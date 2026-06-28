@@ -165,7 +165,8 @@ async function ensureBaseRepo(repoRoot: string): Promise<void> {
   }
   const hasCommit = (await runGit(["rev-parse", "--verify", "--quiet", "HEAD"], repoRoot)).code === 0;
   if (!hasCommit) {
-    await git(["commit", "--allow-empty", "-m", "init: beckett project"], repoRoot);
+    // -c commit.gpgsign=false: the bootstrap commit must never block on signing in the daemon env.
+    await git(["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init: beckett project"], repoRoot);
     logger.info("created initial commit", { repoRoot });
   }
 }

@@ -1551,14 +1551,37 @@ export class BeckettOrchestrator implements Orchestrator {
   /** Ensure the integration branch exists in the project repo (created from the current HEAD). */
   private async ensureIntegrationBranch(task: TaskRow, projectBranch: string): Promise<void> {
     const repoRoot = this.d.repoRoot(task);
+    // Proactive: a fresh/empty project has nothing to branch from. Creating + initializing a repo
+    // is reversible work we just do (Spec 00 — proceed on reversible), never a blocker to escalate.
+    await this.ensureProjectRepo(repoRoot);
     const exists = (await this.git(["rev-parse", "--verify", "--quiet", projectBranch], repoRoot)).code === 0;
     if (exists) return;
-    const head = await this.git(["rev-parse", "--verify", "--quiet", "HEAD"], repoRoot);
-    if (head.code !== 0) {
-      throw new Error(`project repo at ${repoRoot} has no commits to branch from`);
-    }
     const r = await this.git(["branch", projectBranch], repoRoot);
     if (r.code !== 0) throw new Error(`git branch ${projectBranch}: ${r.stderr.trim()}`);
+  }
+
+  /**
+   * Ensure `repoRoot` is a git repo with ≥1 commit. Initializes a fresh project (mkdir + git init +
+   * initial commit) rather than failing — so "create a repo" / first-task scenarios just work.
+   * Idempotent: no-op once a commit exists. (Spec 00 proceed-on-reversible; self-provisioning.)
+   */
+  private async ensureProjectRepo(repoRoot: string): Promise<void> {
+    await Bun.spawn(["mkdir", "-p", repoRoot]).exited;
+    const isRepo = (await this.git(["rev-parse", "--is-inside-work-tree"], repoRoot)).code === 0;
+    if (!isRepo) {
+      const init = await this.git(["init", "-q"], repoRoot);
+      if (init.code !== 0) throw new Error(`git init failed in ${repoRoot}: ${init.stderr.trim()}`);
+      await this.git(["symbolic-ref", "HEAD", "refs/heads/main"], repoRoot);
+    }
+    const head = await this.git(["rev-parse", "--verify", "--quiet", "HEAD"], repoRoot);
+    if (head.code !== 0) {
+      // -c overrides ensure the init commit never blocks on signing/identity gaps in the daemon env.
+      const c = await this.git(
+        ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init: beckett project"],
+        repoRoot,
+      );
+      if (c.code !== 0) throw new Error(`initial commit failed in ${repoRoot}: ${c.stderr.trim()}`);
+    }
   }
 
   private async git(args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
