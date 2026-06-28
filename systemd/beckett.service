@@ -1,0 +1,16 @@
+[Unit]
+Description=Beckett — agentic Discord coworker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/beckett
+ExecStart=%h/beckett/.venv/bin/beckett
+Restart=on-failure
+RestartSec=3
+# Beckett's own environment (claude.ai OAuth in ~/.claude, gh via GH_TOKEN).
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
