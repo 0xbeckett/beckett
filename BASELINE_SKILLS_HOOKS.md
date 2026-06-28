@@ -124,13 +124,39 @@ Transfer goal: Similar declarative + selective injection, but adapted to Beckett
 - Easier extensibility for future "learned" behaviors.
 - Aligns with Beckett's existing emphasis on scope, criteria, and review gate (skills can be node-scoped).
 
-## 6. Work Rules on This Branch
+## 6. Performance Baseline (Captured 2026-06-29)
+
+Run from the branch using available Node:
+```
+node scripts/perf-baseline.ts
+```
+
+**Key baseline metrics (pre any skills/hooks changes):**
+- Context assembly time: **0.0050 ms** avg per call
+- Typical assembled context size: **~1299 chars** (~325 tokens)
+- Memory graph build + recall (50 nodes): **0.0056 ms** avg
+- Hook/scope-guard eval: **sub-millisecond** (negligible per call, but high volume on every tool use)
+- Other characteristics:
+  - Memory is rebuilt from disk on *every* recall/write (see MemoryStore).
+  - Prompt assembly uses stable layers for potential caching.
+  - Worker concurrency kept low (4-8) because harnesses are expensive.
+  - Envelopes focus on turns/wall-clock, not tokens/dollars.
+
+**How to use for iteration:**
+- Re-run `node scripts/perf-baseline.ts` after each experiment.
+- Track deltas in context size (skills will add bloat), assembly time, and recall cost.
+- Goal: Keep increases minimal or provide opt-in/lean modes (like Kew).
+
+Full script output captured in this run for the baseline.
+
+## 7. Work Rules on This Branch
 
 - Only commit on `explore/skills-and-hooks` (or children).
 - Never commit to main.
 - All changes documented here or in follow-up files.
 - When a piece is solid, we can discuss how to surface it (patch, you push the branch later, etc.).
 - Current behavior must be preserved byte-for-byte when new features are not active.
+- Re-measure perf after every significant iteration.
 
 ---
 
