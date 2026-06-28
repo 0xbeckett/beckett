@@ -189,9 +189,16 @@ class BeckettDaemon {
 
   private async onDiscordMessage(m: IncomingMessage): Promise<void> {
     if (this.shuttingDown || m.authorIsBot) return;
+    this.logger.info("inbound routing", {
+      mentionsBot: m.mentionsBot,
+      repliedToId: m.repliedToId ?? null,
+      len: m.content.length,
+    });
     try {
       // Awaiting-reply resolution takes precedence over a fresh mention (Spec 05 §4/§5).
-      if (await this.orchestrator.handleReply(m)) return;
+      const handledAsReply = await this.orchestrator.handleReply(m);
+      this.logger.info("inbound routed", { handledAsReply, mentionsBot: m.mentionsBot });
+      if (handledAsReply) return;
       if (m.mentionsBot) {
         const evt: IntakeEvent = {
           userId: m.userId,
@@ -201,6 +208,8 @@ class BeckettDaemon {
           ts: m.createdAt,
         };
         await this.orchestrator.submit(evt);
+      } else {
+        this.logger.info("inbound ignored (no mention, not a reply)");
       }
     } catch (err) {
       this.logger.error("inbound message handling failed", { error: (err as Error).message });
