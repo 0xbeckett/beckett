@@ -228,6 +228,35 @@ We will experiment with this via skills on the branch (additive only).
 - Make the active-skills path in PLAN more explicit (still additive).
 - Explore hook points that could help observability differently for each harness.
 
+## Fleet Orchestration Skill (from your local Claude/Codex setup)
+
+You mentioned a skill that calls a "fleet", stored on your bot drive, with strong Codex prompts and skills for project work.
+
+From inspection (edd-fleet + proj family in ~/.codex/skills and .claude/skills):
+- It's a multi-fleet orchestration pattern (proj-codex, proj-grok, proj-hermes, edd-fleet, etc.).
+- Main "driver" (often Codex or Claude) orchestrates independent fleets/workers.
+- Strict "Matryoshka grounding": Dispatch to fleets, but **never** accept their claims as truth. Every load-bearing claim must be reconciled by a trusted party (e.g. Opus via opus-reconcile.sh against verbatim `file:line` source).
+- Session scoping: Ephemeral prompts per leg (/tmp), persistent scoped ledger per research_loop/<session>. Re-injects only the ledger on resume. Prevents context bleed across legs/sessions.
+- Good specialization: Codex skills/prompts tuned for implementation/orchestration; separate fleets for audit (Grok), literature (Hermes), deep research (o3), etc.
+- Operator gates irreversible steps; ≤N concurrent workers; notification wrappers for long runs.
+- Compaction/anti-bloat: Fleet outputs ephemeral; only reconciled findings + ledger persist.
+
+This directly attacks the "context per session" problem ro described:
+- Each fleet member/leg gets its own isolated context/prompt/session.
+- The orchestrator (main thread) controls what context is carried forward (only reconciled ledger).
+- No mixing of "what was said in this feedback loop" with unrelated sessions.
+
+For Beckett (vision alignment):
+- Beckett's core is already close: orchestrator + worker fleet (Claude/Codex in isolated worktrees), supervise, integrate, review/gate.
+- The fleet skill's discipline (independence + mandatory source reconciliation + session-scoped persistence) can be encoded as a **Beckett skill** without changing core.
+- Codex prompts/skills from your setup can become reusable Beckett skills for when dispatching Codex workers (implementation bursts).
+- Hooks can implement the "reconcile" step (e.g. PostToolUse or custom hook that forces source citation check).
+- Complements previous: Use with harness-selector (Claude for steering sessions, Codex for impl fleets), scoped memory, compaction (per-fleet/session).
+- Per-server isolation in vision: Fleet per "org/server" with its own scoped context/ledger.
+- Background + feedback steering: The fleet pattern lets one session/fleet handle steering (Claude) while dispatching sub-fleets (Codex) with clean handoffs.
+
+We can port the *pattern* + useful Codex prompts as additive skills on this branch (e.g. a `fleet-orchestrator.md` skill + reconciliation hook example). It gives Beckett better multi-harness coordination while solving the "didnt know what context belonged where" failure.
+
 We just landed the first code for this on the branch (skills loader and worker context now accept session/task id).
 
 ## Critical Insight: Context Must Be Session-Scoped (from conversation with ro)
