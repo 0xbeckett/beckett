@@ -77,13 +77,42 @@ These invalidate parts of Spec 02 §CodexDriver and Spec 12 §1.5 as written:
    login shells, codex didn't until symlinked into `~/.local/bin`. The daemon should not rely on login
    PATH — prefer absolute paths or an explicit PATH in the systemd unit (Spec 01/12).
 
+## 🟢 Risk-A VERIFIED — mid-task nudge works (2026-06-27)
+
+The load-bearing steering assumption is **confirmed** on `claude 2.1.195` via a real bun harness
+(streaming input). Test: slow count 1→12 (one `bash -c 'echo N; sleep 4'` per turn), nudge injected at
+t=12s telling it to stop + write a sentinel.
+
+**Result:** `log.txt = [1, 2, NUDGE-RECEIVED]` — counted only to 2/12, then steered. Timeline: nudge sent
+12.0s → echoed back (replay) 15.0s → claude finished its in-flight tool (wrote `2`), then "Stopping the
+count now as instructed" → wrote sentinel 21.7s → `result/success turns=4 cost=$0.09`.
+
+Confirmed facts for the ClaudeDriver (Spec 02/03):
+- `claude -p --input-format stream-json --output-format stream-json --verbose --replay-user-messages
+  --permission-mode bypassPermissions --model sonnet` works headless as beckett.
+- Injected `{"type":"user","message":{"role":"user","content":"..."}}` NDJSON lines are accepted mid-run.
+- **Nudges land at the next TURN boundary, not mid-tool** — the in-flight `sleep 4` completed (wrote `2`)
+  before the nudge applied. Exactly the context-preserving behavior the spec wants. ✅
+- `--replay-user-messages` echoes the nudge back on stdout (`type:"user"`) → clean ack/ingestion signal.
+- `result` carries `total_cost_usd`, `num_turns`, `is_error`, `session_id` (cost is informational only).
+- ⚠️ The stream has **more `system` subtypes than init/result**: saw `system/thinking_tokens`,
+  `system/task_started`, `system/task_notification`. The telemetry parser must tolerate unknown system
+  subtypes (don't assume the schema; switch on what you know, ignore the rest).
+- ⚠️ `--model sonnet` resolved to **`claude-sonnet-4-6`** on this box (not 4.5) — update the model id in
+  the Spec 06 routing table to match what the alias actually resolves to, or pin full ids.
+
+## Done since: Discord creds
+
+- `~/.beckett/.env` populated (0600) with `DISCORD_TOKEN`, `DISCORD_HOME_SERVER_ID`
+  (`1446046120433418302` — telemetry/home server), `DISCORD_OWNER_ID` (`1151230208783945818`). GitHub +
+  Gmail keys still blank. ⚠️ The bot token was shared in plaintext chat — rotate it if that transcript
+  is ever exposed.
+
 ## Still TODO (needs Jason / not yet done)
 
-- **🔑 Identity provisioning** (Spec 12 §1.6, interactive): Beckett's own **Discord bot** (token +
-  enable **Message Content** intent), **GitHub** account + fine-grained PAT + collaborator add, **Gmail**
-  account + OAuth. Then populate `~/.beckett/.env` and fix git email.
-- **⚠️ Risk-A NOT yet verified** (the big v0 gate): does `claude -p --input-format stream-json` actually
-  deliver a mid-task nudge at the next turn boundary on 2.1.195? This is the load-bearing steering
-  assumption — smoke-test before building the ClaudeDriver.
+- **🔑 Identity provisioning** (Spec 12 §1.6, interactive): **Discord** — enable **Message Content**
+  intent in the dev portal + invite the bot to the home server (token already stored). **GitHub** account
+  + PAT (or App — see decision pending) + collaborator add. **Gmail** account + OAuth. Then fill `.env`
+  and set git email.
 - `config.toml` seed, systemd user service — defer until the daemon code exists.
 - Decide whether to keep codex's bwrap sandbox (userns flipped) or bypass it (correction #3 alt).
