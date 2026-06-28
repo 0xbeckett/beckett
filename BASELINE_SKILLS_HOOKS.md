@@ -228,6 +228,8 @@ We will experiment with this via skills on the branch (additive only).
 - Make the active-skills path in PLAN more explicit (still additive).
 - Explore hook points that could help observability differently for each harness.
 
+We just landed the first code for this on the branch (skills loader and worker context now accept session/task id).
+
 ## Critical Insight: Context Must Be Session-Scoped (from conversation with ro)
 
 You asked ro why "he" didn't like the prior setup. The root problem was **context**.
