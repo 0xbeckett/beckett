@@ -10,6 +10,7 @@ other vault secrets the agent has no business reading.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,7 +52,11 @@ def _load_env_file(state_dir: Path) -> None:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        # Strip a trailing inline comment (a '#' preceded by whitespace) so a line
+        # like `DISCORD_OWNER_ID=123  # Jason` parses as the int 123, not a string
+        # with a comment glued on. A '#' inside a value with no leading space
+        # (e.g. part of a token) is preserved.
+        value = re.split(r"\s#", value, maxsplit=1)[0].strip().strip('"').strip("'")
         if key and os.environ.get(key) is None:
             os.environ[key] = value
 
