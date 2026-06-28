@@ -281,8 +281,10 @@ export class DiscordJsGateway implements DiscordGateway {
     const botId = this.client?.user?.id;
     const isDM = msg.guildId === null;
     // A DM addressed to the bot is an address even without an explicit @mention (Spec 05
-    // §1.1 — the DM IS the channel). In guilds, require a direct user mention.
-    const directMention = botId ? msg.mentions.users.has(botId) : false;
+    // §1.1 — the DM IS the channel). In guilds, count a direct @mention OR a native reply to one
+    // of Beckett's messages (the reply-ping lands in `repliedUser`, which `.users.has()` MISSES —
+    // that bug silently dropped every reply-style mention). `ignoreEveryone` avoids @everyone noise.
+    const directMention = botId ? msg.mentions.has(botId, { ignoreEveryone: true }) : false;
     return {
       messageId: msg.id,
       userId: msg.author.id,
