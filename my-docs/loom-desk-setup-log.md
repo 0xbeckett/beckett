@@ -24,6 +24,24 @@
 `/home/claude` is untouched and still running. `/home/claude` is mode `750` so beckett cannot read it —
 that's why beckett got its **own** binaries; only the cred files were copied (root read them).
 
+### Passwordless sudo + docker (2026-06-27, Jason's call)
+
+beckett gets **passwordless sudo** so it can manage its own tooling (install/update, manage its service)
+— the agency goal, and parity with how `claude`/clawdbot already runs. Mirrors `claude` exactly:
+`/etc/sudoers.d/beckett-nopasswd` → `beckett ALL=(ALL:ALL) NOPASSWD: ALL` (mode 0440); added to
+`sudo` + `docker` groups. Verified `sudo -n whoami → root`, `docker ps → ok`.
+
+- ✋ **Note (not a blocker):** the original premise was that bwrap needed sudo — it didn't. bubblewrap is
+  unprivileged by design; the codex sandbox already worked as beckett with no sudo (the real fix was the
+  userns sysctl). So sudo is granted for **tooling/agency**, not for the sandbox.
+- ⚠️ **Accepted blast-radius tradeoff:** workers (`claude -p`/`codex exec`) run **as `beckett`**, so they
+  inherit passwordless root. Untrusted input (email, external repos) flowing into a worker now has a path
+  to root. This is consistent with clawdbot's existing model on a trusted personal box, and Jason owns
+  the box. *Future mitigation if isolation tightens:* run untrusted workers under a separate
+  no-sudo user, or scrub sudo from the worker process env. Tracked for the multiplayer/untrusted era.
+- beckett remains a **non-root account** (uid 1001) — it just *can* escalate. So Claude's
+  `bypassPermissions`-can't-run-as-root requirement still holds (workers run as beckett, not root).
+
 ## ✅ Confirmed: subscription creds are portable across OS users (same host)
 
 Copying `~/.claude/.credentials.json` (471 B) and `~/.codex/auth.json` (4.4 KB) from `claude` → `beckett`
