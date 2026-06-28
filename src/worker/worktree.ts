@@ -130,15 +130,44 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<Worktree
 
   mkdirSync(dirname(workspace), { recursive: true });
 
+  // Proactive: a fresh/empty project has nothing to branch from. Creating a repo is reversible
+  // (Spec 00 — proceed on reversible), so we init it + make an initial commit rather than
+  // escalating "there are no commits". No-op when a commit already exists.
+  await ensureBaseRepo(repoRoot);
+
   // If the branch already exists (e.g. a prior failed attempt), check it out instead of -b.
   const branchExists = (await runGit(["rev-parse", "--verify", "--quiet", branch], repoRoot)).code === 0;
+  // The requested baseRef may not exist on a just-initialized repo (e.g. origin/main) — fall back to HEAD.
+  const baseOk = (await runGit(["rev-parse", "--verify", "--quiet", baseRef], repoRoot)).code === 0;
+  const effectiveBase = baseOk ? baseRef : "HEAD";
   const args = branchExists
     ? ["worktree", "add", workspace, branch]
-    : ["worktree", "add", "-b", branch, workspace, baseRef];
+    : ["worktree", "add", "-b", branch, workspace, effectiveBase];
 
   await git(args, repoRoot);
-  logger.info("worktree created", { workspace, branch, baseRef });
+  logger.info("worktree created", { workspace, branch, baseRef: effectiveBase });
   return handle;
+}
+
+/**
+ * Ensure `repoRoot` is a git repo with ≥1 commit so `git worktree add` has a base to branch from.
+ * Proactive self-setup: a brand-new project (or an empty ~/projects) is initialized rather than
+ * failing the dispatch. Idempotent — does nothing once a commit exists. Relies on the global git
+ * identity (set at provisioning to Beckett's signed identity).
+ */
+async function ensureBaseRepo(repoRoot: string): Promise<void> {
+  mkdirSync(repoRoot, { recursive: true });
+  const isRepo = (await runGit(["rev-parse", "--is-inside-work-tree"], repoRoot)).code === 0;
+  if (!isRepo) {
+    await git(["init"], repoRoot);
+    await runGit(["symbolic-ref", "HEAD", "refs/heads/main"], repoRoot);
+    logger.info("git init (fresh project repo)", { repoRoot });
+  }
+  const hasCommit = (await runGit(["rev-parse", "--verify", "--quiet", "HEAD"], repoRoot)).code === 0;
+  if (!hasCommit) {
+    await git(["commit", "--allow-empty", "-m", "init: beckett project"], repoRoot);
+    logger.info("created initial commit", { repoRoot });
+  }
 }
 
 /** Canonicalize a path for comparison (resolves symlinks like macOS /var → /private/var). */
