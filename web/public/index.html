@@ -131,18 +131,12 @@
   .legend i{width:18px;height:1px;background:var(--dim);display:inline-block}
   .legend i.c{background:var(--cyan)}
 
-  /* ---------- live loop demo (simulated channel) ---------- */
-  .demo{position:relative;width:100%;max-width:580px;margin:0 auto;height:min(74vh,580px);
-    border:1px solid var(--hair);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;
-    background:linear-gradient(180deg,rgba(13,15,28,.72),rgba(8,9,16,.72));backdrop-filter:blur(5px);
-    box-shadow:0 40px 90px -50px rgba(0,0,0,.9)}
-  .demo .dhead{display:flex;align-items:center;gap:8px;padding:13px 16px;border-bottom:1px solid var(--hair);font-size:11px;color:var(--dim);flex:none}
-  .demo .dhead .hd-dot{width:8px;height:8px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan-glow)}
-  .demo .dhead .hash{color:var(--ink)}
-  .demo .feed{position:relative;flex:1;overflow:hidden}
-  .demo .feed::before{content:"";position:absolute;top:0;left:0;right:0;height:54px;z-index:3;pointer-events:none;
-    background:linear-gradient(rgba(11,13,24,.95),rgba(11,13,24,0))}
-  .feedinner{position:absolute;left:18px;right:18px;bottom:16px;display:flex;flex-direction:column;gap:13px}
+  /* ---------- live loop demo (uncontained, floating transcript) ---------- */
+  .demo{position:relative;width:100%;max-width:600px;margin:0 auto;height:min(74vh,560px)}
+  .demo .feed{position:absolute;inset:0;overflow:hidden}
+  .demo .feed::before{content:"";position:absolute;top:0;left:0;right:0;height:64px;z-index:3;pointer-events:none;
+    background:linear-gradient(var(--bg),rgba(7,8,17,0))}
+  .feedinner{position:absolute;left:0;right:0;top:0;display:flex;flex-direction:column;gap:13px;will-change:transform}
 
   .msg{display:flex;gap:10px;align-items:flex-start;opacity:0;transform:translateY(8px);animation:rise .42s var(--ease) forwards}
   @keyframes rise{to{opacity:1;transform:none}}
@@ -162,10 +156,13 @@
   .badge{font-size:9px;letter-spacing:.13em;padding:3px 0;width:78px;text-align:center;border:1px solid var(--hair);border-radius:6px;color:var(--cyan);flex:none}
   .badge.lav{color:var(--lav);border-color:rgba(175,162,222,.3)}
   .badge.ok{color:#7fe0bf;border-color:rgba(127,224,191,.3)}
+  .badge.amber{color:#e6b770;border-color:rgba(230,183,112,.32)}
   .worker{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--dim)}
   .worker .sp{width:11px;height:11px;border-radius:50%;border:1.6px solid var(--cyan);border-top-color:transparent;animation:spin360 .8s linear infinite;flex:none}
-  .worker.done .sp{border:none;animation:none;width:auto;height:auto}
+  .worker.done .sp,.worker.abort .sp{border:none;animation:none;width:auto;height:auto}
   .worker.done .sp::after{content:"✓";color:#7fe0bf;font-size:12px}
+  .worker.abort{color:rgba(230,183,112,.85)}
+  .worker.abort .sp::after{content:"✕";color:#e6b770;font-size:12px}
   .worker .wl b{color:var(--ink);font-weight:500}
   .reason{display:flex;gap:9px;font-size:12px;font-style:italic;color:var(--dim);opacity:0;animation:rise .42s var(--ease) forwards}
   .reason .mk{color:var(--lav);font-style:normal;flex:none}
@@ -310,7 +307,6 @@
   <h2 class="lead reveal">Plan. Dispatch. Gate. Ship.<br>Then run it <b class="accent">on itself.</b></h2>
 
   <div class="demo reveal" id="demo">
-    <div class="dhead"><span class="hd-dot"></span><span class="hash">#eng</span><span>· beckett is in this channel</span></div>
     <div class="feed"><div class="feedinner" id="feed"></div></div>
   </div>
   </div>
@@ -478,8 +474,18 @@
   function buildDemo(glyphHTML){
     var feed = document.getElementById("feed");
     if(!feed) return;
+    var viewport = feed.parentElement; // .feed (fixed height, clips)
     var avatar = '<span class="av beck">'+glyphHTML+'</span>';
     function sleep(ms){ return new Promise(function(r){ setTimeout(r,ms); }); }
+
+    // keep the latest line in view: scroll the transcript up as it grows past the box
+    var curTy = 0;
+    (function keepBottom(){
+      var over = Math.max(0, feed.scrollHeight - viewport.clientHeight);
+      curTy += (over - curTy) * (reduce ? 1 : 0.12);
+      feed.style.transform = "translateY(" + (-curTy) + "px)";
+      requestAnimationFrame(keepBottom);
+    })();
 
     function row(html, cls){
       var d = document.createElement("div");
@@ -512,67 +518,149 @@
       var w = document.createElement("div"); w.className="worker tline";
       w.innerHTML = '<span class="sp"></span><span class="wl">'+name+'</span>';
       box.appendChild(w);
-      return { el:w, done:function(){ w.classList.add("done"); } };
+      return {
+        el:w,
+        done:function(){ w.classList.remove("abort"); w.classList.add("done"); },
+        abort:function(label){ w.classList.add("abort"); if(label) w.querySelector(".wl").textContent = label; }
+      };
     }
     function reason(box, text){
       var r = document.createElement("div"); r.className="reason";
       r.innerHTML = '<span class="mk">‹thinking›</span><span>'+text+'</span>';
       box.appendChild(r); return r;
     }
+    var api = { msg:msg, trace:trace, tline:tline, worker:worker, reason:reason, sleep:sleep };
 
-    async function cycle(){
-      feed.innerHTML = "";
+    /* ----- 5 scenarios, each shows a different capability ----- */
 
-      await msg("you","you","@beckett signup form throws on slow networks — can you fix it?");
-      await sleep(500);
-      await msg("beck","beckett","on it. reproducing first.");
-      await sleep(450);
-
-      var t = trace();
-      reason(t, "the retry path only catches network errors, not 5xx. that's the bug.");
-      await sleep(900);
-      tline(t,"PLAN","lav","3-node DAG · acceptance criteria written");
-      await sleep(650);
-      tline(t,"STAFF","lav","claude ×2 · codex ×1 — granularity to match");
-      await sleep(650);
-      tline(t,"DISPATCH","","3 workers, isolated worktrees");
-      await sleep(300);
-      var w1 = worker(t,"claude · fix the retry path");
-      await sleep(180); var w2 = worker(t,"codex · add a slow-network test");
-      await sleep(180); var w3 = worker(t,"claude · harden the error toast");
-      await sleep(1100); w2.done();
-      await sleep(500);
-      tline(t,"SUPERVISE","","worker 3 drifting out of scope → nudged back");
-      await sleep(500); w1.done();
-      await sleep(450); w3.done();
-      await sleep(500);
-      tline(t,"INTEGRATE","","merged 3 branches · reconciled interfaces");
-      await sleep(700);
-      tline(t,"GATE","ok","tests green · adversarial review pass ✓");
-      await sleep(800);
-      await msg("beck","beckett","shipped to a branch. PR's up — review or merge?");
-      await sleep(1500);
-
-      // ...then run it on itself
-      await msg("you","you","merge it. also — can you make your own intake faster?");
-      await sleep(500);
-      await msg("beck","beckett","ha. staffing a copy of myself on my own code.");
-      await sleep(450);
-      var t2 = trace();
-      tline(t2,"DISPATCH","lav","beckett → beckett");
-      await sleep(280);
-      var ws = worker(t2,"beckett · refactoring its own intake");
-      await sleep(1500); ws.done();
-      await sleep(400);
-      tline(t2,"GATE","ok","self-review pass · ~30% faster ✓");
-      await sleep(800);
-      await msg("beck","beckett","done. intake's snappier now, and I logged what worked.");
-      await sleep(3600);
+    // 1 — the full loop, then beckett runs it on itself
+    async function s_shipAndSelf(a){
+      await a.msg("you","you","@beckett signup form throws on slow networks — can you fix it?");
+      await a.sleep(500);
+      await a.msg("beck","beckett","on it. reproducing first.");
+      var t = a.trace();
+      a.reason(t,"the retry path only catches network errors, not 5xx. that's the bug.");
+      await a.sleep(950);
+      a.tline(t,"PLAN","lav","3-node DAG · acceptance criteria written"); await a.sleep(620);
+      a.tline(t,"STAFF","lav","claude ×2 · codex ×1"); await a.sleep(560);
+      a.tline(t,"DISPATCH","","3 workers, isolated worktrees"); await a.sleep(280);
+      var w1=a.worker(t,"claude · fix the retry path");
+      await a.sleep(160); var w2=a.worker(t,"codex · add a slow-network test");
+      await a.sleep(160); var w3=a.worker(t,"claude · harden the error toast");
+      await a.sleep(1100); w2.done();
+      await a.sleep(480); a.tline(t,"SUPERVISE","","worker 3 drifting → nudged back");
+      await a.sleep(450); w1.done(); await a.sleep(420); w3.done();
+      await a.sleep(480); a.tline(t,"INTEGRATE","","merged 3 branches");
+      await a.sleep(640); a.tline(t,"GATE","ok","tests green · review pass ✓");
+      await a.sleep(750);
+      await a.msg("beck","beckett","shipped to a branch. PR's up — review or merge?");
+      await a.sleep(1400);
+      await a.msg("you","you","merge it. also — can you make your own intake faster?");
+      await a.sleep(500);
+      await a.msg("beck","beckett","ha. staffing a copy of myself on my own code.");
+      var t2=a.trace();
+      a.tline(t2,"DISPATCH","lav","beckett → beckett"); await a.sleep(280);
+      var ws=a.worker(t2,"beckett · refactoring its own intake");
+      await a.sleep(1500); ws.done();
+      await a.sleep(380); a.tline(t2,"GATE","ok","self-review pass · ~30% faster ✓");
+      await a.sleep(750);
+      await a.msg("beck","beckett","done. intake's snappier, and I logged what worked.");
     }
 
+    // 2 — interrupt a running agent mid-flight
+    async function s_interrupt(a){
+      await a.msg("you","you","@beckett refactor the auth module onto the new token service.");
+      await a.sleep(450);
+      await a.msg("beck","beckett","on it.");
+      var t=a.trace();
+      a.tline(t,"DISPATCH","","2 workers"); await a.sleep(300);
+      var w1=a.worker(t,"claude · rewriting auth/*");
+      await a.sleep(180); var w2=a.worker(t,"codex · porting the session store");
+      await a.sleep(1300);
+      await a.msg("you","you","wait — stop. don't touch the session store yet.");
+      await a.sleep(350);
+      w2.abort("codex · session store — aborted mid-turn");
+      await a.msg("beck","beckett","caught it. killed that worker, dropped it from scope.");
+      await a.sleep(500);
+      a.tline(t,"RE-SCOPE","amber","auth only · session store deferred"); await a.sleep(650);
+      w1.done(); a.tline(t,"GATE","ok","tests green ✓");
+      await a.sleep(700);
+      await a.msg("beck","beckett","done — auth's on the new tokens, session store untouched. PR's up.");
+    }
+
+    // 3 — ask for clarification *during* the task, then continue
+    async function s_clarify(a){
+      await a.msg("you","you","@beckett migrate the analytics events to the v2 schema.");
+      await a.sleep(450);
+      await a.msg("beck","beckett","on it.");
+      var t=a.trace();
+      a.tline(t,"PLAN","lav","mapping 41 events → v2"); await a.sleep(500);
+      a.tline(t,"DISPATCH","","1 worker"); await a.sleep(260);
+      var w=a.worker(t,"codex · rewriting the event map");
+      await a.sleep(1400);
+      a.reason(t,"`signup_v1` and `account_created` both map to `signup`. that's lossy.");
+      await a.sleep(950);
+      await a.msg("beck","beckett","quick one before I commit — two events collapse into `signup`. merge them, or keep both?");
+      await a.sleep(900);
+      await a.msg("you","you","keep both.");
+      await a.sleep(350);
+      await a.msg("beck","beckett","got it. continuing.");
+      var t2=a.trace();
+      a.tline(t2,"RESUME","amber","both events preserved"); await a.sleep(650);
+      w.done(); a.tline(t2,"GATE","ok","all 41 events round-trip ✓");
+      await a.sleep(700);
+      await a.msg("beck","beckett","migrated. nothing dropped. PR's up — review or merge?");
+    }
+
+    // 4 — standing to push back on a bad plan
+    async function s_pushback(a){
+      await a.msg("you","you","@beckett drop the legacy billing tables, we don't use them.");
+      await a.sleep(500);
+      var t=a.trace();
+      a.reason(t,"`invoices` still has live FKs from `refunds`. dropping it breaks refunds.");
+      await a.sleep(1050);
+      await a.msg("beck","beckett","I'd hold off — `invoices` still backs active refunds. dropping it cascades.");
+      await a.sleep(700);
+      await a.msg("beck","beckett","archive them to cold storage instead, or proceed and I handle the cascade?");
+      await a.sleep(900);
+      await a.msg("you","you","archive them. good catch.");
+      await a.sleep(400);
+      var t2=a.trace();
+      a.tline(t2,"DISPATCH","","1 worker"); await a.sleep(260);
+      var w=a.worker(t2,"claude · archive + verify referential integrity");
+      await a.sleep(1500); w.done();
+      a.tline(t2,"GATE","ok","refunds still resolve ✓");
+      await a.sleep(700);
+      await a.msg("beck","beckett","archived. nothing dropped, refunds intact.");
+    }
+
+    // 5 — self-governance: it halts itself
+    async function s_halt(a){
+      await a.msg("you","you","@beckett rewrite the whole payments service in rust.");
+      await a.sleep(450);
+      await a.msg("beck","beckett","scoping it…");
+      var t=a.trace();
+      a.tline(t,"PLAN","lav","reading payments/* · mapping blast radius"); await a.sleep(800);
+      a.reason(t,"live money path, ~0 test coverage, no staging soak. that's a lot to get wrong.");
+      await a.sleep(1100);
+      a.tline(t,"HALT","amber","stopping myself before dispatch"); await a.sleep(650);
+      await a.msg("beck","beckett","I don't think I should just run with this. it's the live money path with almost no tests.");
+      await a.sleep(800);
+      await a.msg("beck","beckett","let's scope a migration + a staging soak first. want me to draft that plan?");
+      await a.sleep(800);
+      await a.msg("you","you","yeah — good call.");
+    }
+
+    var scripts = [s_shipAndSelf, s_interrupt, s_clarify, s_pushback, s_halt];
+
     async function run(){
-      if(reduce){ await cycle(); return; }
-      while(true){ await cycle(); }
+      var i = 0;
+      do {
+        feed.innerHTML = "";
+        try { await scripts[i % scripts.length](api); } catch(e){}
+        i++;
+        await sleep(reduce ? 0 : 4200);
+      } while(!reduce);
     }
     run();
   }
