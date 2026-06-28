@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
@@ -89,6 +90,13 @@ def _clean_env() -> dict[str, str]:
     env = dict(os.environ)
     for key in SECRET_ENV_KEYS:
         env.pop(key, None)
+    # Make the `beckett-job` console-script reachable from the agent's Bash: it's
+    # installed alongside this interpreter (the venv bin), which isn't on the
+    # bot's own PATH.
+    bin_dir = os.path.dirname(sys.executable)
+    path = env.get("PATH", "")
+    if bin_dir and bin_dir not in path.split(os.pathsep):
+        env["PATH"] = bin_dir + os.pathsep + path if path else bin_dir
     return env
 
 
@@ -133,6 +141,7 @@ async def run_session(
     model: str | None = None,
     system_prompt: str | None = None,
     settings_path: str | None = None,
+    extra_env: dict[str, str] | None = None,
     should_interrupt: Callable[[], bool] | None = None,
 ) -> AsyncIterator[ClaudeEvent]:
     """Spawn (or resume) a session and yield parsed events as they stream.
@@ -152,12 +161,15 @@ async def run_session(
         system_prompt=system_prompt,
         settings_path=settings_path,
     )
+    env = _clean_env()
+    if extra_env:
+        env.update(extra_env)
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=_clean_env(),
+        env=env,
         limit=_STREAM_LIMIT,
     )
     assert proc.stdout is not None

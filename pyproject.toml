@@ -10,6 +10,7 @@ dependencies = [
 
 [project.scripts]
 beckett = "beckett.__main__:main"
+beckett-job = "beckett.jobcli:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -25,6 +25,7 @@ import discord
 from .claude import run_session
 from .config import Settings
 from .hooks import ensure_worker_settings
+from .jobs import JobManager
 from .prompts import build_system_prompt
 from .relay import Relay, chunk_text
 from .store import Store
@@ -50,6 +51,8 @@ class BeckettBot(discord.Client):
         self._workers: dict[int, SessionWorker] = {}
         # The worker settings file registering the scope-guard hook (built once).
         self._settings_path = ensure_worker_settings(settings)
+        # Detached background jobs (the agency).
+        self.jobs = JobManager(self, settings, store)
         self.started_at = time.time()
 
     # --- lifecycle --------------------------------------------------------
@@ -64,6 +67,8 @@ class BeckettBot(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("connected as %s (id=%s)", self.user, self.user and self.user.id)
+        # Reconcile jobs left running by a previous process, then start the poller.
+        await self.jobs.start()
 
     # --- access -----------------------------------------------------------
     def is_allowed(self, user_id: int) -> bool:
@@ -276,6 +281,7 @@ class SessionWorker:
                                 model=self.bot.settings.model,
                                 system_prompt=system_prompt,
                                 settings_path=self.bot._settings_path,
+                                extra_env={"BECKETT_CHANNEL_ID": str(getattr(self.target, "id", 0))},
                                 should_interrupt=lambda: self._stop or not self.queue.empty(),
                             )
                         )
@@ -402,6 +408,19 @@ def register_commands(bot: BeckettBot) -> None:
             await interaction.response.send_message("no active sessions.", ephemeral=True)
             return
         lines = [f"• <#{s.channel_id}> — `{s.session_id[:8]}` (cwd `{s.cwd}`)" for s in rows[:25]]
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @bot.tree.command(name="jobs", description="Show background jobs in this channel.")
+    async def jobs_cmd(interaction: discord.Interaction):
+        cid = getattr(interaction.channel, "id", 0)
+        rows = store.recent_jobs(channel_id=cid, limit=10)
+        if not rows:
+            await interaction.response.send_message("no jobs in this channel yet.", ephemeral=True)
+            return
+        lines = []
+        for j in rows:
+            tag = f" · `{j.branch}`" if j.branch else ""
+            lines.append(f"`{j.id}` **{j.status}** — {j.spec[:60]}{tag}")
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @bot.tree.command(name="status", description="Beckett status + your access.")

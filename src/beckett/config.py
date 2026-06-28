@@ -56,6 +56,15 @@ def _load_env_file(state_dir: Path) -> None:
             os.environ[key] = value
 
 
+def resolve_db_path() -> Path:
+    """The session/jobs db path — resolved WITHOUT requiring DISCORD_TOKEN.
+
+    The beckett-job CLI runs inside agent sessions where the bot's secrets are
+    scrubbed; it only needs the db, so it must not go through load_settings().
+    """
+    return _default_state_dir() / "sessions.db"
+
+
 def _int_or_none(value: str | None) -> int | None:
     if not value:
         return None

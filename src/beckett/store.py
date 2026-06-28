@@ -28,6 +28,25 @@ class Session:
     created_at: float
 
 
+@dataclass
+class Job:
+    id: str
+    channel_id: int
+    spec: str
+    repo: str | None
+    cwd: str | None
+    branch: str | None
+    # requested | running | done | failed | cancelled | interrupted
+    status: str
+    session_id: str | None
+    progress: str | None
+    summary: str | None
+    requested_by: int | None
+    cancel_requested: int
+    created_at: float
+    updated_at: float
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     channel_id INTEGER PRIMARY KEY,
@@ -45,6 +64,23 @@ CREATE TABLE IF NOT EXISTS access (
     added_by INTEGER,
     added_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id               TEXT PRIMARY KEY,
+    channel_id       INTEGER NOT NULL,
+    spec             TEXT NOT NULL,
+    repo             TEXT,
+    cwd              TEXT,
+    branch           TEXT,
+    status           TEXT NOT NULL,    -- requested|running|done|failed|cancelled|interrupted
+    session_id       TEXT,
+    progress         TEXT,
+    summary          TEXT,
+    requested_by     INTEGER,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    created_at       REAL NOT NULL,
+    updated_at       REAL NOT NULL
+);
 """
 
 
@@ -53,6 +89,11 @@ class Store:
         self._lock = threading.Lock()
         self._db = sqlite3.connect(str(db_path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        # WAL + a busy timeout so the bot, the beckett-job CLI, and a concurrent
+        # `status` read don't trip "database is locked" — they're three separate
+        # processes on this one file (the in-process lock coordinates none of it).
+        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA busy_timeout=5000")
         self._db.executescript(_SCHEMA)
         self._db.commit()
 
@@ -127,6 +168,94 @@ class Store:
             else:
                 rows = self._db.execute("SELECT user_id, status FROM access").fetchall()
         return [(r["user_id"], r["status"]) for r in rows]
+
+
+    # --- jobs -------------------------------------------------------------
+    def create_job(
+        self,
+        job_id: str,
+        channel_id: int,
+        spec: str,
+        repo: str | None,
+        requested_by: int | None,
+    ) -> None:
+        now = time.time()
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO jobs "
+                "(id, channel_id, spec, repo, status, requested_by, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'requested', ?, ?, ?)",
+                (job_id, channel_id, spec, repo, requested_by, now, now),
+            )
+            self._db.commit()
+
+    def get_job(self, job_id: str) -> "Job | None":
+        with self._lock:
+            row = self._db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return _row_to_job(row) if row else None
+
+    def jobs_by_status(self, status: str) -> list["Job"]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM jobs WHERE status = ? ORDER BY created_at", (status,)
+            ).fetchall()
+        return [_row_to_job(r) for r in rows]
+
+    def recent_jobs(self, channel_id: int | None = None, limit: int = 15) -> list["Job"]:
+        with self._lock:
+            if channel_id is not None:
+                rows = self._db.execute(
+                    "SELECT * FROM jobs WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
+                    (channel_id, limit),
+                ).fetchall()
+            else:
+                rows = self._db.execute(
+                    "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+        return [_row_to_job(r) for r in rows]
+
+    def update_job(self, job_id: str, **fields) -> None:
+        if not fields:
+            return
+        fields["updated_at"] = time.time()
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        with self._lock:
+            self._db.execute(
+                f"UPDATE jobs SET {cols} WHERE id = ?", (*fields.values(), job_id)
+            )
+            self._db.commit()
+
+    def request_cancel(self, job_id: str) -> bool:
+        """Flag a job for cancellation. Returns True if it was cancellable."""
+        with self._lock:
+            row = self._db.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if not row or row["status"] not in ("requested", "running"):
+                return False
+            self._db.execute(
+                "UPDATE jobs SET cancel_requested = 1, updated_at = ? WHERE id = ?",
+                (time.time(), job_id),
+            )
+            self._db.commit()
+        return True
+
+
+def _row_to_job(row: sqlite3.Row) -> Job:
+    return Job(
+        id=row["id"],
+        channel_id=row["channel_id"],
+        spec=row["spec"],
+        repo=row["repo"],
+        cwd=row["cwd"],
+        branch=row["branch"],
+        status=row["status"],
+        session_id=row["session_id"],
+        progress=row["progress"],
+        summary=row["summary"],
+        requested_by=row["requested_by"],
+        cancel_requested=row["cancel_requested"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
 
 
 def _row_to_session(row: sqlite3.Row) -> Session:
