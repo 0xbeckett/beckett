@@ -72,6 +72,20 @@ export function loadAllSkills(): LoadedSkill[] {
 }
 
 /**
+ * Load only specific active skills by name (additive).
+ * If activeNames is empty or undefined, falls back to loadAllSkills (for now).
+ * This enables per-node/task skills selection (e.g. from PLAN) without changing defaults.
+ */
+export function loadActiveSkills(activeNames?: string[]): LoadedSkill[] {
+  if (!activeNames || activeNames.length === 0) {
+    return loadAllSkills();
+  }
+  const all = loadAllSkills();
+  const nameSet = new Set(activeNames);
+  return all.filter(s => nameSet.has(s.name));
+}
+
+/**
  * Format skills for prompt/context injection (Kew-style headers).
  * If no skills or empty list, returns "".
  *
@@ -97,8 +111,8 @@ export function formatSkillsBlock(skills: LoadedSkill[]): string {
  * Returns "" when there are no skills → completely safe to append unconditionally
  * in existing builders.
  */
-export function loadAndFormatSkills(): string {
-  const skills = loadAllSkills();
+export function loadAndFormatSkills(activeNames?: string[]): string {
+  const skills = loadActiveSkills(activeNames);
   return formatSkillsBlock(skills);
 }
 

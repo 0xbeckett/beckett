@@ -187,12 +187,12 @@ function ctxMemory(ctx?: BrainContext): string {
 }
 
 /** Pull skills (additive, from src/skills). Returns "" if none → no behavior change. */
-function ctxSkills(ctx?: BrainContext): string {
+function ctxSkills(ctx?: BrainContext, activeSkills?: string[]): string {
   const fromCtx = ctx?.skills?.trim();
   if (fromCtx) return `SKILLS (specialized instructions):\n\n${fromCtx}`;
 
-  // Fallback: global loader (still additive; empty when no skills present)
-  const loaded = loadAndFormatSkills();
+  // Fallback: support active list (additive, for per-task collaboration skills)
+  const loaded = loadAndFormatSkills(activeSkills);
   return loaded ? `SKILLS (specialized instructions):\n\n${loaded}` : "";
 }
 
@@ -383,7 +383,7 @@ export function clarifyUser(task: TaskRecord, ctx?: BrainContext): string {
 ${task.prompt}
 """`,
     ctxMemory(ctx),
-    ctxSkills(ctx),
+    ctxSkills(ctx, (ctx as any)?.activeSkills), // additive path for per-node skills
     renderFields(ctx),
     "Decide: does this need ONE clarifying question before planning, or do you proceed with recorded assumptions?",
   );
@@ -401,7 +401,7 @@ ${task.prompt}
 """`,
     assumptions,
     ctxMemory(ctx),
-    ctxSkills(ctx),
+    ctxSkills(ctx, (ctx as any)?.activeSkills), // additive path for per-node skills
     renderFields(ctx),
     "Produce the PlanOutput: the smallest correct DAG with mandatory per-node criteria, suggested workers, envelopes, and initial check-ins.",
   );

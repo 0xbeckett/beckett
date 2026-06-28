@@ -160,13 +160,18 @@ function zeroSpend(): WorkerSpend {
 }
 
 /** The businesslike worker-persona / scope / criteria system append (Spec 02 §4.3). */
-function buildSystemAppend(scopeDesc: string, ownedGlobs: string[], criteria: AcceptanceCriteria): string {
+function buildSystemAppend(
+  scopeDesc: string, 
+  ownedGlobs: string[], 
+  criteria: AcceptanceCriteria,
+  activeSkills?: string[] // additive, from PLAN / NodeRecord
+): string {
   const owned = ownedGlobs.length ? ownedGlobs.join(", ") : "(your whole worktree)";
   const nl = criteria.nl.length ? criteria.nl.map((c) => `  - ${c}`).join("\n") : "  - (none specified)";
   const checks = criteria.checks.length
     ? `These checks must pass (each must exit 0):\n${criteria.checks.map((c) => `  - ${c}`).join("\n")}\n`
     : "";
-  const skillsBlock = loadAndFormatSkills();
+  const skillsBlock = loadAndFormatSkills(activeSkills);
   const skillsPart = skillsBlock ? `\n\n${skillsBlock}\n` : "";
 
   return (
@@ -421,7 +426,12 @@ export class DefaultWorkerManager implements WorkerManager {
       const spec: SpawnSpec = {
         workerId: id,
         prompt: buildPrompt(node, criteria),
-        systemAppend: buildSystemAppend(node.scope.description, node.scope.ownedGlobs, criteria),
+        systemAppend: buildSystemAppend(
+          node.scope.description, 
+          node.scope.ownedGlobs, 
+          criteria,
+          node.activeSkills // additive: pass per-node skills if set by PLAN
+        ),
         workspace,
         scope: node.scope,
         envelope,

@@ -5,6 +5,28 @@
 **Date:** 2026-06-29 (local exploration)  
 **Goal:** Explore transferring Kew's skills invocation pattern + enhancing Beckett's hook system for better consolidation, **without breaking any existing behavior**.
 
+## Vision Context (from direct conversation with repo owner)
+
+Beckett's intended use:
+- Team collaboration tool: teammates tag `@beckett` to offload tasks.
+- Agent acts on its **own behalf** (own GH account, can be invited to private repos like any collaborator).
+- Works in background, takes teammate feedback, and **steers** the work.
+- First-class harness support: Claude Code (`claude -p` for steering/interrupts) + Codex.
+- Per-"org"/server isolation (own containers/knowledge base per server ID in vision).
+- Not for solo coding — collaboration-focused.
+- Owner specifically wants **better use of hooks** for observability inside claude -p sessions.
+- Skills are a good way to encode reusable behavior (research, verification, feedback handling, steering rules) declaratively instead of hardcoding everything.
+
+Core that must be preserved:
+- Harness-over-harnesses model (Claude + Codex steering capability).
+- Worktree isolation + scope enforcement.
+- Own identity + agency (GH account, handshakes for irreversible actions).
+- Background execution + mid-task steering with feedback.
+- Review/gate against criteria.
+- The existing orchestrator, state machine, drivers, and persistence must not regress.
+
+Skills + hooks are the consolidation levers to make the 16.5k LoC codebase less "sloppy" while staying true to the vision.
+
 ## 1. What "Baseline" Means Here
 
 - This branch was created from `baseline-2026-06-28` (exact copy of main at the single commit).
