@@ -384,6 +384,8 @@ export interface PlanNode {
   reviewTier?: "self" | "fresh";
   envelope: NodeEnvelopeEstimate;
   initialCheckIn?: InitialCheckIn;
+  /** Additive: skills recommended for this node (Kew-style consolidation). Empty = no change. */
+  activeSkills?: string[];
 }
 
 /** A normalized DAG edge (dependent depends on upstream). */
@@ -698,6 +700,8 @@ export interface BrainContext {
   persona: string; // thin or full slice per role
   memory?: RecallResult;
   fields: Record<string, unknown>; // role-specific payload
+  /** Additive: formatted skills content (from src/skills). Empty/undefined = existing behavior. */
+  skills?: string;
 }
 
 // =======================================================================================

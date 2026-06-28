@@ -57,6 +57,7 @@ import {
   excludeFromGit,
 } from "./worktree.ts";
 import { scopeGuardSettings } from "../hooks/scope-guard.ts";
+import { loadAndFormatSkills } from "../skills/index.ts";
 
 // =======================================================================================
 // Injected collaborators
@@ -164,6 +165,9 @@ function buildSystemAppend(scopeDesc: string, ownedGlobs: string[], criteria: Ac
   const checks = criteria.checks.length
     ? `These checks must pass (each must exit 0):\n${criteria.checks.map((c) => `  - ${c}`).join("\n")}\n`
     : "";
+  const skillsBlock = loadAndFormatSkills();
+  const skillsPart = skillsBlock ? `\n\n${skillsBlock}\n` : "";
+
   return (
     `You are an autonomous worker. Scope: you own and may modify ONLY: ${owned}.\n` +
     `Treat everything else as read-only context. Do not edit files outside your scope; if you ` +
@@ -171,7 +175,8 @@ function buildSystemAppend(scopeDesc: string, ownedGlobs: string[], criteria: Ac
     (scopeDesc ? `Scope in plain terms: ${scopeDesc}.\n` : "") +
     `Acceptance criteria (you are done when ALL hold):\n${nl}\n` +
     checks +
-    `When finished, emit the structured done-signal matching the provided schema.`
+    `When finished, emit the structured done-signal matching the provided schema.` +
+    skillsPart
   );
 }
 
