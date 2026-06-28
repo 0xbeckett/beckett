@@ -199,4 +199,31 @@ console.log(`Memory build (50 nodes): measured above`);
 console.log("Recommendation: Re-run this script after each iteration of skills/hooks to compare deltas.");
 console.log("Next: Add real skill loading and measure bloat + time increase.");
 
+// === Context Growth + Compaction Simulation (new for this iteration) ===
+console.log("\n--- Context Growth Simulation (multi-turn background task) ---");
+const turns = 5;
+let cumulativeContext = basePersona.length;
+const skillOverheadPerTurn = 512; // from current measurement with active skills
+let compactedSize = 0;
+
+for (let t = 1; t <= turns; t++) {
+  cumulativeContext += 300 + (t * 50); // simulate turn + feedback + tool results
+  if (skillsBlock) cumulativeContext += skillOverheadPerTurn;
+  
+  console.log(`Turn ${t}: raw ~${cumulativeContext} chars`);
+  
+  // Simple compaction stub (what a future compaction skill/hook could do)
+  if (t % 3 === 0) {
+    const before = cumulativeContext;
+    cumulativeContext = Math.floor(cumulativeContext * 0.6); // naive 40% compaction
+    compactedSize += (before - cumulativeContext);
+    console.log(`  -> Compacted at turn ${t}: saved ${before - cumulativeContext} chars`);
+  }
+}
+
+console.log(`Total raw after ${turns} turns: ~${cumulativeContext} chars`);
+console.log(`Total compacted/saved: ~${compactedSize} chars`);
+console.log("This demonstrates why compaction becomes necessary with skills + long feedback loops.");
+console.log("Future: Make compaction itself a skill or hook-triggered process (lean summary of prior turns).");
+
 process.exit(0);

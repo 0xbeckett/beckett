@@ -125,3 +125,17 @@ export function getSkillsRequestedHooks(): string[] {
   // Placeholder. Real impl could parse frontmatter from skill files.
   return [];
 }
+
+/**
+ * Basic compaction helper (additive, for use by a "compaction" skill or hook).
+ * Given accumulated context, produce a lean summary.
+ * This is a stub — real version would use a model call (Opus/Haiku) or heuristics.
+ */
+export function compactContext(fullContext: string, maxChars: number = 2000): string {
+  if (fullContext.length <= maxChars) return fullContext;
+  
+  // Naive compaction: keep first + last parts + note
+  const head = fullContext.slice(0, maxChars / 2);
+  const tail = fullContext.slice(-maxChars / 3);
+  return `${head}\n\n[... compacted ${fullContext.length - maxChars} chars of prior turns/feedback ...]\n\n${tail}`;
+}
