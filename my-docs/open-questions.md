@@ -123,103 +123,69 @@
 
 ## A. Substrate & process model
 
-**A1. 🔴 What does Beckett physically run on?** Memory says v1 = shared project VM, collaboration
-wedge. My POV: Beckett is a **single long-lived daemon process** per project VM (not serverless),
-because the supervise loop needs persistent in-memory handles to running worker streams. One VM = one
-Beckett = one project/team. Confirm: one Beckett per project, or one Beckett serving many projects?
+**A1. 🟢 What does Beckett physically run on?** (decided 2026-06-27 — see top Decisions Log)
+Memory says v1 = shared project VM, collaboration wedge. Decision: single long-lived daemon on `loom-desk` (Ubuntu 24.04, dedicated `beckett` user). One Beckett per (trusted) host.
 
-**A2. 🔴 Implementation language?** The Claude Agent SDK is first-class in **TypeScript** and Python;
-Codex's programmatic surface (app-server) ships **TypeScript bindings** (`generate-ts`). My POV:
-**TypeScript** for the orchestrator — best SDK coverage on both sides, good async streaming, easy
-Discord lib (discord.js). Python is viable but Codex integration is rougher. Your call?
+**A2. 🟢 Implementation language?** (decided 2026-06-27 — see top Decisions Log)
+Decision: **TypeScript** (bun) for the orchestrator.
 
-**A3. 🔴 Persistence layer?** The DAG, worker state, budget ledger, and Beckett's memory must survive
-VM restarts mid-task. My POV: **SQLite** (single-file, on the VM) for state + a JSONL event log for
-audit. Postgres only if multi-project later. Agree, or do you want something else (Redis for the
-nudge queue)?
+**A3. 🟢 Persistence layer?** (decided 2026-06-27 — see top Decisions Log)
+Decision: **SQLite** (state) + JSONL event log for audit.
 
-**A4. 🔴 Crash recovery semantics.** If the VM/daemon dies with 3 workers mid-task, on restart Beckett
-should: re-attach to survivable sessions via `--resume`/`exec resume` from the persisted session_ids,
-and re-spawn the rest. My POV: persist `session_id` the instant each worker starts so every worker is
-resumable. Acceptable? How hard is the durability requirement — is "lose at most the current turn" OK?
+**A4. 🟢 Crash recovery semantics.** (decided 2026-06-27 — see top Decisions Log)
+Decision: persist `session_id` immediately; re-attach via resume on restart; acceptable to lose ≤ current turn.
 
 ---
 
 ## B. Harness integration depth (the biggest fork)
 
-**B1. 🔴 Claude driver: SDK-embed vs CLI-shell?** SDK gives `interrupt()`, `canUseTool`, programmatic
-streaming input. CLI (`claude -p --input-format stream-json`) gives steering-at-turn-boundary but
-interrupt = kill+resume. My POV: **embed the TS SDK** for Claude workers — steering fidelity is the
-whole thesis. Worth the heavier dependency?
+**B1. 🟢 Claude driver: SDK-embed vs CLI-shell?** (decided 2026-06-27 — see top Decisions Log)
+Decision: CLI-shell both (uniform); no SDK embed in v1.
 
-**B2. 🔴 Codex driver: one-shot `exec` vs `app-server`?** This is THE decision. `exec` is simple but
-**cannot be nudged mid-run**. `app-server` (JSON-RPC, `turn/steer` + `turn/interrupt`) gives real
-steering but is experimental and heavier. My POV: **start with `exec` + `exec resume`** (nudge =
-"queue steer text, apply at next turn"), and treat app-server as a v2 upgrade *only if* Codex workers
-turn out to need true mid-turn steering. Most Codex nodes will be tightly-scoped one-shots anyway
-(granularity scales inversely with worker strength). Agree to defer app-server?
+**B2. 🟢 Codex driver: one-shot `exec` vs `app-server`?** (decided 2026-06-27 — see top Decisions Log)
+Decision: start with `exec` + `exec resume`; app-server deferred to v2.
 
-**B3. 🔴 Is the "nudge" allowed to be best-effort/asymmetric in v1?** i.e. Claude = instant-ish
-(next turn), Codex = only between turns. My POV: yes, document it honestly rather than fake parity.
-The supervise UI just shows "nudge queued" vs "nudge delivered." OK?
+**B3. 🟢 Is the "nudge" allowed to be best-effort/asymmetric in v1?** (decided 2026-06-27 — see top Decisions Log)
+Decision: yes — document honestly (Claude near-immediate, Codex at turn end).
 
-**B4. 🔴 Do we want dual-provider cross-check on the same node** (run Claude *and* Codex, diff results)
-in v1, or later? My POV: later — it's a quality multiplier, not a core-loop requirement.
+**B4. 🟢 Do we want dual-provider cross-check on the same node** (run Claude *and* Codex, diff results)
+in v1, or later? (decided 2026-06-27 — see top Decisions Log)
+Decision: later (post-v0 quality multiplier).
 
 ---
 
 ## C. Workspace, scope & isolation
 
-**C1. 🔴 How is scope ownership *enforced*, not just declared?** Options: (a) **git worktree per
-worker** (clean isolation, natural merge), (b) shared dir + PreToolUse hook that **denies writes
-outside scope**, (c) Codex sandbox `workspace-write` rooted at the worker's dir. My POV: **git
-worktree per worker on a shared repo** as the primary mechanism — it makes the INTEGRATE phase a real
-`git merge`, and pairs with Claude's `--worktree` and Codex's `--cd`. Hooks/sandbox enforce the
-boundary *within* the worktree. Agree?
+**C1. 🟢 How is scope ownership *enforced*, not just declared?** (decided 2026-06-27 — see top Decisions Log)
+Decision: **git worktree per worker** as primary + hooks/sandbox within the tree.
 
-**C2. 🔴 Containers or just dirs/worktrees?** Full container-per-worker (Docker) gives real blast-radius
-control but adds weight. My POV for v1 (trusted shared VM, collaboration wedge): **worktrees + Codex
-OS sandbox + Claude tool allowlist**, no per-worker containers yet. Containers when Beckett runs
-untrusted/multi-tenant. OK to defer containers?
+**C2. 🟢 Containers or just dirs/worktrees?** (decided 2026-06-27 — see top Decisions Log)
+Decision: worktrees + sandboxes for v1; containers later for untrusted.
 
-**C3. 🔴 Network access policy per worker.** Codex defaults network OFF in workspace-write. Tasks
-needing `npm install`/`git push`/API calls must opt in. My POV: **default-off, opt-in per node** in
-the plan ("this node needs network for deps"). Beckett's planner decides. Reasonable?
+**C3. 🟢 Network access policy per worker.** (decided 2026-06-27 — see top Decisions Log)
+Decision: default-off, opt-in per node in the plan.
 
-**C4. 🔴 Integration/merge conflict handling.** When two worktrees touch adjacent code despite scoping,
-who resolves? My POV: Beckett attempts auto-merge; on conflict, spawn a dedicated **integration
-worker** (Opus) with both diffs + the interface contract. Escalate to you only after that fails. OK?
+**C4. 🟢 Integration/merge conflict handling.** (decided 2026-06-27 — see top Decisions Log)
+Decision: auto-merge attempt; dedicated integration worker (Opus) on conflict; escalate only if that fails.
 
 ---
 
 ## D. Beckett's brain & the supervise control plane
 
-**D1. 🔴 Is "Beckett the brain" a persistent Opus session, or orchestration code that *calls* Opus on
-signal?** The pitch says Opus = judgment not clock. My POV: **orchestration code (TS) that invokes
-Opus statelessly per decision** (plan / drift-read / gate), passing the relevant transcript slice.
-Beckett's *continuity* lives in the DB + memory files, not in a pinned Opus context. This keeps the
-expensive head asleep. But the coworker *voice* needs continuity — handled by always feeding Opus
-Beckett's persona + memory. Agree the brain is code-orchestrating-Opus, not a standing Opus chat?
+**D1. 🟢 Is "Beckett the brain" a persistent Opus session, or orchestration code...?** (decided 2026-06-27 — see top Decisions Log)
+Decision: orchestration code that calls Opus statelessly per judgment; continuity in DB + memory.
 
-**D2. 🔴 Which cheap signals trigger an Opus "go read the worker" decision?** Candidates: token-spend
-rate spike, wall-clock over node estimate, N repeated near-identical tool calls, no-diff-progress over
-K turns, worker emitted an error/asked a question, scope-violation attempt (hook fired). My POV: start
-with **(a) no-diff-progress over K turns, (b) spend > 1.5× node budget, (c) scope-violation, (d)
-worker explicitly asks/blocks.** Each fires → one cheap "summarize last 3 turns" → Opus decides
-nudge/pause/abort. Which signals do you most want? Any I'm missing?
+**D2. 🟢 Which cheap signals trigger an Opus "go read the worker" decision?** (decided 2026-06-27 — see top Decisions Log)
+Decision: smoke-alarms (no-diff-progress, over budget, scope-violation, explicit block) + self-scheduled check-ins.
 
-**D3. 🔴 Where does the supervise loop get its data — parse stdout streams, or watch on-disk JSONL,
-or both?** My POV: **parse the live stream** for counters (free, real-time) and use the on-disk JSONL
-as the durable record / for "Opus go read." Both, with the stream as primary. OK?
+**D3. 🟢 Where does the supervise loop get its data...?** (decided 2026-06-27 — see top Decisions Log)
+Decision: both — live stream primary for counters, on-disk JSONL for durable/Opus reads.
 
-**D4. 🔴 Nudge queue mechanism.** My POV: in-memory per-worker queue, drained at the worker's next
-safe boundary; persisted to DB so a restart doesn't drop a pending nudge. For Claude = stdin write;
-for Codex = held until next `exec resume`. Agree?
+**D4. 🟢 Nudge queue mechanism.** (decided 2026-06-27 — see top Decisions Log)
+Decision: in-memory + persisted to DB; delivered at safe boundary (held for Codex until resume).
 
-**D5. 🔴 The "ask the worker its plan" mid-flight question** — you flagged this as highest-leverage.
-For Claude this is a nudge ("what's your current plan?") read next turn. For Codex one-shot it's not
-possible mid-run (only after turn). My POV: implement as a first-class control op `ask_plan(worker)`
-that's instant for Claude, deferred for Codex. Confirm you want this as a named primitive.
+**D5. 🟢 The "ask the worker its plan" mid-flight question** (decided 2026-06-27 — see top Decisions Log)
+Decision: first-class `ask_plan(worker)` primitive (instant for Claude, deferred for Codex).
 
 ---
 
