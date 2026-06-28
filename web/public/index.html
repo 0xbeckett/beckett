@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>beckett</title>
+<meta name="description" content="An agentic coworker you reach in Discord. It runs the things that do the work — and comes back like a colleague would." />
+<meta name="theme-color" content="#020202" />
+<meta property="og:title" content="beckett" />
+<meta property="og:description" content="An agentic coworker." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23020202'/%3E%3Ccircle cx='16' cy='16' r='6' fill='none' stroke='%23F7FAFB' stroke-width='1.5'/%3E%3C/svg%3E" />
+<style>
+  :root{
+    --bg:#020202;
+    --ink:#F7FAFB;
+    --dim:rgba(247,250,251,.46);
+    --faint:rgba(247,250,251,.12);
+    --hair:rgba(247,250,251,.07);
+    --blurple:#5865F2;
+    --glow:rgba(88,101,242,.5);
+    --ease:cubic-bezier(.22,.61,.36,1);
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--mono);
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+    line-height:1.5;
+  }
+  /* ambient grain + vignette over the whole page */
+  body::after{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:60;
+    background:radial-gradient(120% 90% at 50% 38%,transparent 55%,rgba(0,0,0,.55) 100%);
+    mix-blend-mode:multiply;
+  }
+  canvas#field{position:fixed;inset:0;z-index:0;display:block}
+
+  a{color:inherit}
+  ::selection{background:var(--blurple);color:#fff}
+
+  /* ---------- top bar ---------- */
+  header{
+    position:fixed;top:0;left:0;right:0;z-index:50;
+    display:flex;align-items:center;justify-content:space-between;
+    padding:22px clamp(20px,5vw,52px);
+    mix-blend-mode:difference;
+  }
+  .mark{display:flex;align-items:center;gap:10px;letter-spacing:.02em;font-size:14px}
+  .mark .dot{
+    width:9px;height:9px;border-radius:50%;border:1.5px solid var(--ink);
+    position:relative;
+  }
+  .mark .dot::after{
+    content:"";position:absolute;inset:1px;border-radius:50%;background:var(--ink);
+    animation:beat 3.4s var(--ease) infinite;
+  }
+  @keyframes beat{0%,100%{transform:scale(.25);opacity:.35}45%{transform:scale(1);opacity:1}}
+  nav{display:flex;gap:22px;font-size:12px;color:var(--ink);text-decoration:none}
+  nav a{text-decoration:none;opacity:.7;transition:opacity .3s}
+  nav a:hover{opacity:1}
+
+  /* ---------- generic section ---------- */
+  section{position:relative;z-index:1}
+  .reveal{opacity:0;transform:translateY(26px);transition:opacity 1s var(--ease),transform 1.1s var(--ease)}
+  .reveal.in{opacity:1;transform:none}
+
+  /* ---------- hero ---------- */
+  .hero{min-height:100svh;display:grid;place-items:center;text-align:center;padding:120px 20px 80px}
+  .stage{position:relative;width:min(78vw,440px);aspect-ratio:99/84;margin:0 auto}
+  .stage svg{width:100%;height:100%;overflow:visible;display:block}
+  /* the creature's strokes self-draw, then settle and breathe */
+  .glyph path[stroke]{
+    stroke:var(--ink);
+    filter:drop-shadow(0 0 5px rgba(247,250,251,.16));
+  }
+  .stage .halo{
+    position:absolute;inset:-18% -12%;z-index:-1;border-radius:50%;
+    background:radial-gradient(closest-side,rgba(88,101,242,.16),transparent 72%);
+    filter:blur(8px);
+    animation:halo 7s ease-in-out infinite;
+  }
+  @keyframes halo{0%,100%{opacity:.5;transform:scale(.96)}50%{opacity:1;transform:scale(1.04)}}
+  .breathe{animation:breathe 6.5s ease-in-out infinite;transform-origin:center}
+
+  @keyframes breathe{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-1.2%) scale(1.012)}}
+
+  .tagline{
+    margin-top:46px;font-size:clamp(13px,2.4vw,16px);letter-spacing:.34em;
+    text-transform:uppercase;color:var(--dim);
+  }
+  /* the only "voice": a rotating first-person line, like a Discord reply */
+  .say{
+    margin-top:26px;display:inline-flex;align-items:center;gap:12px;
+    padding:11px 18px;border:1px solid var(--hair);border-radius:999px;
+    background:rgba(255,255,255,.015);backdrop-filter:blur(2px);
+    font-size:14px;min-height:44px;
+  }
+  .say .at{color:var(--blurple);font-weight:600}
+  .say .line{color:var(--ink);white-space:nowrap}
+  .say .cursor{width:8px;height:17px;background:var(--blurple);display:inline-block;border-radius:1px;animation:blink 1.05s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  .scrollcue{position:absolute;bottom:34px;left:50%;transform:translateX(-50%);opacity:.5;font-size:10px;letter-spacing:.3em;display:flex;flex-direction:column;align-items:center;gap:9px}
+  .scrollcue .bar{width:1px;height:38px;background:linear-gradient(var(--ink),transparent);animation:drop 2.4s var(--ease) infinite}
+  @keyframes drop{0%{transform:scaleY(0);transform-origin:top;opacity:0}40%{transform:scaleY(1);opacity:1}100%{transform:scaleY(1);transform-origin:bottom;opacity:0}}
+
+  /* ---------- act framing ---------- */
+  .act{padding:clamp(90px,16vh,180px) clamp(20px,6vw,80px);max-width:1100px;margin:0 auto}
+  .kicker{font-size:11px;letter-spacing:.34em;text-transform:uppercase;color:var(--dim);margin-bottom:22px}
+  .lead{font-size:clamp(22px,4.4vw,40px);line-height:1.28;letter-spacing:-.01em;max-width:18ch;font-weight:400}
+  .lead b{font-weight:600}
+  .lead .accent{color:var(--blurple)}
+
+  /* ---------- DAG fan-out ---------- */
+  .dag{margin-top:64px;width:100%}
+  .dag svg{width:100%;height:auto;overflow:visible}
+  .wire{stroke:var(--faint);stroke-width:1.4;fill:none}
+  .wire.live{stroke:url(#flow);stroke-width:1.6;stroke-dasharray:7 11;animation:dash 1.1s linear infinite}
+  @keyframes dash{to{stroke-dashoffset:-18}}
+  .node rect,.node circle{fill:rgba(247,250,251,.02);stroke:var(--dim);stroke-width:1.3}
+  .node.run rect{stroke:var(--blurple);animation:runpulse 1.7s ease-in-out infinite}
+  @keyframes runpulse{0%,100%{stroke:rgba(88,101,242,.4)}50%{stroke:var(--blurple);filter:drop-shadow(0 0 6px var(--glow))}}
+  .node text{fill:var(--dim);font-size:9px;letter-spacing:.12em}
+  .activity{fill:var(--blurple)}
+  .endcap circle{fill:rgba(88,101,242,.06);stroke:var(--blurple)}
+  .legend{display:flex;gap:26px;flex-wrap:wrap;margin-top:30px;font-size:11px;color:var(--dim)}
+  .legend span{display:inline-flex;align-items:center;gap:8px}
+  .legend i{width:18px;height:1px;background:var(--dim);display:inline-block}
+  .legend i.b{background:var(--blurple)}
+
+  /* ---------- the loop ring ---------- */
+  .loopwrap{display:grid;grid-template-columns:1fr;gap:40px;align-items:center;justify-items:center;margin-top:56px}
+  .ring{position:relative;width:min(80vw,420px);aspect-ratio:1}
+  .ring svg{width:100%;height:100%;overflow:visible}
+  .ring .track{fill:none;stroke:var(--hair);stroke-width:1.2}
+  .ring .comet{fill:none;stroke:url(#flow);stroke-width:2.4;stroke-linecap:round;stroke-dasharray:60 540;animation:orbit 7s linear infinite}
+  @keyframes orbit{to{stroke-dashoffset:-600}}
+  .ring .tick{fill:rgba(2,2,2,1);stroke:var(--dim);stroke-width:1.2}
+  .ring .label{fill:var(--dim);font-size:8.5px;letter-spacing:.1em;text-anchor:middle}
+  .ring .center{fill:var(--ink);font-size:13px;letter-spacing:.05em;text-anchor:middle;dominant-baseline:middle}
+  .ring .center small{font-size:8px}
+
+  /* ---------- pillars ---------- */
+  .pillars{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1px;margin-top:64px;background:var(--hair);border:1px solid var(--hair)}
+  .pillar{background:var(--bg);padding:34px 26px;min-height:210px;display:flex;flex-direction:column;gap:18px;transition:background .4s}
+  .pillar:hover{background:rgba(88,101,242,.04)}
+  .pillar svg{width:40px;height:40px;stroke:var(--ink);fill:none;stroke-width:1.4;opacity:.9}
+  .pillar h3{font-size:13px;font-weight:600;letter-spacing:.02em}
+  .pillar p{font-size:12px;color:var(--dim);line-height:1.6}
+
+  /* ---------- closing ---------- */
+  .close{min-height:78svh;display:grid;place-items:center;text-align:center;padding:120px 20px}
+  .close .big{font-size:clamp(28px,6vw,64px);letter-spacing:-.02em;line-height:1.1}
+  .close .chip{
+    margin-top:40px;display:inline-flex;align-items:center;gap:10px;
+    padding:14px 26px;border:1px solid var(--blurple);border-radius:999px;
+    color:var(--ink);text-decoration:none;font-size:14px;
+    box-shadow:0 0 0 0 var(--glow);transition:box-shadow .5s,background .4s;
+  }
+  .close .chip:hover{background:rgba(88,101,242,.12);box-shadow:0 0 34px -4px var(--glow)}
+  .close .chip svg{width:18px;height:18px;fill:currentColor}
+
+  footer{padding:46px 20px;text-align:center;font-size:11px;color:var(--dim);border-top:1px solid var(--hair)}
+  footer .mark{justify-content:center;margin-bottom:10px}
+
+  @media(prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+    .reveal{opacity:1;transform:none}
+    .glyph path[stroke]{stroke-dashoffset:0!important}
+  }
+</style>
+</head>
+<body>
+<canvas id="field"></canvas>
+
+<header>
+  <div class="mark"><span class="dot"></span><span>beckett</span></div>
+  <nav>
+    <a href="#dispatch">how</a>
+    <a href="#loop">loop</a>
+    <a href="#self">self</a>
+  </nav>
+</header>
+
+<!-- ============ HERO ============ -->
+<section class="hero">
+  <div>
+    <div class="stage">
+      <span class="halo"></span>
+      <div class="glyph breathe" id="glyph"><!-- creature injected here --></div>
+    </div>
+    <div class="tagline reveal">an agentic coworker</div>
+    <div class="say reveal">
+      <span class="at">@beckett</span>
+      <span class="line" id="say"></span>
+      <span class="cursor"></span>
+    </div>
+  </div>
+  <div class="scrollcue"><span>SCROLL</span><span class="bar"></span></div>
+</section>
+
+<!-- ============ ACT 1 — it runs the things that do the work ============ -->
+<section id="dispatch" class="act">
+  <div class="kicker reveal">the spine</div>
+  <h2 class="lead reveal">It doesn't do the work.<br>It <b class="accent">runs the things</b> that do.</h2>
+
+  <div class="dag reveal" id="dag">
+    <svg viewBox="0 0 960 320" role="img" aria-label="One task fans out into parallel workers, then converges into one delivery.">
+      <defs>
+        <linearGradient id="flow" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#5865F2" stop-opacity="0"/>
+          <stop offset=".5" stop-color="#5865F2"/>
+          <stop offset="1" stop-color="#F7FAFB" stop-opacity=".2"/>
+        </linearGradient>
+      </defs>
+
+      <!-- wires: intake -> 4 workers -> deliver -->
+      <path class="wire live" d="M150,160 C250,160 250,70 360,70"/>
+      <path class="wire live" d="M150,160 C250,160 250,130 360,130"/>
+      <path class="wire live" d="M150,160 C250,160 250,190 360,190"/>
+      <path class="wire live" d="M150,160 C250,160 250,250 360,250"/>
+      <path class="wire live" d="M600,70 C710,70 710,160 810,160"/>
+      <path class="wire live" d="M600,130 C710,130 710,160 810,160"/>
+      <path class="wire live" d="M600,190 C710,190 710,160 810,160"/>
+      <path class="wire live" d="M600,250 C710,250 710,160 810,160"/>
+
+      <!-- intake (the @mention) -->
+      <g class="node endcap">
+        <circle cx="110" cy="160" r="34"/>
+        <text x="110" y="164" text-anchor="middle" style="fill:var(--ink)">@</text>
+      </g>
+
+      <!-- four workers, each = a harness in its own worktree -->
+      <g class="node run" data-w="0"><rect x="360" y="48" width="240" height="44" rx="9"/><circle class="activity" cx="380" cy="70" r="3.5"/><text x="398" y="74">claude · worktree a</text></g>
+      <g class="node run" data-w="1"><rect x="360" y="108" width="240" height="44" rx="9"/><circle class="activity" cx="380" cy="130" r="3.5"/><text x="398" y="134">codex · worktree b</text></g>
+      <g class="node run" data-w="2"><rect x="360" y="168" width="240" height="44" rx="9"/><circle class="activity" cx="380" cy="190" r="3.5"/><text x="398" y="194">claude · worktree c</text></g>
+      <g class="node run" data-w="3"><rect x="360" y="228" width="240" height="44" rx="9"/><circle class="activity" cx="380" cy="250" r="3.5"/><text x="398" y="254">codex · worktree d</text></g>
+
+      <!-- deliver -->
+      <g class="node endcap">
+        <circle cx="846" cy="160" r="34"/>
+        <path d="M832,160 l9,9 l18,-20" fill="none" stroke="#5865F2" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="legend reveal">
+    <span><i class="b"></i> work in flight</span>
+    <span><i></i> a worker = one harness · scoped task · isolated worktree</span>
+  </div>
+</section>
+
+<!-- ============ ACT 2 — the loop ============ -->
+<section id="loop" class="act">
+  <div class="kicker reveal">the loop</div>
+  <h2 class="lead reveal">Plan. Dispatch. Watch.<br>Integrate. <b class="accent">Gate.</b> Ship.</h2>
+
+  <div class="loopwrap reveal">
+    <div class="ring" id="ring">
+      <svg viewBox="0 0 400 400">
+        <circle class="track" cx="200" cy="200" r="150"/>
+        <circle class="comet" cx="200" cy="200" r="150" transform="rotate(-90 200 200)"/>
+        <!-- ticks + labels placed by JS around the ring -->
+        <g id="ticks"></g>
+        <text class="center" x="200" y="194">autonomous</text>
+        <text class="center" x="200" y="214"><tspan style="fill:var(--dim);font-size:9px;letter-spacing:.28em">NO BABYSITTING</tspan></text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ACT 3 — the four pillars of self ============ -->
+<section id="self" class="act">
+  <div class="kicker reveal">why it's a coworker, not a tool</div>
+  <h2 class="lead reveal">It has a <b class="accent">self</b>.</h2>
+
+  <div class="pillars reveal">
+    <div class="pillar">
+      <svg viewBox="0 0 40 40"><path d="M8 28 L8 12 M14 28 L14 8 M20 28 L20 16 M26 28 L26 10 M32 28 L32 18" stroke-linecap="round"/><path d="M6 32 L34 32" opacity=".4"/></svg>
+      <h3>Discretion</h3>
+      <p>Chooses how many workers, which model, how hard to push — or whether a thing is worth doing at all.</p>
+    </div>
+    <div class="pillar">
+      <svg viewBox="0 0 40 40"><path d="M20 6 L32 13 L32 27 L20 34 L8 27 L8 13 Z"/><circle cx="20" cy="20" r="4"/><path d="M20 6 L20 16 M32 13 L23 19 M8 13 L17 19" opacity=".4"/></svg>
+      <h3>A home + memory</h3>
+      <p>Lives on its own machine and grows a knowledge graph of your people, projects, and what its workers are good at.</p>
+    </div>
+    <div class="pillar">
+      <svg viewBox="0 0 40 40"><path d="M10 30 L10 10 L26 10 L22 16 L26 22 L10 22" stroke-linejoin="round"/></svg>
+      <h3>Standing to push back</h3>
+      <p>Can say "this spec contradicts itself" and refuse to staff a bad plan. The pushback is the point.</p>
+    </div>
+    <div class="pillar">
+      <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="13"/><path d="M15 15 L25 25 M25 15 L15 25" opacity=".5"/><path d="M20 4 L20 8 M20 32 L20 36 M4 20 L8 20 M32 20 L36 20" stroke-linecap="round"/></svg>
+      <h3>Self-governance</h3>
+      <p>Knows when to stop itself — "I don't think I should keep going on this, here's why." Not a runaway loop.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CLOSE ============ -->
+<section class="close">
+  <div class="reveal">
+    <div class="big">You <span style="color:var(--blurple)">@beckett</span> it.<br>It comes back done.</div>
+    <a class="chip" href="#" id="cta">
+      <svg viewBox="0 0 24 24"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.2.4a18 18 0 0 1 4.3 1.3 16.6 16.6 0 0 0-5-1.6 18.5 18.5 0 0 0-4.9 0A16.5 16.5 0 0 0 4.5 4.7 18 18 0 0 1 8.8 3.4L8.6 3a19.8 19.8 0 0 0-4.9 1.4C1 8.4.2 12.3.6 16.1A19.9 19.9 0 0 0 6.7 19l.6-.9a13 13 0 0 1-2-1l.5-.3a14.2 14.2 0 0 0 12.2 0l.5.3a13 13 0 0 1-2 1l.6.9a19.8 19.8 0 0 0 6-3c.5-4.5-.7-8.4-3.4-11.6ZM8.7 13.9c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z"/></svg>
+      reach it in Discord
+    </a>
+  </div>
+</section>
+
+<footer>
+  <div class="mark"><span class="dot"></span><span>beckett</span></div>
+  <div>a harness over harnesses · runs on subscriptions, not a meter</div>
+</footer>
+
+<script>
+(function(){
+  var reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
+
+  /* ---------- inject the creature, then self-draw its strokes ---------- */
+  fetch("beckett.svg").then(function(r){return r.text()}).then(function(svg){
+    var host = document.getElementById("glyph");
+    host.innerHTML = svg;
+    var root = host.querySelector("svg");
+    // strip the opaque black backing rects so the creature floats on our bg
+    Array.prototype.forEach.call(root.querySelectorAll('rect,path'), function(p){
+      var f = (p.getAttribute("fill")||"").toLowerCase();
+      if(f === "#020202") p.remove();
+    });
+    if(reduce) return;
+    var strokes = root.querySelectorAll("path[stroke]");
+    Array.prototype.forEach.call(strokes, function(p, i){
+      var len;
+      try{ len = p.getTotalLength(); }catch(e){ return; }
+      p.style.strokeDasharray = len + " " + len;
+      p.style.strokeDashoffset = len;
+      p.style.transition = "stroke-dashoffset 1.7s cubic-bezier(.22,.61,.36,1)";
+      // stagger so it draws on like a hand sketching
+      setTimeout(function(){ p.style.strokeDashoffset = "0"; }, 220 + i*150);
+    });
+  });
+
+  /* ---------- the voice: first-person quips, typed out ---------- */
+  var lines = [
+    "on it.",
+    "PR's up — review or merge?",
+    "aborted worker 3, re-scoped, re-dispatched.",
+    "two of them stalled. failed over to codex.",
+    "shipped. tests green. known limit: no retries yet.",
+    "this spec contradicts itself — one question first.",
+    "drafted the email. send as me, or you handle it?",
+    "done. logged what worked for next time."
+  ];
+  var el = document.getElementById("say");
+  if(el){
+    if(reduce){ el.textContent = lines[1]; }
+    else{
+      var li=0;
+      function typeLine(){
+        var txt = lines[li % lines.length]; li++;
+        var i=0;
+        (function type(){
+          el.textContent = txt.slice(0,i);
+          if(i++ <= txt.length){ setTimeout(type, 34); }
+          else { setTimeout(erase, 2600); }
+        })();
+        function erase(){
+          (function del(){
+            el.textContent = txt.slice(0,i);
+            if(i-- > 0){ setTimeout(del, 16); }
+            else { setTimeout(typeLine, 360); }
+          })();
+        }
+      }
+      typeLine();
+    }
+  }
+
+  /* ---------- loop ring: place state ticks + labels ---------- */
+  var states = ["intake","plan","staff","dispatch","supervise","integrate","gate","deliver"];
+  var ticks = document.getElementById("ticks");
+  if(ticks){
+    var cx=200, cy=200, R=150;
+    states.forEach(function(s, i){
+      var a = (-90 + i*(360/states.length)) * Math.PI/180;
+      var x = cx + R*Math.cos(a), y = cy + R*Math.sin(a);
+      var lx = cx + (R+24)*Math.cos(a), ly = cy + (R+24)*Math.sin(a);
+      var c = document.createElementNS("http://www.w3.org/2000/svg","circle");
+      c.setAttribute("class","tick"); c.setAttribute("cx",x); c.setAttribute("cy",y); c.setAttribute("r","6");
+      ticks.appendChild(c);
+      var t = document.createElementNS("http://www.w3.org/2000/svg","text");
+      t.setAttribute("class","label"); t.setAttribute("x",lx); t.setAttribute("y",ly+3);
+      // keep labels readable on left/right of the ring
+      if(lx < cx-30) t.setAttribute("text-anchor","end");
+      else if(lx > cx+30) t.setAttribute("text-anchor","start");
+      t.textContent = s.toUpperCase();
+      ticks.appendChild(t);
+    });
+  }
+
+  /* ---------- scroll reveal ---------- */
+  var io = new IntersectionObserver(function(es){
+    es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add("in"); io.unobserve(e.target);} });
+  },{threshold:.18});
+  document.querySelectorAll(".reveal").forEach(function(n){ io.observe(n); });
+
+  /* ---------- ambient drifting shard field (canvas, transform-only) ---------- */
+  var cv = document.getElementById("field"), ctx = cv.getContext("2d");
+  var DPR = Math.min(devicePixelRatio||1, 2), W, H, parts=[];
+  var mx=0.5, my=0.4, tx=0.5, ty=0.4;
+  function resize(){
+    W = cv.width = innerWidth*DPR; H = cv.height = innerHeight*DPR;
+    cv.style.width = innerWidth+"px"; cv.style.height = innerHeight+"px";
+    var n = Math.min(70, Math.round(innerWidth*innerHeight/26000));
+    parts = [];
+    for(var i=0;i<n;i++){
+      parts.push({
+        x:Math.random()*W, y:Math.random()*H,
+        z:0.3+Math.random()*0.9,
+        r:(0.6+Math.random()*1.6)*DPR,
+        vx:(Math.random()-0.5)*0.08*DPR, vy:(Math.random()-0.5)*0.08*DPR,
+        a:0.05+Math.random()*0.22
+      });
+    }
+  }
+  addEventListener("resize", resize);
+  addEventListener("pointermove", function(e){ tx = e.clientX/innerWidth; ty = e.clientY/innerHeight; });
+  resize();
+  function frame(){
+    mx += (tx-mx)*0.05; my += (ty-my)*0.05;
+    ctx.clearRect(0,0,W,H);
+    var ox = (mx-0.5), oy = (my-0.5);
+    for(var i=0;i<parts.length;i++){
+      var p = parts[i];
+      p.x += p.vx; p.y += p.vy;
+      if(p.x<0)p.x=W; if(p.x>W)p.x=0; if(p.y<0)p.y=H; if(p.y>H)p.y=0;
+      var px = p.x - ox*60*DPR*p.z, py = p.y - oy*60*DPR*p.z;
+      ctx.beginPath();
+      ctx.arc(px, py, p.r, 0, 6.2832);
+      ctx.fillStyle = "rgba(247,250,251,"+p.a*p.z+")";
+      ctx.fill();
+    }
+    if(!reduce) requestAnimationFrame(frame);
+  }
+  if(reduce){ frame(); } else { requestAnimationFrame(frame); }
+})();
+</script>
+</body>
+</html>
