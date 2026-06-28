@@ -50,6 +50,7 @@ import type {
   WorkerState,
 } from "../types.ts";
 import { makeLogger } from "../log.ts";
+import { readFileSync } from "node:fs";
 
 /** The bun subprocess handle type (avoids a hard import of the `bun` module symbol). */
 type Child = ReturnType<typeof Bun.spawn>;
@@ -438,7 +439,15 @@ export class ClaudeDriver implements HarnessDriver {
       args.push("--append-system-prompt", spec.systemAppend);
     }
     if (spec.mcpConfigPath) args.push("--mcp-config", spec.mcpConfigPath);
-    if (spec.doneSchemaPath) args.push("--json-schema", spec.doneSchemaPath);
+    // claude's --json-schema takes the schema JSON INLINE, not a file path (verified on 2.1.195;
+    // a path makes claude exit 1 before init). Read the done-schema file and pass its contents.
+    if (spec.doneSchemaPath) {
+      try {
+        args.push("--json-schema", readFileSync(spec.doneSchemaPath, "utf8"));
+      } catch {
+        /* if the schema file is unreadable, skip it rather than crash the worker spawn */
+      }
+    }
 
     // Append configured extra flags (e.g. --include-hook-events) without duplicating ours.
     for (const f of this.config.harness.claude.extra_flags) {
