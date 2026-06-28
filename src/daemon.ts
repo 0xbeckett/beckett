@@ -24,7 +24,7 @@
 
 import { loadConfig } from "./config.ts";
 import { buildPaths } from "./paths.ts";
-import { log as rootLog, setLogLevel } from "./log.ts";
+import { log as rootLog, setLogLevel, addLogSink } from "./log.ts";
 import { createStore } from "./persistence/store.ts";
 import { createMemory } from "./memory/index.ts";
 import { createBrain } from "./brain/index.ts";
@@ -67,6 +67,12 @@ class BeckettDaemon {
 
   private shuttingDown = false;
   private resumedWorkers = 0;
+
+  // Discord log mirror (live telemetry to a dedicated channel; DISCORD_LOG_CHANNEL_ID).
+  private logMirrorTimer?: ReturnType<typeof setInterval>;
+  private logMirrorBuf: string[] = [];
+  private logMirrorFlushing = false;
+  private stopLogSink?: () => void;
 
   constructor() {
     this.config = loadConfig();
@@ -165,6 +171,7 @@ class BeckettDaemon {
     try {
       await this.discord.start();
       this.discord.onMessage((m) => this.onDiscordMessage(m));
+      this.startLogMirror();
     } catch (err) {
       this.logger.warn("discord gateway not connected (continuing headless)", {
         error: (err as Error).message,
@@ -292,10 +299,60 @@ class BeckettDaemon {
     process.on("SIGINT", () => onSignal("SIGINT"));
   }
 
+  /**
+   * Mirror structured logs to a dedicated Discord channel (DISCORD_LOG_CHANNEL_ID) for live
+   * debugging visibility, separate from task channels (sparseness still applies there). Logs are
+   * batched into code-block chunks and flushed on a timer to stay within Discord rate limits.
+   */
+  private startLogMirror(): void {
+    const channelId = process.env.DISCORD_LOG_CHANNEL_ID?.trim();
+    if (!channelId) return;
+    const MAX_BUF = 1000;
+    this.stopLogSink = addLogSink((rec) => {
+      if (rec.component === "daemon.logmirror") return; // never mirror the mirror's own plumbing
+      const f: Record<string, unknown> = { ...rec };
+      delete f.level;
+      delete f.ts;
+      delete f.component;
+      delete f.msg;
+      const extra = Object.keys(f).length ? " " + JSON.stringify(f) : "";
+      const t = String(rec.ts).slice(11, 19);
+      let line = `${t} ${rec.level.toUpperCase().padEnd(5)} ${rec.component}: ${rec.msg}${extra}`;
+      if (line.length > 600) line = line.slice(0, 597) + "...";
+      this.logMirrorBuf.push(line);
+      if (this.logMirrorBuf.length > MAX_BUF) this.logMirrorBuf.splice(0, this.logMirrorBuf.length - MAX_BUF);
+    });
+    this.logMirrorTimer = setInterval(() => void this.flushLogMirror(channelId), 2500);
+    this.logger.child("logmirror").info("log mirror active", { channelId });
+  }
+
+  private async flushLogMirror(channelId: string): Promise<void> {
+    if (this.logMirrorFlushing || this.logMirrorBuf.length === 0 || !this.discord.isConnected()) return;
+    this.logMirrorFlushing = true;
+    try {
+      for (let posted = 0; posted < 3 && this.logMirrorBuf.length > 0; posted++) {
+        let chunk = "";
+        while (this.logMirrorBuf.length > 0 && chunk.length + this.logMirrorBuf[0]!.length + 1 < 1850) {
+          chunk += this.logMirrorBuf.shift()! + "\n";
+        }
+        if (!chunk) chunk = this.logMirrorBuf.shift()!.slice(0, 1850) + "\n";
+        await this.discord.post(channelId, "```\n" + chunk + "```");
+      }
+    } catch {
+      /* drop this batch on error — mirroring must never crash the loop */
+    } finally {
+      this.logMirrorFlushing = false;
+    }
+  }
+
   async shutdown(code: number): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true; // 1. stop intake / new IPC dispatch
     this.logger.info("graceful shutdown starting");
+
+    // Stop the log mirror first so teardown logs aren't posted after Discord closes.
+    if (this.logMirrorTimer) clearInterval(this.logMirrorTimer);
+    if (this.stopLogSink) this.stopLogSink();
 
     // 2–3. Checkpoint: session_ids + node/worker state are already persisted on change. Stop the
     //      supervisor's timers so they don't fire during teardown (Spec 03). 4. Detach: leave each
