@@ -200,21 +200,22 @@ export class BeckettOrchestrator implements Orchestrator {
   /** INTAKE classification (Haiku) → ack → CLARIFY?/PLAN branch (Spec 04 T2/T3/T4). */
   private async runIntake(task: TaskRow, evt: IntakeEvent): Promise<void> {
     const cls = await this.d.brain.intake(evt);
-    // The ack is always posted instantly (Spec 05 §2.2).
-    if (cls.ack?.trim()) await this.post(task.channel_id, cls.ack, evt.msgId);
 
     this.d.store.updateTask({ id: task.id, task_type: cls.kind === "task" ? "code" : cls.kind });
 
     if (cls.kind !== "task") {
-      // chatter / question / fyi → conversational close, no DAG (Spec 04 T4).
-      if (cls.answer?.trim() && cls.answer.trim() !== cls.ack?.trim()) {
-        await this.post(task.channel_id, cls.answer, evt.msgId);
-      }
+      // chatter / question / fyi → a SINGLE conversational reply, no DAG (Spec 04 T4; Spec 00
+      // sparseness law). A greeting must NOT get both an ack and an answer — prefer the full
+      // answer, fall back to the ack. The ack-then-deliver two-beat is for tasks only.
+      const reply = cls.answer?.trim() || cls.ack?.trim();
+      if (reply) await this.post(task.channel_id, reply, evt.msgId);
       this.d.store.setTaskState(task.id, TaskState.DELIVERED);
       return;
     }
 
-    // It's a task → CLARIFY decisioning.
+    // It's a task → post the instant honest one-line ack now (the work itself delivers later,
+    // Spec 05 §2.2), then CLARIFY decisioning.
+    if (cls.ack?.trim()) await this.post(task.channel_id, cls.ack, evt.msgId);
     this.d.store.setTaskState(task.id, TaskState.CLARIFY);
     const ctx = await this.ctx(task.prompt);
     const clarify = await this.d.brain.clarify(this.toTaskRecordLite(this.d.store.getTask(task.id)!), ctx);
