@@ -35,7 +35,8 @@
   commands (tests/build/lint exit codes) AND natural-language criteria for the reviewer, written at
   PLAN time. GATE passes only if checks exit 0 AND reviewer confirms NL criteria.
 - **2026-06-27 — Management surface = CLI + structured logs** (L1 🟢, new). A `beckett` CLI
-  (`ps`, `tail`, `nudge`, `abort`, `budget`, …) over SQLite state + JSONL event logs. No web UI in v1.
+  (`ps`, `tail`, `nudge`, `abort`, `status`, `logs`, …) over SQLite state + JSONL event logs. No web UI
+  in v1. (No `budget` command — economics are subscription-based, no dollar ledger.)
   (Implies persistence = SQLite + JSONL event log, confirming A3.)
 - **2026-06-27 — Supervise = non-invasive observation + Opus self-scheduled check-ins** (D2/D3 🟢).
   Beckett continuously *tails* each worker's JSONL (stream + on-disk transcript) — **read-only, never
