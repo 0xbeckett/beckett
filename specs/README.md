@@ -13,6 +13,8 @@ layout. Every other doc defers to it.
 > Background research & decision rationale live in [`../my-docs/`](../my-docs/)
 > (`00-synthesis.md` = harness capability matrix; `claude-code-headless.md` / `codex-exec.md` = wire
 > formats; `open-questions.md` = the full decision log).
+>
+> **Open questions & decisions are managed via PRs** on this repo. See root [CONTRIBUTING.md](../CONTRIBUTING.md) and [.github/PULL_REQUEST_TEMPLATE.md](../.github/PULL_REQUEST_TEMPLATE.md). Every architecture-affecting PR must reference and (when ratifying) update the ledger.
 
 ## Document map
 

@@ -2,6 +2,9 @@
 
 > Living doc. Each question carries my current POV/recommendation so you can react fast rather than
 > start from blank. Answer in any order, in batches. We resolve these → then write `specs/`.
+>
+> **Process**: Open questions are proposed, discussed, and ratified via Pull Requests (see [CONTRIBUTING.md](../CONTRIBUTING.md)). Use the PR template's "Open questions / decision ledger" section. When a PR merges that closes or records a question, update the status (🟢 + date) here as part of the change. GitHub Issues with the `question` or `architecture` label can be used to surface new ones; they are closed by the ratifying PR.
+>
 > Status legend: 🔴 unanswered · 🟡 leaning · 🟢 decided
 
 ## Decisions Log
