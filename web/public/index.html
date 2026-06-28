@@ -4,21 +4,26 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>beckett</title>
-<meta name="description" content="An agentic coworker you reach in Discord. It runs the things that do the work — and comes back like a colleague would." />
-<meta name="theme-color" content="#020202" />
+<meta name="description" content="An agentic coworker you reach in Discord. It runs the things that do the work — and it can run itself." />
+<meta name="theme-color" content="#070811" />
 <meta property="og:title" content="beckett" />
 <meta property="og:description" content="An agentic coworker." />
 <meta property="og:type" content="website" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23020202'/%3E%3Ccircle cx='16' cy='16' r='6' fill='none' stroke='%23F7FAFB' stroke-width='1.5'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23070811'/%3E%3Ccircle cx='16' cy='16' r='6' fill='none' stroke='%236FC7CC' stroke-width='1.5'/%3E%3Ccircle cx='16' cy='16' r='2.4' fill='none' stroke='%23AFA2DE' stroke-width='1.5'/%3E%3C/svg%3E" />
 <style>
   :root{
-    --bg:#020202;
-    --ink:#F7FAFB;
-    --dim:rgba(247,250,251,.46);
-    --faint:rgba(247,250,251,.12);
-    --hair:rgba(247,250,251,.07);
-    --blurple:#5865F2;
-    --glow:rgba(88,101,242,.5);
+    --bg:#070811;
+    --bg2:#0a0c17;
+    --ink:#E3E7F0;
+    --dim:rgba(227,231,240,.44);
+    --faint:rgba(227,231,240,.12);
+    --hair:rgba(227,231,240,.07);
+    --cyan:#6FC7CC;
+    --cyan-soft:#CDEAEC;
+    --lav:#AFA2DE;
+    --lav-soft:#D8CFF2;
+    --cyan-glow:rgba(111,199,204,.5);
+    --lav-glow:rgba(175,162,222,.5);
     --ease:cubic-bezier(.22,.61,.36,1);
     --mono:"SF Mono",ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
   }
@@ -32,16 +37,15 @@
     overflow-x:hidden;
     line-height:1.5;
   }
-  /* ambient grain + vignette over the whole page */
   body::after{
     content:"";position:fixed;inset:0;pointer-events:none;z-index:60;
-    background:radial-gradient(120% 90% at 50% 38%,transparent 55%,rgba(0,0,0,.55) 100%);
+    background:radial-gradient(120% 90% at 50% 36%,transparent 52%,rgba(0,0,0,.6) 100%);
     mix-blend-mode:multiply;
   }
   canvas#field{position:fixed;inset:0;z-index:0;display:block}
 
   a{color:inherit}
-  ::selection{background:var(--blurple);color:#fff}
+  ::selection{background:var(--cyan);color:#04121a}
 
   /* ---------- top bar ---------- */
   header{
@@ -52,118 +56,116 @@
   }
   .mark{display:flex;align-items:center;gap:10px;letter-spacing:.02em;font-size:14px}
   .mark .dot{
-    width:9px;height:9px;border-radius:50%;border:1.5px solid var(--ink);
-    position:relative;
+    width:10px;height:10px;border-radius:50%;border:1.5px solid var(--cyan);
+    position:relative;display:grid;place-items:center;
   }
   .mark .dot::after{
-    content:"";position:absolute;inset:1px;border-radius:50%;background:var(--ink);
-    animation:beat 3.4s var(--ease) infinite;
+    content:"";width:3px;height:3px;border-radius:50%;border:1.5px solid var(--lav);
+    animation:beat 3.6s var(--ease) infinite;
   }
-  @keyframes beat{0%,100%{transform:scale(.25);opacity:.35}45%{transform:scale(1);opacity:1}}
-  nav{display:flex;gap:22px;font-size:12px;color:var(--ink);text-decoration:none}
+  @keyframes beat{0%,100%{transform:scale(.2);opacity:.4}45%{transform:scale(1.6);opacity:1}}
+  nav{display:flex;gap:22px;font-size:12px}
   nav a{text-decoration:none;opacity:.7;transition:opacity .3s}
   nav a:hover{opacity:1}
 
-  /* ---------- generic section ---------- */
   section{position:relative;z-index:1}
   .reveal{opacity:0;transform:translateY(26px);transition:opacity 1s var(--ease),transform 1.1s var(--ease)}
   .reveal.in{opacity:1;transform:none}
 
-  /* ---------- hero ---------- */
-  .hero{min-height:100svh;display:grid;place-items:center;text-align:center;padding:120px 20px 80px}
-  .stage{position:relative;width:min(78vw,440px);aspect-ratio:99/84;margin:0 auto}
-  .stage svg{width:100%;height:100%;overflow:visible;display:block}
-  /* the creature's strokes self-draw, then settle and breathe */
-  .glyph path[stroke]{
-    stroke:var(--ink);
-    filter:drop-shadow(0 0 5px rgba(247,250,251,.16));
+  /* ---------- recursive hero ---------- */
+  .hero{height:360vh;position:relative}
+  .herostick{position:sticky;top:0;height:100svh;display:grid;place-items:center;overflow:hidden}
+  .recur{position:relative;width:min(82vw,460px);aspect-ratio:99/84;animation:drift 9s ease-in-out infinite}
+  @keyframes drift{0%,100%{transform:scale(1)}50%{transform:scale(1.015)}}
+  .layer{position:absolute;left:50%;top:50%;width:100%;height:100%;transform:translate(-50%,-50%);will-change:transform,opacity}
+  .layer svg{width:100%;height:100%;overflow:visible;display:block}
+  .layer path[stroke]{fill:none}
+  .layer:nth-child(odd) path[stroke]{stroke:var(--cyan-soft);filter:drop-shadow(0 0 5px var(--cyan-glow))}
+  .layer:nth-child(even) path[stroke]{stroke:var(--lav-soft);filter:drop-shadow(0 0 5px var(--lav-glow))}
+  .halo{
+    position:absolute;left:50%;top:50%;width:84%;height:84%;transform:translate(-50%,-50%);z-index:-1;border-radius:50%;
+    background:radial-gradient(closest-side,rgba(111,199,204,.16),rgba(175,162,222,.1) 55%,transparent 74%);
+    filter:blur(10px);animation:halo 7s ease-in-out infinite;
   }
-  .stage .halo{
-    position:absolute;inset:-18% -12%;z-index:-1;border-radius:50%;
-    background:radial-gradient(closest-side,rgba(88,101,242,.16),transparent 72%);
-    filter:blur(8px);
-    animation:halo 7s ease-in-out infinite;
-  }
-  @keyframes halo{0%,100%{opacity:.5;transform:scale(.96)}50%{opacity:1;transform:scale(1.04)}}
-  .breathe{animation:breathe 6.5s ease-in-out infinite;transform-origin:center}
+  @keyframes halo{0%,100%{opacity:.55;transform:translate(-50%,-50%) scale(.94)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.06)}}
 
-  @keyframes breathe{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-1.2%) scale(1.012)}}
-
-  .tagline{
-    margin-top:46px;font-size:clamp(13px,2.4vw,16px);letter-spacing:.34em;
-    text-transform:uppercase;color:var(--dim);
-  }
-  /* the only "voice": a rotating first-person line, like a Discord reply */
+  .herofoot{position:absolute;bottom:max(34px,env(safe-area-inset-bottom));left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:26px;z-index:5}
   .say{
-    margin-top:26px;display:inline-flex;align-items:center;gap:12px;
+    display:inline-flex;align-items:center;gap:12px;
     padding:11px 18px;border:1px solid var(--hair);border-radius:999px;
-    background:rgba(255,255,255,.015);backdrop-filter:blur(2px);
-    font-size:14px;min-height:44px;
+    background:rgba(10,12,23,.5);backdrop-filter:blur(3px);
+    font-size:14px;min-height:44px;max-width:90vw;
   }
-  .say .at{color:var(--blurple);font-weight:600}
-  .say .line{color:var(--ink);white-space:nowrap}
-  .say .cursor{width:8px;height:17px;background:var(--blurple);display:inline-block;border-radius:1px;animation:blink 1.05s steps(1) infinite}
+  .say .at{color:var(--cyan);font-weight:600}
+  .say .line{color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .say .cursor{width:8px;height:17px;background:var(--lav);display:inline-block;border-radius:1px;flex:none;animation:blink 1.05s steps(1) infinite}
   @keyframes blink{50%{opacity:0}}
-
-  .scrollcue{position:absolute;bottom:34px;left:50%;transform:translateX(-50%);opacity:.5;font-size:10px;letter-spacing:.3em;display:flex;flex-direction:column;align-items:center;gap:9px}
-  .scrollcue .bar{width:1px;height:38px;background:linear-gradient(var(--ink),transparent);animation:drop 2.4s var(--ease) infinite}
+  .scrollcue{opacity:.5;font-size:10px;letter-spacing:.3em;display:flex;flex-direction:column;align-items:center;gap:9px}
+  .scrollcue .bar{width:1px;height:36px;background:linear-gradient(var(--cyan),transparent);animation:drop 2.4s var(--ease) infinite}
   @keyframes drop{0%{transform:scaleY(0);transform-origin:top;opacity:0}40%{transform:scaleY(1);opacity:1}100%{transform:scaleY(1);transform-origin:bottom;opacity:0}}
 
-  /* ---------- act framing ---------- */
+  /* ---------- acts ---------- */
   .act{padding:clamp(90px,16vh,180px) clamp(20px,6vw,80px);max-width:1100px;margin:0 auto}
-  .kicker{font-size:11px;letter-spacing:.34em;text-transform:uppercase;color:var(--dim);margin-bottom:22px}
-  .lead{font-size:clamp(22px,4.4vw,40px);line-height:1.28;letter-spacing:-.01em;max-width:18ch;font-weight:400}
+  .lead{font-size:clamp(22px,4.4vw,40px);line-height:1.28;letter-spacing:-.01em;max-width:20ch;font-weight:400}
   .lead b{font-weight:600}
-  .lead .accent{color:var(--blurple)}
+  .accent{background:linear-gradient(90deg,var(--cyan),var(--lav));-webkit-background-clip:text;background-clip:text;color:transparent}
 
-  /* ---------- DAG fan-out ---------- */
+  /* ---------- DAG ---------- */
   .dag{margin-top:64px;width:100%}
   .dag svg{width:100%;height:auto;overflow:visible}
   .wire{stroke:var(--faint);stroke-width:1.4;fill:none}
   .wire.live{stroke:url(#flow);stroke-width:1.6;stroke-dasharray:7 11;animation:dash 1.1s linear infinite}
   @keyframes dash{to{stroke-dashoffset:-18}}
-  .node rect,.node circle{fill:rgba(247,250,251,.02);stroke:var(--dim);stroke-width:1.3}
-  .node.run rect{stroke:var(--blurple);animation:runpulse 1.7s ease-in-out infinite}
-  @keyframes runpulse{0%,100%{stroke:rgba(88,101,242,.4)}50%{stroke:var(--blurple);filter:drop-shadow(0 0 6px var(--glow))}}
+  .node rect,.node circle{fill:rgba(227,231,240,.02);stroke:var(--dim);stroke-width:1.3}
+  .node.run rect{animation:runpulse 1.9s ease-in-out infinite}
+  .node.self rect{stroke:var(--lav)}
+  @keyframes runpulse{0%,100%{stroke:rgba(111,199,204,.42)}50%{stroke:var(--cyan);filter:drop-shadow(0 0 6px var(--cyan-glow))}}
   .node text{fill:var(--dim);font-size:9px;letter-spacing:.12em}
-  .activity{fill:var(--blurple)}
-  .endcap circle{fill:rgba(88,101,242,.06);stroke:var(--blurple)}
+  .activity{fill:var(--lav)}
+  .endcap circle{fill:rgba(111,199,204,.06);stroke:var(--cyan)}
   .legend{display:flex;gap:26px;flex-wrap:wrap;margin-top:30px;font-size:11px;color:var(--dim)}
   .legend span{display:inline-flex;align-items:center;gap:8px}
   .legend i{width:18px;height:1px;background:var(--dim);display:inline-block}
-  .legend i.b{background:var(--blurple)}
+  .legend i.c{background:var(--cyan)}
 
-  /* ---------- the loop ring ---------- */
-  .loopwrap{display:grid;grid-template-columns:1fr;gap:40px;align-items:center;justify-items:center;margin-top:56px}
-  .ring{position:relative;width:min(80vw,420px);aspect-ratio:1}
+  /* ---------- recursive loop ---------- */
+  .ring{position:relative;width:min(86vw,460px);aspect-ratio:1;margin:56px auto 0}
   .ring svg{width:100%;height:100%;overflow:visible}
-  .ring .track{fill:none;stroke:var(--hair);stroke-width:1.2}
-  .ring .comet{fill:none;stroke:url(#flow);stroke-width:2.4;stroke-linecap:round;stroke-dasharray:60 540;animation:orbit 7s linear infinite}
-  @keyframes orbit{to{stroke-dashoffset:-600}}
-  .ring .tick{fill:rgba(2,2,2,1);stroke:var(--dim);stroke-width:1.2}
-  .ring .label{fill:var(--dim);font-size:8.5px;letter-spacing:.1em;text-anchor:middle}
-  .ring .center{fill:var(--ink);font-size:13px;letter-spacing:.05em;text-anchor:middle;dominant-baseline:middle}
-  .ring .center small{font-size:8px}
+  .ring .track{fill:none;stroke:var(--hair);stroke-width:1.1}
+  .ring .comet{fill:none;stroke:url(#flow);stroke-linecap:round}
+  .ring .comet.c0{stroke-width:2.4;stroke-dasharray:64 880;animation:orbit 8s linear infinite}
+  .ring .comet.c1{stroke-width:2;stroke-dasharray:40 560;animation:orbitr 6s linear infinite}
+  .ring .comet.c2{stroke-width:1.7;stroke-dasharray:26 300;animation:orbit 4.2s linear infinite}
+  @keyframes orbit{to{stroke-dashoffset:-944}}
+  @keyframes orbitr{to{stroke-dashoffset:600}}
+  .ring .tick{fill:var(--bg);stroke:var(--dim);stroke-width:1.1}
+  .ring .tick.sm{stroke:var(--faint)}
+  .ring .label{fill:var(--dim);font-size:8px;letter-spacing:.1em;text-anchor:middle}
+  .ring .spiral{fill:none;stroke:url(#flow);stroke-width:1.3;stroke-linecap:round;stroke-dasharray:5 9;animation:spin 1.4s linear infinite}
+  @keyframes spin{to{stroke-dashoffset:-14}}
+  .ringcore{position:absolute;left:50%;top:50%;width:21%;transform:translate(-50%,-50%);aspect-ratio:99/84}
+  .ringcore svg{width:100%;height:100%;overflow:visible}
+  .ringcore path[stroke]{stroke:var(--lav-soft);fill:none;filter:drop-shadow(0 0 4px var(--lav-glow))}
 
   /* ---------- pillars ---------- */
-  .pillars{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1px;margin-top:64px;background:var(--hair);border:1px solid var(--hair)}
+  .pillars{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1px;margin-top:56px;background:var(--hair);border:1px solid var(--hair)}
   .pillar{background:var(--bg);padding:34px 26px;min-height:210px;display:flex;flex-direction:column;gap:18px;transition:background .4s}
-  .pillar:hover{background:rgba(88,101,242,.04)}
-  .pillar svg{width:40px;height:40px;stroke:var(--ink);fill:none;stroke-width:1.4;opacity:.9}
+  .pillar:hover{background:rgba(111,199,204,.04)}
+  .pillar svg{width:40px;height:40px;stroke:var(--cyan);fill:none;stroke-width:1.4;opacity:.92}
   .pillar h3{font-size:13px;font-weight:600;letter-spacing:.02em}
   .pillar p{font-size:12px;color:var(--dim);line-height:1.6}
 
-  /* ---------- closing ---------- */
+  /* ---------- close ---------- */
   .close{min-height:78svh;display:grid;place-items:center;text-align:center;padding:120px 20px}
   .close .big{font-size:clamp(28px,6vw,64px);letter-spacing:-.02em;line-height:1.1}
   .close .chip{
     margin-top:40px;display:inline-flex;align-items:center;gap:10px;
-    padding:14px 26px;border:1px solid var(--blurple);border-radius:999px;
-    color:var(--ink);text-decoration:none;font-size:14px;
-    box-shadow:0 0 0 0 var(--glow);transition:box-shadow .5s,background .4s;
+    padding:14px 26px;border:1px solid var(--cyan);border-radius:999px;
+    text-decoration:none;font-size:14px;
+    box-shadow:0 0 0 0 var(--lav-glow);transition:box-shadow .5s,background .4s;
   }
-  .close .chip:hover{background:rgba(88,101,242,.12);box-shadow:0 0 34px -4px var(--glow)}
-  .close .chip svg{width:18px;height:18px;fill:currentColor}
+  .close .chip:hover{background:rgba(111,199,204,.1);box-shadow:0 0 34px -4px var(--lav-glow)}
+  .close .chip svg{width:18px;height:18px;fill:var(--cyan)}
 
   footer{padding:46px 20px;text-align:center;font-size:11px;color:var(--dim);border-top:1px solid var(--hair)}
   footer .mark{justify-content:center;margin-bottom:10px}
@@ -171,7 +173,8 @@
   @media(prefers-reduced-motion:reduce){
     *{animation:none!important;transition:none!important}
     .reveal{opacity:1;transform:none}
-    .glyph path[stroke]{stroke-dashoffset:0!important}
+    .hero{height:100svh}
+    .layer:not(:first-child){display:none}
   }
 </style>
 </head>
@@ -187,39 +190,35 @@
   </nav>
 </header>
 
-<!-- ============ HERO ============ -->
+<!-- ============ HERO — recursion ============ -->
 <section class="hero">
-  <div>
-    <div class="stage">
-      <span class="halo"></span>
-      <div class="glyph breathe" id="glyph"><!-- creature injected here --></div>
-    </div>
-    <div class="tagline reveal">an agentic coworker</div>
-    <div class="say reveal">
-      <span class="at">@beckett</span>
-      <span class="line" id="say"></span>
-      <span class="cursor"></span>
+  <div class="herostick">
+    <div class="recur" id="recur"><span class="halo"></span></div>
+    <div class="herofoot" id="herofoot">
+      <div class="say">
+        <span class="at">@beckett</span>
+        <span class="line" id="say"></span>
+        <span class="cursor"></span>
+      </div>
+      <div class="scrollcue"><span>SCROLL</span><span class="bar"></span></div>
     </div>
   </div>
-  <div class="scrollcue"><span>SCROLL</span><span class="bar"></span></div>
 </section>
 
 <!-- ============ ACT 1 — it runs the things that do the work ============ -->
 <section id="dispatch" class="act">
-  <div class="kicker reveal">the spine</div>
   <h2 class="lead reveal">It doesn't do the work.<br>It <b class="accent">runs the things</b> that do.</h2>
 
   <div class="dag reveal" id="dag">
-    <svg viewBox="0 0 960 320" role="img" aria-label="One task fans out into parallel workers, then converges into one delivery.">
+    <svg viewBox="0 0 960 320" role="img" aria-label="One task fans out into parallel workers — including a copy of beckett working on itself — then converges into one delivery.">
       <defs>
         <linearGradient id="flow" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0" stop-color="#5865F2" stop-opacity="0"/>
-          <stop offset=".5" stop-color="#5865F2"/>
-          <stop offset="1" stop-color="#F7FAFB" stop-opacity=".2"/>
+          <stop offset="0" stop-color="#6FC7CC" stop-opacity="0"/>
+          <stop offset=".5" stop-color="#6FC7CC"/>
+          <stop offset="1" stop-color="#AFA2DE"/>
         </linearGradient>
       </defs>
 
-      <!-- wires: intake -> 4 workers -> deliver -->
       <path class="wire live" d="M150,160 C250,160 250,70 360,70"/>
       <path class="wire live" d="M150,160 C250,160 250,130 360,130"/>
       <path class="wire live" d="M150,160 C250,160 250,190 360,190"/>
@@ -229,55 +228,51 @@
       <path class="wire live" d="M600,190 C710,190 710,160 810,160"/>
       <path class="wire live" d="M600,250 C710,250 710,160 810,160"/>
 
-      <!-- intake (the @mention) -->
       <g class="node endcap">
         <circle cx="110" cy="160" r="34"/>
         <text x="110" y="164" text-anchor="middle" style="fill:var(--ink)">@</text>
       </g>
 
-      <!-- four workers, each = a harness in its own worktree -->
       <g class="node run" data-w="0"><rect x="360" y="48" width="240" height="44" rx="9"/><circle class="activity" cx="380" cy="70" r="3.5"/><text x="398" y="74">claude · worktree a</text></g>
       <g class="node run" data-w="1"><rect x="360" y="108" width="240" height="44" rx="9"/><circle class="activity" cx="380" cy="130" r="3.5"/><text x="398" y="134">codex · worktree b</text></g>
-      <g class="node run" data-w="2"><rect x="360" y="168" width="240" height="44" rx="9"/><circle class="activity" cx="380" cy="190" r="3.5"/><text x="398" y="194">claude · worktree c</text></g>
+      <g class="node run self" data-w="2"><rect x="360" y="168" width="240" height="44" rx="9"/><circle class="activity" cx="380" cy="190" r="3.5"/><text x="398" y="194">beckett · on itself</text></g>
       <g class="node run" data-w="3"><rect x="360" y="228" width="240" height="44" rx="9"/><circle class="activity" cx="380" cy="250" r="3.5"/><text x="398" y="254">codex · worktree d</text></g>
 
-      <!-- deliver -->
       <g class="node endcap">
         <circle cx="846" cy="160" r="34"/>
-        <path d="M832,160 l9,9 l18,-20" fill="none" stroke="#5865F2" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M832,160 l9,9 l18,-20" fill="none" stroke="#6FC7CC" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
       </g>
     </svg>
   </div>
 
   <div class="legend reveal">
-    <span><i class="b"></i> work in flight</span>
+    <span><i class="c"></i> work in flight</span>
     <span><i></i> a worker = one harness · scoped task · isolated worktree</span>
   </div>
 </section>
 
-<!-- ============ ACT 2 — the loop ============ -->
+<!-- ============ ACT 2 — the loop is recursive ============ -->
 <section id="loop" class="act">
-  <div class="kicker reveal">the loop</div>
-  <h2 class="lead reveal">Plan. Dispatch. Watch.<br>Integrate. <b class="accent">Gate.</b> Ship.</h2>
+  <h2 class="lead reveal">Plan. Dispatch. Gate. Ship.<br>Then run it <b class="accent">on itself.</b></h2>
 
-  <div class="loopwrap reveal">
-    <div class="ring" id="ring">
-      <svg viewBox="0 0 400 400">
-        <circle class="track" cx="200" cy="200" r="150"/>
-        <circle class="comet" cx="200" cy="200" r="150" transform="rotate(-90 200 200)"/>
-        <!-- ticks + labels placed by JS around the ring -->
-        <g id="ticks"></g>
-        <text class="center" x="200" y="194">autonomous</text>
-        <text class="center" x="200" y="214"><tspan style="fill:var(--dim);font-size:9px;letter-spacing:.28em">NO BABYSITTING</tspan></text>
-      </svg>
-    </div>
+  <div class="ring reveal" id="ring">
+    <svg viewBox="0 0 400 400" aria-hidden="true">
+      <circle class="track" cx="200" cy="200" r="150"/>
+      <circle class="track" cx="200" cy="200" r="96"/>
+      <circle class="track" cx="200" cy="200" r="50"/>
+      <circle class="comet c0" cx="200" cy="200" r="150" transform="rotate(-90 200 200)"/>
+      <circle class="comet c1" cx="200" cy="200" r="96" transform="rotate(-90 200 200)"/>
+      <circle class="comet c2" cx="200" cy="200" r="50" transform="rotate(-90 200 200)"/>
+      <g id="ticks"></g>
+      <g id="spirals"></g>
+    </svg>
+    <div class="ringcore" id="ringcore"></div>
   </div>
 </section>
 
-<!-- ============ ACT 3 — the four pillars of self ============ -->
+<!-- ============ ACT 3 — it has a self ============ -->
 <section id="self" class="act">
-  <div class="kicker reveal">why it's a coworker, not a tool</div>
-  <h2 class="lead reveal">It has a <b class="accent">self</b>.</h2>
+  <h2 class="lead reveal">It has a <b class="accent">self.</b></h2>
 
   <div class="pillars reveal">
     <div class="pillar">
@@ -306,7 +301,7 @@
 <!-- ============ CLOSE ============ -->
 <section class="close">
   <div class="reveal">
-    <div class="big">You <span style="color:var(--blurple)">@beckett</span> it.<br>It comes back done.</div>
+    <div class="big">You <span class="accent">@beckett</span> it.<br>It comes back done.</div>
     <a class="chip" href="#" id="cta">
       <svg viewBox="0 0 24 24"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.2.4a18 18 0 0 1 4.3 1.3 16.6 16.6 0 0 0-5-1.6 18.5 18.5 0 0 0-4.9 0A16.5 16.5 0 0 0 4.5 4.7 18 18 0 0 1 8.8 3.4L8.6 3a19.8 19.8 0 0 0-4.9 1.4C1 8.4.2 12.3.6 16.1A19.9 19.9 0 0 0 6.7 19l.6-.9a13 13 0 0 1-2-1l.5-.3a14.2 14.2 0 0 0 12.2 0l.5.3a13 13 0 0 1-2 1l.6.9a19.8 19.8 0 0 0 6-3c.5-4.5-.7-8.4-3.4-11.6ZM8.7 13.9c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z"/></svg>
       reach it in Discord
@@ -322,31 +317,169 @@
 <script>
 (function(){
   var reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
+  function clamp(v,a,b){return v<a?a:v>b?b:v;}
 
-  /* ---------- inject the creature, then self-draw its strokes ---------- */
-  fetch("beckett.svg").then(function(r){return r.text()}).then(function(svg){
-    var host = document.getElementById("glyph");
-    host.innerHTML = svg;
-    var root = host.querySelector("svg");
-    // strip the opaque black backing rects so the creature floats on our bg
-    Array.prototype.forEach.call(root.querySelectorAll('rect,path'), function(p){
+  fetch("beckett.svg").then(function(r){return r.text()}).then(build).catch(function(){});
+
+  function build(svgText){
+    // clean: drop the opaque black backing shapes so the creature floats
+    var tmp = document.createElement("div");
+    tmp.innerHTML = svgText;
+    var src = tmp.querySelector("svg");
+    Array.prototype.forEach.call(src.querySelectorAll("rect,path"), function(p){
       var f = (p.getAttribute("fill")||"").toLowerCase();
       if(f === "#020202") p.remove();
     });
-    if(reduce) return;
-    var strokes = root.querySelectorAll("path[stroke]");
-    Array.prototype.forEach.call(strokes, function(p, i){
-      var len;
-      try{ len = p.getTotalLength(); }catch(e){ return; }
-      p.style.strokeDasharray = len + " " + len;
-      p.style.strokeDashoffset = len;
-      p.style.transition = "stroke-dashoffset 1.7s cubic-bezier(.22,.61,.36,1)";
-      // stagger so it draws on like a hand sketching
-      setTimeout(function(){ p.style.strokeDashoffset = "0"; }, 220 + i*150);
-    });
-  });
+    var glyphHTML = src.outerHTML;
 
-  /* ---------- the voice: first-person quips, typed out ---------- */
+    buildRecursion(glyphHTML);
+    buildLoop(glyphHTML);
+  }
+
+  /* ---------------- recursive hero: form a face, then fall into it ---------------- */
+  function buildRecursion(glyphHTML){
+    var host = document.getElementById("recur");
+    var N = 7, RATIO = 0.44, LEVELS = 4;
+    var layers = [];
+    for(var i=0;i<N;i++){
+      var el = document.createElement("div");
+      el.className = "layer";
+      el.innerHTML = glyphHTML;
+      host.appendChild(el);
+      var paths = [];
+      Array.prototype.forEach.call(el.querySelectorAll("path[stroke]"), function(p){
+        var len = 0;
+        try{ len = p.getTotalLength(); }catch(e){}
+        p.style.strokeDasharray = len + " " + len;
+        p.style.strokeDashoffset = "0";
+        paths.push({node:p, len:len});
+      });
+      // each nested face is rotated / mirrored so it reads as a *new* face
+      var rot = (i%2 ? -1 : 1) * i * 15;
+      var flip = (i%3===2) ? -1 : 1;
+      layers.push({el:el, paths:paths, rot:rot, flip:flip});
+    }
+
+    var foot = document.getElementById("herofoot");
+
+    if(reduce){
+      var L0 = layers[0];
+      L0.el.style.opacity = 1;
+      L0.el.style.transform = "translate(-50%,-50%)";
+      return;
+    }
+
+    // intro: the front face draws itself in
+    layers[0].paths.forEach(function(pp, j){
+      pp.node.style.strokeDashoffset = pp.len;
+      pp.node.style.transition = "stroke-dashoffset 1.7s cubic-bezier(.22,.61,.36,1)";
+      setTimeout(function(){ pp.node.style.strokeDashoffset = "0"; }, 200 + j*140);
+    });
+    var introDone = false;
+    setTimeout(function(){
+      introDone = true;
+      layers[0].paths.forEach(function(pp){ pp.node.style.transition = "none"; });
+    }, 2200);
+
+    function vis(d){
+      var o;
+      if(d <= -0.85) o = 0;
+      else if(d < 0.15) o = (d + 0.85) / 1.0;
+      else if(d <= 3.2) o = 1;
+      else if(d < 4.2) o = 1 - (d - 3.2);
+      else o = 0;
+      return clamp(o,0,1);
+    }
+
+    var hero = document.querySelector(".hero");
+    var tgt = 0, cur = 0;
+    function onScroll(){
+      var r = hero.getBoundingClientRect();
+      var total = hero.offsetHeight - window.innerHeight;
+      tgt = clamp(-r.top / Math.max(1,total), 0, 1);
+    }
+    addEventListener("scroll", onScroll, {passive:true});
+    addEventListener("resize", onScroll);
+    onScroll();
+
+    function frame(){
+      cur += (tgt - cur) * 0.1;
+      var Z = cur * LEVELS;
+      for(var i=0;i<layers.length;i++){
+        var L = layers[i];
+        var d = i - Z;
+        var s = Math.pow(RATIO, d);
+        var o = vis(d);
+        L.el.style.opacity = o;
+        L.el.style.transform =
+          "translate(-50%,-50%) rotate("+L.rot+"deg) scale("+(L.flip*s)+","+s+")";
+        // as a face zooms past the viewer (d<0) it unravels into the next
+        if(introDone || cur > 0.004){
+          var u = d < 0 ? clamp(-d/0.85,0,0.62) : 0;
+          if(o <= 0.001) u = 0;
+          for(var k=0;k<L.paths.length;k++){
+            L.paths[k].node.style.strokeDashoffset = (L.paths[k].len * u);
+          }
+        }
+      }
+      foot.style.opacity = clamp(1 - cur*2.4, 0, 1);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------------- recursive loop: loops within loops, beckett at the core ------- */
+  function buildLoop(glyphHTML){
+    var core = document.getElementById("ringcore");
+    if(core) core.innerHTML = glyphHTML;
+
+    var ticks = document.getElementById("ticks");
+    var spirals = document.getElementById("spirals");
+    var cx=200, cy=200;
+
+    var outer = ["intake","plan","staff","dispatch","supervise","integrate","gate","deliver"];
+    placeTicks(outer, 150, true);
+    placeTicks(["","","","","","","",""], 96, false);
+    placeTicks(["","","","",""], 50, false);
+
+    function placeTicks(states, R, labelled){
+      states.forEach(function(s,i){
+        var a = (-90 + i*(360/states.length)) * Math.PI/180;
+        var x = cx + R*Math.cos(a), y = cy + R*Math.sin(a);
+        var c = document.createElementNS("http://www.w3.org/2000/svg","circle");
+        c.setAttribute("class", labelled ? "tick" : "tick sm");
+        c.setAttribute("cx",x); c.setAttribute("cy",y); c.setAttribute("r", labelled?5:3.2);
+        ticks.appendChild(c);
+        if(labelled && s){
+          var lx = cx + (R+22)*Math.cos(a), ly = cy + (R+22)*Math.sin(a);
+          var t = document.createElementNS("http://www.w3.org/2000/svg","text");
+          t.setAttribute("class","label"); t.setAttribute("x",lx); t.setAttribute("y",ly+3);
+          if(lx < cx-30) t.setAttribute("text-anchor","end");
+          else if(lx > cx+30) t.setAttribute("text-anchor","start");
+          t.textContent = s.toUpperCase();
+          ticks.appendChild(t);
+        }
+      });
+    }
+
+    // two spiral connectors: each loop spawns the next one inward (recursion)
+    [0, Math.PI].forEach(function(phase){
+      var d = "M ", pts = [];
+      for(var step=0; step<=40; step++){
+        var f = step/40;
+        var ang = phase + f * Math.PI * 1.6;
+        var rad = 150 - f*(150-50);
+        pts.push((cx + rad*Math.cos(ang)).toFixed(1) + " " + (cy + rad*Math.sin(ang)).toFixed(1));
+      }
+      var path = document.createElementNS("http://www.w3.org/2000/svg","path");
+      path.setAttribute("class","spiral");
+      path.setAttribute("d", "M " + pts.join(" L "));
+      path.setAttribute("opacity","0.5");
+      spirals.appendChild(path);
+    });
+  }
+
+  /* ---------------- the voice: first-person quips, typed ---------------- */
   var lines = [
     "on it.",
     "PR's up — review or merge?",
@@ -354,7 +487,7 @@
     "two of them stalled. failed over to codex.",
     "shipped. tests green. known limit: no retries yet.",
     "this spec contradicts itself — one question first.",
-    "drafted the email. send as me, or you handle it?",
+    "spun up a copy of myself to fix my own intake.",
     "done. logged what worked for next time."
   ];
   var el = document.getElementById("say");
@@ -362,7 +495,7 @@
     if(reduce){ el.textContent = lines[1]; }
     else{
       var li=0;
-      function typeLine(){
+      (function typeLine(){
         var txt = lines[li % lines.length]; li++;
         var i=0;
         (function type(){
@@ -377,40 +510,17 @@
             else { setTimeout(typeLine, 360); }
           })();
         }
-      }
-      typeLine();
+      })();
     }
   }
 
-  /* ---------- loop ring: place state ticks + labels ---------- */
-  var states = ["intake","plan","staff","dispatch","supervise","integrate","gate","deliver"];
-  var ticks = document.getElementById("ticks");
-  if(ticks){
-    var cx=200, cy=200, R=150;
-    states.forEach(function(s, i){
-      var a = (-90 + i*(360/states.length)) * Math.PI/180;
-      var x = cx + R*Math.cos(a), y = cy + R*Math.sin(a);
-      var lx = cx + (R+24)*Math.cos(a), ly = cy + (R+24)*Math.sin(a);
-      var c = document.createElementNS("http://www.w3.org/2000/svg","circle");
-      c.setAttribute("class","tick"); c.setAttribute("cx",x); c.setAttribute("cy",y); c.setAttribute("r","6");
-      ticks.appendChild(c);
-      var t = document.createElementNS("http://www.w3.org/2000/svg","text");
-      t.setAttribute("class","label"); t.setAttribute("x",lx); t.setAttribute("y",ly+3);
-      // keep labels readable on left/right of the ring
-      if(lx < cx-30) t.setAttribute("text-anchor","end");
-      else if(lx > cx+30) t.setAttribute("text-anchor","start");
-      t.textContent = s.toUpperCase();
-      ticks.appendChild(t);
-    });
-  }
-
-  /* ---------- scroll reveal ---------- */
+  /* ---------------- scroll reveal ---------------- */
   var io = new IntersectionObserver(function(es){
     es.forEach(function(e){ if(e.isIntersecting){ e.target.classList.add("in"); io.unobserve(e.target);} });
-  },{threshold:.18});
+  },{threshold:.16});
   document.querySelectorAll(".reveal").forEach(function(n){ io.observe(n); });
 
-  /* ---------- ambient drifting shard field (canvas, transform-only) ---------- */
+  /* ---------------- ambient drifting field ---------------- */
   var cv = document.getElementById("field"), ctx = cv.getContext("2d");
   var DPR = Math.min(devicePixelRatio||1, 2), W, H, parts=[];
   var mx=0.5, my=0.4, tx=0.5, ty=0.4;
@@ -421,34 +531,31 @@
     parts = [];
     for(var i=0;i<n;i++){
       parts.push({
-        x:Math.random()*W, y:Math.random()*H,
-        z:0.3+Math.random()*0.9,
+        x:Math.random()*W, y:Math.random()*H, z:0.3+Math.random()*0.9,
         r:(0.6+Math.random()*1.6)*DPR,
         vx:(Math.random()-0.5)*0.08*DPR, vy:(Math.random()-0.5)*0.08*DPR,
-        a:0.05+Math.random()*0.22
+        a:0.05+Math.random()*0.2, hue:Math.random()<0.5?"111,199,204":"175,162,222"
       });
     }
   }
   addEventListener("resize", resize);
   addEventListener("pointermove", function(e){ tx = e.clientX/innerWidth; ty = e.clientY/innerHeight; });
   resize();
-  function frame(){
+  function field(){
     mx += (tx-mx)*0.05; my += (ty-my)*0.05;
     ctx.clearRect(0,0,W,H);
-    var ox = (mx-0.5), oy = (my-0.5);
+    var ox=(mx-0.5), oy=(my-0.5);
     for(var i=0;i<parts.length;i++){
-      var p = parts[i];
-      p.x += p.vx; p.y += p.vy;
+      var p=parts[i];
+      p.x+=p.vx; p.y+=p.vy;
       if(p.x<0)p.x=W; if(p.x>W)p.x=0; if(p.y<0)p.y=H; if(p.y>H)p.y=0;
-      var px = p.x - ox*60*DPR*p.z, py = p.y - oy*60*DPR*p.z;
-      ctx.beginPath();
-      ctx.arc(px, py, p.r, 0, 6.2832);
-      ctx.fillStyle = "rgba(247,250,251,"+p.a*p.z+")";
-      ctx.fill();
+      var px=p.x-ox*60*DPR*p.z, py=p.y-oy*60*DPR*p.z;
+      ctx.beginPath(); ctx.arc(px,py,p.r,0,6.2832);
+      ctx.fillStyle="rgba("+p.hue+","+(p.a*p.z)+")"; ctx.fill();
     }
-    if(!reduce) requestAnimationFrame(frame);
+    if(!reduce) requestAnimationFrame(field);
   }
-  if(reduce){ frame(); } else { requestAnimationFrame(frame); }
+  if(reduce){ field(); } else { requestAnimationFrame(field); }
 })();
 </script>
 </body>
