@@ -210,8 +210,9 @@ export async function callJSON<T>(opts: CallJSONOptions<T>): Promise<T> {
         JSON.stringify(opts.jsonSchema),
         "--append-system-prompt",
         opts.system + systemExtra,
-        "--max-turns",
-        "1",
+        // No --max-turns: a --json-schema call needs a turn to think AND a turn to emit the
+        // StructuredOutput tool call; capping at 1 made every structured call error_max_turns.
+        // Let it run to completion (it stops on its own once the schema is satisfied).
         "--disallowedTools",
         DISALLOWED_TOOLS,
         "--permission-mode",
@@ -312,8 +313,7 @@ export async function callText(opts: CallTextOptions): Promise<string> {
         "json",
         "--append-system-prompt",
         opts.system,
-        "--max-turns",
-        "1",
+        // No --max-turns — let the call run to completion (see callJSON).
         "--disallowedTools",
         DISALLOWED_TOOLS,
         "--permission-mode",

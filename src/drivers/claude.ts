@@ -428,8 +428,8 @@ export class ClaudeDriver implements HarnessDriver {
       this.resolvedPermissionMode(),
       "--model",
       this.resolvedModel(),
-      "--max-turns",
-      String(spec.envelope.turnCap),
+      // No --max-turns: envelopes are ESTIMATES, not caps (Spec 02 §7 / canon). turnCap drives the
+      // supervisor's drift look, never a hard kill — capping here truncates legitimate long work.
     ];
 
     if (mode.kind === "spawn") args.push("--session-id", mode.sessionId);
