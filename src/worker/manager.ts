@@ -58,6 +58,7 @@ import {
 } from "./worktree.ts";
 import { scopeGuardSettings } from "../hooks/scope-guard.ts";
 import { loadAndFormatSkills } from "../skills/index.ts";
+import { initBaselineHooks } from "../hooks/registry.ts";
 
 // =======================================================================================
 // Injected collaborators
@@ -201,6 +202,8 @@ export class DefaultWorkerManager implements WorkerManager {
     this.logger = deps.logger ?? log.child("worker-manager");
     this.now = deps.now ?? Date.now;
     this.scopeGuardPath = deps.scopeGuardPath ?? join(import.meta.dir, "../hooks/scope-guard.ts");
+    // Additive: initialize registry with baseline scope guard (no behavior change)
+    initBaselineHooks(`bun ${JSON.stringify(this.scopeGuardPath)}`);
   }
 
   // ── public surface (WorkerManager contract) ──────────────────────────────────────────
