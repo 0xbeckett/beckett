@@ -1,4 +1,4 @@
-# Beckett + Kew Consolidation Plan (Skills + Hooks + Fleet)
+# Beckett Consolidation Plan (Skills, Hooks, Context, Fleet Coordination)
 
 **Branch:** `explore/skills-and-hooks` (local only — no main commits)  
 **Status:** Planning phase complete. Ready for implementation handoff.  
@@ -27,11 +27,13 @@ Beckett is a collaborative agent that teams can tag in Discord. It acts on its o
 3. **Harness Specialization** — Clear rules for when to use Claude vs Codex for what kinds of tasks.
 4. **Coordination** — Better multi-harness "fleet" patterns with independence + reconciliation.
 
-## Kew Ideas to Port (via Skills + Hooks)
-- **Skills**: Declarative .md modules (like Kew) for behavior. Injected selectively. Can declare hooks or compaction hints.
-- **Memory Scoping**: Operator / per-person / general + relevance filtering + gated writes + explicit compaction (Kew style).
-- **Sandbox Isolation**: Secret-free execution boundaries for workers (Kew two-container pattern). Extend existing worktrees/hooks.
-- **Fleet Orchestration**: Multi-fleet pattern with "Matryoshka grounding" (never trust worker output blindly — reconcile vs source). Session-scoped ephemeral context + persistent scoped ledger. Good Codex prompts/skills for project/implementation work.
+## Key Patterns to Introduce
+- Declarative skills (modular .md files) for behavior, specialization, and coordination.
+- Strong session/task scoping for all context (memory, skills, prompts).
+- Session-aware compaction for long-running work.
+- Fleet-style coordination with independence + mandatory reconciliation.
+- Harness-specific behavior (Claude for steering/feedback sessions, Codex for implementation).
+- Sandbox-style isolation for workers (build on existing worktrees + hooks).
 
 ## Phased Plan (Logical Order)
 
@@ -100,7 +102,7 @@ Beckett is a collaborative agent that teams can tag in Discord. It acts on its o
 - Skills seeded: harness-selector, fleet-orchestrator, feedback-steering, research, verify.
 - Hooks registry stub started.
 - Compaction simulation live.
-- Full analysis of Kew memory/sandbox + your fleet skill in BASELINE_SKILLS_HOOKS.md.
+- Analysis of context/session issues, compaction, and multi-harness coordination in BASELINE_SKILLS_HOOKS.md.
 
 ## Handoff Notes for Implementation Agent
 You can continue directly on `explore/skills-and-hooks`.
