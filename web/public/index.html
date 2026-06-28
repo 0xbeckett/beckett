@@ -75,7 +75,7 @@
   /* ---------- recursive hero ---------- */
   .hero{height:360vh;position:relative}
   .herostick{position:sticky;top:0;height:100svh;display:grid;place-items:center;overflow:hidden}
-  .recur{position:relative;width:min(82vw,460px);aspect-ratio:99/84;animation:drift 9s ease-in-out infinite}
+  .recur{position:relative;width:min(90vw,680px);aspect-ratio:99/84;animation:drift 9s ease-in-out infinite}
   @keyframes drift{0%,100%{transform:scale(1)}50%{transform:scale(1.015)}}
   .layer{position:absolute;left:50%;top:50%;width:100%;height:100%;transform:translate(-50%,-50%);will-change:transform,opacity}
   .layer svg{width:100%;height:100%;overflow:visible;display:block}
@@ -105,9 +105,12 @@
   @keyframes drop{0%{transform:scaleY(0);transform-origin:top;opacity:0}40%{transform:scaleY(1);opacity:1}100%{transform:scaleY(1);transform-origin:bottom;opacity:0}}
 
   /* ---------- acts ---------- */
-  .act{padding:clamp(90px,16vh,180px) clamp(20px,6vw,80px);max-width:1100px;margin:0 auto}
-  .lead{font-size:clamp(22px,4.4vw,40px);line-height:1.28;letter-spacing:-.01em;max-width:20ch;font-weight:400}
+  .act{padding:clamp(90px,15vh,170px) clamp(24px,5vw,96px);max-width:1640px;margin:0 auto}
+  .lead{font-size:clamp(24px,4.6vw,48px);line-height:1.24;letter-spacing:-.01em;max-width:22ch;font-weight:400}
   .lead b{font-weight:600}
+  .acthead{display:flex;justify-content:space-between;align-items:flex-end;gap:40px;flex-wrap:wrap}
+  .split{display:grid;grid-template-columns:minmax(280px,.92fr) 1.08fr;gap:clamp(32px,6vw,96px);align-items:center;margin-top:8px}
+  @media(max-width:900px){.split{grid-template-columns:1fr;gap:48px}}
   .accent{background:linear-gradient(90deg,var(--cyan),var(--lav));-webkit-background-clip:text;background-clip:text;color:transparent}
 
   /* ---------- DAG ---------- */
@@ -129,7 +132,7 @@
   .legend i.c{background:var(--cyan)}
 
   /* ---------- recursive loop ---------- */
-  .ring{position:relative;width:min(86vw,460px);aspect-ratio:1;margin:56px auto 0}
+  .ring{position:relative;width:100%;max-width:600px;aspect-ratio:1;margin:0 auto}
   .ring svg{width:100%;height:100%;overflow:visible}
   .ring .track{fill:none;stroke:var(--hair);stroke-width:1.1}
   .ring .comet{fill:none;stroke:url(#flow);stroke-linecap:round}
@@ -167,6 +170,29 @@
   .close .chip:hover{background:rgba(111,199,204,.1);box-shadow:0 0 34px -4px var(--lav-glow)}
   .close .chip svg{width:18px;height:18px;fill:var(--cyan)}
 
+  /* "you beck it" -> scribble -> "you @beckett" */
+  .morph{position:relative;display:inline-block;text-align:center;vertical-align:baseline}
+  .morph .sizer{visibility:hidden;display:inline-block;white-space:nowrap}
+  .morph .w{position:absolute;left:0;right:0;top:0;white-space:nowrap}
+  .morph .wA{animation:wA 4.6s var(--ease) infinite}
+  .morph .wB{animation:wB 4.6s var(--ease) infinite}
+  .morph .scribble{position:absolute;left:-9%;top:50%;width:118%;height:1.4em;transform:translateY(-50%);overflow:visible;pointer-events:none}
+  .morph .scribble path{fill:none;stroke:var(--lav);stroke-width:3.4;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 5px var(--lav-glow));stroke-dasharray:600;stroke-dashoffset:600;opacity:0}
+  .morph .scribble .s1{animation:scrib 4.6s linear infinite}
+  .morph .scribble .s2{animation:scrib 4.6s linear infinite;animation-delay:.05s}
+  @keyframes wA{0%,40%{opacity:1}47%,90%{opacity:0}96%,100%{opacity:1}}
+  @keyframes wB{0%,43%{opacity:0}50%,87%{opacity:1}93%,100%{opacity:0}}
+  @keyframes scrib{
+    0%,34%{stroke-dashoffset:600;opacity:0}
+    40%{opacity:1}
+    50%{stroke-dashoffset:0;opacity:1}
+    58%{stroke-dashoffset:0;opacity:0}
+    59%,86%{stroke-dashoffset:600;opacity:0}
+    90%{opacity:1}
+    98%{stroke-dashoffset:0;opacity:1}
+    100%{stroke-dashoffset:0;opacity:0}
+  }
+
   footer{padding:46px 20px;text-align:center;font-size:11px;color:var(--dim);border-top:1px solid var(--hair)}
   footer .mark{justify-content:center;margin-bottom:10px}
 
@@ -175,6 +201,9 @@
     .reveal{opacity:1;transform:none}
     .hero{height:100svh}
     .layer:not(:first-child){display:none}
+    .morph .wA{opacity:0}
+    .morph .wB{opacity:1}
+    .morph .scribble{display:none}
   }
 </style>
 </head>
@@ -207,7 +236,13 @@
 
 <!-- ============ ACT 1 — it runs the things that do the work ============ -->
 <section id="dispatch" class="act">
-  <h2 class="lead reveal">It doesn't do the work.<br>It <b class="accent">runs the things</b> that do.</h2>
+  <div class="acthead reveal">
+    <h2 class="lead">It doesn't do the work.<br>It <b class="accent">runs the things</b> that do.</h2>
+    <div class="legend">
+      <span><i class="c"></i> work in flight</span>
+      <span><i></i> a worker = one harness · scoped task · isolated worktree</span>
+    </div>
+  </div>
 
   <div class="dag reveal" id="dag">
     <svg viewBox="0 0 960 320" role="img" aria-label="One task fans out into parallel workers — including a copy of beckett working on itself — then converges into one delivery.">
@@ -244,15 +279,11 @@
       </g>
     </svg>
   </div>
-
-  <div class="legend reveal">
-    <span><i class="c"></i> work in flight</span>
-    <span><i></i> a worker = one harness · scoped task · isolated worktree</span>
-  </div>
 </section>
 
 <!-- ============ ACT 2 — the loop is recursive ============ -->
 <section id="loop" class="act">
+  <div class="split">
   <h2 class="lead reveal">Plan. Dispatch. Gate. Ship.<br>Then run it <b class="accent">on itself.</b></h2>
 
   <div class="ring reveal" id="ring">
@@ -267,6 +298,7 @@
       <g id="spirals"></g>
     </svg>
     <div class="ringcore" id="ringcore"></div>
+  </div>
   </div>
 </section>
 
@@ -301,7 +333,7 @@
 <!-- ============ CLOSE ============ -->
 <section class="close">
   <div class="reveal">
-    <div class="big">You <span class="accent">@beckett</span> it.<br>It comes back done.</div>
+    <div class="big">You <span class="morph" aria-label="@beckett"><span class="sizer">@beckett</span><span class="w wA">beck it</span><span class="w wB accent">@beckett</span><svg class="scribble" viewBox="0 0 220 48" preserveAspectRatio="none" aria-hidden="true"><path class="s1" d="M6,30 C46,8 78,42 116,20 C150,4 188,36 214,16"/><path class="s2" d="M214,30 C176,46 128,14 86,32 C50,46 22,18 6,28"/></svg></span><br>It comes back done.</div>
     <a class="chip" href="#" id="cta">
       <svg viewBox="0 0 24 24"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.2.4a18 18 0 0 1 4.3 1.3 16.6 16.6 0 0 0-5-1.6 18.5 18.5 0 0 0-4.9 0A16.5 16.5 0 0 0 4.5 4.7 18 18 0 0 1 8.8 3.4L8.6 3a19.8 19.8 0 0 0-4.9 1.4C1 8.4.2 12.3.6 16.1A19.9 19.9 0 0 0 6.7 19l.6-.9a13 13 0 0 1-2-1l.5-.3a14.2 14.2 0 0 0 12.2 0l.5.3a13 13 0 0 1-2 1l.6.9a19.8 19.8 0 0 0 6-3c.5-4.5-.7-8.4-3.4-11.6ZM8.7 13.9c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z"/></svg>
       reach it in Discord
