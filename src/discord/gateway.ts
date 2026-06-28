@@ -224,6 +224,14 @@ export class DiscordJsGateway implements DiscordGateway {
   private wireListeners(client: Client): void {
     client.on(Events.MessageCreate, (msg) => {
       this.lastEventTs = Date.now();
+      // Observability: record every inbound message so we can confirm gateway receipt + intent.
+      this.logger.info("discord message received", {
+        author: msg.author.username,
+        bot: msg.author.bot,
+        channelId: msg.channelId,
+        len: msg.content.length,
+        mentionsBot: client.user ? msg.mentions.has(client.user.id) : undefined,
+      });
       // Loop guard: never react to bots, including ourselves (Spec 05 §2.2 / §9.2).
       if (msg.author.bot) return;
       const m = this.normalize(msg);
