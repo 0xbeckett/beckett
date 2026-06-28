@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# SQLite (state lives in ~/.beckett, never in-repo — but ignore stray copies)
+*.db
+*.db-wal
+*.db-shm
+
+# secrets
+.env
+
+# Beckett runtime home (if BECKETT_DIR points into the repo during local testing)
+/home
+.beckett/
+
+# scratch / temp
+scratch/
+*.log
