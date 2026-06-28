@@ -187,3 +187,43 @@ This document lives on the exploration branch and will be updated as we implemen
 Next step on this branch: implement the minimal additive skills loader + wire it into one safe place (e.g. buildSystemAppend) so it returns "" today.
 
 Status: baseline captured. Ready to code the first non-breaking improvement.
+
+## Harness Specialization: Claude vs. Codex (Vision-Driven Analysis)
+
+From the direct conversation with the repo owner ("ro"):
+- "i want to support Claude Code and Codex as first-class support"
+- Codex shines for "implementation agent" work.
+- Claude -p is valued for steering: "claude -p does which makes it nice" because "it just doesnt allow interrupts/steering via codex exec".
+- "I use codex for implementation agent. Grok for everything else. Codex can also launch grok."
+
+Current design in Beckett (as of baseline):
+- Both are first-class via the `Harness` / `HarnessDriver` abstraction (Spec 02).
+- Strong documented asymmetry:
+  - **Claude (`claude-cli-stream`)**: Excellent for tasks requiring mid-run steering, feedback incorporation, and iterative collaboration. Nudges land at the next turn boundary. Ideal when the task involves teammate input or needs real-time course correction.
+  - **Codex (`codex-exec-oneshot`)**: Strong for autonomous, well-scoped implementation, build, refactor, or test-heavy work. Steering is "queued" and applied on resume. Better when the work can proceed largely independently until a checkpoint.
+- In practice today (v0 focus): Claude is the workhorse for proving steering. Codex is positioned for failover, cross-review (Spec 11), and future multi-node DAGs.
+- STAFF logic (Spec 06) is currently fused into PLAN (`suggestedWorker`). Future learned model will use task_type + past outcomes to choose harness.
+- No mature `task_type` taxonomy yet (flagged in open-questions.md).
+
+How this fits skills + hooks + compaction (without breaking core):
+- **Skills** are the natural place to encode specialization:
+  - A "harness-selector" or "task-classifier" skill can analyze the node intent + scope and recommend Claude (when feedback/steering expected) vs Codex (pure implementation).
+  - Task-specific skills (e.g. "implementation-patterns") can be activated only for Codex workers.
+  - Feedback-steering skill (already added on this branch) can bias toward Claude.
+- **Hooks** provide per-harness observability:
+  - Claude tool events are richer for real-time steering visibility (owner specifically wants better hooks here).
+  - Codex produces different events; hooks can normalize or surface them differently.
+- **Compaction** must be harness-aware:
+  - Claude sessions (streaming + nudges + feedback) generate more incremental history → needs frequent lean summarization.
+  - Codex one-shots may accumulate large artifacts in one go → different pruning strategy (e.g., focus on diffs + test outputs).
+  - Skills can carry compaction hints ("this is a steering-heavy task → aggressive turn summary").
+
+This directly supports the vision of an agent that can be tagged in for collaborative background work: it intelligently chooses the right tool for the sub-task while still allowing steering when humans give feedback.
+
+We will experiment with this via skills on the branch (additive only).
+
+## Next Iterations Planned on This Branch
+- Add a concrete "harness-selector" skill example.
+- Extend perf baseline to model different context growth rates per harness.
+- Make the active-skills path in PLAN more explicit (still additive).
+- Explore hook points that could help observability differently for each harness.
