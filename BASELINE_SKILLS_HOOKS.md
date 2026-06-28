@@ -227,3 +227,27 @@ We will experiment with this via skills on the branch (additive only).
 - Extend perf baseline to model different context growth rates per harness.
 - Make the active-skills path in PLAN more explicit (still additive).
 - Explore hook points that could help observability differently for each harness.
+
+## Critical Insight: Context Must Be Session-Scoped (from conversation with ro)
+
+You asked ro why "he" didn't like the prior setup. The root problem was **context**.
+
+Key point: "it could [not] determine what context belonged to what session so it literally just didnt know anything."
+
+This is a make-or-break issue for the vision:
+- Beckett is meant to be invited into repos/teams (own GH account).
+- "each server ID gets its own container. so the orgs are separate."
+- It needs to handle multiple concurrent or sequential tasks/sessions across different channels, servers, or collaborators.
+- Feedback, memory, skills, and harness state must stay correctly associated with the *right* session/thread/task.
+- Without this, the agent loses grounding: it can't remember prior feedback for *this* task, can't apply the right skills for *this* context, and "just doesnt know anything."
+
+How this affects skills + hooks + compaction + harness usage:
+- **Skills** must be injectable with explicit session/task scoping, not as a global blob. A skill activated for one background task shouldn't pollute another.
+- **Hooks** are perfect for observability here: they can tag events (tool calls, nudges, feedback) with session identifiers so we can reconstruct "what belonged where".
+- **Compaction** has to be session-aware. You cannot naively summarize across sessions or you destroy the association.
+- **Harness choice** (Claude vs Codex) is per-task/session. A steering/feedback-heavy session should prefer Claude; a pure implementation burst can use Codex — but the context passed to each must be correctly isolated.
+- Current Beckett has some of the pieces (task.channelId, worker.sessionId, per-worker worktrees, memory KG), but the "it literally just didnt know anything" failure mode shows that association logic can easily get lost in practice.
+
+This is why we're prioritizing clean declarative skills + proper hooks: they give us explicit points to enforce and observe session boundaries without rewriting the core orchestrator.
+
+We'll use this lens for all future iterations on the branch.

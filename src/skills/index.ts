@@ -75,14 +75,23 @@ export function loadAllSkills(): LoadedSkill[] {
  * Load only specific active skills by name (additive).
  * If activeNames is empty or undefined, falls back to loadAllSkills (for now).
  * This enables per-node/task skills selection (e.g. from PLAN) without changing defaults.
+ *
+ * sessionId / taskId can be passed for future session-scoped loading
+ * (different sessions/servers must never mix context — this was the fatal flaw
+ *  reported by ro: the agent "literally just didnt know anything" because it
+ *  could not determine what context belonged to what session).
  */
-export function loadActiveSkills(activeNames?: string[]): LoadedSkill[] {
+export function loadActiveSkills(activeNames?: string[], sessionOrTaskId?: string): LoadedSkill[] {
   if (!activeNames || activeNames.length === 0) {
     return loadAllSkills();
   }
   const all = loadAllSkills();
   const nameSet = new Set(activeNames);
   return all.filter(s => nameSet.has(s.name));
+  // TODO (session scoping): when we have per-session skill storage or filtering,
+  // use sessionOrTaskId to ensure we never leak context across sessions.
+  // This was the exact failure mode reported: the agent "literally just didnt know anything"
+  // because it couldn't tell what context belonged to what session.
 }
 
 /**
@@ -111,8 +120,8 @@ export function formatSkillsBlock(skills: LoadedSkill[]): string {
  * Returns "" when there are no skills → completely safe to append unconditionally
  * in existing builders.
  */
-export function loadAndFormatSkills(activeNames?: string[]): string {
-  const skills = loadActiveSkills(activeNames);
+export function loadAndFormatSkills(activeNames?: string[], sessionOrTaskId?: string): string {
+  const skills = loadActiveSkills(activeNames, sessionOrTaskId);
   return formatSkillsBlock(skills);
 }
 

@@ -164,14 +164,15 @@ function buildSystemAppend(
   scopeDesc: string, 
   ownedGlobs: string[], 
   criteria: AcceptanceCriteria,
-  activeSkills?: string[] // additive, from PLAN / NodeRecord
+  activeSkills?: string[], // additive, from PLAN / NodeRecord
+  sessionOrTaskId?: string // additive: explicit session/task id for context scoping
 ): string {
   const owned = ownedGlobs.length ? ownedGlobs.join(", ") : "(your whole worktree)";
   const nl = criteria.nl.length ? criteria.nl.map((c) => `  - ${c}`).join("\n") : "  - (none specified)";
   const checks = criteria.checks.length
     ? `These checks must pass (each must exit 0):\n${criteria.checks.map((c) => `  - ${c}`).join("\n")}\n`
     : "";
-  const skillsBlock = loadAndFormatSkills(activeSkills);
+  const skillsBlock = loadAndFormatSkills(activeSkills, sessionOrTaskId);
   const skillsPart = skillsBlock ? `\n\n${skillsBlock}\n` : "";
 
   return (
@@ -430,7 +431,8 @@ export class DefaultWorkerManager implements WorkerManager {
           node.scope.description, 
           node.scope.ownedGlobs, 
           criteria,
-          node.activeSkills // additive: pass per-node skills if set by PLAN
+          node.activeSkills, // additive: pass per-node skills if set by PLAN
+          node.taskId || undefined // additive: pass task/session id so skills can be properly scoped
         ),
         workspace,
         scope: node.scope,
