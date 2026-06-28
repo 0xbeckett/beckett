@@ -131,24 +131,45 @@
   .legend i{width:18px;height:1px;background:var(--dim);display:inline-block}
   .legend i.c{background:var(--cyan)}
 
-  /* ---------- recursive loop ---------- */
-  .ring{position:relative;width:100%;max-width:600px;aspect-ratio:1;margin:0 auto}
-  .ring svg{width:100%;height:100%;overflow:visible}
-  .ring .track{fill:none;stroke:var(--hair);stroke-width:1.1}
-  .ring .comet{fill:none;stroke:url(#flow);stroke-linecap:round}
-  .ring .comet.c0{stroke-width:2.4;stroke-dasharray:64 880;animation:orbit 8s linear infinite}
-  .ring .comet.c1{stroke-width:2;stroke-dasharray:40 560;animation:orbitr 6s linear infinite}
-  .ring .comet.c2{stroke-width:1.7;stroke-dasharray:26 300;animation:orbit 4.2s linear infinite}
-  @keyframes orbit{to{stroke-dashoffset:-944}}
-  @keyframes orbitr{to{stroke-dashoffset:600}}
-  .ring .tick{fill:var(--bg);stroke:var(--dim);stroke-width:1.1}
-  .ring .tick.sm{stroke:var(--faint)}
-  .ring .label{fill:var(--dim);font-size:8px;letter-spacing:.1em;text-anchor:middle}
-  .ring .spiral{fill:none;stroke:url(#flow);stroke-width:1.3;stroke-linecap:round;stroke-dasharray:5 9;animation:spin 1.4s linear infinite}
-  @keyframes spin{to{stroke-dashoffset:-14}}
-  .ringcore{position:absolute;left:50%;top:50%;width:21%;transform:translate(-50%,-50%);aspect-ratio:99/84}
-  .ringcore svg{width:100%;height:100%;overflow:visible}
-  .ringcore path[stroke]{stroke:var(--lav-soft);fill:none;filter:drop-shadow(0 0 4px var(--lav-glow))}
+  /* ---------- live loop demo (simulated channel) ---------- */
+  .demo{position:relative;width:100%;max-width:580px;margin:0 auto;height:min(74vh,580px);
+    border:1px solid var(--hair);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;
+    background:linear-gradient(180deg,rgba(13,15,28,.72),rgba(8,9,16,.72));backdrop-filter:blur(5px);
+    box-shadow:0 40px 90px -50px rgba(0,0,0,.9)}
+  .demo .dhead{display:flex;align-items:center;gap:8px;padding:13px 16px;border-bottom:1px solid var(--hair);font-size:11px;color:var(--dim);flex:none}
+  .demo .dhead .hd-dot{width:8px;height:8px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan-glow)}
+  .demo .dhead .hash{color:var(--ink)}
+  .demo .feed{position:relative;flex:1;overflow:hidden}
+  .demo .feed::before{content:"";position:absolute;top:0;left:0;right:0;height:54px;z-index:3;pointer-events:none;
+    background:linear-gradient(rgba(11,13,24,.95),rgba(11,13,24,0))}
+  .feedinner{position:absolute;left:18px;right:18px;bottom:16px;display:flex;flex-direction:column;gap:13px}
+
+  .msg{display:flex;gap:10px;align-items:flex-start;opacity:0;transform:translateY(8px);animation:rise .42s var(--ease) forwards}
+  @keyframes rise{to{opacity:1;transform:none}}
+  .msg .av{width:27px;height:27px;border-radius:50%;flex:none;display:grid;place-items:center;overflow:hidden;border:1px solid var(--hair);background:rgba(255,255,255,.02)}
+  .msg .av.you{border-color:rgba(175,162,222,.5);color:var(--lav);font-size:8px;letter-spacing:.04em}
+  .msg .av svg{width:23px;height:23px}
+  .msg .av path[stroke]{stroke:var(--cyan-soft);fill:none}
+  .msg .bd{min-width:0;flex:1}
+  .msg .nm{font-size:11px;margin-bottom:3px;font-weight:600}
+  .msg.you .nm{color:var(--lav)}
+  .msg.beck .nm{color:var(--cyan)}
+  .msg .tx{font-size:13.5px;color:var(--ink);line-height:1.5;white-space:pre-wrap}
+  .msg .tx .cur{display:inline-block;width:7px;height:15px;background:var(--cyan);vertical-align:-2px;margin-left:1px;animation:blink 1s steps(1) infinite}
+
+  .trace{margin:1px 0 1px 37px;border-left:2px solid var(--hair);padding-left:13px;display:flex;flex-direction:column;gap:8px}
+  .tline{display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--dim);opacity:0;transform:translateY(6px);animation:rise .34s var(--ease) forwards}
+  .badge{font-size:9px;letter-spacing:.13em;padding:3px 0;width:78px;text-align:center;border:1px solid var(--hair);border-radius:6px;color:var(--cyan);flex:none}
+  .badge.lav{color:var(--lav);border-color:rgba(175,162,222,.3)}
+  .badge.ok{color:#7fe0bf;border-color:rgba(127,224,191,.3)}
+  .worker{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--dim)}
+  .worker .sp{width:11px;height:11px;border-radius:50%;border:1.6px solid var(--cyan);border-top-color:transparent;animation:spin360 .8s linear infinite;flex:none}
+  .worker.done .sp{border:none;animation:none;width:auto;height:auto}
+  .worker.done .sp::after{content:"✓";color:#7fe0bf;font-size:12px}
+  .worker .wl b{color:var(--ink);font-weight:500}
+  .reason{display:flex;gap:9px;font-size:12px;font-style:italic;color:var(--dim);opacity:0;animation:rise .42s var(--ease) forwards}
+  .reason .mk{color:var(--lav);font-style:normal;flex:none}
+  @keyframes spin360{to{transform:rotate(360deg)}}
 
   /* ---------- pillars ---------- */
   .pillars{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1px;margin-top:56px;background:var(--hair);border:1px solid var(--hair)}
@@ -204,6 +225,8 @@
     .morph .wA{opacity:0}
     .morph .wB{opacity:1}
     .morph .scribble{display:none}
+    .msg,.tline,.reason,.worker{opacity:1!important;transform:none!important}
+    .worker .sp{border-top-color:var(--cyan)!important}
   }
 </style>
 </head>
@@ -286,18 +309,9 @@
   <div class="split">
   <h2 class="lead reveal">Plan. Dispatch. Gate. Ship.<br>Then run it <b class="accent">on itself.</b></h2>
 
-  <div class="ring reveal" id="ring">
-    <svg viewBox="0 0 400 400" aria-hidden="true">
-      <circle class="track" cx="200" cy="200" r="150"/>
-      <circle class="track" cx="200" cy="200" r="96"/>
-      <circle class="track" cx="200" cy="200" r="50"/>
-      <circle class="comet c0" cx="200" cy="200" r="150" transform="rotate(-90 200 200)"/>
-      <circle class="comet c1" cx="200" cy="200" r="96" transform="rotate(-90 200 200)"/>
-      <circle class="comet c2" cx="200" cy="200" r="50" transform="rotate(-90 200 200)"/>
-      <g id="ticks"></g>
-      <g id="spirals"></g>
-    </svg>
-    <div class="ringcore" id="ringcore"></div>
+  <div class="demo reveal" id="demo">
+    <div class="dhead"><span class="hd-dot"></span><span class="hash">#eng</span><span>· beckett is in this channel</span></div>
+    <div class="feed"><div class="feedinner" id="feed"></div></div>
   </div>
   </div>
 </section>
@@ -365,7 +379,7 @@
     var glyphHTML = src.outerHTML;
 
     buildRecursion(glyphHTML);
-    buildLoop(glyphHTML);
+    buildDemo(glyphHTML);
   }
 
   /* ---------------- recursive hero: form a face, then fall into it ---------------- */
@@ -460,55 +474,107 @@
     requestAnimationFrame(frame);
   }
 
-  /* ---------------- recursive loop: loops within loops, beckett at the core ------- */
-  function buildLoop(glyphHTML){
-    var core = document.getElementById("ringcore");
-    if(core) core.innerHTML = glyphHTML;
+  /* ---------------- live loop demo: a simulated channel running the loop ---------- */
+  function buildDemo(glyphHTML){
+    var feed = document.getElementById("feed");
+    if(!feed) return;
+    var avatar = '<span class="av beck">'+glyphHTML+'</span>';
+    function sleep(ms){ return new Promise(function(r){ setTimeout(r,ms); }); }
 
-    var ticks = document.getElementById("ticks");
-    var spirals = document.getElementById("spirals");
-    var cx=200, cy=200;
-
-    var outer = ["intake","plan","staff","dispatch","supervise","integrate","gate","deliver"];
-    placeTicks(outer, 150, true);
-    placeTicks(["","","","","","","",""], 96, false);
-    placeTicks(["","","","",""], 50, false);
-
-    function placeTicks(states, R, labelled){
-      states.forEach(function(s,i){
-        var a = (-90 + i*(360/states.length)) * Math.PI/180;
-        var x = cx + R*Math.cos(a), y = cy + R*Math.sin(a);
-        var c = document.createElementNS("http://www.w3.org/2000/svg","circle");
-        c.setAttribute("class", labelled ? "tick" : "tick sm");
-        c.setAttribute("cx",x); c.setAttribute("cy",y); c.setAttribute("r", labelled?5:3.2);
-        ticks.appendChild(c);
-        if(labelled && s){
-          var lx = cx + (R+22)*Math.cos(a), ly = cy + (R+22)*Math.sin(a);
-          var t = document.createElementNS("http://www.w3.org/2000/svg","text");
-          t.setAttribute("class","label"); t.setAttribute("x",lx); t.setAttribute("y",ly+3);
-          if(lx < cx-30) t.setAttribute("text-anchor","end");
-          else if(lx > cx+30) t.setAttribute("text-anchor","start");
-          t.textContent = s.toUpperCase();
-          ticks.appendChild(t);
-        }
-      });
+    function row(html, cls){
+      var d = document.createElement("div");
+      if(cls) d.className = cls;
+      d.innerHTML = html;
+      feed.appendChild(d);
+      return d;
+    }
+    // a chat message; types out its text, returns when done
+    async function msg(who, name, text){
+      var av = who==="you" ? '<span class="av you">YOU</span>' : avatar;
+      var d = row('<div class="msg '+(who==="you"?"you":"beck")+'">'+av+'<div class="bd"><div class="nm">'+name+'</div><div class="tx"></div></div></div>');
+      var tx = d.querySelector(".tx");
+      if(reduce){ tx.textContent = text; return; }
+      tx.innerHTML = '<span class="cur"></span>';
+      var cur = tx.querySelector(".cur");
+      for(var i=0;i<text.length;i++){
+        cur.insertAdjacentText("beforebegin", text[i]);
+        await sleep(text[i]===" " ? 14 : 20);
+      }
+      cur.remove();
+    }
+    function trace(){ return row('', "trace"); }
+    function tline(box, badge, badgeCls, text){
+      var b = document.createElement("div"); b.className="tline";
+      b.innerHTML = '<span class="badge '+(badgeCls||"")+'">'+badge+'</span><span class="tt">'+text+'</span>';
+      box.appendChild(b); return b;
+    }
+    function worker(box, name){
+      var w = document.createElement("div"); w.className="worker tline";
+      w.innerHTML = '<span class="sp"></span><span class="wl">'+name+'</span>';
+      box.appendChild(w);
+      return { el:w, done:function(){ w.classList.add("done"); } };
+    }
+    function reason(box, text){
+      var r = document.createElement("div"); r.className="reason";
+      r.innerHTML = '<span class="mk">‹thinking›</span><span>'+text+'</span>';
+      box.appendChild(r); return r;
     }
 
-    // two spiral connectors: each loop spawns the next one inward (recursion)
-    [0, Math.PI].forEach(function(phase){
-      var d = "M ", pts = [];
-      for(var step=0; step<=40; step++){
-        var f = step/40;
-        var ang = phase + f * Math.PI * 1.6;
-        var rad = 150 - f*(150-50);
-        pts.push((cx + rad*Math.cos(ang)).toFixed(1) + " " + (cy + rad*Math.sin(ang)).toFixed(1));
-      }
-      var path = document.createElementNS("http://www.w3.org/2000/svg","path");
-      path.setAttribute("class","spiral");
-      path.setAttribute("d", "M " + pts.join(" L "));
-      path.setAttribute("opacity","0.5");
-      spirals.appendChild(path);
-    });
+    async function cycle(){
+      feed.innerHTML = "";
+
+      await msg("you","you","@beckett signup form throws on slow networks — can you fix it?");
+      await sleep(500);
+      await msg("beck","beckett","on it. reproducing first.");
+      await sleep(450);
+
+      var t = trace();
+      reason(t, "the retry path only catches network errors, not 5xx. that's the bug.");
+      await sleep(900);
+      tline(t,"PLAN","lav","3-node DAG · acceptance criteria written");
+      await sleep(650);
+      tline(t,"STAFF","lav","claude ×2 · codex ×1 — granularity to match");
+      await sleep(650);
+      tline(t,"DISPATCH","","3 workers, isolated worktrees");
+      await sleep(300);
+      var w1 = worker(t,"claude · fix the retry path");
+      await sleep(180); var w2 = worker(t,"codex · add a slow-network test");
+      await sleep(180); var w3 = worker(t,"claude · harden the error toast");
+      await sleep(1100); w2.done();
+      await sleep(500);
+      tline(t,"SUPERVISE","","worker 3 drifting out of scope → nudged back");
+      await sleep(500); w1.done();
+      await sleep(450); w3.done();
+      await sleep(500);
+      tline(t,"INTEGRATE","","merged 3 branches · reconciled interfaces");
+      await sleep(700);
+      tline(t,"GATE","ok","tests green · adversarial review pass ✓");
+      await sleep(800);
+      await msg("beck","beckett","shipped to a branch. PR's up — review or merge?");
+      await sleep(1500);
+
+      // ...then run it on itself
+      await msg("you","you","merge it. also — can you make your own intake faster?");
+      await sleep(500);
+      await msg("beck","beckett","ha. staffing a copy of myself on my own code.");
+      await sleep(450);
+      var t2 = trace();
+      tline(t2,"DISPATCH","lav","beckett → beckett");
+      await sleep(280);
+      var ws = worker(t2,"beckett · refactoring its own intake");
+      await sleep(1500); ws.done();
+      await sleep(400);
+      tline(t2,"GATE","ok","self-review pass · ~30% faster ✓");
+      await sleep(800);
+      await msg("beck","beckett","done. intake's snappier now, and I logged what worked.");
+      await sleep(3600);
+    }
+
+    async function run(){
+      if(reduce){ await cycle(); return; }
+      while(true){ await cycle(); }
+    }
+    run();
   }
 
   /* ---------------- the voice: first-person quips, typed ---------------- */
