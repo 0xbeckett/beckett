@@ -8,6 +8,12 @@
 >
 > Status: **draft v0.1** · Last updated 2026-06-27 · Owner: Jason
 > Anchor: [Spec 00 — Overview & Canon](./00-overview.md) (phasing §8, filesystem §5, decisions §4).
+>
+> 🟢 **§1.1–§1.5 EXECUTED on loom-desk 2026-06-27** — beckett user + both harnesses installed & authed
+> (auth **copied** from the `claude` user, zero re-auth). See
+> [`../my-docs/loom-desk-setup-log.md`](../my-docs/loom-desk-setup-log.md) for the actual run + 4 spec
+> corrections (codex stdin-hang, `--ask-for-approval` not an exec flag, Ubuntu-24.04 userns sysctl,
+> PATH). Still TODO: 🔑 identity provisioning (§1.6), Risk-A nudge smoke-test (§4).
 > Research: [`../my-docs/`](../my-docs/) — [00-synthesis.md](../my-docs/00-synthesis.md) (loom-desk
 > facts), [claude-code-headless.md](../my-docs/claude-code-headless.md),
 > [codex-exec.md](../my-docs/codex-exec.md), [open-questions.md](../my-docs/open-questions.md).
@@ -129,8 +135,12 @@ curl -fsSL https://codex.openai.com/install.sh | bash     # or: npm i -g @openai
 codex --version                                           # expect codex-cli 0.142.3 or newer
 codex login            # OAuth against Jason's ChatGPT/Codex subscription; device/paste flow as above
 # verify (autonomous one-shot, no hang — also doubles as Risk-B smoke test, §4):
-cd /tmp && codex exec --sandbox workspace-write --ask-for-approval never --json \
-  "write hello to ./codex-auth-ok.txt then stop" && cat /tmp/codex-auth-ok.txt
+# ⚠️ CORRECTED for codex 0.142.3 (see my-docs/loom-desk-setup-log.md):
+#   - `--ask-for-approval` is NOT a `codex exec` flag (it's top-level) → omit it; exec is non-interactive.
+#   - codex exec READS STDIN even with a prompt arg → MUST redirect `</dev/null` or it hangs.
+#   - Ubuntu 24.04 needs `kernel.apparmor_restrict_unprivileged_userns=0` or bwrap sandbox fails.
+cd "$HOME" && codex exec --sandbox workspace-write --skip-git-repo-check </dev/null \
+  "create codex-ok.txt containing hello, then stop" && cat "$HOME/codex-ok.txt"
 ```
 
 > Credentials land in `~/.codex`. Back it up alongside `~/.claude`. Keep `harness.codex.enabled =
