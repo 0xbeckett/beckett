@@ -14,7 +14,8 @@ import { mkdirSync, appendFileSync, writeFileSync, readFileSync, existsSync } fr
 import { join } from "node:path";
 import { createDriver } from "../drivers/index.ts";
 import { createWorktree, mergeBranch, commitWorktree, readDiffStat, excludeFromGit } from "../worker/worktree.ts";
-import { scopeGuardSettings } from "../hooks/scope-guard.ts";
+import { scopeGuardSpec } from "../hooks/scope-guard.ts";
+import { renderClaudeSettings } from "../hooks/registry.ts";
 import { workerId as mintWorkerId } from "../ids.ts";
 import type {
   Config,
@@ -383,7 +384,7 @@ export class Registry {
   private writeScopeGuard(workspace: string, owned: string[]): void {
     try {
       const scriptPath = join(import.meta.dir, "..", "hooks", "scope-guard.ts");
-      const settings = scopeGuardSettings(scriptPath, workspace, owned);
+      const settings = renderClaudeSettings([scopeGuardSpec(scriptPath, workspace, owned)]);
       const dir = join(workspace, ".claude");
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "settings.json"), JSON.stringify(settings, null, 2));

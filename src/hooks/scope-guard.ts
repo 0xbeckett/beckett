@@ -260,28 +260,23 @@ export function scopeGuardEnv(workspace: string, owned: string[]): Record<string
 }
 
 /**
- * Produce the claude settings object that registers this hook for a worker. Bakes the root +
- * owned globs into the command args so the hook is self-contained (no env dependency). The
- * WorkerManager writes this to `<workspace>/.claude/settings.json` (auto-loaded from cwd).
+ * Return the {@link HookSpec} that registers this hook for a worker. Bakes the root +
+ * owned globs into the command args so the hook is self-contained (no env dependency).
+ * Pass to {@link renderClaudeSettings} in manager.ts to produce the settings JSON.
  */
-export function scopeGuardSettings(
+export function scopeGuardSpec(
   scopeGuardScriptPath: string,
   workspace: string,
   owned: string[],
-): { hooks: { PreToolUse: unknown[] } } {
+): import("./registry.ts").HookSpec {
   const command =
     `bun ${JSON.stringify(scopeGuardScriptPath)} ` +
     `--root ${JSON.stringify(workspace)} ` +
     `--owned ${JSON.stringify(owned.join(GLOB_SEP))}`;
   return {
-    hooks: {
-      PreToolUse: [
-        {
-          matcher: "Edit|Write|MultiEdit|NotebookEdit|Bash",
-          hooks: [{ type: "command", command }],
-        },
-      ],
-    },
+    event: "PreToolUse",
+    matcher: "Edit|Write|MultiEdit|NotebookEdit|Bash",
+    command,
   };
 }
 

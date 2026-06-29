@@ -56,7 +56,8 @@ import {
   readDiffStat,
   excludeFromGit,
 } from "./worktree.ts";
-import { scopeGuardSettings } from "../hooks/scope-guard.ts";
+import { scopeGuardSpec } from "../hooks/scope-guard.ts";
+import { renderClaudeSettings } from "../hooks/registry.ts";
 
 // =======================================================================================
 // Injected collaborators
@@ -566,7 +567,7 @@ export class DefaultWorkerManager implements WorkerManager {
     mkdirSync(dirname(settingsPath), { recursive: true });
     writeFileSync(
       settingsPath,
-      JSON.stringify(scopeGuardSettings(this.scopeGuardPath, workspace, ownedGlobs), null, 2),
+      JSON.stringify(renderClaudeSettings([scopeGuardSpec(this.scopeGuardPath, workspace, ownedGlobs)]), null, 2),
     );
 
     const doneSchemaPath = join(workspace, ".beckett", "done-schema.json");
