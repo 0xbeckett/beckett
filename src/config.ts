@@ -166,7 +166,7 @@ const ConfigSchema = z
       .default({}),
     identity: z
       .object({
-        github_user: z.string().default("beckett-bot"),
+        github_user: z.string().default("0xbeckett"),
         gmail_address: z.string().default(""),
         poll_inbox_s: nonNegInt.default(120),
         auto_merge: z.boolean().default(false),

@@ -375,8 +375,12 @@ export class GitHubCli implements GitHubClient {
     if (r.code !== 0) {
       throw new Error(`gh repo create failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
     }
-    const nameWithOwner = p.name.includes("/") ? p.name : `${this.opts.account}/${p.name}`;
-    const url = (r.stdout.match(/https?:\/\/\S+/) ?? [`${this.gitHost()}/${nameWithOwner}`])[0].trim();
+    const url = (r.stdout.match(/https?:\/\/\S+/) ?? [
+      `${this.gitHost()}/${p.name.includes("/") ? p.name : `${this.opts.account}/${p.name}`}`,
+    ])[0].trim();
+    // Trust the URL gh printed for the real owner/name (the token's account may differ from config).
+    const owned = url.match(/[^/]+\/[^/]+$/);
+    const nameWithOwner = owned ? owned[0].replace(/\.git$/, "") : p.name;
     this.opts.logger.info("repo created", { repo: nameWithOwner, url });
     return { nameWithOwner, url };
   }
