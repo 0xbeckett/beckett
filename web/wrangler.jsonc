@@ -6,7 +6,9 @@
     "not_found_handling": "single-page-application"
   },
   "routes": [
-    { "pattern": "beckett.frgmt.xyz", "custom_domain": true }
+    { "pattern": "beckett.frgmt.xyz", "custom_domain": true },
+    { "pattern": "0xbeckett.me", "custom_domain": true },
+    { "pattern": "www.0xbeckett.me", "custom_domain": true }
   ],
   "observability": { "enabled": true }
 }
