@@ -19,6 +19,7 @@ import { callBus } from "../shell/control-bus.ts";
 import { createMemory } from "../memory/index.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { CfDns } from "../agency/cloudflare.ts";
+import { CodexImageGen } from "../agency/imagegen.ts";
 import { TunnelDeployer } from "../shell/deploy.ts";
 import { loadAccess, grantAccess, revokeAccess, ACCESS_CAP } from "../discord/access.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
@@ -351,6 +352,28 @@ async function main(): Promise<void> {
     fail("usage: beckett deploy <name> --port <p> | deploy ls | deploy rm <name>");
   }
 
+  // ── image (in-process: wraps the Codex image_gen tool into one deterministic command) ─────
+  if (group === "image") {
+    const { _, flags } = parse([sub, ...rest].filter(Boolean) as string[]);
+    const prompt = _.join(" ").trim();
+    if (!prompt)
+      fail(
+        'usage: beckett image "<prompt>" [--out <path>] [--size 1024x1024|1536x1024|1024x1536|auto] [--ref <file[,file]>] [--transparent] [--model <m>]',
+      );
+    const refs = flags.ref ? String(flags.ref).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+    const gen = new CodexImageGen({ imagesDir: paths.imagesDir, logger: quietLogger });
+    out(
+      await gen.generate({
+        prompt,
+        out: flags.out ? String(flags.out) : undefined,
+        size: flags.size ? String(flags.size) : undefined,
+        refs,
+        transparent: flags.transparent === true || flags.transparent === "true",
+        model: flags.model ? String(flags.model) : undefined,
+      }),
+    );
+  }
+
   // ── access (in-process: whitelist manipulation, no control bus) ──────────────────────────
   if (group === "access") {
     const ownerId = process.env.DISCORD_OWNER_ID;
@@ -442,7 +465,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: inject | status | reload | persona | access ls|grant|revoke | discord reply | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: inject | status | reload | persona | access ls|grant|revoke | discord reply | image | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 main().catch((err) => fail((err as Error).message));
