@@ -17,13 +17,14 @@ import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { log as rootLog, makeLogger } from "../log.ts";
 import { createDiscordGateway } from "../discord/gateway.ts";
+import { downloadAttachments, formatAttachmentManifest } from "../discord/attachments.ts";
 import { serveBus, type BusRequest, type BusResponse } from "./control-bus.ts";
 import { ParentSupervisor } from "./parent.ts";
 import { Registry, type SpawnArgs } from "./registry.ts";
 import { FlowRunner } from "./flow.ts";
 import { AmbientPump } from "./ambient.ts";
 import { randomUUID } from "node:crypto";
-import type { DiscordGateway } from "../types.ts";
+import type { DiscordGateway, IncomingMessage } from "../types.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 
@@ -131,6 +132,49 @@ async function main(): Promise<void> {
     }
   }
 
+  // Per-channel inject ordering: downloading attachments makes injectMention async, so a
+  // mention with a big file could otherwise land AFTER a later text-only mention in the same
+  // channel. We chain each channel's injects so the parent always sees a conversation in
+  // arrival order. Cross-channel stays concurrent (a slow download in #a never stalls #b).
+  const injectChains = new Map<string, Promise<void>>();
+  function injectOrdered(m: IncomingMessage): void {
+    const prev = injectChains.get(m.channelId) ?? Promise.resolve();
+    const next = prev.then(() => injectMention(m)).catch((err) =>
+      logger.warn("injectMention failed", { messageId: m.messageId, error: String(err) }),
+    );
+    injectChains.set(m.channelId, next);
+    // Drop the chain entry once it settles and nothing newer has replaced it (avoid a leak).
+    void next.finally(() => {
+      if (injectChains.get(m.channelId) === next) injectChains.delete(m.channelId);
+    });
+  }
+
+  /**
+   * Wake the parent for a direct mention, downloading any attachments first so their local
+   * paths ride along in the injected line. Best-effort: a download failure degrades to a note
+   * in the manifest and the text still gets through — a bad upload never swallows the message.
+   */
+  async function injectMention(m: IncomingMessage): Promise<void> {
+    const head = `[discord channel=${m.channelId} user=${m.userId}] ${stripMention(m.content)}`;
+    if (m.attachments.length === 0) {
+      parent.inject(head);
+      return;
+    }
+    let manifest = "";
+    try {
+      const downloaded = await downloadAttachments(m.attachments, {
+        attachmentsDir: paths.attachmentsDir,
+        messageId: m.messageId,
+        logger: logger.child("attachments"),
+      });
+      manifest = formatAttachmentManifest(downloaded);
+    } catch (err) {
+      // downloadAttachments is already best-effort, but belt-and-suspenders: never drop the msg.
+      logger.warn("attachment handling failed; injecting text only", { error: String(err) });
+    }
+    parent.inject(manifest ? `${head}\n${manifest}` : head);
+  }
+
   if (!noDiscord) {
     gateway = createDiscordGateway({ config, logger: logger.child("discord") });
     try {
@@ -143,7 +187,10 @@ async function main(): Promise<void> {
           // Direct address: show typing immediately, surface overheard context, wake the parent.
           startTyping(m.channelId);
           ambient.flush(m.channelId);
-          parent.inject(`[discord channel=${m.channelId} user=${m.userId}] ${stripMention(m.content)}`);
+          // Attachments (images / txt / pdf / md / anything) are pulled down locally so the
+          // parent can Read them; that download is async + best-effort. injectOrdered preserves
+          // per-channel arrival order despite the async download.
+          injectOrdered(m);
           return;
         }
         // Overheard chatter: batched + handed over only if ambient mode is on.

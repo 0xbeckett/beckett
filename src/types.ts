@@ -704,6 +704,19 @@ export interface BrainContext {
 // SECTION 10 — Discord interface (Spec 05)
 // =======================================================================================
 
+/**
+ * A file attached to an inbound Discord message (image / txt / pdf / md / anything).
+ * Captured raw from the gateway; the shell downloads it locally so Beckett can `Read` it
+ * (the parent loop is multimodal — image/pdf/text all go through the Read tool).
+ */
+export interface IncomingAttachment {
+  id: string; // Discord attachment snowflake
+  name: string; // original filename (e.g. "diagram.png")
+  url: string; // CDN url to fetch the bytes
+  contentType: string | null; // MIME from Discord (may be null for some uploads)
+  size: number; // bytes, as reported by Discord
+}
+
 /** A captured inbound Discord message (Spec 05 §2.1). */
 export interface IncomingMessage {
   messageId: string;
@@ -715,6 +728,7 @@ export interface IncomingMessage {
   mentionsBot: boolean;
   authorIsBot: boolean;
   createdAt: number;
+  attachments: IncomingAttachment[]; // files dragged into the message (empty when none)
 }
 
 /** What an outstanding question is waiting for (Spec 05 §4.1). */
@@ -1311,6 +1325,7 @@ export interface Paths {
   configFile: string; // <beckettDir>/config.toml
   envFile: string; // <beckettDir>/.env
   personaFile: string; // <beckettDir>/persona.md
+  attachmentsDir: string; // <beckettDir>/attachments — downloaded Discord attachments
 }
 
 /** The full validated config (Spec 01 §4). Every key has a default so an empty config boots. */

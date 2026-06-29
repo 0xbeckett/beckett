@@ -295,6 +295,16 @@ export class DiscordJsGateway implements DiscordGateway {
       mentionsBot: isDM || directMention,
       authorIsBot: msg.author.bot,
       createdAt: msg.createdTimestamp,
+      // Every file dragged into the message (images, txt, pdf, md, anything). The shell
+      // downloads these locally so the parent can Read them; the gateway just captures the
+      // refs (Spec 05 §2.1 extended). `.contentType` is null for some uploads — keep as-is.
+      attachments: [...msg.attachments.values()].map((a) => ({
+        id: a.id,
+        name: a.name,
+        url: a.url,
+        contentType: a.contentType ?? null,
+        size: a.size,
+      })),
     };
   }
 

@@ -1,0 +1,162 @@
+/**
+ * Beckett — Discord attachment ingestion (`src/discord/attachments.ts`)
+ * =======================================================================================
+ * Discord messages can carry files — images, .txt, .pdf, .md, anything someone drags in.
+ * The gateway captures their refs ({@link IncomingAttachment}); this module pulls the bytes
+ * down to a local scratch dir so the parent loop can **Read** them. That's the whole trick:
+ * the inject pipeline is text-only and the parent is already multimodal via its Read tool
+ * (images render, PDFs paginate, text inlines) — so we don't stream bytes through the prompt,
+ * we hand the parent a local path and a one-line manifest and let it decide what to open.
+ *
+ * Design rules (mirrors the gateway's "dumb pipe, never crash" posture, Spec 05 §7/§9.2):
+ *  - **Best-effort, never throws.** A failed/oversized/timed-out download becomes an `error`
+ *    entry in the manifest, not an exception — a bad upload must never break message handling.
+ *  - **Path-traversal safe.** The Discord filename is untrusted; we sanitize to a basename and
+ *    namespace every message under its own `<attachmentsDir>/<messageId>/` dir so two files
+ *    named `notes.md` from different messages can't collide or overwrite.
+ *  - **Bounded.** A per-file size cap and a fetch timeout keep a hostile/huge upload from
+ *    wedging the daemon or filling the disk.
+ */
+
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, basename, extname } from "node:path";
+import type { IncomingAttachment, Logger } from "../types.ts";
+
+/** Per-file ceiling. Discord's own default upload cap is 25 MiB; we allow a little headroom. */
+export const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+
+/** How long to wait on a single CDN fetch before giving up (best-effort, never hangs). */
+const FETCH_TIMEOUT_MS = 30_000;
+
+/** Outcome of trying to localize one attachment. Discriminated on `ok`. */
+export type DownloadedAttachment =
+  | {
+      ok: true;
+      name: string; // sanitized basename actually written
+      localPath: string; // absolute path the parent can Read
+      contentType: string | null;
+      size: number; // bytes actually written
+    }
+  | {
+      ok: false;
+      name: string; // original (unsanitized) name, for the human-readable manifest
+      url: string; // kept so the parent could still fetch it manually if it wants
+      reason: string; // why it failed (oversized / fetch error / timeout)
+    };
+
+export interface DownloadOptions {
+  /** Root dir for downloads; each message gets a `<root>/<messageId>/` subdir. */
+  attachmentsDir: string;
+  /** The message these belong to — namespaces the subdir + avoids cross-message collisions. */
+  messageId: string;
+  logger?: Logger;
+  /** Override the per-file cap (tests). */
+  maxBytes?: number;
+}
+
+/**
+ * Reduce an untrusted Discord filename to a safe basename. Strips any directory components
+ * and characters that have no business in a filename, preserving the extension so the parent's
+ * Read tool (and the human) can still tell a `.pdf` from a `.png`. Falls back to `file<ext>`.
+ */
+export function safeFilename(raw: string): string {
+  // basename() kills any `../` or absolute-path games before we ever touch the FS.
+  const base = basename(raw).replace(/[^\w.\- ]+/g, "_").trim();
+  if (base && base !== "." && base !== "..") return base.slice(0, 200);
+  const ext = extname(raw).replace(/[^\w.]+/g, "");
+  return `file${ext || ""}`;
+}
+
+/**
+ * Download every attachment on a message to `<attachmentsDir>/<messageId>/`, best-effort.
+ * Returns one result per input (same order), `ok:false` for any that couldn't be localized.
+ * Never throws — the caller (the shell pump) must stay alive regardless of a bad upload.
+ */
+export async function downloadAttachments(
+  attachments: IncomingAttachment[],
+  opts: DownloadOptions,
+): Promise<DownloadedAttachment[]> {
+  if (attachments.length === 0) return [];
+  const maxBytes = opts.maxBytes ?? MAX_ATTACHMENT_BYTES;
+  const destDir = join(opts.attachmentsDir, opts.messageId);
+
+  try {
+    await mkdir(destDir, { recursive: true });
+  } catch (err) {
+    // If we can't even make the dir, fail them all gracefully rather than throwing.
+    opts.logger?.warn("could not create attachments dir", { destDir, error: String(err) });
+    return attachments.map((a) => ({ ok: false, name: a.name, url: a.url, reason: "no scratch dir" }));
+  }
+
+  // Download in parallel — they're independent CDN fetches; one failing must not block the rest.
+  return Promise.all(
+    attachments.map((a) => downloadOne(a, destDir, maxBytes, opts.logger)),
+  );
+}
+
+/** Localize a single attachment. Resolves to a result; never rejects. */
+async function downloadOne(
+  a: IncomingAttachment,
+  destDir: string,
+  maxBytes: number,
+  logger?: Logger,
+): Promise<DownloadedAttachment> {
+  // Trust Discord's declared size as a cheap pre-flight reject before spending a fetch.
+  if (a.size > maxBytes) {
+    return { ok: false, name: a.name, url: a.url, reason: `too large (${humanBytes(a.size)} > ${humanBytes(maxBytes)})` };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(a.url, { signal: controller.signal });
+    if (!res.ok) {
+      return { ok: false, name: a.name, url: a.url, reason: `fetch ${res.status}` };
+    }
+    // Reject by Content-Length BEFORE buffering the body — a hostile/misconfigured source could
+    // declare a small `a.size` but stream a huge body; this stops the OOM before arrayBuffer().
+    const declared = Number(res.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      return { ok: false, name: a.name, url: a.url, reason: `too large (${humanBytes(declared)})` };
+    }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    // Re-check against the actual bytes — declared size can lie / be absent.
+    if (buf.byteLength > maxBytes) {
+      return { ok: false, name: a.name, url: a.url, reason: `too large (${humanBytes(buf.byteLength)})` };
+    }
+    const filename = safeFilename(a.name);
+    const localPath = join(destDir, filename);
+    await writeFile(localPath, buf);
+    logger?.info("attachment downloaded", { name: filename, bytes: buf.byteLength, type: a.contentType });
+    return { ok: true, name: filename, localPath, contentType: a.contentType, size: buf.byteLength };
+  } catch (err) {
+    const reason = controller.signal.aborted ? "timeout" : String((err as Error).message ?? err);
+    logger?.warn("attachment download failed", { name: a.name, reason });
+    return { ok: false, name: a.name, url: a.url, reason };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Build the text block appended to the injected message line so the parent SEES the files and
+ * knows it can open them. Kept terse and explicit: local paths for the ones we got, a short
+ * note for the ones we didn't. Returns "" when there were no attachments (caller appends raw).
+ */
+export function formatAttachmentManifest(results: DownloadedAttachment[]): string {
+  if (results.length === 0) return "";
+  const lines = results.map((r) =>
+    r.ok
+      ? `  • ${r.name} (${r.contentType ?? "unknown type"}, ${humanBytes(r.size)}) → Read: ${r.localPath}`
+      : `  • ${r.name} — couldn't fetch (${r.reason}); url: ${r.url}`,
+  );
+  const got = results.filter((r) => r.ok).length;
+  return `[${results.length} attachment${results.length === 1 ? "" : "s"}, ${got} saved locally — use your Read tool to open them:\n${lines.join("\n")}]`;
+}
+
+/** Compact human bytes for logs/manifest (e.g. "240 KB", "1.2 MB"). */
+function humanBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
