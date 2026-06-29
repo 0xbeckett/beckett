@@ -231,6 +231,14 @@ export class FlowRunner {
           const key = nextKey("i");
           if (cached.has(key)) return cached.get(key);
           const res = await this.registry.integrate(workerIds, targetBranch);
+          const conflicts = Array.isArray(res)
+            ? (res as Array<{ branch?: string; conflicted?: boolean }>).filter((r) => r && r.conflicted)
+            : [];
+          if (conflicts.length) {
+            this.onSignal(
+              `[flow ${opts.runId}] integrate CONFLICT: ${conflicts.map((c) => c.branch).join(", ")} → ${targetBranch} (needs manual resolve)`.slice(0, 200),
+            );
+          }
           record(key, "integrate", res);
           return res;
         },

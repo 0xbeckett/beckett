@@ -13,7 +13,7 @@
 import { mkdirSync, appendFileSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createDriver } from "../drivers/index.ts";
-import { createWorktree, mergeBranch, commitWorktree, readDiffStat } from "../worker/worktree.ts";
+import { createWorktree, mergeBranch, commitWorktree, readDiffStat, excludeFromGit } from "../worker/worktree.ts";
 import { scopeGuardSettings } from "../hooks/scope-guard.ts";
 import { workerId as mintWorkerId } from "../ids.ts";
 import type {
@@ -123,6 +123,11 @@ export class Registry {
     const baseRef = a.baseRef ?? "HEAD";
     const baseSha = await resolveRef(a.repoRoot, baseRef);
     await createWorktree({ repoRoot: a.repoRoot, workspace, branch, baseRef });
+
+    // Keep Beckett's per-worktree tooling out of git so it never gets committed into the worker's
+    // branch (and thus never conflicts when several branches integrate — the scope-guard settings
+    // would otherwise add/add-conflict on the 2nd merge).
+    await excludeFromGit(workspace, [".claude/settings.json", ".beckett/"]);
 
     // Install the per-worktree scope-guard PreToolUse hook (Spec 04 §3).
     this.writeScopeGuard(workspace, a.scope.ownedGlobs);
