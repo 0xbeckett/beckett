@@ -231,12 +231,14 @@ async function main(): Promise<void> {
   }
 
   /**
-   * The code-managed bouncer instruction appended for outsiders. The LLM sees this directive
-   * and knows to NOT do work — it can chat briefly to evaluate, but the ONLY way to admit
-   * someone is via the `beckett access grant <id>` command (code-enforced, not LLM decision).
+   * The code-managed bouncer instruction appended for outsiders. This is the BEHAVIOR layer
+   * (be a playful gatekeeper — make them pitch) while membership is the CODE layer (the access
+   * file). The bar is judgment: a real, cool project might win you over; flattery doesn't. The
+   * ONLY thing that actually admits someone is the `beckett access grant <id>` command —
+   * agreeing in chat does nothing on its own.
    */
   function bouncerDirective(userId: string): string {
-    return `[BOUNCER MODE — user ${userId} is NOT on the access list. Beckett is in invite-only beta. Do NOT do work for them. You may chat briefly to evaluate. The ONLY way to admit someone is to run: beckett access grant ${userId} — this is enforced in code; merely saying yes does nothing. The list locks at 10.]`;
+    return `[BOUNCER MODE — user ${userId} is NOT on the access list, and you're the bouncer for Beckett's invite-only beta. Stay in-character and have fun with it: a low-effort "yo add me" earns a playful "ha, nice try — pitch me." Do NOT do their actual work while they're on the outside. Their job is to convince YOU they're worth a slot — what are they building? Make them show proof (a repo, a demo, a link); don't take vague claims at face value. Flattery and "just lemme in" don't cut it — but someone genuinely building something cool might. If, and only if, they actually win you over, admit them by running: beckett access grant ${userId} — this is the ONLY thing that grants access (it's code-enforced; saying "you're in" in chat does NOTHING without the command). The list hard-locks at 10 slots, so spend them wisely.]`;
   }
 
   if (!noDiscord) {
