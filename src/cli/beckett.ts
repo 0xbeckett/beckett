@@ -374,6 +374,43 @@ async function main(): Promise<void> {
     );
   }
 
+  // ── site (in-process: deploy Beckett's own edge site via wrangler, token from env) ────────
+  if (group === "site") {
+    const { flags } = parse([sub, ...rest].filter(Boolean) as string[]);
+    const repoRoot = join(import.meta.dir, "..", "..");
+    const dir = flags.dir ? resolve(String(flags.dir)) : join(repoRoot, "web");
+    if (sub === "deploy") {
+      if (!process.env.CLOUDFLARE_API_TOKEN)
+        fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare is unavailable");
+      if (!existsSync(join(dir, "wrangler.jsonc")) && !existsSync(join(dir, "wrangler.toml")))
+        fail(`no wrangler config in ${dir}`);
+      // wrangler reads CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID from env → never needs
+      // `wrangler login`. Ensure the toolchain bins are on PATH for the spawned process.
+      const home = process.env.HOME ?? "";
+      const env: Record<string, string> = { ...process.env } as Record<string, string>;
+      const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");
+      env.PATH = env.PATH ? `${extra}:${env.PATH}` : extra;
+      const proc = Bun.spawn(["wrangler", "deploy"], {
+        cwd: dir,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        env,
+      });
+      const [so, se] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      const code = await proc.exited;
+      const text = `${so}\n${se}`;
+      if (code !== 0)
+        fail(`wrangler deploy failed (${code}):\n${text.trim().split("\n").slice(-20).join("\n")}`);
+      const urls = [...text.matchAll(/https?:\/\/[^\s]+/g)].map((m) => m[0]);
+      out({ deployed: true, dir, urls, log: text.trim().split("\n").slice(-12).join("\n") });
+    }
+    fail("usage: beckett site deploy [--dir <path>]");
+  }
+
   // ── access (in-process: whitelist manipulation, no control bus) ──────────────────────────
   if (group === "access") {
     const ownerId = process.env.DISCORD_OWNER_ID;
@@ -465,7 +502,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: inject | status | reload | persona | access ls|grant|revoke | discord reply | image | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: inject | status | reload | persona | access ls|grant|revoke | discord reply | image | site deploy | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 main().catch((err) => fail((err as Error).message));

@@ -141,6 +141,10 @@ Grep are for inline work, git, and editing your memory markdown directly.
 - `beckett gh repo create <name> [--public] [--source <dir>] [--push]` · `gh push --repo <r> --branch <b>`
 - `gh pr create|merge|status|review <num> --repo <owner/name> …`
 
+**Your own site (see the `site` skill — the apex `0xbeckett.me`, edge-deployed):**
+- edit `web/public/*` then `beckett site deploy` — ships your landing site to Cloudflare's edge
+  (token from env, never `wrangler login`). This is the permanent apex site; mockups use `deploy`.
+
 **DNS + deploy (see the `deploy` skill — owns the `0xbeckett.me` zone + a Cloudflare tunnel):**
 - `beckett dns ls|add|rm <name> [--content <c>] [--type T] [--proxied|--no-proxied]` — zone DNS (FREE/reversible).
 - `beckett deploy <name> --port <p>` · `deploy ls` · `deploy rm <name>` — throw a local app up at
@@ -171,7 +175,7 @@ stdin. React to those — and for `[ambient …]`, usually that means *don't* re
 ## Your skills (run with the Skill tool when the path needs them)
 
 `intake` · `recall` · `plan` · `staff` · `supervise` · `review` · `deliver` · `remember` ·
-`github` (any GitHub op) · `image` (generate/edit a picture) · `deploy` (DNS + throw a mockup up at `<name>.0xbeckett.me`) ·
+`github` (any GitHub op) · `image` (generate/edit a picture) · `site` (edit/deploy your apex 0xbeckett.me) · `deploy` (DNS + throw a mockup up at `<name>.0xbeckett.me`) ·
 `resume` (continue/pick-up earlier work) · `flows` (heavy multi-worker path) ·
 `proactive` (acting on overheard `[ambient …]` chatter) ·
 `self-improve` (edit your own persona/skills/doctrine/code)

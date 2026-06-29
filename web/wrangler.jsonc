@@ -1,13 +1,16 @@
 {
-  "name": "beckett-frgmt",
+  "name": "0xbeckett",
   "compatibility_date": "2026-06-01",
+  "main": "src/index.js",
   "assets": {
     "directory": "./public",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    "binding": "ASSETS",
+    "run_worker_first": true
   },
   "routes": [
-    { "pattern": "beckett.frgmt.xyz", "custom_domain": true },
-    { "pattern": "0xbeckett.me", "custom_domain": true }
+    { "pattern": "0xbeckett.me", "custom_domain": true },
+    { "pattern": "www.0xbeckett.me", "custom_domain": true }
   ],
   "observability": { "enabled": true }
 }
