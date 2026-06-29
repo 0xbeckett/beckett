@@ -174,6 +174,16 @@ export class Registry {
     return recs.map((w) => this.digest(w));
   }
 
+  /** Resolve once a worker reaches a terminal state (done/failed/aborted) — for the flow runner. */
+  async waitFor(workerId: string, pollMs = 2000): Promise<WorkerDigest> {
+    for (;;) {
+      const rec = this.workers.get(workerId);
+      if (!rec) throw new Error(`unknown worker ${workerId}`);
+      if (isTerminal(rec.state)) return this.digest(rec);
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+  }
+
   recentEvents(workerId: string, lastN = 50): unknown[] {
     const rec = this.workers.get(workerId);
     if (!rec) throw new Error(`unknown worker ${workerId}`);

@@ -20,6 +20,8 @@ import { createDiscordGateway } from "../discord/gateway.ts";
 import { serveBus, type BusRequest, type BusResponse } from "./control-bus.ts";
 import { ParentSupervisor } from "./parent.ts";
 import { Registry, type SpawnArgs } from "./registry.ts";
+import { FlowRunner } from "./flow.ts";
+import { randomUUID } from "node:crypto";
 import type { DiscordGateway } from "../types.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
@@ -48,6 +50,11 @@ async function main(): Promise<void> {
 
   // Watcher / worker registry — signals wake the parent.
   const registry = new Registry(config, paths, logger.child("watch"), (text) => parent.inject(text));
+
+  // Flow runner — the heavy path: Beckett writes flows/<name>.js, the runner drives the registry.
+  const flows = new FlowRunner(registry, join(paths.beckettDir, "flows"), logger.child("flow"), (text) =>
+    parent.inject(text),
+  );
 
   // Discord pump (optional; off for headless testing or when no token).
   let gateway: DiscordGateway | undefined;
@@ -118,6 +125,29 @@ async function main(): Promise<void> {
           (a.workerIds as string[]) ?? [],
           a.targetBranch ? String(a.targetBranch) : "main",
         );
+      case "flow.run": {
+        const runId = `fl_${randomUUID().slice(0, 8)}`;
+        const scriptPath = String(a.script ?? "");
+        if (!scriptPath) throw new Error("flow.run needs a script path");
+        // Fire-and-forget: the runner signals the parent on done/failed (errors are surfaced there).
+        void flows.run(scriptPath, { runId, args: a.args }).catch((err) =>
+          logger.warn("flow run failed", { runId, error: String((err as Error).message) }),
+        );
+        return { runId, started: true };
+      }
+      case "flow.resume": {
+        const runId = String(a.runId ?? "");
+        const scriptPath = String(a.script ?? "");
+        if (!runId || !scriptPath) throw new Error("flow.resume needs --run <id> and the script path");
+        void flows.run(scriptPath, { runId, args: a.args, resume: true }).catch((err) =>
+          logger.warn("flow resume failed", { runId, error: String((err as Error).message) }),
+        );
+        return { runId, resumed: true };
+      }
+      case "flow.ls":
+        return flows.list();
+      case "flow.show":
+        return flows.show(String(a.runId ?? ""));
       case "status":
         return {
           parentSession: parent.session,

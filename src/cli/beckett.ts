@@ -11,7 +11,7 @@
  *   exec bun /home/beckett/beckett/src/cli/beckett.ts "$@"
  */
 
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
@@ -267,6 +267,32 @@ async function main(): Promise<void> {
     const { _, flags } = parse(rest);
     await bus("discord.reply", { channelId: flags.channel ? String(flags.channel) : undefined, text: _.join(" ") });
   }
+  // ── flow (control bus: heavy-path scripts the parent writes) ─────────────────────────────
+  if (group === "flow") {
+    const { _, flags } = parse(rest);
+    const argsJson = flags.args ? JSON.parse(String(flags.args)) : undefined;
+    if (sub === "run") {
+      if (!_[0]) fail("usage: beckett flow run <file.js> [--args <json>]");
+      const script = resolve(_[0]);
+      if (!existsSync(script)) fail(`no such flow script: ${script}`);
+      await bus("flow.run", { script, args: argsJson });
+    }
+    if (sub === "resume") {
+      const runId = _[0];
+      const file = _[1] ?? (flags.script ? String(flags.script) : undefined);
+      if (!runId || !file) fail("usage: beckett flow resume <runId> <file.js> [--args <json>]");
+      const script = resolve(file);
+      if (!existsSync(script)) fail(`no such flow script: ${script}`);
+      await bus("flow.resume", { runId, script, args: argsJson });
+    }
+    if (sub === "ls") await bus("flow.ls", {});
+    if (sub === "show") {
+      if (!_[0]) fail("usage: beckett flow show <runId>");
+      await bus("flow.show", { runId: _[0] });
+    }
+    fail("usage: beckett flow run <file> | resume <runId> <file> | ls | show <runId>");
+  }
+
   if (group === "inject") await bus("inject", { text: [sub, ...rest].filter(Boolean).join(" ") });
   if (group === "integrate") {
     const { _, flags } = parse([sub, ...rest].filter(Boolean) as string[]);
@@ -275,7 +301,7 @@ async function main(): Promise<void> {
   if (group === "status") await bus("status", {});
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: inject | status | discord reply | worker spawn|status|log|nudge|abort|checkin | work ls|show | integrate | gh repo|pr|push | memory recall|remember");
+    "commands: inject | status | discord reply | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | memory recall|remember");
 }
 
 main().catch((err) => fail((err as Error).message));
