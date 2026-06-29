@@ -387,9 +387,12 @@ async function main(): Promise<void> {
     await bus("integrate", { workerIds: _, targetBranch: flags.target ? String(flags.target) : undefined });
   }
   if (group === "status") await bus("status", {});
+  // Self-improvement: apply edits to your persona/doctrine/skills WITHOUT a service restart.
+  if (group === "reload") await bus("reload", {}); // re-spawn the parent (resume) with the new self
+  if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: inject | status | discord reply | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: inject | status | reload | persona | discord reply | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 main().catch((err) => fail((err as Error).message));

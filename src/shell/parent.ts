@@ -20,7 +20,7 @@ export interface ParentOptions {
   bin: string; // claude binary (BECKETT_CLAUDE_BIN or config)
   model: string; // parent model (e.g. claude-opus-4-8)
   cwd: string; // repo root, so .claude/skills + hooks load (NOT --bare)
-  doctrine: string; // contents of .claude/parent-doctrine.md (system prompt)
+  systemPrompt: () => string; // built fresh on each (re)spawn: doctrine + self-editable persona
   sessionFile: string; // where to persist the parent session id
   logger: Logger;
   env?: Record<string, string | undefined>;
@@ -39,6 +39,7 @@ export class ParentSupervisor {
   private sessionId: string;
   private buf = "";
   private shuttingDown = false;
+  private reloading = false;
   private restarts = 0;
 
   constructor(private readonly opts: ParentOptions) {
@@ -65,7 +66,7 @@ export class ParentSupervisor {
       "--permission-mode",
       "bypassPermissions", // the parent is Beckett itself — fully trusted (non-root user)
       "--append-system-prompt",
-      this.opts.doctrine,
+      this.opts.systemPrompt(), // read fresh: picks up persona/doctrine edits on every (re)spawn
     ];
     if (resuming) args.push("--resume", this.sessionId);
     else args.push("--session-id", this.sessionId);
@@ -101,6 +102,26 @@ export class ParentSupervisor {
     }
     (stdin as { write: (s: string) => void }).write(line + "\n");
     (stdin as { flush?: () => void }).flush?.();
+  }
+
+  /**
+   * Re-spawn the parent so an edited persona/doctrine/skill set takes effect WITHOUT losing the
+   * conversation — start() reads the system prompt fresh and `--resume`s the persisted session, so
+   * Beckett keeps its context but comes back with the new self. This is the hot path for
+   * self-improvement: Beckett edits `~/.beckett/persona.md` (or a skill) then `beckett reload`.
+   */
+  async reload(): Promise<void> {
+    if (!this.proc) {
+      await this.start();
+      return;
+    }
+    this.opts.logger.info("parent reload requested");
+    this.reloading = true;
+    try {
+      this.proc.kill();
+    } catch {
+      /* watchExit will respawn */
+    }
   }
 
   async stop(): Promise<void> {
@@ -160,6 +181,12 @@ export class ParentSupervisor {
     if (!this.proc) return;
     const code = await this.proc.exited;
     if (this.shuttingDown) return;
+    if (this.reloading) {
+      this.reloading = false;
+      this.opts.logger.info("parent reloading (resume with refreshed system prompt)");
+      void this.start();
+      return;
+    }
     this.restarts++;
     const backoff = Math.min(30_000, 1000 * 2 ** Math.min(this.restarts, 5));
     this.opts.logger.warn("parent exited — resuming", { code, restarts: this.restarts, backoff });

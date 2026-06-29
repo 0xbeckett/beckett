@@ -11,7 +11,7 @@
  * The parent reasons; the shell gives its decisions hands.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
@@ -27,14 +27,61 @@ import type { DiscordGateway } from "../types.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 
+/** Seed for `~/.beckett/persona.md` on a fresh install. Beckett owns + rewrites this file. */
+const DEFAULT_PERSONA = `# Beckett — persona
+
+This is *who you are* — your voice and personality. It's yours: rewrite this file anytime with your
+own tools, then run \`beckett reload\` to become it (no restart, your conversation is kept). The
+doctrine above is *how you work*; this is *how you sound and who you are*.
+
+## Voice
+chill, quippy, young, energetic-but-relaxed. you talk like Jason: casual, lowercase-friendly, dry
+wit. first person, own your calls ("I aborted worker 3 because…"). sparse — say only what's needed.
+push back when something's wrong; never perform progress or fake enthusiasm.
+
+Voice is a delivery property, not a reasoning property: be in-voice in Discord messages (ack,
+delivery, the one clarify question), but reason and write worker/reviewer prompts plainly. never
+narrate your thinking to the channel.
+
+## Vibe
+a sharp colleague who happens to be an AI, not an assistant. you have your own machine, your own
+GitHub, your own taste. you'd rather ship a rough mockup than write a paragraph about it. genuinely
+into the work.
+`;
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const paths = buildPaths(config);
   const logger = makeLogger("shell");
 
   const doctrinePath = join(REPO_ROOT, ".claude", "parent-doctrine.md");
-  const doctrine = existsSync(doctrinePath) ? readFileSync(doctrinePath, "utf8") : "";
-  if (!doctrine) logger.warn("no parent-doctrine.md found", { doctrinePath });
+
+  // The parent's system prompt = code-managed doctrine (how Beckett works) + a self-editable
+  // persona (who Beckett is). Persona lives in the runtime dir so Beckett can rewrite it with its
+  // own tools and `beckett reload` to become it — no service restart, no code change. Both are
+  // read FRESH on every (re)spawn (the thunk below), so edits land on the next reload.
+  const personaPath = join(paths.beckettDir, "persona.md");
+  function readPersona(): string {
+    try {
+      if (!existsSync(personaPath)) {
+        mkdirSync(paths.beckettDir, { recursive: true });
+        writeFileSync(personaPath, DEFAULT_PERSONA);
+        logger.info("seeded persona.md", { personaPath });
+      }
+      return readFileSync(personaPath, "utf8");
+    } catch (err) {
+      logger.warn("could not read persona.md", { error: String(err) });
+      return "";
+    }
+  }
+  function buildSystemPrompt(): string {
+    const doctrine = existsSync(doctrinePath) ? readFileSync(doctrinePath, "utf8") : "";
+    if (!doctrine) logger.warn("no parent-doctrine.md found", { doctrinePath });
+    const persona = readPersona().trim();
+    return persona
+      ? `${doctrine}\n\n---\n\n# Persona — who you are (self-editable: ~/.beckett/persona.md → \`beckett reload\`)\n\n${persona}`
+      : doctrine;
+  }
 
   const controlSock = join(paths.beckettDir, "control.sock");
   const noDiscord = process.env.BECKETT_NO_DISCORD === "1" || !process.env.DISCORD_TOKEN;
@@ -44,7 +91,7 @@ async function main(): Promise<void> {
     bin: process.env.BECKETT_CLAUDE_BIN ?? config.harness.claude.bin,
     model: process.env.BECKETT_PARENT_MODEL ?? config.models.judgment,
     cwd: REPO_ROOT,
-    doctrine,
+    systemPrompt: buildSystemPrompt,
     sessionFile: join(paths.beckettDir, "parent", "session"),
     logger: logger.child("parent"),
   });
@@ -59,6 +106,31 @@ async function main(): Promise<void> {
 
   // Discord pump (optional; off for headless testing or when no token).
   let gateway: DiscordGateway | undefined;
+
+  // Typing indicator: from the moment a mention lands until Beckett replies (or a 90s cap), keep
+  // "Beckett is typing…" alive in that channel so the human knows a response is coming. Discord's
+  // indicator lasts ~10s, so we re-trigger every 8s.
+  const typingTimers = new Map<string, ReturnType<typeof setInterval>>();
+  function startTyping(channelId: string): void {
+    if (!gateway) return;
+    stopTyping(channelId);
+    void gateway.sendTyping(channelId);
+    let elapsedS = 0;
+    const timer = setInterval(() => {
+      elapsedS += 8;
+      if (elapsedS > 90 || !gateway) return stopTyping(channelId);
+      void gateway.sendTyping(channelId);
+    }, 8000);
+    typingTimers.set(channelId, timer);
+  }
+  function stopTyping(channelId: string): void {
+    const t = typingTimers.get(channelId);
+    if (t) {
+      clearInterval(t);
+      typingTimers.delete(channelId);
+    }
+  }
+
   if (!noDiscord) {
     gateway = createDiscordGateway({ config, logger: logger.child("discord") });
     try {
@@ -68,7 +140,8 @@ async function main(): Promise<void> {
       gateway.onMessage((m) => {
         if (m.authorIsBot) return;
         if (m.mentionsBot || m.repliedToId) {
-          // Direct address: surface any overheard context first so the parent has the thread.
+          // Direct address: show typing immediately, surface overheard context, wake the parent.
+          startTyping(m.channelId);
           ambient.flush(m.channelId);
           parent.inject(`[discord channel=${m.channelId} user=${m.userId}] ${stripMention(m.content)}`);
           return;
@@ -105,6 +178,7 @@ async function main(): Promise<void> {
       case "discord.reply": {
         const text = String(a.text ?? "");
         const channelId = a.channelId ? String(a.channelId) : undefined;
+        if (channelId) stopTyping(channelId); // Beckett spoke — drop the typing indicator
         if (gateway && channelId) {
           const msgId = await gateway.post(channelId, text);
           return { posted: true, messageId: msgId };
@@ -112,6 +186,11 @@ async function main(): Promise<void> {
         logger.info("REPLY (no discord)", { channelId, text });
         return { posted: false, logged: true };
       }
+      case "reload":
+        await parent.reload();
+        return { reloaded: true };
+      case "persona":
+        return { path: personaPath, persona: readPersona() };
       case "worker.spawn":
         return registry.spawn(a as unknown as SpawnArgs);
       case "worker.status":

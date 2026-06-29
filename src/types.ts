@@ -1574,6 +1574,8 @@ export interface DiscordGateway {
   stop(): Promise<void>;
   /** Post to a channel; returns the bot message id (for reply correlation). */
   post(channelId: string, content: string, opts?: ReplyOptions): Promise<string>;
+  /** Trigger the typing indicator in a channel (~10s; re-call to keep it alive). */
+  sendTyping(channelId: string): Promise<void>;
   /** Register the inbound message handler (intake + awaiting-reply resolution). */
   onMessage(cb: (m: IncomingMessage) => void | Promise<void>): void;
   isConnected(): boolean;

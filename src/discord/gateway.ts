@@ -298,6 +298,25 @@ export class DiscordJsGateway implements DiscordGateway {
     };
   }
 
+  /**
+   * Trigger the "Beckett is typing…" indicator in a channel. Discord shows it for ~10s, so the
+   * caller re-invokes on an interval to keep it alive while Beckett is thinking (Risk: the user
+   * should see something is coming). Best-effort: never throws (a typing failure must not break
+   * anything).
+   */
+  async sendTyping(channelId: string): Promise<void> {
+    const client = this.client;
+    if (!client) return;
+    try {
+      const channel = await client.channels.fetch(channelId);
+      if (channel && channel.isSendable()) {
+        await (channel as { sendTyping: () => Promise<unknown> }).sendTyping();
+      }
+    } catch {
+      /* typing is cosmetic — swallow */
+    }
+  }
+
   /** Actually send a message now; returns the sent message id. Caps at 2000 chars. */
   private async sendNow(
     channelId: string,
