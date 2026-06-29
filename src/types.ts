@@ -1327,6 +1327,7 @@ export interface Paths {
   envFile: string; // <beckettDir>/.env
   personaFile: string; // <beckettDir>/persona.md
   attachmentsDir: string; // <beckettDir>/attachments — downloaded Discord attachments
+  accessFile: string; // <beckettDir>/access.txt — Discord user whitelist (invite-only beta)
 }
 
 /** The full validated config (Spec 01 §4). Every key has a default so an empty config boots. */

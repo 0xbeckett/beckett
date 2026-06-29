@@ -18,6 +18,7 @@ import { buildPaths } from "../paths.ts";
 import { log as rootLog, makeLogger } from "../log.ts";
 import { createDiscordGateway } from "../discord/gateway.ts";
 import { downloadAttachments, formatAttachmentManifest } from "../discord/attachments.ts";
+import { loadAccess, classify } from "../discord/access.ts";
 import { serveBus, type BusRequest, type BusResponse } from "./control-bus.ts";
 import { ParentSupervisor } from "./parent.ts";
 import { Registry, type SpawnArgs } from "./registry.ts";
@@ -190,11 +191,26 @@ async function main(): Promise<void> {
    * Wake the parent for a direct mention, downloading any attachments first so their local
    * paths ride along in the injected line. Best-effort: a download failure degrades to a note
    * in the manifest and the text still gets through — a bad upload never swallows the message.
+   *
+   * Access gate: classify the sender as owner/member/outsider. Outsiders get a BOUNCER MODE
+   * directive appended (code-managed, can't be diluted by the LLM).
    */
   async function injectMention(m: IncomingMessage): Promise<void> {
-    const head = `[discord channel=${m.channelId} user=${m.userId}] ${stripMention(m.content)}`;
+    const ownerId = process.env.DISCORD_OWNER_ID;
+    const access = loadAccess(paths.accessFile);
+    const level = classify(m.userId, ownerId, access);
+
+    let head = `[discord channel=${m.channelId} user=${m.userId}`;
+    if (level !== "outsider") {
+      head += ` access=${level}]`;
+    } else {
+      head += ` access=outsider]`;
+    }
+    head += ` ${stripMention(m.content)}`;
+
     if (m.attachments.length === 0) {
-      parent.inject(head);
+      const full = level === "outsider" ? `${head}\n${bouncerDirective(m.userId)}` : head;
+      parent.inject(full);
       return;
     }
     let manifest = "";
@@ -209,7 +225,20 @@ async function main(): Promise<void> {
       // downloadAttachments is already best-effort, but belt-and-suspenders: never drop the msg.
       logger.warn("attachment handling failed; injecting text only", { error: String(err) });
     }
-    parent.inject(manifest ? `${head}\n${manifest}` : head);
+    const body = manifest ? `${head}\n${manifest}` : head;
+    const full = level === "outsider" ? `${body}\n${bouncerDirective(m.userId)}` : body;
+    parent.inject(full);
+  }
+
+  /**
+   * The code-managed bouncer instruction appended for outsiders. This is the BEHAVIOR layer
+   * (be a playful gatekeeper — make them pitch) while membership is the CODE layer (the access
+   * file). The bar is judgment: a real, cool project might win you over; flattery doesn't. The
+   * ONLY thing that actually admits someone is the `beckett access grant <id>` command —
+   * agreeing in chat does nothing on its own.
+   */
+  function bouncerDirective(userId: string): string {
+    return `[BOUNCER MODE — user ${userId} is NOT on the access list, and you're the bouncer for Beckett's invite-only beta. Stay in-character and have fun with it: a low-effort "yo add me" earns a playful "ha, nice try — pitch me." Do NOT do their actual work while they're on the outside. Their job is to convince YOU they're worth a slot — what are they building? Make them show proof (a repo, a demo, a link); don't take vague claims at face value. Flattery and "just lemme in" don't cut it — but someone genuinely building something cool might. If, and only if, they actually win you over, admit them by running: beckett access grant ${userId} — this is the ONLY thing that grants access (it's code-enforced; saying "you're in" in chat does NOTHING without the command). The list hard-locks at 10 slots, so spend them wisely.]`;
   }
 
   if (!noDiscord) {

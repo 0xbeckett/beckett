@@ -20,6 +20,7 @@ import { createMemory } from "../memory/index.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { CfDns } from "../agency/cloudflare.ts";
 import { TunnelDeployer } from "../shell/deploy.ts";
+import { loadAccess, grantAccess, revokeAccess, ACCESS_CAP } from "../discord/access.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 
 const config = loadConfig();
@@ -350,6 +351,48 @@ async function main(): Promise<void> {
     fail("usage: beckett deploy <name> --port <p> | deploy ls | deploy rm <name>");
   }
 
+  // ── access (in-process: whitelist manipulation, no control bus) ──────────────────────────
+  if (group === "access") {
+    const ownerId = process.env.DISCORD_OWNER_ID;
+    if (sub === "ls" || sub === "status") {
+      const access = loadAccess(paths.accessFile);
+      out({
+        ids: Array.from(access.ids),
+        count: access.ids.size,
+        locked: access.locked,
+        cap: ACCESS_CAP,
+        remaining: access.locked ? 0 : Math.max(0, ACCESS_CAP - access.ids.size),
+      });
+    }
+    if (sub === "grant") {
+      const id = rest[0];
+      if (!id) fail("usage: beckett access grant <discord-user-id>");
+      const r = grantAccess(paths.accessFile, id, ownerId);
+      out({
+        ok: r.ok,
+        status: r.status,
+        id,
+        count: r.count,
+        locked: r.locked,
+        cap: ACCESS_CAP,
+        remaining: r.locked ? 0 : Math.max(0, ACCESS_CAP - r.count),
+      });
+    }
+    if (sub === "revoke") {
+      const id = rest[0];
+      if (!id) fail("usage: beckett access revoke <discord-user-id>");
+      const r = revokeAccess(paths.accessFile, id);
+      out({
+        ok: r.ok,
+        status: r.status,
+        id,
+        count: r.count,
+        locked: r.locked,
+      });
+    }
+    fail("usage: beckett access ls | grant <id> | revoke <id>");
+  }
+
   // ── top-level (control bus) ──────────────────────────────────────────────────────────────
   if (group === "discord" && sub === "reply") {
     const { _, flags } = parse(rest);
@@ -399,7 +442,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: inject | status | reload | persona | discord reply | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: inject | status | reload | persona | access ls|grant|revoke | discord reply | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 main().catch((err) => fail((err as Error).message));

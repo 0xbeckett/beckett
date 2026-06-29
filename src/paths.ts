@@ -77,6 +77,7 @@ export function buildPaths(config: Config, env: PathEnv = process.env): Paths {
     envFile: join(beckettDir, ".env"),
     personaFile: join(beckettDir, "persona.md"),
     attachmentsDir: join(beckettDir, "attachments"),
+    accessFile: join(beckettDir, "access.txt"),
   };
 }
 
