@@ -26,6 +26,7 @@ import { FlowRunner } from "./flow.ts";
 import { AmbientPump } from "./ambient.ts";
 import { randomUUID } from "node:crypto";
 import type { DiscordGateway, IncomingMessage } from "../types.ts";
+import { createBrain } from "../brain/index.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 
@@ -125,6 +126,9 @@ async function main(): Promise<void> {
   const controlSock = join(paths.beckettDir, "control.sock");
   const noDiscord = process.env.BECKETT_NO_DISCORD === "1" || !process.env.DISCORD_TOKEN;
 
+  // Haiku front door — fast triage for simple chat (Spec 06).
+  const brain = createBrain({ config, paths, logger: logger.child("frontdoor") });
+
   // Parent supervisor — Beckett's brain.
   const parent = new ParentSupervisor({
     bin: process.env.BECKETT_CLAUDE_BIN ?? config.harness.claude.bin,
@@ -194,6 +198,13 @@ async function main(): Promise<void> {
    *
    * Access gate: classify the sender as owner/member/outsider. Outsiders get a BOUNCER MODE
    * directive appended (code-managed, can't be diluted by the LLM).
+   *
+   * HAIKU TRIAGE (Spec 06): simple, non-stateful mentions from owner/members are classified by
+   * Haiku first. If Haiku can answer entirely (escalate=false + answer), we reply fast and skip
+   * the Opus parent. Otherwise we escalate to the parent as before. Bypassed entirely for:
+   *   - thread replies (m.repliedToId set)
+   *   - attachments (multimodal → Opus)
+   *   - outsiders (gatekeeper needs judgment → Opus)
    */
   async function injectMention(m: IncomingMessage): Promise<void> {
     const ownerId = process.env.DISCORD_OWNER_ID;
@@ -208,6 +219,48 @@ async function main(): Promise<void> {
     }
     head += ` ${stripMention(m.content)}`;
 
+    // BYPASS Haiku triage for stateful/complex/gatekeeper cases → straight to Opus parent.
+    const bypassHaiku =
+      m.repliedToId || // continuing a thread / answering a bot question
+      m.attachments.length > 0 || // multimodal → Opus
+      level === "outsider"; // gatekeeper + grant judgment → Opus
+
+    // Haiku fast path: plain mention from owner/member with no thread context or attachments.
+    if (!bypassHaiku) {
+      try {
+        const result = await brain.intake({
+          userId: m.userId,
+          channelId: m.channelId,
+          msgId: m.messageId,
+          text: stripMention(m.content),
+          ts: m.createdAt,
+        });
+        // If Haiku answered it entirely (escalate=false + has answer), post and RETURN.
+        if (!result.escalate && result.answer) {
+          stopTyping(m.channelId);
+          if (gateway) {
+            await gateway.post(m.channelId, result.answer);
+            logger.info("haiku fast-path replied", { channelId: m.channelId, msgId: m.messageId });
+          } else {
+            // Headless mode or no gateway: fall back to parent injection so nothing is lost.
+            logger.warn("haiku answered but no gateway; escalating to parent", { msgId: m.messageId });
+            parent.inject(head);
+          }
+          return;
+        }
+        // Otherwise escalate to parent. Optionally append a recall hint if Haiku provided one.
+        const escalated = result.memoryQuery ? `${head}\n[recall hint: ${result.memoryQuery}]` : head;
+        parent.inject(escalated);
+        return;
+      } catch (err) {
+        // FAIL-SAFE: Haiku triage failed → fall back to parent injection (never drop a mention).
+        logger.warn("haiku intake failed; falling back to parent", { error: String(err), msgId: m.messageId });
+        parent.inject(head);
+        return;
+      }
+    }
+
+    // Opus path: attachments or outsider or thread reply.
     if (m.attachments.length === 0) {
       const full = level === "outsider" ? `${head}\n${bouncerDirective(m.userId)}` : head;
       parent.inject(full);
