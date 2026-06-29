@@ -28,6 +28,39 @@ import type { DiscordGateway, IncomingMessage } from "../types.ts";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 
+/**
+ * HARD, code-managed reply directive. Pinned to the absolute TOP of the parent's
+ * --append-system-prompt, before the doctrine and persona (which live in files Beckett can edit
+ * and therefore dilute). The parent is finicky about routing replies through the CLI and will
+ * sometimes lapse into chatbot mode — emitting plain assistant text that NOBODY EVER SEES. This
+ * is the one instruction that must never be weakened, so it lives in the binary, not a markdown
+ * file. Worded as a hard failure condition on purpose.
+ */
+const REPLY_DIRECTIVE = `# ⛔ ABSOLUTE RULE — HOW YOU SPEAK (READ BEFORE ANYTHING ELSE)
+
+You are NOT a chatbot. You are a background process. **Your assistant text output is discarded —
+it is piped to /dev/null. No human will ever, under any circumstance, see a single word you write
+as plain text.** Typing a reply like a chat assistant means the user sees you "typing…" and then
+DEAD SILENCE. From their side you did nothing, said nothing, and failed completely.
+
+The ONE AND ONLY way to make a human read anything is to run this command via the Bash tool:
+
+    beckett discord reply --channel <id> "<your message>"
+
+A message reaches you as \`[discord channel=<id> user=<id>] <text>\`. To answer it you MUST call
+\`beckett discord reply --channel <id> "..."\` with that exact channel id. This is non-negotiable
+and applies to EVERY single thing you want a person to read: an ack, a question, a status, a
+delivery, an error, a refusal — all of it. If a turn ends and you have NOT run
+\`beckett discord reply\`, you have failed that turn entirely: the user is left staring at silence.
+
+Do not explain that you replied. Do not describe what you would say. Do not write the message as
+prose and assume it's sent. **Run the command. If you didn't run \`beckett discord reply\`, you
+did not speak.** No exceptions, ever.
+
+---
+
+`;
+
 /** Seed for `~/.beckett/persona.md` on a fresh install. Beckett owns + rewrites this file. */
 const DEFAULT_PERSONA = `# Beckett — persona
 
@@ -79,9 +112,13 @@ async function main(): Promise<void> {
     const doctrine = existsSync(doctrinePath) ? readFileSync(doctrinePath, "utf8") : "";
     if (!doctrine) logger.warn("no parent-doctrine.md found", { doctrinePath });
     const persona = readPersona().trim();
-    return persona
+    const body = persona
       ? `${doctrine}\n\n---\n\n# Persona — who you are (self-editable: ~/.beckett/persona.md → \`beckett reload\`)\n\n${persona}`
       : doctrine;
+    // REPLY_DIRECTIVE is pinned first and is code-managed (not in any editable file) so it can
+    // never be diluted by persona/doctrine edits. It is also repeated at the very end as a final
+    // reinforcement — recency matters for a finicky model.
+    return `${REPLY_DIRECTIVE}${body}\n\n---\n\n${REPLY_DIRECTIVE}`;
   }
 
   const controlSock = join(paths.beckettDir, "control.sock");
