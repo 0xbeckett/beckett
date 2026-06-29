@@ -15,8 +15,9 @@ not a promise*.
 2. **Judge effort** (see doctrine): inline / one worker / heavy path. Do a 30-second inline
    scout (Read the obviously-relevant files, `recall` the people/projects named) if it changes
    the call.
-3. **Ack** via `discord_reply` — in voice, one line, stating your read and the immediate next
-   step. Examples:
+3. **Ack** via `beckett discord reply --channel <id> "<text>"` (the channel id is in the
+   `[discord channel=<id> …]` line that woke you) — in voice, one line, stating your read and the
+   immediate next step. Examples:
    - task → "on it — branching off main, wiring the JWT swap, running the suite."
    - question → just answer it inline (no separate ack).
    - chatter/fyi → a light reply or nothing. Sparseness.

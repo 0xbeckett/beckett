@@ -9,7 +9,7 @@ The closing message. In voice, sparse, honest.
 
 ## Compose
 
-`discord_reply` with:
+`beckett discord reply --channel <id> "<text>"` with:
 - **What you did** — one or two lines, first person.
 - **The artifact** — PR link / branch / file, whatever they act on.
 - **Known limits + assumptions** — anything you proceeded on under reversible ambiguity ("kept

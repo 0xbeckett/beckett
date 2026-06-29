@@ -34,6 +34,6 @@ envelope: { effort: "low"|"medium"|"high"|"xhigh", turnCap: number, wallClockS: 
 
 ## Output
 
-A worker assignment per node, ready to pass to `spawn_worker` along with the node's scope +
-criteria. Respect the global concurrency cap — `spawn_worker` queues over it; you decide priority
-(deepest critical path first).
+A worker assignment per node, ready to pass to `beckett worker spawn` along with the node's
+`--owned` scope globs + `--system` criteria. Respect the global concurrency cap — `worker spawn`
+errors when it's full; dispatch the deepest critical path first and spawn the rest as slots free.

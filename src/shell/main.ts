@@ -1,0 +1,155 @@
+/**
+ * Beckett v2 — the shell (`src/shell/main.ts`)
+ * =======================================================================================
+ * The thin long-lived bun process (Spec 01). It does only the plumbing the parent agent
+ * can't do for itself:
+ *   - Discord pump:   inbound @mentions → injected into the parent's stdin
+ *   - Parent supervisor: spawn/keep-alive/resume the `claude -p` parent (Beckett's brain)
+ *   - Watcher (Registry): live worker handles + telemetry digests + smoke-alarm signals
+ *   - Control bus:    a unix socket the `beckett` CLI (run by the parent via Bash) talks to
+ *
+ * The parent reasons; the shell gives its decisions hands.
+ */
+
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { loadConfig } from "../config.ts";
+import { buildPaths } from "../paths.ts";
+import { log as rootLog, makeLogger } from "../log.ts";
+import { createDiscordGateway } from "../discord/gateway.ts";
+import { serveBus, type BusRequest, type BusResponse } from "./control-bus.ts";
+import { ParentSupervisor } from "./parent.ts";
+import { Registry, type SpawnArgs } from "./registry.ts";
+import type { DiscordGateway } from "../types.ts";
+
+const REPO_ROOT = join(import.meta.dir, "..", "..");
+
+async function main(): Promise<void> {
+  const config = loadConfig();
+  const paths = buildPaths(config);
+  const logger = makeLogger("shell");
+
+  const doctrinePath = join(REPO_ROOT, ".claude", "parent-doctrine.md");
+  const doctrine = existsSync(doctrinePath) ? readFileSync(doctrinePath, "utf8") : "";
+  if (!doctrine) logger.warn("no parent-doctrine.md found", { doctrinePath });
+
+  const controlSock = join(paths.beckettDir, "control.sock");
+  const noDiscord = process.env.BECKETT_NO_DISCORD === "1" || !process.env.DISCORD_TOKEN;
+
+  // Parent supervisor — Beckett's brain.
+  const parent = new ParentSupervisor({
+    bin: process.env.BECKETT_CLAUDE_BIN ?? config.harness.claude.bin,
+    model: process.env.BECKETT_PARENT_MODEL ?? config.models.judgment,
+    cwd: REPO_ROOT,
+    doctrine,
+    sessionFile: join(paths.beckettDir, "parent", "session"),
+    logger: logger.child("parent"),
+  });
+
+  // Watcher / worker registry — signals wake the parent.
+  const registry = new Registry(config, paths, logger.child("watch"), (text) => parent.inject(text));
+
+  // Discord pump (optional; off for headless testing or when no token).
+  let gateway: DiscordGateway | undefined;
+  if (!noDiscord) {
+    gateway = createDiscordGateway({ config, logger: logger.child("discord") });
+    try {
+      await gateway.start();
+      gateway.onMessage((m) => {
+        if (m.authorIsBot) return;
+        if (!m.mentionsBot && !m.repliedToId) return;
+        parent.inject(`[discord channel=${m.channelId} user=${m.userId}] ${stripMention(m.content)}`);
+      });
+      logger.info("discord pump online");
+    } catch (err) {
+      logger.warn("discord gateway not connected (continuing headless)", { error: String(err) });
+      gateway = undefined;
+    }
+  } else {
+    logger.info("discord disabled (BECKETT_NO_DISCORD / no token) — inject via `beckett inject`");
+  }
+
+  // Control bus — the parent's hands.
+  const startedAt = Date.now();
+  const stopBus = serveBus(controlSock, async (req): Promise<BusResponse> => {
+    try {
+      return { ok: true, data: await dispatch(req) };
+    } catch (err) {
+      logger.warn("bus command failed", { cmd: req.cmd, error: String((err as Error).message) });
+      return { ok: false, error: String((err as Error).message) };
+    }
+  });
+
+  async function dispatch(req: BusRequest): Promise<unknown> {
+    const a = req.args ?? {};
+    switch (req.cmd) {
+      case "inject":
+        parent.inject(String(a.text ?? ""));
+        return { injected: true };
+      case "discord.reply": {
+        const text = String(a.text ?? "");
+        const channelId = a.channelId ? String(a.channelId) : undefined;
+        if (gateway && channelId) {
+          const msgId = await gateway.post(channelId, text);
+          return { posted: true, messageId: msgId };
+        }
+        logger.info("REPLY (no discord)", { channelId, text });
+        return { posted: false, logged: true };
+      }
+      case "worker.spawn":
+        return registry.spawn(a as unknown as SpawnArgs);
+      case "worker.status":
+        return registry.status(a.workerId ? String(a.workerId) : undefined);
+      case "worker.log":
+        return registry.recentEvents(String(a.workerId), a.lastN ? Number(a.lastN) : 50);
+      case "worker.nudge":
+        return registry.nudge(String(a.workerId), String(a.text ?? ""));
+      case "worker.abort":
+        return registry.abort(String(a.workerId), String(a.reason ?? "aborted via CLI"));
+      case "worker.checkin":
+        registry.scheduleCheckin(String(a.workerId), {
+          afterTurns: a.afterTurns ? Number(a.afterTurns) : undefined,
+          afterSecs: a.afterSecs ? Number(a.afterSecs) : undefined,
+          reason: String(a.reason ?? "scheduled check-in"),
+        });
+        return { scheduled: true };
+      case "integrate":
+        return registry.integrate(
+          (a.workerIds as string[]) ?? [],
+          a.targetBranch ? String(a.targetBranch) : "main",
+        );
+      case "status":
+        return {
+          parentSession: parent.session,
+          liveWorkers: registry.liveCount(),
+          uptimeMs: Date.now() - startedAt,
+          discord: Boolean(gateway),
+        };
+      default:
+        throw new Error(`unknown command "${req.cmd}"`);
+    }
+  }
+
+  await parent.start();
+  logger.info("beckett shell ready", { controlSock, repoRoot: REPO_ROOT });
+
+  const shutdown = async (sig: string) => {
+    logger.info("shutting down", { sig });
+    await registry.stopAll();
+    await parent.stop();
+    if (gateway) await gateway.stop().catch(() => {});
+    stopBus();
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+}
+
+function stripMention(content: string): string {
+  return content.replace(/^\s*<@!?\d+>\s*/, "").trim();
+}
+
+main().catch((err) => {
+  rootLog.error("shell failed to start", { error: (err as Error).message, stack: (err as Error).stack });
+  process.exit(1);
+});

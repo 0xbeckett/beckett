@@ -6,8 +6,10 @@
   "private": true,
   "module": "src/daemon.ts",
   "scripts": {
+    "shell": "bun src/shell/main.ts",
+    "beckett": "bun src/cli/beckett.ts",
     "daemon": "bun src/daemon.ts",
-    "build": "bun build src/daemon.ts --target=bun --outdir=dist",
+    "build": "bun build src/shell/main.ts --target=bun --outdir=dist",
     "typecheck": "bunx tsc --noEmit",
     "cli": "bun src/cli/index.ts",
     "test": "bun test"

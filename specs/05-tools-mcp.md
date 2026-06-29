@@ -1,10 +1,16 @@
 # Beckett — Spec 05: Tools & MCP
 
 > Status: **draft v2.0** · 2026-06-28 · Owner: Jason
-> The surface the parent agent acts through: the **`beckett-control`** MCP server (in-process in
-> the shell, [Spec 01 §1.2](./01-runtime.md)) plus the **memory** and **identity** CLIs. These
+> The surface the parent agent acts through: the **`beckett` CLI**, which the parent runs via
+> Bash. Stateful commands forward to the shell over a **unix control socket** (the shell holds
+> the live worker handles + the parent's stdin); memory/identity commands run in-process. These
 > wrap the salvaged libraries + sandcastle so the agent's reasoning reaches real subprocess
-> control. This replaces the v0.1 CLI/IPC controller surface.
+> control.
+>
+> **Implementation note (v2 build):** the logical "`beckett-control`" tool surface below is
+> implemented as **`beckett <subcommand>` over a unix socket** (`src/shell/control-bus.ts` +
+> `src/cli/beckett.ts`), not an in-process MCP server. Rationale in §1.3. The tool names in the
+> table map 1:1 to CLI subcommands (e.g. `spawn_worker` → `beckett worker spawn`).
 
 ---
 
@@ -49,12 +55,15 @@ Compact by construction — this is the context-discipline mechanism from
 frees. The **parent** decides priority among queued nodes (discretion); the shell only enforces
 the ceiling.
 
-### 1.3 Why MCP (not a unix socket CLI like v0.1)
-The v0.1 design split read (direct SQLite) vs write (unix socket) for an *external* `beckett`
-CLI driving a separate daemon. In v2 the *agent itself* is the controller, so the natural
-surface is **tools it calls in its own loop**. MCP gives typed, in-context tools with structured
-errors — the agent calls `spawn_worker` the way it calls `Read`. The shell holds the live worker
-handles, so a nudge (a write to a worker's stdin) is a local function call, not an IPC hop.
+### 1.3 Why a CLI over a control socket (not an MCP server)
+The parent is a coding agent; it is already fluent in Bash and uses CLIs for memory/identity.
+Making worker-control *also* a CLI keeps one uniform surface and reuses a tiny socket framing
+(~80 lines) instead of standing up and maintaining an HTTP/SSE MCP server — less surface, true
+to the de-bloat thesis. Either way the **shell** must hold the live worker handles (a nudge is a
+write to a worker's stdin that only the shell owns), so a short-lived command process reaches
+them over the control socket. The parent calls `beckett worker nudge <id> "…"`; the shell does
+the stdin write. (An MCP transport remains a clean future option if typed in-context tools are
+wanted — the command vocabulary is identical.)
 
 ---
 
