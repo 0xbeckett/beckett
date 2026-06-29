@@ -157,6 +157,22 @@
   .pill.disabled{color:var(--faint);cursor:default;font-family:var(--mono);font-size:12.5px;letter-spacing:.04em;text-transform:uppercase}
   @media(max-width:820px){.tiers{grid-template-columns:1fr}}
 
+  /* cta wordplay swap */
+  .swap{position:relative;display:inline-block;white-space:nowrap}
+  .wtext{position:relative;display:inline-block;transition:opacity .35s var(--eo)}
+  .scrib{position:absolute;left:-9%;top:2%;width:118%;height:94%;overflow:visible;pointer-events:none}
+  .scrib path{fill:none;stroke:var(--accent);stroke-width:6;stroke-linecap:round;stroke-linejoin:round;
+    stroke-dasharray:620;stroke-dashoffset:620;opacity:0}
+  .swap.crossed .scrib path{opacity:1;transition:stroke-dashoffset .5s linear,opacity .1s;stroke-dashoffset:0}
+  /* anchored to the LEFT edge of "beck it" so the pill grows rightward only and never
+     cuts back across "lets" */
+  .wment{position:absolute;left:0;top:50%;transform:translateY(-50%) scale(.8);transform-origin:left center;opacity:0;
+    transition:opacity .4s var(--eo) .2s,transform .5s var(--eo) .2s;
+    background:rgba(88,101,242,.28);color:#dfe1fd;border-radius:.16em;padding:.02em .22em;font-weight:600;white-space:nowrap}
+  .swap.flipped .wtext{opacity:0;transition:opacity .22s}
+  .swap.flipped .scrib{opacity:0;transition:opacity .22s}
+  .swap.flipped .wment{opacity:1;transform:translateY(-50%) scale(1)}
+
   /* cta */
   .cta{text-align:center;padding:110px 0;border-top:1px solid var(--line-2)}
   .cta h2{margin:0 auto;max-width:20ch}
@@ -267,7 +283,7 @@
 
   <!-- CTA -->
   <section class="cta" id="cta">
-    <h2 class="rv">Put a coworker on it.</h2>
+    <h2 class="rv beckit" aria-label="let's beckett">lets&nbsp;<span class="swap" id="swap" aria-hidden="true"><span class="wtext">beck&nbsp;it<svg class="scrib" viewBox="0 0 200 60" preserveAspectRatio="none"><path d="M10 36 C 50 14, 78 50, 112 28 S 170 16, 192 38 C 150 52, 70 34, 12 46"/></svg></span><span class="wment">@beckett</span></span></h2>
     <p class="sub rv">Beckett's in invite-only beta. slide into the Discord and make your case — first impressions matter.</p>
     <div class="cta-row rv">
       <a class="btn btn-primary btn-lg" id="ctabtn" data-h href="https://discord.gg/DfJKFawURy">Get access →</a>
@@ -331,6 +347,21 @@
       m.querySelectorAll('path').forEach(function(p,i){p.style.animationDelay=(i*0.12)+'s';});
       setTimeout(function(){m.classList.add('lit');}, 3600);
     }).catch(function(){m.style.display='none';});
+  })();
+
+  /* cta wordplay: "lets beck it" → scribble → "@beckett" mention, on loop */
+  (function(){
+    var swap=document.getElementById('swap');if(!swap)return;
+    if(RM){swap.classList.add('flipped');return;}
+    var started=false;
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){
+      if(e.isIntersecting&&!started){started=true;
+        setTimeout(function(){swap.classList.add('crossed');},800);   // scribble out "beck it"
+        setTimeout(function(){swap.classList.add('flipped');},1650);  // → @beckett, and rest there
+        io.disconnect();
+      }
+    });},{threshold:.5});
+    io.observe(swap);
   })();
 
   /* console type-out */
