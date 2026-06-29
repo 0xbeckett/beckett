@@ -21,6 +21,7 @@ import { serveBus, type BusRequest, type BusResponse } from "./control-bus.ts";
 import { ParentSupervisor } from "./parent.ts";
 import { Registry, type SpawnArgs } from "./registry.ts";
 import { FlowRunner } from "./flow.ts";
+import { AmbientPump } from "./ambient.ts";
 import { randomUUID } from "node:crypto";
 import type { DiscordGateway } from "../types.ts";
 
@@ -62,12 +63,20 @@ async function main(): Promise<void> {
     gateway = createDiscordGateway({ config, logger: logger.child("discord") });
     try {
       await gateway.start();
+      const ambientOn = process.env.BECKETT_AMBIENT === "1";
+      const ambient = new AmbientPump((text) => parent.inject(text));
       gateway.onMessage((m) => {
         if (m.authorIsBot) return;
-        if (!m.mentionsBot && !m.repliedToId) return;
-        parent.inject(`[discord channel=${m.channelId} user=${m.userId}] ${stripMention(m.content)}`);
+        if (m.mentionsBot || m.repliedToId) {
+          // Direct address: surface any overheard context first so the parent has the thread.
+          ambient.flush(m.channelId);
+          parent.inject(`[discord channel=${m.channelId} user=${m.userId}] ${stripMention(m.content)}`);
+          return;
+        }
+        // Overheard chatter: batched + handed over only if ambient mode is on.
+        if (ambientOn) ambient.add(m.channelId, m.userId, m.content);
       });
-      logger.info("discord pump online");
+      logger.info("discord pump online", { ambient: ambientOn });
     } catch (err) {
       logger.warn("discord gateway not connected (continuing headless)", { error: String(err) });
       gateway = undefined;
