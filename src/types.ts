@@ -751,6 +751,7 @@ export interface AwaitingReply {
 /** Options for posting a reply (ambient model — always the origin channel, Spec 05 §3). */
 export interface ReplyOptions {
   replyToMessageId?: string; // native reply-to for correlation
+  files?: string[]; // local file paths to attach (image-only posts OK)
 }
 
 // =======================================================================================
