@@ -262,13 +262,19 @@ async function main(): Promise<void> {
       case "discord.reply": {
         const text = String(a.text ?? "");
         const channelId = a.channelId ? String(a.channelId) : undefined;
+        const files = a.files ? (a.files as string[]) : undefined;
         if (channelId) stopTyping(channelId); // Beckett spoke — drop the typing indicator
         if (gateway && channelId) {
-          const msgId = await gateway.post(channelId, text);
-          logger.info("discord.reply posted", { channelId, messageId: msgId, len: text.length });
+          const msgId = await gateway.post(channelId, text, { files });
+          logger.info("discord.reply posted", {
+            channelId,
+            messageId: msgId,
+            len: text.length,
+            fileCount: files?.length ?? 0,
+          });
           return { posted: true, messageId: msgId };
         }
-        logger.info("REPLY (no discord)", { channelId, text });
+        logger.info("REPLY (no discord)", { channelId, text, files });
         return { posted: false, logged: true };
       }
       case "reload":

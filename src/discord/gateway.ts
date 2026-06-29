@@ -33,6 +33,7 @@ import {
   Events,
   type Message,
   type MessageCreateOptions,
+  AttachmentBuilder,
 } from "discord.js";
 import type {
   DiscordGateway,
@@ -341,11 +342,24 @@ export class DiscordJsGateway implements DiscordGateway {
       throw new Error(`discord channel ${channelId} is not a sendable text channel`);
     }
 
+    // Validate file paths exist before building payload
+    if (opts?.files && opts.files.length > 0) {
+      const { existsSync } = await import("node:fs");
+      for (const filePath of opts.files) {
+        if (!existsSync(filePath)) {
+          throw new Error(`attachment file not found: ${filePath}`);
+        }
+      }
+    }
+
     const payload: MessageCreateOptions = { content: this.cap(content) };
     if (opts?.replyToMessageId) {
       // Native reply-to: visual threading without threads + the strong correlation key
       // (Spec 05 §4.2). failIfNotExists=false so a deleted ask doesn't reject the post.
       payload.reply = { messageReference: opts.replyToMessageId, failIfNotExists: false };
+    }
+    if (opts?.files && opts.files.length > 0) {
+      payload.files = opts.files.map((path) => new AttachmentBuilder(path));
     }
 
     const sent = await channel.send(payload);

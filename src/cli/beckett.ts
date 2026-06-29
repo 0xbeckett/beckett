@@ -353,7 +353,14 @@ async function main(): Promise<void> {
   // ── top-level (control bus) ──────────────────────────────────────────────────────────────
   if (group === "discord" && sub === "reply") {
     const { _, flags } = parse(rest);
-    await bus("discord.reply", { channelId: flags.channel ? String(flags.channel) : undefined, text: _.join(" ") });
+    const files = flags.file
+      ? (Array.isArray(flags.file) ? flags.file.map(String) : [String(flags.file)])
+      : undefined;
+    await bus("discord.reply", {
+      channelId: flags.channel ? String(flags.channel) : undefined,
+      text: _.join(" "),
+      files,
+    });
   }
   // ── flow (control bus: heavy-path scripts the parent writes) ─────────────────────────────
   if (group === "flow") {
