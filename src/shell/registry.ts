@@ -62,6 +62,7 @@ interface WorkerRec {
   branch: string;
   workspace: string;
   repoRoot: string;
+  baseSha: string; // commit the worktree branched from — diff against this to count committed work too
   scope: FileScope;
   envelope: ResourceEnvelope;
   state: string;
@@ -119,12 +120,9 @@ export class Registry {
       throw new Error(`harness "${harness}" not wired yet (sandcastle codex/pi is Phase 4)`);
     }
 
-    await createWorktree({
-      repoRoot: a.repoRoot,
-      workspace,
-      branch,
-      baseRef: a.baseRef ?? "HEAD",
-    });
+    const baseRef = a.baseRef ?? "HEAD";
+    const baseSha = await resolveRef(a.repoRoot, baseRef);
+    await createWorktree({ repoRoot: a.repoRoot, workspace, branch, baseRef });
 
     // Install the per-worktree scope-guard PreToolUse hook (Spec 04 §3).
     this.writeScopeGuard(workspace, a.scope.ownedGlobs);
@@ -138,6 +136,7 @@ export class Registry {
       branch,
       workspace,
       repoRoot: a.repoRoot,
+      baseSha,
       scope: a.scope,
       envelope,
       state: "spawning",
@@ -285,7 +284,7 @@ export class Registry {
   }
 
   private refreshDiff(rec: WorkerRec): void {
-    void readDiffStat(rec.workspace)
+    void readDiffStat(rec.workspace, rec.baseSha)
       .then((d) => {
         const grew = d.added + d.removed > rec.diff.added + rec.diff.removed;
         rec.diff = d;
@@ -407,6 +406,17 @@ export class Registry {
 
 function isTerminal(state: string): boolean {
   return state === "done" || state === "failed" || state === "aborted";
+}
+
+/** Resolve a ref to a commit SHA in a repo (the worktree's diff baseline). */
+async function resolveRef(repoRoot: string, ref: string): Promise<string> {
+  try {
+    const proc = Bun.spawn(["git", "-C", repoRoot, "rev-parse", ref], { stdout: "pipe", stderr: "ignore" });
+    const sha = (await new Response(proc.stdout).text()).trim();
+    return sha || ref;
+  } catch {
+    return ref;
+  }
 }
 
 function shortInput(input: unknown): string {
