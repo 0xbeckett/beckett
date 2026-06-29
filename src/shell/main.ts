@@ -265,6 +265,7 @@ async function main(): Promise<void> {
         if (channelId) stopTyping(channelId); // Beckett spoke — drop the typing indicator
         if (gateway && channelId) {
           const msgId = await gateway.post(channelId, text);
+          logger.info("discord.reply posted", { channelId, messageId: msgId, len: text.length });
           return { posted: true, messageId: msgId };
         }
         logger.info("REPLY (no discord)", { channelId, text });
