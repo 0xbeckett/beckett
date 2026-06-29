@@ -12,6 +12,7 @@
  */
 
 import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus } from "../shell/control-bus.ts";
@@ -151,6 +152,49 @@ async function main(): Promise<void> {
     fail(`unknown: beckett worker ${sub ?? ""}`);
   }
 
+  // ── work (in-process: the on-disk worker ledger — survives shell restarts) ────────────────
+  // `worker ...` is LIVE control over the running shell's registry; `work ...` reads the durable
+  // ~/.beckett/workers/<id>/ records straight off disk, so it answers "what was I doing / did any
+  // work get interrupted?" even after a restart, with the shell down, before spinning up anything.
+  if (group === "work") {
+    const dir = join(paths.beckettDir, "workers");
+    if (sub === "ls" || sub === undefined) {
+      if (!existsSync(dir)) out([]);
+      const now = Date.now();
+      const rows = readdirSync(dir)
+        .map((id) => join(dir, id, "status.json"))
+        .filter((f) => existsSync(f))
+        .map((f) => {
+          let d: Record<string, unknown> = {};
+          try { d = JSON.parse(readFileSync(f, "utf8")); } catch { /* skip corrupt */ }
+          const ageMs = now - statSync(f).mtimeMs;
+          // A "running" record that hasn't been touched in minutes is an orphan from a prior shell.
+          const interrupted = d.state === "running" && ageMs > 120_000;
+          return { ...d, ageMs, interrupted };
+        })
+        .sort((a, b) => (a.ageMs as number) - (b.ageMs as number));
+      out(rows);
+    }
+    if (sub === "show") {
+      const id = rest[0];
+      if (!id) fail("usage: beckett work show <workerId> [--last N]");
+      const wdir = join(dir, id);
+      if (!existsSync(wdir)) fail(`no worker record: ${id}`);
+      const { flags } = parse(rest.slice(1));
+      const lastN = flags.last ? Number(flags.last) : 40;
+      let status: unknown = null;
+      try { status = JSON.parse(readFileSync(join(wdir, "status.json"), "utf8")); } catch { /* none */ }
+      const evFile = join(wdir, "events.jsonl");
+      const events = existsSync(evFile)
+        ? readFileSync(evFile, "utf8").trim().split("\n").filter(Boolean).slice(-lastN).map((l) => {
+            try { return JSON.parse(l); } catch { return { raw: l }; }
+          })
+        : [];
+      out({ status, events });
+    }
+    fail("usage: beckett work ls | work show <workerId> [--last N]");
+  }
+
   // ── gh (in-process: stateless `gh`/`git` subprocesses, token from env) ────────────────────
   // The token rides GH_TOKEN/the git credential helper per-invocation, so the parent NEVER
   // needs `gh auth login`/`gh auth status` — it just calls `beckett gh ...`. (Spec 07 §3.2)
@@ -231,7 +275,7 @@ async function main(): Promise<void> {
   if (group === "status") await bus("status", {});
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: inject | status | discord reply | worker spawn|status|log|nudge|abort|checkin | integrate | gh repo|pr|push | memory recall|remember");
+    "commands: inject | status | discord reply | worker spawn|status|log|nudge|abort|checkin | work ls|show | integrate | gh repo|pr|push | memory recall|remember");
 }
 
 main().catch((err) => fail((err as Error).message));
