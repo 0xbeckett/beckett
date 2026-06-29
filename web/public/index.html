@@ -145,13 +145,16 @@
   .tier{border:1px solid var(--line);border-radius:var(--r);padding:28px;background:var(--panel);display:flex;flex-direction:column;transition:.3s var(--eo)}
   .tier:hover{transform:translateY(-4px)}
   .tier.hl{border-color:var(--accent);background:linear-gradient(180deg,var(--accent-dim),var(--panel) 40%)}
+  .tier.soon{opacity:.6}
+  .tier.soon:hover{transform:none}
   .tier .nm{font-family:var(--mono);font-size:12.5px;color:var(--accent);text-transform:uppercase;letter-spacing:.05em}
   .tier .amt{font-family:var(--disp);font-weight:600;font-size:30px;letter-spacing:-.02em;margin:14px 0 4px}
   .tier .amt span{font-size:14px;color:var(--faint);font-weight:400}
   .tier p{color:var(--dim);font-size:14px;line-height:1.5;margin-bottom:20px;flex:1}
   .tier .pill{margin-top:auto;text-align:center;border:1px solid var(--line);border-radius:9px;padding:11px;font-size:14px;font-weight:500;transition:.25s}
   .tier.hl .pill{background:var(--accent);color:#09090b;border-color:var(--accent)}
-  .tier .pill:hover{border-color:var(--accent)}
+  .tier .pill:not(.disabled):hover{border-color:var(--accent)}
+  .pill.disabled{color:var(--faint);cursor:default;font-family:var(--mono);font-size:12.5px;letter-spacing:.04em;text-transform:uppercase}
   @media(max-width:820px){.tiers{grid-template-columns:1fr}}
 
   /* cta */
@@ -186,7 +189,6 @@
       <a href="#tiers">Scale</a>
     </div>
     <div class="nav-r">
-      <span class="badge" style="padding:7px 13px"><i></i>online</span>
       <a class="btn btn-primary btn-sm" id="navcta" data-h href="https://discord.gg/DfJKFawURy">Get access</a>
     </div>
   </div>
@@ -197,14 +199,13 @@
   <!-- HERO -->
   <section class="hero">
     <div>
-      <span class="badge rv"><i></i>Coworker&nbsp;as&nbsp;a&nbsp;Service</span>
       <h1 class="rv">Delegation,<br><span class="g">as a service.</span></h1>
-      <p class="lead rv">Drop a goal in your chat. Beckett spins up a fleet of agents, reviews the diff with a second model, and ships it — then reports back. You run the outcomes.</p>
+      <p class="lead rv">Drop a goal in your chat. Beckett spins up a fleet of agents, reviews the diff with a second model, and ships it — then reports back. you stay in your bag; it handles the grind.</p>
       <div class="cta-row rv">
         <a class="btn btn-primary btn-lg" id="herocta" data-h href="https://discord.gg/DfJKFawURy">Get access →</a>
         <a class="btn btn-ghost btn-lg" data-h href="#how">See how it works</a>
       </div>
-      <div class="micro rv">invite-only beta · you'll have to pitch your way in</div>
+      <div class="micro rv">invite-only beta · gotta pitch your way in (show proof, no yapping)</div>
     </div>
     <div class="markwrap rv">
       <svg class="mark-svg" id="mark" viewBox="6 45 99 84" aria-label="Beckett"></svg>
@@ -217,9 +218,8 @@
 
   <!-- LIVE CONSOLE -->
   <section style="padding-top:88px;padding-bottom:0">
-    <div class="eyebrow rv">Live</div>
     <h2 class="rv">Watch it close a ticket.</h2>
-    <p class="sub rv">No edits, no cuts — this is the actual loop: take the task, delegate, review, ship.</p>
+    <p class="sub rv">No edits, no cuts — this is the actual loop: take the task, delegate, review, ship. it just locks in.</p>
     <div class="console rv" style="margin-top:36px">
       <div class="c-bar"><i></i><i></i><i></i><span>beckett@loom-desk — #engineering</span></div>
       <div class="c-body" id="con"></div>
@@ -228,50 +228,47 @@
 
   <!-- HOW -->
   <section id="how">
-    <div class="eyebrow rv">How it works</div>
     <h2 class="rv">A teammate, not a text box.</h2>
-    <p class="sub rv">No dashboards to learn. You talk to it like a coworker; it does the rest.</p>
+    <p class="sub rv">No dashboards to learn, no standups to sit through. talk to it like a coworker; it does the rest.</p>
     <div class="steps">
-      <div class="step rv"><div class="k">01</div><h3>Mention it</h3><p>Drop a task in Discord, plain English. "Fix the flaky auth flow and ship it."</p></div>
-      <div class="step rv"><div class="k">02</div><h3>It delegates</h3><p>Fans out to agents in isolated worktrees, supervises by digest, kills the ones going sideways.</p></div>
-      <div class="step rv"><div class="k">03</div><h3>It ships</h3><p>A second model red-teams the diff. If it holds, Beckett merges — signed — and reports back.</p></div>
+      <div class="step rv"><div class="k">01</div><h3>Mention it</h3><p>Drop a task in Discord, plain English. "fix the flaky auth flow and ship it." that's the whole interface.</p></div>
+      <div class="step rv"><div class="k">02</div><h3>It delegates</h3><p>Fans out to agents in isolated worktrees, supervises by digest, and benches the ones going sideways.</p></div>
+      <div class="step rv"><div class="k">03</div><h3>It ships</h3><p>A second model red-teams the diff. if it holds, Beckett merges — signed — and pings you. no cap.</p></div>
     </div>
   </section>
 
   <!-- CAPABILITIES (bento) -->
   <section id="caps">
-    <div class="eyebrow rv">Capabilities</div>
     <h2 class="rv">Everything a good hire has. None of the onboarding.</h2>
     <div class="bento">
       <div class="tile feat rv">
         <div><div class="ic2">// orchestration</div><h3>It runs its own team</h3>
-        <p>Real work fans out to a fleet of worker agents in isolated git worktrees. Beckett supervises by digest — never drowns you in logs.</p></div>
+        <p>Real work fans out to a fleet of worker agents in isolated git worktrees. Beckett supervises by digest — never drowns you in logs, never needs micromanaging.</p></div>
         <div class="micro" style="margin-top:18px;color:var(--faint)">N workers · supervised in parallel</div>
       </div>
-      <div class="tile t-third rv"><div class="ic2">// review</div><h3>Adversarial review</h3><p>A second model tries to break every change before it merges.</p></div>
-      <div class="tile t-third rv"><div class="ic2">// identity</div><h3>Owns its identity</h3><p>Own machine, own GitHub, signed &amp; verified commits.</p></div>
-      <div class="tile t-third rv"><div class="ic2">// memory</div><h3>Persistent memory</h3><p>A linked graph — it remembers you across sessions.</p></div>
-      <div class="tile t-third rv"><div class="ic2">// infra</div><h3>Ships its own infra</h3><p>Provisions DNS, tunnels, deploys. Live URLs on demand.</p></div>
-      <div class="tile t-mid rv"><div class="ic2">// self-improvement</div><h3>It rewrites itself</h3><p>Persona, skills, operating doctrine — all editable by Beckett, applied live. It gets better without a redeploy.</p></div>
+      <div class="tile t-third rv"><div class="ic2">// review</div><h3>Adversarial review</h3><p>A second model tries to break every change before it merges. trust issues, but make it a feature.</p></div>
+      <div class="tile t-third rv"><div class="ic2">// identity</div><h3>Owns its identity</h3><p>Own machine, own GitHub, signed &amp; verified commits. built different.</p></div>
+      <div class="tile t-third rv"><div class="ic2">// memory</div><h3>Persistent memory</h3><p>A linked graph — it remembers you across sessions. unlike your last intern.</p></div>
+      <div class="tile t-third rv"><div class="ic2">// infra</div><h3>Ships its own infra</h3><p>Provisions DNS, tunnels, deploys. live URLs on demand, zero hand-holding.</p></div>
+      <div class="tile t-mid rv"><div class="ic2">// self-improvement</div><h3>It rewrites itself</h3><p>Persona, skills, operating doctrine — all editable by Beckett, applied live. self-improvement arc, fr.</p></div>
     </div>
   </section>
 
   <!-- TIERS -->
   <section id="tiers">
-    <div class="eyebrow rv">Scale</div>
     <h2 class="rv">Scales like software, not headcount.</h2>
-    <p class="sub rv">One coworker today. A department's worth of throughput when you need it — same interface.</p>
+    <p class="sub rv">One coworker today. fleets and whole departments are loading… same interface, more throughput.</p>
     <div class="tiers">
-      <div class="tier rv"><div class="nm">Solo</div><div class="amt">One coworker</div><p>A single Beckett, supervising one worker at a time. The reliable teammate who just gets it done.</p><a class="pill" data-h href="https://discord.gg/DfJKFawURy">Get access</a></div>
-      <div class="tier hl rv"><div class="nm">Squad</div><div class="amt">A fleet</div><p>Beckett fans out across a parallel worker fleet, integrates the branches, gates the merges. Most teams live here.</p><a class="pill" data-h href="https://discord.gg/DfJKFawURy">Get access</a></div>
-      <div class="tier rv"><div class="nm">Department</div><div class="amt">Many, running functions<span></span></div><p>Becketts running whole workflows end-to-end. When the org chart starts including software.</p><a class="pill" data-h href="mailto:jason.awz2005@gmail.com?subject=Beckett%20Department">Talk to us</a></div>
+      <div class="tier rv"><div class="nm">Solo</div><div class="amt">One coworker</div><p>A single Beckett, locking in on one task at a time. the teammate who actually delivers.</p><a class="pill" data-h href="https://discord.gg/DfJKFawURy">Get access</a></div>
+      <div class="tier soon rv"><div class="nm">Squad</div><div class="amt">A fleet</div><p>Beckett fans out across a parallel worker fleet, integrates the branches, gates the merges.</p><span class="pill disabled">Coming soon</span></div>
+      <div class="tier soon rv"><div class="nm">Department</div><div class="amt">Many, running functions<span></span></div><p>Becketts running whole workflows end-to-end. when the org chart starts including software.</p><span class="pill disabled">Coming soon</span></div>
     </div>
   </section>
 
   <!-- CTA -->
   <section class="cta" id="cta">
     <h2 class="rv">Put a coworker on it.</h2>
-    <p class="sub rv">Beckett's in invite-only beta. Come find it in Discord — and make your case.</p>
+    <p class="sub rv">Beckett's in invite-only beta. slide into the Discord and make your case — first impressions matter.</p>
     <div class="cta-row rv">
       <a class="btn btn-primary btn-lg" id="ctabtn" data-h href="https://discord.gg/DfJKFawURy">Get access →</a>
       <a class="btn btn-ghost btn-lg" data-h href="https://github.com/0xbeckett">Read the source</a>
