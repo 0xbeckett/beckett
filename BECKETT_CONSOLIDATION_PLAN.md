@@ -42,11 +42,13 @@ Beckett is a collaborative agent that teams can tag in Discord. It acts on its o
 - Documented current behavior in BASELINE_SKILLS_HOOKS.md.
 - All existing paths unchanged when new features are off.
 
-### Phase 1 — Session / Context Scoping (foundation)
-- Make every context injection explicitly session/task/server-aware.
-- Thread `sessionOrTaskId` through skills loader, memory recall, BrainContext, worker prep, and hook events.
-- Prevent cross-session pollution at the source.
-- Update perf baseline to demonstrate scoped vs mixed context.
+### Phase 1 — Session / Context Scoping (foundation) — DONE (2026-06-29)
+- Make every context injection explicitly session/task/server-aware. ✅
+- Thread `sessionOrTaskId` through skills loader, memory recall, BrainContext, worker prep, and hook events. ✅ (loader/overlay live; recall + hook-registry carry the id additively; full hook wiring → Phase 3)
+- Prevent cross-session pollution at the source. ✅ (removed the `loadAllSkills()` fallback that made skills always-on)
+- Update perf baseline to demonstrate scoped vs mixed context. ✅ (ADDITIVITY CHECK + OFF/SCOPED/ALL modes)
+- **Restored the additive invariant: OFF == baseline (1299 chars, was 7442 always-on).** Verified: typecheck clean, 16/16 tests.
+- See IMPLEMENTATION LOG in BASELINE_SKILLS_HOOKS.md for source-proven details + measurements.
 
 ### Phase 2 — Skills System
 - Complete additive loader (active list, session filter, format with headers, lean mode).
@@ -107,9 +109,15 @@ Beckett is a collaborative agent that teams can tag in Discord. It acts on its o
 ## Handoff Notes for Implementation Agent
 You can continue directly on `explore/skills-and-hooks`.
 
-Start with Phase 1 completion (make session scoping consistent across memory recall, BrainContext, and hook events).
+**Phase 0 + Phase 1 are DONE (2026-06-29).** Baseline is green (bun installed locally; tests made
+path-portable; typecheck fixed). The additive invariant was found broken (skills were always-on via
+a `loadAllSkills()` fallback) and is now restored: OFF == baseline. Session scoping is threaded
+through the skills loader (+ per-scope overlay), BrainContext, the orchestrator `ctx()`, recall
+query, and the hook registry. See the IMPLEMENTATION LOG in BASELINE_SKILLS_HOOKS.md.
 
-Then Phase 2 — make the `fleet-orchestrator` skill actually influence dispatch in an additive way.
+**Next — Phase 2:** make per-node `activeSkills` actually reach a worker end-to-end (add a `NodeRow`
+column + migration, hydrate it, have PLAN emit it), then make the `fleet-orchestrator` skill
+influence a dispatch example additively. Keep the OFF==baseline test (`tests/skills.test.ts`) green.
 
 Use the existing `BASELINE_SKILLS_HOOKS.md` and this file as the single source of truth.
 

@@ -36,6 +36,12 @@ export type Harness = "claude" | "codex";
  */
 export type DriverKind = "claude-cli-stream" | "codex-exec-oneshot";
 
+/** Canonical harness → driver-kind pairing — the single place this mapping is defined. */
+export const DRIVER_KIND_FOR: Record<Harness, DriverKind> = {
+  claude: "claude-cli-stream",
+  codex: "codex-exec-oneshot",
+};
+
 /** Reasoning depth; mapped per-harness at spawn (Spec 02 §9.1). */
 export type Effort = "low" | "medium" | "high" | "xhigh";
 
@@ -465,6 +471,8 @@ export interface NodeRecord {
   feedback: ReviewerFeedback[]; // threaded across retries
   lastReviewerId?: string; // resume-vs-fresh decisioning
   criticalPathRank?: number; // scheduler ordering hint
+  /** Additive: skills active for this node (carried from PlanNode). Empty/undefined = baseline. */
+  activeSkills?: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -702,6 +710,10 @@ export interface BrainContext {
   fields: Record<string, unknown>; // role-specific payload
   /** Additive: formatted skills content (from src/skills). Empty/undefined = existing behavior. */
   skills?: string;
+  /** Additive: skill names active for this context (else nothing loads). Empty = baseline. */
+  activeSkills?: string[];
+  /** Additive: session/task/server id this context belongs to (scopes skills + recall). */
+  sessionOrTaskId?: string;
 }
 
 // =======================================================================================
@@ -943,6 +955,9 @@ export interface RecallQuery {
   hint?: { names?: string[]; types?: NodeType[] };
   k?: number; // seeds before expansion (default 6)
   hops?: number; // link expansion depth (default 1)
+  /** Additive: session/task/server scope this recall belongs to (observability + future
+   *  per-scope partitioning). Ignored by the current global KG — no behavior change. */
+  sessionOrTaskId?: string;
 }
 
 /** The bundle recall hands the brain (Spec 08 §3). */

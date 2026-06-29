@@ -33,7 +33,6 @@
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   renameSync,
   statSync,
@@ -59,6 +58,7 @@ import type {
   Store,
 } from "../types.ts";
 import { log as rootLog } from "../log.ts";
+import { listMarkdownFiles, splitFrontmatter } from "../util/markdown.ts";
 
 // =======================================================================================
 // Tunables (Spec 08 §3, §4.2 — start conservative; favor flagging over auto-merge)
@@ -268,7 +268,11 @@ export class MemoryStore implements Memory {
     const out = new Map<string, MemoryEdge[]>();
     const inE = new Map<string, MemoryEdge[]>();
 
-    const files = this.listMarkdownFiles();
+    const files = listMarkdownFiles(this.dir, {
+      recursive: true,
+      excludeRels: ["MEMORY.md"],
+      excludeDirSegments: [".git"],
+    });
     const parsed: { node: MemoryNode; edges: MemoryEdge[] }[] = [];
     for (const path of files) {
       let raw: string;
@@ -356,24 +360,6 @@ export class MemoryStore implements Memory {
   }
 
   // ── filesystem helpers (Spec 08 §8.1) ───────────────────────────────────────────────
-
-  private listMarkdownFiles(): string[] {
-    if (!existsSync(this.dir)) return [];
-    let rels: string[];
-    try {
-      rels = readdirSync(this.dir, { recursive: true }) as string[];
-    } catch {
-      return [];
-    }
-    return rels
-      .filter(
-        (r) =>
-          r.endsWith(".md") &&
-          r !== "MEMORY.md" &&
-          !r.split(/[\\/]/).includes(".git"),
-      )
-      .map((r) => join(this.dir, r));
-  }
 
   private pathFor(name: string, type: string): string {
     const folder = TYPE_FOLDER[type] ?? slug(type) ?? "misc";
@@ -811,13 +797,9 @@ function orderedMeta(metadata: Record<string, unknown>): [string, unknown][] {
 // YAML frontmatter parser (dependency-free; handles the Spec 08 §1.2 subset)
 // =======================================================================================
 
-/** Split a `---`-fenced frontmatter block from the markdown body. */
-export function splitFrontmatter(raw: string): { frontmatter: string; body: string } {
-  const text = raw.replace(/^﻿/, "");
-  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-  if (!m) return { frontmatter: "", body: text };
-  return { frontmatter: m[1]!, body: text.slice(m[0].length) };
-}
+/** Split a `---`-fenced frontmatter block from the body. Re-exported from the shared util so
+ *  memory's historical export surface is unchanged (Spec 08 §1.2). */
+export { splitFrontmatter } from "../util/markdown.ts";
 
 /** Return the exact `---...---` frontmatter header text (including fences) of a raw file. */
 function frontmatterHead(raw: string): string {

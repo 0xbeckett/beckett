@@ -20,8 +20,9 @@
  * Import style: explicit `.ts` extensions (Foundation contract).
  */
 
-import { existsSync, readdirSync, readFileSync, statSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, statSync, mkdirSync } from "node:fs";
 import { join, resolve as resolvePath, isAbsolute, basename, relative } from "node:path";
+import { listMarkdownFiles, splitFrontmatter } from "../util/markdown.ts";
 import { userInfo } from "node:os";
 import { Database } from "bun:sqlite";
 import type {
@@ -1136,22 +1137,15 @@ function cmdLogs(ctx: Ctx, p: ParsedArgs): number | Promise<number> {
 interface MemNote { path: string; name: string; kind: string; tags: string[]; body: string; mtime: number; frontmatter: Record<string, string>; }
 
 function listMemFiles(memoryDir: string): string[] {
-  if (!existsSync(memoryDir)) return [];
-  const entries = readdirSync(memoryDir, { recursive: true }) as string[];
-  return entries.filter((e) => e.endsWith(".md") && basename(e) !== "MEMORY.md").map((e) => join(memoryDir, e));
+  return listMarkdownFiles(memoryDir, { recursive: true, excludeBasenames: ["MEMORY.md"] });
 }
 
 function parseMemNote(path: string): MemNote {
-  const text = readFileSync(path, "utf8");
+  const { frontmatter, body } = splitFrontmatter(readFileSync(path, "utf8"));
   const fm: Record<string, string> = {};
-  let body = text;
-  const m = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (m) {
-    body = m[2] ?? "";
-    for (const line of (m[1] ?? "").split("\n")) {
-      const eq = line.indexOf(":");
-      if (eq > 0) fm[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-    }
+  for (const line of frontmatter.split("\n")) {
+    const eq = line.indexOf(":");
+    if (eq > 0) fm[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
   }
   const tags = (fm.tags ?? "").replace(/[[\]]/g, "").split(",").map((s) => s.trim()).filter(Boolean);
   return { path, name: basename(path, ".md"), kind: fm.kind ?? fm.type ?? "note", tags, body, mtime: statSync(path).mtimeMs, frontmatter: fm };

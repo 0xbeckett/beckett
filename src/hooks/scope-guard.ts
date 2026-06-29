@@ -26,6 +26,7 @@
 
 import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { realpathSync } from "node:fs";
+import { renderClaudeSettings, registeredHookSpecs, type ClaudeHookSettings } from "./registry.ts";
 
 /** Env var carrying the colon-separated owned globs (Spec 02 §8.2). */
 export const OWNED_GLOBS_ENV = "BECKETT_OWNED_GLOBS";
@@ -259,30 +260,39 @@ export function scopeGuardEnv(workspace: string, owned: string[]): Record<string
   };
 }
 
+/** The tools the scope guard gates (Spec 02 §8.2). */
+export const SCOPE_GUARD_MATCHER = "Edit|Write|MultiEdit|NotebookEdit|Bash";
+
+/** Build the self-contained scope-guard command (root + owned globs baked into the args). */
+export function scopeGuardCommand(scopeGuardScriptPath: string, workspace: string, owned: string[]): string {
+  return (
+    `bun ${JSON.stringify(scopeGuardScriptPath)} ` +
+    `--root ${JSON.stringify(workspace)} ` +
+    `--owned ${JSON.stringify(owned.join(GLOB_SEP))}`
+  );
+}
+
 /**
- * Produce the claude settings object that registers this hook for a worker. Bakes the root +
- * owned globs into the command args so the hook is self-contained (no env dependency). The
- * WorkerManager writes this to `<workspace>/.claude/settings.json` (auto-loaded from cwd).
+ * Produce the claude settings object that registers the worker's hooks. The baseline is the
+ * PreToolUse scope guard (self-contained args, no env dependency); any EXTRA hooks registered
+ * in the {@link registry} (Phase 3: skills-contributed hooks) are appended. Both flow through
+ * the one {@link renderClaudeSettings} renderer, so with no extras the JSON is byte-for-byte
+ * the historical scope-guard-only settings. The WorkerManager writes this to
+ * `<workspace>/.claude/settings.json` (auto-loaded from cwd).
  */
 export function scopeGuardSettings(
   scopeGuardScriptPath: string,
   workspace: string,
   owned: string[],
-): { hooks: { PreToolUse: unknown[] } } {
-  const command =
-    `bun ${JSON.stringify(scopeGuardScriptPath)} ` +
-    `--root ${JSON.stringify(workspace)} ` +
-    `--owned ${JSON.stringify(owned.join(GLOB_SEP))}`;
-  return {
-    hooks: {
-      PreToolUse: [
-        {
-          matcher: "Edit|Write|MultiEdit|NotebookEdit|Bash",
-          hooks: [{ type: "command", command }],
-        },
-      ],
+): ClaudeHookSettings {
+  return renderClaudeSettings([
+    {
+      event: "PreToolUse",
+      matcher: SCOPE_GUARD_MATCHER,
+      command: scopeGuardCommand(scopeGuardScriptPath, workspace, owned),
     },
-  };
+    ...registeredHookSpecs(),
+  ]);
 }
 
 // =======================================================================================

@@ -2,32 +2,36 @@
 /**
  * Performance Baseline Script (run on explore/skills-and-hooks branch)
  *
- * Captures metrics for the baseline before heavy skills + hooks experimentation.
- * Focus areas relevant to skills/hooks consolidation:
- *  - Context/prompt assembly cost (skills will increase this)
- *  - Memory recall / graph build time (frequent in baseline)
+ * Captures metrics for the baseline + the additive skills/hooks layer. Focus areas:
+ *  - Context/prompt assembly cost (skills add bloat ONLY when active)
+ *  - The additive invariant: OFF == baseline (skills off → context size unchanged)
+ *  - Three skill modes: OFF (none), SCOPED (named subset), ALL (operator opt-in)
+ *  - Memory recall / graph build time
  *  - Scope guard / hook evaluation time (hot path for every tool)
- *  - Rough token/character bloat estimates
  *
- * Run with: node scripts/perf-baseline.ts
- * (Uses only node, no bun required for baseline measurement)
+ * Run with: node scripts/perf-baseline.ts   (node-only; no bun required)
  *
- * Results should be captured and added to BASELINE_SKILLS_HOOKS.md or a dedicated perf log.
+ * CONSOLIDATION: the skills loader + assembleSystem are imported from the REAL src modules
+ * (node 23.6+ strips types and resolves .ts imports), not re-copied — so this script measures
+ * exactly what production does. (Previously a hand-copied loader drifted: it reported 1299
+ * while the real always-on code did 7442.) Only `renderMemory` stays local — the real one
+ * needs a full RecallResult; here a fixed-size stand-in is fine for relative deltas.
  */
 
 import { performance } from "node:perf_hooks";
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
 
-// --- Simulate key baseline functions from current code (as of the branch) ---
+// REAL production code (single source of truth — no re-implementation):
+import {
+  loadAndFormatSkills,
+  loadAllSkills,
+} from "../src/skills/index.ts";
+import { assembleSystem } from "../src/brain/prompts.ts";
 
-function assembleSystem(...layers: (string | undefined | null)[]): string {
-  return layers.filter((l): l is string => Boolean(l && l.trim())).join("\n\n---\n\n");
-}
+// --- Local fixtures / stand-ins (not production paths) ---
 
+/** Stand-in for prompts.ts renderMemory (the real one needs a full RecallResult). */
 function renderMemory(memory?: any): string {
   if (!memory || !memory.hits?.length) return "";
-  // Simplified from src/brain/prompts.ts baseline
   const parts = memory.hits.slice(0, 6).map((h: any) => {
     const desc = (h.node?.description || "").slice(0, 200);
     return `[[${h.node?.name}]]: ${desc}`;
@@ -39,65 +43,22 @@ function ctxMemory(ctx?: any): string {
   return renderMemory(ctx?.memory);
 }
 
-function ctxSkills(ctx?: any): string {
-  const fromCtx = ctx?.skills?.trim();
-  if (fromCtx) return `SKILLS (specialized instructions):\n\n${fromCtx}`;
-
-  // Fallback: global loader (still additive; empty when no skills present)
-  const loaded = loadAndFormatSkills();
+/** Skills layer (mirrors prompts.ts ctxSkills) using the REAL loader. */
+function ctxSkills(activeNames?: string[], sessionOrTaskId?: string): string {
+  const loaded = loadAndFormatSkills(activeNames, sessionOrTaskId);
   return loaded ? `SKILLS (specialized instructions):\n\n${loaded}` : "";
 }
 
-// Simplified scope guard eval (from src/hooks/scope-guard.ts)
-function evaluateScopeGuard(input: any, cfg: any) {
+// Simplified scope guard eval (from src/hooks/scope-guard.ts) — call-overhead timing only
+function evaluateScopeGuard(input: any, _cfg: any) {
   const tool = input.tool_name || "";
-  if (!["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"].includes(tool)) {
-    return {};
-  }
-  // Minimal logic for timing
+  if (!["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"].includes(tool)) return {};
   const targets: string[] = [];
   if (tool !== "Bash") {
     const fp = input.tool_input?.file_path;
     if (fp) targets.push(fp);
   }
-  // ... (real logic elided for baseline timing; this captures call overhead)
   return targets.length === 0 ? {} : { hookSpecificOutput: { permissionDecision: "allow" } };
-}
-
-// --- NEW: Real skills loader for measurement (copied from src/skills for standalone run) ---
-function resolveSkillsDir(): string | null {
-  const home = process.env.HOME || process.env.USERPROFILE || "";
-  const candidates = [
-    join(home, ".beckett", "skills"),
-    join(process.cwd(), "skills"),
-  ];
-  for (const dir of candidates) {
-    if (existsSync(dir)) return dir;
-  }
-  return null;
-}
-
-function loadAllSkills(): any[] {
-  const dir = resolveSkillsDir();
-  if (!dir) return [];
-  const skills: any[] = [];
-  try {
-    const files = readdirSync(dir);
-    for (const file of files) {
-      if (file.endsWith(".md")) {
-        const name = file.replace(".md", "");
-        const content = readFileSync(join(dir, file), "utf8").trim();
-        if (content) skills.push({ name, content });
-      }
-    }
-  } catch {}
-  return skills;
-}
-
-function loadAndFormatSkills(): string {
-  const skills = loadAllSkills();
-  if (!skills.length) return "";
-  return skills.map((s: any) => `--- SKILL: ${s.name} ---\n${s.content}`).join("\n\n");
 }
 
 // --- Benchmark helpers ---
@@ -105,9 +66,7 @@ function loadAndFormatSkills(): string {
 function timeIt<T>(label: string, fn: () => T, iterations = 1000): { avgMs: number; result: T } {
   const start = performance.now();
   let result: T;
-  for (let i = 0; i < iterations; i++) {
-    result = fn();
-  }
+  for (let i = 0; i < iterations; i++) result = fn();
   const elapsed = performance.now() - start;
   const avg = elapsed / iterations;
   console.log(`${label} (x${iterations}): ${avg.toFixed(4)} ms avg`);
@@ -115,115 +74,95 @@ function timeIt<T>(label: string, fn: () => T, iterations = 1000): { avgMs: numb
 }
 
 function roughTokens(chars: number): number {
-  return Math.round(chars / 4); // rough estimate
+  return Math.round(chars / 4);
 }
 
-// --- Baseline Measurements ---
+// --- Fixtures shared across measurements ---
 
-console.log("=== Beckett Performance Baseline (pre-skills/hooks experiment) ===");
-console.log("Branch:", "explore/skills-and-hooks");
-console.log("Baseline commit:", "13be23f");
-console.log("Node:", process.version);
-console.log("");
-
-let totalContextChars = 0;
-
-// 1. Prompt / Context Assembly Baseline
-console.log("--- Context Assembly ---");
 const basePersona = "You are Beckett, a chill, quippy coworker... (typical thin/full persona ~800 chars)";
 const sampleMemory = {
   hits: Array.from({ length: 5 }, (_, i) => ({
-    node: { name: `proj-${i}`, description: "Long project description with facts, links, and history. ".repeat(10) }
-  }))
+    node: { name: `proj-${i}`, description: "Long project description with facts, links, and history. ".repeat(10) },
+  })),
 };
 const sampleTask = "Implement the new feature with proper tests and docs.";
+const sampleFields = "Additional context: {...}";
 
-const { avgMs: assemblyAvg } = timeIt("assembleSystem (persona + memory + skills + fields)", () => {
-  const skills = ctxSkills({}); // empty = baseline
+function assembledSize(activeNames?: string[], sessionOrTaskId?: string): number {
+  const skills = ctxSkills(activeNames, sessionOrTaskId);
   const mem = ctxMemory({ memory: sampleMemory });
-  const fields = "Additional context: {...}";
-  const full = assembleSystem(basePersona, mem, skills, fields, sampleTask);
-  totalContextChars += full.length;
-  return full;
-}, 5000);
-
-console.log(`Typical assembled context size (baseline): ~${Math.round(totalContextChars / 5000)} chars (~${roughTokens(totalContextChars / 5000)} tokens)`);
-
-// Re-measure with actual loaded skills (for delta)
-const skillsBlock = loadAndFormatSkills();
-if (skillsBlock) {
-  const { avgMs: withSkillsAvg } = timeIt("assembleSystem WITH skills", () => {
-    const mem = ctxMemory({ memory: sampleMemory });
-    const fields = "Additional context: {...}";
-    return assembleSystem(basePersona, mem, skillsBlock, fields, sampleTask);
-  }, 5000);
-  const skillsChars = skillsBlock.length;
-  console.log(`Skills content size: ${skillsChars} chars (~${roughTokens(skillsChars)} tokens)`);
+  return assembleSystem(basePersona, mem, skills, sampleFields, sampleTask).length;
 }
 
-// 2. Memory Recall / Graph Simulation
+// =======================================================================================
+
+console.log("=== Beckett Performance Baseline (skills/hooks additive layer) ===");
+console.log("Branch:", "explore/skills-and-hooks");
+console.log("Baseline commit:", "13be23f");
+console.log("Node:", process.version);
+console.log("env BECKETT_SKILLS_ALL:", process.env.BECKETT_SKILLS_ALL ?? "(unset)");
+console.log("env BECKETT_SKILLS:", process.env.BECKETT_SKILLS ?? "(unset)");
+console.log("");
+
+// 1. Context assembly — OFF (baseline) timing
+console.log("--- Context Assembly (skills OFF == baseline) ---");
+const { avgMs: assemblyAvg } = timeIt("assembleSystem (persona + memory + NO skills)", () => {
+  return assembledSize(); // no active list, no env opt-in → skills = ""
+}, 5000);
+
+const offSize = assembledSize();
+console.log(`Baseline (skills OFF) context size: ~${offSize} chars (~${roughTokens(offSize)} tokens)`);
+
+// 2. The additive invariant: OFF must equal the no-skills assembly exactly.
+const noSkillsControl = assembleSystem(basePersona, ctxMemory({ memory: sampleMemory }), "", sampleFields, sampleTask).length;
+const additive = offSize === noSkillsControl;
+console.log(`ADDITIVITY CHECK — OFF == no-skills control: ${additive ? "PASS" : "FAIL"} (off=${offSize}, control=${noSkillsControl})`);
+
+// 3. Skill modes (only loaded when explicitly active)
+console.log("\n--- Skill Modes (delta vs OFF) ---");
+const allSkills = loadAllSkills();
+if (!allSkills.length) {
+  console.log("(no skills dir found — nothing to load; OFF is the only mode)");
+} else {
+  const scopedNames = allSkills.slice(0, 2).map((s) => s.name); // a scoped subset (e.g. 2 skills)
+  const scopedSize = assembledSize(scopedNames);
+
+  // ALL mode = operator opt-in (BECKETT_SKILLS_ALL); measure without leaking env to later code.
+  const prevAll = process.env.BECKETT_SKILLS_ALL;
+  process.env.BECKETT_SKILLS_ALL = "1";
+  const allModeSize = assembledSize();
+  if (prevAll === undefined) delete process.env.BECKETT_SKILLS_ALL;
+  else process.env.BECKETT_SKILLS_ALL = prevAll;
+
+  const fullBlockLen = allSkills.map((s) => `--- SKILL: ${s.name} ---\n${s.content}`).join("\n\n").length;
+  console.log(`SCOPED [${scopedNames.join(", ")}]: ~${scopedSize} chars (~${roughTokens(scopedSize)} tok)  Δ +${scopedSize - offSize}`);
+  console.log(`ALL (operator opt-in, ${allSkills.length} skills): ~${allModeSize} chars (~${roughTokens(allModeSize)} tok)  Δ +${allModeSize - offSize}`);
+  console.log(`Full library size: ${fullBlockLen} chars (~${roughTokens(fullBlockLen)} tokens)`);
+
+  timeIt("assembleSystem WITH 2 scoped skills", () => assembledSize(scopedNames), 5000);
+}
+
+// 4. Memory recall / graph build simulation
 console.log("\n--- Memory Operations ---");
-// Simulate the frequent rebuild noted in src/memory/index.ts
 const fakeMemoryFiles = Array.from({ length: 50 }, (_, i) => `node-${i}.md`);
 function simulateRecallBuild() {
   const graph: any = { nodes: new Map(), out: new Map() };
-  fakeMemoryFiles.forEach(name => {
-    graph.nodes.set(name, { name, description: "x".repeat(300), type: "project" });
-  });
+  fakeMemoryFiles.forEach((name) => graph.nodes.set(name, { name, description: "x".repeat(300), type: "project" }));
   return graph;
 }
-timeIt("Memory graph build + recall (50 nodes, as in baseline)", simulateRecallBuild, 2000);
+timeIt("Memory graph build + recall (50 nodes)", simulateRecallBuild, 2000);
 
-// 3. Hook Evaluation (scope-guard hot path)
+// 5. Hook evaluation (scope-guard hot path)
 console.log("\n--- Hook / Scope Enforcement ---");
 const sampleHookInput = { tool_name: "Edit", tool_input: { file_path: "src/foo.ts" }, cwd: "/tmp/worktree" };
-const sampleCfg = { root: "/tmp/worktree", owned: ["src/**"] };
-timeIt("evaluateScopeGuard (per-tool call overhead)", () => {
-  return evaluateScopeGuard(sampleHookInput, sampleCfg);
-}, 100000);
+timeIt("evaluateScopeGuard (per-tool call overhead)", () => evaluateScopeGuard(sampleHookInput, {}), 100000);
 
-// 4. Overall estimates from specs/code
-console.log("\n--- Other Baseline Characteristics (from specs + code) ---");
-console.log("Worker envelope defaults (typical): turnCap ~20-50, wallClockS ~300-900");
-console.log("Concurrency cap (baseline in config): usually small (4-8) due to harness cost");
-console.log("Memory recall: rebuilt from disk on EVERY read/write (see MemoryStore)");
-console.log("Prompt layers stable for caching (persona → role → memory → state)");
-console.log("Hook calls: every write tool (Edit/Write/Bash) in Claude workers");
-
-// Summary for capture
-console.log("\n=== BASELINE METRICS SUMMARY (capture these) ===");
-console.log(`Assembly time (per call): ${assemblyAvg.toFixed(4)} ms`);
-console.log(`Simulated context size: ~${Math.round(totalContextChars / 5000)} chars`);
-console.log(`Hook eval time: sub-ms (high call volume)`);
-console.log(`Memory build (50 nodes): measured above`);
-console.log("Recommendation: Re-run this script after each iteration of skills/hooks to compare deltas.");
-console.log("Next: Add real skill loading and measure bloat + time increase.");
-
-// === Context Growth + Compaction Simulation (new for this iteration) ===
-console.log("\n--- Context Growth Simulation (multi-turn background task) ---");
-const turns = 5;
-let cumulativeContext = basePersona.length;
-const skillOverheadPerTurn = 512; // from current measurement with active skills
-let compactedSize = 0;
-
-for (let t = 1; t <= turns; t++) {
-  cumulativeContext += 300 + (t * 50); // simulate turn + feedback + tool results
-  if (skillsBlock) cumulativeContext += skillOverheadPerTurn;
-  
-  console.log(`Turn ${t}: raw ~${cumulativeContext} chars`);
-  
-  // Simple compaction stub (what a future compaction skill/hook could do)
-  if (t % 3 === 0) {
-    const before = cumulativeContext;
-    cumulativeContext = Math.floor(cumulativeContext * 0.6); // naive 40% compaction
-    compactedSize += (before - cumulativeContext);
-    console.log(`  -> Compacted at turn ${t}: saved ${before - cumulativeContext} chars`);
-  }
-}
-
-console.log(`Total raw after ${turns} turns: ~${cumulativeContext} chars`);
-console.log(`Total compacted/saved: ~${compactedSize} chars`);
-console.log("This demonstrates why compaction becomes necessary with skills + long feedback loops.");
-console.log("Future: Make compaction itself a skill or hook-triggered process (lean summary of prior turns).");
+// 6. Summary
+console.log("\n=== METRICS SUMMARY ===");
+console.log(`Assembly time (per call, OFF): ${assemblyAvg.toFixed(4)} ms`);
+console.log(`Context size OFF (baseline): ~${offSize} chars (~${roughTokens(offSize)} tok)`);
+console.log(`Additive invariant (OFF == baseline): ${additive ? "PASS" : "FAIL"}`);
+console.log("Hook eval time: sub-ms (high call volume)");
+console.log("Re-run after each iteration to track deltas. Skills cost is paid ONLY when active.");
 
 process.exit(0);

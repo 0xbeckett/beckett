@@ -46,7 +46,7 @@ import type {
   Logger,
   AcceptanceCriteria,
 } from "../types.ts";
-import { WORKER_TERMINAL } from "../types.ts";
+import { WORKER_TERMINAL, DRIVER_KIND_FOR } from "../types.ts";
 import { workerId as mintWorkerId } from "../ids.ts";
 import { log } from "../log.ts";
 import {
@@ -58,7 +58,6 @@ import {
 } from "./worktree.ts";
 import { scopeGuardSettings } from "../hooks/scope-guard.ts";
 import { loadAndFormatSkills } from "../skills/index.ts";
-import { initBaselineHooks } from "../hooks/registry.ts";
 
 // =======================================================================================
 // Injected collaborators
@@ -112,9 +111,9 @@ function consumesSlot(state: WorkerState): boolean {
   return !(WORKER_TERMINAL.has(state) || state === "review");
 }
 
-/** Driver kind for a harness (Spec 02 §2). */
+/** Driver kind for a harness (Spec 02 §2) — backed by the canonical {@link DRIVER_KIND_FOR}. */
 function driverKindFor(harness: Harness): DriverKind {
-  return harness === "claude" ? "claude-cli-stream" : "codex-exec-oneshot";
+  return DRIVER_KIND_FOR[harness];
 }
 
 /** The structured done-signal JSON schema (Spec 02 §6). Written per-worker for the driver. */
@@ -208,8 +207,6 @@ export class DefaultWorkerManager implements WorkerManager {
     this.logger = deps.logger ?? log.child("worker-manager");
     this.now = deps.now ?? Date.now;
     this.scopeGuardPath = deps.scopeGuardPath ?? join(import.meta.dir, "../hooks/scope-guard.ts");
-    // Additive: initialize registry with baseline scope guard (no behavior change)
-    initBaselineHooks(`bun ${JSON.stringify(this.scopeGuardPath)}`);
   }
 
   // ── public surface (WorkerManager contract) ──────────────────────────────────────────

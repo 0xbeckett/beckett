@@ -217,7 +217,7 @@ export class BeckettOrchestrator implements Orchestrator {
     // Spec 05 §2.2), then CLARIFY decisioning.
     if (cls.ack?.trim()) await this.post(task.channel_id, cls.ack, evt.msgId);
     this.d.store.setTaskState(task.id, TaskState.CLARIFY);
-    const ctx = await this.ctx(task.prompt);
+    const ctx = await this.ctx(task.prompt, {}, task.id);
     const clarify = await this.d.brain.clarify(this.toTaskRecordLite(this.d.store.getTask(task.id)!), ctx);
 
     if (clarify.needsClarify && clarify.question?.trim()) {
@@ -241,7 +241,7 @@ export class BeckettOrchestrator implements Orchestrator {
   private async planAndExecute(task: TaskRow): Promise<void> {
     this.d.store.setTaskState(task.id, TaskState.PLAN);
     const tr = this.toTaskRecordLite(task);
-    const ctx = await this.ctx(task.prompt);
+    const ctx = await this.ctx(task.prompt, {}, task.id);
 
     let plan: PlanOutput;
     try {
@@ -510,7 +510,7 @@ export class BeckettOrchestrator implements Orchestrator {
         worker_id: worker.id,
         payload: { alarms: alarms.map((a) => a.kind) },
       });
-      const ctx = await this.ctx();
+      const ctx = await this.ctx(undefined, {}, worker.taskId);
       let summary: WorkerSummary;
       try {
         summary = await this.d.brain.summarizeWorker(live, ctx);
@@ -661,7 +661,7 @@ export class BeckettOrchestrator implements Orchestrator {
     );
     let verdict;
     try {
-      const ctx = await this.ctx();
+      const ctx = await this.ctx(undefined, {}, worker.taskId);
       verdict = await this.d.brain.gate(rec, checks, diff, ctx);
     } catch (err) {
       // Brain failure at GATE: pause + escalate rather than gating blind (Spec 11 §6.3).
@@ -833,7 +833,7 @@ export class BeckettOrchestrator implements Orchestrator {
       fields.note = PR_PENDING_CREDS_NOTE;
     }
 
-    const ctx = await this.ctx(fresh.prompt, fields);
+    const ctx = await this.ctx(fresh.prompt, fields, fresh.id);
     let message: string;
     try {
       message = await this.d.brain.deliver(this.toTaskRecordLite(fresh), ctx);
@@ -883,7 +883,7 @@ export class BeckettOrchestrator implements Orchestrator {
 
     let message: string;
     try {
-      message = await this.d.brain.escalationVoice(escalation, await this.ctx());
+      message = await this.d.brain.escalationVoice(escalation, await this.ctx(undefined, {}, task.id));
     } catch {
       message =
         `${escalation.reason}\n\n` +
@@ -1457,17 +1457,27 @@ export class BeckettOrchestrator implements Orchestrator {
     }
   }
 
-  /** Build a BrainContext with optional memory recall + role fields. */
-  private async ctx(recallText?: string, fields: Record<string, unknown> = {}): Promise<BrainContext> {
+  /**
+   * Build a BrainContext with optional memory recall + role fields. `sessionOrTaskId` scopes
+   * the context explicitly (skills overlay + recall tagging) so one task/session/server's
+   * context never bleeds into another's — the "couldn't tell what belonged where" fix. It is
+   * additive: when omitted, and with no skills active, the assembled prompt is byte-for-byte
+   * the pre-skills baseline.
+   */
+  private async ctx(
+    recallText?: string,
+    fields: Record<string, unknown> = {},
+    sessionOrTaskId?: string,
+  ): Promise<BrainContext> {
     let memory: RecallResult | undefined;
     if (recallText) {
       try {
-        memory = await this.d.memory.recall({ text: recallText });
+        memory = await this.d.memory.recall({ text: recallText, sessionOrTaskId });
       } catch {
         memory = undefined;
       }
     }
-    return { persona: "", memory, fields };
+    return { persona: "", memory, fields, sessionOrTaskId };
   }
 
   /** A minimal in-memory TaskRecord projection the Brain role prompts consume. */

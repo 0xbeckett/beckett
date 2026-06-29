@@ -222,13 +222,103 @@ This directly supports the vision of an agent that can be tagged in for collabor
 
 We will experiment with this via skills on the branch (additive only).
 
-## Next Iterations Planned on This Branch
-- Add a concrete "harness-selector" skill example.
-- Extend perf baseline to model different context growth rates per harness.
-- Make the active-skills path in PLAN more explicit (still additive).
-- Explore hook points that could help observability differently for each harness.
+## Coherent Plan: Integrating Kew Ideas into Beckett (Skills + Hooks + Fleet + Memory + Sandbox)
 
-## Fleet Orchestration Skill (from your local Claude/Codex setup)
+**Branch only**: All work on `explore/skills-and-hooks`. No main commits. Everything additive and non-breaking. Core (worktrees, harness dispatch, steering/nudges, DAG/orchestrator, review/gate, own identity/agency, persistence) remains untouched. Changes only extend context assembly, PLAN outputs, hooks, and memory via skills.
+
+**Vision Alignment** (from transcript + your feedback):
+- Beckett = collaborative agent teams tag for background offload + feedback steering.
+- First-class Claude (steering/feedback loops, interrupts) + Codex (implementation).
+- Own GH identity, per-server/org isolation (containers in vision).
+- Hooks for claude-p observability.
+- Solve context/session problem ("could not determine what context belonged to what session" → agent "didnt know anything").
+- Long-running tasks need compaction.
+- Fleet-style coordination for multi-harness tasks with independence + reconciliation.
+
+**Phased Plan** (logical order, iterative, measurable):
+
+### Phase 0: Baseline & Safety (COMPLETE)
+- Perf baseline script + metrics (context size, assembly time, hook eval, memory rebuild, multi-turn growth + compaction simulation).
+- Document current behavior for prompts, memory, hooks, workers, harness asymmetry.
+- Update BASELINE_SKILLS_HOOKS.md with vision, problems (context scoping, compaction, harness usage), and this plan.
+- All tests/fake-harness paths must remain identical when features are off.
+
+### Phase 1: Session/Context Scoping (FOUNDATION)
+- Make every context injection (skills, memory, prompts) explicitly session/task/server-aware.
+- Thread `sessionOrTaskId` (or channel/server/task) through loader, BrainContext, worker prep.
+- Prevent cross-session pollution at the source.
+- Hook events tagged with session id for observability.
+- Update perf baseline to simulate cross-session vs scoped injection.
+- Add to skills (e.g., scoped loading in fleet-orchestrator).
+
+### Phase 2: Skills System (Kew + Fleet Patterns)
+- Solid declarative .md skills loader (already started: active list, format with headers, session filter).
+- Core skills from Kew/fleet:
+  - harness-selector (Claude for steering/feedback sessions; Codex for impl).
+  - fleet-orchestrator (multi-fleet coordination with Matryoshka grounding/reconciliation).
+  - feedback-steering (take teammate feedback, steer without losing context).
+  - research, verify (from Kew).
+- Fleet discipline: orchestrator dispatches independent legs; every claim reconciled (via gate/hook/skill).
+- Good Codex prompts/skills for project/implementation work ported as reusable skills.
+- Skills can declare requested hooks or compaction hints.
+- Integrate into PLAN (additive `activeSkills` per node) and worker/brain context (additive append).
+
+### Phase 3: Proper Hooks (Observability + Enforcement)
+- Generalize existing scope-guard into pluggable registry (already started).
+- Harness-specific: richer Pre/PostToolUse for Claude (steering visibility); normalized for Codex.
+- Session tagging on every hook event.
+- Reconciliation hooks (force source citation check before accepting worker output).
+- Skills can contribute hooks (e.g., verify skill adds extra checks).
+- Use for compaction triggers or context scoping enforcement.
+
+### Phase 4: Memory + Compaction (Kew-Style Scoping)
+- Adopt Kew memory patterns: scoped (per-operator/server/person/task/general), gated writes, relevance-filtered injection, atomic ops via special blocks, dedup.
+- Make Beckett's KG respect session boundaries (per-task/per-server slices + ledger).
+- Bounded injection + explicit compaction (per-session, lean summaries of prior turns/feedback).
+- Compaction as skill or hook-triggered (use compactContext stub; make it session-aware).
+- Re-inject only scoped reconciled ledger on resume/feedback.
+- Update perf baseline to measure scoped vs polluted context growth + compaction savings.
+
+### Phase 5: Sandbox/Isolation Enhancements
+- Leverage existing worktrees + hooks as "sandbox".
+- Enhance for Codex: more secret-free launches (inspired by Kew builder — don't mount full agent context/memory into impl workers).
+- Per-harness isolation: Claude steering sessions get full feedback context; Codex impl legs get narrow task-only context.
+- Hooks for sandbox boundaries (e.g., scope + secret redaction).
+
+### Phase 6: Harness Specialization & Fleet Coordination
+- Document/use: Claude for steering/feedback-heavy background tasks; Codex for scoped implementation.
+- Fleet-orchestrator skill coordinates mixed fleets (e.g., Codex impl + Claude steering oversight + audit leg).
+- Reconciliation via gate + hooks (Matryoshka style: fleets return artifacts; orchestrator verifies).
+- Per-session fleet limits, operator-style gates for irreversible.
+
+### Phase 7: Integration, Measurement & Polish
+- Wire skills/hooks into existing paths (manager, brain prompts, worktree prep, supervise) — always additive/fallback to current behavior.
+- Re-run perf baseline after every phase (track tokens, time, bloat, compaction wins).
+- Session-aware compaction + scoping prevents the "didnt know anything" failure.
+- Update open-questions.md / specs references (additive notes only).
+- Ensure per-server vision supported (skills/memory scoped by server).
+
+### Phase 8: Documentation & PR Readiness
+- Keep BASELINE_SKILLS_HOOKS.md as living plan + measurements.
+- Create clean handoff notes (what was added, how it preserves core, how it solves context/session/harness/compaction).
+- When ready: you can push the branch and open PRs (or ask me to generate diffs). Use for "open questions on PR".
+
+**Principles**:
+- Additive only. If disabled (no skills dir, empty active list), Beckett behaves exactly as baseline.
+- Respect core invariants (steering via claude-p, worktree isolation, own identity, DAG, gate).
+- Session-first: every new thing carries explicit session/task/server id.
+- Measure everything (perf script is the source of truth).
+- Align to vision: background collaboration, feedback steering, Claude+Codex first-class, isolation, observability via hooks.
+
+This plan is coherent, ordered, and directly addresses the transcript problems while building on Kew's strengths (scoped memory, sandbox isolation, fleet orchestration with good Codex skills/prompts) and your fleet setup.
+
+---
+
+Current status on branch: Phases 0-2 partially complete (baseline + session threading + several skills including fleet-orchestrator + hooks registry stub + compaction simulation).
+
+Next immediate step: Finish Phase 1 (full session scoping in more paths) and Phase 2 (make fleet-orchestrator actually influence a dispatch example additively). 
+
+Tell me the priority or if you want me to execute the next chunk now.
 
 You mentioned a skill that calls a "fleet", stored on your bot drive, with strong Codex prompts and skills for project work.
 
@@ -282,3 +372,101 @@ How this affects skills + hooks + compaction + harness usage:
 This is why we're prioritizing clean declarative skills + proper hooks: they give us explicit points to enforce and observe session boundaries without rewriting the core orchestrator.
 
 We'll use this lens for all future iterations on the branch.
+
+---
+
+# IMPLEMENTATION LOG (live)
+
+## Phase 0 — Green baseline re-established (2026-06-29)
+
+The branch did not actually build/test cleanly when handed off. Fixed, additively:
+
+- **Tooling:** `bun` was not installed; installed locally to `~/.bun` (no sudo, reversible).
+  Runtime is bun (`bun:sqlite`, `bun:test`, `.ts` imports); node can run only the perf script.
+- **Tests were Mac-only:** all 4 e2e files hardcoded `REPO_ROOT="/Users/jason/Code/beckett"`
+  and a `/private/tmp/...` scratch path. Made portable: `REPO_ROOT = join(import.meta.dir, "..")`
+  and scratch = `$BECKETT_TEST_SCRATCH || os.tmpdir()`. Only path scaffolding changed — no test
+  logic or assertions touched.
+- **Pre-existing typecheck break:** `manager.ts` read `node.activeSkills` but `NodeRecord` had no
+  such field (only `PlanNode` did). Added optional `NodeRecord.activeSkills` (additive).
+
+Result: `bun run typecheck` clean · `bun test` 6/6 · `node scripts/perf-baseline.ts` runs.
+
+## Phase 1 — Session/context scoping foundation (2026-06-29)
+
+### Critical finding (source-proven): the additive invariant was BROKEN
+
+`loadActiveSkills(undefined)` fell back to `loadAllSkills()` (old `skills/index.ts:85-87`). Because
+the `skills/` dir was seeded on this branch, **every** worker system-append and every CLARIFY/PLAN
+prompt silently injected all 5 skills. Context assembly was **7442 chars (~1861 tok)** vs the
+documented **~1299 chars (~325 tok)** baseline. "Skills off" did not equal baseline — there was no
+"off". (Skills/registry confirmed absent at baseline tag `13be23f`; per-node `activeSkills` also
+could not persist — no `NodeRow` column, never hydrated — so it was runtime-inert.)
+
+### Fix (additive, reversible)
+
+- **`src/skills/index.ts` rewritten.** Empty/undefined selection → `[]` → `""` (no load-all
+  fallback). A skill loads only when (1) explicitly named in an active list, or (2) an operator
+  opt-in is set: `BECKETT_SKILLS_ALL=1` (whole library) or `BECKETT_SKILLS=a,b` (named). Default
+  OFF. New `SkillScope` + per-scope overlay dir `<skillsDir>/scoped/<id>/*.md` that loads ONLY for
+  its scope and overrides a same-named base skill — concrete per-session/per-server isolation.
+- **`sessionOrTaskId` made load-bearing** (was a TODO): threaded into the loader (scopes the
+  overlay), `BrainContext` (new optional `activeSkills` + `sessionOrTaskId`), the orchestrator's
+  `ctx()` builder, all 6 `ctx()` call sites (clarify/plan/supervise/gate/deliver/escalation), and
+  the `RecallQuery` (additive field, ignored by the current global KG → no behavior change). Removed
+  the `(ctx as any)` casts in `prompts.ts`.
+- **Hook registry** gained an optional `sessionOrTaskId` on `HookRegistration` (structural prep for
+  Phase 3; registry is still inert, so zero behavior change).
+- **`scripts/perf-baseline.ts`** rewritten to mirror the real semantics and prove the invariant:
+  it now reports an ADDITIVITY CHECK and measures OFF / SCOPED / ALL modes.
+- **`tests/skills.test.ts`** added (10 hermetic unit tests) — the e2e suite never asserted on
+  prompt/skills content, so these lock in OFF==baseline, precedence, opt-in, and scoped overlay.
+
+### Measurements (`node scripts/perf-baseline.ts`)
+
+| Mode | Context size | ~tokens | Δ vs OFF |
+|------|-------------|---------|----------|
+| **OFF (default)** | **1299 chars** | **325** | — (== baseline; ADDITIVITY CHECK **PASS**) |
+| SCOPED (2 named skills) | 5454 chars | 1364 | +4155 |
+| ALL (operator opt-in, 5 skills) | 7442 chars | 1861 | +6143 |
+
+Before the fix, OFF was effectively the 7442-char "ALL" row (always-on). After: skills cost is paid
+**only when explicitly activated**. Assembly time OFF ≈ 0.003 ms/call; full library ≈ 6100 chars.
+
+Verification: `bun run typecheck` clean · `bun test` **16/16** (6 e2e + 10 new unit).
+
+### Deferred to later phases (by design)
+- Per-node `activeSkills` **persistence** (NodeRow column + migration) and PLAN **emission** → Phase 2.
+- Real per-server **memory partitioning** (KG slices) → Phase 4 (only the scope id is threaded now).
+- ~~Wiring the hook registry into settings generation~~ → done in Consolidation B below.
+
+## Consolidation pass — behavior-preserving refactors (2026-06-29)
+
+The repo's stated goal was *consolidation* ("less sloppy"), not just additive features. Found and
+fixed four duplications/dead-code sites, each with a test proving identical output. (Tooling note:
+`grep` treats several src files as binary — they contain UTF-8 like `…`/`→`/BOM — so audits must use
+`grep -a`; plain grep silently skips them.)
+
+- **B — Hook registry was dead code → now the single source of truth.** `registry.ts`'s
+  `getHooksForEvent`/`initBaselineHooks` had **zero consumers**; real settings came from a separate
+  hardcoded path in `scope-guard.ts`. Now both flow through one `renderClaudeSettings`: scope-guard
+  supplies its per-worker spec, the registry supplies any extras (Phase-3 ready). `tests/hooks.test.ts`
+  asserts **byte-identical** JSON to the old output when no extras are registered. Dropped the dead
+  `initBaselineHooks` call from the manager.
+- **A — Three markdown parsers/listers → one.** `memory`, `cli` (`bk mem`), and `skills` each had
+  their own `.md` lister, and the CLI reimplemented frontmatter splitting. Extracted
+  `src/util/markdown.ts` (`listMarkdownFiles` + `splitFrontmatter`); each caller passes options that
+  reproduce its exact prior filtering (memory: exact-rel `MEMORY.md` + `.git`; cli: basename; skills:
+  non-recursive). `tests/util-markdown.test.ts` pins those differences. (One intentional micro-change:
+  skills `.md` matching is now case-sensitive like the rest of the codebase.)
+- **C — perf script no longer hand-copies the loader.** `scripts/perf-baseline.ts` now `import`s the
+  REAL `loadAndFormatSkills`/`loadAllSkills`/`assembleSystem` from `src/` (node strips types). This
+  killed the drift that produced the false 1299 baseline while production did 7442. Numbers unchanged
+  (OFF 1299 / SCOPED 5454 / ALL 7442); opt-in correctly flips the ADDITIVITY CHECK to FAIL.
+- **D — harness→driverKind mapping centralized.** Was a hardcoded ternary in `manager.ts`; now the
+  canonical `DRIVER_KIND_FOR` map in `types.ts` (alongside `DriverKind`/`WORKER_TERMINAL`), consumed
+  by the manager. Pure refactor.
+
+Net: **−1 dead module path, −2 duplicate parsers, −1 drift source.** New shared module
+`src/util/markdown.ts`. Verification: typecheck clean, **28/28 tests** (6 e2e + 10 skills + 5 hooks +
+7 util), additive invariant PASS.

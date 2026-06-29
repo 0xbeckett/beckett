@@ -186,13 +186,16 @@ function ctxMemory(ctx?: BrainContext): string {
   return renderMemory(ctx?.memory);
 }
 
-/** Pull skills (additive, from src/skills). Returns "" if none → no behavior change. */
-function ctxSkills(ctx?: BrainContext, activeSkills?: string[]): string {
+/**
+ * Pull skills (additive, from src/skills). Returns "" if none → no behavior change.
+ * A pre-formatted `ctx.skills` wins; otherwise resolve the context's active list, scoped by
+ * its session/task id. With no active skills and no operator opt-in this yields "" (baseline).
+ */
+function ctxSkills(ctx?: BrainContext): string {
   const fromCtx = ctx?.skills?.trim();
   if (fromCtx) return `SKILLS (specialized instructions):\n\n${fromCtx}`;
 
-  // Fallback: support active list (additive, for per-task collaboration skills)
-  const loaded = loadAndFormatSkills(activeSkills);
+  const loaded = loadAndFormatSkills(ctx?.activeSkills, ctx?.sessionOrTaskId);
   return loaded ? `SKILLS (specialized instructions):\n\n${loaded}` : "";
 }
 
@@ -383,7 +386,7 @@ export function clarifyUser(task: TaskRecord, ctx?: BrainContext): string {
 ${task.prompt}
 """`,
     ctxMemory(ctx),
-    ctxSkills(ctx, (ctx as any)?.activeSkills), // additive path for per-node skills
+    ctxSkills(ctx), // additive: "" unless skills are active for this context
     renderFields(ctx),
     "Decide: does this need ONE clarifying question before planning, or do you proceed with recorded assumptions?",
   );
@@ -401,7 +404,7 @@ ${task.prompt}
 """`,
     assumptions,
     ctxMemory(ctx),
-    ctxSkills(ctx, (ctx as any)?.activeSkills), // additive path for per-node skills
+    ctxSkills(ctx), // additive: "" unless skills are active for this context
     renderFields(ctx),
     "Produce the PlanOutput: the smallest correct DAG with mandatory per-node criteria, suggested workers, envelopes, and initial check-ins.",
   );
