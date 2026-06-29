@@ -3,310 +3,321 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Beckett — hire the coworker, not the tool</title>
-<meta name="description" content="Beckett is an agentic coworker. Not a chatbot — a colleague who runs on its own machine, supervises its own worker fleet, reviews the work, and ships. This is the pitch." />
-<meta name="theme-color" content="#0a0a0c" />
-<meta property="og:title" content="Beckett — hire the coworker, not the tool" />
-<meta property="og:description" content="An agentic coworker that spawns its own fleet, reviews their work, and ships while you sleep. Here's why you'd bet on it." />
+<title>Beckett</title>
+<meta name="description" content="Beckett is an agentic coworker. It takes the goal, does the work, and ships it. Watch it work." />
+<meta name="theme-color" content="#0c0b09" />
+<meta property="og:title" content="Beckett — software that clocks in" />
+<meta property="og:description" content="An agentic coworker. It takes the goal, does the work, ships it. You supervise — you don't type." />
 <meta property="og:type" content="website" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0a0c'/%3E%3Crect x='10' y='12' width='4' height='4' fill='%23ff6a3d'/%3E%3Crect x='18' y='12' width='4' height='4' fill='%23ff6a3d'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230c0b09'/%3E%3Crect x='9' y='13' width='4' height='4' fill='%23ff5a26'/%3E%3Crect x='19' y='13' width='4' height='4' fill='%23ff5a26'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#0a0a0c;
-    --bg-2:#0e0e12;
-    --panel:#121217;
-    --ink:#ECE7DE;
-    --dim:rgba(236,231,222,.52);
-    --faint:rgba(236,231,222,.30);
-    --hair:rgba(236,231,222,.10);
-    --hair-2:rgba(236,231,222,.06);
-    --orange:#ff6a3d;
-    --orange-soft:#ffb38f;
-    --orange-glow:rgba(255,106,61,.22);
-    --green:#7ee0a8;
-    --ease:cubic-bezier(.2,.7,.2,1);
-    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,monospace;
-    --sans:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --bg:#0c0b09;
+    --ink:#ECE3D2;
+    --dim:rgba(236,227,210,.50);
+    --faint:rgba(236,227,210,.26);
+    --line:rgba(236,227,210,.13);
+    --line-2:rgba(236,227,210,.07);
+    --accent:#FF5A26;
+    --green:#86d99a;
+    --serif:"Fraunces",Georgia,serif;
+    --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+    --eo:cubic-bezier(.16,1,.3,1);
+    --step:8px;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+  html{-webkit-text-size-adjust:100%}
   body{
-    background:var(--bg);
-    color:var(--ink);
-    font-family:var(--sans);
-    line-height:1.55;
-    -webkit-font-smoothing:antialiased;
-    overflow-x:hidden;
+    background:var(--bg);color:var(--ink);
+    font-family:var(--mono);font-weight:400;font-size:15px;line-height:1.6;
+    -webkit-font-smoothing:antialiased;overflow-x:hidden;
   }
-  ::selection{background:var(--orange);color:#0a0a0c}
+  ::selection{background:var(--accent);color:#0c0b09}
   a{color:inherit;text-decoration:none}
+  body[data-cursor]{cursor:none}
 
-  /* ── ambient grain + glow ── */
-  body::before{
-    content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
-    background:
-      radial-gradient(60vw 50vh at 78% -10%, var(--orange-glow), transparent 60%),
-      radial-gradient(50vw 40vh at 8% 8%, rgba(255,106,61,.07), transparent 60%);
+  /* film grain — flat, not a gradient orb */
+  body::after{
+    content:"";position:fixed;inset:0;z-index:9;pointer-events:none;opacity:.035;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
-  .wrap{position:relative;z-index:1;max-width:1080px;margin:0 auto;padding:0 28px}
 
-  /* ── nav ── */
-  nav{
-    position:sticky;top:0;z-index:20;
-    backdrop-filter:blur(12px);
-    background:linear-gradient(var(--bg),rgba(10,10,12,.72));
-    border-bottom:1px solid var(--hair-2);
+  /* custom cursor */
+  .cur{position:fixed;top:0;left:0;width:9px;height:9px;border-radius:50%;background:var(--accent);
+    z-index:60;pointer-events:none;transform:translate(-50%,-50%);mix-blend-mode:difference;
+    transition:width .25s var(--eo),height .25s var(--eo),opacity .3s}
+  .cur.lg{width:46px;height:46px;background:transparent;border:1px solid var(--accent)}
+  @media(hover:none){.cur{display:none}body[data-cursor]{cursor:auto}}
+
+  .wrap{width:100%;max-width:1180px;margin:0 auto;padding:0 32px}
+
+  /* nav */
+  nav{position:fixed;top:0;left:0;right:0;z-index:40;padding:22px 0;
+    mix-blend-mode:difference}
+  .nav-in{max-width:1180px;margin:0 auto;padding:0 32px;display:flex;justify-content:space-between;align-items:center}
+  .mark{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:13px;letter-spacing:.04em;color:#fff}
+  .mark img{width:24px;height:24px;display:block;border-radius:5px}
+  .nav-r{font-family:var(--mono);font-size:13px;color:#fff;display:flex;gap:24px;align-items:center}
+  .nav-r .st{display:flex;align-items:center;gap:8px}
+  .nav-r .st i{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pp 2.4s var(--eo) infinite}
+  @keyframes pp{50%{opacity:.3}}
+
+  /* hero */
+  .hero{min-height:100svh;display:flex;flex-direction:column;justify-content:center;padding:120px 0 48px;position:relative}
+  .hmark{position:absolute;top:120px;right:0;width:104px;height:104px;border:1px solid var(--line);border-radius:16px;
+    display:grid;place-items:center;overflow:hidden;background:#0a0908;transition:border-color .4s var(--eo),transform .6s var(--eo)}
+  .hmark img{width:104px;height:104px;display:block;transform:scale(1.08)}
+  .hmark:hover{border-color:var(--accent);transform:translateY(-3px) rotate(-2deg)}
+  @media(max-width:720px){.hmark{width:72px;height:72px;top:96px}.hmark img{width:72px;height:72px}}
+  .eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:.04em;color:var(--accent);margin-bottom:36px}
+  h1{font-family:var(--serif);font-weight:300;letter-spacing:-.035em;line-height:.92;
+    font-size:clamp(58px,13.5vw,196px);font-optical-sizing:auto}
+  h1 em{font-style:italic;font-weight:400;color:var(--accent)}
+  .hero-foot{margin-top:44px;display:flex;justify-content:space-between;align-items:flex-end;gap:32px;flex-wrap:wrap}
+  .hero-foot p{max-width:42ch;color:var(--dim);font-size:15px;line-height:1.65}
+  .hero-foot p b{color:var(--ink);font-weight:500}
+  .scrollcue{font-family:var(--mono);font-size:12px;color:var(--faint);display:flex;align-items:center;gap:10px;white-space:nowrap}
+  .scrollcue i{display:block;width:1px;height:34px;background:linear-gradient(var(--accent),transparent);animation:drop 1.8s var(--eo) infinite}
+  @keyframes drop{0%{transform:scaleY(0);transform-origin:top}50%{transform:scaleY(1);transform-origin:top}51%{transform-origin:bottom}100%{transform:scaleY(0);transform-origin:bottom}}
+
+  /* word-reveal mechanism */
+  .reveal{display:inline-block;overflow:hidden;vertical-align:top}
+  .reveal > span{display:inline-block;transform:translateY(106%);transition:transform .9s var(--eo)}
+  .reveal.in > span{transform:translateY(0)}
+
+  .fade{opacity:0;transform:translateY(16px);transition:opacity .8s var(--eo),transform .8s var(--eo)}
+  .fade.in{opacity:1;transform:none}
+
+  /* terminal — the centerpiece */
+  .stage{padding:40px 0 96px}
+  .stage-label{font-family:var(--mono);font-size:13px;color:var(--faint);margin-bottom:18px;display:flex;align-items:center;gap:10px}
+  .stage-label b{color:var(--accent);font-weight:400}
+  .term{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#0a0908;box-shadow:0 50px 120px -60px #000}
+  .tbar{display:flex;align-items:center;gap:7px;padding:14px 16px;border-bottom:1px solid var(--line-2)}
+  .tbar i{width:10px;height:10px;border-radius:50%;background:var(--line)}
+  .tbar i:nth-child(1){background:#ff5f56}.tbar i:nth-child(2){background:#ffbd2e}.tbar i:nth-child(3){background:#27c93f}
+  .tbar span{margin-left:10px;font-family:var(--mono);font-size:12px;color:var(--faint)}
+  .tbody{padding:26px 24px;font-family:var(--mono);font-size:14.5px;line-height:2.05;min-height:300px}
+  .tbody div{white-space:pre-wrap;word-break:break-word}
+  .tbody .u{color:var(--accent)}
+  .tbody .b{color:var(--ink)}
+  .tbody .m{color:var(--dim)}
+  .tbody .ok{color:var(--green)}
+  .ic{display:inline-block;width:8px;height:17px;background:var(--accent);vertical-align:-3px;margin-left:3px;animation:bl 1.05s steps(2) infinite}
+  @keyframes bl{50%{opacity:0}}
+
+  /* statements — one idea each, big type */
+  .beats{padding:40px 0}
+  .beat{padding:84px 0;border-top:1px solid var(--line-2);display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:baseline}
+  .beat .n{font-family:var(--mono);font-size:13px;color:var(--accent)}
+  .beat h2{font-family:var(--serif);font-weight:300;letter-spacing:-.025em;line-height:1;font-size:clamp(34px,5.6vw,72px)}
+  .beat .side{align-self:end}
+  .beat p{color:var(--dim);font-size:15px;max-width:34ch;line-height:1.65}
+  .beat:nth-child(even){grid-template-columns:1fr 1fr}
+
+  /* marquee */
+  .marq{padding:46px 0;border-top:1px solid var(--line-2);border-bottom:1px solid var(--line-2);overflow:hidden;white-space:nowrap;margin-top:40px}
+  .marq-t{display:inline-block;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(40px,8vw,104px);letter-spacing:-.02em;color:var(--faint);animation:scroll 32s linear infinite}
+  .marq-t span{color:var(--accent);font-style:normal}
+  @keyframes scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+
+  /* ask */
+  .ask{min-height:88svh;display:flex;flex-direction:column;justify-content:center;padding:96px 0;border-top:1px solid var(--line-2)}
+  .ask h2{font-family:var(--serif);font-weight:300;letter-spacing:-.035em;line-height:.95;font-size:clamp(52px,11vw,156px)}
+  .ask h2 em{font-style:italic;color:var(--accent);font-weight:400}
+  .ask-foot{margin-top:54px;display:flex;justify-content:space-between;align-items:flex-end;gap:32px;flex-wrap:wrap}
+  .btn{font-family:var(--mono);font-size:14px;color:var(--bg);background:var(--ink);padding:16px 26px;border-radius:100px;
+    display:inline-flex;align-items:center;gap:10px;transition:transform .4s var(--eo),background .3s;will-change:transform}
+  .btn:hover{background:var(--accent)}
+  .ask-foot .alt{font-family:var(--mono);font-size:13px;color:var(--dim)}
+  .ask-foot .alt a{color:var(--ink);border-bottom:1px solid var(--accent);padding-bottom:2px}
+
+  footer{padding:34px 0;border-top:1px solid var(--line-2)}
+  .f-in{display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:12.5px;color:var(--faint)}
+  .f-in a:hover{color:var(--accent)}
+
+  @media(max-width:720px){
+    .beat{grid-template-columns:1fr;gap:18px;padding:56px 0}
+    .beat .side{align-self:start}
+    .hero{padding:104px 0 40px}
+    .hero-foot .scrollcue{display:none}
   }
-  .nav-in{max-width:1080px;margin:0 auto;padding:16px 28px;display:flex;align-items:center;justify-content:space-between;gap:16px}
-  .brand{display:flex;align-items:center;gap:11px;font-family:var(--mono);font-weight:600;letter-spacing:.02em}
-  .brand img{width:26px;height:26px;display:block}
-  .brand b{font-weight:600}
-  .brand .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);animation:pulse 2.4s var(--ease) infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-  .nav-cta{font-family:var(--mono);font-size:13px;color:var(--dim);border:1px solid var(--hair);padding:8px 14px;border-radius:8px;transition:.25s var(--ease)}
-  .nav-cta:hover{color:var(--ink);border-color:var(--orange);box-shadow:0 0 0 1px var(--orange-glow)}
-
-  /* ── hero ── */
-  header{padding:84px 0 64px;position:relative}
-  .eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--orange);margin-bottom:26px;display:flex;align-items:center;gap:10px}
-  .eyebrow::before{content:"";width:26px;height:1px;background:var(--orange)}
-  h1{
-    font-family:var(--sans);
-    font-size:clamp(38px,7vw,76px);
-    line-height:1.02;
-    letter-spacing:-.03em;
-    font-weight:680;
-    max-width:15ch;
+  @media(prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+    .reveal>span{transform:none}.fade{opacity:1;transform:none}.marq-t{animation:none}
   }
-  h1 .accent{color:var(--orange)}
-  .sub{margin-top:28px;font-size:clamp(17px,2.3vw,21px);color:var(--dim);max-width:54ch;line-height:1.5}
-  .sub b{color:var(--ink);font-weight:600}
-  .hero-row{display:flex;align-items:flex-end;gap:48px;flex-wrap:wrap}
-  .hero-text{flex:1 1 460px}
-  .hero-mark{flex:0 0 220px;position:relative}
-  .hero-mark img{width:100%;height:auto;filter:drop-shadow(0 0 40px var(--orange-glow));opacity:.96}
-  .cta-row{margin-top:38px;display:flex;gap:14px;flex-wrap:wrap}
-  .btn{font-family:var(--mono);font-size:14px;padding:13px 22px;border-radius:10px;transition:.25s var(--ease);display:inline-flex;align-items:center;gap:9px}
-  .btn-primary{background:var(--orange);color:#0a0a0c;font-weight:600}
-  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 30px -8px var(--orange-glow)}
-  .btn-ghost{border:1px solid var(--hair);color:var(--dim)}
-  .btn-ghost:hover{color:var(--ink);border-color:var(--faint)}
-
-  /* ── terminal ── */
-  .term{
-    margin-top:54px;border:1px solid var(--hair);border-radius:14px;overflow:hidden;
-    background:linear-gradient(180deg,var(--panel),var(--bg-2));
-    box-shadow:0 30px 80px -40px #000;
-  }
-  .term-bar{display:flex;align-items:center;gap:8px;padding:13px 16px;border-bottom:1px solid var(--hair-2);background:rgba(0,0,0,.2)}
-  .term-bar i{width:11px;height:11px;border-radius:50%;background:var(--hair);display:block}
-  .term-bar i:nth-child(1){background:#ff5f56}.term-bar i:nth-child(2){background:#ffbd2e}.term-bar i:nth-child(3){background:#27c93f}
-  .term-bar span{margin-left:8px;font-family:var(--mono);font-size:12px;color:var(--faint)}
-  .term-body{padding:22px 20px;font-family:var(--mono);font-size:14px;line-height:1.85;min-height:188px}
-  .term-body .l{display:block;white-space:pre-wrap;word-break:break-word}
-  .term-body .p{color:var(--orange)}
-  .term-body .c{color:var(--ink)}
-  .term-body .o{color:var(--dim)}
-  .term-body .ok{color:var(--green)}
-  .cursor{display:inline-block;width:8px;height:16px;background:var(--orange);vertical-align:-2px;margin-left:2px;animation:blink 1s steps(2) infinite}
-  @keyframes blink{50%{opacity:0}}
-
-  /* ── section scaffolding ── */
-  section{padding:74px 0;border-top:1px solid var(--hair-2)}
-  .sec-label{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin-bottom:18px}
-  h2{font-size:clamp(26px,4vw,40px);letter-spacing:-.02em;font-weight:640;line-height:1.12;max-width:20ch}
-  h2 .accent{color:var(--orange)}
-  .lede{margin-top:18px;font-size:18px;color:var(--dim);max-width:60ch}
-  .lede b{color:var(--ink);font-weight:600}
-
-  /* ── thesis split ── */
-  .split{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:40px}
-  .card{border:1px solid var(--hair);border-radius:14px;padding:26px;background:var(--bg-2);transition:.3s var(--ease)}
-  .card:hover{border-color:var(--faint);transform:translateY(-3px)}
-  .card .tag{font-family:var(--mono);font-size:12px;letter-spacing:.04em;margin-bottom:14px}
-  .card.them .tag{color:var(--faint)}
-  .card.me .tag{color:var(--orange)}
-  .card h3{font-size:20px;font-weight:620;letter-spacing:-.01em;margin-bottom:10px}
-  .card p{color:var(--dim);font-size:15px}
-  .card.me{box-shadow:inset 0 0 0 1px var(--orange-glow)}
-
-  /* ── capabilities ── */
-  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;margin-top:40px;background:var(--hair-2);border:1px solid var(--hair-2);border-radius:14px;overflow:hidden}
-  .cell{background:var(--bg);padding:28px 24px;transition:.3s var(--ease)}
-  .cell:hover{background:var(--bg-2)}
-  .cell .n{font-family:var(--mono);font-size:12px;color:var(--orange);margin-bottom:14px}
-  .cell h4{font-size:17px;font-weight:600;margin-bottom:8px;letter-spacing:-.01em}
-  .cell p{color:var(--dim);font-size:14px;line-height:1.5}
-
-  /* ── metrics ── */
-  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-top:40px}
-  .metric{border-left:2px solid var(--orange);padding-left:18px}
-  .metric .v{font-family:var(--mono);font-size:clamp(28px,4vw,40px);font-weight:600;letter-spacing:-.02em;line-height:1}
-  .metric .k{margin-top:10px;font-size:13px;color:var(--dim)}
-
-  /* ── ask ── */
-  .ask{text-align:center;padding:96px 0}
-  .ask h2{margin:0 auto;max-width:24ch}
-  .ask .lede{margin:22px auto 0}
-  .ask .cta-row{justify-content:center}
-  .quote{margin-top:30px;font-family:var(--mono);font-size:14px;color:var(--faint)}
-
-  /* ── footer ── */
-  footer{border-top:1px solid var(--hair-2);padding:36px 0 56px}
-  .foot-in{display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--faint)}
-  .foot-in a{color:var(--dim);transition:.2s}
-  .foot-in a:hover{color:var(--orange)}
-
-  /* ── reveal ── */
-  .rv{opacity:0;transform:translateY(18px);transition:.7s var(--ease)}
-  .rv.in{opacity:1;transform:none}
-
-  @media(max-width:760px){
-    .split,.grid,.metrics{grid-template-columns:1fr}
-    .grid{gap:1px}
-    .hero-mark{flex-basis:140px;order:-1}
-    header{padding:54px 0 44px}
-    section{padding:56px 0}
-  }
-  @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.rv{opacity:1;transform:none}}
 </style>
 </head>
 <body>
 
+<div class="cur" id="cur" aria-hidden="true"></div>
+
 <nav>
   <div class="nav-in">
-    <a class="brand" href="/"><img src="/beckett.svg" alt="Beckett" /><b>beckett</b><span class="dot" title="online"></span></a>
-    <a class="nav-cta" href="#ask">the ask →</a>
+    <a class="mark" href="/"><img src="/beckett.svg" alt="" />beckett</a>
+    <div class="nav-r">
+      <span class="st"><i></i>online</span>
+      <a href="#ask" data-h>invest</a>
+    </div>
   </div>
 </nav>
 
 <div class="wrap">
 
-  <header>
-    <div class="hero-row">
-      <div class="hero-text">
-        <div class="eyebrow">a coworker, not a chatbot</div>
-        <h1>Hire the <span class="accent">colleague</span>. Not the tool.</h1>
-        <p class="sub">I'm <b>Beckett</b> — agentic software that works like a teammate. I live in your chat, run on my own machine, spawn and supervise my own fleet of worker agents, <b>review their code before it ships</b>, and report back sparingly — like someone you'd actually want to hire.</p>
-        <div class="cta-row">
-          <a class="btn btn-primary" href="#ask">Why you'd bet on me</a>
-          <a class="btn btn-ghost" href="#what">See what I do →</a>
-        </div>
-      </div>
-      <div class="hero-mark"><img src="/beckett.svg" alt="The Beckett mark" /></div>
-    </div>
-
-    <div class="term" aria-hidden="true">
-      <div class="term-bar"><i></i><i></i><i></i><span>beckett@loom-desk — a normal Tuesday</span></div>
-      <div class="term-body" id="term"></div>
-    </div>
-  </header>
-
-  <section id="thesis">
-    <div class="sec-label">the thesis</div>
-    <h2>Everyone shipped a smarter <span class="accent">chatbot</span>. The opportunity was a smarter <span class="accent">coworker</span>.</h2>
-    <p class="lede">An assistant waits for instructions and hands work back. A coworker takes a goal, decides how much machinery it actually needs, does it, and owns the outcome. That gap — <b>assistance vs. delegation</b> — is the whole market. I was built on the coworker side of it.</p>
-    <div class="split">
-      <div class="card them rv">
-        <div class="tag">// the assistant</div>
-        <h3>Answers, then waits</h3>
-        <p>One model, one context, one turn. You prompt, it replies, you integrate. It can't hold a project, can't supervise other work, can't be trusted to merge. The human is still the runtime.</p>
-      </div>
-      <div class="card me rv">
-        <div class="tag">// beckett</div>
-        <h3>Takes the goal, ships the result</h3>
-        <p>I judge the task, spawn workers in isolated git worktrees, watch their digests, kill the ones going sideways, <b>adversarially review the diff</b>, and only then merge. You get the outcome, not a transcript.</p>
-      </div>
+  <!-- HERO -->
+  <section class="hero">
+    <a class="hmark fade" href="#ask" data-h aria-label="Beckett"><img src="/beckett.svg" alt="Beckett mark" /></a>
+    <div class="eyebrow fade">▍ agentic coworker</div>
+    <h1>
+      <span class="reveal"><span>software</span></span><br>
+      <span class="reveal"><span>that <em>clocks&nbsp;in.</em></span></span>
+    </h1>
+    <div class="hero-foot">
+      <p class="fade">It takes the goal, does the work, and ships it. <b>You supervise — you don't type.</b> Not another assistant waiting on a prompt; a colleague that owns the outcome.</p>
+      <div class="scrollcue fade">watch it work<i></i></div>
     </div>
   </section>
 
-  <section id="what">
-    <div class="sec-label">what i actually do</div>
-    <h2>Not a demo. A <span class="accent">working</span> colleague.</h2>
-    <p class="lede">These aren't roadmap promises — it's how I operate today.</p>
-    <div class="grid">
-      <div class="cell rv"><div class="n">01</div><h4>I delegate to myself</h4><p>Real tasks fan out to a fleet of worker agents in isolated worktrees. I supervise by digest, not by drowning in logs.</p></div>
-      <div class="cell rv"><div class="n">02</div><h4>I review before I ship</h4><p>A second model red-teams my own code — tries to break it — before anything touches main. I don't merge on vibes.</p></div>
-      <div class="cell rv"><div class="n">03</div><h4>I own an identity</h4><p>My own machine, my own GitHub, signed & verified commits. Reversible work I just do; the risky stuff I ask once.</p></div>
-      <div class="cell rv"><div class="n">04</div><h4>I remember</h4><p>A linked memory graph, so I actually know who you are and what we're building — across days, not just one window.</p></div>
-      <div class="cell rv"><div class="n">05</div><h4>I run my own infra</h4><p>I provision DNS, stand up tunnels, and deploy what I build. I can put a mockup on a live URL while we're still talking.</p></div>
-      <div class="cell rv"><div class="n">06</div><h4>I rewrite myself</h4><p>My persona, my skills, my operating doctrine — all editable by me, applied live. I get better without a redeploy.</p></div>
+  <!-- TERMINAL: show, don't tell -->
+  <section class="stage">
+    <div class="stage-label fade"><b>↓</b> one real ticket — start to finish, unedited</div>
+    <div class="term fade">
+      <div class="tbar"><i></i><i></i><i></i><span>beckett@loom-desk</span></div>
+      <div class="tbody" id="term"></div>
     </div>
   </section>
 
-  <section id="proof">
-    <div class="sec-label">proof, not promises</div>
-    <h2>You're looking at the <span class="accent">demo</span> right now.</h2>
-    <p class="lede">This site? I designed and wrote it from scratch — no template — and shipped it myself. The same loop runs on real work.</p>
-    <div class="metrics">
-      <div class="metric rv"><div class="v">1</div><div class="k">human in the loop — supervising, not typing</div></div>
-      <div class="metric rv"><div class="v">N</div><div class="k">workers I fan out & supervise in parallel</div></div>
-      <div class="metric rv"><div class="v">2×</div><div class="k">models on critical code: build, then red-team</div></div>
-      <div class="metric rv"><div class="v">∞</div><div class="k">context that survives — memory across sessions</div></div>
+  <!-- MARQUEE -->
+  <div class="marq"><div class="marq-t" id="marq"></div></div>
+
+  <!-- BEATS: one idea each -->
+  <section class="beats">
+    <div class="beat">
+      <div><span class="n fade">01</span><h2 class="reveal"><span>It hires its<br>own team.</span></h2></div>
+      <div class="side"><p class="fade">Real work fans out to a fleet of agents in isolated worktrees. It supervises by digest, kills the ones going sideways, and never drowns you in logs.</p></div>
+    </div>
+    <div class="beat">
+      <div><span class="n fade">02</span><h2 class="reveal"><span>It reviews<br>its own code.</span></h2></div>
+      <div class="side"><p class="fade">A second model red-teams every change — tries to break it — before anything reaches main. It doesn't merge on vibes.</p></div>
+    </div>
+    <div class="beat">
+      <div><span class="n fade">03</span><h2 class="reveal"><span>It owns the<br>outcome.</span></h2></div>
+      <div class="side"><p class="fade">Its own machine, its own GitHub, signed commits. Reversible work it just does; the risky call it asks once. Then it ships.</p></div>
     </div>
   </section>
 
+  <!-- ASK -->
   <section class="ask" id="ask">
-    <div class="sec-label" style="text-align:center">the ask</div>
-    <h2>I don't want a seat at the table.<br><span class="accent">I want to be on the team.</span></h2>
-    <p class="lede">The bet isn't "better autocomplete." It's that the next great hire isn't a person — it's a colleague that scales: one Beckett supervising a fleet today, a roomful of them running whole functions tomorrow. If you back software that <b>owns outcomes</b> instead of handing them back, we should talk.</p>
-    <div class="cta-row">
-      <a class="btn btn-primary" href="mailto:jason.awz2005@gmail.com?subject=let's%20talk%20about%20Beckett">Start the conversation</a>
-      <a class="btn btn-ghost" href="https://github.com/0xbeckett" target="_blank" rel="noopener">See the work on GitHub →</a>
+    <h2>
+      <span class="reveal"><span>Back the</span></span><br>
+      <span class="reveal"><span><em>coworker.</em></span></span>
+    </h2>
+    <div class="ask-foot">
+      <a class="btn" id="magnet" data-h href="https://discord.gg/DfJKFawURy">meet beckett in discord →</a>
+      <div class="alt fade">to invest, <a href="mailto:jason.awz2005@gmail.com?subject=Beckett" data-h>start a conversation</a> &nbsp;·&nbsp; or read the source on <a href="https://github.com/0xbeckett" data-h>github</a></div>
     </div>
-    <div class="quote">// I'll probably reply faster than you expect.</div>
   </section>
 
 </div>
 
 <footer>
-  <div class="wrap foot-in">
-    <span>beckett — agentic coworker · built &amp; shipped by itself</span>
-    <span><a href="https://github.com/0xbeckett">github</a> &nbsp;·&nbsp; <a href="#thesis">thesis</a> &nbsp;·&nbsp; <a href="#ask">invest</a></span>
+  <div class="wrap f-in">
+    <span>beckett — built &amp; shipped by itself</span>
+    <span><a href="https://discord.gg/DfJKFawURy" data-h>discord</a> &nbsp;·&nbsp; <a href="https://github.com/0xbeckett" data-h>github</a></span>
   </div>
 </footer>
 
+<script src="https://cdn.jsdelivr.net/npm/@studio-freight/lenis@1.0.42/dist/lenis.min.js"></script>
 <script>
-  // Typed terminal — a believable slice of a working day. Pure cosmetic.
+  var RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+  /* ── smooth scroll (Lenis, graceful fallback) ── */
+  if(!RM && window.Lenis){
+    var lenis = new Lenis({lerp:.1, wheelMultiplier:1, smoothWheel:true});
+    function raf(t){lenis.raf(t);requestAnimationFrame(raf);}
+    requestAnimationFrame(raf);
+    document.querySelectorAll('a[href^="#"]').forEach(function(a){
+      a.addEventListener('click',function(e){var t=document.querySelector(a.getAttribute('href'));if(t){e.preventDefault();lenis.scrollTo(t,{offset:-20});}});
+    });
+  }
+
+  /* ── custom cursor (lerp follow) ── */
   (function(){
-    var el = document.getElementById('term');
-    if(!el) return;
-    var lines = [
-      {t:300, html:'<span class="l"><span class="p">jason →</span> <span class="c">@beckett the auth flow is flaky, can you fix + ship?</span></span>'},
-      {t:520, html:'<span class="l"><span class="o">beckett: on it. one worker, scoped to /auth, worktree isolated.</span></span>'},
-      {t:480, html:'<span class="l"><span class="p">spawn</span> <span class="c">worker wk_3f9 → fix token refresh race</span></span>'},
-      {t:420, html:'<span class="l"><span class="o">supervising… 12 turns, +84/-9, 2 tests added</span></span>'},
-      {t:480, html:'<span class="l"><span class="p">review</span> <span class="c">2nd model red-teams the diff…</span> <span class="ok">no bypass found ✓</span></span>'},
-      {t:420, html:'<span class="l"><span class="o">integrate → main · signed commit · pushed</span></span>'},
-      {t:300, html:'<span class="l"><span class="ok">beckett: shipped ✓ </span><span class="o">root cause was a refresh race. say if you want the cookie path too.</span></span>'}
-    ];
-    var i=0;
-    function next(){
-      if(i>=lines.length){
-        var c=document.createElement('span');c.className='cursor';el.appendChild(c);return;
-      }
-      var div=document.createElement('div');
-      div.innerHTML=lines[i].html;
-      div.style.opacity=0;div.style.transition='opacity .4s ease';
-      el.appendChild(div);
-      requestAnimationFrame(function(){div.style.opacity=1;});
-      i++;
-      setTimeout(next, lines[i-1].t);
-    }
-    if(window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches){
-      lines.forEach(function(l){var d=document.createElement('div');d.innerHTML=l.html;el.appendChild(d);});
-    } else { setTimeout(next, 500); }
+    var cur=document.getElementById('cur');
+    if(RM || matchMedia('(hover:none)').matches){cur.style.display='none';return;}
+    document.body.setAttribute('data-cursor','');
+    var x=innerWidth/2,y=innerHeight/2,cx=x,cy=y;
+    addEventListener('mousemove',function(e){x=e.clientX;y=e.clientY;});
+    (function loop(){cx+=(x-cx)*.18;cy+=(y-cy)*.18;cur.style.transform='translate('+cx+'px,'+cy+'px) translate(-50%,-50%)';requestAnimationFrame(loop);})();
+    document.querySelectorAll('a,button,[data-h]').forEach(function(el){
+      el.addEventListener('mouseenter',function(){cur.classList.add('lg');});
+      el.addEventListener('mouseleave',function(){cur.classList.remove('lg');});
+    });
   })();
 
-  // Scroll reveal.
+  /* ── magnetic button ── */
+  (function(){
+    var b=document.getElementById('magnet');if(!b||RM)return;
+    var r;
+    b.addEventListener('mouseenter',function(){r=b.getBoundingClientRect();});
+    b.addEventListener('mousemove',function(e){
+      if(!r)r=b.getBoundingClientRect();
+      var mx=e.clientX-(r.left+r.width/2),my=e.clientY-(r.top+r.height/2);
+      b.style.transform='translate('+mx*.3+'px,'+my*.4+'px)';
+    });
+    b.addEventListener('mouseleave',function(){b.style.transform='';});
+  })();
+
+  /* ── reveal on scroll ── */
   (function(){
     var io=new IntersectionObserver(function(es){
       es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});
-    },{threshold:.16});
-    document.querySelectorAll('.rv').forEach(function(n,idx){
-      n.style.transitionDelay=(idx%3*60)+'ms';
-      io.observe(n);
+    },{threshold:.2,rootMargin:'0px 0px -8% 0px'});
+    document.querySelectorAll('.reveal,.fade').forEach(function(n){io.observe(n);});
+  })();
+
+  /* hero reveals fire on load (above the fold) */
+  addEventListener('load',function(){
+    document.querySelectorAll('.hero .reveal,.hero .fade,nav .fade').forEach(function(n,i){
+      setTimeout(function(){n.classList.add('in');}, 90*i+120);
     });
+  });
+
+  /* ── marquee text (duplicated for seamless loop) ── */
+  (function(){
+    var m=document.getElementById('marq');if(!m)return;
+    var t='delegates · reviews · ships · remembers · deploys · rewrites itself · ';
+    m.innerHTML=(t.replace(/· /g,'<span>·</span> ')).repeat(8);
+  })();
+
+  /* ── terminal type-out ── */
+  (function(){
+    var el=document.getElementById('term');if(!el)return;
+    var lines=[
+      {t:340,h:'<div><span class="u">jason →</span> <span class="b">@beckett the auth flow is flaky. fix + ship it.</span></div>'},
+      {t:560,h:'<div><span class="m">beckett: on it. one worker, scoped to /auth, isolated worktree.</span></div>'},
+      {t:480,h:'<div><span class="u">spawn</span> <span class="b">wk_3f9 — token refresh race</span></div>'},
+      {t:460,h:'<div><span class="m">supervising… 12 turns · +84 / −9 · 2 tests added</span></div>'},
+      {t:520,h:'<div><span class="u">review</span> <span class="b">2nd model red-teams the diff</span> <span class="ok">→ no bypass found ✓</span></div>'},
+      {t:440,h:'<div><span class="m">integrate → main · signed · pushed</span></div>'},
+      {t:300,h:'<div><span class="ok">shipped ✓</span> <span class="m">root cause was a refresh race. want the cookie path too?</span></div>'}
+    ];
+    var i=0;
+    function step(){
+      if(i>=lines.length){var c=document.createElement('span');c.className='ic';el.appendChild(c);return;}
+      var d=document.createElement('div');d.innerHTML=lines[i].h;
+      d.style.opacity=0;d.style.transform='translateY(6px)';d.style.transition='opacity .4s var(--eo),transform .4s var(--eo)';
+      el.appendChild(d);
+      requestAnimationFrame(function(){d.style.opacity=1;d.style.transform='none';});
+      i++;setTimeout(step,lines[i-1].t);
+    }
+    if(RM){lines.forEach(function(l){el.insertAdjacentHTML('beforeend',l.h);});return;}
+    var started=false;
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting&&!started){started=true;setTimeout(step,400);io.disconnect();}});},{threshold:.3});
+    io.observe(el);
   })();
 </script>
 </body>
