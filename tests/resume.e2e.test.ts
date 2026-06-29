@@ -19,16 +19,17 @@
 import { test, expect, beforeAll } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, existsSync, chmodSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { loadConfig } from "../src/config.ts";
 import { makeLogger } from "../src/log.ts";
 import { ClaudeDriver } from "../src/drivers/claude.ts";
 import type { WorkerEvent, SpawnSpec, Config } from "../src/types.ts";
 
-const REPO_ROOT = "/Users/jason/Code/beckett";
+const REPO_ROOT = join(import.meta.dir, "..");
 const FAKE_HARNESS = join(REPO_ROOT, "src/test/fake-harness.ts");
 const SCRATCH = join(
-  "/private/tmp/claude-501/-Users-jason-Code-beckett/ef11fcf3-c6c5-4bb6-b279-54800845a02b/scratchpad",
+  process.env.BECKETT_TEST_SCRATCH || join(tmpdir(), "beckett-test-scratch"),
   "e2e-resume",
 );
 const WRAPPER = join(SCRATCH, "fake-claude.sh");
