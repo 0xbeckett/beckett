@@ -42,6 +42,10 @@ export function loadAccess(accessFile: string): AccessList {
       for (let line of raw.split("\n")) {
         line = line.trim();
         if (!line || line.startsWith("#")) continue;
+        // FAIL-SAFE PARSE: only accept well-formed snowflake ids (digits, ≤20). A malformed or
+        // hand-corrupted line is ignored — never trusted as a member and never inflates the cap
+        // count. Keeps loadAccess consistent with grantAccess's own validation.
+        if (!/^\d{1,20}$/.test(line)) continue;
         ids.add(line);
       }
     }
@@ -86,8 +90,9 @@ export interface GrantResult {
  * - Else append the id. If this brings the count to ACCESS_CAP, engage the lock.
  */
 export function grantAccess(accessFile: string, id: string, ownerId: string | undefined): GrantResult {
-  // Validate: must be digits only (Discord snowflake)
-  if (!/^\d+$/.test(id)) {
+  // Validate: must be a digits-only Discord snowflake, bounded length (real ids are 17-19
+  // digits; cap at 20 so an absurd all-digit string can't be stored).
+  if (!/^\d{1,20}$/.test(id)) {
     return { ok: false, status: "invalid-id", count: 0, locked: false };
   }
 
