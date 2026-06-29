@@ -28,10 +28,11 @@ and stop:
 - merge → "PR's up — review or merge?"
 - email → "drafted it — send as me, or you handle it?"
 
-Create it via the gated CLI (`beckett gh merge <pr>` / `beckett gmail send <draft>`), which makes
-a **pending action** and waits for the human's go / decline / variant. A timeout leaves it undone
-— the task is still **delivered** (honest terminal state), the irreversible step just isn't taken.
-A "variant" answer ("merge to develop instead") → re-plan + a new handshake.
+Post the handshake, then **wait for the human's reply** before the irreversible step. Only once
+they say go do you run `beckett gh pr merge <num> --repo <owner/name>` (see [[github]]). A "variant"
+answer ("merge to develop instead") → re-plan + a new handshake. If they never answer, the task is
+still **delivered** (honest terminal state) — the merge just isn't taken. You are the gate here:
+the reasoning to ask-first IS the handshake, so don't merge to main without an explicit go.
 
 ## Rules
 

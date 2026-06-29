@@ -1,9 +1,0 @@
-{
-  "pid": 60345,
-  "port": 11009,
-  "token": "78d7323a-b9de-48b5-b785-53825d6a91c0",
-  "startedAt": "2026-06-28T01:26:30.432Z",
-  "serverPath": "/Users/jason/.claude/skills/gstack/browse/src/server.ts",
-  "mode": "launched",
-  "configHash": "303a7eeccc03078b"
-}

@@ -351,6 +351,36 @@ export class GitHubCli implements GitHubClient {
     this.opts.logger.info("branch pushed", { repo, remoteBranch });
   }
 
+  /**
+   * Create a repo under Beckett's account (Spec 07 §3.3). New repos are reversible (deletable)
+   * and within remit, so this is a FREE op — Beckett spins up project repos on its own. With
+   * `sourceDir` (+ `push`) it wires the local dir as `origin` and pushes the initial commits in
+   * one shot. Token rides `GH_TOKEN` per-invocation, so `gh` never needs `gh auth login/status`.
+   */
+  async createRepo(p: {
+    name: string; // "name" (under the account) or "owner/name"
+    private?: boolean; // default true
+    description?: string;
+    sourceDir?: string; // an existing git repo to wire as origin
+    push?: boolean; // push sourceDir's commits after creating
+  }): Promise<{ nameWithOwner: string; url: string }> {
+    this.requireCreds("create repo");
+    const args = ["gh", "repo", "create", p.name, p.private === false ? "--public" : "--private"];
+    if (p.description) args.push("--description", p.description);
+    if (p.sourceDir) {
+      args.push("--source", p.sourceDir, "--remote", "origin");
+      if (p.push) args.push("--push");
+    }
+    const r = await run(args, { cwd: p.sourceDir, env: this.ghEnv() });
+    if (r.code !== 0) {
+      throw new Error(`gh repo create failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+    const nameWithOwner = p.name.includes("/") ? p.name : `${this.opts.account}/${p.name}`;
+    const url = (r.stdout.match(/https?:\/\/\S+/) ?? [`${this.gitHost()}/${nameWithOwner}`])[0].trim();
+    this.opts.logger.info("repo created", { repo: nameWithOwner, url });
+    return { nameWithOwner, url };
+  }
+
   /** Open a PR as itself (Spec 07 §3.3). FREE: a proposal, not a change to main. */
   async openPR(p: OpenPRParams): Promise<{ number: number; url: string }> {
     this.requireCreds("open PR");
