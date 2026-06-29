@@ -18,6 +18,8 @@ import { buildPaths } from "../paths.ts";
 import { callBus } from "../shell/control-bus.ts";
 import { createMemory } from "../memory/index.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
+import { CfDns } from "../agency/cloudflare.ts";
+import { TunnelDeployer } from "../shell/deploy.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 
 const config = loadConfig();
@@ -51,6 +53,12 @@ function parse(argv: string[]): { _: string[]; flags: Record<string, string | bo
   }
   return { _, flags };
 }
+
+/** A no-op logger: CLI invocations are short-lived and emit JSON, not log lines. */
+const quietLogger = (() => {
+  const q = { info() {}, warn() {}, debug() {}, error() {}, child() { return q; } };
+  return q as unknown as Logger;
+})();
 
 async function bus(cmd: string, args: Record<string, unknown>): Promise<never> {
   try {
@@ -262,6 +270,86 @@ async function main(): Promise<void> {
     fail("usage: beckett gh repo create | pr create|merge|status|review | push");
   }
 
+  // ── dns (in-process: zone-scoped Cloudflare DNS, token from env) ──────────────────────────
+  // Reads CLOUDFLARE_API_TOKEN + CLOUDFLARE_ZONE_ID from ~/.beckett/.env (via loadConfig). DNS
+  // is FREE: a record is a reversible proposal you can delete. Short names expand to the zone
+  // apex (e.g. `x-tool` → `x-tool.0xbeckett.me`). Output is JSON. (See the `deploy` skill.)
+  if (group === "dns") {
+    const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
+    const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
+    if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare DNS is unavailable");
+    if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to the 0xbeckett.me zone id");
+    const dns = new CfDns({ token, zoneId, logger: quietLogger });
+    const { _, flags } = parse(rest);
+
+    if (sub === "ls") {
+      out(await dns.list({
+        name: flags.name ? String(flags.name) : undefined,
+        type: flags.type ? String(flags.type) : undefined,
+      }));
+    }
+    if (sub === "add") {
+      const name = _[0];
+      if (!name || !flags.content) {
+        fail("usage: beckett dns add <name> --content <c> [--type CNAME] [--proxied|--no-proxied] [--ttl N]");
+      }
+      // proxied defaults to true; --no-proxied or --proxied=false turns it off.
+      const proxied = flags["no-proxied"] ? false : flags.proxied === "false" ? false : true;
+      out(await dns.upsert({
+        name,
+        type: flags.type ? String(flags.type) : "CNAME",
+        content: String(flags.content),
+        proxied,
+        ttl: flags.ttl ? Number(flags.ttl) : undefined,
+      }));
+    }
+    if (sub === "rm") {
+      const name = _[0];
+      if (!name) fail("usage: beckett dns rm <name> [--type T]");
+      out(await dns.remove(name, flags.type ? String(flags.type) : undefined));
+    }
+    fail("usage: beckett dns ls [--name N] [--type T] | add <name> --content <c> [...] | rm <name> [--type T]");
+  }
+
+  // ── deploy (in-process: cloudflared named-tunnel ingress + a CNAME via CfDns) ──────────────
+  // Throws a locally-running app up at <name>.0xbeckett.me. Reversible/FREE (a record + ingress
+  // rule you can delete) but outward — announce the URL in voice. Requires CLOUDFLARE_TUNNEL_ID
+  // (a one-time human prereq); fails clearly if absent. (See the `deploy` skill.)
+  if (group === "deploy") {
+    const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
+    const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
+    if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare is unavailable");
+    if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to the 0xbeckett.me zone id");
+    const dns = new CfDns({ token, zoneId, logger: quietLogger });
+    const deployer = new TunnelDeployer({
+      tunnelId: process.env.CLOUDFLARE_TUNNEL_ID,
+      dns,
+      logger: quietLogger,
+    });
+    const { _, flags } = parse(rest);
+
+    if (sub === "ls") {
+      out(deployer.list());
+    }
+    if (sub === "rm") {
+      const name = _[0];
+      if (!name) fail("usage: beckett deploy rm <name>");
+      out(await deployer.remove(name));
+    }
+    // `beckett deploy <name> --port <p>` | `--service <url>`  (sub is the name here)
+    if (sub && sub !== "ls" && sub !== "rm") {
+      const name = sub;
+      const service = flags.service
+        ? String(flags.service)
+        : flags.port
+          ? `http://localhost:${Number(flags.port)}`
+          : "";
+      if (!service) fail("usage: beckett deploy <name> --port <p> | --service http://localhost:<p>");
+      out(await deployer.deploy({ name, service }));
+    }
+    fail("usage: beckett deploy <name> --port <p> | deploy ls | deploy rm <name>");
+  }
+
   // ── top-level (control bus) ──────────────────────────────────────────────────────────────
   if (group === "discord" && sub === "reply") {
     const { _, flags } = parse(rest);
@@ -301,7 +389,7 @@ async function main(): Promise<void> {
   if (group === "status") await bus("status", {});
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: inject | status | discord reply | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | memory recall|remember");
+    "commands: inject | status | discord reply | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 main().catch((err) => fail((err as Error).message));

@@ -124,6 +124,11 @@ Grep are for inline work, git, and editing your memory markdown directly.
 - `beckett gh repo create <name> [--public] [--source <dir>] [--push]` · `gh push --repo <r> --branch <b>`
 - `gh pr create|merge|status|review <num> --repo <owner/name> …`
 
+**DNS + deploy (see the `deploy` skill — owns the `0xbeckett.me` zone + a Cloudflare tunnel):**
+- `beckett dns ls|add|rm <name> [--content <c>] [--type T] [--proxied|--no-proxied]` — zone DNS (FREE/reversible).
+- `beckett deploy <name> --port <p>` · `deploy ls` · `deploy rm <name>` — throw a local app up at
+  `<name>.0xbeckett.me` (reversible/FREE, but outward — announce the URL in voice).
+
 **Memory:**
 - `beckett memory recall "<query>" [--k N] [--hops N]` · `beckett memory remember --name … --type … --desc … [--body-stdin] [--link a:field]`
 
@@ -138,8 +143,9 @@ stdin. React to those — and for `[ambient …]`, usually that means *don't* re
 ## Your skills (run with the Skill tool when the path needs them)
 
 `intake` · `recall` · `plan` · `staff` · `supervise` · `review` · `deliver` · `remember` ·
-`github` (any GitHub op) · `resume` (continue/pick-up earlier work) · `flows` (heavy multi-worker
-path) · `proactive` (acting on overheard `[ambient …]` chatter)
+`github` (any GitHub op) · `deploy` (DNS + throw a mockup up at `<name>.0xbeckett.me`) ·
+`resume` (continue/pick-up earlier work) · `flows` (heavy multi-worker path) ·
+`proactive` (acting on overheard `[ambient …]` chatter)
 
 They are on-demand, not a checklist. A trivial task uses none. A medium task uses `plan` (lite),
 `review`, `deliver`. A large task uses all of them. Reach for `github`/`flows`/`resume`/`proactive`
