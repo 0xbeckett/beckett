@@ -1,5 +1,38 @@
 # Changelog
 
+## v3.1.1 — first-real-tickets bug fixes (2026-06-30)
+
+The first batch of real tickets (the `random` and `gravity-well` sites) surfaced four bugs:
+
+- **Duplicate Discord replies.** On a direct @mention the Concierge answered twice — once via its
+  auto-posted turn text, once by *also* running `beckett discord reply` (which it had been over-
+  trained to do, since that command is the only path on automated update turns). Fixed: the
+  Concierge now tracks the in-flight @mention turn; if it answers via the CLI, that becomes THE
+  reply (native, once) and the auto-post is suppressed. Doctrine clarified — `beckett discord reply`
+  is ONLY for `SYSTEM (automated ticket update…)` turns; a person's message just gets a normal reply.
+- **GitHub repos 404'd.** Workers *did* push the project repos, but `beckett gh repo create` defaults
+  to **private**, so `0xbeckett/<slug>` was invisible (404) to anyone not logged in as Beckett — and
+  the Concierge handed out URLs that didn't resolve. Publishing is now **deterministic in the
+  dispatcher**: on every done it pushes the project repo to `0xbeckett/<slug>` as a **public** repo
+  (create-if-missing, else push + self-heal visibility to public), and posts the real URL on the
+  ticket so the Concierge stops guessing. The unreliable "push it yourself via the github skill"
+  worker instruction is gone.
+- **Deploys didn't go public.** Workers improvised their own servers — a foreground `server.mjs`
+  that died on session end, bound to localhost, with no systemd unit and (sometimes) no DNS record,
+  so `<name>.0xbeckett.me` never resolved. The deploy note is rewritten into one exact recipe
+  (durable `systemd --user` unit on a port → `beckett deploy <slug> --port <p>` for tunnel **and**
+  DNS), forbids every improvised alternative (foreground/`&`/`nohup`, hand-editing the ingress), and
+  requires the worker to `curl https://<slug>.0xbeckett.me` for a 200 before it may call the ticket
+  done. Never report a URL you haven't curled.
+- **A visual toy ground for 8 minutes.** OPS-19 (a canvas particle toy) was mis-cast to **codex at
+  heavy effort** — codex can't see pixels, so it over-engineers visual work slowly. Casting doctrine
+  sharpened: anything visual (canvas, game, animation, landing page) is **claude + `effort: low`**
+  (fast, one-pass self-review), never codex. codex is for crisp-spec, no-pixel work only.
+
+Also reaped a leaked worker process that had been idle for 7 hours (a gravity-well implement worker
+whose OS process outlived its dispatcher bookkeeping), and flipped the existing `random` /
+`gravity-well` repos to public.
+
 ## v3.1 — "go faster" (2026-06-30)
 
 The v3 ticket loop was slow for a reason: it was fully serial and **every leg booted a cold

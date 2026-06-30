@@ -58,7 +58,7 @@ function resolveRepoRoot(ticket: Ticket): string {
  * per-stage worktrees), effort-scaled review (trivial work self-reviews in one pass), and
  * Sonnet 5 @ xhigh workers. See CHANGELOG.md.
  */
-export const BECKETT_VERSION = "3.1";
+export const BECKETT_VERSION = "3.1.1";
 
 /** The live v3 system — held so {@link shutdown} can tear every part down in order. */
 interface BootedSystem {
