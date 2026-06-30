@@ -1,0 +1,20 @@
+[Unit]
+Description=Beckett Discord Rich Presence daemon
+After=network.target graphical-session.target
+# restart if Discord isn't open yet — keep trying
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=beckett
+WorkingDirectory=/home/beckett/beckett
+EnvironmentFile=/home/beckett/.beckett/.env
+Environment=DISCORD_RPC_LARGE_IMAGE=beckett
+ExecStart=bun src/rpc/daemon.ts
+Restart=always
+RestartSec=15
+StandardOutput=append:/home/beckett/.beckett/logs/rpc.log
+StandardError=append:/home/beckett/.beckett/logs/rpc.log
+
+[Install]
+WantedBy=default.target

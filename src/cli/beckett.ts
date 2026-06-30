@@ -491,6 +491,21 @@ async function main(): Promise<void> {
     fail("usage: beckett flow run <file> | resume <runId> <file> | ls | show <runId>");
   }
 
+  // ── rpc (in-process: write status file for the RPC daemon) ──────────────────────────────
+  if (group === "rpc") {
+    const { _, flags } = parse([sub, ...rest].filter(Boolean) as string[]);
+    if (sub === "status") {
+      const details = _[0] ?? flags.details ?? "on standby";
+      const state = _[1] ?? String(flags.state ?? "loom-desk");
+      const statusFile = join(paths.beckettDir, "rpc-status.json");
+      const { mkdirSync, writeFileSync } = await import("node:fs");
+      mkdirSync(paths.beckettDir, { recursive: true });
+      writeFileSync(statusFile, JSON.stringify({ details, state, updatedAt: Date.now() }, null, 2));
+      out({ updated: true, details, state });
+    }
+    fail("usage: beckett rpc status \"<details>\" [<state>]");
+  }
+
   if (group === "inject") await bus("inject", { text: [sub, ...rest].filter(Boolean).join(" ") });
   if (group === "integrate") {
     const { _, flags } = parse([sub, ...rest].filter(Boolean) as string[]);
