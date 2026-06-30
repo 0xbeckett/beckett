@@ -36,9 +36,6 @@ import { createDiscordGateway, type DiscordGateway } from "../discord/gateway.ts
 /** The same env keys the worker driver strips — subscription auth only (Spec 00 §4). */
 const FORBIDDEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] as const;
 
-/** How long spawn() waits for the first `system/init` before failing the launch. */
-const INIT_TIMEOUT_MS = 60_000;
-
 /** Hard ceiling on one chat turn before we give up waiting for its `result` line. */
 const TURN_TIMEOUT_MS = 240_000;
 
@@ -84,10 +81,9 @@ export class ConciergeSession {
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
 
-  // launch plumbing
-  private resolveInit: (() => void) | null = null;
-  private rejectInit: ((e: Error) => void) | null = null;
-  private initTimer: ReturnType<typeof setTimeout> | null = null;
+  // launch plumbing. NOTE: `claude -p --input-format stream-json` emits `system/init` only AFTER
+  // the first stdin line arrives, so start() must NOT block waiting for init (that deadlocks —
+  // claude waits for input, we'd wait for init). We track initSeen for diagnostics only.
   private initSeen = false;
 
   constructor(opts: ConciergeSessionOptions) {
@@ -167,11 +163,6 @@ export class ConciergeSession {
     const args = this.buildArgs(isResume);
     this.initSeen = false;
 
-    const ready = new Promise<void>((resolve, reject) => {
-      this.resolveInit = resolve;
-      this.rejectInit = reject;
-    });
-
     this.log.info("spawning concierge claude session", {
       bin,
       model: this.model,
@@ -190,15 +181,9 @@ export class ConciergeSession {
         env: this.childEnv(),
       });
     } catch (err) {
-      const e = new Error(`concierge: failed to spawn ${bin} — ${(err as Error).message}`);
-      this.rejectInit?.(e);
-      throw e;
+      throw new Error(`concierge: failed to spawn ${bin} — ${(err as Error).message}`);
     }
     this.child = child;
-
-    this.initTimer = setTimeout(() => {
-      this.rejectInit?.(new Error(`concierge: no system/init within ${INIT_TIMEOUT_MS}ms`));
-    }, INIT_TIMEOUT_MS);
 
     void this.consumeStdout(child).catch((err) =>
       this.log.error("concierge stdout loop crashed", { err: String(err) }),
@@ -206,7 +191,9 @@ export class ConciergeSession {
     void this.drainStderr(child);
     void child.exited.then((code) => this.onExit(code));
 
-    await ready;
+    // Do NOT await `system/init` here — this claude build emits it only after the first stdin
+    // line, so the session is "ready" once spawned. The first ask() writes a line which triggers
+    // init + the turn; a dead launch (bad bin/auth) surfaces as that first turn failing.
   }
 
   private buildArgs(isResume: boolean): string[] {
@@ -263,18 +250,11 @@ export class ConciergeSession {
   }
 
   private async onExit(code: number): Promise<void> {
-    if (this.initTimer) {
-      clearTimeout(this.initTimer);
-      this.initTimer = null;
-    }
-    // Died before init → fail the pending launch.
-    if (!this.initSeen) this.rejectInit?.(new Error(`concierge: claude exited (code ${code}) before init`));
-    this.resolveInit = null;
-    this.rejectInit = null;
+    this.child = null;
     if (this.stopped) return;
     this.log.warn("concierge claude process exited", { code, sessionId: this.sessionId });
-    // The current process is gone; the next ask() will relaunch with --resume (context intact).
-    this.child = null;
+    // The current process is gone; the next ask() relaunches with --resume (context intact). Any
+    // turn that was in flight is failed so the human gets an error rather than a hang.
     if (this.pending) {
       clearTimeout(this.pending.timer);
       this.pending.reject(new Error(`concierge: claude exited (code ${code}) mid-turn`));
@@ -360,14 +340,9 @@ export class ConciergeSession {
   }
 
   private onInit(): void {
+    // Diagnostic only now — init no longer gates the launch (see launch() note).
+    if (!this.initSeen) this.log.debug("concierge session init seen");
     this.initSeen = true;
-    if (this.initTimer) {
-      clearTimeout(this.initTimer);
-      this.initTimer = null;
-    }
-    this.resolveInit?.();
-    this.resolveInit = null;
-    this.rejectInit = null;
   }
 
   private onAssistant(obj: Record<string, unknown>): void {
