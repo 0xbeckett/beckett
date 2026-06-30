@@ -114,15 +114,18 @@ export interface SpawnWorkerArgs {
 // =======================================================================================
 
 /** The structured done-signal JSON schema (Spec 02 §6) written per-worker for the driver. */
+// NOTE: codex's `--output-schema` enforces OpenAI strict mode — EVERY property must appear in
+// `required`, and "optional" fields are expressed as nullable unions (type: [..., "null"]).
+// Claude accepts this form too, so one schema serves both harnesses.
 const DONE_SCHEMA = {
   type: "object",
-  required: ["status", "summary", "filesChanged"],
+  required: ["status", "summary", "filesChanged", "checksRun", "blockedReason"],
   properties: {
     status: { type: "string", enum: ["complete", "blocked", "partial"] },
     summary: { type: "string" },
     filesChanged: { type: "array", items: { type: "string" } },
-    checksRun: { type: "array", items: { type: "string" } },
-    blockedReason: { type: "string" },
+    checksRun: { type: ["array", "null"], items: { type: "string" } },
+    blockedReason: { type: ["string", "null"] },
   },
   additionalProperties: false,
 } as const;

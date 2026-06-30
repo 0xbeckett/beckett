@@ -137,7 +137,9 @@ const ConfigSchema = z
           .object({
             enabled: z.boolean().default(false),
             bin: z.string().min(1).default("codex"),
-            default_model: z.string().min(1).default("gpt-5.1-codex"),
+            // Empty = defer to codex's own ~/.codex/config.toml model (account-appropriate).
+            // The Concierge can still cast an explicit model per ticket.
+            default_model: z.string().default(""),
             sandbox_mode: z.string().min(1).default("workspace-write"),
             approval_policy: z.string().min(1).default("never"),
             network_default: z.boolean().default(false),

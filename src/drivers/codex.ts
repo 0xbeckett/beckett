@@ -375,13 +375,20 @@ export class CodexDriver implements HarnessDriver {
       codex.sandbox_mode,
       "-C",
       spec.workspace,
-      "-m",
-      this.resolvedModel(),
+      // `-m` only when a model is explicitly cast; otherwise defer to codex's own config
+      // (`~/.codex/config.toml`), which is authed for the account's supported models.
+      ...this.modelFlag(),
       ...this.configOverrides(),
     ];
     if (spec.doneSchemaPath) args.push("--output-schema", spec.doneSchemaPath);
     args.push(prompt);
     return args;
+  }
+
+  /** `["-m", model]` only when a model was explicitly cast; else `[]` (use codex's default). */
+  private modelFlag(): string[] {
+    const m = this.resolvedModel().trim();
+    return m ? ["-m", m] : [];
   }
 
   private buildResumeArgs(prompt: string): string[] {
@@ -395,8 +402,7 @@ export class CodexDriver implements HarnessDriver {
       "--last",
       "--json",
       "--skip-git-repo-check",
-      "-m",
-      this.resolvedModel(),
+      ...this.modelFlag(),
       "-c",
       `sandbox_mode=${codex.sandbox_mode}`,
       ...this.configOverrides(),
