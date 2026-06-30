@@ -394,6 +394,23 @@ export class GitHubCli implements GitHubClient {
   }
 
   /**
+   * Make a repo publicly visible (idempotent — a no-op if it's already public). Project repos are
+   * public so the links Beckett hands out resolve; this self-heals repos an older code path left
+   * private (the cause of the `0xbeckett/<slug>` 404s). Uses the REST `private=false` field, which
+   * is stable across `gh` versions (the `repo edit --visibility` flag is not). FREE: a metadata edit.
+   */
+  async setPublic(nameWithOwner: string): Promise<void> {
+    this.requireCreds("set repo visibility");
+    const repo = nameWithOwner.includes("/") ? nameWithOwner : `${this.opts.account}/${nameWithOwner}`;
+    const r = await run(["gh", "api", "--method", "PATCH", `repos/${repo}`, "-F", "private=false"], {
+      env: this.ghEnv(),
+    });
+    if (r.code !== 0) {
+      throw new Error(`gh api set-public failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+  }
+
+  /**
    * Idempotently publish a local repo to `<account>/<slug>` (public) and push HEAD → `main`. If the
    * repo doesn't exist yet it's created from `sourceDir` and pushed in one shot; if it already
    * exists (a continuing project) HEAD is pushed to its `main`. Returns the repo's web URL. This is
@@ -408,6 +425,15 @@ export class GitHubCli implements GitHubClient {
     const repo = `${this.opts.account}/${p.slug}`;
     if (await this.repoExists(repo)) {
       await this.pushBranch(repo, "HEAD", "main");
+      // Push is the critical part; visibility is best-effort so it never blocks shipping the code.
+      try {
+        await this.setPublic(repo);
+      } catch (err) {
+        this.opts.logger.warn("could not make repo public (left as-is)", {
+          repo,
+          err: (err as Error).message,
+        });
+      }
       return { nameWithOwner: repo, url: `${this.gitHost()}/${repo}` };
     }
     return this.createRepo({
