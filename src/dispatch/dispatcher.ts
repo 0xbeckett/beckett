@@ -99,8 +99,16 @@ export class Dispatcher {
   private readonly branchForTicket = new Map<string, string>();
   /** FIFO queue of spawns waiting for a free concurrency slot. */
   private readonly pending: PendingSpawn[] = [];
-  /** Spawns that have passed the cap check but not yet landed in {@link workers} (race guard). */
-  private inflightSpawns = 0;
+  /**
+   * Ticket ids with a spawn ADMITTED but whose handle has not yet landed in {@link workers}
+   * (the async `spawnWorker` gap — worktree alloc + harness launch). This is the airtight
+   * per-ticket dedup reservation: it is added SYNCHRONOUSLY the instant a spawn is admitted,
+   * before any `await`, so a second event for the same ticket arriving during the gap is
+   * rejected instead of launching a duplicate worker. Without it, duplicate spawns landed on
+   * the same ticket id, the second `workers.set` overwrote (orphaning the first process), and
+   * `atCap()` undercounted → the concurrency cap was silently bypassed (runaway fan-out).
+   */
+  private readonly staffing = new Set<string>();
   /** Ids of comments the dispatcher itself posted — never read back as steering (Fix: self-nudge). */
   private readonly ownCommentIds = new Set<string>();
   /** Per-ticket implement↔review round-trips, to bound auto-rework. */
@@ -204,6 +212,7 @@ export class Dispatcher {
   private async onCancelled(ticket: Ticket): Promise<void> {
     const handle = this.workers.get(ticket.id);
     this.branchForTicket.delete(ticket.id);
+    this.staffing.delete(ticket.id); // drop any mid-spawn reservation so doSpawn discards it
     if (!handle) {
       this.logger.info("ticket cancelled (no live worker)", { ticket: ticket.identifier });
       return;
@@ -220,20 +229,25 @@ export class Dispatcher {
 
   // ── spawning + concurrency ─────────────────────────────────────────────────────────────
 
-  /** True when live workers + in-flight (awaiting) spawns already fill the concurrency cap. */
+  /** True if a worker is live, OR a spawn is mid-flight, for this ticket (airtight dedup). */
+  private isStaffed(ticketId: string): boolean {
+    return this.workers.has(ticketId) || this.staffing.has(ticketId);
+  }
+
+  /** True when live workers + admitted-but-not-yet-live spawns already fill the concurrency cap. */
   private atCap(): boolean {
-    return this.workers.size + this.inflightSpawns >= this.config.concurrency.max_workers;
+    return this.workers.size + this.staffing.size >= this.config.concurrency.max_workers;
   }
 
   /** Spawn immediately if a slot is free, else enqueue for {@link pump}. */
   private spawnGuarded(ticket: Ticket, stage: string): void {
-    if (this.workers.has(ticket.id)) return; // already staffed
+    if (this.isStaffed(ticket.id)) return; // already staffed (live or mid-spawn)
     if (this.atCap()) {
       this.pending.push({ ticket, stage });
       this.logger.info("spawn queued (concurrency cap reached)", {
         ticket: ticket.identifier,
         stage,
-        inUse: this.workers.size + this.inflightSpawns,
+        inUse: this.workers.size + this.staffing.size,
         cap: this.config.concurrency.max_workers,
         queueDepth: this.pending.length,
       });
@@ -243,18 +257,19 @@ export class Dispatcher {
   }
 
   /**
-   * Reserve a slot SYNCHRONOUSLY (bump {@link inflightSpawns}) before the async spawn, so two
-   * spawns racing through {@link spawnGuarded} can't both pass the cap check. The reservation is
-   * released — and the queue pumped — once the spawn lands (or fails).
+   * Reserve the ticket's slot SYNCHRONOUSLY ({@link staffing}.add) BEFORE the async spawn, so two
+   * spawns racing through {@link spawnGuarded} can't both pass the dedup/cap checks. The
+   * reservation is released — into {@link workers} on success, or dropped on failure — by
+   * {@link doSpawn}; the queue is pumped once the spawn settles.
    */
   private launchSpawn(ticket: Ticket, stage: string): void {
-    this.inflightSpawns++;
+    this.staffing.add(ticket.id);
     void this.doSpawn(ticket, stage)
       .catch(() => {
         /* doSpawn handles its own errors + ticket comment */
       })
       .finally(() => {
-        this.inflightSpawns--;
+        this.staffing.delete(ticket.id); // no-op if doSpawn already moved it into `workers`
         this.pump();
       });
   }
@@ -263,7 +278,7 @@ export class Dispatcher {
   private pump(): void {
     while (this.pending.length > 0 && !this.atCap()) {
       const next = this.pending.shift()!;
-      if (this.workers.has(next.ticket.id)) continue; // staffed since it was queued
+      if (this.isStaffed(next.ticket.id)) continue; // staffed since it was queued
       this.launchSpawn(next.ticket, next.stage);
     }
   }
@@ -296,6 +311,19 @@ export class Dispatcher {
         `Could not start the ${stage} worker: ${(err as Error).message}. Leaving for a human.`,
       );
       return; // launchSpawn's finally releases the reservation + pumps
+    }
+
+    // If the ticket was cancelled/reaped DURING the spawn gap, its reservation was dropped from
+    // {@link staffing}; discard the freshly-spawned worker rather than register an orphan.
+    if (!this.staffing.has(ticket.id)) {
+      this.logger.info("ticket no longer staffed mid-spawn — discarding worker", {
+        ticket: ticket.identifier,
+        stage,
+        workerId: handle.id,
+      });
+      await handle.abort("ticket no longer active");
+      await handle.reap();
+      return;
     }
 
     this.workers.set(ticket.id, handle);
@@ -460,6 +488,7 @@ export class Dispatcher {
   private async reapTicket(ticketId: string, reason: string): Promise<void> {
     const handle = this.workers.get(ticketId);
     this.branchForTicket.delete(ticketId);
+    this.staffing.delete(ticketId); // drop any mid-spawn reservation so doSpawn discards it
     if (!handle) return;
     this.workers.delete(ticketId);
     this.logger.info("reaping worker", { ticketId, workerId: handle.id, reason });

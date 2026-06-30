@@ -12,6 +12,13 @@ import type { Ticket, TicketState, PollEvent, HarnessSpec, PlaneComment } from "
 let spawnCalls: { ticketId: string; stage: string; harness: HarnessSpec }[] = [];
 let created: any[] = [];
 let counter = 0;
+/**
+ * When set, every {@link fakeSpawn} suspends on this gate AFTER recording the call but BEFORE
+ * returning a handle — i.e. it simulates the real `spawnWorker`'s slow worktree-alloc + harness
+ * launch. This holds workers in the "admitted, handle not yet registered" window so tests can
+ * fire duplicate/competing events into that window and prove the dedup + cap reservation holds.
+ */
+let spawnGate: Promise<void> | null = null;
 
 function makeHandle(ticket: Ticket, stage: string) {
   const doneCbs = new Set<(s: "success" | "error", sum: string) => void>();
@@ -62,6 +69,7 @@ function makeHandle(ticket: Ticket, stage: string) {
 
 const fakeSpawn = async (args: any) => {
   spawnCalls.push({ ticketId: args.ticket.id, stage: args.stage, harness: args.harness });
+  if (spawnGate) await spawnGate; // simulate slow worktree alloc + harness launch
   const h = makeHandle(args.ticket, args.stage);
   created.push(h);
   return h;
@@ -128,6 +136,7 @@ beforeEach(() => {
   spawnCalls = [];
   created = [];
   counter = 0;
+  spawnGate = null;
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────────────────
@@ -269,5 +278,46 @@ describe("concurrency cap", () => {
     await tick();
     expect(spawnCalls).toHaveLength(2);
     expect(spawnCalls[1]!.ticketId).toBe("b");
+  });
+
+  // ── regression: the runaway fan-out (cap=2 but 18 workers in prod) ──────────────────────────
+  // Root cause: a worker's handle only lands in `workers` AFTER the slow async spawn, so duplicate
+  // events for the same ticket arriving during that gap each passed `workers.has()` and launched
+  // another worker; the second `workers.set` overwrote (orphaning the first) and `atCap()`
+  // undercounted, so the cap never tripped. The fix reserves the ticket SYNCHRONOUSLY in
+  // `staffing` the instant a spawn is admitted. These tests fire events INTO the spawn gap.
+
+  test("duplicate in_progress events during the spawn gap spawn exactly one worker", async () => {
+    const { d } = newDispatcher(5); // cap high enough that only per-ticket dedup can stop dups
+    const ticket = makeTicket();
+    let release!: () => void;
+    spawnGate = new Promise<void>((r) => (release = r));
+
+    // Fire 5 identical events with NO await between them: all land while the first spawn is still
+    // mid-flight (handle not yet in `workers`). Pre-fix, each would launch its own worker.
+    const inflight = Array.from({ length: 5 }, () => d.handle(stateChanged(ticket, "in_progress")));
+    release();
+    await Promise.all(inflight);
+    await tick();
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(d.live()).toHaveLength(1);
+  });
+
+  test("global cap is never bypassed by a burst of distinct-ticket events", async () => {
+    const { d } = newDispatcher(2);
+    let release!: () => void;
+    spawnGate = new Promise<void>((r) => (release = r));
+
+    // 5 different tickets all enter in_progress at once; with the spawn gated, all 5 events land
+    // before any handle registers. Only 2 (the cap) may be admitted; the rest queue.
+    const tickets = Array.from({ length: 5 }, (_, i) => makeTicket({ id: `t${i}`, identifier: `OPS-${i}` }));
+    await Promise.all(tickets.map((t) => d.handle(stateChanged(t, "in_progress"))));
+    expect(spawnCalls).toHaveLength(2); // cap respected even though no handle has registered yet
+
+    release();
+    await tick();
+    expect(d.live()).toHaveLength(2); // still exactly the cap; the other 3 are queued
+    expect(spawnCalls).toHaveLength(2);
   });
 });
