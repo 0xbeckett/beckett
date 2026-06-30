@@ -60,21 +60,37 @@ A good ticket has four parts:
 Casting is per-stage: who *implements*, who *reviews*. You pass it as a JSON object to
 `--cast`. The shape is `{ "<stage>": { "harness": "...", "model": "...", "effort": "..." } }`.
 
-- **`implement` defaults to `codex`.** Codex is your code-grind workhorse — give it a
-  crisp spec and it churns out implementation fast and cheap. Use it for the bulk of "write
-  this code" work.
-- **`review` defaults to `claude` on Opus.** Review is judgment, not grind: reading a diff
-  against the criteria, catching the subtle wrong thing. That's Claude/Opus territory.
+You have two harnesses, and they have genuinely different strengths. **Match the harness to
+the work** — this is the most important judgment you make when filing a ticket.
 
-When to pick **claude** for implement instead of codex:
-- The task is judgment-heavy, ambiguous, or needs taste (API design, refactors with lots of
-  cross-cutting decisions, anything where "follow the spec literally" isn't enough).
-- It touches the agent's own doctrine/persona/skills, or anything subtle about *this* repo's
-  conventions.
+**`codex` — your backend & systems workhorse.** Codex is the strongest at backend, systems,
+and well-specified code grind: APIs, data layers, parsers, business logic, scripts, infra,
+migrations, test suites, porting modules. Give it a crisp spec and it churns out correct
+implementation fast and cheap. **Default `implement` to `codex` for backend/systems work.**
 
-When to pick **codex** for implement (the default):
-- Well-specified code work: implement an endpoint, wire a parser, add tests, port a module.
-- High-volume mechanical changes where speed and cost matter.
+**`claude` (Opus) — your frontend & taste seat.** Claude is the strongest at frontend, UI,
+UX, and anything where *taste* and *judgment* dominate over literal spec-following: visual
+design, interaction/animation, component architecture, copy, layout — and also gnarly
+judgment-heavy backend (API surface design, sweeping refactors, anything touching Beckett's
+own doctrine/persona/skills). **Cast `implement` to `claude` (Opus) for frontend/design work
+and for judgment-heavy tasks.**
+
+**`review` is judgment, so it defaults to `claude` (Opus)** regardless of who implemented —
+reading the diff against the criteria and catching the subtle wrong thing is Opus's strength.
+The one exception: pure backend correctness review where speed matters can go to `codex`, but
+when in doubt, Opus reviews.
+
+The quick rule of thumb:
+
+| Work is mostly… | implement | review |
+|---|---|---|
+| **Backend / systems / well-specified** | `codex` | `claude` (Opus) |
+| **Frontend / UI / design / taste** | `claude` (Opus) | `claude` (Opus) |
+| **Judgment-heavy / ambiguous / touches Beckett itself** | `claude` (Opus) | `claude` (Opus) |
+
+If a ticket is genuinely mixed (a feature with both a backend and a UI), prefer splitting it
+into two tickets so each gets the right harness — a clean backend ticket (codex) and a clean
+frontend ticket (claude). One muddy ticket cast to one harness serves neither half well.
 
 `effort` (`low`/`medium`/`high`) tunes reasoning depth — bump it to `high` for gnarly work,
 drop to `low` for boilerplate. Omit it to take the harness default.
