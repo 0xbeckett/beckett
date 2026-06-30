@@ -102,7 +102,12 @@ async function boot(): Promise<BootedSystem> {
   const concierge = createConcierge({ config, logger: logger.child("concierge") });
   await concierge.start();
 
-  await poller.start((events) => dispatcher.handle(events));
+  // Fan each poll batch to BOTH the dispatcher (acts on the work) and the Concierge (surfaces
+  // milestones/errors back to the Discord conversation that filed the ticket — the closed loop).
+  await poller.start((events) => {
+    concierge.notify(events);
+    return dispatcher.handle(events);
+  });
   logger.info("beckett v3 online", { liveWorkers: dispatcher.live().length });
 
   return { config, logger, client, poller, dispatcher, concierge };

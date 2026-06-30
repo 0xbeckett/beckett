@@ -36,6 +36,12 @@ export interface CreateTicketInput {
   state?: TicketState;
   /** Plane member ids to assign. */
   assignees?: string[];
+  /**
+   * Discord channel that originated this ticket. Stored as a marker in the description so
+   * worker/ticket updates route back to the right conversation (closed agent loop). Stripped
+   * back out on hydration into {@link Ticket.originChannel} — workers never see it.
+   */
+  originChannel?: string;
 }
 
 /** Constructor dependencies for {@link PlaneClient}. */
@@ -165,6 +171,30 @@ function textToPreHtml(text: string): string {
   return `<pre>${escapeHtml(text)}</pre>`;
 }
 
+/**
+ * The Discord-origin marker stored at the tail of an issue description (closed agent loop). It is
+ * an HTML-comment-shaped token but stored as ESCAPED text inside the `<pre>` (see
+ * {@link textToPreHtml}), so Plane's sanitizer treats it as literal text and it round-trips
+ * verbatim — yet it never collides with the cast/criteria parser.
+ */
+const ORIGIN_MARKER_RE = /<!--\s*beckett-origin:\s*([^\s>]+)\s*-->/i;
+
+/** Append the origin marker to a serialized description (no-op when no channel is given). */
+export function withOriginMarker(description: string, channel?: string): string {
+  if (!channel) return description;
+  const marker = `<!-- beckett-origin: ${channel} -->`;
+  return description ? `${description}\n\n${marker}` : marker;
+}
+
+/** Split the origin channel back off a stored description; returns the cleaned description. */
+export function extractOriginMarker(stored: string): { channel?: string; description: string } {
+  const m = stored.match(ORIGIN_MARKER_RE);
+  if (!m) return { description: stored };
+  const channel = m[1];
+  const description = stored.replace(ORIGIN_MARKER_RE, "").trim();
+  return { channel, description };
+}
+
 /** Render text into paragraph HTML (one `<p>` per line) — used for comment bodies. */
 function textToParagraphHtml(text: string): string {
   const lines = text.split(/\r?\n/);
@@ -251,7 +281,7 @@ export class PlaneClient {
     const body = input.body ?? input.description ?? "";
     const casting = input.casting ?? {};
     const criteria = input.criteria ?? [];
-    const description = serializeCast(casting, criteria, body);
+    const description = withOriginMarker(serializeCast(casting, criteria, body), input.originChannel);
     const payload: Record<string, unknown> = {
       name: input.title,
       description_html: textToPreHtml(description),
@@ -311,7 +341,10 @@ export class PlaneClient {
 
   private hydrate(raw: unknown): Ticket {
     const issue = IssueSchema.parse(raw);
-    const rawDescription = htmlToText(issue.description_html, issue.description_stripped);
+    const storedDescription = htmlToText(issue.description_html, issue.description_stripped);
+    // Pull the origin-channel marker out before anything else parses the description, so neither
+    // the worker body nor the cast parser ever sees it (the closed agent loop's routing key).
+    const { channel: originChannel, description: rawDescription } = extractOriginMarker(storedDescription);
     const { casting, criteria, body } = parseCast(rawDescription);
     const state = this.reverseState(issue.state ?? null);
     const identifier =
@@ -332,6 +365,7 @@ export class PlaneClient {
       projectId,
       url: `${this.config.plane.base_url.replace(/\/+$/, "")}/${this.config.plane.workspace_slug}/projects/${projectId}/issues/${issue.id}`,
       updatedAt: issue.updated_at ?? issue.created_at ?? new Date(0).toISOString(),
+      ...(originChannel ? { originChannel } : {}),
     };
   }
 

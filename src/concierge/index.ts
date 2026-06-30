@@ -29,8 +29,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config, IncomingMessage, Logger } from "../types.ts";
+import type { PollEvent, PlaneComment, Ticket } from "../plane/types.ts";
 import { log as rootLog } from "../log.ts";
 import { loadConfig } from "../config.ts";
+import { buildPaths } from "../paths.ts";
+import { serveBus, type BusRequest, type BusResponse } from "../shell/control-bus.ts";
 import { createDiscordGateway, type DiscordGateway } from "../discord/gateway.ts";
 
 /** The same env keys the worker driver strips — subscription auth only (Spec 00 §4). */
@@ -41,6 +44,48 @@ const TURN_TIMEOUT_MS = 240_000;
 
 /** Discord shows "typing…" for ~10s; re-trigger inside this window while a turn runs. */
 const TYPING_INTERVAL_MS = 8_000;
+
+/**
+ * Default context-size ceiling (summed input tokens) at which we auto-compact the session.
+ * Headless `claude -p` exposes no programmatic `/compact`, so "compaction" here means: summarize
+ * the conversation, then rotate to a fresh `--session-id` seeded with that summary (issue #5). At
+ * 190k we're comfortably under the 200k window with room for one more turn + the handoff turn.
+ * Overridable via `config.concierge.rotate_at_tokens` (driven low in tests to exercise rotation).
+ */
+const DEFAULT_ROTATE_AT_TOKENS = 190_000;
+
+/** What a turn resolves to when it times out — must never be seeded as a handoff "summary". */
+const TURN_TIMEOUT_FALLBACK = "Still chewing on that one — give me a sec and ask again.";
+
+/** Prompt that asks the dying session for a compact handoff before we drop its transcript. */
+const HANDOFF_PROMPT =
+  "SYSTEM: Your conversation context is about to be compacted and this transcript dropped. " +
+  "In <=200 words, write a handoff note for your fresh self: who you're mid-conversation with, " +
+  "any open threads or promises, tickets you've filed and their channels, and anything you'd " +
+  "lose by forgetting. Prose only, no preamble — you are writing a note to yourself.";
+
+/**
+ * The live context size from a turn's `usage` block = the SUM of every input-side field. Exported
+ * for tests because getting this wrong is the classic bug: `input_tokens` alone is only the
+ * uncached delta (tens of tokens on a warm session) and never trips the ceiling; the real mass
+ * lives in `cache_read_input_tokens` (warm) or `cache_creation_input_tokens` (after a cache gap).
+ * Returns 0 for anything that isn't a usage object.
+ */
+export function contextTokensFromUsage(raw: unknown): number {
+  if (!raw || typeof raw !== "object") return 0;
+  const u = raw as Record<string, unknown>;
+  const n = (v: unknown): number => (typeof v === "number" && v > 0 ? v : 0);
+  return n(u.input_tokens) + n(u.cache_creation_input_tokens) + n(u.cache_read_input_tokens);
+}
+
+/** Frames the handoff summary as the first line of the rotated session (re-grounds the new self). */
+function seedFromHandoff(summary: string): string {
+  return (
+    "SYSTEM: Context was just compacted. This is your handoff note from the prior session — " +
+    "treat it as memory, not as a message from the user, and do not reply to it:\n\n" +
+    summary
+  );
+}
 
 /** The bun subprocess handle type (mirrors ClaudeDriver — avoids importing the bun symbol). */
 type Child = ReturnType<typeof Bun.spawn>;
@@ -73,13 +118,20 @@ export class ConciergeSession {
   private readonly cwd: string;
   private readonly systemPrompt: string;
   private readonly model: string;
-  private readonly sessionId: string;
+  /** Summed-input-token ceiling that triggers auto-compaction (from config; issue #5). */
+  private readonly rotateAtTokens: number;
+  /** Mutable: rotation (auto-compaction) mints a fresh id and relaunches under it (issue #5). */
+  private sessionId: string;
 
   private child: Child | null = null;
   private pending: PendingTurn | null = null;
   /** Serializes turns: each `ask` chains onto the previous so claude sees one input at a time. */
   private queue: Promise<unknown> = Promise.resolve();
   private stopped = false;
+  /** Latest summed input-token count (input + cache_creation + cache_read) — the live context size. */
+  private lastContextTokens = 0;
+  /** True while we're deliberately swapping the child for a rotation — suppresses onExit's relaunch. */
+  private rotating = false;
 
   // launch plumbing. NOTE: `claude -p --input-format stream-json` emits `system/init` only AFTER
   // the first stdin line arrives, so start() must NOT block waiting for init (that deadlocks —
@@ -92,6 +144,7 @@ export class ConciergeSession {
     this.cwd = opts.cwd ?? defaultRepoRoot();
     this.systemPrompt = opts.systemPrompt ?? defaultSystemPrompt();
     this.model = opts.config.concierge.model;
+    this.rotateAtTokens = opts.config.concierge.rotate_at_tokens ?? DEFAULT_ROTATE_AT_TOKENS;
     this.sessionId = crypto.randomUUID();
   }
 
@@ -107,7 +160,9 @@ export class ConciergeSession {
   ask(message: string): Promise<string> {
     const run = this.queue.then(() => this.runTurn(message));
     // Keep the chain alive even if a turn rejects, so one bad turn never wedges the session.
-    this.queue = run.catch(() => undefined);
+    // Chain the rotation check AFTER the turn so any compaction lands at a turn boundary (never
+    // mid-turn) and the next ask() waits for the fresh session to be live.
+    this.queue = run.catch(() => undefined).then(() => this.maybeRotate());
     return run;
   }
 
@@ -144,7 +199,7 @@ export class ConciergeSession {
           const acc = this.pending.parts.join("\n\n").trim();
           this.pending = null;
           // Don't hang the human forever — return whatever we have (or a soft nudge).
-          resolve(acc || "Still chewing on that one — give me a sec and ask again.");
+          resolve(acc || TURN_TIMEOUT_FALLBACK);
         }
       }, TURN_TIMEOUT_MS);
       this.pending = { parts: [], resolve, reject, timer };
@@ -250,6 +305,12 @@ export class ConciergeSession {
   }
 
   private async onExit(code: number): Promise<void> {
+    // During a rotation we kill the old child on purpose and immediately relaunch under a fresh
+    // session id; let rotate() own the child handle so this exit is not mistaken for a crash.
+    if (this.rotating) {
+      this.log.debug("concierge process exited during rotation (expected)", { code });
+      return;
+    }
     this.child = null;
     if (this.stopped) return;
     this.log.warn("concierge claude process exited", { code, sessionId: this.sessionId });
@@ -326,9 +387,11 @@ export class ConciergeSession {
           if (obj.subtype === "init") this.onInit();
           break;
         case "assistant":
+          this.recordUsage((obj.message as Record<string, unknown> | undefined)?.usage);
           this.onAssistant(obj);
           break;
         case "result":
+          this.recordUsage(obj.usage);
           this.onResult();
           break;
         default:
@@ -365,6 +428,88 @@ export class ConciergeSession {
     this.pending = null;
     p.resolve(p.parts.join("\n\n").trim());
   }
+
+  /**
+   * Track the live context size from a turn's `usage`. The context size is the SUM of every
+   * input-side field on the latest turn — `input_tokens` alone is only the uncached delta (a
+   * handful of tokens on a warm cached session) and would never cross the threshold. On a warm
+   * session most of the mass sits in `cache_read`; after a >5-min gap the same mass reappears as
+   * `cache_creation`. Each turn re-sends the whole context, so the latest sum IS the current size.
+   */
+  private recordUsage(raw: unknown): void {
+    const ctx = contextTokensFromUsage(raw);
+    if (ctx > 0) this.lastContextTokens = ctx;
+  }
+
+  /** Between turns: if the context crossed the ceiling, compact by rotating to a fresh session. */
+  private async maybeRotate(): Promise<void> {
+    if (this.stopped || this.rotating) return;
+    if (this.lastContextTokens < this.rotateAtTokens) return;
+    try {
+      await this.rotate();
+    } catch (err) {
+      // A failed rotation must not wedge the session — keep serving on the old (bloated) one.
+      this.log.error("concierge rotation failed; staying on current session", {
+        err: String(err),
+        sessionId: this.sessionId,
+      });
+      this.rotating = false;
+    }
+  }
+
+  /**
+   * Auto-compaction (issue #5). Asks the dying session for a handoff note, then drops the
+   * transcript by relaunching under a fresh session id seeded with that note. Called only at a
+   * turn boundary (chained off {@link ask}'s queue), so no turn is ever in flight here.
+   */
+  private async rotate(): Promise<void> {
+    const fromTokens = this.lastContextTokens;
+    const oldSession = this.sessionId;
+    this.log.info("concierge context at ceiling — compacting via session rotation", {
+      contextTokens: fromTokens,
+      ceiling: this.rotateAtTokens,
+      sessionId: oldSession,
+    });
+
+    // 1. Last words from the dying session, on its still-live child (best-effort). Guard the
+    //    timeout sentinel — seeding "Still chewing…" as a handoff note would be nonsense.
+    let summary = "";
+    try {
+      const note = (await this.runTurn(HANDOFF_PROMPT)).trim();
+      if (note && note !== TURN_TIMEOUT_FALLBACK) summary = note;
+    } catch (err) {
+      this.log.warn("concierge handoff summary failed — rotating without it", { err: String(err) });
+    }
+
+    // 2. Swap the child for a fresh session. `rotating` makes onExit ignore the deliberate kill.
+    this.rotating = true;
+    try {
+      const old = this.child;
+      this.child = null;
+      if (old) {
+        try {
+          old.kill("SIGTERM");
+        } catch {
+          /* already gone */
+        }
+      }
+      this.sessionId = crypto.randomUUID();
+      this.lastContextTokens = 0;
+      await this.launch(/*resume*/ false); // fresh id, transcript dropped, concierge.md re-attaches
+    } finally {
+      this.rotating = false;
+    }
+
+    // 3. Re-ground the fresh self with the handoff note (skipped if we couldn't get one).
+    if (summary) {
+      try {
+        await this.runTurn(seedFromHandoff(summary));
+      } catch (err) {
+        this.log.warn("concierge re-grounding turn failed (continuing)", { err: String(err) });
+      }
+    }
+    this.log.info("concierge rotation complete", { from: oldSession, to: this.sessionId });
+  }
 }
 
 // =======================================================================================
@@ -390,6 +535,8 @@ export class Concierge {
   private readonly log: Logger;
   private readonly gateway: DiscordGateway;
   private readonly session: ConciergeSession;
+  /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
+  private busStop: (() => void) | null = null;
 
   constructor(opts: ConciergeOptions = {}) {
     this.config = opts.config ?? loadConfig();
@@ -404,12 +551,116 @@ export class Concierge {
     await this.session.start();
     this.gateway.onMessage((m) => this.onMessage(m));
     await this.gateway.start();
+    this.serveControlBus();
     this.log.info("concierge online", { model: this.config.concierge.model });
   }
 
   async stop(): Promise<void> {
+    try {
+      this.busStop?.();
+    } catch {
+      /* best-effort */
+    }
+    this.busStop = null;
     await this.gateway.stop();
     await this.session.stop();
+  }
+
+  // ── closing the agent loop: Plane updates → Discord (issue: ticket updates never surfaced) ──
+
+  /**
+   * Serve the control bus the Concierge's OWN `claude` process dials via `beckett discord reply`
+   * from its Bash tool. v3 doesn't run the v2 shell, so without this the CLI would hit a dead
+   * socket; here the same machinery routes `discord.reply` straight into the in-process gateway.
+   */
+  private serveControlBus(): void {
+    // Same path the CLI's `callBus` dials (`<beckettDir>/control.sock`). Resolved here, not in the
+    // constructor, so constructing a Concierge never touches the filesystem (keeps it unit-testable).
+    const sock = join(buildPaths(this.config).beckettDir, "control.sock");
+    this.busStop = serveBus(sock, (req) => this.onBusRequest(req));
+    this.log.info("concierge control bus listening", { socket: sock });
+  }
+
+  private async onBusRequest(req: BusRequest): Promise<BusResponse> {
+    if (req.cmd !== "discord.reply") {
+      return { ok: false, error: `concierge bus: unknown command "${req.cmd}"` };
+    }
+    const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
+    const text = typeof req.args.text === "string" ? req.args.text.trim() : "";
+    if (!channelId || !text) {
+      return { ok: false, error: "discord.reply needs both channelId and text" };
+    }
+    try {
+      const messageId = await this.gateway.post(channelId, text);
+      return { ok: true, data: { messageId } };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
+  /**
+   * Fan a batch of Plane poll events at the Concierge so it can surface progress to the human
+   * (the closed loop). We relay only what's worth a turn — the dispatcher's OWN milestone/error
+   * comments (it narrates every outcome to Plane) and cancellations — and let the Concierge judge
+   * voice/skip. Each relevant event becomes one session turn that asks it to reply via the CLI.
+   * Fire-and-forget: turns queue on the session and never block the poll loop.
+   */
+  notify(events: PollEvent | PollEvent[]): void {
+    const batch = Array.isArray(events) ? events : [events];
+    for (const event of batch) {
+      const framed = this.frameUpdate(event);
+      if (!framed) continue; // not worth surfacing, or no channel to route back to
+      // Don't await: the turn serializes on the session's own queue; the poll loop moves on.
+      void this.session.ask(framed).catch((err) =>
+        this.log.warn("concierge update turn failed (ignored)", { err: String(err) }),
+      );
+    }
+  }
+
+  /**
+   * Decide whether a poll event is worth telling the user about, and if so frame it as a turn that
+   * instructs the Concierge to reply via `beckett discord reply`. Returns null to stay silent.
+   * Milestones + errors only: the dispatcher posts a `<!-- beckett… -->`-tagged comment on every
+   * outcome (advance / error / verdict / rework), so those comments ARE the milestone feed.
+   */
+  private frameUpdate(event: PollEvent): string | null {
+    if (event.kind === "comment_added") {
+      if (!isDispatcherComment(event.comment)) return null; // human/worker chatter — not ours to echo
+      return this.updateTurn(event.ticket, stripCommentMarker(event.comment.body));
+    }
+    if (event.kind === "cancelled") {
+      return this.updateTurn(event.ticket, `Ticket was cancelled.`);
+    }
+    if (event.kind === "state_changed" && event.to === "done") {
+      // `done` is the one milestone the comment feed misses: the poller stops collecting comments
+      // once a ticket is terminal (poll.ts), so the dispatcher's "Review passed → done" comment
+      // never arrives as a comment_added. Surface it from the state transition instead.
+      return this.updateTurn(event.ticket, `Review passed — shipped, ticket is **done**.`);
+    }
+    // Other `state_changed` (→in_review, →in_progress rework) and `created` already arrive as the
+    // dispatcher's own comments on a still-active ticket, so we don't double-surface them here.
+    return null;
+  }
+
+  /** Build the synthetic update turn (or null when the ticket can't be routed back to a channel). */
+  private updateTurn(ticket: Ticket, detail: string): string | null {
+    const channel = ticket.originChannel;
+    if (!channel) {
+      // This is the exact failure the closed loop exists to prevent: an update with nowhere to go,
+      // because the ticket was filed without --channel. Warn loudly — silence here recreates the bug.
+      this.log.warn("ticket update dropped — no origin channel on ticket (was it filed without --channel?)", {
+        ticket: ticket.identifier,
+      });
+      return null;
+    }
+    return (
+      `SYSTEM (automated ticket update — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
+      `Ticket ${ticket.identifier} "${ticket.title}" has an update:\n\n${detail}\n\n` +
+      `If this is worth telling the person who asked for it, send them a short note IN YOUR VOICE by ` +
+      `running this from your Bash tool:\n` +
+      `  beckett discord reply --channel ${channel} "<your message>"\n` +
+      `Paraphrase — don't dump the raw status. If it's routine or not worth a ping, do nothing.`
+    );
   }
 
   /**
@@ -429,7 +680,7 @@ export class Concierge {
     void this.gateway.sendTyping(m.channelId);
 
     try {
-      const reply = await this.session.ask(content);
+      const reply = await this.session.ask(frameUserTurn(m.channelId, content));
       keepTyping = false;
       clearInterval(typing);
       const text = reply.trim();
@@ -466,6 +717,28 @@ function defaultRepoRoot(): string {
 /** Read the sibling `concierge.md` doctrine as the session's appended system prompt. */
 function defaultSystemPrompt(): string {
   return readFileSync(join(import.meta.dir, "concierge.md"), "utf8");
+}
+
+/**
+ * Prefix a Discord turn with its channel id so the Concierge can stamp `--channel <id>` onto any
+ * ticket it files (the routing key that lets updates flow back here — see `concierge.md`). Kept
+ * to one terse line so it doesn't crowd the actual message or bleed into the Concierge's voice.
+ */
+function frameUserTurn(channelId: string, content: string): string {
+  return `[channel:${channelId}]\n${content}`;
+}
+
+/** The marker the dispatcher prepends to its own Plane comments (mirrors `BECKETT_COMMENT_MARKER`). */
+const DISPATCHER_COMMENT_PREFIX = "<!-- beckett";
+
+/** True when a comment was authored by Beckett's machinery (a milestone/error narration), not a human. */
+function isDispatcherComment(comment: PlaneComment): boolean {
+  return comment.body.trimStart().startsWith(DISPATCHER_COMMENT_PREFIX);
+}
+
+/** Drop the leading `<!-- beckett… -->` marker line so the Concierge paraphrases just the prose. */
+function stripCommentMarker(body: string): string {
+  return body.replace(/^\s*<!--\s*beckett[^>]*-->\s*/i, "").trim();
 }
 
 // Run standalone: `bun src/concierge/index.ts` brings the Concierge online.

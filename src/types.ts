@@ -1431,6 +1431,8 @@ export interface Config {
   /** v3 — the Concierge agent that owns Discord and files tickets. */
   concierge: {
     model: string;
+    /** Summed-input-token ceiling at which the Concierge session auto-compacts (rotates). */
+    rotate_at_tokens: number;
   };
 }
 

@@ -85,6 +85,13 @@ export interface Ticket {
   projectId: string; // Plane project id
   url: string; // deep link to the issue in the Plane web UI
   updatedAt: string; // ISO-8601; the poll cursor / change key
+  /**
+   * Discord channel that filed this ticket, stamped by the Concierge at creation so worker/ticket
+   * updates can be routed back to the conversation that asked (the closed agent loop). Absent for
+   * tickets created outside Discord (e.g. straight in Plane). Round-tripped through the issue
+   * description by the PlaneClient — Plane stays the single source of truth (no sidecar DB).
+   */
+  originChannel?: string;
 }
 
 /** One comment on a Plane issue. */

@@ -225,6 +225,10 @@ const ConfigSchema = z
     concierge: z
       .object({
         model: z.string().min(1).default("claude-opus-4-8"),
+        // Context-size ceiling (summed input tokens) at which the session auto-compacts by rotating
+        // to a fresh session seeded with a handoff summary (issue #5). Configurable so it can be
+        // driven low in tests/harnesses to exercise a real rotation without burning ~190k tokens.
+        rotate_at_tokens: z.number().int().positive().default(190_000),
       })
       .default({}),
   })
