@@ -97,6 +97,8 @@ export class CodexDriver implements HarnessDriver {
   private finished = false;
   private spawnedAt = 0;
   private lastActivityTs = 0;
+  /** Incremented per child process; an exit whose gen != current is a superseded child (ignored). */
+  private childGen = 0;
 
   // ── normalized-stream parse state ────────────────────────────────────────────
   private readonly subscribers = new Set<(e: WorkerEvent) => void>();
@@ -320,6 +322,7 @@ export class CodexDriver implements HarnessDriver {
 
     this.child = child;
     this.pid = child.pid;
+    const gen = ++this.childGen;
 
     // Fail the launch if the thread never starts.
     this.spawnTimer = setTimeout(() => {
@@ -334,8 +337,9 @@ export class CodexDriver implements HarnessDriver {
     });
     void this.drainStderr(child);
 
-    // Watch for process exit (covers crashes that never emit a terminal turn line).
-    void child.exited.then((code) => this.onProcessExit(code));
+    // Watch for process exit (covers crashes that never emit a terminal turn line). The gen guard
+    // means a child superseded by an auto-resume can't fire a spurious error-finish.
+    void child.exited.then((code) => this.onProcessExit(code, gen));
 
     // Arm the wall-clock watchdog once (survives resumes).
     if (!this.watchdog) {
@@ -421,7 +425,9 @@ export class CodexDriver implements HarnessDriver {
     return ov;
   }
 
-  private async onProcessExit(code: number): Promise<void> {
+  private async onProcessExit(code: number, gen: number): Promise<void> {
+    // A child we've already moved past (e.g. replaced by an auto-resume) — its exit is not ours.
+    if (gen !== this.childGen) return;
     if (this.spawnTimer) {
       clearTimeout(this.spawnTimer);
       this.spawnTimer = null;
@@ -624,7 +630,32 @@ export class CodexDriver implements HarnessDriver {
       this.emit({ kind: "turn_completed", usage, ts });
     }
 
-    // exec is one-shot: a completed turn IS the run finishing successfully (Spec 02 §5).
+    // Steering that arrived during this one-shot turn couldn't interrupt it; apply it now by
+    // resuming with the buffered instruction(s) rather than finishing. The child-gen guard keeps
+    // this turn's imminent process exit from firing a spurious error-finish.
+    if (this.bufferedNudges.length > 0 && this.workerState !== "aborted") {
+      this.log.info("turn completed with buffered steering — auto-resuming to apply it", {
+        pending: this.bufferedNudges.length,
+      });
+      this.finished = true; // this turn's process is done; resume() will relaunch
+      void this.resume().catch((err) => {
+        this.log.error("auto-resume after steering failed", { err: String(err) });
+        this.emit({
+          kind: "finished",
+          status: "error",
+          subtype: "error_resume",
+          structuredOutput: null,
+          usage: { ...this.tokens },
+          ts: Date.now(),
+        });
+        this.finished = true;
+        this.stopWatchdog();
+        if (!this.isTerminal()) this.setState("failed");
+      });
+      return;
+    }
+
+    // exec is one-shot: a completed turn (with no pending steering) IS success (Spec 02 §5).
     this.emit({
       kind: "finished",
       status: "success",
@@ -634,7 +665,16 @@ export class CodexDriver implements HarnessDriver {
       ts,
     });
     this.finished = true;
+    this.stopWatchdog(); // success sets the non-terminal "review" state, so clear the timer here
     if (!this.isTerminal()) this.setState("review"); // success → handed to GATE (Spec 11)
+  }
+
+  /** Clear the wall-clock watchdog interval (idempotent). */
+  private stopWatchdog(): void {
+    if (this.watchdog) {
+      clearInterval(this.watchdog);
+      this.watchdog = null;
+    }
   }
 
   private handleTurnFailed(obj: Record<string, unknown>): void {

@@ -238,6 +238,22 @@ describe("steering + cancel", () => {
   });
 });
 
+describe("rework cap", () => {
+  test("repeated review failures stop auto-rework after MAX_REWORK_CYCLES", async () => {
+    const { d, client } = newDispatcher(5);
+    const ticket = makeTicket({ state: "in_review" });
+    for (let i = 0; i < 3; i++) {
+      await d.handle(stateChanged(ticket, "in_review"));
+      await tick();
+      created[created.length - 1].finish("success", "still broken", { status: "blocked" });
+      await tick();
+    }
+    const backToProgress = client.setStateCalls.filter((c) => c.state === "in_progress");
+    expect(backToProgress).toHaveLength(2); // cycles 1 & 2 rework; cycle 3 stops, awaiting a human
+    expect(client.comments.some((c) => c.body.includes("stopping"))).toBe(true);
+  });
+});
+
 describe("concurrency cap", () => {
   test("over-cap spawns queue and pump when a slot frees", async () => {
     const { d } = newDispatcher(1);

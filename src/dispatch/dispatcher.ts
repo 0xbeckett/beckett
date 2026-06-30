@@ -74,6 +74,9 @@ export interface DispatcherDeps {
  */
 export const BECKETT_COMMENT_MARKER = "<!-- beckett:dispatcher -->";
 
+/** Max implement↔review round-trips before the dispatcher stops auto-reworking and waits for a human. */
+const MAX_REWORK_CYCLES = 3;
+
 /** A spawn deferred because the concurrency cap was reached. */
 interface PendingSpawn {
   ticket: Ticket;
@@ -96,6 +99,12 @@ export class Dispatcher {
   private readonly branchForTicket = new Map<string, string>();
   /** FIFO queue of spawns waiting for a free concurrency slot. */
   private readonly pending: PendingSpawn[] = [];
+  /** Spawns that have passed the cap check but not yet landed in {@link workers} (race guard). */
+  private inflightSpawns = 0;
+  /** Ids of comments the dispatcher itself posted — never read back as steering (Fix: self-nudge). */
+  private readonly ownCommentIds = new Set<string>();
+  /** Per-ticket implement↔review round-trips, to bound auto-rework. */
+  private readonly reworkCount = new Map<string, number>();
 
   constructor(deps: DispatcherDeps) {
     this.client = deps.client;
@@ -211,28 +220,51 @@ export class Dispatcher {
 
   // ── spawning + concurrency ─────────────────────────────────────────────────────────────
 
+  /** True when live workers + in-flight (awaiting) spawns already fill the concurrency cap. */
+  private atCap(): boolean {
+    return this.workers.size + this.inflightSpawns >= this.config.concurrency.max_workers;
+  }
+
   /** Spawn immediately if a slot is free, else enqueue for {@link pump}. */
   private spawnGuarded(ticket: Ticket, stage: string): void {
-    if (this.workers.size >= this.config.concurrency.max_workers) {
+    if (this.workers.has(ticket.id)) return; // already staffed
+    if (this.atCap()) {
       this.pending.push({ ticket, stage });
       this.logger.info("spawn queued (concurrency cap reached)", {
         ticket: ticket.identifier,
         stage,
-        inUse: this.workers.size,
+        inUse: this.workers.size + this.inflightSpawns,
         cap: this.config.concurrency.max_workers,
         queueDepth: this.pending.length,
       });
       return;
     }
-    void this.doSpawn(ticket, stage);
+    this.launchSpawn(ticket, stage);
+  }
+
+  /**
+   * Reserve a slot SYNCHRONOUSLY (bump {@link inflightSpawns}) before the async spawn, so two
+   * spawns racing through {@link spawnGuarded} can't both pass the cap check. The reservation is
+   * released — and the queue pumped — once the spawn lands (or fails).
+   */
+  private launchSpawn(ticket: Ticket, stage: string): void {
+    this.inflightSpawns++;
+    void this.doSpawn(ticket, stage)
+      .catch(() => {
+        /* doSpawn handles its own errors + ticket comment */
+      })
+      .finally(() => {
+        this.inflightSpawns--;
+        this.pump();
+      });
   }
 
   /** Admit queued spawns while slots are free. */
   private pump(): void {
-    while (this.pending.length > 0 && this.workers.size < this.config.concurrency.max_workers) {
+    while (this.pending.length > 0 && !this.atCap()) {
       const next = this.pending.shift()!;
       if (this.workers.has(next.ticket.id)) continue; // staffed since it was queued
-      void this.doSpawn(next.ticket, next.stage);
+      this.launchSpawn(next.ticket, next.stage);
     }
   }
 
@@ -263,8 +295,7 @@ export class Dispatcher {
         ticket.id,
         `Could not start the ${stage} worker: ${(err as Error).message}. Leaving for a human.`,
       );
-      this.pump(); // the slot was never taken
-      return;
+      return; // launchSpawn's finally releases the reservation + pumps
     }
 
     this.workers.set(ticket.id, handle);
@@ -374,17 +405,37 @@ export class Dispatcher {
       await this.client.setState(ticket.id, "done");
       await this.postComment(ticket.id, `Review passed → **done**.\n\n${summary}`);
       this.branchForTicket.delete(ticket.id);
+      this.reworkCount.delete(ticket.id);
       this.logger.info("ticket advanced to done", { ticket: ticket.identifier });
-    } else {
-      await this.client.setState(ticket.id, "in_progress");
+      return;
+    }
+
+    // Review failed — bound the implement↔review loop so it can't churn forever.
+    const cycles = (this.reworkCount.get(ticket.id) ?? 0) + 1;
+    this.reworkCount.set(ticket.id, cycles);
+    if (cycles >= MAX_REWORK_CYCLES) {
       await this.postComment(
         ticket.id,
-        `Review found issues → back to **in_progress** for re-work.\n\n${summary}`,
+        `Review found issues, and this is rework cycle ${cycles}/${MAX_REWORK_CYCLES} — stopping ` +
+          `automatic rework and leaving this in **in_review** for a human to take over.\n\n${summary}`,
       );
-      this.logger.info("ticket sent back to in_progress (review fail)", {
+      this.reworkCount.delete(ticket.id);
+      this.logger.warn("rework cap reached — leaving for human", {
         ticket: ticket.identifier,
+        cycles,
       });
+      return; // no setState → no new event → loop stops, ticket awaits a human
     }
+
+    await this.client.setState(ticket.id, "in_progress");
+    await this.postComment(
+      ticket.id,
+      `Review found issues → back to **in_progress** for re-work (cycle ${cycles}/${MAX_REWORK_CYCLES}).\n\n${summary}`,
+    );
+    this.logger.info("ticket sent back to in_progress (review fail)", {
+      ticket: ticket.identifier,
+      cycle: cycles,
+    });
   }
 
   /**
@@ -420,15 +471,21 @@ export class Dispatcher {
   /** Post a dispatcher comment, tagged with the bot marker so it is never read back as steering. */
   private async postComment(ticketId: string, body: string): Promise<void> {
     try {
-      await this.client.addComment(ticketId, `${BECKETT_COMMENT_MARKER}\n${body}`);
+      const posted = await this.client.addComment(ticketId, `${BECKETT_COMMENT_MARKER}\n${body}`);
+      // Record the id so we recognise our own comment even if Plane mangles the HTML marker.
+      if (posted?.id) this.ownCommentIds.add(posted.id);
     } catch (err) {
       this.logger.warn("addComment failed", { ticketId, error: (err as Error).message });
     }
   }
 
-  /** True if a comment was authored by Beckett itself (carries the dispatcher marker). */
+  /**
+   * True if a comment was authored by Beckett itself. Primary signal is the comment id we
+   * recorded when we posted it; the HTML marker is a restart-surviving fallback (the id set is
+   * in-memory). Either match means "don't treat this as a human steering nudge."
+   */
   private isBeckettComment(comment: PlaneComment): boolean {
-    return comment.body.trimStart().startsWith("<!-- beckett");
+    return this.ownCommentIds.has(comment.id) || comment.body.trimStart().startsWith("<!-- beckett");
   }
 }
 

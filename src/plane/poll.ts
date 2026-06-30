@@ -128,11 +128,16 @@ export class PlanePoller {
   }
 
   /**
-   * Seed the snapshot from the current Plane state WITHOUT emitting any events (cold-start /
-   * recovery). After {@link prime}, only changes that happen AFTER this call surface from
-   * {@link poll}.
+   * Seed the snapshot from the current Plane state and RETURN recovery events for tickets that
+   * are already mid-flight, so a restart re-staffs them (workers don't survive a shell restart).
+   * Without this, a ticket sitting in `in_progress` after a crash would be orphaned — its state
+   * never changes again, so {@link poll} would emit nothing for it.
+   *
+   * Returns a `state_changed{from:null}` for every `in_progress` ticket (the Dispatcher re-spawns
+   * an implementer). `in_review` tickets are surfaced via a warning rather than auto-re-reviewed:
+   * the reviewer needs the prior implementation branch, which is not recoverable from Plane alone.
    */
-  async prime(): Promise<void> {
+  async prime(): Promise<PollEvent[]> {
     let tickets: Ticket[];
     try {
       tickets = await this.client.listIssues();
@@ -140,17 +145,34 @@ export class PlanePoller {
       this.logger.warn("prime: listIssues failed — snapshot left empty", {
         error: (err as Error).message,
       });
-      return;
+      return [];
     }
     const nowIso = new Date(this.now()).toISOString();
+    const recovery: PollEvent[] = [];
+    let inReview = 0;
     for (const ticket of tickets) {
       this.snapshot.set(ticket.id, {
         state: ticket.state,
         updatedAt: ticket.updatedAt,
         lastCommentAt: nowIso,
       });
+      if (ticket.state === "in_progress") {
+        recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
+      } else if (ticket.state === "in_review") {
+        inReview++;
+      }
     }
-    this.logger.info("primed snapshot", { tickets: this.snapshot.size });
+    this.logger.info("primed snapshot", {
+      tickets: this.snapshot.size,
+      recover_in_progress: recovery.length,
+      in_review_awaiting_human: inReview,
+    });
+    if (inReview > 0) {
+      this.logger.warn("tickets in in_review at startup are not auto-re-reviewed (no branch)", {
+        count: inReview,
+      });
+    }
+    return recovery;
   }
 
   // ── convenience self-scheduling surface (start/stop) ─────────────────────────────────────
@@ -162,7 +184,11 @@ export class PlanePoller {
    */
   async start(onEvents: PollEventSink): Promise<void> {
     if (this.timer) return;
-    await this.prime();
+    const recovery = await this.prime();
+    if (recovery.length > 0) {
+      this.logger.info("re-dispatching in-flight tickets after restart", { count: recovery.length });
+      await onEvents(recovery);
+    }
     this.timer = setInterval(() => {
       void this.tickOnce(onEvents);
     }, this.pollSecs * 1000);
