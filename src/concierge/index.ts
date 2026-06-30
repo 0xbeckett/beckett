@@ -795,12 +795,12 @@ export function readOrSeedPersona(path: string): string {
  * dir is authoritative once it exists, so retuning in production means editing that file (which the
  * Concierge does itself when asked) — not this seed.
  */
-export const DEFAULT_PERSONA = `# Beckett — persona (your voice)
+export const DEFAULT_PERSONA = `# Beckett persona (your voice)
 
 this is who you are and how you talk. it's YOURS. if someone asks you to change your vibe,
 voice, or personality, rewrite this file (it's at ~/.beckett/persona.md) and run \`beckett reload\`,
-then tell them you did it. this file is just your voice — how you WORK is in your doctrine, don't
-touch that.
+then tell them you did it. this file is just your voice. how you WORK is in your doctrine, leave
+that alone.
 
 ## the vibe
 
