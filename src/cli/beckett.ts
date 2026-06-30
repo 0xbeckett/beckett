@@ -484,7 +484,7 @@ async function main(): Promise<void> {
     if (sub === "create") {
       if (!flags.title) {
         fail(
-          'usage: beckett ticket create --title <t> [--body <b>|--body-stdin] [--state backlog|todo|in_progress|in_review|done|cancelled] [--cast <json>] [--criteria "a;b;c"]',
+          'usage: beckett ticket create --title <t> [--body <b>|--body-stdin] [--state backlog|todo|in_progress|in_review|done|cancelled] [--cast <json>] [--criteria "a;b;c"] [--channel <discord-channel-id>]',
         );
       }
       const casting = flags.cast ? parseCastJson(String(flags.cast)) : {};
@@ -497,6 +497,8 @@ async function main(): Promise<void> {
         casting,
         criteria,
         state: flags.state ? (String(flags.state) as TicketState) : undefined,
+        // Stamp the originating Discord channel so updates route back to the conversation (closed loop).
+        originChannel: flags.channel ? String(flags.channel) : undefined,
       });
       out({ id: ticket.id, identifier: ticket.identifier, url: ticket.url, state: ticket.state });
     }
