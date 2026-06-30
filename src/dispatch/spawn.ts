@@ -2,25 +2,28 @@
  * Beckett v3 — ticket-worker spawn helper (`src/dispatch/spawn.ts`)
  * =======================================================================================
  * The thin v3 spawn glue the {@link Dispatcher} (`./dispatcher.ts`) calls to stand up one
- * worker for a ticket stage. It composes the SAME lower-level primitives that the v2
- * `WorkerManager#startWorker` does (driver registry + git worktree + scope-guard hook) but
- * WITHOUT the v2 `Store`/`NodeRecord` persistence — v3 routes through Plane, not the DAG store
- * (see `docs/V3.md` §6). One call == one harness process in one isolated git worktree.
+ * worker for a ticket stage (see `docs/V3.md` §6). v3.1: a ticket gets ONE git worktree on its
+ * own branch, REUSED across implement→review→rework (not a fresh worktree per stage — that churn
+ * + the `wk_*` branch litter was the waste). Work stays on the ticket branch; Beckett never
+ * auto-merges it to `main`. The worktree isolates concurrent tickets, so `beckett plan` nodes can
+ * still run in parallel.
  *
- * What it wires (mirrors `manager.ts#startWorker`):
+ * What it wires:
  *   1. Driver — `createDriver(harness, config, logger)` (claude today; codex once registered).
- *   2. Worktree — `createWorktree(...)` under `<repoRoot>/.beckett/worktrees/<workerId>` on a
- *      fresh branch `beckett/<workerId>/<ticket.identifier>`.
- *   3. Scope-guard — `<workspace>/.claude/settings.json` registering the PreToolUse hook, plus
- *      the done-signal schema at `.beckett/done-schema.json`; both git-excluded from the diff.
+ *   2. Worktree — `createWorktree({ reuseIfExists: true })` at {@link ticketWorkspace} on
+ *      {@link ticketBranch}; created by the first stage, attached to by the rest. Removed by the
+ *      dispatcher (`removeTicketWorktree`) only when the ticket is terminal.
+ *   3. Scope-guard — written to `<worktree>/.beckett/worker-settings.json` and delivered via
+ *      `claude --settings` (so the checkout's own `.claude` is never clobbered), plus the
+ *      done-signal schema at `<worktree>/.beckett/done-schema.json`; `.beckett/` is git-excluded.
  *   4. Spawn — a {@link SpawnSpec} built from the ticket (title/body/criteria), staged for the
- *      `implement` or `review` role.
+ *      `implement` or `review` role (review diffs `<baseRef>..HEAD` to see the contribution).
  *
  * The returned {@link TicketWorkerHandle} exposes the control surface the dispatcher needs:
  * `nudge` (STEERING), `abort` (CANCEL), `onDone`/`onFinished` (advance the ticket), plus
- * `reap` (tear down the worktree). The handle deliberately satisfies BOTH the task spec
- * (`id`, `nudge`, `abort`, `onDone`, `state`) and the `docs/V3.md` §6 contract (`workerId`,
- * `ticketId`, `stage`, `onFinished`, `reap`).
+ * `reap` (unsubscribe — the shared worktree is torn down per-ticket, not per-worker). The handle
+ * satisfies BOTH the task spec (`id`, `nudge`, `abort`, `onDone`, `state`) and the `docs/V3.md`
+ * §6 contract (`workerId`, `ticketId`, `stage`, `onFinished`, `reap`).
  */
 
 import { randomUUID } from "node:crypto";
@@ -104,9 +107,36 @@ export interface SpawnWorkerArgs {
   config: Config;
   /** Absolute git repo root the worktree is allocated under. */
   repoRoot: string;
-  /** Base ref to branch the worktree from (a prior stage branch, or "HEAD"). */
+  /** Base ref the ticket's worktree was first branched from (the REVIEW diff base). */
   baseRef: string;
   logger?: Logger;
+}
+
+/** Sanitize a ticket identifier into a safe path/branch segment (e.g. "OPS-15"). */
+function ticketSlug(ticket: Ticket): string {
+  return ticket.identifier.replace(/[^A-Za-z0-9._-]/g, "_") || ticket.id;
+}
+
+/**
+ * The single git worktree a ticket REUSES across all its stages (implement→review→rework) — v3.1.
+ * One per ticket (not one per worker/stage), so there's no per-stage churn and no `wk_*` litter.
+ */
+export function ticketWorkspace(repoRoot: string, ticket: Ticket): string {
+  return join(repoRoot, ".beckett", "worktrees", ticketSlug(ticket));
+}
+
+/** The branch carrying a ticket's work. One per ticket; Beckett never auto-merges it to `main`. */
+export function ticketBranch(ticket: Ticket): string {
+  return `beckett/${ticketSlug(ticket)}`;
+}
+
+/**
+ * Remove a ticket's worktree directory when it reaches a terminal state (done/cancelled). The
+ * branch — the record of the work — is intentionally KEPT; Beckett never silently merges it to
+ * `main`. Idempotent / best-effort.
+ */
+export async function removeTicketWorktree(repoRoot: string, ticket: Ticket): Promise<void> {
+  await removeWorktree(repoRoot, ticketWorkspace(repoRoot, ticket));
 }
 
 // =======================================================================================
@@ -141,6 +171,19 @@ const ENVELOPE_BY_EFFORT: Record<Effort, { turnCap: number; wallClockS: number }
 /** Max chars of fallback assistant text used as a summary. */
 const SUMMARY_MAX = 1200;
 
+/**
+ * Durable-deploy guidance baked into every implement worker's system prompt (v3.1 robustness).
+ * The OPS-15 footgun: a worker "deployed" a site via a throwaway foreground server that died when
+ * its session ended, so the URL 404'd and burned two review cycles. Anything that must stay up
+ * goes through Beckett's durable Cloudflare tunnel, never an ephemeral process.
+ */
+const DEPLOY_DURABILITY_NOTE =
+  `DEPLOY DURABLY: if the ticket needs a running URL, publish it with Beckett's durable deploy ` +
+  `(the \`deploy\` skill / \`beckett deploy\`, a Cloudflare tunnel that survives your session). ` +
+  `NEVER hand back a link served by a throwaway foreground process (e.g. \`python -m http.server\`, ` +
+  `\`vite\`, \`bun run dev\`) — it dies when you exit and the link 404s. Verify the deployed URL ` +
+  `actually responds before you call the ticket done.`;
+
 // =======================================================================================
 // Prompt + system-append builders (stage-aware)
 // =======================================================================================
@@ -150,29 +193,36 @@ function criteriaBlock(criteria: string[]): string {
   return criteria.length ? criteria.map((c) => `- ${c}`).join("\n") : "- (none specified)";
 }
 
+/** The diff command a reviewer runs to see the ticket's whole contribution on its branch. */
+function diffHint(baseRef?: string): string {
+  return baseRef && baseRef !== "HEAD"
+    ? `\`git diff ${baseRef}..HEAD\` (plus \`git status\` for anything uncommitted)`
+    : "`git diff HEAD` and `git log`";
+}
+
 /** The initial task brief (first user turn) handed to the worker. */
-function buildPrompt(ticket: Ticket, stage: string): string {
+function buildPrompt(ticket: Ticket, stage: string, baseRef?: string): string {
   const header = `[${ticket.identifier}] ${ticket.title}`;
   const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";
   const crit = `\n\nAcceptance criteria:\n${criteriaBlock(ticket.criteria)}`;
   if (stage === "review") {
     return (
       `Review the implementation for ticket ${header}.${body}${crit}\n\n` +
-      `The full implementation is already present in your worktree (this branch). ` +
-      `Read the code and verify it against EVERY acceptance criterion above. Do not modify ` +
-      `the implementation — your job is to judge it.`
+      `The implementation is committed in the repo you're in (your cwd). Inspect it with ` +
+      `${diffHint(baseRef)}, then verify it against EVERY acceptance criterion above. Do not ` +
+      `modify the implementation — your job is to judge it.`
     );
   }
   return `${header}${body}${crit}`;
 }
 
 /** The businesslike worker persona + scope + criteria system append (stage-aware). */
-function buildSystemAppend(ticket: Ticket, stage: string): string {
+function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): string {
   const crit = criteriaBlock(ticket.criteria);
   if (stage === "review") {
     return (
-      `You are an autonomous REVIEWER. The implementation under review is already checked out ` +
-      `in your worktree (your cwd). Read the diff/code and judge it against the acceptance ` +
+      `You are an autonomous REVIEWER. The implementation under review is committed in the repo ` +
+      `at your cwd. Inspect it with ${diffHint(baseRef)} and judge it against the acceptance ` +
       `criteria — do NOT edit the implementation.\n` +
       `Acceptance criteria:\n${crit}\n` +
       `When finished, emit the structured done-signal matching the provided schema:\n` +
@@ -183,11 +233,15 @@ function buildSystemAppend(ticket: Ticket, stage: string): string {
     );
   }
   return (
-    `You are an autonomous worker implementing a ticket. You own and may modify your entire ` +
-    `worktree (your cwd); treat anything outside it as read-only.\n` +
+    `You are an autonomous worker implementing a ticket. Your cwd is a dedicated checkout on this ` +
+    `ticket's own branch — edit it freely and commit your work; treat anything outside it as read-only.\n` +
     `Acceptance criteria (you are done when ALL hold):\n${crit}\n` +
+    `SELF-REVIEW before you finish: re-read your own diff and CHECK each acceptance criterion ` +
+    `holds — there may be no separate reviewer after you. Run the check commands; fix what fails.\n` +
+    `${DEPLOY_DURABILITY_NOTE}\n` +
     `When finished, emit the structured done-signal matching the provided schema (status ` +
-    `"complete" when all criteria hold, "blocked"/"partial" otherwise with a reason).`
+    `"complete" when all criteria hold AND your self-review passed, "blocked"/"partial" ` +
+    `otherwise with a reason).`
   );
 }
 
@@ -196,9 +250,9 @@ function buildScope(ticket: Ticket): FileScope {
   return { ownedGlobs: [], readGlobs: null, description: `${ticket.identifier}: ${ticket.title}` };
 }
 
-/** Build the resource envelope from the casting effort (default medium). */
+/** Build the resource envelope from the casting effort (defaults to the configured worker effort). */
 function buildEnvelope(harness: HarnessSpec, config: Config): ResourceEnvelope {
-  const effort: Effort = harness.effort ?? "medium";
+  const effort: Effort = harness.effort ?? config.harness.claude.default_effort;
   const { turnCap, wallClockS } = ENVELOPE_BY_EFFORT[effort];
   // Ticket workers self-provision tools / run checks → allow network. codex honors its own
   // sandbox/network config; the envelope flag is informational for claude.
@@ -207,22 +261,29 @@ function buildEnvelope(harness: HarnessSpec, config: Config): ResourceEnvelope {
 }
 
 /**
- * Write the per-worker meta into the worktree: the scope-guard hook settings
- * (`.claude/settings.json`, auto-loaded by claude from cwd) and the done-signal schema
- * (`.beckett/done-schema.json`). Returns the done-schema path for the {@link SpawnSpec}.
+ * Write the per-worker meta under `<repoRoot>/.beckett/` (git-excluded): the scope-guard hook
+ * settings and the done-signal schema. v3.1 runs the worker IN the project checkout, so the
+ * scope-guard is delivered via `claude --settings <file>` (NOT `.claude/settings.json`) — claude
+ * layers it on top of the project's own settings rather than overwriting them. The scope-guard's
+ * boundary is the repo root, so the worker may edit the whole repo but nothing outside it.
  */
-function writeWorkerMeta(workspace: string, scopeGuardPath: string, ownedGlobs: string[]): string {
-  const settingsPath = join(workspace, ".claude", "settings.json");
-  mkdirSync(dirname(settingsPath), { recursive: true });
+function writeWorkerMeta(
+  repoRoot: string,
+  scopeGuardPath: string,
+  ownedGlobs: string[],
+): { doneSchemaPath: string; settingsPath: string } {
+  const metaDir = join(repoRoot, ".beckett");
+  mkdirSync(metaDir, { recursive: true });
+
+  const settingsPath = join(metaDir, "worker-settings.json");
   writeFileSync(
     settingsPath,
-    JSON.stringify(renderClaudeSettings([scopeGuardSpec(scopeGuardPath, workspace, ownedGlobs)]), null, 2),
+    JSON.stringify(renderClaudeSettings([scopeGuardSpec(scopeGuardPath, repoRoot, ownedGlobs)]), null, 2),
   );
 
-  const doneSchemaPath = join(workspace, ".beckett", "done-schema.json");
-  mkdirSync(dirname(doneSchemaPath), { recursive: true });
+  const doneSchemaPath = join(metaDir, "done-schema.json");
   writeFileSync(doneSchemaPath, JSON.stringify(DONE_SCHEMA, null, 2));
-  return doneSchemaPath;
+  return { doneSchemaPath, settingsPath };
 }
 
 /** Extract a human summary from a finished event's structured done-signal or fallback text. */
@@ -241,10 +302,14 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
 // =======================================================================================
 
 /**
- * Stand up one worker for a ticket stage. Allocates the worktree, wires the scope-guard,
- * launches the harness driver, and returns a live control handle. Throws (after best-effort
- * worktree cleanup) if the worktree allocation or the harness launch fails — the dispatcher
- * surfaces that as a ticket comment.
+ * Stand up one worker for a ticket stage. v3.1: the worker runs in the TICKET'S OWN worktree
+ * ({@link ticketWorkspace}) on its own branch ({@link ticketBranch}) — created on the first stage
+ * and reused (`reuseIfExists`) by review + every rework, so a ticket has ONE worktree instead of
+ * one per stage. Work stays on the ticket branch; Beckett never auto-merges it to `main`. The
+ * scope-guard (delivered via `claude --settings`, so it never clobbers the checkout's own
+ * `.claude`) bounds writes to the worktree. Throws if the harness launch fails; the dispatcher
+ * surfaces that as a ticket comment and removes the worktree only when the ticket is terminal.
+ * Because tickets are isolated, independent `beckett plan` nodes can run in parallel (cap > 1).
  *
  * Exported under both names: `spawnWorker` (task spec) and `spawnTicketWorker` (docs/V3.md §6).
  */
@@ -253,8 +318,10 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   const logger = (args.logger ?? log.child("dispatch.spawn")).child(`ticket.${ticket.identifier}`);
 
   const id = mintWorkerId();
-  const workspace = join(repoRoot, ".beckett", "worktrees", id);
-  const branch = `beckett/${id}/${ticket.identifier}`;
+  // v3.1: ONE worktree per TICKET, reused across all its stages — `reuseIfExists` makes the
+  // implement spawn create it and every later review/rework spawn attach to the SAME tree+branch.
+  const workspace = ticketWorkspace(repoRoot, ticket);
+  const branch = ticketBranch(ticket);
   const scope = buildScope(ticket);
   const envelope = buildEnvelope(harness, config);
   const scopeGuardPath = join(import.meta.dir, "../hooks/scope-guard.ts");
@@ -305,22 +372,23 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     }
   });
 
-  // ── allocate worktree + scope-guard, then launch ──────────────────────────────────────
+  // ── attach to the ticket's worktree (create on first stage, reuse after) + scope-guard ──
   try {
-    await createWorktree({ repoRoot, workspace, branch, baseRef, reuseIfExists: false });
-    await excludeFromGit(workspace, [".claude/", ".beckett/"]);
-    const doneSchemaPath = writeWorkerMeta(workspace, scopeGuardPath, scope.ownedGlobs);
+    await createWorktree({ repoRoot, workspace, branch, baseRef, reuseIfExists: true });
+    await excludeFromGit(workspace, [".beckett/"]);
+    const { doneSchemaPath, settingsPath } = writeWorkerMeta(workspace, scopeGuardPath, scope.ownedGlobs);
 
     const spec: SpawnSpec = {
       workerId: id,
-      prompt: buildPrompt(ticket, stage),
-      systemAppend: buildSystemAppend(ticket, stage),
+      prompt: buildPrompt(ticket, stage, baseRef),
+      systemAppend: buildSystemAppend(ticket, stage, baseRef),
       workspace,
       scope,
       envelope,
       model: harness.model ?? "",
       sessionId: preMintSession,
       doneSchemaPath,
+      settingsPath,
     };
 
     const spawnResult = await driver.spawn(spec);
@@ -338,11 +406,6 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   } catch (err) {
     state = "failed";
     unsubscribe();
-    try {
-      await removeWorktree(repoRoot, workspace);
-    } catch {
-      /* best-effort cleanup */
-    }
     logger.error("ticket worker spawn failed", { workerId: id, stage, error: (err as Error).message });
     throw err;
   }
@@ -380,11 +443,9 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
       if (reaped) return;
       reaped = true;
       unsubscribe();
-      try {
-        await removeWorktree(repoRoot, workspace);
-      } catch (err) {
-        logger.warn("worktree removal failed during reap", { workspace, error: (err as Error).message });
-      }
+      // v3.1: reap is per-WORKER (one stage); it does NOT remove the worktree, which is shared
+      // across the ticket's stages. The dispatcher removes the ticket's worktree only when the
+      // ticket itself reaches a terminal state (see `removeTicketWorktree`).
       logger.info("ticket worker reaped", { workerId: id, stage });
     },
   };

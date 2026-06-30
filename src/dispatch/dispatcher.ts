@@ -20,14 +20,19 @@
  *   | state_changed → done/other    | —                    | reap any live worker; no spawn          |
  *   | created                       | —                    | no spawn (log)                          |
  *
- *   on worker finish:
- *     implement success → setState(in_review) + summary comment (work committed to its branch)
- *     implement error   → comment + LEAVE in in_progress for a human
- *     review   pass     → setState(done) + verdict comment
- *     review   fail     → setState(in_progress) + verdict comment (re-work)
+ *   on worker finish (work is committed on the ticket's own branch — v3.1 one worktree per ticket):
+ *     implement success, review tier `self`  → setState(done)       (ONE pass — worker self-reviewed)
+ *     implement success, review tier `fresh` → setState(in_review)  + summary comment
+ *     implement error                        → comment + LEAVE in in_progress for a human
+ *     review   pass                          → setState(done) + verdict comment
+ *     review   fail                          → setState(in_progress) + verdict comment (re-work)
  *
- * Concurrency is bounded by `config.concurrency.max_workers`; over-cap spawns are queued FIFO
- * and pumped as workers free their slots (mirrors the v2 manager's cap behavior).
+ * Review tier (see {@link reviewTierFor}) derives from the cast `effort` (low/medium → self;
+ * high/xhigh/unset → fresh) or an explicit `reviewTier` on the implement cast.
+ *
+ * Concurrency is bounded by `config.concurrency.max_workers` (default 2 — each ticket has its own
+ * worktree, so independent tickets/DAG nodes run in parallel); over-cap spawns are queued FIFO and
+ * pumped as workers free their slots.
  */
 
 import type { Config, Logger } from "../types.ts";
@@ -39,8 +44,8 @@ import type {
   HarnessSpec,
 } from "../plane/types.ts";
 import { log } from "../log.ts";
-import { commitWorktree } from "../worker/worktree.ts";
-import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
+import { commitWorktree, headSha } from "../worker/worktree.ts";
+import { spawnWorker, removeTicketWorktree, type TicketWorkerHandle } from "./spawn.ts";
 
 // =======================================================================================
 // Collaborators
@@ -64,7 +69,7 @@ export interface PlaneClientLike {
 export interface DispatcherDeps {
   client: PlaneClientLike;
   config: Config;
-  /** Resolve the absolute git repo root a ticket's worktrees are allocated under. */
+  /** Resolve the absolute git repo root a ticket's worktree is allocated under. */
   resolveRepoRoot: (ticket: Ticket) => string;
   logger?: Logger;
 }
@@ -97,8 +102,13 @@ export class Dispatcher {
 
   /** At most one live worker per ticket (implement OR review). */
   private readonly workers = new Map<string, TicketWorkerHandle>();
-  /** The branch carrying the latest committed work for a ticket (review/rework base). */
-  private readonly branchForTicket = new Map<string, string>();
+  /**
+   * Repo HEAD sha captured when a ticket FIRST entered `implement` — the REVIEW/rework diff base.
+   * v3.1 runs every stage of a ticket in the one project checkout (no per-stage branch), so the
+   * reviewer diffs `<baseSha>..HEAD` to see the ticket's whole contribution. Persists across
+   * rework cycles (so re-review still diffs from the original base); cleared on done/cancel.
+   */
+  private readonly baseShaForTicket = new Map<string, string>();
   /** FIFO queue of spawns waiting for a free concurrency slot. */
   private readonly pending: PendingSpawn[] = [];
   /**
@@ -181,6 +191,7 @@ export class Dispatcher {
         return;
       case "done":
         await this.reapTicket(ticket.id, "ticket done");
+        await this.removeWorktreeFor(ticket); // ticket finished — tear its worktree down (branch kept)
         await this.promoteDependents(ticket);
         return;
       case "cancelled":
@@ -214,10 +225,11 @@ export class Dispatcher {
 
   private async onCancelled(ticket: Ticket): Promise<void> {
     const handle = this.workers.get(ticket.id);
-    this.branchForTicket.delete(ticket.id);
+    this.baseShaForTicket.delete(ticket.id);
     this.staffing.delete(ticket.id); // drop any mid-spawn reservation so doSpawn discards it
     if (!handle) {
       this.logger.info("ticket cancelled (no live worker)", { ticket: ticket.identifier });
+      await this.removeWorktreeFor(ticket); // still tear down any worktree a prior stage left
       return;
     }
     this.logger.warn("ticket cancelled — aborting worker", {
@@ -227,7 +239,20 @@ export class Dispatcher {
     this.workers.delete(ticket.id);
     await handle.abort("ticket cancelled");
     await handle.reap();
+    await this.removeWorktreeFor(ticket); // terminal — tear the ticket's worktree down
     this.pump();
+  }
+
+  /** Best-effort removal of a terminal ticket's worktree (branch kept). Never throws into the loop. */
+  private async removeWorktreeFor(ticket: Ticket): Promise<void> {
+    try {
+      await removeTicketWorktree(this.resolveRepoRoot(ticket), ticket);
+    } catch (err) {
+      this.logger.warn("worktree removal failed", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
+    }
   }
 
   // ── spawning + concurrency ─────────────────────────────────────────────────────────────
@@ -290,7 +315,21 @@ export class Dispatcher {
   private async doSpawn(ticket: Ticket, stage: string): Promise<void> {
     const spec = this.castFor(ticket, stage);
     const repoRoot = this.resolveRepoRoot(ticket);
-    const baseRef = this.branchForTicket.get(ticket.id) ?? "HEAD";
+    // Capture the diff base the first time a ticket implements: every stage shares the one
+    // checkout, so this sha is how a later REVIEW sees the ticket's whole contribution. A git
+    // hiccup here must never block the spawn — the reviewer just falls back to diffing HEAD.
+    if (stage === "implement" && !this.baseShaForTicket.has(ticket.id)) {
+      try {
+        const sha = await headSha(repoRoot);
+        if (sha) this.baseShaForTicket.set(ticket.id, sha);
+      } catch (err) {
+        this.logger.warn("base-sha capture failed; review will diff HEAD", {
+          ticket: ticket.identifier,
+          error: (err as Error).message,
+        });
+      }
+    }
+    const baseRef = this.baseShaForTicket.get(ticket.id) ?? "HEAD";
 
     let handle: TicketWorkerHandle;
     try {
@@ -398,20 +437,15 @@ export class Dispatcher {
       return;
     }
 
-    // Persist the work to the worker's branch so the reviewer (and any re-work) can see it after
-    // the worktree is reaped (the branch ref lives in the shared .git).
+    // Capture any uncommitted work the worker left in the checkout so review/rework (and the
+    // human) can see it. The worker may have committed already; this is the safety net.
     try {
       const commit = await commitWorktree(
         handle.workspace,
         `beckett: ${ticket.identifier} implement (${handle.workerId})`,
       );
-      this.branchForTicket.set(ticket.id, handle.branch);
       if (commit.committed) {
-        this.logger.info("committed implementation", {
-          ticket: ticket.identifier,
-          branch: handle.branch,
-          sha: commit.sha,
-        });
+        this.logger.info("committed implementation", { ticket: ticket.identifier, sha: commit.sha });
       }
     } catch (err) {
       this.logger.warn("commit of implementation failed", {
@@ -420,9 +454,35 @@ export class Dispatcher {
       });
     }
 
+    // v3.1 effort-scaled review. `self` (low/medium-risk work) → the worker self-verified inline,
+    // so go straight to done in ONE pass — no separate cold reviewer, no relay. `fresh` →
+    // a separate adversarial reviewer (the in_review stage), as before. The done/in_review state
+    // change loops back through the poller, which reaps + promotes DAG dependents.
+    if (this.reviewTierFor(ticket) === "self") {
+      await this.client.setState(ticket.id, "done");
+      await this.postComment(ticket.id, `Self-reviewed → **done** (one pass).\n\n${summary}`);
+      this.baseShaForTicket.delete(ticket.id);
+      this.reworkCount.delete(ticket.id);
+      this.logger.info("ticket self-reviewed → done", { ticket: ticket.identifier });
+      return;
+    }
+
     await this.client.setState(ticket.id, "in_review");
     await this.postComment(ticket.id, `Implementation complete → **in_review**.\n\n${summary}`);
     this.logger.info("ticket advanced to in_review", { ticket: ticket.identifier });
+  }
+
+  /**
+   * The review gate for a ticket (v3.1). An explicit `reviewTier` on the implement cast wins;
+   * otherwise it derives from the CAST effort: low/medium → `self` (one-pass, the worker
+   * self-verifies inline), everything else (high/xhigh, or no cast) → `fresh` (separate
+   * adversarial reviewer). Note this reads the *cast* effort, not the resolved worker effort —
+   * an un-cast ticket defaults to a full fresh review (the safe, pre-v3.1 behavior).
+   */
+  private reviewTierFor(ticket: Ticket): "self" | "fresh" {
+    const impl = this.castFor(ticket, "implement");
+    if (impl.reviewTier) return impl.reviewTier;
+    return impl.effort === "low" || impl.effort === "medium" ? "self" : "fresh";
   }
 
   private async onReviewDone(
@@ -435,7 +495,7 @@ export class Dispatcher {
     if (passed) {
       await this.client.setState(ticket.id, "done");
       await this.postComment(ticket.id, `Review passed → **done**.\n\n${summary}`);
-      this.branchForTicket.delete(ticket.id);
+      this.baseShaForTicket.delete(ticket.id);
       this.reworkCount.delete(ticket.id);
       this.logger.info("ticket advanced to done", { ticket: ticket.identifier });
       return;
@@ -542,7 +602,7 @@ export class Dispatcher {
   /** Reap any live worker for a ticket (terminal-state cleanup). */
   private async reapTicket(ticketId: string, reason: string): Promise<void> {
     const handle = this.workers.get(ticketId);
-    this.branchForTicket.delete(ticketId);
+    this.baseShaForTicket.delete(ticketId);
     this.staffing.delete(ticketId); // drop any mid-spawn reservation so doSpawn discards it
     if (!handle) return;
     this.workers.delete(ticketId);

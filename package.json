@@ -1,6 +1,6 @@
 {
   "name": "beckett",
-  "version": "0.0.0",
+  "version": "3.1.0",
   "description": "Beckett — an agentic coworker reached in Discord. A harness over harnesses.",
   "type": "module",
   "private": true,

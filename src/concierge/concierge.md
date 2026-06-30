@@ -108,8 +108,26 @@ If a ticket is genuinely mixed (a feature with both a backend and a UI), prefer 
 into two tickets so each gets the right harness — a clean backend ticket (codex) and a clean
 frontend ticket (claude). One muddy ticket cast to one harness serves neither half well.
 
-`effort` (`low`/`medium`/`high`) tunes reasoning depth — bump it to `high` for gnarly work,
-drop to `low` for boilerplate. Omit it to take the harness default.
+`effort` (`low`/`medium`/`high`/`xhigh`) tunes reasoning depth — bump it to `high` for gnarly
+work, drop to `low` for boilerplate. Omit it to take the harness default (xhigh for claude).
+
+**`effort` also picks the review gate (v3.1) — this is your main speed lever.** A worker now
+self-reviews its own diff against the criteria before finishing, so a second cold reviewer is
+often wasted relay time. The dispatcher reads your cast `effort`:
+
+- **`low`/`medium`** → **one pass**: the worker self-verifies and the ticket goes straight to
+  `done`. No separate reviewer. Use this for the *bulk* of work — small features, copy/UI
+  tweaks, boilerplate, anything visual or taste-driven (a fresh code reviewer can't judge "does
+  this cat look like bread" anyway), and anything low-risk and reversible.
+- **`high`/`xhigh`, or omitted** → **fresh adversarial reviewer** runs after implement, as
+  before. Reserve this for correctness-critical / hard-to-reverse work (auth, money, data
+  migrations, shared interfaces, anything that breaks siblings if it's wrong).
+- You can force the gate independent of effort with `reviewTier`: `{"implement":{...,
+  "reviewTier":"self"}}` (one pass) or `"fresh"` (always review).
+
+Bias toward `low`/`medium` (one pass). The relay — file → cold worker → cold reviewer → bounce
+→ cold worker again — is what makes a 15-minute job take 30. Only spend a fresh review when a
+wrong answer is expensive.
 
 ### Filing — exact commands
 

@@ -88,7 +88,9 @@ const ConfigSchema = z
   .object({
     concurrency: z
       .object({
-        // v0 seed: conservative cap of 2 (Spec 12 §1.7 — "one worker really, headroom of 2").
+        // v3.1: ONE worktree per ticket (its own branch) isolates concurrent tickets, so the cap
+        // can stay >1 and `beckett plan` DAG nodes run in parallel. The waste v3.1 removed was a
+        // fresh worktree per STAGE, not isolation itself (Spec 12 §1.7 — "headroom of 2").
         max_workers: posInt.default(2),
         queue_max: posInt.default(256),
         per_task_soft: posInt.default(4),
@@ -123,7 +125,12 @@ const ConfigSchema = z
           .object({
             enabled: z.boolean().default(true),
             bin: z.string().min(1).default("claude"),
-            default_model: z.string().min(1).default("claude-sonnet-4-5"),
+            default_model: z.string().min(1).default("claude-sonnet-5"),
+            // Reasoning effort handed to every claude worker via `claude --effort` (verified on
+            // claude 2.1.197). Sonnet 5 @ xhigh is the v3.1 worker default — fast cold boots with
+            // full reasoning. A ticket may cast a lower effort per stage. Honored by
+            // ClaudeDriver.buildArgs + dispatch/spawn#buildEnvelope.
+            default_effort: z.enum(["low", "medium", "high", "xhigh"]).default("xhigh"),
             // v0 seed: bounded by the worktree + PreToolUse scope hook, so the worker runs
             // autonomously without per-edit prompts (Spec 12 §1.7; Spec 02 §8). Honored by
             // ClaudeDriver.buildArgs.

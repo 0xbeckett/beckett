@@ -46,6 +46,13 @@ function resolveRepoRoot(_ticket: Ticket): string {
   return process.env.BECKETT_REPO_ROOT?.trim() || REPO_ROOT;
 }
 
+/**
+ * Beckett version. v3.1 — the "go faster" release: workers run in the project checkout (no
+ * per-stage worktrees), effort-scaled review (trivial work self-reviews in one pass), and
+ * Sonnet 5 @ xhigh workers. See CHANGELOG.md.
+ */
+export const BECKETT_VERSION = "3.1";
+
 /** The live v3 system — held so {@link shutdown} can tear every part down in order. */
 interface BootedSystem {
   config: Config;
@@ -66,6 +73,7 @@ async function boot(): Promise<BootedSystem> {
   const logger = rootLog.child("shell.v3");
 
   logger.info("booting beckett v3", {
+    version: BECKETT_VERSION,
     plane: config.plane.base_url,
     workspace: config.plane.workspace_slug,
     project: config.plane.project_slug,

@@ -48,7 +48,14 @@ export type HarnessName = "claude" | "codex";
 export interface HarnessSpec {
   harness: HarnessName;
   model?: string;
-  effort?: "low" | "medium" | "high";
+  effort?: "low" | "medium" | "high" | "xhigh";
+  /**
+   * v3.1 review gate (set on the `implement` cast). `self` = the implement worker self-verifies
+   * inline and the ticket goes straight to `done` (one pass, no separate reviewer). `fresh` = a
+   * separate adversarial reviewer runs (`in_review` stage). When unset the dispatcher derives it
+   * from `effort` (low/medium → self; high/xhigh/unset → fresh).
+   */
+  reviewTier?: "self" | "fresh";
 }
 
 /**

@@ -75,9 +75,18 @@ const fakeSpawn = async (args: any) => {
   return h;
 };
 
-mock.module("./spawn.ts", () => ({ spawnWorker: fakeSpawn, spawnTicketWorker: fakeSpawn }));
+let removedWorktrees: string[] = [];
+mock.module("./spawn.ts", () => ({
+  spawnWorker: fakeSpawn,
+  spawnTicketWorker: fakeSpawn,
+  removeTicketWorktree: async (_repoRoot: string, ticket: any) => {
+    removedWorktrees.push(ticket.identifier);
+  },
+}));
 mock.module("../worker/worktree.ts", () => ({
   commitWorktree: async () => ({ committed: false, sha: null }),
+  headSha: async () => "base000", // v3.1 per-ticket diff base (fake repo has no real HEAD)
+  currentBranch: async () => "main",
 }));
 
 const { Dispatcher, BECKETT_COMMENT_MARKER } = await import("./dispatcher.ts");
@@ -145,6 +154,7 @@ beforeEach(() => {
   created = [];
   counter = 0;
   spawnGate = null;
+  removedWorktrees = [];
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────────────────
@@ -203,6 +213,31 @@ describe("advance on finish", () => {
     expect(client.setStateCalls).toHaveLength(0);
   });
 
+  test("v3.1: self-review tier (low effort) → done in one pass, no in_review relay", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "shipped it");
+    await tick();
+    // straight to done — never routed through in_review, so only one spawn ever happened
+    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
+    expect(spawnCalls).toHaveLength(1);
+    expect(client.comments[0]!.body).toContain("one pass");
+  });
+
+  test("v3.1: explicit reviewTier 'fresh' forces in_review even at low effort", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({
+      casting: { implement: { harness: "claude", effort: "low", reviewTier: "fresh" } },
+    });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "did it");
+    await tick();
+    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "in_review" }]);
+  });
+
   test("review verdict complete → done", async () => {
     const { d, client } = newDispatcher();
     await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
@@ -219,6 +254,31 @@ describe("advance on finish", () => {
     created[0].finish("success", "missing tests", { status: "blocked" });
     await tick();
     expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "in_progress" }]);
+  });
+});
+
+describe("v3.1 worktree lifecycle (one per ticket, torn down only when terminal)", () => {
+  test("a done event removes the ticket's worktree", async () => {
+    const { d } = newDispatcher();
+    await d.handle(stateChanged(makeTicket(), "done"));
+    await tick();
+    expect(removedWorktrees).toContain("OPS-1");
+  });
+
+  test("a cancel removes the ticket's worktree", async () => {
+    const { d } = newDispatcher();
+    await d.handle(stateChanged(makeTicket(), "cancelled"));
+    await tick();
+    expect(removedWorktrees).toContain("OPS-1");
+  });
+
+  test("a review-fail rework does NOT remove the worktree (it's reused next cycle)", async () => {
+    const { d } = newDispatcher();
+    await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
+    await tick();
+    created[0].finish("success", "needs work", { status: "blocked" });
+    await tick();
+    expect(removedWorktrees).not.toContain("OPS-1"); // back to in_progress — worktree survives
   });
 });
 

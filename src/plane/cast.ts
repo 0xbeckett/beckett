@@ -42,7 +42,8 @@ export const CRITERIA_HEADING = "## Acceptance criteria";
 const HarnessSpecSchema: z.ZodType<HarnessSpec> = z.object({
   harness: z.enum(["claude", "codex"]),
   model: z.string().min(1).optional(),
-  effort: z.enum(["low", "medium", "high"]).optional(),
+  effort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
+  reviewTier: z.enum(["self", "fresh"]).optional(),
 });
 
 /** A casting object is a map of stage-name → HarnessSpec (implement/review + open-ended). */

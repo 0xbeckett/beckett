@@ -11,7 +11,7 @@
  *   claude -p \
  *     --input-format stream-json --output-format stream-json --verbose \
  *     --replay-user-messages --permission-mode bypassPermissions \
- *     --model <model> --max-turns <cap> \
+ *     --model <model> --effort <effort> \
  *     --session-id <uuid> | --resume <session_id> \
  *     [--append-system-prompt <sys>] [--mcp-config <cfg>] [--json-schema <done>] \
  *     [<config extra_flags>]
@@ -399,6 +399,14 @@ export class ClaudeDriver implements HarnessDriver {
   }
 
   /**
+   * The reasoning effort passed to `--effort` (claude 2.1.197: low|medium|high|xhigh|max). The
+   * per-stage cast effort (carried on the envelope) wins; otherwise the configured worker default.
+   */
+  private resolvedEffort(): string {
+    return this.spec?.envelope.effort || this.config.harness.claude.default_effort;
+  }
+
+  /**
    * The permission mode passed to `--permission-mode`, honoring the config key (S3 — the key
    * was dead before this). Falls back to {@link DEFAULT_PERMISSION_MODE} when unset/blank so
    * the default is never weakened (Spec 02 §4.1; Spec 12 §1.7).
@@ -428,6 +436,8 @@ export class ClaudeDriver implements HarnessDriver {
       this.resolvedPermissionMode(),
       "--model",
       this.resolvedModel(),
+      "--effort",
+      this.resolvedEffort(),
       // No --max-turns: envelopes are ESTIMATES, not caps (Spec 02 §7 / canon). turnCap drives the
       // supervisor's drift look, never a hard kill — capping here truncates legitimate long work.
     ];
@@ -439,6 +449,9 @@ export class ClaudeDriver implements HarnessDriver {
       args.push("--append-system-prompt", spec.systemAppend);
     }
     if (spec.mcpConfigPath) args.push("--mcp-config", spec.mcpConfigPath);
+    // v3.1: the scope-guard hook rides here (NOT the worktree's .claude/settings.json) so a
+    // checkout's own settings are never clobbered — claude layers --settings on top of them.
+    if (spec.settingsPath) args.push("--settings", spec.settingsPath);
     // claude's --json-schema takes the schema JSON INLINE, not a file path (verified on 2.1.195;
     // a path makes claude exit 1 before init). Read the done-schema file and pass its contents.
     if (spec.doneSchemaPath) {

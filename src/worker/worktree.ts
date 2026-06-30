@@ -371,3 +371,20 @@ export async function mergeBranch(
 export async function hasHead(repoRoot: string): Promise<boolean> {
   return (await runGit(["rev-parse", "--verify", "--quiet", "HEAD"], repoRoot)).code === 0;
 }
+
+/**
+ * The current HEAD sha of a repo, or null if it has no commits yet. v3.1 in-place workers capture
+ * this when a ticket first enters `implement` so a later REVIEW stage can diff the ticket's whole
+ * contribution (`<baseSha>..HEAD`) instead of relying on a per-worker branch.
+ */
+export async function headSha(repoRoot: string): Promise<string | null> {
+  const r = await runGit(["rev-parse", "--verify", "--quiet", "HEAD"], repoRoot);
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+
+/** The current branch name of a repo (or a short sha when detached / "HEAD" on a fresh repo). */
+export async function currentBranch(repoRoot: string): Promise<string> {
+  const r = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], repoRoot);
+  const name = r.stdout.trim();
+  return name || "HEAD";
+}

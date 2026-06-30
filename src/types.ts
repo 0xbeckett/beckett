@@ -1360,6 +1360,7 @@ export interface Config {
       enabled: boolean;
       bin: string;
       default_model: string;
+      default_effort: Effort;
       permission_mode: string;
       extra_flags: string[];
     };
@@ -1529,6 +1530,10 @@ export interface SpawnSpec {
   sessionId?: string; // optional caller-minted UUID (claude --session-id); else captured
   mcpConfigPath?: string;
   doneSchemaPath: string; // JSON-schema file for the structured done-signal
+  // v3.1: external settings file (claude --settings) carrying the scope-guard hook. Used when the
+  // worker runs IN the project checkout (no worktree) so we never clobber the project's own
+  // .claude/settings.json — claude layers --settings on top rather than replacing it.
+  settingsPath?: string;
 }
 
 export interface SpawnResult {
