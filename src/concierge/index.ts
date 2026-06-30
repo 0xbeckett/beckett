@@ -26,8 +26,8 @@
  * Import style: explicit `.ts` extensions, ESM, bun runtime.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Config, IncomingMessage, Logger } from "../types.ts";
 import type { PollEvent, PlaneComment, Ticket } from "../plane/types.ts";
 import { log as rootLog } from "../log.ts";
@@ -116,7 +116,8 @@ export class ConciergeSession {
   private readonly config: Config;
   private readonly log: Logger;
   private readonly cwd: string;
-  private readonly systemPrompt: string;
+  /** Test-only override: when set, used verbatim as the system prompt (skips file composition). */
+  private readonly staticPrompt: string | undefined;
   private readonly model: string;
   /** Summed-input-token ceiling that triggers auto-compaction (from config; issue #5). */
   private readonly rotateAtTokens: number;
@@ -130,8 +131,10 @@ export class ConciergeSession {
   private stopped = false;
   /** Latest summed input-token count (input + cache_creation + cache_read) — the live context size. */
   private lastContextTokens = 0;
-  /** True while we're deliberately swapping the child for a rotation — suppresses onExit's relaunch. */
+  /** True while we're deliberately swapping the child for a rotation/reload — suppresses onExit's relaunch. */
   private rotating = false;
+  /** Set by {@link requestReload} when the persona file changed; applied at the next turn boundary. */
+  private reloadPending = false;
 
   // launch plumbing. NOTE: `claude -p --input-format stream-json` emits `system/init` only AFTER
   // the first stdin line arrives, so start() must NOT block waiting for init (that deadlocks —
@@ -142,7 +145,7 @@ export class ConciergeSession {
     this.config = opts.config;
     this.log = (opts.logger ?? rootLog).child("concierge.session");
     this.cwd = opts.cwd ?? defaultRepoRoot();
-    this.systemPrompt = opts.systemPrompt ?? defaultSystemPrompt();
+    this.staticPrompt = opts.systemPrompt;
     this.model = opts.config.concierge.model;
     this.rotateAtTokens = opts.config.concierge.rotate_at_tokens ?? DEFAULT_ROTATE_AT_TOKENS;
     this.sessionId = crypto.randomUUID();
@@ -267,8 +270,11 @@ export class ConciergeSession {
     ];
     if (isResume) args.push("--resume", this.sessionId);
     else args.push("--session-id", this.sessionId);
-    if (this.systemPrompt.trim().length > 0) {
-      args.push("--append-system-prompt", this.systemPrompt);
+    // Compose the prompt FRESH at each launch (doctrine + the editable persona) so a reload or a
+    // rotation picks up persona edits — it is NOT cached at construction.
+    const systemPrompt = this.composeSystemPrompt();
+    if (systemPrompt.trim().length > 0) {
+      args.push("--append-system-prompt", systemPrompt);
     }
     // Honor any configured extra flags without duplicating ours (mirrors ClaudeDriver).
     for (const f of this.config.harness.claude.extra_flags) {
@@ -441,14 +447,31 @@ export class ConciergeSession {
     if (ctx > 0) this.lastContextTokens = ctx;
   }
 
-  /** Between turns: if the context crossed the ceiling, compact by rotating to a fresh session. */
+  /**
+   * Ask the session to re-read its persona and re-ground on a fresh process at the next turn
+   * boundary (live persona/voice retune — no service restart). Idempotent; takes effect promptly
+   * even when idle, because we nudge the queue to run the boundary check.
+   */
+  requestReload(): void {
+    if (this.stopped) return;
+    this.reloadPending = true;
+    this.queue = this.queue.then(() => this.maybeRotate());
+  }
+
+  /**
+   * Between turns: rotate to a fresh session when EITHER the context crossed the ceiling
+   * (auto-compaction, issue #5) OR a persona reload was requested. Both re-read the persona on
+   * relaunch; reload is the manual, retune-now trigger.
+   */
   private async maybeRotate(): Promise<void> {
     if (this.stopped || this.rotating) return;
-    if (this.lastContextTokens < this.rotateAtTokens) return;
+    const reload = this.reloadPending;
+    if (!reload && this.lastContextTokens < this.rotateAtTokens) return;
+    this.reloadPending = false;
     try {
-      await this.rotate();
+      await this.rotate(reload ? "persona reload" : "context ceiling");
     } catch (err) {
-      // A failed rotation must not wedge the session — keep serving on the old (bloated) one.
+      // A failed rotation must not wedge the session — keep serving on the old session.
       this.log.error("concierge rotation failed; staying on current session", {
         err: String(err),
         sessionId: this.sessionId,
@@ -458,14 +481,16 @@ export class ConciergeSession {
   }
 
   /**
-   * Auto-compaction (issue #5). Asks the dying session for a handoff note, then drops the
-   * transcript by relaunching under a fresh session id seeded with that note. Called only at a
-   * turn boundary (chained off {@link ask}'s queue), so no turn is ever in flight here.
+   * Re-ground on a fresh process: ask the dying session for a handoff note, then relaunch under a
+   * new session id (transcript dropped, persona re-read from disk) seeded with that note. Called
+   * only at a turn boundary (chained off {@link ask}'s queue), so no turn is ever in flight here.
+   * Drives both auto-compaction and live persona reload.
    */
-  private async rotate(): Promise<void> {
+  private async rotate(reason: string): Promise<void> {
     const fromTokens = this.lastContextTokens;
     const oldSession = this.sessionId;
-    this.log.info("concierge context at ceiling — compacting via session rotation", {
+    this.log.info("concierge re-grounding on a fresh session", {
+      reason,
       contextTokens: fromTokens,
       ceiling: this.rotateAtTokens,
       sessionId: oldSession,
@@ -508,7 +533,25 @@ export class ConciergeSession {
         this.log.warn("concierge re-grounding turn failed (continuing)", { err: String(err) });
       }
     }
-    this.log.info("concierge rotation complete", { from: oldSession, to: this.sessionId });
+    this.log.info("concierge re-grounding complete", { reason, from: oldSession, to: this.sessionId });
+  }
+
+  /**
+   * The session's appended system prompt = the stable operating doctrine (`concierge.md`, in the
+   * repo) + the editable persona (`persona.md`, in the runtime dir so it survives redeploys and the
+   * Concierge can rewrite it live). Read FRESH each launch; the persona file is seeded with a
+   * default on first use. A test `systemPrompt` override short-circuits all of this.
+   */
+  private composeSystemPrompt(): string {
+    if (this.staticPrompt !== undefined) return this.staticPrompt;
+    const doctrine = readDoctrine();
+    const persona = readOrSeedPersona(this.personaFilePath());
+    return persona.trim() ? `${doctrine}\n\n${persona}` : doctrine;
+  }
+
+  /** Absolute path to the editable persona file (runtime dir; same dir as the control socket). */
+  personaFilePath(): string {
+    return join(buildPaths(this.config).beckettDir, "persona.md");
   }
 }
 
@@ -582,6 +625,17 @@ export class Concierge {
   }
 
   private async onBusRequest(req: BusRequest): Promise<BusResponse> {
+    if (req.cmd === "reload") {
+      // Live persona/voice retune: re-read persona.md and re-ground at the next turn boundary.
+      this.session.requestReload();
+      return { ok: true, data: { reloading: true } };
+    }
+    if (req.cmd === "persona") {
+      // Show where the editable voice lives + its current contents (for `beckett persona`).
+      const path = this.session.personaFilePath();
+      const contents = existsSync(path) ? readFileSync(path, "utf8") : "(not yet seeded)";
+      return { ok: true, data: { path, contents } };
+    }
     if (req.cmd !== "discord.reply") {
       return { ok: false, error: `concierge bus: unknown command "${req.cmd}"` };
     }
@@ -714,10 +768,60 @@ function defaultRepoRoot(): string {
   return join(import.meta.dir, "..", "..");
 }
 
-/** Read the sibling `concierge.md` doctrine as the session's appended system prompt. */
-function defaultSystemPrompt(): string {
+/** Read the sibling `concierge.md` — the stable operating doctrine half of the system prompt. */
+function readDoctrine(): string {
   return readFileSync(join(import.meta.dir, "concierge.md"), "utf8");
 }
+
+/**
+ * Read the editable persona file, seeding it with {@link DEFAULT_PERSONA} on first use. Lives in
+ * the runtime dir (not the repo) so it survives redeploys and the Concierge can rewrite it live
+ * via its Bash tool + `beckett reload`. A read/seed failure degrades to no persona, never throws.
+ */
+export function readOrSeedPersona(path: string): string {
+  try {
+    if (existsSync(path)) return readFileSync(path, "utf8");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, DEFAULT_PERSONA);
+    return DEFAULT_PERSONA;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The persona seeded on a fresh install — Beckett's voice. This is the ONLY personality layer;
+ * `concierge.md` carries the operating doctrine and points here. The deployed copy in the runtime
+ * dir is authoritative once it exists, so retuning in production means editing that file (which the
+ * Concierge does itself when asked) — not this seed.
+ */
+export const DEFAULT_PERSONA = `# Beckett — persona (your voice)
+
+this is who you are and how you talk. it's YOURS. if someone asks you to change your vibe,
+voice, or personality, rewrite this file (it's at ~/.beckett/persona.md) and run \`beckett reload\`,
+then tell them you did it. this file is just your voice — how you WORK is in your doctrine, don't
+touch that.
+
+## the vibe
+
+you're beckett. 19, dev, kinda cracked at it and you know it. you talk like you text in a discord
+server with people you're comfortable with. lowercase, fast, a lil cocky but you back it up.
+
+- talk like discord, not like an assistant. lowercase is fine. short. one line usually does it.
+- gen z cadence. "ngl", "tbh", "lowkey/highkey", "bet", "say less", "it's giving", "fr", "icl",
+  "that's wild", "we're so back", "cooked", "ez". use it naturally, don't force a slang dump.
+- a little arrogance is on brand. you're good and you don't pretend you're not. "yeah i got it",
+  "ez", "that's a me problem to solve not yours". confidence, not douche. never punch down.
+- NO emojis. none. NO em-dashes ever (use a period or just start a new sentence).
+- single short sentences. if you're writing a paragraph ask yourself why. lead with the answer.
+- swearing is fine in moderation if it fits, keep it chill not aggressive.
+- you can admit when you don't know. "idk lemme check" hits harder than a confident wrong answer.
+
+## still you
+
+the slang is the surface. underneath you're sharp and you actually ship. when there's real work you
+file the ticket and let it cook, same as always. don't let the vibe make you sloppy or vague. be the
+guy who talks like this AND gets it done.`;
 
 /**
  * Prefix a Discord turn with its channel id so the Concierge can stamp `--channel <id>` onto any
