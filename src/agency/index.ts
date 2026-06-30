@@ -385,6 +385,40 @@ export class GitHubCli implements GitHubClient {
     return { nameWithOwner, url };
   }
 
+  /** Whether `owner/name` (or `name` under the account) already exists on GitHub. FREE: a read. */
+  async repoExists(nameWithOwner: string): Promise<boolean> {
+    if (!this.available) return false;
+    const repo = nameWithOwner.includes("/") ? nameWithOwner : `${this.opts.account}/${nameWithOwner}`;
+    const r = await run(["gh", "repo", "view", repo, "--json", "name"], { env: this.ghEnv() });
+    return r.code === 0;
+  }
+
+  /**
+   * Idempotently publish a local repo to `<account>/<slug>` (public) and push HEAD → `main`. If the
+   * repo doesn't exist yet it's created from `sourceDir` and pushed in one shot; if it already
+   * exists (a continuing project) HEAD is pushed to its `main`. Returns the repo's web URL. This is
+   * the deterministic path the dispatcher calls when a ticket reaches done — workers no longer push
+   * by hand (that was unreliable and left repos that 404'd). FREE: new repos are reversible.
+   */
+  async ensurePublished(p: { slug: string; sourceDir: string; description?: string }): Promise<{
+    nameWithOwner: string;
+    url: string;
+  }> {
+    this.requireCreds("publish repo");
+    const repo = `${this.opts.account}/${p.slug}`;
+    if (await this.repoExists(repo)) {
+      await this.pushBranch(repo, "HEAD", "main");
+      return { nameWithOwner: repo, url: `${this.gitHost()}/${repo}` };
+    }
+    return this.createRepo({
+      name: p.slug,
+      private: false, // project repos are public so links Beckett hands out actually resolve
+      description: p.description,
+      sourceDir: p.sourceDir,
+      push: true,
+    });
+  }
+
   /** Open a PR as itself (Spec 07 §3.3). FREE: a proposal, not a change to main. */
   async openPR(p: OpenPRParams): Promise<{ number: number; url: string }> {
     this.requireCreds("open PR");

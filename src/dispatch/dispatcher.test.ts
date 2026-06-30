@@ -224,6 +224,55 @@ describe("advance on finish", () => {
     expect(client.comments[0]!.body).toContain("one pass");
   });
 
+  test("v3.1: publishes the project repo to GitHub on done and links the URL in the comment", async () => {
+    const client = new FakeClient();
+    const calls: { slug: string; repoRoot: string; description: string }[] = [];
+    const d = new Dispatcher({
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/home/beckett/Projects/balloons-game",
+      publishRepo: async (a) => {
+        calls.push(a);
+        return { url: "https://github.com/0xbeckett/balloons-game" };
+      },
+    });
+    const ticket = makeTicket({
+      project: "Balloons Game!",
+      title: "Build balloons",
+      casting: { implement: { harness: "claude", effort: "low" } },
+    });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "shipped it");
+    await tick();
+    // Published deterministically with the slugified project + its repo root, and the real URL
+    // (not a guess) is woven into the done comment so the Concierge can hand it out.
+    expect(calls).toEqual([
+      { slug: "balloons-game", repoRoot: "/home/beckett/Projects/balloons-game", description: "Build balloons" },
+    ]);
+    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
+    expect(client.comments.at(-1)!.body).toContain("https://github.com/0xbeckett/balloons-game");
+  });
+
+  test("v3.1: a GitHub publish failure still lets the ticket reach done (best-effort)", async () => {
+    const client = new FakeClient();
+    const d = new Dispatcher({
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/tmp/repo",
+      publishRepo: async () => {
+        throw new Error("gh down");
+      },
+    });
+    const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "shipped it");
+    await tick();
+    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
+    expect(client.comments.some((c) => c.body.includes("Couldn't push to GitHub"))).toBe(true);
+  });
+
   test("v3.1: explicit reviewTier 'fresh' forces in_review even at low effort", async () => {
     const { d, client } = newDispatcher();
     const ticket = makeTicket({

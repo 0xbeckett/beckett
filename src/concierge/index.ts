@@ -580,6 +580,15 @@ export class Concierge {
   private readonly session: ConciergeSession;
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
   private busStop: (() => void) | null = null;
+  /**
+   * The @mention turn currently in flight, if any. Tracked so the two posting paths can't BOTH
+   * fire for one turn (the duplicate-message bug): if the Concierge answers a live @mention by
+   * running `beckett discord reply` from its Bash tool, that bus post becomes THE reply (a native
+   * reply to the same message) and {@link onMessage} skips auto-posting the turn text. Exactly one
+   * message either way. Single-flight: the session serializes turns, so at most one is live.
+   */
+  private activeMention: { channelId: string; messageId: string; repliedViaCli: boolean } | null =
+    null;
 
   constructor(opts: ConciergeOptions = {}) {
     this.config = opts.config ?? loadConfig();
@@ -624,7 +633,9 @@ export class Concierge {
     this.log.info("concierge control bus listening", { socket: sock });
   }
 
-  private async onBusRequest(req: BusRequest): Promise<BusResponse> {
+  /** Handle one control-bus request (the Concierge's own `beckett ...` CLI dials this). Public: it
+   *  is an external entrypoint (the bus calls it) and is exercised directly in tests. */
+  async onBusRequest(req: BusRequest): Promise<BusResponse> {
     if (req.cmd === "reload") {
       // Live persona/voice retune: re-read persona.md and re-ground at the next turn boundary.
       this.session.requestReload();
@@ -645,7 +656,14 @@ export class Concierge {
       return { ok: false, error: "discord.reply needs both channelId and text" };
     }
     try {
-      const messageId = await this.gateway.post(channelId, text);
+      // If this reply lands DURING the @mention turn it's answering, claim that turn: post it as a
+      // native reply to the originating message and mark the turn handled so onMessage won't also
+      // auto-post the turn text (the duplicate-message bug). Any other channel posts normally.
+      const active = this.activeMention;
+      const claimsActiveTurn = !!active && active.channelId === channelId;
+      const opts = claimsActiveTurn ? { replyToMessageId: active!.messageId } : undefined;
+      const messageId = await this.gateway.post(channelId, text, opts);
+      if (claimsActiveTurn && active) active.repliedViaCli = true;
       return { ok: true, data: { messageId } };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -720,12 +738,18 @@ export class Concierge {
   /**
    * Handle one inbound Discord message. We only engage when addressed (an @mention or a DM —
    * the gateway folds both into `mentionsBot`); ambient chatter is left alone here. Failures
-   * are isolated so a bad turn can never take down the gateway.
+   * are isolated so a bad turn can never take down the gateway. Public: it is an external
+   * entrypoint (the gateway calls it) and is exercised directly in tests.
    */
-  private async onMessage(m: IncomingMessage): Promise<void> {
+  async onMessage(m: IncomingMessage): Promise<void> {
     if (!m.mentionsBot) return;
     const content = m.content.trim();
     if (!content) return;
+
+    // Track this turn so a `beckett discord reply` the Concierge runs while answering it counts as
+    // THE reply (and suppresses the auto-post below) instead of producing a second message.
+    const mention = { channelId: m.channelId, messageId: m.messageId, repliedViaCli: false };
+    this.activeMention = mention;
 
     let keepTyping = true;
     const typing = setInterval(() => {
@@ -738,7 +762,10 @@ export class Concierge {
       keepTyping = false;
       clearInterval(typing);
       const text = reply.trim();
-      if (text) {
+      // The turn's text IS the reply for a person's @mention — post it as a native reply. Skip it
+      // only if the Concierge already answered this turn itself via `beckett discord reply` (then
+      // that bus post was the reply, and posting again would duplicate it).
+      if (text && !mention.repliedViaCli) {
         await this.gateway.post(m.channelId, text, { replyToMessageId: m.messageId });
       }
     } catch (err) {
@@ -750,6 +777,8 @@ export class Concierge {
           replyToMessageId: m.messageId,
         })
         .catch(() => undefined);
+    } finally {
+      if (this.activeMention === mention) this.activeMention = null;
     }
   }
 }

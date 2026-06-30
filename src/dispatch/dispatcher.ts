@@ -72,6 +72,16 @@ export interface DispatcherDeps {
   config: Config;
   /** Resolve the absolute path of a ticket's own project repo (`~/Projects/<slug>`). */
   resolveRepoRoot: (ticket: Ticket) => string;
+  /**
+   * Publish a done ticket's project repo to GitHub (`0xbeckett/<slug>`, public) and return its web
+   * URL. Injected so the dispatcher stays decoupled from the GitHub client + identity loading (and
+   * stays unit-testable). Omitted in tests / when no PAT is configured → publishing is skipped.
+   */
+  publishRepo?: (args: {
+    slug: string;
+    repoRoot: string;
+    description: string;
+  }) => Promise<{ url: string }>;
   logger?: Logger;
 }
 
@@ -99,6 +109,11 @@ export class Dispatcher {
   private readonly client: PlaneClientLike;
   private readonly config: Config;
   private readonly resolveRepoRoot: (ticket: Ticket) => string;
+  private readonly publishRepo?: (args: {
+    slug: string;
+    repoRoot: string;
+    description: string;
+  }) => Promise<{ url: string }>;
   private readonly logger: Logger;
 
   /** At most one live worker per ticket (implement OR review). */
@@ -131,6 +146,7 @@ export class Dispatcher {
     this.client = deps.client;
     this.config = deps.config;
     this.resolveRepoRoot = deps.resolveRepoRoot;
+    this.publishRepo = deps.publishRepo;
     this.logger = deps.logger ?? log.child("dispatch.dispatcher");
   }
 
@@ -465,8 +481,12 @@ export class Dispatcher {
     // a separate adversarial reviewer (the in_review stage), as before. The done/in_review state
     // change loops back through the poller, which reaps + promotes DAG dependents.
     if (this.reviewTierFor(ticket) === "self") {
+      const ghUrl = await this.publishProject(ticket);
       await this.client.setState(ticket.id, "done");
-      await this.postComment(ticket.id, `Self-reviewed → **done** (one pass).\n\n${summary}`);
+      await this.postComment(
+        ticket.id,
+        `Self-reviewed → **done** (one pass).${ghUrl ? `\n\nGitHub: ${ghUrl}` : ""}\n\n${summary}`,
+      );
       this.baseShaForTicket.delete(ticket.id);
       this.reworkCount.delete(ticket.id);
       this.logger.info("ticket self-reviewed → done", { ticket: ticket.identifier });
@@ -491,6 +511,35 @@ export class Dispatcher {
     return impl.effort === "low" || impl.effort === "medium" ? "self" : "fresh";
   }
 
+  /**
+   * Publish a done ticket's project repo to GitHub and return its URL (or null). DETERMINISTIC —
+   * runs on every done so `0xbeckett/<slug>` always exists and is current, rather than relying on
+   * the worker to push by hand (which it skipped, leaving local-only repos that 404'd when Beckett
+   * handed out a guessed URL). Best-effort: a push failure is logged + noted on the ticket but never
+   * blocks the done transition. No-op when no `publishRepo` was injected (tests / no PAT).
+   */
+  private async publishProject(ticket: Ticket): Promise<string | null> {
+    if (!this.publishRepo) return null;
+    const slug = projectSlug(ticket.project || ticket.identifier);
+    const repoRoot = this.resolveRepoRoot(ticket);
+    try {
+      const { url } = await this.publishRepo({ slug, repoRoot, description: ticket.title });
+      this.logger.info("project published to github", { ticket: ticket.identifier, url });
+      return url;
+    } catch (err) {
+      this.logger.warn("github publish failed (continuing)", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
+      await this.postComment(
+        ticket.id,
+        `Couldn't push to GitHub (${(err as Error).message}). The work is committed locally in ` +
+          `\`${repoRoot}\` — a human can push it.`,
+      );
+      return null;
+    }
+  }
+
   private async onReviewDone(
     ticket: Ticket,
     handle: TicketWorkerHandle,
@@ -499,8 +548,12 @@ export class Dispatcher {
   ): Promise<void> {
     const passed = this.reviewPassed(handle, status);
     if (passed) {
+      const ghUrl = await this.publishProject(ticket);
       await this.client.setState(ticket.id, "done");
-      await this.postComment(ticket.id, `Review passed → **done**.\n\n${summary}`);
+      await this.postComment(
+        ticket.id,
+        `Review passed → **done**.${ghUrl ? `\n\nGitHub: ${ghUrl}` : ""}\n\n${summary}`,
+      );
       this.baseShaForTicket.delete(ticket.id);
       this.reworkCount.delete(ticket.id);
       this.logger.info("ticket advanced to done", { ticket: ticket.identifier });

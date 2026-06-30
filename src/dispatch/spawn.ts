@@ -145,16 +145,31 @@ const SUMMARY_MAX = 1200;
 
 /**
  * Durable-deploy guidance baked into every implement worker's system prompt (v3.1 robustness).
- * The OPS-15 footgun: a worker "deployed" a site via a throwaway foreground server that died when
- * its session ended, so the URL 404'd and burned two review cycles. Anything that must stay up
- * goes through Beckett's durable Cloudflare tunnel, never an ephemeral process.
+ * The recurring footgun (OPS-15, OPS-17, OPS-19): workers improvise their own deploy — a
+ * foreground server that dies on session end, a server bound somewhere the tunnel can't reach, or
+ * a hand-edited ingress with no DNS record — so the URL 404s / never resolves and burns review
+ * cycles. The fix is to give ONE exact path and forbid every improvised alternative, then make the
+ * worker prove the public URL responds before it may call the ticket done. Slug-parameterized so
+ * the recipe names the worker's real hostname (`<slug>.0xbeckett.me`).
  */
-const DEPLOY_DURABILITY_NOTE =
-  `DEPLOY DURABLY: if the ticket needs a running URL, publish it with Beckett's durable deploy ` +
-  `(the \`deploy\` skill / \`beckett deploy\`, a Cloudflare tunnel that survives your session). ` +
-  `NEVER hand back a link served by a throwaway foreground process (e.g. \`python -m http.server\`, ` +
-  `\`vite\`, \`bun run dev\`) — it dies when you exit and the link 404s. Verify the deployed URL ` +
-  `actually responds before you call the ticket done.`;
+function deployDurabilityNote(slug: string): string {
+  return (
+    `DEPLOY DURABLY (only if the ticket needs a public URL): there is exactly ONE supported path, ` +
+    `and improvising your own is the #1 cause of dead links here. Do these three steps, nothing else:\n` +
+    `  1. Serve the build on a local port with a server that SURVIVES your session: write a ` +
+    `\`systemd --user\` unit and \`systemctl --user enable --now <unit>\`. Bind it to 127.0.0.1 (the ` +
+    `tunnel reaches localhost). A foreground process (\`python -m http.server\`, \`vite\`, ` +
+    `\`bun run dev\`) or a bare \`&\`/\`nohup\` job is FORBIDDEN — it dies when you exit and the link 404s.\n` +
+    `  2. Run \`beckett deploy ${slug} --port <thePort>\`. That command (and ONLY that command) ` +
+    `creates BOTH the Cloudflare tunnel ingress AND the public DNS record for ` +
+    `\`${slug}.0xbeckett.me\`. NEVER hand-edit \`~/.cloudflared/config.yml\` or touch DNS yourself — ` +
+    `that leaves a half-deploy with an ingress but no DNS, which never resolves.\n` +
+    `  3. VERIFY before you call the ticket done: ` +
+    `\`curl -fsS -o /dev/null -w '%{http_code}' https://${slug}.0xbeckett.me\` must print 200. If it ` +
+    `can't resolve or returns 502, the deploy is NOT done (your unit isn't running, or ` +
+    `\`beckett deploy\` didn't run) — fix it and re-check. Never report a URL you haven't curled.`
+  );
+}
 
 // =======================================================================================
 // Prompt + system-append builders (stage-aware)
@@ -212,10 +227,10 @@ function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): str
     `Acceptance criteria (you are done when ALL hold):\n${crit}\n` +
     `SELF-REVIEW before you finish: re-read your own diff and CHECK each acceptance criterion ` +
     `holds — there may be no separate reviewer after you. Run the check commands; fix what fails.\n` +
-    `GITHUB: if this work should live on GitHub, create/push it to \`0xbeckett/${slug}\` via the ` +
-    `github skill (\`beckett gh\`) — never raw \`gh\`/\`git push\`. It's a standalone repo, not tied ` +
-    `to 0xbeckett/beckett.\n` +
-    `${DEPLOY_DURABILITY_NOTE}\n` +
+    `GITHUB: don't push anything yourself. When this ticket is done, Beckett automatically ` +
+    `publishes this repo to \`0xbeckett/${slug}\` (a standalone PUBLIC repo, NOT tied to ` +
+    `0xbeckett/beckett). Just commit your work in this checkout — the push is handled for you.\n` +
+    `${deployDurabilityNote(slug)}\n` +
     `When finished, emit the structured done-signal matching the provided schema (status ` +
     `"complete" when all criteria hold AND your self-review passed, "blocked"/"partial" ` +
     `otherwise with a reason).`

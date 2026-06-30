@@ -34,6 +34,7 @@ import { createPlaneClient, type PlaneClient } from "../plane/client.ts";
 import { createPlanePoller, type PlanePoller } from "../plane/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
 import { createConcierge, type Concierge } from "../concierge/index.ts";
+import { GitHubCli, loadIdentity } from "../agency/index.ts";
 
 /**
  * Root under which every ticket builds its OWN project repo — one directory per code project,
@@ -95,11 +96,38 @@ async function boot(): Promise<BootedSystem> {
   // 2. PlaneClient — the sole HTTP boundary to Plane (token from env).
   const client = createPlaneClient({ config, logger: logger.child("plane.client") });
 
+  // Deterministic GitHub publishing: when a ticket reaches done, its project repo is pushed to
+  // `0xbeckett/<slug>` (public) so the links Beckett hands out actually resolve — instead of
+  // relying on the worker to push, which it skipped and left repos that 404'd. Built from the
+  // GitHub identity; a missing PAT makes it undefined → the dispatcher skips publishing and says so.
+  const identity = loadIdentity(config);
+  const publishRepo = identity.github.pat
+    ? async (a: { slug: string; repoRoot: string; description: string }) => {
+        const gh = new GitHubCli({
+          pat: identity.github.pat,
+          account: identity.github.account,
+          apiBase: identity.github.apiBase,
+          resolveRepoDir: () => a.repoRoot,
+          logger: logger.child("gh"),
+        });
+        const { url } = await gh.ensurePublished({
+          slug: a.slug,
+          sourceDir: a.repoRoot,
+          description: a.description,
+        });
+        return { url };
+      }
+    : undefined;
+  if (!publishRepo) {
+    logger.warn("no GITHUB_PAT — project repos will stay local-only (not pushed to GitHub)");
+  }
+
   // 4. Dispatcher — consumes PollEvents, owns the worker lifecycle.
   const dispatcher = createDispatcher({
     client,
     config,
     resolveRepoRoot,
+    publishRepo,
     logger: logger.child("dispatch"),
   });
 
