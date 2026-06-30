@@ -198,6 +198,33 @@ const ConfigSchema = z
         outcomes_max_rows: nonNegInt.default(0),
       })
       .default({}),
+    // v3 — Plane ticket-queue (Spec v3). base_url/slugs locate the self-hosted Plane; the
+    // PLANE_API_TOKEN secret comes from .env, NOT here. `state_map` maps each Beckett
+    // TicketState to the project's Plane workflow state NAME (the client resolves name→UUID).
+    plane: z
+      .object({
+        base_url: z.string().min(1).default("https://plane.0xbeckett.me"),
+        workspace_slug: z.string().min(1).default("beckett"),
+        project_slug: z.string().min(1).default("beckett"),
+        poll_secs: posInt.default(15),
+        state_map: z
+          .object({
+            backlog: z.string().min(1).default("Backlog"),
+            todo: z.string().min(1).default("Todo"),
+            in_progress: z.string().min(1).default("In Progress"),
+            in_review: z.string().min(1).default("In Review"),
+            done: z.string().min(1).default("Done"),
+            cancelled: z.string().min(1).default("Cancelled"),
+          })
+          .default({}),
+      })
+      .default({}),
+    // v3 — the Concierge (long-lived `claude -p` Opus agent that owns Discord, files tickets).
+    concierge: z
+      .object({
+        model: z.string().min(1).default("claude-opus-4-8"),
+      })
+      .default({}),
   })
   .strict();
 

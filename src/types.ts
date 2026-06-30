@@ -1412,6 +1412,26 @@ export interface Config {
     db_backups: number;
     outcomes_max_rows: number; // 0 = unbounded
   };
+  /** v3 — Plane ticket-queue config (Spec v3). Secret PLANE_API_TOKEN lives in env, not here. */
+  plane: {
+    base_url: string;
+    workspace_slug: string;
+    project_slug: string;
+    poll_secs: number;
+    /** Each Beckett TicketState → its Plane workflow state NAME (client resolves name→UUID). */
+    state_map: {
+      backlog: string;
+      todo: string;
+      in_progress: string;
+      in_review: string;
+      done: string;
+      cancelled: string;
+    };
+  };
+  /** v3 — the Concierge agent that owns Discord and files tickets. */
+  concierge: {
+    model: string;
+  };
 }
 
 // =======================================================================================
