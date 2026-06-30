@@ -23,6 +23,7 @@ import { CodexImageGen } from "../agency/imagegen.ts";
 import { TunnelDeployer } from "../shell/deploy.ts";
 import { loadAccess, grantAccess, revokeAccess, ACCESS_CAP } from "../discord/access.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
+import type { Ticket, TicketState } from "../plane/types.ts";
 
 const config = loadConfig();
 const paths = buildPaths(config);
@@ -453,6 +454,86 @@ async function main(): Promise<void> {
     fail("usage: beckett access ls | grant <id> | revoke <id>");
   }
 
+  // ── ticket (in-process: PlaneClient — the Concierge's door to Plane, v3 §8) ───────────────
+  // The Concierge shells these from its Bash tool to file/inspect/steer tickets. Output is
+  // JSON on stdout (the Concierge reads it). PlaneClient speaks HTTP to Plane; the secret
+  // PLANE_API_TOKEN rides process.env, never config. Imported dynamically so the rest of the
+  // CLI keeps working while `src/plane/client.ts` is built in parallel.
+  if (group === "ticket") {
+    const { createPlaneClient } = await import("../plane/client.ts");
+    const { parseCastJson } = await import("../plane/cast.ts");
+    const { _, flags } = parse(rest);
+    const client = createPlaneClient({ config, logger: quietLogger });
+
+    /** Read --body, or --body-stdin (piped). */
+    const readBody = async (): Promise<string> => {
+      if (flags["body-stdin"]) return (await Bun.stdin.text()).trim();
+      return flags.body ? String(flags.body) : "";
+    };
+    /** A hydrated ticket → the slim row the Concierge needs to reason about progress. */
+    const slim = (t: Ticket) => ({
+      id: t.id,
+      identifier: t.identifier,
+      title: t.title,
+      state: t.state,
+      assignees: t.assignees,
+      url: t.url,
+      updatedAt: t.updatedAt,
+    });
+
+    if (sub === "create") {
+      if (!flags.title) {
+        fail(
+          'usage: beckett ticket create --title <t> [--body <b>|--body-stdin] [--state backlog|todo|in_progress|in_review|done|cancelled] [--cast <json>] [--criteria "a;b;c"]',
+        );
+      }
+      const casting = flags.cast ? parseCastJson(String(flags.cast)) : {};
+      const criteria = flags.criteria
+        ? String(flags.criteria).split(";").map((s) => s.trim()).filter(Boolean)
+        : [];
+      const ticket = await client.createIssue({
+        title: String(flags.title),
+        body: await readBody(),
+        casting,
+        criteria,
+        state: flags.state ? (String(flags.state) as TicketState) : undefined,
+      });
+      out({ id: ticket.id, identifier: ticket.identifier, url: ticket.url, state: ticket.state });
+    }
+    if (sub === "comment") {
+      const id = _[0];
+      if (!id) fail("usage: beckett ticket comment <id> <text> | --body <b> | --body-stdin");
+      // Accept the body as positional text (per the v3 §8 shorthand) or via --body/--body-stdin.
+      const positional = _.slice(1).join(" ").trim();
+      const body = positional || (await readBody());
+      if (!body) fail("beckett ticket comment: empty body");
+      out(await client.addComment(id, body));
+    }
+    if (sub === "state") {
+      const id = _[0];
+      const state = _[1];
+      if (!id || !state) {
+        fail("usage: beckett ticket state <id> <backlog|todo|in_progress|in_review|done|cancelled>");
+      }
+      await client.setState(id, state as TicketState);
+      out({ id, state });
+    }
+    if (sub === "list") {
+      const tickets = await client.listIssues();
+      const wanted = flags.state ? String(flags.state) : undefined;
+      const rows = (wanted ? tickets.filter((t) => t.state === wanted) : tickets).map(slim);
+      out(rows);
+    }
+    if (sub === "show" || sub === "get") {
+      const id = _[0];
+      if (!id) fail(`usage: beckett ticket ${sub} <id>`);
+      const ticket = await client.getIssue(id);
+      if (!ticket) fail(`no such ticket: ${id}`);
+      out(ticket);
+    }
+    fail("usage: beckett ticket create|comment|state|list|show <...>");
+  }
+
   // ── top-level (control bus) ──────────────────────────────────────────────────────────────
   if (group === "discord" && sub === "reply") {
     const { _, flags } = parse(rest);
@@ -517,7 +598,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: inject | status | reload | persona | access ls|grant|revoke | discord reply | image | site deploy | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: inject | status | reload | persona | access ls|grant|revoke | discord reply | image | site deploy | ticket create|comment|state|list|show | worker spawn|status|log|nudge|abort|checkin | work ls|show | flow run|resume|ls|show | integrate | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 main().catch((err) => fail((err as Error).message));

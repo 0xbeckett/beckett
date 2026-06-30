@@ -14,20 +14,23 @@
 
 import type { Config, Harness, HarnessDriver, Logger } from "../types.ts";
 import { ClaudeDriver } from "./claude.ts";
+import { CodexDriver } from "./codex.ts";
 
 export { ClaudeDriver } from "./claude.ts";
+export { CodexDriver } from "./codex.ts";
 export type { RateLimitSignal } from "./claude.ts";
 
 /** Builds a fresh driver instance (one driver == one harness process). */
 export type DriverFactory = (config: Config, logger?: Logger) => HarnessDriver;
 
 /**
- * The harness → driver-factory table. Add `codex` here when CodexDriver is implemented
- * (Spec 02 §5); until then it is deliberately absent so v0 cannot half-run a codex node.
+ * The harness → driver-factory table. v3: both `claude` (live-steerable stream) and `codex`
+ * (one-shot `codex exec`, steer-via-resume) are registered so the dispatcher can cast either
+ * harness per stage (Spec 02 §5; docs/V3.md §7).
  */
 const FACTORIES: Partial<Record<Harness, DriverFactory>> = {
   claude: (config, logger) => new ClaudeDriver(config, logger),
-  // codex: (config, logger) => new CodexDriver(config, logger),  // v1 — not in v0 scope
+  codex: (config, logger) => new CodexDriver(config, logger),
 };
 
 /** Whether a driver is registered for `harness`. */
