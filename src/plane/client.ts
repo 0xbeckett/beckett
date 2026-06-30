@@ -34,6 +34,8 @@ export interface CreateTicketInput {
   criteria?: string[];
   /** Identifiers of tickets this one is blocked by (held in `backlog` until all are `done`). */
   blockedBy?: string[];
+  /** Code-project slug — the ticket's own repo under `~/Projects/<project>` (see {@link Ticket.project}). */
+  project?: string;
   /** Lifecycle state to file into; defaults to `"backlog"`. */
   state?: TicketState;
   /** Plane member ids to assign. */
@@ -285,7 +287,7 @@ export class PlaneClient {
     const criteria = input.criteria ?? [];
     const blockedBy = input.blockedBy ?? [];
     const description = withOriginMarker(
-      serializeCast(casting, criteria, body, blockedBy),
+      serializeCast(casting, criteria, body, blockedBy, input.project),
       input.originChannel,
     );
     const payload: Record<string, unknown> = {
@@ -351,7 +353,7 @@ export class PlaneClient {
     // Pull the origin-channel marker out before anything else parses the description, so neither
     // the worker body nor the cast parser ever sees it (the closed agent loop's routing key).
     const { channel: originChannel, description: rawDescription } = extractOriginMarker(storedDescription);
-    const { casting, criteria, blockedBy, body } = parseCast(rawDescription);
+    const { casting, criteria, blockedBy, project, body } = parseCast(rawDescription);
     const state = this.reverseState(issue.state ?? null);
     const identifier =
       issue.sequence_id != null && this.projectIdentifier
@@ -369,6 +371,7 @@ export class PlaneClient {
       casting,
       criteria,
       blockedBy,
+      ...(project ? { project } : {}),
       projectId,
       url: `${this.config.plane.base_url.replace(/\/+$/, "")}/${this.config.plane.workspace_slug}/projects/${projectId}/issues/${issue.id}`,
       updatedAt: issue.updated_at ?? issue.created_at ?? new Date(0).toISOString(),

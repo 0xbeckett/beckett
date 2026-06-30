@@ -75,18 +75,15 @@ const fakeSpawn = async (args: any) => {
   return h;
 };
 
-let removedWorktrees: string[] = [];
-mock.module("./spawn.ts", () => ({
-  spawnWorker: fakeSpawn,
-  spawnTicketWorker: fakeSpawn,
-  removeTicketWorktree: async (_repoRoot: string, ticket: any) => {
-    removedWorktrees.push(ticket.identifier);
-  },
-}));
+let provisioned: string[] = [];
+mock.module("./spawn.ts", () => ({ spawnWorker: fakeSpawn, spawnTicketWorker: fakeSpawn }));
 mock.module("../worker/worktree.ts", () => ({
   commitWorktree: async () => ({ committed: false, sha: null }),
   headSha: async () => "base000", // v3.1 per-ticket diff base (fake repo has no real HEAD)
   currentBranch: async () => "main",
+  ensureProjectRepo: async (repoRoot: string, slug: string) => {
+    provisioned.push(slug);
+  },
 }));
 
 const { Dispatcher, BECKETT_COMMENT_MARKER } = await import("./dispatcher.ts");
@@ -126,6 +123,7 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
     casting: over.casting ?? {},
     criteria: over.criteria ?? ["it works"],
     blockedBy: over.blockedBy ?? [],
+    ...(over.project ? { project: over.project } : {}),
     projectId: "proj-1",
     url: "http://x",
     updatedAt: "now",
@@ -154,7 +152,7 @@ beforeEach(() => {
   created = [];
   counter = 0;
   spawnGate = null;
-  removedWorktrees = [];
+  provisioned = [];
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────────────────
@@ -257,28 +255,21 @@ describe("advance on finish", () => {
   });
 });
 
-describe("v3.1 worktree lifecycle (one per ticket, torn down only when terminal)", () => {
-  test("a done event removes the ticket's worktree", async () => {
+describe("v3.1 project-repo provisioning", () => {
+  test("a ticket's own project repo is provisioned before the worker spawns", async () => {
     const { d } = newDispatcher();
-    await d.handle(stateChanged(makeTicket(), "done"));
+    await d.handle(stateChanged(makeTicket({ identifier: "OPS-7" }), "in_progress"));
     await tick();
-    expect(removedWorktrees).toContain("OPS-1");
+    expect(provisioned).toContain("ops-7"); // slug of the (unnamed) ticket → its own sandbox repo
+    expect(spawnCalls).toHaveLength(1);
   });
 
-  test("a cancel removes the ticket's worktree", async () => {
+  test("an explicit project slug routes the worker to that repo", async () => {
     const { d } = newDispatcher();
-    await d.handle(stateChanged(makeTicket(), "cancelled"));
+    const ticket = makeTicket({ project: "Balloons Game!" });
+    await d.handle(stateChanged(ticket, "in_progress"));
     await tick();
-    expect(removedWorktrees).toContain("OPS-1");
-  });
-
-  test("a review-fail rework does NOT remove the worktree (it's reused next cycle)", async () => {
-    const { d } = newDispatcher();
-    await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
-    await tick();
-    created[0].finish("success", "needs work", { status: "blocked" });
-    await tick();
-    expect(removedWorktrees).not.toContain("OPS-1"); // back to in_progress — worktree survives
+    expect(provisioned).toContain("balloons-game"); // sanitized slug
   });
 });
 

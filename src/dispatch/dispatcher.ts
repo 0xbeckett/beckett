@@ -20,7 +20,7 @@
  *   | state_changed → done/other    | —                    | reap any live worker; no spawn          |
  *   | created                       | —                    | no spawn (log)                          |
  *
- *   on worker finish (work is committed on the ticket's own branch — v3.1 one worktree per ticket):
+ *   on worker finish (work is committed in the ticket's own project repo, `~/Projects/<slug>`):
  *     implement success, review tier `self`  → setState(done)       (ONE pass — worker self-reviewed)
  *     implement success, review tier `fresh` → setState(in_review)  + summary comment
  *     implement error                        → comment + LEAVE in in_progress for a human
@@ -31,8 +31,8 @@
  * high/xhigh/unset → fresh) or an explicit `reviewTier` on the implement cast.
  *
  * Concurrency is bounded by `config.concurrency.max_workers` (default 2 — each ticket has its own
- * worktree, so independent tickets/DAG nodes run in parallel); over-cap spawns are queued FIFO and
- * pumped as workers free their slots.
+ * project repo, so independent tickets/DAG nodes run in parallel); over-cap spawns are queued FIFO
+ * and pumped as workers free their slots.
  */
 
 import type { Config, Logger } from "../types.ts";
@@ -44,8 +44,9 @@ import type {
   HarnessSpec,
 } from "../plane/types.ts";
 import { log } from "../log.ts";
-import { commitWorktree, headSha } from "../worker/worktree.ts";
-import { spawnWorker, removeTicketWorktree, type TicketWorkerHandle } from "./spawn.ts";
+import { commitWorktree, headSha, ensureProjectRepo } from "../worker/worktree.ts";
+import { projectSlug } from "../plane/cast.ts";
+import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
 
 // =======================================================================================
 // Collaborators
@@ -69,7 +70,7 @@ export interface PlaneClientLike {
 export interface DispatcherDeps {
   client: PlaneClientLike;
   config: Config;
-  /** Resolve the absolute git repo root a ticket's worktree is allocated under. */
+  /** Resolve the absolute path of a ticket's own project repo (`~/Projects/<slug>`). */
   resolveRepoRoot: (ticket: Ticket) => string;
   logger?: Logger;
 }
@@ -191,7 +192,6 @@ export class Dispatcher {
         return;
       case "done":
         await this.reapTicket(ticket.id, "ticket done");
-        await this.removeWorktreeFor(ticket); // ticket finished — tear its worktree down (branch kept)
         await this.promoteDependents(ticket);
         return;
       case "cancelled":
@@ -229,7 +229,6 @@ export class Dispatcher {
     this.staffing.delete(ticket.id); // drop any mid-spawn reservation so doSpawn discards it
     if (!handle) {
       this.logger.info("ticket cancelled (no live worker)", { ticket: ticket.identifier });
-      await this.removeWorktreeFor(ticket); // still tear down any worktree a prior stage left
       return;
     }
     this.logger.warn("ticket cancelled — aborting worker", {
@@ -239,20 +238,7 @@ export class Dispatcher {
     this.workers.delete(ticket.id);
     await handle.abort("ticket cancelled");
     await handle.reap();
-    await this.removeWorktreeFor(ticket); // terminal — tear the ticket's worktree down
     this.pump();
-  }
-
-  /** Best-effort removal of a terminal ticket's worktree (branch kept). Never throws into the loop. */
-  private async removeWorktreeFor(ticket: Ticket): Promise<void> {
-    try {
-      await removeTicketWorktree(this.resolveRepoRoot(ticket), ticket);
-    } catch (err) {
-      this.logger.warn("worktree removal failed", {
-        ticket: ticket.identifier,
-        error: (err as Error).message,
-      });
-    }
   }
 
   // ── spawning + concurrency ─────────────────────────────────────────────────────────────
@@ -315,6 +301,26 @@ export class Dispatcher {
   private async doSpawn(ticket: Ticket, stage: string): Promise<void> {
     const spec = this.castFor(ticket, stage);
     const repoRoot = this.resolveRepoRoot(ticket);
+
+    // v3.1: ensure the ticket's OWN project repo exists before any stage runs — clone
+    // `0xbeckett/<slug>` if it's already on GitHub (a continuing project, or Beckett's source for a
+    // self-improvement ticket), else `git init` a fresh one. A worker never touches Beckett's live
+    // source. A provisioning failure leaves the ticket for a human rather than spawning blind.
+    try {
+      await ensureProjectRepo(repoRoot, projectSlug(ticket.project || ticket.identifier));
+    } catch (err) {
+      this.logger.error("project repo provisioning failed", {
+        ticket: ticket.identifier,
+        repoRoot,
+        error: (err as Error).message,
+      });
+      await this.postComment(
+        ticket.id,
+        `Could not provision the project repo at \`${repoRoot}\`: ${(err as Error).message}. Leaving for a human.`,
+      );
+      return; // launchSpawn's finally releases the reservation + pumps
+    }
+
     // Capture the diff base the first time a ticket implements: every stage shares the one
     // checkout, so this sha is how a later REVIEW sees the ticket's whole contribution. A git
     // hiccup here must never block the spawn — the reviewer just falls back to diffing HEAD.

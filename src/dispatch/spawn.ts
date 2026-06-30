@@ -2,26 +2,24 @@
  * Beckett v3 — ticket-worker spawn helper (`src/dispatch/spawn.ts`)
  * =======================================================================================
  * The thin v3 spawn glue the {@link Dispatcher} (`./dispatcher.ts`) calls to stand up one
- * worker for a ticket stage (see `docs/V3.md` §6). v3.1: a ticket gets ONE git worktree on its
- * own branch, REUSED across implement→review→rework (not a fresh worktree per stage — that churn
- * + the `wk_*` branch litter was the waste). Work stays on the ticket branch; Beckett never
- * auto-merges it to `main`. The worktree isolates concurrent tickets, so `beckett plan` nodes can
- * still run in parallel.
+ * worker for a ticket stage (see `docs/V3.md` §6). v3.1: each ticket builds its OWN project repo
+ * at `~/Projects/<slug>` (pushed to `0xbeckett/<slug>`), fully decoupled from Beckett's own source.
+ * The worker runs IN that repo — implement, review, and rework share the one checkout and edit in
+ * place. Isolation between tickets is just "different project dirs," so `beckett plan` nodes still
+ * run in parallel. The dispatcher provisions the repo (clone-or-init) before the first spawn.
  *
  * What it wires:
  *   1. Driver — `createDriver(harness, config, logger)` (claude today; codex once registered).
- *   2. Worktree — `createWorktree({ reuseIfExists: true })` at {@link ticketWorkspace} on
- *      {@link ticketBranch}; created by the first stage, attached to by the rest. Removed by the
- *      dispatcher (`removeTicketWorktree`) only when the ticket is terminal.
- *   3. Scope-guard — written to `<worktree>/.beckett/worker-settings.json` and delivered via
- *      `claude --settings` (so the checkout's own `.claude` is never clobbered), plus the
- *      done-signal schema at `<worktree>/.beckett/done-schema.json`; `.beckett/` is git-excluded.
+ *   2. Workspace — `repoRoot` (the provisioned project repo); no per-worker worktree.
+ *   3. Scope-guard — written to `<repo>/.beckett/worker-settings.json` and delivered via
+ *      `claude --settings` (so the project's own `.claude` is never clobbered), plus the
+ *      done-signal schema at `<repo>/.beckett/done-schema.json`; `.beckett/` is git-excluded.
  *   4. Spawn — a {@link SpawnSpec} built from the ticket (title/body/criteria), staged for the
  *      `implement` or `review` role (review diffs `<baseRef>..HEAD` to see the contribution).
  *
  * The returned {@link TicketWorkerHandle} exposes the control surface the dispatcher needs:
  * `nudge` (STEERING), `abort` (CANCEL), `onDone`/`onFinished` (advance the ticket), plus
- * `reap` (unsubscribe — the shared worktree is torn down per-ticket, not per-worker). The handle
+ * `reap` (unsubscribe — the project repo persists). The handle
  * satisfies BOTH the task spec (`id`, `nudge`, `abort`, `onDone`, `state`) and the `docs/V3.md`
  * §6 contract (`workerId`, `ticketId`, `stage`, `onFinished`, `reap`).
  */
@@ -42,10 +40,11 @@ import type {
   HarnessDriver,
 } from "../types.ts";
 import type { HarnessSpec, Ticket } from "../plane/types.ts";
+import { projectSlug } from "../plane/cast.ts";
 import { createDriver } from "../drivers/index.ts";
 import { workerId as mintWorkerId } from "../ids.ts";
 import { log } from "../log.ts";
-import { createWorktree, removeWorktree, excludeFromGit } from "../worker/worktree.ts";
+import { excludeFromGit, currentBranch } from "../worker/worktree.ts";
 import { scopeGuardSpec } from "../hooks/scope-guard.ts";
 import { renderClaudeSettings } from "../hooks/registry.ts";
 
@@ -110,33 +109,6 @@ export interface SpawnWorkerArgs {
   /** Base ref the ticket's worktree was first branched from (the REVIEW diff base). */
   baseRef: string;
   logger?: Logger;
-}
-
-/** Sanitize a ticket identifier into a safe path/branch segment (e.g. "OPS-15"). */
-function ticketSlug(ticket: Ticket): string {
-  return ticket.identifier.replace(/[^A-Za-z0-9._-]/g, "_") || ticket.id;
-}
-
-/**
- * The single git worktree a ticket REUSES across all its stages (implement→review→rework) — v3.1.
- * One per ticket (not one per worker/stage), so there's no per-stage churn and no `wk_*` litter.
- */
-export function ticketWorkspace(repoRoot: string, ticket: Ticket): string {
-  return join(repoRoot, ".beckett", "worktrees", ticketSlug(ticket));
-}
-
-/** The branch carrying a ticket's work. One per ticket; Beckett never auto-merges it to `main`. */
-export function ticketBranch(ticket: Ticket): string {
-  return `beckett/${ticketSlug(ticket)}`;
-}
-
-/**
- * Remove a ticket's worktree directory when it reaches a terminal state (done/cancelled). The
- * branch — the record of the work — is intentionally KEPT; Beckett never silently merges it to
- * `main`. Idempotent / best-effort.
- */
-export async function removeTicketWorktree(repoRoot: string, ticket: Ticket): Promise<void> {
-  await removeWorktree(repoRoot, ticketWorkspace(repoRoot, ticket));
 }
 
 // =======================================================================================
@@ -232,12 +204,17 @@ function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): str
       `Put your one-line verdict in summary.`
     );
   }
+  const slug = projectSlug(ticket.project || ticket.identifier);
   return (
-    `You are an autonomous worker implementing a ticket. Your cwd is a dedicated checkout on this ` +
-    `ticket's own branch — edit it freely and commit your work; treat anything outside it as read-only.\n` +
+    `You are an autonomous worker implementing a ticket. Your cwd is THIS PROJECT'S OWN git repo ` +
+    `(\`~/Projects/${slug}\`) — it is yours to build in. Edit freely and commit your work; treat ` +
+    `anything outside it (especially Beckett's own source) as read-only.\n` +
     `Acceptance criteria (you are done when ALL hold):\n${crit}\n` +
     `SELF-REVIEW before you finish: re-read your own diff and CHECK each acceptance criterion ` +
     `holds — there may be no separate reviewer after you. Run the check commands; fix what fails.\n` +
+    `GITHUB: if this work should live on GitHub, create/push it to \`0xbeckett/${slug}\` via the ` +
+    `github skill (\`beckett gh\`) — never raw \`gh\`/\`git push\`. It's a standalone repo, not tied ` +
+    `to 0xbeckett/beckett.\n` +
     `${DEPLOY_DURABILITY_NOTE}\n` +
     `When finished, emit the structured done-signal matching the provided schema (status ` +
     `"complete" when all criteria hold AND your self-review passed, "blocked"/"partial" ` +
@@ -245,7 +222,7 @@ function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): str
   );
 }
 
-/** Resolve the worker's write scope. A ticket worker owns its whole worktree. */
+/** Resolve the worker's write scope. A ticket worker owns its whole project repo. */
 function buildScope(ticket: Ticket): FileScope {
   return { ownedGlobs: [], readGlobs: null, description: `${ticket.identifier}: ${ticket.title}` };
 }
@@ -302,14 +279,13 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
 // =======================================================================================
 
 /**
- * Stand up one worker for a ticket stage. v3.1: the worker runs in the TICKET'S OWN worktree
- * ({@link ticketWorkspace}) on its own branch ({@link ticketBranch}) — created on the first stage
- * and reused (`reuseIfExists`) by review + every rework, so a ticket has ONE worktree instead of
- * one per stage. Work stays on the ticket branch; Beckett never auto-merges it to `main`. The
- * scope-guard (delivered via `claude --settings`, so it never clobbers the checkout's own
- * `.claude`) bounds writes to the worktree. Throws if the harness launch fails; the dispatcher
- * surfaces that as a ticket comment and removes the worktree only when the ticket is terminal.
- * Because tickets are isolated, independent `beckett plan` nodes can run in parallel (cap > 1).
+ * Stand up one worker for a ticket stage. v3.1: the worker runs IN the ticket's own project repo
+ * (`repoRoot` = `~/Projects/<slug>`, provisioned by the dispatcher) — implement, review, and every
+ * rework cycle share that one checkout and the worker edits + commits in place. Isolation between
+ * tickets comes from each one having its OWN project repo, not from worktrees; the worker pushes to
+ * `0xbeckett/<slug>` via the github skill. The scope-guard (delivered via `claude --settings`, so
+ * it never clobbers the project's own `.claude`) bounds writes to the project repo. Throws if the
+ * harness launch fails; the dispatcher surfaces that as a ticket comment.
  *
  * Exported under both names: `spawnWorker` (task spec) and `spawnTicketWorker` (docs/V3.md §6).
  */
@@ -318,10 +294,8 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   const logger = (args.logger ?? log.child("dispatch.spawn")).child(`ticket.${ticket.identifier}`);
 
   const id = mintWorkerId();
-  // v3.1: ONE worktree per TICKET, reused across all its stages — `reuseIfExists` makes the
-  // implement spawn create it and every later review/rework spawn attach to the SAME tree+branch.
-  const workspace = ticketWorkspace(repoRoot, ticket);
-  const branch = ticketBranch(ticket);
+  const workspace = repoRoot; // v3.1: the ticket's own project repo (the dispatcher provisioned it)
+  const branch = await currentBranch(repoRoot); // informational: the project repo's branch
   const scope = buildScope(ticket);
   const envelope = buildEnvelope(harness, config);
   const scopeGuardPath = join(import.meta.dir, "../hooks/scope-guard.ts");
@@ -372,9 +346,8 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     }
   });
 
-  // ── attach to the ticket's worktree (create on first stage, reuse after) + scope-guard ──
+  // ── wire scope-guard into the project repo (already provisioned by the dispatcher), then launch ──
   try {
-    await createWorktree({ repoRoot, workspace, branch, baseRef, reuseIfExists: true });
     await excludeFromGit(workspace, [".beckett/"]);
     const { doneSchemaPath, settingsPath } = writeWorkerMeta(workspace, scopeGuardPath, scope.ownedGlobs);
 
@@ -443,9 +416,9 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
       if (reaped) return;
       reaped = true;
       unsubscribe();
-      // v3.1: reap is per-WORKER (one stage); it does NOT remove the worktree, which is shared
-      // across the ticket's stages. The dispatcher removes the ticket's worktree only when the
-      // ticket itself reaches a terminal state (see `removeTicketWorktree`).
+      // v3.1: nothing to tear down — the worker ran in the ticket's persistent project repo
+      // (`~/Projects/<slug>`), which lives on as a real repo. Its committed work stays there; the
+      // git-excluded `.beckett/` meta is harmless and overwritten by the next worker.
       logger.info("ticket worker reaped", { workerId: id, stage });
     },
   };

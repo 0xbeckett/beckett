@@ -37,6 +37,9 @@ async function runGit(args: string[], cwd: string): Promise<GitResult> {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    // Never block on a credential/passphrase prompt — a remote op (ls-remote/clone) on a missing
+    // or unauthorized repo must fail fast, not hang the daemon waiting on a tty.
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
   });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -387,4 +390,33 @@ export async function currentBranch(repoRoot: string): Promise<string> {
   const r = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], repoRoot);
   const name = r.stdout.trim();
   return name || "HEAD";
+}
+
+/** GitHub org/account Beckett owns and pushes project repos to (override via `BECKETT_GH_ORG`). */
+export const GH_ORG = process.env.BECKETT_GH_ORG?.trim() || "0xbeckett";
+
+/**
+ * Ensure a ticket's project repo exists at `repoRoot` — v3.1. A ticket builds its OWN repo under
+ * `~/Projects/<slug>`, decoupled from Beckett's source. If `<GH_ORG>/<slug>` already exists on
+ * GitHub (a continuing project, or Beckett's own source when a self-improvement ticket sets
+ * `project: beckett`) it is **cloned**; otherwise a fresh repo is `git init`-ed on `main`. The
+ * worker then commits in place and (if the ticket calls for it) creates/pushes the GitHub repo via
+ * the github skill. Idempotent — a no-op once `repoRoot/.git` exists.
+ */
+export async function ensureProjectRepo(repoRoot: string, slug: string): Promise<void> {
+  if (existsSync(`${repoRoot}/.git`)) return; // already provisioned
+  const parent = dirname(repoRoot);
+  mkdirSync(parent, { recursive: true });
+
+  const remote = `https://github.com/${GH_ORG}/${slug}.git`;
+  const onGitHub = (await runGit(["ls-remote", remote, "HEAD"], parent)).code === 0;
+  if (onGitHub) {
+    await git(["clone", remote, repoRoot], parent);
+    logger.info("provisioned project repo by clone", { repoRoot, remote });
+    return;
+  }
+
+  mkdirSync(repoRoot, { recursive: true });
+  await git(["init", "-b", "main"], repoRoot);
+  logger.info("provisioned new project repo (git init)", { repoRoot, slug });
 }

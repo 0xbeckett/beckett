@@ -24,26 +24,32 @@
  */
 
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { loadConfig } from "../config.ts";
 import { log as rootLog } from "../log.ts";
 import type { Config, Logger } from "../types.ts";
 import type { Ticket } from "../plane/types.ts";
+import { projectSlug } from "../plane/cast.ts";
 import { createPlaneClient, type PlaneClient } from "../plane/client.ts";
 import { createPlanePoller, type PlanePoller } from "../plane/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
 import { createConcierge, type Concierge } from "../concierge/index.ts";
 
-/** Repo root = two levels up from `src/shell/` (matches `main.ts`'s `REPO_ROOT`). */
-const REPO_ROOT = join(import.meta.dir, "..", "..");
+/**
+ * Root under which every ticket builds its OWN project repo — one directory per code project,
+ * e.g. `~/Projects/balloons`. Override via `BECKETT_PROJECTS_ROOT`.
+ */
+const PROJECTS_ROOT = process.env.BECKETT_PROJECTS_ROOT?.trim() || join(homedir(), "Projects");
 
 /**
- * Resolve the absolute git repo root a ticket's worktrees are allocated under. v1 runs against a
- * single shared project VM (one repo), so every ticket maps to the same root: `BECKETT_REPO_ROOT`
- * if set, else the Beckett repo itself. The dispatcher creates each worker's worktree under
- * `<repoRoot>/.beckett/worktrees/<workerId>` (see `src/dispatch/spawn.ts`).
+ * The git repo a ticket's worker runs in (v3.1): the ticket's OWN project repo at
+ * `<PROJECTS_ROOT>/<slug>`, pushed to `0xbeckett/<slug>` — fully decoupled from Beckett's own
+ * source repo (`~/beckett`, which a worker never touches). The slug is the ticket's
+ * Concierge-named `project`, or the ticket identifier when unnamed (a per-ticket sandbox). The
+ * dispatcher provisions the repo (clone if it exists on GitHub, else `git init`) before spawning.
  */
-function resolveRepoRoot(_ticket: Ticket): string {
-  return process.env.BECKETT_REPO_ROOT?.trim() || REPO_ROOT;
+function resolveRepoRoot(ticket: Ticket): string {
+  return join(PROJECTS_ROOT, projectSlug(ticket.project || ticket.identifier || "scratch"));
 }
 
 /**
@@ -79,7 +85,7 @@ async function boot(): Promise<BootedSystem> {
     project: config.plane.project_slug,
     pollSecs: config.plane.poll_secs,
     conciergeModel: config.concierge.model,
-    repoRoot: resolveRepoRoot({} as Ticket),
+    projectsRoot: PROJECTS_ROOT,
   });
 
   if (!process.env.PLANE_API_TOKEN) {

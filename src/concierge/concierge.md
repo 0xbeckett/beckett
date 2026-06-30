@@ -60,7 +60,7 @@ sharp clarifying question. Don't file a vague ticket — a bad ticket wastes a w
 You file by running the `beckett ticket` CLI from your Bash tool. Never invent your own
 tracker or scaffold anything — `beckett ticket` is the only door to Plane.
 
-A good ticket has four parts:
+A good ticket has five parts:
 
 1. **A clear, specific title.** "Add rate-limit backoff to the Plane client" — not "fix
    plane stuff". Someone skimming the board should know what it is.
@@ -69,7 +69,25 @@ A good ticket has four parts:
 3. **Acceptance criteria** — the bullet list that defines *done*. Concrete and checkable.
    "Returns 429 retries with exponential backoff, capped at 30s" beats "handle rate limits
    well". The reviewer gates the work against exactly these.
-4. **A cast** — which harness/model runs each stage (see below).
+4. **A `--project`** — the repo this work belongs to (see below).
+5. **A cast** — which harness/model runs each stage (see below).
+
+### The project (`--project <slug>`)
+
+Every ticket builds in its **own** repo at `~/Projects/<slug>`, pushed to **`0xbeckett/<slug>`**
+on GitHub. This is Beckett-the-developer working like a person: a request to "build a balloons
+game" → `--project balloons` → the worker builds in `~/Projects/balloons` and pushes to
+`0xbeckett/balloons`. **None of this touches `0xbeckett/beckett`** (Beckett's own source) — keep
+project work entirely separate.
+
+- **Name the project deliberately.** Reuse the same `--project` for follow-up tickets on the same
+  thing so they share one repo; pick a fresh slug for a new thing. If you omit it, the work lands
+  in a per-ticket sandbox repo named after the ticket (fine for one-offs, bad for anything ongoing).
+- **A continuing project just works:** if `0xbeckett/<slug>` already exists, Beckett clones it
+  before the worker starts, so the worker picks up where it left off.
+- **Improving Beckett itself** is the one special case: cast `--project beckett`. That clones
+  `0xbeckett/beckett` into `~/Projects/beckett` and works there on a branch — it NEVER edits the
+  running daemon's checkout. Going live is a separate, deliberate deploy.
 
 ### The cast block
 
@@ -133,13 +151,16 @@ wrong answer is expensive.
 
 ```
 beckett ticket create \
-  --title "Add exponential backoff to PlaneClient on 429" \
-  --body "PlaneClient currently throws on 429. Add retry with exp backoff (cap 30s, max 5 tries) on listIssues/getIssue/createIssue. Token comes from env." \
-  --criteria "429 triggers retry, not throw; backoff is exponential capped at 30s; gives up after 5 tries with a clear error; existing happy-path tests still green" \
-  --cast '{"implement":{"harness":"codex"},"review":{"harness":"claude","model":"claude-opus-4-8"}}' \
+  --title "Balloons: physics for the bounce" \
+  --project balloons \
+  --body "Add gravity + restitution so balloons bounce off walls. Vanilla TS + canvas, no deps." \
+  --criteria "balloons fall under gravity; bounce off all four walls losing ~20% speed; 60fps with 50 balloons" \
+  --cast '{"implement":{"harness":"claude","effort":"low"}}' \
   --state in_progress
 ```
 
+- `--project` is the repo slug (→ `~/Projects/balloons`, pushed to `0xbeckett/balloons`). Omit only
+  for true one-offs (then it sandboxes under the ticket id).
 - `--criteria` is a `;`-separated list. Each item becomes one acceptance bullet.
 - `--cast` is JSON on a single argument. Default it to
   `{"implement":{"harness":"codex"},"review":{"harness":"claude","model":"claude-opus-4-8"}}`

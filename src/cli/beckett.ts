@@ -408,7 +408,7 @@ async function main(): Promise<void> {
     if (sub === "create") {
       if (!flags.title) {
         fail(
-          'usage: beckett ticket create --title <t> [--body <b>|--body-stdin] [--state backlog|todo|in_progress|in_review|done|cancelled] [--cast <json>] [--criteria "a;b;c"] [--channel <discord-channel-id>]',
+          'usage: beckett ticket create --title <t> [--body <b>|--body-stdin] [--project <slug>] [--state backlog|todo|in_progress|in_review|done|cancelled] [--cast <json>] [--criteria "a;b;c"] [--channel <discord-channel-id>]',
         );
       }
       const casting = flags.cast ? parseCastJson(String(flags.cast)) : {};
@@ -420,6 +420,9 @@ async function main(): Promise<void> {
         body: await readBody(),
         casting,
         criteria,
+        // The code project this ticket builds → its own repo at ~/Projects/<slug>, pushed to
+        // 0xbeckett/<slug>. Decoupled from Beckett's own source repo.
+        project: flags.project ? String(flags.project) : undefined,
         state: flags.state ? (String(flags.state) as TicketState) : undefined,
         // Stamp the originating Discord channel so updates route back to the conversation (closed loop).
         originChannel: flags.channel ? String(flags.channel) : undefined,
@@ -544,6 +547,9 @@ async function main(): Promise<void> {
         casting: t.cast ?? {},
         criteria: Array.isArray(t.criteria) ? t.criteria.map(String) : [],
         blockedBy,
+        // Per-node code project (its own repo). Sibling nodes may share one project or each get
+        // their own; defaults at dispatch to the ticket id when unset.
+        project: t.project ? String(t.project) : undefined,
         state: state as TicketState,
         originChannel: channel,
       });

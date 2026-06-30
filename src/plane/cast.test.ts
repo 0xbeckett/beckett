@@ -41,6 +41,21 @@ describe("cast round-trip", () => {
     expect(parseCast(out).blockedBy).toEqual([]);
   });
 
+  test("serialize → parse round-trips the code project (slugified)", () => {
+    const out = serializeCast({ implement: { harness: "claude" } }, ["it works"], "build it", [], "Balloons Game!");
+    const parsed = parseCast(out);
+    expect(out).toContain("beckett-project");
+    expect(parsed.project).toBe("balloons-game"); // sanitized to a fs/GitHub-safe slug
+    expect(parsed.body.trim()).toBe("build it");
+    expect(parsed.casting).toEqual({ implement: { harness: "claude" } });
+  });
+
+  test("no project → no project block, and parse yields undefined", () => {
+    const out = serializeCast({}, [], "just prose");
+    expect(out).not.toContain("beckett-project");
+    expect(parseCast(out).project).toBeUndefined();
+  });
+
   test("serialized form contains the fence and the criteria heading", () => {
     const out = serializeCast({ implement: { harness: "codex" } }, ["does the thing"], "body");
     expect(out).toContain("```" + CAST_FENCE);

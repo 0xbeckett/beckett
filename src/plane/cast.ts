@@ -32,6 +32,9 @@ export const CAST_FENCE = "beckett-cast";
 /** The fenced-block language tag that carries the blocked-by dependency identifiers (JSON array). */
 export const DEPS_FENCE = "beckett-deps";
 
+/** The fenced-block language tag that carries the code-project slug (a bare string, e.g. "balloons"). */
+export const PROJECT_FENCE = "beckett-project";
+
 /** The markdown heading that introduces the acceptance-criteria bullet list. */
 export const CRITERIA_HEADING = "## Acceptance criteria";
 
@@ -78,6 +81,21 @@ const DEPS_RE = new RegExp(
   "i",
 );
 
+const PROJECT_RE = new RegExp(
+  "```" + PROJECT_FENCE + "\\s*\\n([\\s\\S]*?)\\n?```",
+  "i",
+);
+
+/** Normalize a project name into a filesystem/GitHub-safe slug (lowercase, hyphenated). */
+export function projectSlug(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
 /** A blocked-by dependency list is a JSON array of ticket-identifier strings. */
 const DepsSchema = z.array(z.string().min(1));
 
@@ -114,6 +132,12 @@ export function parseCast(description: string): ParsedCast {
   const blockedBy = depsMatch ? parseDepsJson(depsMatch[1] ?? "") : [];
   if (depsMatch) rest = rest.replace(depsMatch[0], "");
 
+  // 1c. code-project block (a bare slug string)
+  const projMatch = rest.match(PROJECT_RE);
+  const projectRaw = projMatch ? (projMatch[1] ?? "").trim() : "";
+  const project = projectRaw ? projectSlug(projectRaw) : undefined;
+  if (projMatch) rest = rest.replace(projMatch[0], "");
+
   // 2. acceptance-criteria section (heading → end-of-string or next h2)
   const criteria: string[] = [];
   const headingIdx = indexOfHeading(rest);
@@ -136,7 +160,7 @@ export function parseCast(description: string): ParsedCast {
     rest = rest.slice(0, headingIdx) + after.slice(consumed.length);
   }
 
-  return { casting, criteria, blockedBy, body: rest.trim() };
+  return { casting, criteria, blockedBy, project, body: rest.trim() };
 }
 
 /** Case-insensitive index of the criteria heading at a line start, or -1. */
@@ -163,10 +187,14 @@ export function serializeCast(
   criteria: string[],
   body: string,
   blockedBy: string[] = [],
+  project?: string,
 ): string {
   const parts: string[] = [];
   const trimmedBody = (body ?? "").trim();
   if (trimmedBody) parts.push(trimmedBody);
+
+  const cleanProject = project ? projectSlug(project) : "";
+  if (cleanProject) parts.push("```" + PROJECT_FENCE + "\n" + cleanProject + "\n```");
 
   const castEntries = Object.entries(casting ?? {}).filter(([, v]) => v !== undefined);
   if (castEntries.length > 0) {

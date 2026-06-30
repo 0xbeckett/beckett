@@ -97,7 +97,14 @@ export interface Ticket {
    * the DAG survives a daemon restart — no in-memory dependency state to lose.
    */
   blockedBy: string[];
-  projectId: string; // Plane project id
+  /**
+   * The CODE project this ticket builds — its own repo under `~/Projects/<project>`, pushed to
+   * `0xbeckett/<project>` on GitHub, fully decoupled from Beckett's own source repo. The Concierge
+   * names it at creation (```beckett-project``` block); absent ⇒ the dispatcher falls back to the
+   * ticket identifier (a per-ticket sandbox). NOT the Plane project (that's `projectId`).
+   */
+  project?: string;
+  projectId: string; // Plane project id (the queue, e.g. "ops") — NOT the code project above
   url: string; // deep link to the issue in the Plane web UI
   updatedAt: string; // ISO-8601; the poll cursor / change key
   /**
@@ -144,5 +151,6 @@ export interface ParsedCast {
   casting: Casting;
   criteria: string[];
   blockedBy: string[]; // ticket identifiers this one waits on (```beckett-deps``` block)
-  body: string; // prose with the cast block, deps block, + criteria section removed
+  project?: string; // code-project slug (```beckett-project``` block) — see Ticket.project
+  body: string; // prose with the cast/deps/project blocks + criteria section removed
 }

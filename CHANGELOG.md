@@ -8,14 +8,17 @@ a *separate* fresh reviewer booted and re-read the whole diff → on any nitpick
 way back and a worker booted cold *again*. One tiny fix paid a full multi-minute round trip, and
 a simple site took ~31 min where plain Claude Code took ~18. v3.1 attacks the per-lap fixed cost.
 
-### Faster
-- **One worktree per ticket, not per stage.** A ticket now gets a single git worktree on its own
-  branch, **reused** across implement→review→rework, instead of each stage spinning up (and
-  leaking) a fresh worktree + branch. Kills the `beckett/wk_*/OPS-*` litter and the per-stage
-  re-orientation cost. Work stays on the ticket's branch — Beckett **never auto-merges it to
-  `main`** (the worker's own repo, not the daemon's live source). Because each ticket is isolated,
-  `concurrency.max_workers` stays at **2** and independent `beckett plan` nodes still run in
-  parallel. The worktree is torn down (branch kept) only when the ticket is done/cancelled.
+### Faster + properly decoupled
+- **Every ticket builds its OWN repo.** `resolveRepoRoot` was hardcoded to Beckett's own source
+  (`~/beckett`), forcing all work — and all the per-stage worktree churn — into the daemon's repo.
+  Now a ticket works in **`~/Projects/<slug>`**, its own `git` repo, pushed to **`0xbeckett/<slug>`**
+  on GitHub, **fully decoupled from `0xbeckett/beckett`**. The Concierge names the project
+  (`--project balloons`); unnamed tickets sandbox under the ticket id. The dispatcher provisions it
+  before the first worker (clone `0xbeckett/<slug>` if it already exists — continuing projects, or
+  Beckett's own source for a `--project beckett` self-improvement ticket — else `git init`). The
+  worker just builds in place and pushes via the github skill. No worktrees, no `wk_*` litter; each
+  ticket is its own directory so `concurrency.max_workers` stays **2** and `beckett plan` nodes run
+  in parallel. **A worker never touches the running daemon's checkout.**
 - **Effort-scaled review (the big one).** A worker now **self-reviews its own diff against the
   acceptance criteria before finishing**, so most tickets skip the separate cold reviewer entirely:
   - cast `effort` `low`/`medium` (or `reviewTier: "self"`) → **one pass**, straight to `done`.
@@ -36,6 +39,7 @@ a simple site took ~31 min where plain Claude Code took ~18. v3.1 attacks the pe
 
 ### Notes
 - `claude --effort` requires claude ≥ 2.1.197 (verified on the loom-desk host).
-- Ticket workers operate in their own worktree on the daemon's repo and **never auto-merge to
-  `main`** — self-improvement work lands on a `beckett/<ticket>` branch for a human (or a later
-  deliberate step) to merge + reload, so a bad ticket can't brick the running daemon.
+- Beckett works like a developer: it owns `/home/beckett`, builds each project under `~/Projects/`,
+  and pushes to its own GitHub account (`0xbeckett/<project>`). Improving Beckett itself is just a
+  `--project beckett` ticket that clones the source into `~/Projects/beckett` — the live daemon is
+  only ever updated by a deliberate deploy, never by a worker.
