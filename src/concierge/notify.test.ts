@@ -38,6 +38,7 @@ function ticket(overrides: Partial<Ticket> = {}): Ticket {
     assignees: [],
     casting: {},
     criteria: [],
+    blockedBy: [],
     projectId: "p",
     url: "http://x",
     updatedAt: "now",

@@ -460,6 +460,99 @@ async function main(): Promise<void> {
     fail("usage: beckett ticket create|comment|state|list|show <...>");
   }
 
+  // ── plan (in-process: file a whole dependency DAG at once) ───────────────────────────────
+  // For BIG, multi-part work only. Reads a JSON DAG on stdin (or --file), validates it (unique
+  // keys, known edges, no cycles), then files the tickets in dependency order: roots (no `needs`)
+  // start NOW (in_progress), dependents wait in `backlog` with a blocked-by edge. The dispatcher
+  // promotes each dependent to in_progress once all its blockers reach `done`. For anything that
+  // is one cohesive unit, DON'T plan — file a single `beckett ticket create`.
+  if (group === "plan") {
+    const { flags } = parse([sub, ...rest].filter((x) => x !== undefined) as string[]);
+    const raw = flags.file
+      ? await Bun.file(String(flags.file)).text()
+      : await Bun.stdin.text();
+    let spec: any;
+    try {
+      spec = JSON.parse(raw);
+    } catch (err) {
+      fail(`plan: input is not valid JSON (${(err as Error).message})`);
+    }
+    const tickets: any[] = Array.isArray(spec?.tickets) ? spec.tickets : [];
+    if (tickets.length === 0) {
+      fail(
+        'usage: beckett plan [--file <f>] < dag.json\n' +
+          '  dag.json = { "channel"?: "<id>", "tickets": [ { "key", "title", "body"?, ' +
+          '"criteria"?: string[], "cast"?: {...}, "needs"?: ["key", ...] }, ... ] }',
+      );
+    }
+
+    // 1. validate keys + edges
+    const keys = new Set<string>();
+    for (const t of tickets) {
+      if (!t.key || typeof t.key !== "string") fail(`plan: every ticket needs a string "key" (got ${JSON.stringify(t.key)})`);
+      if (keys.has(t.key)) fail(`plan: duplicate key "${t.key}"`);
+      if (!t.title || typeof t.title !== "string") fail(`plan: ticket "${t.key}" needs a "title"`);
+      keys.add(t.key);
+    }
+    const byKey = new Map<string, any>(tickets.map((t) => [t.key, t]));
+    for (const t of tickets) {
+      for (const need of (t.needs ?? [])) {
+        if (!keys.has(need)) fail(`plan: ticket "${t.key}" needs unknown key "${need}"`);
+        if (need === t.key) fail(`plan: ticket "${t.key}" cannot depend on itself`);
+      }
+    }
+
+    // 2. topological order (Kahn) — also the cycle detector
+    const indeg = new Map<string, number>(tickets.map((t) => [t.key, (t.needs ?? []).length]));
+    const dependents = new Map<string, string[]>(); // need → [keys that need it]
+    for (const t of tickets) {
+      for (const need of (t.needs ?? [])) {
+        if (!dependents.has(need)) dependents.set(need, []);
+        dependents.get(need)!.push(t.key);
+      }
+    }
+    const queue = tickets.filter((t) => (indeg.get(t.key) ?? 0) === 0).map((t) => t.key);
+    const order: string[] = [];
+    while (queue.length > 0) {
+      const k = queue.shift()!;
+      order.push(k);
+      for (const dep of dependents.get(k) ?? []) {
+        indeg.set(dep, (indeg.get(dep) ?? 1) - 1);
+        if (indeg.get(dep) === 0) queue.push(dep);
+      }
+    }
+    if (order.length !== tickets.length) {
+      const cyclic = tickets.map((t) => t.key).filter((k) => !order.includes(k));
+      fail(`plan: dependency cycle among [${cyclic.join(", ")}] — a plan must be a DAG`);
+    }
+
+    // 3. file in order, mapping each key → its created identifier so dependents can reference it
+    const { createPlaneClient } = await import("../plane/client.ts");
+    const client = createPlaneClient({ config, logger: quietLogger });
+    const channel = spec.channel ? String(spec.channel) : undefined;
+    const identForKey = new Map<string, string>();
+    const filed: any[] = [];
+    for (const key of order) {
+      const t = byKey.get(key)!;
+      const needs: string[] = t.needs ?? [];
+      const blockedBy = needs.map((n) => identForKey.get(n)!).filter(Boolean);
+      // roots start immediately; anything with a blocker waits in backlog until promoted.
+      const state = blockedBy.length === 0 ? "in_progress" : "backlog";
+      const created = await client.createIssue({
+        title: String(t.title),
+        body: t.body ? String(t.body) : "",
+        casting: t.cast ?? {},
+        criteria: Array.isArray(t.criteria) ? t.criteria.map(String) : [],
+        blockedBy,
+        state: state as TicketState,
+        originChannel: channel,
+      });
+      identForKey.set(key, created.identifier);
+      filed.push({ key, id: created.id, identifier: created.identifier, state, blockedBy, url: created.url });
+    }
+    out({ planned: filed.length, tickets: filed });
+  }
+
   // ── top-level (control bus) ──────────────────────────────────────────────────────────────
   if (group === "discord" && sub === "reply") {
     const { _, flags } = parse(rest);
@@ -492,7 +585,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: reload | persona | access ls|grant|revoke | discord reply | image | site deploy | ticket create|comment|state|list|show | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: reload | persona | access ls|grant|revoke | discord reply | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 main().catch((err) => fail((err as Error).message));

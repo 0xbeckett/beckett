@@ -82,6 +82,14 @@ export interface Ticket {
   assignees: string[]; // Plane member ids
   casting: Casting;
   criteria: string[]; // acceptance-criteria bullet lines
+  /**
+   * Identifiers of tickets this one is blocked by (a `beckett plan` dependency edge, e.g.
+   * `["OPS-41"]`). The ticket is held in `backlog` until EVERY blocker reaches `done`, at which
+   * point the dispatcher promotes it to `in_progress`. Empty for an independent ticket. Stored in
+   * the issue description (```beckett-deps``` block) so Plane stays the single source of truth and
+   * the DAG survives a daemon restart — no in-memory dependency state to lose.
+   */
+  blockedBy: string[];
   projectId: string; // Plane project id
   url: string; // deep link to the issue in the Plane web UI
   updatedAt: string; // ISO-8601; the poll cursor / change key
@@ -124,9 +132,10 @@ export type PollEventKind = PollEvent["kind"];
 // Cast-block parse/serialize — the structured halves of a ticket description
 // =======================================================================================
 
-/** The three parts {@link parseCast} pulls out of a Plane issue description. */
+/** The structured parts {@link parseCast} pulls out of a Plane issue description. */
 export interface ParsedCast {
   casting: Casting;
   criteria: string[];
-  body: string; // prose with the cast block + criteria section removed
+  blockedBy: string[]; // ticket identifiers this one waits on (```beckett-deps``` block)
+  body: string; // prose with the cast block, deps block, + criteria section removed
 }

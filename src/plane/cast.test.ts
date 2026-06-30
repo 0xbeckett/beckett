@@ -24,6 +24,23 @@ describe("cast round-trip", () => {
     expect(parsed.body.trim()).toBe(body);
   });
 
+  test("serialize → parse round-trips blocked-by deps (the plan DAG edge)", () => {
+    const blockedBy = ["OPS-41", "OPS-42"];
+    const serialized = serializeCast({ implement: { harness: "codex" } }, ["it works"], "the prose", blockedBy);
+    const parsed = parseCast(serialized);
+
+    expect(parsed.blockedBy).toEqual(blockedBy);
+    expect(parsed.casting).toEqual({ implement: { harness: "codex" } });
+    expect(parsed.criteria).toEqual(["it works"]);
+    expect(parsed.body.trim()).toBe("the prose");
+  });
+
+  test("no deps → no deps block, and parse yields an empty blockedBy", () => {
+    const out = serializeCast({}, [], "just prose");
+    expect(out).not.toContain("beckett-deps");
+    expect(parseCast(out).blockedBy).toEqual([]);
+  });
+
   test("serialized form contains the fence and the criteria heading", () => {
     const out = serializeCast({ implement: { harness: "codex" } }, ["does the thing"], "body");
     expect(out).toContain("```" + CAST_FENCE);

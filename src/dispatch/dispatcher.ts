@@ -56,6 +56,8 @@ export interface PlaneClientLike {
   setState(id: string, state: TicketState): Promise<void>;
   /** Post a comment on a ticket; returns the created comment. */
   addComment(ticketId: string, body: string): Promise<PlaneComment>;
+  /** List every ticket in the project — used to find dependents to promote when one finishes. */
+  listIssues(): Promise<Ticket[]>;
 }
 
 /** Construction dependencies for the {@link Dispatcher} (docs/V3.md §5). */
@@ -179,6 +181,7 @@ export class Dispatcher {
         return;
       case "done":
         await this.reapTicket(ticket.id, "ticket done");
+        await this.promoteDependents(ticket);
         return;
       case "cancelled":
         await this.onCancelled(ticket);
@@ -480,6 +483,58 @@ export class Dispatcher {
       if (s === "complete") return true;
     }
     return true; // clean finish, no explicit blocking verdict
+  }
+
+  // ── dependency promotion (the `beckett plan` DAG) ────────────────────────────────────────
+
+  /**
+   * When a ticket reaches `done`, promote any dependent whose blockers are ALL now `done` from its
+   * held `backlog`/`todo` slot to `in_progress` (which staffs it). The DAG lives entirely in Plane
+   * (each ticket's ```beckett-deps``` block), so this is stateless and restart-proof: we re-read
+   * the board and recompute readiness rather than track edges in memory. A dependent with a still
+   * unresolved blocker (or a cancelled one) is left held and logged — never force-started.
+   */
+  private async promoteDependents(doneTicket: Ticket): Promise<void> {
+    let all: Ticket[];
+    try {
+      all = await this.client.listIssues();
+    } catch (err) {
+      this.logger.warn("promote: listIssues failed — dependents not advanced", {
+        ticket: doneTicket.identifier,
+        error: (err as Error).message,
+      });
+      return;
+    }
+    const stateByIdent = new Map(all.map((t) => [t.identifier, t.state]));
+
+    for (const t of all) {
+      if (!t.blockedBy.includes(doneTicket.identifier)) continue; // not waiting on this ticket
+      if (t.state !== "backlog" && t.state !== "todo") continue; // already running/terminal — leave it
+      const unresolved = t.blockedBy.filter((id) => stateByIdent.get(id) !== "done");
+      if (unresolved.length > 0) {
+        this.logger.info("dependent still blocked — leaving held", {
+          ticket: t.identifier,
+          waitingOn: unresolved,
+        });
+        continue;
+      }
+      this.logger.info("promoting unblocked dependent → in_progress", {
+        ticket: t.identifier,
+        after: doneTicket.identifier,
+      });
+      try {
+        await this.client.setState(t.id, "in_progress");
+        await this.postComment(
+          t.id,
+          `All blockers done (${t.blockedBy.join(", ")}) → starting now.`,
+        );
+      } catch (err) {
+        this.logger.warn("promote: setState failed", {
+          ticket: t.identifier,
+          error: (err as Error).message,
+        });
+      }
+    }
   }
 
   // ── reaping + comments ───────────────────────────────────────────────────────────────

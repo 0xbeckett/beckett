@@ -29,6 +29,9 @@ import type { Casting, HarnessSpec, ParsedCast } from "./types.ts";
 /** The fenced-block language tag that carries the casting JSON. */
 export const CAST_FENCE = "beckett-cast";
 
+/** The fenced-block language tag that carries the blocked-by dependency identifiers (JSON array). */
+export const DEPS_FENCE = "beckett-deps";
+
 /** The markdown heading that introduces the acceptance-criteria bullet list. */
 export const CRITERIA_HEADING = "## Acceptance criteria";
 
@@ -69,6 +72,26 @@ const FENCE_RE = new RegExp(
   "i",
 );
 
+const DEPS_RE = new RegExp(
+  "```" + DEPS_FENCE + "\\s*\\n([\\s\\S]*?)\\n?```",
+  "i",
+);
+
+/** A blocked-by dependency list is a JSON array of ticket-identifier strings. */
+const DepsSchema = z.array(z.string().min(1));
+
+/** Parse + validate a raw deps-block JSON string into a list of identifiers. `[]` on any failure. */
+export function parseDepsJson(raw: string): string[] {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const result = DepsSchema.safeParse(obj);
+  return result.success ? result.data : [];
+}
+
 /**
  * Split a Plane issue description into its structured halves + prose body.
  *   - `casting`  — parsed from the first ```beckett-cast``` fenced block (zod-validated).
@@ -84,6 +107,11 @@ export function parseCast(description: string): ParsedCast {
   const fenceMatch = desc.match(FENCE_RE);
   const casting = fenceMatch ? parseCastJson(fenceMatch[1] ?? "") : {};
   let rest = fenceMatch ? desc.replace(fenceMatch[0], "") : desc;
+
+  // 1b. deps (blocked-by) block
+  const depsMatch = rest.match(DEPS_RE);
+  const blockedBy = depsMatch ? parseDepsJson(depsMatch[1] ?? "") : [];
+  if (depsMatch) rest = rest.replace(depsMatch[0], "");
 
   // 2. acceptance-criteria section (heading → end-of-string or next h2)
   const criteria: string[] = [];
@@ -107,7 +135,7 @@ export function parseCast(description: string): ParsedCast {
     rest = rest.slice(0, headingIdx) + after.slice(consumed.length);
   }
 
-  return { casting, criteria, body: rest.trim() };
+  return { casting, criteria, blockedBy, body: rest.trim() };
 }
 
 /** Case-insensitive index of the criteria heading at a line start, or -1. */
@@ -124,12 +152,17 @@ function indexOfHeading(text: string): number {
 // =======================================================================================
 
 /**
- * Compose a Plane issue description from prose + structured casting + criteria. Inverse of
- * {@link parseCast}: `parseCast(serializeCast(c, cr, b))` recovers `c`, `cr`, and `b.trim()`.
- * The cast block is omitted when `casting` is empty; the criteria section is omitted when
- * `criteria` is empty — so a trivial ticket serializes to just its prose.
+ * Compose a Plane issue description from prose + structured casting + criteria + deps. Inverse of
+ * {@link parseCast}: `parseCast(serializeCast(c, cr, b, d))` recovers `c`, `cr`, `d`, and `b.trim()`.
+ * The cast block is omitted when `casting` is empty, the deps block when `blockedBy` is empty, and
+ * the criteria section when `criteria` is empty — so a trivial ticket serializes to just its prose.
  */
-export function serializeCast(casting: Casting, criteria: string[], body: string): string {
+export function serializeCast(
+  casting: Casting,
+  criteria: string[],
+  body: string,
+  blockedBy: string[] = [],
+): string {
   const parts: string[] = [];
   const trimmedBody = (body ?? "").trim();
   if (trimmedBody) parts.push(trimmedBody);
@@ -138,6 +171,11 @@ export function serializeCast(casting: Casting, criteria: string[], body: string
   if (castEntries.length > 0) {
     const json = JSON.stringify(Object.fromEntries(castEntries), null, 2);
     parts.push("```" + CAST_FENCE + "\n" + json + "\n```");
+  }
+
+  const cleanDeps = (blockedBy ?? []).map((d) => d.trim()).filter(Boolean);
+  if (cleanDeps.length > 0) {
+    parts.push("```" + DEPS_FENCE + "\n" + JSON.stringify(cleanDeps) + "\n```");
   }
 
   const cleanCriteria = (criteria ?? []).map((c) => c.trim()).filter(Boolean);

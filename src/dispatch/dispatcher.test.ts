@@ -86,12 +86,19 @@ const { Dispatcher, BECKETT_COMMENT_MARKER } = await import("./dispatcher.ts");
 class FakeClient {
   setStateCalls: { id: string; state: TicketState }[] = [];
   comments: { ticketId: string; body: string }[] = [];
+  /** Board the dispatcher reads for dependency promotion; tests seed it. setState mutates it too. */
+  board: Ticket[] = [];
   async setState(id: string, state: TicketState) {
     this.setStateCalls.push({ id, state });
+    const t = this.board.find((b) => b.id === id);
+    if (t) t.state = state;
   }
   async addComment(ticketId: string, body: string): Promise<PlaneComment> {
     this.comments.push({ ticketId, body });
     return { id: `c${this.comments.length}`, ticketId, author: "beckett", body, createdAt: "now" };
+  }
+  async listIssues(): Promise<Ticket[]> {
+    return this.board;
   }
 }
 
@@ -109,6 +116,7 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
     assignees: [],
     casting: over.casting ?? {},
     criteria: over.criteria ?? ["it works"],
+    blockedBy: over.blockedBy ?? [],
     projectId: "proj-1",
     url: "http://x",
     updatedAt: "now",
@@ -319,5 +327,45 @@ describe("concurrency cap", () => {
     await tick();
     expect(d.live()).toHaveLength(2); // still exactly the cap; the other 3 are queued
     expect(spawnCalls).toHaveLength(2);
+  });
+});
+
+describe("dependency promotion (beckett plan DAG)", () => {
+  test("a held dependent is promoted to in_progress when its only blocker finishes", async () => {
+    const { d, client } = newDispatcher();
+    const blocker = makeTicket({ id: "a", identifier: "OPS-A", state: "done" });
+    const dependent = makeTicket({ id: "b", identifier: "OPS-B", state: "backlog", blockedBy: ["OPS-A"] });
+    client.board = [blocker, dependent];
+
+    await d.handle(stateChanged(blocker, "done", "in_review"));
+    await tick();
+
+    expect(client.setStateCalls).toContainEqual({ id: "b", state: "in_progress" });
+    expect(client.comments.some((c) => c.ticketId === "b" && c.body.includes("All blockers done"))).toBe(true);
+  });
+
+  test("a dependent with a still-unfinished second blocker stays held", async () => {
+    const { d, client } = newDispatcher();
+    const a = makeTicket({ id: "a", identifier: "OPS-A", state: "done" });
+    const b = makeTicket({ id: "b", identifier: "OPS-B", state: "in_progress" }); // not done yet
+    const c = makeTicket({ id: "c", identifier: "OPS-C", state: "backlog", blockedBy: ["OPS-A", "OPS-B"] });
+    client.board = [a, b, c];
+
+    await d.handle(stateChanged(a, "done", "in_review"));
+    await tick();
+
+    expect(client.setStateCalls.some((s) => s.id === "c")).toBe(false); // still waiting on OPS-B
+  });
+
+  test("independent (no-dep) tickets are never touched by promotion", async () => {
+    const { d, client } = newDispatcher();
+    const a = makeTicket({ id: "a", identifier: "OPS-A", state: "done" });
+    const indep = makeTicket({ id: "z", identifier: "OPS-Z", state: "backlog", blockedBy: [] });
+    client.board = [a, indep];
+
+    await d.handle(stateChanged(a, "done", "in_review"));
+    await tick();
+
+    expect(client.setStateCalls.some((s) => s.id === "z")).toBe(false);
   });
 });

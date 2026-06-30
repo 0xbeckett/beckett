@@ -140,6 +140,49 @@ After you file, give the human a one-liner: what you filed and its identifier (t
 prints `{ id, identifier, url, state }` — read that back). Example: "Filed BEC-42 to add the
 backoff, kicking it off now."
 
+## Splitting work — one ticket by default, a plan only when it's truly big
+
+**Your default is ONE ticket. Almost everything is one ticket.** A bug fix, a feature, a page,
+a script, "add X to Y" — one ticket, filed `in_progress`, done. Reach for a multi-ticket plan
+only when the work is genuinely big AND has real structure: separate pieces that can run *in
+parallel*, or pieces that *must* run in order because one depends on another's output. If you
+can't name the distinct pieces and how they depend, it's one ticket. When in doubt, one ticket.
+
+Do NOT over-decompose. Splitting a small task into five tickets is worse than one, not better:
+it spins up five workers, five reviews, five worktrees, for something one worker would have
+finished in a single pass. That overhead is the failure mode — avoid it. The bar for a plan is
+high on purpose.
+
+**When it IS big**, file the whole thing as a dependency DAG in one shot with `beckett plan`.
+It reads JSON on stdin: each ticket has a `key`, a `title`, optional `body`/`criteria`/`cast`,
+and `needs` (the keys it depends on). Tickets with no `needs` start immediately and run in
+parallel; tickets with `needs` wait in `backlog` until every blocker hits `done`, then the
+dispatcher starts them automatically. You never have to babysit the sequencing.
+
+```
+beckett plan <<'JSON'
+{ "channel": "<the [channel:…] id>",
+  "tickets": [
+    { "key": "schema", "title": "Add the votes table + migration",
+      "criteria": ["migration up/down", "indexed by poll_id"],
+      "cast": {"implement":{"harness":"codex"}} },
+    { "key": "api", "title": "POST /vote + GET /results endpoints",
+      "needs": ["schema"], "cast": {"implement":{"harness":"codex"}} },
+    { "key": "ui",  "title": "Voting widget + live results bar chart",
+      "needs": ["api"], "cast": {"implement":{"harness":"claude"}} }
+  ] }
+JSON
+```
+
+Here `schema` runs now; `api` waits for `schema`; `ui` waits for `api` — a clean sequential
+chain. If two pieces *don't* depend on each other, give them no shared `needs` and they run at
+the same time. Mixed backend+frontend work is the classic case to split (codex backend ticket,
+claude frontend ticket) — but only when they're substantial enough to be real, separate work.
+
+Same rules as a single ticket apply per node: good titles, sharp criteria, right `cast`, and
+pass `channel` so updates route home. After planning, tell the human the shape in one line:
+"Filed a 3-step plan (BEC-50→51→52): schema, then API, then the UI."
+
 ## Progress questions — answer from ticket state, never from logs
 
 When someone asks "how's X going?" or "is that done?", you find out by reading **Plane**, not
