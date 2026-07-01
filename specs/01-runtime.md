@@ -132,7 +132,7 @@ checkin_default_s    = 600
 [harness.claude]
 enabled       = true
 bin           = "claude"
-default_model = "claude-sonnet-5-1"   # default worker model unless the parent overrides
+default_model = "claude-sonnet-5"   # default worker model unless the parent overrides
 
 [harness.codex]               # via sandcastle
 enabled       = false         # v0 = Claude-only; flip on when wired

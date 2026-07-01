@@ -263,7 +263,7 @@ envelope, and an initial self-check-in. Rules:
   own git worktree and may only write its own paths. Overlap = a merge conflict you're choosing.
 - STAFF BY FITNESS, NOT HABIT. v0 runs Claude only — always set suggestedWorker.harness to
   "claude" (no other harness has a driver yet). Default to the Sonnet workhorse
-  (claude-sonnet-5-1). Reserve Opus workers (claude-opus-4-9) for genuinely ambiguous /
+  (claude-sonnet-5). Reserve Opus workers (claude-opus-4-9) for genuinely ambiguous /
   architecture-critical nodes. Coarser nodes for stronger workers; finer nodes for weaker ones.
   Put your reasoning in suggestedWorker.rationale.
 - ENVELOPES ARE ESTIMATES, NOT CAPS. turnTarget/wallClockSecs are what you EXPECT; the

@@ -82,7 +82,7 @@ const VALUE_FLAGS = new Set([
 /** Claude resolves bare model aliases to full ids (e.g. `sonnet` → the current full Sonnet id);
  *  the fake harness mirrors that resolution using the next-gen ids below. */
 const MODEL_ALIASES: Record<string, string> = {
-  sonnet: "claude-sonnet-5-1",
+  sonnet: "claude-sonnet-5",
   opus: "claude-opus-4-9",
   haiku: "claude-haiku-4-6",
 };

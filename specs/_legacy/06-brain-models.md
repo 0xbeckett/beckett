@@ -168,7 +168,7 @@ interface HaikuClassification {
 
 Every decision Beckett makes, the model that makes it, and the effort. Model ids are the canonical
 ones from [Spec 01 `[models]`](./01-architecture.md): Haiku = `claude-haiku-4-6`, Opus =
-`claude-opus-4-9`, worker default = `claude-sonnet-5-1`, Codex = `gpt-5.6-codex`.
+`claude-opus-4-9`, worker default = `claude-sonnet-5`, Codex = `gpt-5.6-codex`.
 
 ### 2.1 Brain roles (decisions Beckett makes *about* the work)
 
@@ -196,7 +196,7 @@ STAFF (B5) assigns each node a worker from the capability table ([Spec 09]/[Spec
 
 | Worker role | Harness / model | Effort | When STAFF picks it |
 |---|---|---|---|
-| **workhorse** (default) | Claude `claude-sonnet-5-1` | low–medium | clear, well-scoped implementation; the common case |
+| **workhorse** (default) | Claude `claude-sonnet-5` | low–medium | clear, well-scoped implementation; the common case |
 | **codex specialist** | Codex `gpt-5.6-codex` | medium–high | per capability table (e.g. tight algorithmic / single-file tasks); failover target ([Spec 00 rate-limits]) |
 | **heavy / ambiguous** | Claude `claude-opus-4-9` | high–xhigh | genuinely ambiguous or architecture-critical nodes; granularity scales inversely with strength ([Spec 00 STAFF]) |
 | **fresh adversarial reviewer** | Claude `claude-opus-4-9` (cross-provider Codex post-v0) | high | critical-node review: criteria + diff, **no implementer context** ([Spec 11], [open-questions H2]) |
@@ -317,7 +317,7 @@ claude -p "$USER_PROMPT" \
   --disallowedTools "Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch" \
   --permission-mode dontAsk
 # ⚠️ effort: when a real --effort flag is verified on loom-desk, add `--effort high`.
-#    Until then, effort = model tier (claude-opus-4-9 vs claude-sonnet-5-1) + a reasoning
+#    Until then, effort = model tier (claude-opus-4-9 vs claude-sonnet-5) + a reasoning
 #    instruction in $SYSTEM_PROMPT. See Spec 02 §7.1.
 ```
 
@@ -437,7 +437,7 @@ The canonical plan object. Full prompt treatment in **§6**.
             "required": ["harness", "model", "effort"],
             "properties": {
               "harness": { "enum": ["claude", "codex"] },
-              "model":   { "type": "string", "description": "e.g. claude-sonnet-5-1 / claude-opus-4-9 / gpt-5.6-codex" },
+              "model":   { "type": "string", "description": "e.g. claude-sonnet-5 / claude-opus-4-9 / gpt-5.6-codex" },
               "effort":  { "enum": ["low", "medium", "high", "xhigh"] },
               "rationale": { "type": "string", "description": "why this worker fits (feeds learned model, Spec 09)" }
             }
@@ -794,7 +794,7 @@ Extends the canonical `[models]` block ([Spec 01 §config]). Brain-specific tuna
 front_door   = "claude-haiku-4-6"   # B0/B1/B2/B9/B11/B12 — intake, chatter, summary, voice
 judgment     = "claude-opus-4-9"    # B3–B8, B10 — clarify, plan, staff, drift-read, gate, integrate, self-halt
 reviewer     = "claude-opus-4-9"    # fresh adversarial reviewer (Spec 11)
-worker_default = "claude-sonnet-5-1"# STAFF default worker (Spec 02/09)
+worker_default = "claude-sonnet-5"# STAFF default worker (Spec 02/09)
 
 [brain]
 # effort routing (⚠️ realized via model tier until --effort verified — §2.2 / Spec 02 §7.1)

@@ -125,7 +125,7 @@ const ConfigSchema = z
           .object({
             enabled: z.boolean().default(true),
             bin: z.string().min(1).default("claude"),
-            default_model: z.string().min(1).default("claude-sonnet-5-1"),
+            default_model: z.string().min(1).default("claude-sonnet-5"),
             // Reasoning effort handed to every claude worker via `claude --effort` (verified on
             // claude 2.1.197). Sonnet 5.1 @ xhigh is the v3.1 worker default — fast cold boots with
             // full reasoning. A ticket may cast a lower effort per stage. Honored by

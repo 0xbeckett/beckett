@@ -105,7 +105,7 @@ class FakeBrain implements Brain {
       dependsOn: [],
       scopePaths: ["**"],
       criteria: { checks: this.checks, nl: ["all three steps complete in the worktree"] },
-      suggestedWorker: { harness: "claude", model: "claude-sonnet-5-1", effort: "low" },
+      suggestedWorker: { harness: "claude", model: "claude-sonnet-5", effort: "low" },
       reviewTier: "self",
       envelope: { turnTarget: 6, wallClockSecs: 120 },
     };
@@ -179,7 +179,7 @@ function makeBeckettDir(): { config: Config; paths: Paths } {
     [
       "[harness.claude]",
       `bin = ${JSON.stringify(WRAPPER)}`,
-      'default_model = "claude-sonnet-5-1"',
+      'default_model = "claude-sonnet-5"',
       // Select the scenario via the highest-precedence --fake-scenario FLAG (passed on both
       // spawn AND --resume) rather than BECKETT_FAKE_SCENARIO env: bun shares process.env across
       // concurrently-running test files, so a global env var would clobber the loop tests' workers.

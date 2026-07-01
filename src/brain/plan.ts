@@ -155,7 +155,7 @@ export const PLAN_SCHEMA: Record<string, unknown> = {
               // v0 is Claude-only — no other harness has a registered driver (drivers/index.ts).
               // Constrain generation here; staffFromPlan also coerces defensively (S2).
               harness: { enum: ["claude"] },
-              model: { type: "string", description: "e.g. claude-sonnet-5-1 / claude-opus-4-9" },
+              model: { type: "string", description: "e.g. claude-sonnet-5 / claude-opus-4-9" },
               effort: { enum: ["low", "medium", "high", "xhigh"] },
               rationale: { type: "string" },
             },

@@ -209,7 +209,7 @@ reviewer     = "claude-opus-4-9"    # fresh adversarial reviewer (critical nodes
 [harness.claude]
 enabled          = true
 bin              = "claude"
-default_model    = "claude-sonnet-5-1"   # default worker model unless STAFF overrides
+default_model    = "claude-sonnet-5"   # default worker model unless STAFF overrides
 permission_mode  = "acceptEdits"         # within-scope autonomy; bypassPermissions per node if needed
 extra_flags      = ["--verbose", "--replay-user-messages", "--include-hook-events"]
 
