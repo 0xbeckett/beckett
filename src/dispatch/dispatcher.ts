@@ -36,6 +36,7 @@
  * and pumped as workers free their slots.
  */
 
+import { randomUUID } from "node:crypto";
 import type { Config, Logger, WorkerEvent, DoneSignal } from "../types.ts";
 import type {
   Ticket,
@@ -50,6 +51,7 @@ import { commitWorktree, headSha, hasDiffSince, ensureProjectRepo } from "../wor
 import { projectSlug } from "../plane/cast.ts";
 import { hardCapSeconds } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
+import { AdvanceOutbox, type AdvanceOperation } from "./advance-outbox.ts";
 
 // =======================================================================================
 // Collaborators
@@ -63,6 +65,8 @@ import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
 export interface PlaneClientLike {
   /** Move a ticket to a new lifecycle state (resolves state_map name → Plane state UUID). */
   setState(id: string, state: TicketState): Promise<void>;
+  /** Fetch a ticket before dispatcher-initiated state changes, so human terminal moves win. */
+  getIssue?(id: string): Promise<Ticket | null>;
   /** Post a comment on a ticket; returns the created comment. */
   addComment(ticketId: string, body: string): Promise<PlaneComment>;
   /** List every ticket in the project — used to find dependents to promote when one finishes. */
@@ -93,6 +97,8 @@ export interface DispatcherDeps {
    * tests / when Discord isn't wired.
    */
   progress?: ProgressSink;
+  /** JSONL path for durable post-finish Plane advances. Omitted in tests unless needed. */
+  advanceOutboxPath?: string;
   logger?: Logger;
 }
 
@@ -194,6 +200,7 @@ export class Dispatcher {
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   private readonly progress?: ProgressSink;
   private readonly logger: Logger;
+  private readonly advanceOutbox?: AdvanceOutbox;
 
   /** At most one live worker per ticket (implement OR review). */
   private readonly workers = new Map<string, TicketWorkerHandle>();
@@ -236,6 +243,9 @@ export class Dispatcher {
     this.publishRepo = deps.publishRepo;
     this.progress = deps.progress;
     this.logger = deps.logger ?? log.child("dispatch.dispatcher");
+    this.advanceOutbox = deps.advanceOutboxPath
+      ? new AdvanceOutbox(deps.advanceOutboxPath, this.logger.child("advance-outbox"))
+      : undefined;
   }
 
   // ── public surface ─────────────────────────────────────────────────────────────────────
@@ -245,11 +255,19 @@ export class Dispatcher {
    * {@link PollEvent} (docs/V3.md §5) or an array (task spec); events are handled in order.
    */
   async handle(event: PollEvent | PollEvent[]): Promise<void> {
+    await this.replayAdvances();
     if (Array.isArray(event)) {
       for (const e of event) await this.handleOne(e);
     } else {
       await this.handleOne(event);
     }
+  }
+
+  /** Replay durable Plane advances left by previous write failures. Safe to call on every tick. */
+  async replayAdvances(): Promise<void> {
+    if (!this.advanceOutbox) return;
+    const applied = await this.advanceOutbox.drain((op) => this.applyAdvance(op));
+    if (applied > 0) this.logger.info("replayed queued Plane advances", { count: applied });
   }
 
   /** Current active and queued dispatcher work, including repo queue context for status surfaces. */
@@ -638,9 +656,9 @@ export class Dispatcher {
     // dependents immediately here; the later poller state_changed(done) is only a restart backstop.
     if (this.reviewTierFor(ticket) === "self") {
       if (!(await this.hasTicketContribution(ticket, handle, committedContribution))) {
-        await this.client.setState(ticket.id, "in_review");
-        await this.postComment(
-          ticket.id,
+        await this.advanceTicket(
+          ticket,
+          "in_review",
           `Self-review withheld → **in_review** because the implement worker finished with no diff against the ticket base.\n\n${summary}`,
         );
         this.logger.warn("self-review withheld: zero-diff implementation", {
@@ -653,8 +671,7 @@ export class Dispatcher {
       return;
     }
 
-    await this.client.setState(ticket.id, "in_review");
-    await this.postComment(ticket.id, `Implementation complete → **in_review**.\n\n${summary}`);
+    await this.advanceTicket(ticket, "in_review", `Implementation complete → **in_review**.\n\n${summary}`);
     this.logger.info("ticket advanced to in_review", { ticket: ticket.identifier });
   }
 
@@ -668,9 +685,9 @@ export class Dispatcher {
     if (this.reviewTierFor(ticket) === "self") {
       const sha = await this.commitWip(ticket, handle);
       const at = sha ? ` at \`${sha.slice(0, 9)}\`` : "";
-      await this.client.setState(ticket.id, "in_review");
-      await this.postComment(
-        ticket.id,
+      await this.advanceTicket(
+        ticket,
+        "in_review",
         `The implement worker reported **${signal.status}**, so self-review is disabled and this ` +
           `is going to a fresh review instead of being marked done. I committed any WIP${at}.\n\n${reason}`,
       );
@@ -759,14 +776,14 @@ export class Dispatcher {
           ? `\n\nWIP pushed as a PR: ${pub.prUrl ?? pub.url}`
           : `\n\nWIP pushed: ${pub.url}`
         : "";
-    await this.postComment(
-      ticket.id,
-      `The worker ${reason} again — that's ${MAX_IMPLEMENT_RETRIES} retries with no clean finish, ` +
-        `so I'm stopping automatic retries and moving this back to **todo** so it isn't stuck in ` +
-        `progress. Its WIP is committed${at}.${link}\n\nWhere it stopped:\n${summary}`,
-    );
     try {
-      await this.client.setState(ticket.id, "todo");
+      await this.advanceTicket(
+        ticket,
+        "todo",
+        `The worker ${reason} again — that's ${MAX_IMPLEMENT_RETRIES} retries with no clean finish, ` +
+          `so I'm stopping automatic retries and moving this back to **todo** so it isn't stuck in ` +
+          `progress. Its WIP is committed${at}.${link}\n\nWhere it stopped:\n${summary}`,
+      );
       this.logger.warn("implement retries exhausted — returned ticket to todo", {
         ticket: ticket.identifier,
       });
@@ -884,9 +901,9 @@ export class Dispatcher {
       return; // no setState → no new event → loop stops, ticket awaits a human
     }
 
-    await this.client.setState(ticket.id, "in_progress");
-    await this.postComment(
-      ticket.id,
+    await this.advanceTicket(
+      ticket,
+      "in_progress",
       `Review found issues → back to **in_progress** for re-work (cycle ${cycles}/${MAX_REWORK_CYCLES}).\n\n${summary}`,
     );
     this.logger.info("ticket sent back to in_progress (review fail)", {
@@ -954,8 +971,6 @@ export class Dispatcher {
       return; // no setState(done), no promote — the work isn't shipped
     }
 
-    await this.client.setState(ticket.id, "done");
-    await this.promoteDependents(ticket);
     // Honest wording: a PR still needs the human's merge; a direct push is actually shipped.
     const link =
       pub.status === "published"
@@ -963,11 +978,10 @@ export class Dispatcher {
           ? `\n\nPR opened (needs your merge): ${pub.prUrl ?? pub.url}`
           : `\n\nShipped: ${pub.url}`
         : "";
-    await this.postComment(ticket.id, `${messagePrefix}${link}\n\n${summary}`);
-    this.baseShaForTicket.delete(ticket.id);
-    this.reworkCount.delete(ticket.id);
-    this.implementRetries.delete(ticket.id);
-    this.reviewInfraRetries.delete(ticket.id);
+    const advanced = await this.advanceTicket(ticket, "done", `${messagePrefix}${link}\n\n${summary}`, {
+      promoteDependents: true,
+    });
+    if (!advanced) return;
   }
 
   // ── dependency promotion (the `beckett plan` DAG) ────────────────────────────────────────
@@ -1022,6 +1036,68 @@ export class Dispatcher {
     }
   }
 
+  private async advanceTicket(
+    ticket: Ticket,
+    state: TicketState,
+    comment: string,
+    opts: { promoteDependents?: boolean } = {},
+  ): Promise<boolean> {
+    const op: AdvanceOperation = {
+      id: randomUUID(),
+      ticketId: ticket.id,
+      state,
+      comment,
+      ...(opts.promoteDependents ? { promoteDependents: true } : {}),
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      await this.applyAdvance(op);
+      return true;
+    } catch (err) {
+      if (this.advanceOutbox) {
+        this.advanceOutbox.append(op);
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  private async applyAdvance(op: AdvanceOperation): Promise<void> {
+    const state = op.state as TicketState;
+    const current = await this.client.getIssue?.(op.ticketId);
+    if (current && this.humanTerminalMoveWins(current, state)) {
+      this.logger.warn("skipping queued Plane advance because ticket is terminal", {
+        ticket: current.identifier,
+        current: current.state,
+        requested: state,
+      });
+      return;
+    }
+    await this.client.setState(op.ticketId, state);
+    await this.addMarkedComment(op.ticketId, op.comment);
+    if (op.promoteDependents) {
+      let doneTicket = (await this.client.getIssue?.(op.ticketId)) ?? current;
+      if (!doneTicket) {
+        const all = await this.client.listIssues();
+        doneTicket = all.find((t) => t.id === op.ticketId);
+      }
+      if (doneTicket) await this.promoteDependents(doneTicket);
+    }
+    if (state === "done") this.clearTicketMemory(op.ticketId);
+  }
+
+  private humanTerminalMoveWins(current: Ticket, requested: TicketState): boolean {
+    if (current.state === requested) return false;
+    return current.state === "cancelled" || current.state === "done";
+  }
+
+  private clearTicketMemory(ticketId: string): void {
+    this.baseShaForTicket.delete(ticketId);
+    this.reworkCount.delete(ticketId);
+    this.implementRetries.delete(ticketId);
+    this.reviewInfraRetries.delete(ticketId);
+  }
+
   // ── reaping + comments ───────────────────────────────────────────────────────────────
 
   /** Reap any live worker for a ticket (terminal-state cleanup). */
@@ -1064,12 +1140,16 @@ export class Dispatcher {
   /** Post a dispatcher comment, tagged with the bot marker so it is never read back as steering. */
   private async postComment(ticketId: string, body: string): Promise<void> {
     try {
-      const posted = await this.client.addComment(ticketId, `${BECKETT_COMMENT_MARKER}\n${body}`);
-      // Record the id so we recognise our own comment even if Plane mangles the HTML marker.
-      if (posted?.id) this.ownCommentIds.add(posted.id);
+      await this.addMarkedComment(ticketId, body);
     } catch (err) {
       this.logger.warn("addComment failed", { ticketId, error: (err as Error).message });
     }
+  }
+
+  private async addMarkedComment(ticketId: string, body: string): Promise<void> {
+    const posted = await this.client.addComment(ticketId, `${BECKETT_COMMENT_MARKER}\n${body}`);
+    // Record the id so we recognise our own comment even if Plane mangles the HTML marker.
+    if (posted?.id) this.ownCommentIds.add(posted.id);
   }
 
   /**

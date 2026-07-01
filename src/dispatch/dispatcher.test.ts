@@ -5,6 +5,9 @@
  * pass/fail, and the concurrency cap — is exercised deterministically with no real workers.
  */
 import { describe, expect, test, beforeEach, mock } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Config } from "../types.ts";
 import type { Ticket, TicketState, PollEvent, HarnessSpec, PlaneComment } from "../plane/types.ts";
 
@@ -96,14 +99,27 @@ const { Dispatcher, BECKETT_COMMENT_MARKER } = await import("./dispatcher.ts");
 class FakeClient {
   setStateCalls: { id: string; state: TicketState }[] = [];
   comments: { ticketId: string; body: string }[] = [];
+  failSetState = 0;
+  failAddComment = 0;
   /** Board the dispatcher reads for dependency promotion; tests seed it. setState mutates it too. */
   board: Ticket[] = [];
+  async getIssue(id: string): Promise<Ticket | null> {
+    return this.board.find((b) => b.id === id) ?? null;
+  }
   async setState(id: string, state: TicketState) {
+    if (this.failSetState > 0) {
+      this.failSetState--;
+      throw new Error("Plane state write failed");
+    }
     this.setStateCalls.push({ id, state });
     const t = this.board.find((b) => b.id === id);
     if (t) t.state = state;
   }
   async addComment(ticketId: string, body: string): Promise<PlaneComment> {
+    if (this.failAddComment > 0) {
+      this.failAddComment--;
+      throw new Error("Plane comment write failed");
+    }
     this.comments.push({ ticketId, body });
     return { id: `c${this.comments.length}`, ticketId, author: "beckett", body, createdAt: "now" };
   }
@@ -158,12 +174,13 @@ function doneSignal(
   };
 }
 
-function newDispatcher(max_workers = 2) {
+function newDispatcher(max_workers = 2, opts: { advanceOutboxPath?: string } = {}) {
   const client = new FakeClient();
   const d = new Dispatcher({
     client,
     config: cfg(max_workers),
     resolveRepoRoot: (ticket) => `/tmp/repo/${ticket.project ?? ticket.identifier}`,
+    ...opts,
   });
   return { d, client };
 }
@@ -223,6 +240,56 @@ describe("advance on finish", () => {
     await tick();
     expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "in_review" }]);
     expect(client.comments[0]!.body.startsWith(BECKETT_COMMENT_MARKER)).toBe(true);
+  });
+
+  test("Plane write failure after finish is queued and replayed from the advance outbox", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-advance-outbox-"));
+    try {
+      const outbox = join(dir, "advance.jsonl");
+      const { d, client } = newDispatcher(2, { advanceOutboxPath: outbox });
+      const ticket = makeTicket();
+      client.board = [ticket];
+      client.failSetState = 1;
+
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      created[0].finish("success", "did it");
+      await tick();
+
+      expect(client.setStateCalls).toEqual([]);
+      expect(readFileSync(outbox, "utf8")).toContain("\"state\":\"in_review\"");
+
+      await d.replayAdvances();
+      expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "in_review" }]);
+      expect(client.comments[0]!.body).toContain("Implementation complete");
+      expect(readFileSync(outbox, "utf8")).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("queued advance never reopens a ticket a human moved to cancelled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-advance-cancel-"));
+    try {
+      const outbox = join(dir, "advance.jsonl");
+      const { d, client } = newDispatcher(2, { advanceOutboxPath: outbox });
+      const ticket = makeTicket();
+      client.board = [ticket];
+      client.failSetState = 1;
+
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      created[0].finish("success", "did it");
+      await tick();
+      ticket.state = "cancelled";
+
+      await d.replayAdvances();
+      expect(client.setStateCalls).toEqual([]);
+      expect(client.comments).toEqual([]);
+      expect(readFileSync(outbox, "utf8")).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   const settle = async () => {

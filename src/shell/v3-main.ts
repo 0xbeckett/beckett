@@ -26,6 +26,7 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { loadConfig } from "../config.ts";
+import { buildPaths } from "../paths.ts";
 import { log as rootLog } from "../log.ts";
 import type { Config, Logger } from "../types.ts";
 import type { Ticket } from "../plane/types.ts";
@@ -136,6 +137,7 @@ async function boot(): Promise<BootedSystem> {
     resolveRepoRoot,
     publishRepo,
     progress: concierge.progressSink(),
+    advanceOutboxPath: join(buildPaths(config).beckettDir, "advance-outbox.jsonl"),
     logger: logger.child("dispatch"),
   });
 
@@ -145,11 +147,13 @@ async function boot(): Promise<BootedSystem> {
     client,
     logger: logger.child("plane.poll"),
     pollSecs: config.plane.poll_secs,
+    commentCursorPath: join(buildPaths(config).beckettDir, "comment-cursors.json"),
   });
 
   // Start the Concierge FIRST (of the live parts) so a bad claude launch fails the whole boot
   //    before we begin polling. (Constructed above so its progress sink could be wired in.)
   await concierge.start();
+  await dispatcher.replayAdvances();
 
   // Fan each poll batch to BOTH the dispatcher (acts on the work) and the Concierge (surfaces
   // milestones/errors back to the Discord conversation that filed the ticket — the closed loop).
