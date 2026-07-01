@@ -514,15 +514,21 @@ async function main(): Promise<void> {
         dependents.get(need)!.push(t.key);
       }
     }
-    const queue = tickets.filter((t) => (indeg.get(t.key) ?? 0) === 0).map((t) => t.key);
+    let queue = tickets.filter((t) => (indeg.get(t.key) ?? 0) === 0).map((t) => t.key);
     const order: string[] = [];
+    const levels: string[][] = [];
     while (queue.length > 0) {
-      const k = queue.shift()!;
-      order.push(k);
-      for (const dep of dependents.get(k) ?? []) {
-        indeg.set(dep, (indeg.get(dep) ?? 1) - 1);
-        if (indeg.get(dep) === 0) queue.push(dep);
+      const level = queue;
+      levels.push(level);
+      const next: string[] = [];
+      for (const k of level) {
+        order.push(k);
+        for (const dep of dependents.get(k) ?? []) {
+          indeg.set(dep, (indeg.get(dep) ?? 1) - 1);
+          if (indeg.get(dep) === 0) next.push(dep);
+        }
       }
+      queue = next;
     }
     if (order.length !== tickets.length) {
       const cyclic = tickets.map((t) => t.key).filter((k) => !order.includes(k));
@@ -535,26 +541,37 @@ async function main(): Promise<void> {
     const channel = spec.channel ? String(spec.channel) : undefined;
     const identForKey = new Map<string, string>();
     const filed: any[] = [];
-    for (const key of order) {
-      const t = byKey.get(key)!;
-      const needs: string[] = t.needs ?? [];
-      const blockedBy = needs.map((n) => identForKey.get(n)!).filter(Boolean);
-      // roots start immediately; anything with a blocker waits in backlog until promoted.
-      const state = blockedBy.length === 0 ? "in_progress" : "backlog";
-      const created = await client.createIssue({
-        title: String(t.title),
-        body: t.body ? String(t.body) : "",
-        casting: t.cast ?? {},
-        criteria: Array.isArray(t.criteria) ? t.criteria.map(String) : [],
-        blockedBy,
-        // Per-node code project (its own repo). Sibling nodes may share one project or each get
-        // their own; defaults at dispatch to the ticket id when unset.
-        project: t.project ? String(t.project) : undefined,
-        state: state as TicketState,
-        originChannel: channel,
-      });
-      identForKey.set(key, created.identifier);
-      filed.push({ key, id: created.id, identifier: created.identifier, state, blockedBy, url: created.url });
+    for (const level of levels) {
+      const createdLevel = await Promise.all(
+        level.map(async (key) => {
+          const t = byKey.get(key)!;
+          const needs: string[] = t.needs ?? [];
+          const blockedBy = needs.map((n) => identForKey.get(n)!).filter(Boolean);
+          // roots start immediately; anything with a blocker waits in backlog until promoted.
+          const state = blockedBy.length === 0 ? "in_progress" : "backlog";
+          const created = await client.createIssue({
+            title: String(t.title),
+            body: t.body ? String(t.body) : "",
+            casting: t.cast ?? {},
+            criteria: Array.isArray(t.criteria) ? t.criteria.map(String) : [],
+            blockedBy,
+            // Per-node code project (its own repo). Sibling nodes may share one project or each get
+            // their own; defaults at dispatch to the ticket id when unset.
+            project: t.project ? String(t.project) : undefined,
+            state: state as TicketState,
+            originChannel: channel,
+          });
+          return {
+            key,
+            identifier: created.identifier,
+            filed: { key, id: created.id, identifier: created.identifier, state, blockedBy, url: created.url },
+          };
+        }),
+      );
+      for (const row of createdLevel) {
+        identForKey.set(row.key, row.identifier);
+        filed.push(row.filed);
+      }
     }
     out({ planned: filed.length, tickets: filed });
   }

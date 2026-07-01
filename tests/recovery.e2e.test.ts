@@ -68,12 +68,9 @@ import type {
   IncomingMessage,
 } from "../src/types.ts";
 
-const REPO_ROOT = "/Users/jason/Code/beckett";
+const REPO_ROOT = process.cwd();
 const FAKE_HARNESS = join(REPO_ROOT, "src/test/fake-harness.ts");
-const SCRATCH = join(
-  "/private/tmp/claude-501/-Users-jason-Code-beckett/ef11fcf3-c6c5-4bb6-b279-54800845a02b/scratchpad",
-  "e2e-recovery",
-);
+const SCRATCH = join("/tmp", "beckett-e2e", "recovery");
 const WRAPPER = join(SCRATCH, "fake-claude.sh");
 const log = makeLogger().child("e2e-recovery");
 

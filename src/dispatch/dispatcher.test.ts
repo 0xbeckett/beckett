@@ -224,6 +224,31 @@ describe("advance on finish", () => {
     expect(client.comments[0]!.body).toContain("one pass");
   });
 
+  test("done worker promotes unblocked dependents immediately, without waiting for a poller done event", async () => {
+    const { d, client } = newDispatcher();
+    const blocker = makeTicket({
+      id: "a",
+      identifier: "OPS-A",
+      casting: { implement: { harness: "claude", effort: "low" } },
+    });
+    const dependent = makeTicket({
+      id: "b",
+      identifier: "OPS-B",
+      state: "backlog",
+      blockedBy: ["OPS-A"],
+    });
+    client.board = [blocker, dependent];
+
+    await d.handle(stateChanged(blocker, "in_progress"));
+    await tick();
+    created[0].finish("success", "a done");
+    await tick();
+
+    expect(client.setStateCalls).toContainEqual({ id: "a", state: "done" });
+    expect(client.setStateCalls).toContainEqual({ id: "b", state: "in_progress" });
+    expect(client.comments.some((c) => c.ticketId === "b" && c.body.includes("All blockers done"))).toBe(true);
+  });
+
   test("v3.1: publishes the project repo to GitHub on done and links the URL in the comment", async () => {
     const client = new FakeClient();
     const calls: { slug: string; repoRoot: string; description: string }[] = [];

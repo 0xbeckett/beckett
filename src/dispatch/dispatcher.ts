@@ -478,17 +478,10 @@ export class Dispatcher {
 
     // v3.1 effort-scaled review. `self` (low/medium-risk work) → the worker self-verified inline,
     // so go straight to done in ONE pass — no separate cold reviewer, no relay. `fresh` →
-    // a separate adversarial reviewer (the in_review stage), as before. The done/in_review state
-    // change loops back through the poller, which reaps + promotes DAG dependents.
+    // a separate adversarial reviewer (the in_review stage), as before. Done tickets promote DAG
+    // dependents immediately here; the later poller state_changed(done) is only a restart backstop.
     if (this.reviewTierFor(ticket) === "self") {
-      const ghUrl = await this.publishProject(ticket);
-      await this.client.setState(ticket.id, "done");
-      await this.postComment(
-        ticket.id,
-        `Self-reviewed → **done** (one pass).${ghUrl ? `\n\nGitHub: ${ghUrl}` : ""}\n\n${summary}`,
-      );
-      this.baseShaForTicket.delete(ticket.id);
-      this.reworkCount.delete(ticket.id);
+      await this.finishTicketAsDone(ticket, "Self-reviewed → **done** (one pass).", summary);
       this.logger.info("ticket self-reviewed → done", { ticket: ticket.identifier });
       return;
     }
@@ -548,14 +541,7 @@ export class Dispatcher {
   ): Promise<void> {
     const passed = this.reviewPassed(handle, status);
     if (passed) {
-      const ghUrl = await this.publishProject(ticket);
-      await this.client.setState(ticket.id, "done");
-      await this.postComment(
-        ticket.id,
-        `Review passed → **done**.${ghUrl ? `\n\nGitHub: ${ghUrl}` : ""}\n\n${summary}`,
-      );
-      this.baseShaForTicket.delete(ticket.id);
-      this.reworkCount.delete(ticket.id);
+      await this.finishTicketAsDone(ticket, "Review passed → **done**.", summary);
       this.logger.info("ticket advanced to done", { ticket: ticket.identifier });
       return;
     }
@@ -602,6 +588,27 @@ export class Dispatcher {
       if (s === "complete") return true;
     }
     return true; // clean finish, no explicit blocking verdict
+  }
+
+  /**
+   * Mark a ticket done before best-effort publishing so Plane dependents can start immediately.
+   * Publishing still runs and is still noted on the ticket, but GitHub latency is no longer in the
+   * critical path for the state transition or DAG promotion.
+   */
+  private async finishTicketAsDone(
+    ticket: Ticket,
+    messagePrefix: string,
+    summary: string,
+  ): Promise<void> {
+    await this.client.setState(ticket.id, "done");
+    await this.promoteDependents(ticket);
+    const ghUrl = await this.publishProject(ticket);
+    await this.postComment(
+      ticket.id,
+      `${messagePrefix}${ghUrl ? `\n\nGitHub: ${ghUrl}` : ""}\n\n${summary}`,
+    );
+    this.baseShaForTicket.delete(ticket.id);
+    this.reworkCount.delete(ticket.id);
   }
 
   // ── dependency promotion (the `beckett plan` DAG) ────────────────────────────────────────

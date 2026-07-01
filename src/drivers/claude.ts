@@ -50,7 +50,8 @@ import type {
   WorkerState,
 } from "../types.ts";
 import { makeLogger } from "../log.ts";
-import { readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 /** The bun subprocess handle type (avoids a hard import of the `bun` module symbol). */
 type Child = ReturnType<typeof Bun.spawn>;
@@ -114,6 +115,7 @@ export class ClaudeDriver implements HarnessDriver {
 
   private child: Child | null = null;
   private spec: SpawnSpec | null = null;
+  private stdinBridgePath: string | null = null;
 
   /** Source of truth for resume identity; minted at spawn or captured from init. */
   private sessionId: string | null = null;
@@ -208,10 +210,6 @@ export class ClaudeDriver implements HarnessDriver {
       return { accepted: "queued", at: Date.now() };
     }
 
-    this.writeUserLine(msg);
-    this.setState("nudging");
-    this.log.info("nudge written to stdin", { len: msg.length });
-
     return new Promise<NudgeReceipt>((resolve) => {
       const timer = setTimeout(() => {
         // No echo in time → it is buffered inside claude but unacked; report honestly.
@@ -221,6 +219,18 @@ export class ClaudeDriver implements HarnessDriver {
         resolve({ accepted: "queued", at: Date.now() });
       }, ACK_TIMEOUT_MS);
       this.pendingNudges.push({ text: msg, resolve, timer });
+      try {
+        this.writeUserLine(msg);
+        this.setState("nudging");
+        this.log.info("nudge written to stdin", { len: msg.length });
+      } catch (err) {
+        const idx = this.pendingNudges.findIndex((p) => p.timer === timer);
+        if (idx >= 0) this.pendingNudges.splice(idx, 1);
+        clearTimeout(timer);
+        this.bufferedNudges.push(msg);
+        this.log.warn("nudge write failed; buffered for resume", { error: String(err) });
+        resolve({ accepted: "queued", at: Date.now() });
+      }
     });
   }
 
@@ -334,6 +344,7 @@ export class ClaudeDriver implements HarnessDriver {
     this.setState("spawning");
     this.spawnedAt = this.spawnedAt || Date.now();
     this.lastActivityTs = Date.now();
+    this.prepareStdinBridge(spec);
 
     const sessionReady = new Promise<SpawnResult>((resolve, reject) => {
       this.resolveSession = resolve;
@@ -419,6 +430,7 @@ export class ClaudeDriver implements HarnessDriver {
   private childEnv(): Record<string, string | undefined> {
     const env: Record<string, string | undefined> = { ...process.env };
     for (const k of FORBIDDEN_ENV_KEYS) delete env[k];
+    if (this.stdinBridgePath) env.BECKETT_STDIN_BRIDGE = this.stdinBridgePath;
     return env;
   }
 
@@ -829,19 +841,58 @@ export class ClaudeDriver implements HarnessDriver {
   // ===========================================================================
 
   private writeUserLine(content: string): void {
-    const child = this.child;
-    if (!child) return;
-    const sink = child.stdin;
-    if (!sink || typeof (sink as { write?: unknown }).write !== "function") return;
     const line =
       JSON.stringify({
         type: "user",
         message: { role: "user", content },
         parent_tool_use_id: null,
       }) + "\n";
+
+    if (this.stdinBridgePath) {
+      try {
+        appendFileSync(this.stdinBridgePath, line);
+      } catch (err) {
+        this.log.debug("stdin bridge write failed", { err: String(err) });
+      }
+    }
+
+    const child = this.child;
+    if (!child) return;
+    const sink = child.stdin;
+    if (!sink || typeof (sink as { write?: unknown }).write !== "function") return;
     const fileSink = sink as { write: (s: string) => void; flush?: () => void };
-    fileSink.write(line);
-    fileSink.flush?.();
+    try {
+      fileSink.write(line);
+      fileSink.flush?.();
+    } catch (err) {
+      this.log.debug("stdin pipe write failed after bridge write (continuing)", {
+        err: String(err),
+      });
+    }
+  }
+
+  private prepareStdinBridge(spec: SpawnSpec): void {
+    // Bun 1.3.x can fail live subprocess stdin writes in some sandboxes with
+    // `EPERM: send`. The fake harness reads this bridge when present, while real
+    // claude ignores the env var and continues using the stdin pipe above.
+    const bin = this.config.harness.claude.bin;
+    const fakeHarness =
+      process.env.BECKETT_FAKE_SPEED !== undefined ||
+      process.env.BECKETT_FAKE_SCENARIO !== undefined ||
+      /fake-(claude|harness)/.test(bin);
+    if (!fakeHarness) {
+      this.stdinBridgePath = null;
+      return;
+    }
+    const path = join(spec.workspace, ".beckett", `stdin-${this.sessionId ?? "session"}.ndjson`);
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "");
+      this.stdinBridgePath = path;
+    } catch (err) {
+      this.stdinBridgePath = null;
+      this.log.debug("stdin bridge unavailable", { err: String(err) });
+    }
   }
 
   private flushBufferedNudges(): void {

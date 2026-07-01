@@ -215,7 +215,10 @@ const ConfigSchema = z
         base_url: z.string().min(1).default("https://plane.0xbeckett.me"),
         workspace_slug: z.string().min(1).default("beckett"),
         project_slug: z.string().min(1).default("beckett"),
-        poll_secs: posInt.default(15),
+        // Perf: pickup/review/relay latency is bounded by this poll. The poller now avoids
+        // unchanged-ticket comment reads, so a 5s default cuts average wait without increasing the
+        // old hot-path Plane load.
+        poll_secs: posInt.default(5),
         state_map: z
           .object({
             backlog: z.string().min(1).default("Backlog"),
