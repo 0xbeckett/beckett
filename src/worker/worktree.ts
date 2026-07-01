@@ -385,6 +385,18 @@ export async function headSha(repoRoot: string): Promise<string | null> {
   return r.code === 0 ? r.stdout.trim() : null;
 }
 
+/**
+ * True when the checkout has a committed contribution relative to the captured ticket base. When
+ * there was no base commit (fresh `git init` project), any HEAD commit counts as contribution.
+ */
+export async function hasDiffSince(repoRoot: string, baseRef: string | null): Promise<boolean> {
+  if (!baseRef) return hasHead(repoRoot);
+  const r = await runGit(["diff", "--quiet", `${baseRef}..HEAD`], repoRoot);
+  if (r.code === 0) return false;
+  if (r.code === 1) return true;
+  throw new Error(`git diff --quiet ${baseRef}..HEAD failed (${r.code}) in ${repoRoot}: ${r.stderr.trim() || r.stdout.trim()}`);
+}
+
 /** The current branch name of a repo (or a short sha when detached / "HEAD" on a fresh repo). */
 export async function currentBranch(repoRoot: string): Promise<string> {
   const r = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], repoRoot);
