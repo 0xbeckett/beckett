@@ -171,6 +171,14 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   sys.logger.info("shutting down beckett v3", { signal });
   sys.poller.stop();
   try {
+    const drain = await sys.dispatcher.drainForShutdown(signal, 20_000);
+    if (drain.timedOut) {
+      sys.logger.warn("dispatcher shutdown drain did not finish before deadline", { ...drain });
+    }
+  } catch (err) {
+    sys.logger.warn("dispatcher shutdown drain failed", { error: (err as Error).message });
+  }
+  try {
     await sys.concierge.stop();
   } catch (err) {
     sys.logger.warn("concierge shutdown failed", { error: (err as Error).message });

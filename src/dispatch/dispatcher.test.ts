@@ -81,10 +81,14 @@ const fakeSpawn = async (args: any) => {
 
 let provisioned: string[] = [];
 let commitResult: { committed: boolean; sha: string | null } = { committed: true, sha: "commit000" };
+let commitCalls: { workspace: string; message: string }[] = [];
 let diffSince = true;
 mock.module("./spawn.ts", () => ({ spawnWorker: fakeSpawn, spawnTicketWorker: fakeSpawn }));
 mock.module("../worker/worktree.ts", () => ({
-  commitWorktree: async () => commitResult,
+  commitWorktree: async (workspace: string, message: string) => {
+    commitCalls.push({ workspace, message });
+    return commitResult;
+  },
   headSha: async () => "base000", // v3.1 per-ticket diff base (fake repo has no real HEAD)
   hasDiffSince: async () => diffSince,
   currentBranch: async () => "main",
@@ -192,6 +196,7 @@ beforeEach(() => {
   spawnGate = null;
   provisioned = [];
   commitResult = { committed: true, sha: "commit000" };
+  commitCalls = [];
   diffSince = true;
 });
 
@@ -597,6 +602,29 @@ describe("steering + cancel", () => {
     expect(d.live()).toHaveLength(0);
     expect(client.comments.at(-1)!.body).toContain("Ticket moved to **todo**");
     expect(client.comments.at(-1)!.body).toContain("commit000");
+  });
+
+  test("shutdown drain aborts live workers, commits WIP, and drops queued spawns", async () => {
+    const { d } = newDispatcher(1);
+    const a = makeTicket({ id: "a", identifier: "OPS-A" });
+    const b = makeTicket({ id: "b", identifier: "OPS-B" });
+
+    await d.handle(stateChanged(a, "in_progress"));
+    await tick();
+    await d.handle(stateChanged(b, "in_progress"));
+    await tick();
+
+    const result = await d.drainForShutdown("SIGTERM", 1000);
+    await tick();
+
+    expect(result).toEqual({ liveWorkers: 1, queuedSpawns: 1, completed: 1, timedOut: false });
+    expect(created[0].aborted).toBe(true);
+    expect(created[0].reaped).toBe(true);
+    expect(commitCalls).toEqual([
+      { workspace: "/tmp/fake-wt/1", message: "beckett: OPS-A WIP (wk_1)" },
+    ]);
+    expect(d.live()).toHaveLength(0);
+    expect(spawnCalls).toHaveLength(1);
   });
 });
 
