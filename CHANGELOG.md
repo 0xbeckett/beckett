@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.3 — progress threads + pi replaces codex (2026-07-01)
+
+Two features and a sandbox fix.
+
+- **Discord progress threads.** When Beckett files a ticket, the ack it posts now anchors a
+  Discord **thread** that streams the granular per-worker play-by-play — tool calls, file edits,
+  scope-guard blocks, plan ticks, and the verdict. The main channel stays sparse (one ack line);
+  the firehose lives in the collapsible thread underneath it. A `beckett plan` DAG maps all its
+  tickets onto the one thread, tagged by identifier; a single ticket's implement→review→rework
+  workers all post there, tagged by stage. Rate-safe by construction: lines coalesce into one
+  digest post per ~3s, the backlog is bounded (drop-oldest with an elision marker), and terminal
+  events flush at once. New `src/discord/progress.ts` hub + `startThread` on the gateway;
+  correlation rides a best-effort `ticket.filed` control-bus signal emitted at BOTH the
+  `ticket create` and `plan` stamp sites, tied to the ack in the Concierge.
+- **pi replaces codex as the coding harness.** New `PiDriver` (`src/drivers/pi.ts`) drives
+  `pi -p --mode json` (pi.dev) as a one-shot worker with steer-via-resume — the same
+  `HarnessDriver` surface as claude/codex, so the dispatcher casts `harness:"pi"` interchangeably.
+  Pi is the malleable, **no-network-sandbox** replacement for codex (which kept stalling on
+  sandbox network denials). Concierge doctrine now casts **pi (gpt-5.5, high) for backend/systems
+  work**, claude (Opus) for frontend/taste + review. Auth is the ChatGPT/Codex OAuth via pi's
+  `openai-codex` provider (`~/.pi/agent/auth.json`). codex is retained only for imagegen.
+- **codex sandbox off.** codex's default `workspace-write` sandbox blocked network and stalled
+  workers; the default is now `danger-full-access` (real containment is the scope-guard hook +
+  each ticket's isolated project repo, not codex's own sandbox).
+
 ## v3.1.1 — first-real-tickets bug fixes (2026-06-30)
 
 The first batch of real tickets (the `random` and `gravity-well` sites) surfaced four bugs:

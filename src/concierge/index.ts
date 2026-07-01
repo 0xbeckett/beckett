@@ -35,6 +35,7 @@ import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { serveBus, type BusRequest, type BusResponse } from "../shell/control-bus.ts";
 import { createDiscordGateway, type DiscordGateway } from "../discord/gateway.ts";
+import { createProgressHub, type ProgressHub, type ProgressSink } from "../discord/progress.ts";
 
 /** The same env keys the worker driver strips — subscription auth only (Spec 00 §4). */
 const FORBIDDEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] as const;
@@ -578,6 +579,13 @@ export class Concierge {
   private readonly log: Logger;
   private readonly gateway: DiscordGateway;
   private readonly session: ConciergeSession;
+  /**
+   * The progress-thread hub: turns each ticket's worker-event firehose into a Discord thread
+   * anchored to the ack. The Concierge opens threads (it owns the ack message + the `ticket.filed`
+   * signal); the dispatcher feeds worker events in via {@link progressSink}. Kept here because the
+   * gateway it drives is Concierge-owned.
+   */
+  private readonly progress: ProgressHub;
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
   private busStop: (() => void) | null = null;
   /**
@@ -587,8 +595,15 @@ export class Concierge {
    * reply to the same message) and {@link onMessage} skips auto-posting the turn text. Exactly one
    * message either way. Single-flight: the session serializes turns, so at most one is live.
    */
-  private activeMention: { channelId: string; messageId: string; repliedViaCli: boolean } | null =
-    null;
+  private activeMention: {
+    channelId: string;
+    messageId: string;
+    repliedViaCli: boolean;
+    /** Id of the ack message the Concierge posted this turn — the thread anchor (null until posted). */
+    ackMessageId: string | null;
+    /** Tickets filed during this turn (via `beckett ticket create`/`plan`), awaiting a thread anchor. */
+    pendingTickets: { identifier: string; title: string }[];
+  } | null = null;
 
   constructor(opts: ConciergeOptions = {}) {
     this.config = opts.config ?? loadConfig();
@@ -596,6 +611,15 @@ export class Concierge {
     this.gateway = opts.gateway ?? createDiscordGateway({ config: this.config, logger: this.log });
     this.session =
       opts.session ?? new ConciergeSession({ config: this.config, logger: this.log });
+    this.progress = createProgressHub(this.gateway, this.log);
+  }
+
+  /**
+   * The progress sink the dispatcher feeds worker events into (wired in `v3-main.ts`). Exposed as
+   * the narrow {@link ProgressSink} so the dispatcher can't reach the hub's open/dispose surface.
+   */
+  progressSink(): ProgressSink {
+    return this.progress;
   }
 
   /** Bring the session up first (fail fast on a bad launch), then go live on Discord. */
@@ -614,8 +638,51 @@ export class Concierge {
       /* best-effort */
     }
     this.busStop = null;
+    this.progress.dispose();
     await this.gateway.stop();
     await this.session.stop();
+  }
+
+  // ── progress threads: anchor a per-ticket firehose under the ack (this feature) ──────────────
+
+  /**
+   * A ticket was just filed during the live turn on `channelId`. Stash it on the active mention so
+   * the ack we post claims it as the thread anchor. If the ack already went out (the Concierge
+   * replied via the CLI before filing), open the thread now. No matching active mention (e.g. a
+   * human ran `beckett ticket create` by hand) → nothing to anchor to; we simply don't thread it.
+   */
+  private onTicketFiled(channelId: string, identifier: string, title: string): void {
+    const active = this.activeMention;
+    if (!active || active.channelId !== channelId) {
+      this.log.debug("ticket.filed with no matching active mention — not threading", {
+        identifier,
+        channelId,
+      });
+      return;
+    }
+    active.pendingTickets.push({ identifier, title });
+    if (active.ackMessageId) this.openPendingThreads(active);
+  }
+
+  /**
+   * Open (or map onto) the progress thread for every ticket filed this turn, anchored to the ack.
+   * Idempotent — the hub dedups per (ticket, anchor), so calling this from whichever ack path fires
+   * (and repeatedly as more `plan` tickets land) is safe. No-op until the ack message id is known.
+   */
+  private openPendingThreads(mention: {
+    channelId: string;
+    ackMessageId: string | null;
+    pendingTickets: { identifier: string; title: string }[];
+  }): void {
+    if (!mention.ackMessageId) return;
+    for (const t of mention.pendingTickets) {
+      this.progress.openThread({
+        channelId: mention.channelId,
+        anchorMessageId: mention.ackMessageId,
+        ticketIdent: t.identifier,
+        title: `${t.identifier} · ${t.title}`,
+      });
+    }
   }
 
   // ── closing the agent loop: Plane updates → Discord (issue: ticket updates never surfaced) ──
@@ -647,6 +714,18 @@ export class Concierge {
       const contents = existsSync(path) ? readFileSync(path, "utf8") : "(not yet seeded)";
       return { ok: true, data: { path, contents } };
     }
+    if (req.cmd === "ticket.filed") {
+      // `beckett ticket create`/`plan` tells us it just filed a ticket for a channel. If that channel
+      // has a live @mention turn, remember it so the ack we post claims it as a progress-thread anchor.
+      const identifier = typeof req.args.identifier === "string" ? req.args.identifier.trim() : "";
+      const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
+      const title = typeof req.args.title === "string" && req.args.title.trim() ? req.args.title.trim() : identifier;
+      if (!identifier || !channelId) {
+        return { ok: false, error: "ticket.filed needs both identifier and channelId" };
+      }
+      this.onTicketFiled(channelId, identifier, title);
+      return { ok: true, data: { tracked: true } };
+    }
     if (req.cmd !== "discord.reply") {
       return { ok: false, error: `concierge bus: unknown command "${req.cmd}"` };
     }
@@ -663,7 +742,12 @@ export class Concierge {
       const claimsActiveTurn = !!active && active.channelId === channelId;
       const opts = claimsActiveTurn ? { replyToMessageId: active!.messageId } : undefined;
       const messageId = await this.gateway.post(channelId, text, opts);
-      if (claimsActiveTurn && active) active.repliedViaCli = true;
+      if (claimsActiveTurn && active) {
+        active.repliedViaCli = true;
+        // This CLI reply IS the turn's ack — anchor any pending progress threads to it.
+        active.ackMessageId = messageId;
+        this.openPendingThreads(active);
+      }
       return { ok: true, data: { messageId } };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -759,7 +843,13 @@ export class Concierge {
 
     // Track this turn so a `beckett discord reply` the Concierge runs while answering it counts as
     // THE reply (and suppresses the auto-post below) instead of producing a second message.
-    const mention = { channelId: m.channelId, messageId: m.messageId, repliedViaCli: false };
+    const mention = {
+      channelId: m.channelId,
+      messageId: m.messageId,
+      repliedViaCli: false,
+      ackMessageId: null as string | null,
+      pendingTickets: [] as { identifier: string; title: string }[],
+    };
     this.activeMention = mention;
 
     let keepTyping = true;
@@ -777,7 +867,10 @@ export class Concierge {
       // only if the Concierge already answered this turn itself via `beckett discord reply` (then
       // that bus post was the reply, and posting again would duplicate it).
       if (text && !mention.repliedViaCli) {
-        await this.gateway.post(m.channelId, text, { replyToMessageId: m.messageId });
+        const ackId = await this.gateway.post(m.channelId, text, { replyToMessageId: m.messageId });
+        // The auto-posted turn text is the ack — anchor any progress threads filed this turn to it.
+        mention.ackMessageId = ackId;
+        this.openPendingThreads(mention);
       }
     } catch (err) {
       keepTyping = false;

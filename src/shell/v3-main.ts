@@ -58,7 +58,7 @@ function resolveRepoRoot(ticket: Ticket): string {
  * per-stage worktrees), effort-scaled review (trivial work self-reviews in one pass), and
  * Sonnet 5 @ xhigh workers. See CHANGELOG.md.
  */
-export const BECKETT_VERSION = "3.1.1";
+export const BECKETT_VERSION = "3.3.0";
 
 /** The live v3 system — held so {@link shutdown} can tear every part down in order. */
 interface BootedSystem {
@@ -123,12 +123,19 @@ async function boot(): Promise<BootedSystem> {
     logger.warn("no GITHUB_PAT — project repos will stay local-only (not pushed to GitHub)");
   }
 
-  // 4. Dispatcher — consumes PollEvents, owns the worker lifecycle.
+  // 5. Concierge — owns Discord (and the progress-thread hub the dispatcher feeds). Constructed
+  //    here (cheap, no I/O) so its progress sink can be wired into the dispatcher below; started
+  //    further down (FIRST of the live parts) so a bad claude launch fails the whole boot early.
+  const concierge = createConcierge({ config, logger: logger.child("concierge") });
+
+  // 4. Dispatcher — consumes PollEvents, owns the worker lifecycle. Its workers' granular event
+  //    streams are mirrored into each ticket's Discord thread via the Concierge's progress hub.
   const dispatcher = createDispatcher({
     client,
     config,
     resolveRepoRoot,
     publishRepo,
+    progress: concierge.progressSink(),
     logger: logger.child("dispatch"),
   });
 
@@ -140,9 +147,8 @@ async function boot(): Promise<BootedSystem> {
     pollSecs: config.plane.poll_secs,
   });
 
-  // 5. Concierge — owns Discord, files tickets. Start it FIRST so a bad claude launch fails the
-  //    whole boot before we begin polling.
-  const concierge = createConcierge({ config, logger: logger.child("concierge") });
+  // Start the Concierge FIRST (of the live parts) so a bad claude launch fails the whole boot
+  //    before we begin polling. (Constructed above so its progress sink could be wired in.)
   await concierge.start();
 
   // Fan each poll batch to BOTH the dispatcher (acts on the work) and the Concierge (surfaces

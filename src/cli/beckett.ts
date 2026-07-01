@@ -100,6 +100,21 @@ async function bus(cmd: string, args: Record<string, unknown>): Promise<never> {
   }
 }
 
+/**
+ * Fire a NON-fatal notification at the control bus and return regardless of outcome. Unlike
+ * {@link bus}, this never exits or fails the command: it exists so `ticket create`/`plan` can tell
+ * the running Concierge "I just filed OPS-N for channel X" (so it opens a progress thread) WITHOUT
+ * that being load-bearing — the same commands run by a human or in tests have no daemon socket, and
+ * the ticket must still be created and printed. A short timeout keeps a dead socket from stalling.
+ */
+async function notifyBus(cmd: string, args: Record<string, unknown>): Promise<void> {
+  try {
+    await callBus(SOCK, cmd, args, 5_000);
+  } catch {
+    /* best-effort: no daemon / busy bus — the ticket is already filed, so just move on */
+  }
+}
+
 async function main(): Promise<void> {
   const [group, sub, ...rest] = process.argv.slice(2);
 
@@ -457,6 +472,15 @@ async function main(): Promise<void> {
         // Stamp the originating Discord channel so updates route back to the conversation (closed loop).
         originChannel: flags.channel ? String(flags.channel) : undefined,
       });
+      // Tell the Concierge (if running) so it anchors a progress thread to this turn's ack. Gated on
+      // --channel: only the Concierge path stamps a channel, and it's the only place a thread can go.
+      if (flags.channel) {
+        await notifyBus("ticket.filed", {
+          identifier: ticket.identifier,
+          channelId: String(flags.channel),
+          title: String(flags.title),
+        });
+      }
       out({ id: ticket.id, identifier: ticket.identifier, url: ticket.url, state: ticket.state });
     }
     if (sub === "comment") {
@@ -607,6 +631,17 @@ async function main(): Promise<void> {
       for (const row of createdLevel) {
         identForKey.set(row.key, row.identifier);
         filed.push(row.filed);
+      }
+    }
+    // A plan files N tickets under ONE ack — notify the Concierge for each so they all map onto the
+    // single progress thread (the hub keys threads by anchor, tickets by identifier). Best-effort.
+    if (channel) {
+      for (const row of filed) {
+        await notifyBus("ticket.filed", {
+          identifier: row.identifier,
+          channelId: channel,
+          title: String(byKey.get(row.key)?.title ?? row.identifier),
+        });
       }
     }
     out({ planned: filed.length, tickets: filed });

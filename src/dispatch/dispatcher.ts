@@ -35,7 +35,7 @@
  * and pumped as workers free their slots.
  */
 
-import type { Config, Logger } from "../types.ts";
+import type { Config, Logger, WorkerEvent } from "../types.ts";
 import type {
   Ticket,
   TicketState,
@@ -43,6 +43,7 @@ import type {
   PollEvent,
   HarnessSpec,
 } from "../plane/types.ts";
+import type { ProgressSink } from "../discord/progress.ts";
 import { log } from "../log.ts";
 import { commitWorktree, headSha, ensureProjectRepo } from "../worker/worktree.ts";
 import { projectSlug } from "../plane/cast.ts";
@@ -83,6 +84,13 @@ export interface DispatcherDeps {
     description: string;
     ticket?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
+  /**
+   * Optional progress feed: the dispatcher forwards each worker's granular {@link WorkerEvent}
+   * stream here, keyed by ticket identifier, so it lands in the ticket's Discord thread (see
+   * `src/discord/progress.ts`). Injected from the Concierge's hub in `v3-main.ts`; omitted in
+   * tests / when Discord isn't wired.
+   */
+  progress?: ProgressSink;
   logger?: Logger;
 }
 
@@ -122,6 +130,7 @@ export class Dispatcher {
     description: string;
     ticket?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
+  private readonly progress?: ProgressSink;
   private readonly logger: Logger;
 
   /** At most one live worker per ticket (implement OR review). */
@@ -155,6 +164,7 @@ export class Dispatcher {
     this.config = deps.config;
     this.resolveRepoRoot = deps.resolveRepoRoot;
     this.publishRepo = deps.publishRepo;
+    this.progress = deps.progress;
     this.logger = deps.logger ?? log.child("dispatch.dispatcher");
   }
 
@@ -370,6 +380,11 @@ export class Dispatcher {
         config: this.config,
         repoRoot,
         baseRef,
+        // Mirror this worker's granular event stream into the ticket's Discord thread, keyed by the
+        // stable ticket identifier so implement/review/rework workers all post to the one thread.
+        onProgress: this.progress
+          ? (ev: WorkerEvent, ctx) => this.progress!.event(ticket.identifier, ev, ctx)
+          : undefined,
         logger: this.logger,
       });
     } catch (err) {
