@@ -37,6 +37,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { Config, Logger, WorkerEvent, DoneSignal } from "../types.ts";
 import type {
   Ticket,
@@ -99,6 +101,8 @@ export interface DispatcherDeps {
   progress?: ProgressSink;
   /** JSONL path for durable post-finish Plane advances. Omitted in tests unless needed. */
   advanceOutboxPath?: string;
+  /** JSON path for restart-surviving dispatcher ticket memory (base SHA + retry/rework counters). */
+  runtimeStatePath?: string;
   logger?: Logger;
 }
 
@@ -153,6 +157,14 @@ export interface DispatcherShutdownResult {
   timedOut: boolean;
 }
 
+interface DispatcherRuntimeState {
+  version: 1;
+  baseShaForTicket: Record<string, string>;
+  reworkCount: Record<string, number>;
+  implementRetries: Record<string, number>;
+  reviewInfraRetries: Record<string, number>;
+}
+
 /** Outcome of {@link Dispatcher.publishProject} — gates whether a ticket may be marked done. */
 type PublishOutcome =
   | { status: "skipped" } // no publisher wired (tests / no PAT) — nothing to gate on
@@ -191,6 +203,45 @@ function doneSignalSummary(signal: DoneSignal, fallback: string): string {
   return `${summary}${blockedReason}`;
 }
 
+function parseStringRecord(value: unknown, field: string): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  const out: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "string") throw new Error(`${field}.${key} must be a string`);
+    out[key] = item;
+  }
+  return out;
+}
+
+function parseNumberRecord(value: unknown, field: string): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  const out: Record<string, number> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!Number.isInteger(item) || item < 0) throw new Error(`${field}.${key} must be a non-negative integer`);
+    out[key] = item;
+  }
+  return out;
+}
+
+function parseRuntimeState(value: unknown): DispatcherRuntimeState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("runtime state must be an object");
+  }
+  const raw = value as Record<string, unknown>;
+  if (raw.version !== 1) throw new Error("unsupported runtime state version");
+  return {
+    version: 1,
+    baseShaForTicket: parseStringRecord(raw.baseShaForTicket, "baseShaForTicket"),
+    reworkCount: parseNumberRecord(raw.reworkCount, "reworkCount"),
+    implementRetries: parseNumberRecord(raw.implementRetries, "implementRetries"),
+    reviewInfraRetries: parseNumberRecord(raw.reviewInfraRetries, "reviewInfraRetries"),
+  };
+}
+
 // =======================================================================================
 // Dispatcher
 // =======================================================================================
@@ -208,6 +259,7 @@ export class Dispatcher {
   private readonly progress?: ProgressSink;
   private readonly logger: Logger;
   private readonly advanceOutbox?: AdvanceOutbox;
+  private readonly runtimeStatePath?: string;
 
   /** At most one live worker per ticket (implement OR review). */
   private readonly workers = new Map<string, TicketWorkerHandle>();
@@ -255,6 +307,8 @@ export class Dispatcher {
     this.advanceOutbox = deps.advanceOutboxPath
       ? new AdvanceOutbox(deps.advanceOutboxPath, this.logger.child("advance-outbox"))
       : undefined;
+    this.runtimeStatePath = deps.runtimeStatePath;
+    this.loadRuntimeState();
   }
 
   // ── public surface ─────────────────────────────────────────────────────────────────────
@@ -447,11 +501,8 @@ export class Dispatcher {
 
   private async onCancelled(ticket: Ticket): Promise<void> {
     const handle = this.workers.get(ticket.id);
-    this.baseShaForTicket.delete(ticket.id);
-    this.implementRetries.delete(ticket.id);
-    this.reviewInfraRetries.delete(ticket.id);
+    this.clearTicketMemory(ticket.id);
     this.staffing.delete(ticket.id); // drop any mid-spawn reservation so doSpawn discards it
-    this.liveTickets.delete(ticket.id);
     this.dropPending(ticket.id);
     this.releaseRepo(ticket.id);
     if (!handle) {
@@ -471,11 +522,8 @@ export class Dispatcher {
 
   private async onParked(ticket: Ticket, state: "todo" | "backlog"): Promise<void> {
     const handle = this.workers.get(ticket.id);
-    this.baseShaForTicket.delete(ticket.id);
-    this.implementRetries.delete(ticket.id);
-    this.reviewInfraRetries.delete(ticket.id);
+    this.clearTicketMemory(ticket.id);
     this.staffing.delete(ticket.id);
-    this.liveTickets.delete(ticket.id);
     this.dropPending(ticket.id);
     this.releaseRepo(ticket.id);
     if (!handle) {
@@ -627,7 +675,10 @@ export class Dispatcher {
     if (stage === "implement" && !this.baseShaForTicket.has(ticket.id)) {
       try {
         const sha = await headSha(repoRoot);
-        if (sha) this.baseShaForTicket.set(ticket.id, sha);
+        if (sha) {
+          this.baseShaForTicket.set(ticket.id, sha);
+          this.persistRuntimeState();
+        }
       } catch (err) {
         this.logger.warn("base-sha capture failed; review will diff HEAD", {
           ticket: ticket.identifier,
@@ -868,6 +919,7 @@ export class Dispatcher {
     // 2. Bound the auto-retry so a persistently-failing ticket can't churn forever.
     const attempts = (this.implementRetries.get(ticket.id) ?? 0) + 1;
     this.implementRetries.set(ticket.id, attempts);
+    this.persistRuntimeState();
 
     if (attempts <= MAX_IMPLEMENT_RETRIES) {
       await this.postComment(
@@ -891,6 +943,7 @@ export class Dispatcher {
     // 3. Retries exhausted. Never leave it stuck in in_progress: push the WIP so a human has it, then
     //    return the ticket to a ready state (`todo`) with a loud comment.
     this.implementRetries.delete(ticket.id);
+    this.persistRuntimeState();
     const pub = await this.publishProject(ticket);
     const link =
       pub.status === "published"
@@ -1000,6 +1053,7 @@ export class Dispatcher {
     }
 
     this.reviewInfraRetries.delete(ticket.id);
+    this.persistRuntimeState();
     if (signal.status === "complete") {
       const done = await this.finishTicketAsDone(ticket, "Review passed → **done**.", summary);
       if (done) this.logger.info("ticket advanced to done", { ticket: ticket.identifier });
@@ -1009,6 +1063,7 @@ export class Dispatcher {
     // Review failed — bound the implement↔review loop so it can't churn forever.
     const cycles = (this.reworkCount.get(ticket.id) ?? 0) + 1;
     this.reworkCount.set(ticket.id, cycles);
+    this.persistRuntimeState();
     if (cycles >= MAX_REWORK_CYCLES) {
       await this.postComment(
         ticket.id,
@@ -1016,6 +1071,7 @@ export class Dispatcher {
           `automatic rework and leaving this in **in_review** for a human to take over.\n\n${summary}`,
       );
       this.reworkCount.delete(ticket.id);
+      this.persistRuntimeState();
       this.logger.warn("rework cap reached — leaving for human", {
         ticket: ticket.identifier,
         cycles,
@@ -1037,6 +1093,7 @@ export class Dispatcher {
   private async onReviewInfraFailure(ticket: Ticket, reason: string, summary: string): Promise<void> {
     const attempts = (this.reviewInfraRetries.get(ticket.id) ?? 0) + 1;
     this.reviewInfraRetries.set(ticket.id, attempts);
+    this.persistRuntimeState();
 
     if (attempts <= MAX_REVIEW_INFRA_RETRIES) {
       await this.postComment(
@@ -1054,6 +1111,7 @@ export class Dispatcher {
     }
 
     this.reviewInfraRetries.delete(ticket.id);
+    this.persistRuntimeState();
     await this.postComment(
       ticket.id,
       `${reason} Review still did not produce a reliable verdict after ${MAX_REVIEW_INFRA_RETRIES} ` +
@@ -1220,6 +1278,7 @@ export class Dispatcher {
     this.implementRetries.delete(ticketId);
     this.reviewInfraRetries.delete(ticketId);
     this.liveTickets.delete(ticketId);
+    this.persistRuntimeState();
   }
 
   // ── reaping + comments ───────────────────────────────────────────────────────────────
@@ -1227,11 +1286,8 @@ export class Dispatcher {
   /** Reap any live worker for a ticket (terminal-state cleanup). */
   private async reapTicket(ticketId: string, reason: string): Promise<void> {
     const handle = this.workers.get(ticketId);
-    this.baseShaForTicket.delete(ticketId);
-    this.implementRetries.delete(ticketId);
-    this.reviewInfraRetries.delete(ticketId);
+    this.clearTicketMemory(ticketId);
     this.staffing.delete(ticketId); // drop any mid-spawn reservation so doSpawn discards it
-    this.liveTickets.delete(ticketId);
     this.dropPending(ticketId);
     this.releaseRepo(ticketId);
     if (!handle) return;
@@ -1284,6 +1340,73 @@ export class Dispatcher {
    */
   private isBeckettComment(comment: PlaneComment): boolean {
     return this.ownCommentIds.has(comment.id) || comment.body.trimStart().startsWith("<!-- beckett");
+  }
+
+  private loadRuntimeState(): void {
+    if (!this.runtimeStatePath) return;
+    let raw: string;
+    try {
+      raw = readFileSync(this.runtimeStatePath, "utf8");
+    } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code) : "";
+      if (code !== "ENOENT") {
+        this.logger.warn("dispatcher runtime state read failed", {
+          path: this.runtimeStatePath,
+          error: (err as Error).message,
+        });
+      }
+      return;
+    }
+
+    try {
+      const parsed = parseRuntimeState(JSON.parse(raw));
+      this.replaceMap(this.baseShaForTicket, parsed.baseShaForTicket);
+      this.replaceMap(this.reworkCount, parsed.reworkCount);
+      this.replaceMap(this.implementRetries, parsed.implementRetries);
+      this.replaceMap(this.reviewInfraRetries, parsed.reviewInfraRetries);
+      this.logger.info("loaded dispatcher runtime state", {
+        path: this.runtimeStatePath,
+        tickets: new Set([
+          ...Object.keys(parsed.baseShaForTicket),
+          ...Object.keys(parsed.reworkCount),
+          ...Object.keys(parsed.implementRetries),
+          ...Object.keys(parsed.reviewInfraRetries),
+        ]).size,
+      });
+    } catch (err) {
+      this.logger.warn("dispatcher runtime state ignored", {
+        path: this.runtimeStatePath,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  private persistRuntimeState(): void {
+    if (!this.runtimeStatePath) return;
+    const state: DispatcherRuntimeState = {
+      version: 1,
+      baseShaForTicket: Object.fromEntries(this.baseShaForTicket),
+      reworkCount: Object.fromEntries(this.reworkCount),
+      implementRetries: Object.fromEntries(this.implementRetries),
+      reviewInfraRetries: Object.fromEntries(this.reviewInfraRetries),
+    };
+    try {
+      mkdirSync(dirname(this.runtimeStatePath), { recursive: true });
+      const tmp = `${this.runtimeStatePath}.${process.pid}.${Date.now()}.tmp`;
+      writeFileSync(tmp, JSON.stringify(state, null, 2));
+      renameSync(tmp, this.runtimeStatePath);
+    } catch (err) {
+      this.logger.warn("dispatcher runtime state write failed", {
+        path: this.runtimeStatePath,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  private replaceMap<T extends string | number>(map: Map<string, T>, values: Record<string, T>): void {
+    map.clear();
+    for (const [key, value] of Object.entries(values)) map.set(key, value);
   }
 }
 
