@@ -360,11 +360,15 @@ export class PiDriver implements HarnessDriver {
       sessionId: this.sessionId,
       promptLen: prompt.length,
     });
+    // Sweep the superseded child BEFORE relaunching (issue #11 leak 5): on the auto-resume path
+    // the previous process may still be exiting — dropping its handle here would orphan it. A
+    // no-op when it already exited; the childGen guard keeps its exit from firing spuriously.
+    await this.killChild();
+
     // Reset per-process parse lifecycle (counters/session are cumulative across resumes).
     this.finished = false;
     this.sessionEmitted = false;
     this.lastAgentMessage = "";
-    this.child = null;
     const args = this.buildArgs(prompt, /*isResume*/ true);
     await this.launch(args, /*isResume*/ true);
   }
