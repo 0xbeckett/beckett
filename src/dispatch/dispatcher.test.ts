@@ -432,7 +432,7 @@ describe("advance on finish", () => {
     expect(done).toContain("/pull/7");
   });
 
-  test("v3.1: a GitHub publish FAILURE holds the ticket (not done) so work isn't lost (OPS-30)", async () => {
+  test("v3.1: a GitHub publish FAILURE parks the ticket for courier work", async () => {
     const client = new FakeClient();
     const d = new Dispatcher({
       client,
@@ -447,10 +447,11 @@ describe("advance on finish", () => {
     await tick();
     created[0].finish("success", "shipped it");
     await tick();
-    // Publish failed → the ticket must NOT be marked done (that was the false-done bug), and a loud
-    // "leave it for a human" comment is posted instead.
-    expect(client.setStateCalls).toEqual([]);
+    // Publish failed → the ticket must NOT be marked done (that was the false-done bug), but it
+    // also must not stay in an active state that restarts will re-staff.
+    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "todo" }]);
     expect(client.comments.some((c) => c.body.includes("couldn't publish it to GitHub"))).toBe(true);
+    expect(client.comments.some((c) => c.body.includes("no worker keeps burning tokens"))).toBe(true);
   });
 
   test("v3.1: explicit reviewTier 'fresh' forces in_review even at low effort", async () => {

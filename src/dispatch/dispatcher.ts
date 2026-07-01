@@ -698,8 +698,8 @@ export class Dispatcher {
         });
         return;
       }
-      await this.finishTicketAsDone(ticket, "Self-reviewed → **done** (one pass).", summary);
-      this.logger.info("ticket self-reviewed → done", { ticket: ticket.identifier });
+      const done = await this.finishTicketAsDone(ticket, "Self-reviewed → **done** (one pass).", summary);
+      if (done) this.logger.info("ticket self-reviewed → done", { ticket: ticket.identifier });
       return;
     }
 
@@ -911,8 +911,8 @@ export class Dispatcher {
 
     this.reviewInfraRetries.delete(ticket.id);
     if (signal.status === "complete") {
-      await this.finishTicketAsDone(ticket, "Review passed → **done**.", summary);
-      this.logger.info("ticket advanced to done", { ticket: ticket.identifier });
+      const done = await this.finishTicketAsDone(ticket, "Review passed → **done**.", summary);
+      if (done) this.logger.info("ticket advanced to done", { ticket: ticket.identifier });
       return;
     }
 
@@ -980,27 +980,28 @@ export class Dispatcher {
    * Publish FIRST, then mark done — publish success now gates the done transition (and DAG promotion).
    * This reverses the old "done before best-effort publish" ordering: that let a publish failure slip
    * through as a green "done" while nothing shipped (the false-done, OPS-30). On failure the ticket is
-   * LEFT where it is (in_review/in_progress) with a loud "needs a courier" comment and dependents are
-   * NOT promoted — matching the existing rework-cap "leave it for a human" pattern. The tradeoff is
-   * conscious: publish latency now sits in the critical path before done, in exchange for never
-   * reporting done on work that didn't leave the box. DAG dependents build from the local
-   * `~/Projects/<slug>` checkout, so a PR-up-but-unmerged ticket doesn't starve them.
+   * Parked in `todo` with a loud "needs a courier" comment and dependents are NOT promoted. That
+   * keeps the ticket from being re-staffed on restart while still refusing to report `done` for work
+   * that did not leave the box. DAG dependents build from the local `~/Projects/<slug>` checkout, so
+   * a PR-up-but-unmerged ticket doesn't starve them.
    */
   private async finishTicketAsDone(
     ticket: Ticket,
     messagePrefix: string,
     summary: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const pub = await this.publishProject(ticket);
     if (pub.status === "failed") {
-      await this.postComment(
-        ticket.id,
+      await this.advanceTicket(
+        ticket,
+        "todo",
         `The work is complete, but I couldn't publish it to GitHub (${pub.error}). It's committed ` +
-          `locally in \`${this.resolveRepoRoot(ticket)}\` — leaving this ticket for a human/courier ` +
-          `to push or PR (NOT marking it done, so it isn't lost).\n\n${summary}`,
+          `locally in \`${this.resolveRepoRoot(ticket)}\` — moving this ticket to **todo** for a ` +
+          `human/courier to push or PR. I'm NOT marking it done, so it isn't lost, and I'm parking ` +
+          `it so no worker keeps burning tokens.\n\n${summary}`,
       );
-      this.logger.warn("publish failed — holding ticket (not done)", { ticket: ticket.identifier });
-      return; // no setState(done), no promote — the work isn't shipped
+      this.logger.warn("publish failed — parked ticket for courier", { ticket: ticket.identifier });
+      return false; // no setState(done), no promote — the work isn't shipped
     }
 
     // Honest wording: a PR still needs the human's merge; a direct push is actually shipped.
@@ -1013,7 +1014,7 @@ export class Dispatcher {
     const advanced = await this.advanceTicket(ticket, "done", `${messagePrefix}${link}\n\n${summary}`, {
       promoteDependents: true,
     });
-    if (!advanced) return;
+    return advanced;
   }
 
   // ── dependency promotion (the `beckett plan` DAG) ────────────────────────────────────────
