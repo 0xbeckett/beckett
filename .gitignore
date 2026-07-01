@@ -19,3 +19,4 @@ dist/
 # scratch / temp
 scratch/
 *.log
+.agents/
