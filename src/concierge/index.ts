@@ -79,6 +79,17 @@ const ACCESS_DENY_REPLY_MS = 5 * 60_000;
 const ACCESS_DENY_TEXT =
   "I can't run Beckett turns for you yet. Ask the owner to grant access with `beckett access grant <your Discord user id>`.";
 
+function progressStateFile(config: Config, logger: Logger): string | undefined {
+  try {
+    return join(buildPaths(config).beckettDir, "progress-threads.json");
+  } catch (err) {
+    logger.warn("progress thread state path unavailable; persistence disabled", {
+      error: String(err),
+    });
+    return undefined;
+  }
+}
+
 /**
  * Default context-size ceiling (summed input tokens) at which we auto-compact the session.
  * Headless `claude -p` exposes no programmatic `/compact`, so "compaction" here means: summarize
@@ -648,7 +659,9 @@ export class Concierge {
     this.gateway = opts.gateway ?? createDiscordGateway({ config: this.config, logger: this.log });
     this.session =
       opts.session ?? new ConciergeSession({ config: this.config, logger: this.log });
-    this.progress = createProgressHub(this.gateway, this.log);
+    this.progress = createProgressHub(this.gateway, this.log, {
+      stateFile: progressStateFile(this.config, this.log),
+    });
   }
 
   /**
@@ -791,8 +804,11 @@ export class Concierge {
     }
     const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
     const text = typeof req.args.text === "string" ? req.args.text.trim() : "";
-    if (!channelId || !text) {
-      return { ok: false, error: "discord.reply needs both channelId and text" };
+    const files = Array.isArray(req.args.files)
+      ? req.args.files.map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean)
+      : [];
+    if (!channelId || (!text && files.length === 0)) {
+      return { ok: false, error: "discord.reply needs channelId and text or files" };
     }
     try {
       // If this reply lands DURING the @mention turn it's answering, claim that turn: post it as a
@@ -800,7 +816,10 @@ export class Concierge {
       // auto-post the turn text (the duplicate-message bug). Any other channel posts normally.
       const active = this.activeMention;
       const claimsActiveTurn = !!active && active.channelId === channelId;
-      const opts = claimsActiveTurn ? { replyToMessageId: active!.messageId } : undefined;
+      const opts = {
+        ...(claimsActiveTurn ? { replyToMessageId: active!.messageId } : {}),
+        ...(files.length > 0 ? { files } : {}),
+      };
       const messageId = await this.gateway.post(channelId, text, opts);
       if (claimsActiveTurn && active) {
         active.repliedViaCli = true;

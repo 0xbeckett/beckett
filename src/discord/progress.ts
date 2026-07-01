@@ -26,12 +26,13 @@
  *    ticket runs implement→review→rework workers over time; all post to its thread, tagged by
  *    stage.
  *
- * The `ticketIdent → thread` map is in-memory (like the dispatcher's own `baseShaForTicket` /
- * `reworkCount`): a daemon restart orphans threads for in-flight tickets. That's the accepted v1
- * tradeoff — see `docs/V3.md` if this later needs to survive restarts (stamp the thread id on the
- * ticket via the same origin-marker mechanism `originChannel` uses).
+ * The `ticketIdent → thread` map is persisted in the runtime dir after a thread opens, so a daemon
+ * restart can keep posting worker events into the same progress thread. It is best-effort: if the
+ * state file is corrupt or missing, new ticket.filed acks still create fresh mappings.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { WorkerEvent, Logger } from "../types.ts";
 import { log as rootLog } from "../log.ts";
 
@@ -65,6 +66,9 @@ export interface OpenThreadRequest {
 export interface ProgressHubOptions {
   flushIntervalMs?: number;
   openRetryMs?: number;
+  openMaxAttempts?: number;
+  /** JSON file used to remember ticket → thread mappings across daemon restarts. */
+  stateFile?: string;
 }
 
 /** Coalesce window: at most one digest post per thread per this interval (rate-limit safety). */
@@ -75,16 +79,24 @@ const MAX_POST_CHARS = 1_900;
 const MAX_BUFFER_LINES = 200;
 /** After an open fails (gateway mid-reconnect), retry on this cadence even if no new events arrive. */
 const OPEN_RETRY_MS = 5_000;
+/** Bounded retries before degrading to parent-channel digests. */
+const OPEN_MAX_ATTEMPTS = 3;
 
 /** One live thread's state (one per anchor message = one per {@link ThreadFeed}). */
 interface ThreadFeed {
   channelId: string;
   anchorMessageId: string;
   name: string;
+  /** Ticket identifiers mapped to this feed (one normally, many for plan DAGs). */
+  ticketIdents: Set<string>;
   /** null until the Discord thread is actually created; events buffer until then. */
   threadId: string | null;
   /** True while a {@link startThread} call is in flight (dedups concurrent opens). */
   opening: boolean;
+  /** Count of failed open attempts; permanent failures degrade immediately. */
+  openAttempts: number;
+  /** True once thread creation is abandoned and digests post in the parent channel. */
+  degradedToChannel: boolean;
   /** Set once a 2nd ticket maps here (a `plan` DAG) → lines get an `[IDENT]` prefix to disambiguate. */
   multiTicket: boolean;
   /** Formatted lines awaiting a flush. */
@@ -94,6 +106,12 @@ interface ThreadFeed {
   flushTimer: ReturnType<typeof setTimeout> | null;
   /** toolId → tool name, so a later `tool_result` error can name the tool that failed. */
   toolNames: Map<string, string>;
+}
+
+interface StoredThread {
+  channelId: string;
+  threadId: string;
+  name: string;
 }
 
 /**
@@ -107,10 +125,14 @@ export class ProgressHub implements ProgressSink {
   private readonly log: Logger;
   private readonly flushIntervalMs: number;
   private readonly openRetryMs: number;
+  private readonly openMaxAttempts: number;
+  private readonly stateFile?: string;
   /** One feed per anchor message (the thread). */
   private readonly feeds = new Map<string, ThreadFeed>();
   /** ticketIdent → anchorMessageId, so {@link event} can route a ticket's events to its thread. */
   private readonly anchorByTicket = new Map<string, string>();
+  /** ticketIdent → persisted thread mapping, loaded at boot and updated when threads open. */
+  private readonly savedByTicket = new Map<string, StoredThread>();
   /** Events for a ticket whose thread isn't registered yet (openThread not called), drained on open. */
   private readonly pendingByTicket = new Map<string, string[]>();
 
@@ -119,6 +141,9 @@ export class ProgressHub implements ProgressSink {
     this.log = (logger ?? rootLog).child("discord.progress");
     this.flushIntervalMs = opts?.flushIntervalMs ?? FLUSH_INTERVAL_MS;
     this.openRetryMs = opts?.openRetryMs ?? OPEN_RETRY_MS;
+    this.openMaxAttempts = opts?.openMaxAttempts ?? OPEN_MAX_ATTEMPTS;
+    this.stateFile = opts?.stateFile;
+    this.loadState();
   }
 
   /**
@@ -138,8 +163,11 @@ export class ProgressHub implements ProgressSink {
         channelId,
         anchorMessageId,
         name: title,
+        ticketIdents: new Set([ticketIdent]),
         threadId: null,
         opening: false,
+        openAttempts: 0,
+        degradedToChannel: false,
         multiTicket: false,
         buffer: [],
         elided: 0,
@@ -150,7 +178,9 @@ export class ProgressHub implements ProgressSink {
       this.log.info("progress thread registered", { ticket: ticketIdent, channelId, anchorMessageId });
     } else {
       // A second ticket joined this ack's thread (a plan DAG) — from now on tag lines by ticket.
+      feed.ticketIdents.add(ticketIdent);
       feed.multiTicket = true;
+      if (feed.threadId) this.remember(feed, feed.threadId);
       this.pushLine(feed, `▸ also tracking ${ticketIdent}: ${title}`);
     }
 
@@ -173,7 +203,8 @@ export class ProgressHub implements ProgressSink {
    */
   event(ticketIdent: string, ev: WorkerEvent, ctx: ProgressContext): void {
     const anchor = this.anchorByTicket.get(ticketIdent);
-    const feed = anchor ? this.feeds.get(anchor) : undefined;
+    let feed = anchor ? this.feeds.get(anchor) : undefined;
+    if (!feed) feed = this.restoreFeed(ticketIdent);
     const line = formatEvent(ev, ctx, feed?.toolNames);
     if (line === null) return; // event not worth surfacing (noise: partial text, turn ticks, echoes)
 
@@ -267,25 +298,47 @@ export class ProgressHub implements ProgressSink {
   }
 
   /**
-   * Open the Discord thread for a feed if it isn't open (or opening). Best-effort: on failure
-   * (gateway mid-reconnect, anchor deleted) it clears the flag and schedules a retry so a later
-   * event — or the retry timer — re-attempts, rather than silently losing the thread.
+   * Open the Discord thread for a feed if it isn't open (or opening). Best-effort: transient
+   * failures retry, but permanent failures (DMs cannot host threads) and repeated failures degrade
+   * to parent-channel digest posts so the feed does not retry forever.
    */
   private ensureOpen(feed: ThreadFeed): void {
-    if (feed.threadId || feed.opening) return;
+    if (feed.threadId || feed.opening || feed.degradedToChannel) return;
     feed.opening = true;
+    feed.openAttempts++;
     void this.gateway
       .startThread(feed.channelId, feed.anchorMessageId, feed.name)
       .then((threadId) => {
         feed.opening = false;
+        feed.openAttempts = 0;
         feed.threadId = threadId;
+        this.remember(feed, threadId);
         void this.flush(feed);
       })
       .catch((err) => {
         feed.opening = false;
+        const error = String(err);
+        const permanent = /cannot host a thread|dm|direct message/i.test(error);
+        if (permanent || feed.openAttempts >= this.openMaxAttempts) {
+          feed.degradedToChannel = true;
+          feed.threadId = feed.channelId;
+          this.remember(feed, feed.channelId);
+          this.pushLine(
+            feed,
+            `Progress thread unavailable; posting ${feed.name} progress digests here instead.`,
+          );
+          this.log.warn("progress thread open failed — degrading to parent channel", {
+            anchorMessageId: feed.anchorMessageId,
+            attempts: feed.openAttempts,
+            error,
+          });
+          void this.flush(feed);
+          return;
+        }
         this.log.warn("progress thread open failed — will retry", {
           anchorMessageId: feed.anchorMessageId,
-          error: String(err),
+          attempts: feed.openAttempts,
+          error,
         });
         // Retry even if no further events arrive (e.g. the worker finished before the gateway came back).
         if (!feed.flushTimer) {
@@ -296,11 +349,84 @@ export class ProgressHub implements ProgressSink {
         }
       });
   }
+
+  private restoreFeed(ticketIdent: string): ThreadFeed | undefined {
+    const saved = this.savedByTicket.get(ticketIdent);
+    if (!saved) return undefined;
+    const anchor = saved.threadId;
+    this.anchorByTicket.set(ticketIdent, anchor);
+    let feed = this.feeds.get(anchor);
+    if (!feed) {
+      feed = {
+        channelId: saved.channelId,
+        anchorMessageId: anchor,
+        name: saved.name,
+        ticketIdents: new Set([ticketIdent]),
+        threadId: saved.threadId,
+        opening: false,
+        openAttempts: 0,
+        degradedToChannel: saved.threadId === saved.channelId,
+        multiTicket: false,
+        buffer: [],
+        elided: 0,
+        flushTimer: null,
+        toolNames: new Map(),
+      };
+      this.feeds.set(anchor, feed);
+    } else {
+      feed.ticketIdents.add(ticketIdent);
+      if (feed.ticketIdents.size > 1) feed.multiTicket = true;
+    }
+    return feed;
+  }
+
+  private remember(feed: ThreadFeed, threadId: string): void {
+    for (const ticketIdent of feed.ticketIdents) {
+      this.savedByTicket.set(ticketIdent, { channelId: feed.channelId, threadId, name: feed.name });
+    }
+    this.saveState();
+  }
+
+  private loadState(): void {
+    if (!this.stateFile || !existsSync(this.stateFile)) return;
+    try {
+      const raw = JSON.parse(readFileSync(this.stateFile, "utf8")) as Record<string, StoredThread>;
+      for (const [ticketIdent, rec] of Object.entries(raw)) {
+        if (
+          typeof rec?.channelId === "string" &&
+          typeof rec.threadId === "string" &&
+          typeof rec.name === "string"
+        ) {
+          this.savedByTicket.set(ticketIdent, rec);
+        }
+      }
+    } catch (err) {
+      this.log.warn("progress thread state load failed; starting fresh", { err: String(err) });
+    }
+  }
+
+  private saveState(): void {
+    if (!this.stateFile) return;
+    try {
+      mkdirSync(dirname(this.stateFile), { recursive: true });
+      writeFileSync(
+        this.stateFile,
+        JSON.stringify(Object.fromEntries(this.savedByTicket.entries()), null, 2) + "\n",
+        "utf8",
+      );
+    } catch (err) {
+      this.log.warn("progress thread state save failed", { err: String(err) });
+    }
+  }
 }
 
 /** Factory matching the repo's `createX` convention. */
-export function createProgressHub(gateway: ThreadCapableGateway, logger?: Logger): ProgressHub {
-  return new ProgressHub(gateway, logger);
+export function createProgressHub(
+  gateway: ThreadCapableGateway,
+  logger?: Logger,
+  opts?: ProgressHubOptions,
+): ProgressHub {
+  return new ProgressHub(gateway, logger, opts);
 }
 
 // =======================================================================================

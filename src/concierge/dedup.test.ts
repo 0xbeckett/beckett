@@ -35,6 +35,7 @@ interface Post {
   channelId: string;
   text: string;
   replyTo?: string;
+  files?: string[];
 }
 
 /**
@@ -52,8 +53,8 @@ function harness(opts: { replyViaCli: boolean; turnText: string; cliText?: strin
     async start() {},
     async stop() {},
     sendTyping() {},
-    async post(channelId: string, text: string, o?: { replyToMessageId?: string }) {
-      posts.push({ channelId, text, replyTo: o?.replyToMessageId });
+    async post(channelId: string, text: string, o?: { replyToMessageId?: string; files?: string[] }) {
+      posts.push({ channelId, text, replyTo: o?.replyToMessageId, files: o?.files });
       return `mid-${posts.length}`;
     },
   } as unknown as DiscordGateway;
@@ -94,14 +95,14 @@ test("answers via CLI → exactly one post, native reply, no auto-post duplicate
   await concierge.onMessage(mention());
   // Only the CLI reply lands — once — and it's a NATIVE reply to the @mention (not a bare post).
   expect(posts).toHaveLength(1);
-  expect(posts[0]).toEqual({ channelId: CHAN, text: "the cli answer", replyTo: MSG });
+  expect(posts[0]).toEqual({ channelId: CHAN, text: "the cli answer", replyTo: MSG, files: undefined });
 });
 
 test("answers normally (no CLI) → the turn text is auto-posted once as a native reply", async () => {
   const { concierge, posts } = harness({ replyViaCli: false, turnText: "just the turn text" });
   await concierge.onMessage(mention());
   expect(posts).toHaveLength(1);
-  expect(posts[0]).toEqual({ channelId: CHAN, text: "just the turn text", replyTo: MSG });
+  expect(posts[0]).toEqual({ channelId: CHAN, text: "just the turn text", replyTo: MSG, files: undefined });
 });
 
 test("a CLI reply OUTSIDE any live @mention turn posts plainly (proactive update path)", async () => {
@@ -109,5 +110,14 @@ test("a CLI reply OUTSIDE any live @mention turn posts plainly (proactive update
   // No @mention in flight (this models notify()'s update turn) → plain post, no reply-bar.
   await concierge.onBusRequest({ cmd: "discord.reply", args: { channelId: CHAN, text: "shipped it" } });
   expect(posts).toHaveLength(1);
-  expect(posts[0]).toEqual({ channelId: CHAN, text: "shipped it", replyTo: undefined });
+  expect(posts[0]).toEqual({ channelId: CHAN, text: "shipped it", replyTo: undefined, files: undefined });
+});
+
+test("discord.reply forwards files and permits image-only posts", async () => {
+  const { concierge, posts } = harness({ replyViaCli: false, turnText: "" });
+  await concierge.onBusRequest({
+    cmd: "discord.reply",
+    args: { channelId: CHAN, text: "", files: ["/tmp/logo.png"] },
+  });
+  expect(posts).toEqual([{ channelId: CHAN, text: "", replyTo: undefined, files: ["/tmp/logo.png"] }]);
 });
