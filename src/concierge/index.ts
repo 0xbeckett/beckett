@@ -35,9 +35,17 @@ import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { serveBus, type BusRequest, type BusResponse } from "../shell/control-bus.ts";
 import { createDiscordGateway, type DiscordGateway } from "../discord/gateway.ts";
+import { downloadAttachments, formatAttachmentManifest } from "../discord/attachments.ts";
 
 /** The same env keys the worker driver strips — subscription auth only (Spec 00 §4). */
 const FORBIDDEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] as const;
+
+/**
+ * Ops channel that gets a one-line banner on every daemon boot (short git hash + subject) so a
+ * restart is visible and we can see exactly which commit is live. Hardcoded by design (it's an
+ * ops constant, not per-conversation), overridable via `BECKETT_STARTUP_CHANNEL_ID` for dev.
+ */
+const STARTUP_CHANNEL_ID = "1520658476974735490";
 
 /** Hard ceiling on one chat turn before we give up waiting for its `result` line. */
 const TURN_TIMEOUT_MS = 240_000;
@@ -604,7 +612,29 @@ export class Concierge {
     this.gateway.onMessage((m) => this.onMessage(m));
     await this.gateway.start();
     this.serveControlBus();
+    // Announce the boot (with the live commit) once the gateway is up. Best-effort + non-blocking:
+    // a failed post must never hold up — or crash — the daemon coming online.
+    void this.announceStartup();
     this.log.info("concierge online", { model: this.config.concierge.model });
+  }
+
+  /**
+   * Post a one-time startup banner to {@link STARTUP_CHANNEL_ID} with the current git commit
+   * (short hash + subject) so each restart is visible and the running code is unambiguous. Fires
+   * once per boot (called from {@link start}); best-effort — never throws, never blocks startup.
+   */
+  private async announceStartup(): Promise<void> {
+    const channelId = process.env.BECKETT_STARTUP_CHANNEL_ID?.trim() || STARTUP_CHANNEL_ID;
+    try {
+      const { short, subject } = await currentGitCommit(defaultRepoRoot());
+      const line = subject
+        ? `beckett daemon restarted — now live on \`${short}\` (${subject})`
+        : `beckett daemon restarted — now live on \`${short}\``;
+      await this.gateway.post(channelId, line);
+      this.log.info("posted startup banner", { channelId, commit: short });
+    } catch (err) {
+      this.log.warn("startup banner failed (continuing)", { channelId, err: String(err) });
+    }
   }
 
   async stop(): Promise<void> {
@@ -744,7 +774,9 @@ export class Concierge {
   async onMessage(m: IncomingMessage): Promise<void> {
     if (!m.mentionsBot) return;
     const content = m.content.trim();
-    if (!content) return;
+    // Engage when there's text OR files to look at. An image-only message (a screenshot with no
+    // caption) used to die on this guard — now that we can see attachments it's a real turn.
+    if (!content && m.attachments.length === 0) return;
 
     // Track this turn so a `beckett discord reply` the Concierge runs while answering it counts as
     // THE reply (and suppresses the auto-post below) instead of producing a second message.
@@ -758,7 +790,8 @@ export class Concierge {
     void this.gateway.sendTyping(m.channelId);
 
     try {
-      const reply = await this.session.ask(frameUserTurn(m.channelId, content));
+      const turn = await this.buildTurn(m, content);
+      const reply = await this.session.ask(turn);
       keepTyping = false;
       clearInterval(typing);
       const text = reply.trim();
@@ -781,6 +814,36 @@ export class Concierge {
       if (this.activeMention === mention) this.activeMention = null;
     }
   }
+
+  /**
+   * Turn an inbound message into the single user line the session sees. With no attachments it's
+   * just the framed text. With attachments (images, screenshots, pdfs, anything dragged in) we pull
+   * the bytes down locally and append a manifest of Read-able paths — the session is a full `claude`
+   * harness, so a downloaded image is opened by its Read tool and rendered as real vision input
+   * (this mirrors the shell's parent-injection path). Best-effort: a failed/oversized download
+   * degrades to a note in the manifest and never drops the turn.
+   */
+  private async buildTurn(m: IncomingMessage, content: string): Promise<string> {
+    if (m.attachments.length === 0) return frameUserTurn(m.channelId, content);
+    let manifest = "";
+    try {
+      const downloaded = await downloadAttachments(m.attachments, {
+        attachmentsDir: buildPaths(this.config).attachmentsDir,
+        messageId: m.messageId,
+        logger: this.log.child("attachments"),
+      });
+      manifest = formatAttachmentManifest(downloaded);
+    } catch (err) {
+      // downloadAttachments is already best-effort; belt-and-suspenders so a bad upload never
+      // drops the whole message — fall back to whatever text the person typed.
+      this.log.warn("attachment handling failed; sending text only", {
+        messageId: m.messageId,
+        err: String(err),
+      });
+    }
+    const body = content && manifest ? `${content}\n${manifest}` : content || manifest;
+    return frameUserTurn(m.channelId, body);
+  }
 }
 
 /** Factory: build a Concierge from options (mirrors the repo's `createX` convention). */
@@ -795,6 +858,33 @@ export function createConcierge(opts: ConciergeOptions = {}): Concierge {
 /** Repo root = two levels up from `src/concierge/` (matches the `site` group in beckett.ts). */
 function defaultRepoRoot(): string {
   return join(import.meta.dir, "..", "..");
+}
+
+/**
+ * Read the running code's git commit — short hash + subject line — from `repoRoot`. Used by the
+ * startup banner so a restart shows exactly what's live. Best-effort: any failure (not a repo, no
+ * git, detached weirdness) degrades to `{ short: "unknown", subject: "" }` rather than throwing.
+ */
+export async function currentGitCommit(
+  repoRoot: string,
+): Promise<{ short: string; subject: string }> {
+  const run = async (args: string[]): Promise<string> => {
+    const proc = Bun.spawn({
+      cmd: ["git", "-C", repoRoot, ...args],
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const out = (await new Response(proc.stdout).text()).trim();
+    await proc.exited;
+    return out;
+  };
+  try {
+    const short = (await run(["rev-parse", "--short", "HEAD"])) || "unknown";
+    const subject = await run(["log", "-1", "--pretty=%s"]);
+    return { short, subject };
+  } catch {
+    return { short: "unknown", subject: "" };
+  }
 }
 
 /** Read the sibling `concierge.md` — the stable operating doctrine half of the system prompt. */
