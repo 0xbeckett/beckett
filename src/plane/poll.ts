@@ -175,9 +175,9 @@ export class PlanePoller {
    * Without this, a ticket sitting in `in_progress` after a crash would be orphaned — its state
    * never changes again, so {@link poll} would emit nothing for it.
    *
-   * Returns a `state_changed{from:null}` for every `in_progress` ticket (the Dispatcher re-spawns
-   * an implementer). `in_review` tickets are surfaced via a warning rather than auto-re-reviewed:
-   * the reviewer needs the prior implementation branch, which is not recoverable from Plane alone.
+   * Returns a `state_changed{from:null}` for every active ticket, so restart recovery re-staffs
+   * implementers and reviewers. v3.1 uses persistent project repos, so review can diff the existing
+   * checkout even when the daemon lost its in-memory worker handle.
    */
   async prime(): Promise<PollEvent[]> {
     let tickets: Ticket[];
@@ -207,6 +207,7 @@ export class PlanePoller {
         recoverInProgress++;
         commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
       } else if (ticket.state === "in_review") {
+        recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
         inReview++;
         commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
       }
@@ -215,13 +216,8 @@ export class PlanePoller {
     this.logger.info("primed snapshot", {
       tickets: this.snapshot.size,
       recover_in_progress: recoverInProgress,
-      in_review_awaiting_human: inReview,
+      recover_in_review: inReview,
     });
-    if (inReview > 0) {
-      this.logger.warn("tickets in in_review at startup are not auto-re-reviewed (no branch)", {
-        count: inReview,
-      });
-    }
     return recovery;
   }
 
