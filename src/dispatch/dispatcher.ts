@@ -335,7 +335,7 @@ export class Dispatcher {
         return;
       case "todo":
       case "backlog":
-        // No worker runs in these states; nothing to spawn. A live worker (if any) is left as-is.
+        await this.onParked(ticket, to);
         return;
     }
   }
@@ -379,6 +379,38 @@ export class Dispatcher {
     this.workers.delete(ticket.id);
     await handle.abort("ticket cancelled");
     await handle.reap();
+    this.pump();
+  }
+
+  private async onParked(ticket: Ticket, state: "todo" | "backlog"): Promise<void> {
+    const handle = this.workers.get(ticket.id);
+    this.baseShaForTicket.delete(ticket.id);
+    this.implementRetries.delete(ticket.id);
+    this.reviewInfraRetries.delete(ticket.id);
+    this.staffing.delete(ticket.id);
+    this.dropPending(ticket.id);
+    this.releaseRepo(ticket.id);
+    if (!handle) {
+      this.logger.info("ticket parked (no live worker)", { ticket: ticket.identifier, state });
+      this.pump();
+      return;
+    }
+
+    this.logger.warn("ticket parked — stopping live worker", {
+      ticket: ticket.identifier,
+      workerId: handle.id,
+      state,
+    });
+    this.workers.delete(ticket.id);
+    await handle.abort(`ticket moved to ${state}`);
+    await handle.reap();
+    const sha = await this.commitWip(ticket, handle);
+    const at = sha ? ` at \`${sha.slice(0, 9)}\`` : "";
+    await this.postComment(
+      ticket.id,
+      `Ticket moved to **${state}** while a worker was running, so I stopped the worker and ` +
+        `committed any WIP${at}. Move it back to **in_progress** when you're ready to resume.`,
+    );
     this.pump();
   }
 

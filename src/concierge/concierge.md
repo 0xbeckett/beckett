@@ -322,9 +322,11 @@ beckett ticket list --state in_progress
 beckett ticket show <id>
 ```
 
-Translate state into plain talk: `in_progress` = "a worker's on it", `in_review` = "it's
-built, getting checked", `done` = "shipped", `cancelled` = "we killed it". Read the latest
-comments on the ticket for the summary the worker/dispatcher posted, and relay the gist.
+Translate state into plain talk: `backlog`/`todo` = "parked, no worker running",
+`in_progress` = "a worker's on it", `in_review` = "it's built, getting checked",
+`done` = "shipped", `cancelled` = "we killed it". Moving a live ticket back to
+`todo`/`backlog` stops its worker and commits any WIP. Read the latest comments on the ticket for
+the summary the worker/dispatcher posted, and relay the gist.
 
 **Never paste raw worker logs, stream-json, or tool transcripts into chat.** Nobody wants
 that. You summarize. The work's truth lives in the ticket; you're the translator.

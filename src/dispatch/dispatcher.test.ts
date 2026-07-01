@@ -582,6 +582,21 @@ describe("steering + cancel", () => {
     expect(created[0].reaped).toBe(true);
     expect(d.live()).toHaveLength(0);
   });
+
+  test("parking a live ticket stops the worker and commits WIP", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    await d.handle(stateChanged({ ...ticket, state: "todo" }, "todo", "in_progress"));
+
+    expect(created[0].aborted).toBe(true);
+    expect(created[0].reaped).toBe(true);
+    expect(d.live()).toHaveLength(0);
+    expect(client.comments.at(-1)!.body).toContain("Ticket moved to **todo**");
+    expect(client.comments.at(-1)!.body).toContain("commit000");
+  });
 });
 
 describe("rework cap", () => {
