@@ -62,18 +62,24 @@
   @keyframes drift4{to{transform:translate(-6%,7%) scale(1.1)}}
   @media(max-width:880px){.aurora b{filter:blur(48px)}}
 
-  /* voxel parallax scene — hand-rolled isometric voxels on canvas, pre-rendered once
-     per layer then translated on the GPU (transform only) for scroll/mouse parallax.
-     three depth planes sit BEHIND all copy (z-index 0, under .wrap's z-index 1) and are
-     dimmed so the dark theme + orange accent still lead. static under reduced-motion. */
-  .voxel{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;
-    -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 12%,#000 82%,transparent);
-    mask-image:linear-gradient(180deg,transparent 0,#000 12%,#000 82%,transparent)}
+  /* voxel world — hand-rolled isometric voxels on canvas, pre-rendered once per depth
+     plane then translated on the GPU (transform only) for scroll/mouse parallax. It's a
+     single continuous scene: a snow-capped mountain range on the horizon, a grass valley
+     with a cabin, cherry + pine trees, a pond, crystals and mushrooms up front. The copy
+     lives INSIDE this world — the planes fill the whole page (no hard mask cut) and a
+     soft scrim keeps text legible. Static (no rAF) under reduced-motion. */
+  .voxel{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
   .vx{position:absolute;top:0;left:0;will-change:transform;transform:translateZ(0)}
-  #vxbg{opacity:.4;filter:blur(.5px)}
-  #vxmid{opacity:.82}
-  #vxfg{opacity:.6}
-  @media(max-width:880px){#vxfg{opacity:.4}#vxmid{opacity:.62}}
+  #vxbg{opacity:.62;filter:blur(.4px)}
+  #vxmid{opacity:.96}
+  #vxfg{opacity:.9}
+  @media(max-width:880px){#vxfg{opacity:.7}#vxmid{opacity:.8}#vxbg{opacity:.5}}
+  /* unifying scrim: darkens where copy sits (top hero band + a gentle floor) so the
+     scene reads as one backdrop the text is embedded in, never washing out legibility. */
+  .scrim{position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:
+      radial-gradient(120% 80% at 50% -8%,rgba(9,9,11,.82),rgba(9,9,11,.32) 46%,transparent 68%),
+      linear-gradient(180deg,rgba(9,9,11,.28) 0,transparent 30%,transparent 72%,rgba(9,9,11,.55) 100%)}
 
   .cur{position:fixed;top:0;left:0;width:8px;height:8px;border-radius:50%;background:var(--accent);z-index:60;
     pointer-events:none;transform:translate(-50%,-50%);mix-blend-mode:difference;
@@ -233,6 +239,7 @@
 <div class="cur" id="cur" aria-hidden="true"></div>
 <div class="aurora" aria-hidden="true"><b class="b1"></b><b class="b2"></b><b class="b3"></b><b class="b4"></b></div>
 <div class="voxel" aria-hidden="true"><canvas class="vx" id="vxbg"></canvas><canvas class="vx" id="vxmid"></canvas><canvas class="vx" id="vxfg"></canvas></div>
+<div class="scrim" aria-hidden="true"></div>
 
 <nav>
   <div class="nav-in">
@@ -379,31 +386,79 @@
       vox.forEach(function(v){voxel(ctx,ox+(v.gx-v.gy)*TW,oy+(v.gx+v.gy)*TH-v.gz*H,TW,v.c);});
     }
 
-    var PINK=['#ffc2de','#ff9ec6','#f77fb2','#ffb0d4'],
-        GRASS='#7fce7f',DIRT='#6a5140',TRUNK='#7c5a44',
-        HILL=['#463c68','#3a3357','#514a78','#2f2a47'],
-        FGCOL=['#ff9ec6','#8f7bd6','#7fce7f','#ffc2de'];
+    // ── palette: a warm, varied voxel world (greens, stone, snow, water, blossom,
+    //    crystal, warm woods) — deliberately richer than one repeated motif. ──
+    var C={
+      grass:'#7ec86a',grassD:'#66aa55',dirt:'#6a5140',dirtD:'#4e3a2d',
+      trunk:'#7c5a44',
+      blossom:['#ffb0d4','#ff9ec6','#f77fb2','#ffc2de'],
+      pine:['#3f9160','#347a51','#2b6544'],
+      stone:'#9198a6','stoneD':'#6d7380',snow:'#eef3f9',
+      water:['#4aa8dc','#3f92c6','#5cb8e6'],
+      roof:'#e0603f','roofD':'#bd4a2c',wall:'#e9dcc2','wallD':'#cabfa2',win:'#ffd66b',
+      crystal:['#9a86e2','#b09cf0','#7d68cc'],
+      shroomCap:'#e5533d',shroomStem:'#efe7d6',shroomDot:'#ffe4d6'
+    };
 
-    // ── BACKGROUND: rolling low-contrast hills (distant terrain) ──
-    function terrain(){var v=[];for(var gx=-9;gx<=9;gx++)for(var gy=-2;gy<=8;gy++){
-      var h=Math.round(1.4+1.3*(Math.sin(gx*.55)+Math.cos(gy*.6))+rnd(gx,gy,3)*1.2);if(h<0)h=0;
-      for(var gz=0;gz<=h;gz++)v.push({gx:gx,gy:gy,gz:gz,c:HILL[(gz+9)%HILL.length]});
+    // ── a wide grass valley floor: the ground everything else stands on (cohesion) ──
+    function ground(nx){var v=[];for(var gx=-nx;gx<=nx;gx++)for(var gy=-5;gy<=5;gy++){
+      v.push({gx:gx,gy:gy,gz:0,c:(gx+gy)&1?C.grass:C.grassD});
+      v.push({gx:gx,gy:gy,gz:-1,c:C.dirt});v.push({gx:gx,gy:gy,gz:-2,c:C.dirtD});
     }return v;}
 
-    // ── MIDGROUND: cherry-blossom voxel tree on a grass platter ──
-    function tree(){var v=[];
-      for(var gx=-4;gx<=4;gx++)for(var gy=-4;gy<=4;gy++){var d=gx*gx+gy*gy;
-        if(d<19){v.push({gx:gx,gy:gy,gz:0,c:GRASS});v.push({gx:gx,gy:gy,gz:-1,c:DIRT});}}
-      for(var gz=1;gz<=4;gz++)v.push({gx:0,gy:0,gz:gz,c:TRUNK});
-      v.push({gx:1,gy:0,gz:4,c:TRUNK});v.push({gx:0,gy:-1,gz:4,c:TRUNK});
+    // ── snow-capped mountain (stepped, distant) ──
+    function mountain(base,h){var v=[];for(var lvl=0;lvl<h;lvl++){var r=base-lvl;if(r<0)break;
+      for(var gx=-r;gx<=r;gx++)for(var gy=-r;gy<=r;gy++)if(gx*gx+gy*gy<=r*r+r){
+        var snow=lvl>=h-2;v.push({gx:gx,gy:gy,gz:lvl,c:snow?C.snow:(lvl&1?C.stone:C.stoneD)});
+      }}return v;}
+
+    // ── cherry-blossom tree on a grass mound ──
+    function cherry(){var v=[];
+      for(var gx=-3;gx<=3;gx++)for(var gy=-3;gy<=3;gy++)if(gx*gx+gy*gy<13){
+        v.push({gx:gx,gy:gy,gz:0,c:C.grass});v.push({gx:gx,gy:gy,gz:-1,c:C.dirt});}
+      for(var gz=1;gz<=4;gz++)v.push({gx:0,gy:0,gz:gz,c:C.trunk});
+      v.push({gx:1,gy:0,gz:4,c:C.trunk});v.push({gx:0,gy:-1,gz:4,c:C.trunk});
       for(var bx=-4;bx<=4;bx++)for(var by=-4;by<=4;by++)for(var bz=4;bz<=9;bz++){
         var dz=bz-6.7,r=bx*bx+by*by+dz*dz*1.5;
-        if(r<12.5&&rnd(bx,by,bz)>0.16)v.push({gx:bx,gy:by,gz:bz,c:PINK[(Math.abs(bx+by*2+bz)>>>0)%PINK.length]});
+        if(r<12.5&&rnd(bx,by,bz)>0.16)v.push({gx:bx,gy:by,gz:bz,c:C.blossom[(Math.abs(bx+by*2+bz)>>>0)%C.blossom.length]});
       }return v;}
-    // small floating grass island
-    function island(s){var v=[];for(var gx=-s;gx<=s;gx++)for(var gy=-s;gy<=s;gy++){
-      if(gx*gx+gy*gy<=s*s+1){v.push({gx:gx,gy:gy,gz:0,c:GRASS});v.push({gx:gx,gy:gy,gz:-1,c:DIRT});
-        if(gx*gx+gy*gy<=Math.max(0,s*s-3))v.push({gx:gx,gy:gy,gz:-2,c:DIRT});}}return v;}
+
+    // ── conical pine/evergreen ──
+    function pine(){var v=[];for(var gz=0;gz<3;gz++)v.push({gx:0,gy:0,gz:gz,c:C.trunk});
+      [[2,2],[4,2],[5,1],[6,1],[7,0]].forEach(function(t){var gz=t[0],rr=t[1];
+        for(var gx=-rr;gx<=rr;gx++)for(var gy=-rr;gy<=rr;gy++)if(Math.abs(gx)+Math.abs(gy)<=rr+0.5)
+          v.push({gx:gx,gy:gy,gz:gz,c:C.pine[(gz+Math.abs(gx))%C.pine.length]});});
+      return v;}
+
+    // ── cabin: walls, door, windows, pitched roof, chimney ──
+    function cabin(){var v=[];
+      for(var gx=0;gx<5;gx++)for(var gy=0;gy<5;gy++)for(var gz=0;gz<4;gz++){
+        if(gx===0||gx===4||gy===0||gy===4)v.push({gx:gx,gy:gy,gz:gz,c:(gx+gy)&1?C.wall:C.wallD});}
+      v.push({gx:2,gy:0,gz:0,c:C.wallD});v.push({gx:2,gy:0,gz:1,c:C.dirtD}); // door
+      v.push({gx:1,gy:0,gz:2,c:C.win});v.push({gx:3,gy:0,gz:2,c:C.win});     // windows
+      for(var inset=0,gz=4;inset<=2;inset++,gz++)                            // roof
+        for(var rx=inset;rx<=4-inset;rx++)for(var ry=inset;ry<=4-inset;ry++)
+          v.push({gx:rx,gy:ry,gz:gz,c:inset===0?C.roof:C.roofD});
+      v.push({gx:1,gy:1,gz:4,c:C.stoneD});v.push({gx:1,gy:1,gz:5,c:C.stone}); // chimney
+      return v;}
+
+    // ── still pond sunk into the ground ──
+    function pond(){var v=[];for(var gx=-3;gx<=3;gx++)for(var gy=-2;gy<=2;gy++){var d=gx*gx*.5+gy*gy;
+      if(d<6){v.push({gx:gx,gy:gy,gz:-1,c:C.water[(Math.abs(gx+gy))%C.water.length]});}
+      else if(d<9){v.push({gx:gx,gy:gy,gz:0,c:C.grassD});}}return v;}
+
+    // ── crystal cluster (the deliberate replacement for the old mystery blob) ──
+    function crystals(){var v=[];
+      [[0,0,4],[1,0,2],[-1,0,3],[0,1,2],[0,-1,3]].forEach(function(p,i){
+        for(var gz=0;gz<p[2];gz++)v.push({gx:p[0],gy:p[1],gz:gz,c:C.crystal[i%C.crystal.length]});});
+      return v;}
+
+    // ── toadstool mushroom (foreground detail) ──
+    function shroom(){var v=[];
+      v.push({gx:0,gy:0,gz:0,c:C.shroomStem});v.push({gx:0,gy:0,gz:1,c:C.shroomStem});
+      for(var gx=-1;gx<=1;gx++)for(var gy=-1;gy<=1;gy++)
+        v.push({gx:gx,gy:gy,gz:2,c:(gx===0&&gy===0)?C.shroomDot:C.shroomCap});
+      v.push({gx:0,gy:0,gz:3,c:C.shroomCap});return v;}
 
     var W,H,DPR;
     function fit(cv){DPR=Math.min(2,window.devicePixelRatio||1);W=window.innerWidth;H=window.innerHeight;
@@ -411,19 +466,32 @@
       var c=cv.getContext('2d');c.setTransform(DPR,0,0,DPR,0,0);c.clearRect(0,0,W,H);return c;}
 
     function render(){
-      // background hills, spread low and wide
-      var cb=fit(bg);cluster(cb,terrain(),W*0.5,H*0.66,Math.max(9,W*0.008));
-      // midground: hero tree + a couple floating chunks
-      var cm=fit(mid);var TWm=Math.max(11,Math.min(15,W*0.011));
-      cluster(cm,island(2),W*0.19,H*0.34,TWm*0.72);
-      cluster(cm,island(2),W*0.85,H*0.42,TWm*0.82);
-      cluster(cm,tree(),W*0.66,H*0.58,TWm);
-      // foreground: chunky bits drifting near the edges
-      var cf=fit(fg);var TWf=Math.max(16,W*0.017);
-      var spots=[[0.06,0.28],[0.94,0.2],[0.1,0.82],[0.9,0.78],[0.5,0.94],[0.03,0.55]];
-      spots.forEach(function(s,i){var n=1+(i%3);var vv=[];
-        for(var k=0;k<n;k++)vv.push({gx:k,gy:0,gz:(i+k)%2,c:FGCOL[(i+k)%FGCOL.length]});
-        cluster(cf,vv,W*s[0],H*s[1],TWf);});
+      var mob=W<720;
+      // ── BACKGROUND plane: distant snow-capped mountain range along the horizon ──
+      var cb=fit(bg),TWb=Math.max(6,W*0.0058);
+      cluster(cb,mountain(6,7),W*0.16,H*0.50,TWb);
+      cluster(cb,mountain(8,9),W*0.40,H*0.53,TWb);
+      cluster(cb,mountain(5,6),W*0.63,H*0.50,TWb);
+      cluster(cb,mountain(7,8),W*0.84,H*0.54,TWb);
+
+      // ── MIDGROUND plane: the valley floor + the buildings/trees that sit on it ──
+      var cm=fit(mid),TWm=Math.max(9,Math.min(14,W*0.0105)),by=H*0.80;
+      cluster(cm,ground(Math.ceil(W/(2*TWm))+3),W*0.5,H*0.84,TWm); // continuous floor
+      // drawn back-to-front so nearer objects overpaint farther ones
+      cluster(cm,pine(),W*0.10,by-6,TWm*0.9);
+      cluster(cm,cabin(),W*0.24,by,TWm);
+      cluster(cm,pine(),W*0.40,by+4,TWm*0.95);
+      cluster(cm,pond(),W*0.53,by+18,TWm*1.05);
+      cluster(cm,cherry(),W*0.72,by-2,TWm);
+      cluster(cm,pine(),W*0.90,by+6,TWm*0.9);
+
+      // ── FOREGROUND plane: near, chunky details across the bottom edge ──
+      var cf=fit(fg),TWf=Math.max(13,W*0.014);
+      cluster(cf,crystals(),W*0.06,H*0.93,TWf*1.15);
+      cluster(cf,shroom(),W*0.34,H*0.97,TWf);
+      if(!mob)cluster(cf,shroom(),W*0.62,H*0.99,TWf*0.9);
+      cluster(cf,crystals(),W*0.93,H*0.9,TWf);
+      cluster(cf,shroom(),W*0.80,H*0.98,TWf*1.1);
     }
     render();
 
