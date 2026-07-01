@@ -121,8 +121,11 @@ export interface FileScope {
 /** Bounds effort/turns/wall-clock/network — never dollars (Spec 00 §4; Spec 02 §9). */
 export interface ResourceEnvelope {
   effort: Effort; // reasoning depth; mapped per harness (Spec 02 §9.1)
-  turnCap: number; // hard ceiling on agent turns (--max-turns / watchdog)
-  wallClockS: number; // watchdog kill threshold in seconds
+  turnCap: number; // SOFT turn estimate — drives supervisor drift signals, never a hard kill
+  // SOFT wall-clock estimate (s) feeding supervisor drift signals — NOT a hard kill. The hard
+  // backstop cap is config.supervise.worker_hard_cap_s (drivers/proc.ts#hardCapSeconds); the old
+  // 600s guillotine that read this field is gone (OPS-50).
+  wallClockS: number;
   network: boolean; // outbound network allowed? default false, opt-in per node
 }
 
@@ -1351,6 +1354,9 @@ export interface Config {
     repeated_tool_calls_n: number;
     overrun_factor: number;
     checkin_default_s: number;
+    /** Generous backstop wall-clock cap (s) the per-worker watchdog enforces — a runaway safety
+     *  net, not a work limit (drivers/proc.ts#hardCapSeconds). Floor 1800, default 3600. */
+    worker_hard_cap_s: number;
     tail_mode: "stream" | "disk" | "stream+disk";
   };
   models: {

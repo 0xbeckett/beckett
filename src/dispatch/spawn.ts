@@ -59,6 +59,12 @@ export interface TicketWorkerResult {
   summary: string;
   /** The raw structured done-signal (`{ status, summary, filesChanged, ... }`), if any. */
   structured: unknown | null;
+  /**
+   * True when this run ended because it tripped the generous backstop wall-clock cap (the driver's
+   * `error_wall_clock_cap` finish, OPS-50), rather than finishing/erroring on its own. The
+   * dispatcher keys on this to handle the timeout gracefully (commit WIP, retry / return to ready).
+   */
+  timedOut: boolean;
 }
 
 /** Callback fired exactly once when a worker reaches a terminal `finished` event. */
@@ -368,7 +374,12 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
         break;
       case "finished": {
         const summary = summaryFrom(e.structuredOutput, lastAssistantText);
-        result = { status: e.status, summary, structured: e.structuredOutput };
+        result = {
+          status: e.status,
+          summary,
+          structured: e.structuredOutput,
+          timedOut: e.subtype === "error_wall_clock_cap",
+        };
         state = e.status === "success" ? "review" : "failed";
         logger.info("ticket worker finished", { workerId: id, stage, status: e.status });
         fireDone(e.status, summary);
