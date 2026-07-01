@@ -7,12 +7,34 @@
  * `notify.test.ts`.
  */
 
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Concierge, type ConciergeSession } from "./index.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 
 const CHAN = "chan-42";
+const USER = "111111111111111111";
 const config = { concierge: { model: "m", rotate_at_tokens: 190_000 }, paths: {} } as unknown as Config;
+
+const savedDir = process.env.BECKETT_DIR;
+const savedOwner = process.env.DISCORD_OWNER_ID;
+const tmpDirs: string[] = [];
+afterEach(() => {
+  if (savedDir === undefined) delete process.env.BECKETT_DIR;
+  else process.env.BECKETT_DIR = savedDir;
+  if (savedOwner === undefined) delete process.env.DISCORD_OWNER_ID;
+  else process.env.DISCORD_OWNER_ID = savedOwner;
+  for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+function authorize(): void {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-progress-thread-"));
+  tmpDirs.push(dir);
+  process.env.BECKETT_DIR = dir;
+  process.env.DISCORD_OWNER_ID = USER;
+}
 
 interface Recorded {
   posts: { channelId: string; content: string; replyTo?: string }[];
@@ -42,7 +64,7 @@ function fakeGateway(rec: Recorded) {
 function mention(content: string): IncomingMessage {
   return {
     messageId: "user-msg-1",
-    userId: "u1",
+    userId: USER,
     channelId: CHAN,
     guildId: "g1",
     content,
@@ -55,6 +77,7 @@ function mention(content: string): IncomingMessage {
 }
 
 test("a ticket filed mid-turn anchors its thread to the auto-posted ack", async () => {
+  authorize();
   const rec: Recorded = { posts: [], threads: [] };
   const gateway = fakeGateway(rec);
   // The fake turn: claude files a ticket mid-turn (bus), then the concierge auto-posts the ack text.
@@ -81,6 +104,7 @@ test("a ticket filed mid-turn anchors its thread to the auto-posted ack", async 
 });
 
 test("a ticket filed mid-turn anchors its thread to the CLI-reply ack (no double post)", async () => {
+  authorize();
   const rec: Recorded = { posts: [], threads: [] };
   const gateway = fakeGateway(rec);
   // The fake turn: claude files a ticket, THEN replies itself via `beckett discord reply` (which
@@ -106,6 +130,7 @@ test("a ticket filed mid-turn anchors its thread to the CLI-reply ack (no double
 });
 
 test("a plain chat turn (no ticket filed) opens no thread", async () => {
+  authorize();
   const rec: Recorded = { posts: [], threads: [] };
   const gateway = fakeGateway(rec);
   const session = { ask: async () => "yeah that's just vite's default, you're good" } as unknown as ConciergeSession;

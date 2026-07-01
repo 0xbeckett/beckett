@@ -7,14 +7,29 @@
  * reply (native, once) and the auto-post is suppressed; when it doesn't, the auto-post is the reply.
  */
 
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Concierge, type ConciergeSession } from "./index.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
 
 const CHAN = "1097283746520174592";
 const MSG = "msg-42";
+const USER = "111111111111111111";
 const config = { concierge: { model: "m", rotate_at_tokens: 190_000 }, paths: {} } as unknown as Config;
+
+const savedDir = process.env.BECKETT_DIR;
+const savedOwner = process.env.DISCORD_OWNER_ID;
+const tmpDirs: string[] = [];
+afterEach(() => {
+  if (savedDir === undefined) delete process.env.BECKETT_DIR;
+  else process.env.BECKETT_DIR = savedDir;
+  if (savedOwner === undefined) delete process.env.DISCORD_OWNER_ID;
+  else process.env.DISCORD_OWNER_ID = savedOwner;
+  for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
 
 interface Post {
   channelId: string;
@@ -27,6 +42,10 @@ interface Post {
  * answering via `beckett discord reply` (the bus path) before returning its turn text.
  */
 function harness(opts: { replyViaCli: boolean; turnText: string; cliText?: string }) {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-dedup-"));
+  tmpDirs.push(dir);
+  process.env.BECKETT_DIR = dir;
+  process.env.DISCORD_OWNER_ID = USER;
   const posts: Post[] = [];
   const gateway = {
     onMessage() {},
@@ -62,6 +81,7 @@ function harness(opts: { replyViaCli: boolean; turnText: string; cliText?: strin
 function mention(): IncomingMessage {
   return {
     messageId: MSG,
+    userId: USER,
     channelId: CHAN,
     content: "@beckett where my site at",
     mentionsBot: true,

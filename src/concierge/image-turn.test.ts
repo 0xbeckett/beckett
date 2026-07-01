@@ -42,14 +42,18 @@ function turnText(turn: TurnMessage): string {
 
 const CHAN = "1097283746520174592";
 const MSG = "msg-77";
+const USER = "111111111111111111";
 
 const realFetch = globalThis.fetch;
 const savedBeckettDir = process.env.BECKETT_DIR;
+const savedOwner = process.env.DISCORD_OWNER_ID;
 const tmpDirs: string[] = [];
 afterEach(() => {
   globalThis.fetch = realFetch;
   if (savedBeckettDir === undefined) delete process.env.BECKETT_DIR;
   else process.env.BECKETT_DIR = savedBeckettDir;
+  if (savedOwner === undefined) delete process.env.DISCORD_OWNER_ID;
+  else process.env.DISCORD_OWNER_ID = savedOwner;
   for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -61,6 +65,7 @@ function tmpBeckettDir(): string {
   const d = mkdtempSync(join(tmpdir(), "beckett-concierge-"));
   tmpDirs.push(d);
   process.env.BECKETT_DIR = d;
+  process.env.DISCORD_OWNER_ID = USER;
   return d;
 }
 
@@ -107,7 +112,7 @@ function att(over: Partial<IncomingAttachment> = {}): IncomingAttachment {
 function message(over: Partial<IncomingMessage> = {}): IncomingMessage {
   return {
     messageId: MSG,
-    userId: "u1",
+    userId: USER,
     channelId: CHAN,
     guildId: null,
     content: "",
@@ -212,7 +217,7 @@ test("plain text message (no attachments) is unchanged — a bare framed string,
 
   expect(asks).toHaveLength(1);
   // still a plain string, not an array — now carrying the speaker stamp (OPS-42)
-  expect(asks[0]).toBe(`[channel:${CHAN}] [user:u1 msg:${MSG}]\n@beckett you up`);
+  expect(asks[0]).toBe(`[channel:${CHAN}] [user:${USER} role:owner msg:${MSG}]\n@beckett you up`);
   expect(imageBlocks(asks[0]!)).toHaveLength(0);
 });
 
