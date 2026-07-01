@@ -41,26 +41,23 @@
   a{color:inherit;text-decoration:none}
   body[data-cursor]{cursor:none}
 
-  /* hero aurora — a living, Dia-Browser-style mesh gradient, reimplemented in our own
-     warm palette. soft blurred blobs drifting on the GPU (transform only), masked so it
-     melts into the page. freezes to a static spread under prefers-reduced-motion. */
-  .aurora{position:fixed;top:0;left:0;right:0;height:760px;z-index:0;pointer-events:none;overflow:hidden;
-    -webkit-mask-image:linear-gradient(#000 52%,transparent);mask-image:linear-gradient(#000 52%,transparent)}
-  .aurora b{position:absolute;display:block;border-radius:50%;filter:blur(64px);mix-blend-mode:screen;
-    will-change:transform;transform:translateZ(0)}
-  .aurora .b1{width:48vw;height:48vw;left:6%;top:-18%;opacity:.55;
-    background:radial-gradient(circle,var(--accent),transparent 66%);animation:drift1 19s var(--eo) infinite alternate}
-  .aurora .b2{width:42vw;height:42vw;left:50%;top:-24%;opacity:.5;
-    background:radial-gradient(circle,var(--accent-2),transparent 66%);animation:drift2 23s var(--eo) infinite alternate}
-  .aurora .b3{width:36vw;height:36vw;left:26%;top:0%;opacity:.34;
-    background:radial-gradient(circle,#ff3d7f,transparent 66%);animation:drift3 27s var(--eo) infinite alternate}
-  .aurora .b4{width:32vw;height:32vw;left:66%;top:6%;opacity:.24;
-    background:radial-gradient(circle,#7c5cff,transparent 66%);animation:drift4 31s var(--eo) infinite alternate}
-  @keyframes drift1{to{transform:translate(6%,8%) scale(1.12)}}
-  @keyframes drift2{to{transform:translate(-7%,5%) scale(1.08)}}
-  @keyframes drift3{to{transform:translate(9%,-4%) scale(1.15)}}
-  @keyframes drift4{to{transform:translate(-6%,7%) scale(1.1)}}
-  @media(max-width:880px){.aurora b{filter:blur(48px)}}
+  /* dusk sky — a single baked gradient that becomes the ATMOSPHERE of the one voxel
+     scene: deep indigo at the top, a warm sunset glow at the mountain horizon, settling
+     back to near-black at the valley floor. This replaces the old drifting blob "aurora"
+     (which floated as its own layer over the scene); now sky + voxels + copy read as one
+     continuous world. Fixed, GPU-cheap, no animation cost. */
+  .sky{position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:
+      radial-gradient(120% 62% at 68% 30%,rgba(255,106,44,.16),transparent 60%),
+      linear-gradient(180deg,
+        #140f26 0%,
+        #241436 26%,
+        #4a2340 44%,
+        #914238 55%,
+        #b8592f 61%,
+        #3a1f28 70%,
+        #120e18 82%,
+        var(--bg) 100%)}
 
   /* voxel world — hand-rolled isometric voxels on canvas, pre-rendered once per depth
      plane then translated on the GPU (transform only) for scroll/mouse parallax. It's a
@@ -237,7 +234,7 @@
 </head>
 <body>
 <div class="cur" id="cur" aria-hidden="true"></div>
-<div class="aurora" aria-hidden="true"><b class="b1"></b><b class="b2"></b><b class="b3"></b><b class="b4"></b></div>
+<div class="sky" aria-hidden="true"></div>
 <div class="voxel" aria-hidden="true"><canvas class="vx" id="vxbg"></canvas><canvas class="vx" id="vxmid"></canvas><canvas class="vx" id="vxfg"></canvas></div>
 <div class="scrim" aria-hidden="true"></div>
 
@@ -397,7 +394,8 @@
       water:['#4aa8dc','#3f92c6','#5cb8e6'],
       roof:'#e0603f','roofD':'#bd4a2c',wall:'#e9dcc2','wallD':'#cabfa2',win:'#ffd66b',
       crystal:['#9a86e2','#b09cf0','#7d68cc'],
-      shroomCap:'#e5533d',shroomStem:'#efe7d6',shroomDot:'#ffe4d6'
+      shroomCap:'#e5533d',shroomStem:'#efe7d6',shroomDot:'#ffe4d6',
+      balloon:['#ff6a2c','#ffae8a','#ff3d7f','#ffd66b'],basket:'#7c5a44'
     };
 
     // ── a wide grass valley floor: the ground everything else stands on (cohesion) ──
@@ -453,6 +451,21 @@
         for(var gz=0;gz<p[2];gz++)v.push({gx:p[0],gy:p[1],gz:gz,c:C.crystal[i%C.crystal.length]});});
       return v;}
 
+    // ── hot-air balloon: a striped envelope + a little basket, drifting in the sky.
+    //    a clearly recognizable object that lives INSIDE the scene's air, tying the
+    //    upper (copy) band into the same voxel world as the ground below. ──
+    function balloon(){var v=[];
+      // envelope profile: [gz, radius] narrow→wide→narrow, teardrop-ish
+      [[10,1],[9,2],[8,3],[7,3],[6,3],[5,2],[4,1]].forEach(function(p){
+        var gz=p[0],rr=p[1];
+        for(var gx=-rr;gx<=rr;gx++)for(var gy=-rr;gy<=rr;gy++)if(gx*gx+gy*gy<=rr*rr+rr){
+          // vertical stripes give it the classic balloon banding
+          v.push({gx:gx,gy:gy,gz:gz,c:C.balloon[(Math.abs(gx)+(gx<0?1:0))%C.balloon.length]});
+        }});
+      v.push({gx:0,gy:0,gz:3,c:C.basket}); // short neck / rope gap
+      v.push({gx:0,gy:0,gz:1,c:C.basket});v.push({gx:0,gy:0,gz:0,c:C.basket}); // basket
+      return v;}
+
     // ── toadstool mushroom (foreground detail) ──
     function shroom(){var v=[];
       v.push({gx:0,gy:0,gz:0,c:C.shroomStem});v.push({gx:0,gy:0,gz:1,c:C.shroomStem});
@@ -473,6 +486,8 @@
       cluster(cb,mountain(8,9),W*0.40,H*0.53,TWb);
       cluster(cb,mountain(5,6),W*0.63,H*0.50,TWb);
       cluster(cb,mountain(7,8),W*0.84,H*0.54,TWb);
+      // a distant balloon up in the dawn sky (small, hazy — part of the bg plane)
+      cluster(cb,balloon(),W*0.14,H*0.22,TWb*1.5);
 
       // ── MIDGROUND plane: the valley floor + the buildings/trees that sit on it ──
       var cm=fit(mid),TWm=Math.max(9,Math.min(14,W*0.0105)),by=H*0.80;
@@ -484,6 +499,9 @@
       cluster(cm,pond(),W*0.53,by+18,TWm*1.05);
       cluster(cm,cherry(),W*0.72,by-2,TWm);
       cluster(cm,pine(),W*0.90,by+6,TWm*0.9);
+      // a nearer balloon riding higher in the sky on the right — a crisp focal object in
+      // the mid plane so the hero band clearly belongs to the same voxel world
+      if(!mob)cluster(cm,balloon(),W*0.86,H*0.30,TWm*1.15);
 
       // ── FOREGROUND plane: near, chunky details across the bottom edge ──
       var cf=fit(fg),TWf=Math.max(13,W*0.014);
