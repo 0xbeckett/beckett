@@ -158,6 +158,11 @@ function cfg(max_workers = 2): Config {
   return {
     concurrency: { max_workers },
     models: { reviewer: "claude-opus-4-8" },
+    harness: {
+      claude: { enabled: true },
+      codex: { enabled: true },
+      pi: { enabled: true },
+    },
   } as unknown as Config;
 }
 
@@ -209,6 +214,22 @@ describe("spawn on state change", () => {
     await tick();
     expect(spawnCalls).toHaveLength(1);
     expect(spawnCalls[0]).toMatchObject({ stage: "implement", harness: { harness: "codex" } });
+  });
+
+  test("a cast naming a disabled harness falls back to claude, keeping the effort", async () => {
+    const client = new FakeClient();
+    const config = cfg();
+    (config.harness as unknown as { codex: { enabled: boolean } }).codex.enabled = false;
+    const d = new Dispatcher({
+      client,
+      config,
+      resolveRepoRoot: (ticket) => `/tmp/repo/${ticket.project ?? ticket.identifier}`,
+    });
+    const ticket = makeTicket({ casting: { implement: { harness: "codex", effort: "low" } } });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]).toMatchObject({ harness: { harness: "claude", effort: "low" } });
   });
 
   test("implement defaults to claude when uncast", async () => {

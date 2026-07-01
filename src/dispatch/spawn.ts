@@ -36,6 +36,7 @@ import type {
   Effort,
   SpawnSpec,
   WorkerEvent,
+  WorkerSpend,
   WorkerState,
   HarnessDriver,
 } from "../types.ts";
@@ -90,6 +91,8 @@ export interface TicketWorkerHandle {
   /** The terminal result once finished; null while still live. */
   readonly result: TicketWorkerResult | null;
 
+  /** Live spend counters off the driver (turns/tools/tokens/$) — for finish-comment telemetry. */
+  telemetry(): WorkerSpend;
   /** STEERING: inject a mid-flight nudge (claude: next turn boundary; codex: queued). */
   nudge(text: string): Promise<void>;
   /** CANCEL: hard-stop the harness process, retaining its session id. */
@@ -145,7 +148,12 @@ const DONE_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-/** Effort → (turnCap, wallClockS) envelope mapping (mirrors `manager.ts#buildEnvelope`). */
+/**
+ * Effort → (turnCap, wallClockS) envelope mapping. These are SOFT supervision estimates, never
+ * hard kills: no driver enforces them (the only hard limit is `supervise.worker_hard_cap_s`).
+ * They ride the envelope so stall/overrun detection can compare a worker's real turn count and
+ * wall clock against what its cast effort predicted.
+ */
 const ENVELOPE_BY_EFFORT: Record<Effort, { turnCap: number; wallClockS: number }> = {
   low: { turnCap: 15, wallClockS: 600 },
   medium: { turnCap: 30, wallClockS: 1200 },
@@ -255,9 +263,20 @@ function buildScope(ticket: Ticket): FileScope {
   return { ownedGlobs: [], readGlobs: null, description: `${ticket.identifier}: ${ticket.title}` };
 }
 
-/** Build the resource envelope from the casting effort (defaults to the configured worker effort). */
+function defaultEffortFor(harness: HarnessSpec["harness"], config: Config): Effort {
+  switch (harness) {
+    case "codex":
+      return config.harness.codex.default_effort;
+    case "pi":
+      return config.harness.pi.thinking;
+    case "claude":
+      return config.harness.claude.default_effort;
+  }
+}
+
+/** Build the resource envelope from the casting effort (defaults to the configured harness effort). */
 function buildEnvelope(harness: HarnessSpec, config: Config): ResourceEnvelope {
-  const effort: Effort = harness.effort ?? config.harness.claude.default_effort;
+  const effort: Effort = harness.effort ?? defaultEffortFor(harness.harness, config);
   const { turnCap, wallClockS } = ENVELOPE_BY_EFFORT[effort];
   // Ticket workers self-provision tools / run checks → allow network. codex honors its own
   // sandbox/network config; the envelope flag is informational for claude.
@@ -441,6 +460,9 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     },
     get result() {
       return result;
+    },
+    telemetry(): WorkerSpend {
+      return driver.getTelemetry();
     },
     async nudge(text: string): Promise<void> {
       const receipt = await driver.sendNudge(text);
