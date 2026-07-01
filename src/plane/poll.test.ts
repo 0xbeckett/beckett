@@ -26,7 +26,7 @@ function comment(ticketId: string, over: Partial<PlaneComment> = {}): PlaneComme
   return {
     id: over.id ?? `c-${ticketId}`,
     ticketId,
-    author: "jason",
+    author: "jawrooo",
     body: "nudge",
     createdAt: over.createdAt ?? "2026-01-01T00:00:10.000Z",
     ...over,

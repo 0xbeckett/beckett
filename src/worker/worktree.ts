@@ -399,7 +399,7 @@ export const GH_ORG = process.env.BECKETT_GH_ORG?.trim() || "0xbeckett";
  * The bot git identity every commit in a project checkout must carry. Set repo-LOCAL on each
  * checkout (see {@link applyRepoIdentity}) so nothing — the dispatcher's safety-net commit OR the
  * worker's own inline `git commit`s — can silently inherit a dev box's ambient/personal identity
- * (the `jason.awz2005@icloud.com` leak: `frgmt0`/`kcodes0`-authored commits in the repo history).
+ * (the personal-email leak: dev-box `frgmt0`/`kcodes0`-authored commits in the repo history).
  * Overridable for a differently-named bot via env; defaults match Beckett's GitHub account noreply.
  */
 export const BOT_GIT_NAME = process.env.BECKETT_GIT_NAME?.trim() || "Beckett";

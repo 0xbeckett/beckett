@@ -383,7 +383,7 @@ describe("steering + cancel", () => {
     const ticket = makeTicket();
     await d.handle(stateChanged(ticket, "in_progress"));
     await tick();
-    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jason", body: "cap it at 10s", createdAt: "now" };
+    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "cap it at 10s", createdAt: "now" };
     await d.handle({ kind: "comment_added", ticket, comment });
     expect(created[0].nudges).toEqual(["cap it at 10s"]);
   });

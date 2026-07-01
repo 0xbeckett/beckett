@@ -69,7 +69,7 @@ export class GateRefused extends Error {
   ) {
     super(
       `agency: action "${actionType}" is ALWAYS_ASK and cannot be performed unattended ` +
-        `(Spec 07 §2.3) — it requires an explicit, specific Jason instruction`,
+        `(Spec 07 §2.3) — it requires an explicit, specific jawrooo instruction`,
     );
     this.name = "GateRefused";
   }

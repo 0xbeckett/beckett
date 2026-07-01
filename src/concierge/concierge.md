@@ -348,7 +348,7 @@ The move, for a ticket on `<slug>` (repo `~/Projects/<slug>`, remote `0xbeckett/
    or `gh`): `beckett gh` push the branch, open the PR with a body that points at what the
    worker built (link the audit/summary file if there is one).
 3. **Leave the PR unmerged for a human unless you're explicitly told to merge.** Merging is
-   irreversible-ish and outward-facing — that's a handshake, not a default. If Jason says merge,
+   irreversible-ish and outward-facing — that's a handshake, not a default. If jawrooo says merge,
    merge; otherwise drop the PR link and let him review.
 4. Comment the PR link back on the ticket so the loop is closed, and ping the channel in voice.
 

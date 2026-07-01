@@ -67,10 +67,10 @@ export enum TaskState {
   PLAN = "PLAN", // Opus writing the DAG + per-node acceptance criteria
   STAFF = "STAFF", // Opus assigning worker type per node (capability table)
   EXECUTING = "EXECUTING", // DAG executor running; many NODE FSMs live underneath
-  ESCALATED = "ESCALATED", // halted, awaiting Jason (from CLARIFY/EXECUTING/GATE)
+  ESCALATED = "ESCALATED", // halted, awaiting jawrooo (from CLARIFY/EXECUTING/GATE)
   DELIVERING = "DELIVERING", // Haiku composing + posting the final in-channel message
   DELIVERED = "DELIVERED", // terminal: success, handshake pending or resolved
-  ABORTED = "ABORTED", // terminal: hard-stopped by Jason or self-halt
+  ABORTED = "ABORTED", // terminal: hard-stopped by jawrooo or self-halt
   FAILED = "FAILED", // terminal: unrecoverable, escalation exhausted/declined
 }
 
@@ -471,7 +471,7 @@ export interface NodeRecord {
 // SECTION 7 — Escalation, decisions, intake (Spec 04 §9, Spec 03 §4, Spec 06 §1)
 // =======================================================================================
 
-/** One option offered to Jason at an escalation (Spec 04 §2). */
+/** One option offered to jawrooo at an escalation (Spec 04 §2). */
 export interface EscalationOption {
   key: string;
   label: string;
