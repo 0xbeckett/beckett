@@ -268,13 +268,13 @@ test("un-cast worker falls back to config.harness.pi.thinking for --thinking", (
 
 test("process-exit diagnostics include the stderr tail", () => {
   const driver = new PiDriver(config, quietLog) as unknown as {
-    recordStderr(text: string): void;
+    stderrRing: { record(text: string): void };
     processExitMessage(code: number): string;
-    startupFailureMessage(reason: string): string;
+    spawnFailureError(reason: string | number): Error;
   };
-  driver.recordStderr("first line\nunknown option: --session-id");
+  driver.stderrRing.record("first line\nunknown option: --session-id");
   const exit = driver.processExitMessage(1);
   expect(exit).toContain("unknown option: --session-id");
-  const startup = driver.startupFailureMessage("code 1");
-  expect(startup).toContain("unknown option: --session-id");
+  const startup = driver.spawnFailureError("code 1");
+  expect(startup.message).toContain("unknown option: --session-id");
 });

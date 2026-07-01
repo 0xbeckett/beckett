@@ -5,6 +5,12 @@
  * worker (Spec 02 §4). One instance drives exactly one harness process inside one git
  * worktree.
  *
+ * All process lifecycle (spawn scaffold, watchdog, exit handling, pumps) lives in
+ * {@link BaseDriver} (issue #19); this file is ONLY the claude-specific surface: preflight,
+ * argv construction, stream-json NDJSON parsing, and the LIVE stdin steering channel (claude
+ * is the one harness that can take a nudge mid-run, so it does NOT use {@link OneShotDriver}'s
+ * buffered-relaunch machinery).
+ *
  * Mechanism (Spec 02 §4.1, verified on `claude 2.1.195` — my-docs/loom-desk-setup-log.md
  * Risk-A):
  *
@@ -30,14 +36,10 @@
  * - abort() = SIGTERM→SIGKILL the process, retain the session id (Spec 02 §4.5). resume()
  *   relaunches the same invocation with `--resume <session_id>` from the same cwd, replaying
  *   any nudge buffered across the kill as the first user turn.
- * - A driver-owned wall-clock watchdog enforces a GENEROUS, configurable backstop cap
- *   (`config.supervise.worker_hard_cap_s`, drivers/proc.ts#hardCapSeconds) — a runaway safety net,
- *   not a work limit. On a trip it kills the whole process group (no orphans) then emits a terminal
- *   `finished` (subtype `error_wall_clock_cap`) so the dispatcher handles it gracefully (OPS-50).
  *
  * Economics (Spec 00 §4): tokens / `total_cost_usd` are telemetry only — never a budget gate.
- * Auth (Spec 00 §4): subscription only — the child env has any `ANTHROPIC_API_KEY` /
- * `OPENAI_API_KEY` stripped so `claude` always uses the `~/.claude` login.
+ * Auth (Spec 00 §4): subscription only — the child env strips API keys/endpoint overrides
+ * (src/env.ts) so `claude` always uses the `~/.claude` login.
  */
 
 import type {
@@ -48,17 +50,12 @@ import type {
   SpawnResult,
   SpawnSpec,
   TokenUsage,
-  WorkerEvent,
-  WorkerState,
 } from "../types.ts";
-import { makeLogger } from "../log.ts";
-import { hardCapSeconds, killGroup, killProcessTree, wrapProcessGroup } from "./proc.ts";
-import { classifyHarnessFailure, StderrRing } from "./failure.ts";
+import { childEnv } from "../env.ts";
+import { BaseDriver, type Child } from "./base.ts";
+import { classifyHarnessFailure } from "./failure.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-
-/** The bun subprocess handle type (avoids a hard import of the `bun` module symbol). */
-type Child = ReturnType<typeof Bun.spawn>;
 
 /**
  * Default worker permission mode (Spec 02 §4.1; Spec 12 §1.7): bounded by the worktree + the
@@ -71,18 +68,6 @@ const DEFAULT_PERMISSION_MODE = "bypassPermissions";
 /** How long sendNudge waits for the `--replay-user-messages` echo before reporting `queued`. */
 const ACK_TIMEOUT_MS = 30_000;
 
-/** How long spawn() waits for the `system/init` line before failing the launch. */
-const SPAWN_TIMEOUT_MS = 60_000;
-
-/** How long after SIGTERM we escalate to SIGKILL on abort (Spec 02 §4.5). */
-const SIGKILL_GRACE_MS = 4_000;
-
-/** Watchdog poll interval (Spec 02 §9.3). */
-const WATCHDOG_INTERVAL_MS = 5_000;
-
-/** Env keys that must never reach a child — subscription auth only (Spec 00 §4). */
-const FORBIDDEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] as const;
-
 /** Tool names whose calls imply a worktree write (Spec 02 §7.1 — file_change is derived). */
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
@@ -90,13 +75,6 @@ interface PendingNudge {
   text: string;
   resolve: (r: NudgeReceipt) => void;
   timer: ReturnType<typeof setTimeout>;
-}
-
-/** A subset of the diff stat used for derived telemetry counters. */
-interface DiffStat {
-  added: number;
-  removed: number;
-  files: number;
 }
 
 /** Preflight subprocess timeout — a wedged `--version` must not stall the dispatcher. */
@@ -139,67 +117,78 @@ export async function claudePreflight(config: Config): Promise<{ ok: boolean; pr
   return { ok: problems.length === 0, problems };
 }
 
-export class ClaudeDriver implements HarnessDriver {
+export class ClaudeDriver extends BaseDriver implements HarnessDriver {
   readonly kind = "claude-cli-stream" as const;
 
-  private readonly config: Config;
-  private readonly log: Logger;
-
-  private child: Child | null = null;
-  /** True when the child was launched as its own process-group leader (setsid) — enables tree-kill. */
-  private groupKill = false;
-  private spec: SpawnSpec | null = null;
   private stdinBridgePath: string | null = null;
+  /** The first user line to write right after the next launch (null on plain resume). */
+  private pendingInitialPrompt: string | null = null;
 
-  /** Source of truth for resume identity; minted at spawn or captured from init. */
-  private sessionId: string | null = null;
-  private pid: number | null = null;
-
-  private workerState: WorkerState = "spawning";
-  private finished = false;
-  private spawnedAt = 0;
-  private lastActivityTs = 0;
-
-  // ── normalized-stream parse state ────────────────────────────────────────────
-  private readonly subscribers = new Set<(e: WorkerEvent) => void>();
-  /** Last ~20 stderr lines — the self-diagnosing tail folded into failure messages (issue #17). */
-  private readonly stderrRing = new StderrRing();
+  // ── claude-specific parse state ─────────────────────────────────────────────
   private readonly seenMsgIds = new Set<string>();
   private readonly seenToolIds = new Set<string>();
   private expectTurnStart = true;
-
-  // ── derived counters (Spec 02 §7.3) ──────────────────────────────────────────
-  private turns = 0;
-  private toolCalls = 0;
-  private tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+  /** True once any streamed per-turn usage was counted (result.usage is then a fallback only). */
   private tokensFromStream = false;
+  /** Authoritative cumulative $ from the terminal result line (`total_cost_usd`). */
   private usd: number | null = null;
 
-  // ── steering ──────────────────────────────────────────────────────────────────
+  // ── steering (live stdin channel; Spec 02 §4.4) ─────────────────────────────
   private readonly pendingNudges: PendingNudge[] = [];
   /** Nudges buffered while paused / between a kill and a resume (Spec 02 §4.5). */
   private readonly bufferedNudges: string[] = [];
 
-  // ── launch lifecycle plumbing ───────────────────────────────────────────────
-  private resolveSession: ((r: SpawnResult) => void) | null = null;
-  private rejectSession: ((e: Error) => void) | null = null;
-  private spawnTimer: ReturnType<typeof setTimeout> | null = null;
-  private watchdog: ReturnType<typeof setInterval> | null = null;
-  private readLoop: Promise<void> = Promise.resolve();
-
   constructor(config: Config, logger?: Logger) {
-    this.config = config;
-    this.log = (logger ?? makeLogger()).child("driver.claude");
+    super(config, logger, "driver.claude");
   }
 
-  /** The current runtime lifecycle state (convenience for the WorkerManager). */
-  get state(): WorkerState {
-    return this.workerState;
+  // ===========================================================================
+  // BaseDriver hooks
+  // ===========================================================================
+
+  protected harnessName(): string {
+    return "claude";
   }
 
-  /** The captured/minted harness session id, or null while still spawning. */
-  get currentSessionId(): string | null {
-    return this.sessionId;
+  protected binName(): string {
+    return this.config.harness.claude.bin;
+  }
+
+  protected usdEstimate(): number | null {
+    return this.usd;
+  }
+
+  /** claude's stdin stays an open NDJSON pipe — the initial task and every nudge ride it. */
+  protected override stdinMode(): "pipe" | "ignore" {
+    return "pipe";
+  }
+
+  protected override buildChildEnv(): Record<string, string | undefined> {
+    const env = childEnv();
+    if (this.stdinBridgePath) env.BECKETT_STDIN_BRIDGE = this.stdinBridgePath;
+    return env;
+  }
+
+  /** Write the initial task as the first user line (skipped on plain resume — context restored). */
+  protected override afterLaunch(_child: Child, _isResume: boolean): void {
+    const prompt = this.pendingInitialPrompt;
+    this.pendingInitialPrompt = null;
+    if (prompt !== null) this.writeUserLine(prompt);
+  }
+
+  protected override launchLogFields(): Record<string, unknown> {
+    return { model: this.resolvedModel(), effort: this.resolvedEffort() };
+  }
+
+  /** Pending nudges must not hang their callers once the process is gone. */
+  protected override onExitCleanup(): void {
+    this.failPendingNudges();
+  }
+
+  /** Streamed usage is authoritative once seen; remember so result.usage stays a fallback. */
+  protected override addTokens(u: TokenUsage): void {
+    super.addTokens(u);
+    this.tokensFromStream = true;
   }
 
   // ===========================================================================
@@ -221,11 +210,13 @@ export class ClaudeDriver implements HarnessDriver {
     this.sessionId = resume || (spec.sessionId ?? crypto.randomUUID());
 
     const args = this.buildArgs({ kind: resume ? "resume" : "spawn", sessionId: this.sessionId });
-    return this.launch(args, /*isResume*/ Boolean(resume), spec.prompt);
+    this.prepareStdinBridge(spec);
+    this.pendingInitialPrompt = spec.prompt;
+    return this.launch(args, { isResume: Boolean(resume) });
   }
 
   // ===========================================================================
-  // sendNudge
+  // sendNudge — live stdin steering (claude-only capability)
   // ===========================================================================
 
   /**
@@ -273,21 +264,8 @@ export class ClaudeDriver implements HarnessDriver {
   }
 
   // ===========================================================================
-  // pause / resume / abort
+  // resume
   // ===========================================================================
-
-  /**
-   * Checkpoint without killing (Spec 02 §4.5): the process is left alive but idle and the
-   * driver stops feeding stdin. The on-disk transcript + worktree git state are the durable
-   * checkpoint; nudges sent while paused are buffered and flushed on resume.
-   */
-  async pause(): Promise<void> {
-    if (this.isTerminal()) return;
-    this.setState("paused");
-    this.log.info("worker paused (stdin quiesced; session retained)", {
-      sessionId: this.sessionId,
-    });
-  }
 
   /**
    * Re-attach a paused/crashed worker (Spec 02 §4.5). If the process is still alive this
@@ -309,139 +287,20 @@ export class ClaudeDriver implements HarnessDriver {
     this.log.info("relaunching with --resume", { sessionId: this.sessionId });
     // Reset per-process parse lifecycle (counters/session are cumulative across resumes).
     this.finished = false;
+    this.sessionEmitted = false;
     this.expectTurnStart = true;
     this.seenMsgIds.clear();
     this.seenToolIds.clear();
 
     const args = this.buildArgs({ kind: "resume", sessionId: this.sessionId });
-    await this.launch(args, /*isResume*/ true, null);
+    this.prepareStdinBridge(this.spec);
+    await this.launch(args, { isResume: true });
     this.flushBufferedNudges();
   }
 
-  /**
-   * Hard stop (Spec 02 §4.5): SIGTERM, then SIGKILL after a short grace. The session id is
-   * retained so the supervisor can inspect the partial diff and optionally re-dispatch via
-   * resume. Idempotent.
-   */
-  async abort(reason: string): Promise<void> {
-    this.log.warn("aborting worker", { reason, sessionId: this.sessionId });
-    this.setState("aborted");
-    await this.killChild();
-  }
-
   // ===========================================================================
-  // onEvent / getTelemetry
+  // argv construction
   // ===========================================================================
-
-  /** Subscribe to the normalized event stream; returns an unsubscribe fn (Spec 02 §3). */
-  onEvent(cb: (e: WorkerEvent) => void): () => void {
-    this.subscribers.add(cb);
-    return () => this.subscribers.delete(cb);
-  }
-
-  /**
-   * Snapshot of derived counters (Spec 02 §7.3). Cheap: reads in-memory accumulators and
-   * shells `git diff --numstat` (+ staged) in the worktree for the ground-truth diff size.
-   */
-  getTelemetry() {
-    const diff = this.diffStat();
-    return {
-      turns: this.turns,
-      toolCalls: this.toolCalls,
-      tokens: { ...this.tokens },
-      diffLines: diff,
-      usdEstimate: this.usd,
-    };
-  }
-
-  /** Epoch ms of the last parsed event (watchdog input, Spec 02 §7.3). */
-  getLastActivityTs(): number {
-    return this.lastActivityTs;
-  }
-
-  // ===========================================================================
-  // internal — launch / process lifecycle
-  // ===========================================================================
-
-  private async launch(
-    args: string[],
-    isResume: boolean,
-    initialPrompt: string | null,
-  ): Promise<SpawnResult> {
-    const spec = this.spec!;
-    const bin = this.config.harness.claude.bin;
-    this.setState("spawning");
-    this.spawnedAt = this.spawnedAt || Date.now();
-    this.lastActivityTs = Date.now();
-    this.prepareStdinBridge(spec);
-
-    const sessionReady = new Promise<SpawnResult>((resolve, reject) => {
-      this.resolveSession = resolve;
-      this.rejectSession = reject;
-    });
-
-    this.log.info("spawning claude worker", {
-      bin,
-      workspace: spec.workspace,
-      model: this.resolvedModel(),
-      isResume,
-      sessionId: this.sessionId,
-    });
-
-    // Launch as a NEW process group (setsid) so abort/timeout can kill the whole tree — the
-    // harness plus every bash/MCP/sub-agent child it forks — with one group signal, leaving no
-    // orphan behind to keep mutating the checkout (OPS-45/OPS-50).
-    const { cmd, groupKill } = wrapProcessGroup(bin, args);
-    this.groupKill = groupKill;
-
-    let child: Child;
-    try {
-      child = Bun.spawn({
-        cmd,
-        cwd: spec.workspace,
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-        env: this.childEnv(),
-      });
-    } catch (err) {
-      const e = new Error(`ClaudeDriver: failed to spawn ${bin} — ${(err as Error).message}`);
-      this.rejectSession?.(e);
-      throw e;
-    }
-
-    this.child = child;
-    this.pid = child.pid;
-
-    // Fail the launch if init never arrives.
-    this.spawnTimer = setTimeout(() => {
-      const err = new Error(`ClaudeDriver: no system/init within ${SPAWN_TIMEOUT_MS}ms`);
-      this.rejectSession?.(err);
-      this.resolveSession = null;
-      this.rejectSession = null;
-      this.setState("failed");
-      void this.killChild();
-    }, SPAWN_TIMEOUT_MS);
-
-    // Consume stdout (and drain stderr) without blocking the daemon.
-    this.readLoop = this.consumeStdout(child).catch((err) => {
-      this.log.error("stdout read loop crashed", { err: String(err) });
-    });
-    void this.drainStderr(child);
-
-    // Watch for process exit (covers crashes that never emit a result line).
-    void child.exited.then((code) => this.onProcessExit(code));
-
-    // Arm the wall-clock watchdog once (survives resumes).
-    if (!this.watchdog) {
-      this.watchdog = setInterval(() => this.tickWatchdog(), WATCHDOG_INTERVAL_MS);
-    }
-
-    // Send the initial task as the first user line (skipped on resume — context restored).
-    if (initialPrompt !== null) this.writeUserLine(initialPrompt);
-
-    return sessionReady;
-  }
 
   private resolvedModel(): string {
     return this.spec?.model || this.config.harness.claude.default_model;
@@ -463,13 +322,6 @@ export class ClaudeDriver implements HarnessDriver {
   private resolvedPermissionMode(): string {
     const mode = this.config.harness.claude.permission_mode;
     return mode && mode.trim().length > 0 ? mode : DEFAULT_PERMISSION_MODE;
-  }
-
-  private childEnv(): Record<string, string | undefined> {
-    const env: Record<string, string | undefined> = { ...process.env };
-    for (const k of FORBIDDEN_ENV_KEYS) delete env[k];
-    if (this.stdinBridgePath) env.BECKETT_STDIN_BRIDGE = this.stdinBridgePath;
-    return env;
   }
 
   private buildArgs(mode: { kind: "spawn" | "resume"; sessionId: string }): string[] {
@@ -519,154 +371,16 @@ export class ClaudeDriver implements HarnessDriver {
     return args;
   }
 
-  private async onProcessExit(code: number): Promise<void> {
-    this.child = null;
-    if (this.spawnTimer) {
-      clearTimeout(this.spawnTimer);
-      this.spawnTimer = null;
-    }
-    // If the launch promise is still pending, the process died before init — fail it, with the
-    // stderr tail so "exited before init" is self-diagnosing (binary missing? auth? node drift?).
-    if (this.resolveSession && !this.sessionStartedEmitted) {
-      this.rejectSession?.(
-        new Error(`ClaudeDriver: exited (code ${code}) before init — ${this.processExitMessage(code)}`),
-      );
-      this.resolveSession = null;
-      this.rejectSession = null;
-    }
-    // If it exited without a terminal result, synthesize an error finish (crash path).
-    if (!this.finished && !this.isTerminal()) {
-      const ts = Date.now();
-      const message = this.processExitMessage(code);
-      this.emit({ kind: "error", message, ts });
-      this.emit({
-        kind: "finished",
-        status: "error",
-        subtype: "error_process_exit",
-        structuredOutput: null,
-        usage: { ...this.tokens },
-        errorClass: classifyHarnessFailure(message) ?? "crash",
-        ts,
-      });
-      this.finished = true;
-      this.setState("failed");
-    }
-    this.failPendingNudges();
-    // Sweep any descendant the harness left running so a retry worker can't collide with an orphan.
-    killGroup(this.pid ?? -1, this.groupKill, this.log);
-  }
-
-  private tickWatchdog(): void {
-    if (!this.spec || this.finished || this.isTerminal()) return;
-    const capS = hardCapSeconds(this.config);
-    const totalS = (Date.now() - this.spawnedAt) / 1000;
-    if (totalS <= capS) return;
-    // Trip the generous backstop cap. Set finished up-front so this can't re-enter on the next tick
-    // and so onProcessExit (fired by the kill below) won't also synthesize a finish.
-    this.finished = true;
-    void this.timeOut(capS, totalS);
-  }
-
-  /**
-   * Handle a hard-cap timeout GRACEFULLY (never a silent death, OPS-50). The whole process tree is
-   * killed FIRST — so no orphan is still mutating the checkout when the dispatcher reacts — and only
-   * then do we emit a terminal `finished` (subtype `error_wall_clock_cap`). The dispatcher keys on
-   * that to commit/push the worker's WIP, comment on the ticket, and retry / return it to a ready
-   * state, instead of leaving it silently wedged in in_progress.
-   */
-  private async timeOut(capS: number, totalS: number): Promise<void> {
-    this.log.warn("hard wall-clock cap hit — timing out worker (backstop, not a work limit)", {
-      hardCapS: capS,
-      totalS: Math.round(totalS),
-    });
-    this.setState("aborted");
-    await this.killChild();
-    this.emit({
-      kind: "finished",
-      status: "error",
-      subtype: "error_wall_clock_cap",
-      structuredOutput: null,
-      usage: { ...this.tokens },
-      errorClass: "timeout",
-      ts: Date.now(),
-    });
-  }
-
-  private async killChild(): Promise<void> {
-    const child = this.child;
-    if (!child) return;
-    this.child = null;
-    // Kill the whole process group (harness + descendants) so nothing is orphaned (OPS-50).
-    await killProcessTree(child, { groupKill: this.groupKill, graceMs: SIGKILL_GRACE_MS, log: this.log });
-    this.failPendingNudges();
-  }
-
   // ===========================================================================
-  // internal — stdout consumption + normalization
+  // NDJSON parsing (stream-json)
   // ===========================================================================
-
-  private async consumeStdout(child: Child): Promise<void> {
-    const stream = child.stdout;
-    if (!(stream instanceof ReadableStream)) return;
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl);
-          buf = buf.slice(nl + 1);
-          if (line.trim()) this.handleLine(line);
-        }
-      }
-      // flush any trailing partial line
-      const tail = buf.trim();
-      if (tail) this.handleLine(tail);
-    } finally {
-      reader.releaseLock();
-    }
-  }
-
-  private async drainStderr(child: Child): Promise<void> {
-    const stream = child.stderr;
-    if (!(stream instanceof ReadableStream)) return;
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const text = decoder.decode(value, { stream: true }).trim();
-        if (text) {
-          this.log.debug("claude stderr", { text });
-          this.stderrRing.record(text);
-        }
-      }
-    } catch {
-      // best-effort; stderr is diagnostic only
-    } finally {
-      reader.releaseLock();
-    }
-  }
-
-  /** "claude process exited (code N)" + the stderr tail — self-diagnosing (issue #17). */
-  private processExitMessage(code: number): string {
-    const tail = this.stderrRing.tail();
-    return tail
-      ? `claude process exited (code ${code}). stderr tail:\n${tail}`
-      : `claude process exited (code ${code})`;
-  }
 
   /**
    * Parse one raw NDJSON line and fan out normalized {@link WorkerEvent}s. Tolerant by
    * contract (Spec 02 §7.2): a malformed line, an unknown `type`, or an unknown `system`
    * subtype becomes a `kind:'unknown'` event — never a throw.
    */
-  private handleLine(line: string): void {
+  protected handleLine(line: string): void {
     let obj: Record<string, unknown>;
     try {
       obj = JSON.parse(line) as Record<string, unknown>;
@@ -705,15 +419,13 @@ export class ClaudeDriver implements HarnessDriver {
     }
   }
 
-  private sessionStartedEmitted = false;
-
   private handleSystem(obj: Record<string, unknown>): void {
     const ts = Date.now();
     if (obj.subtype === "init") {
       const sid = this.str(obj.session_id) ?? this.sessionId;
       const model = this.str(obj.model) ?? this.resolvedModel();
       if (sid) this.sessionId = sid;
-      this.sessionStartedEmitted = true;
+      this.sessionEmitted = true;
       this.emit({ kind: "session_started", sessionId: this.sessionId!, model, ts });
 
       // The launch is confirmed running once init streams.
@@ -920,7 +632,7 @@ export class ClaudeDriver implements HarnessDriver {
   }
 
   // ===========================================================================
-  // internal — helpers
+  // internal — stdin channel + nudge bookkeeping
   // ===========================================================================
 
   private writeUserLine(content: string): void {
@@ -1011,42 +723,7 @@ export class ClaudeDriver implements HarnessDriver {
     }
   }
 
-  private emit(e: WorkerEvent): void {
-    this.lastActivityTs = e.ts;
-    for (const cb of this.subscribers) {
-      try {
-        cb(e);
-      } catch (err) {
-        this.log.warn("event subscriber threw", { err: String(err), kind: e.kind });
-      }
-    }
-  }
-
-  /** Clear the wall-clock watchdog interval (idempotent). */
-  private stopWatchdog(): void {
-    if (this.watchdog) {
-      clearInterval(this.watchdog);
-      this.watchdog = null;
-    }
-  }
-
-  private setState(state: WorkerState): void {
-    this.workerState = state;
-    // Tear down the watchdog once the worker reaches a terminal state.
-    if (this.isTerminal() && this.watchdog) {
-      clearInterval(this.watchdog);
-      this.watchdog = null;
-    }
-  }
-
-  private isTerminal(): boolean {
-    return (
-      this.workerState === "done" ||
-      this.workerState === "failed" ||
-      this.workerState === "aborted"
-    );
-  }
-
+  /** Map claude's `usage` block → the shared {@link TokenUsage} shape. */
   private mapUsage(raw: unknown): TokenUsage | null {
     if (!raw || typeof raw !== "object") return null;
     const u = raw as Record<string, unknown>;
@@ -1059,48 +736,5 @@ export class ClaudeDriver implements HarnessDriver {
     };
     if (usage.input + usage.output + usage.cacheRead + usage.cacheCreate === 0) return null;
     return usage;
-  }
-
-  private addTokens(u: TokenUsage): void {
-    this.tokens.input += u.input;
-    this.tokens.output += u.output;
-    this.tokens.cacheRead += u.cacheRead;
-    this.tokens.cacheCreate += u.cacheCreate;
-    this.tokensFromStream = true;
-  }
-
-  /** Ground-truth diff size from git (Spec 02 §7.4): uncommitted + staged, distinct files. */
-  private diffStat(): DiffStat {
-    const ws = this.spec?.workspace;
-    if (!ws) return { added: 0, removed: 0, files: 0 };
-    const paths = new Set<string>();
-    let added = 0;
-    let removed = 0;
-    for (const staged of [false, true]) {
-      const cmd = ["git", "-C", ws, "diff", "--numstat"];
-      if (staged) cmd.push("--staged");
-      let out = "";
-      try {
-        const r = Bun.spawnSync(cmd);
-        out = r.success ? r.stdout.toString() : "";
-      } catch {
-        out = "";
-      }
-      for (const line of out.split("\n")) {
-        if (!line.trim()) continue;
-        const parts = line.split("\t");
-        if (parts.length < 3) continue;
-        const [a, rem, ...rest] = parts;
-        const path = rest.join("\t");
-        paths.add(path);
-        if (a !== "-") added += Number(a) || 0;
-        if (rem !== "-") removed += Number(rem) || 0;
-      }
-    }
-    return { added, removed, files: paths.size };
-  }
-
-  private str(v: unknown): string | undefined {
-    return typeof v === "string" ? v : undefined;
   }
 }

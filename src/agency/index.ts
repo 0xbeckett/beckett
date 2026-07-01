@@ -52,6 +52,7 @@ import type {
 import { ActionClass } from "../types.ts";
 import { pendingActionId } from "../ids.ts";
 import { log as rootLog } from "../log.ts";
+import { childEnv } from "../env.ts";
 
 // =======================================================================================
 // Errors
@@ -241,9 +242,6 @@ interface RunResult {
   stderr: string;
 }
 
-/** Env keys that must NEVER be passed to a subprocess (Spec 00 §4 — subscription auth only). */
-const FORBIDDEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
-
 /** GitHub creates a fork asynchronously — poll this many times before pushing to it. */
 const FORK_READY_TRIES = 10;
 /** Delay between fork-readiness polls. */
@@ -268,11 +266,9 @@ export function parseRepoNwo(url: string): string | null {
   return /^[^/]+\/[^/]+$/.test(nwo) ? nwo : null;
 }
 
-/** A copy of `process.env` with the forbidden API-key vars removed. */
+/** A copy of `process.env` with API-auth/endpoint overrides removed (src/env.ts). */
 function sanitizedEnv(): Record<string, string | undefined> {
-  const out: Record<string, string | undefined> = { ...process.env };
-  for (const k of FORBIDDEN_ENV_KEYS) delete out[k];
-  return out;
+  return childEnv();
 }
 
 /** Run a subprocess to completion with stdin closed. Captures stdout/stderr (Spec 07 §3.6). */

@@ -20,6 +20,7 @@
 import { mkdirSync, existsSync, appendFileSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { log } from "../log.ts";
+import { parseNumstat } from "../git/diff.ts";
 
 const logger = log.child("worktree");
 
@@ -259,17 +260,9 @@ export async function readDiff(workspace: string, baseRef?: string): Promise<str
 export async function readDiffStat(workspace: string, baseRef?: string): Promise<DiffStat> {
   await runGit(["add", "-A", "-N"], workspace);
   const r = await runGit(["diff", "--numstat", baseRef ?? "HEAD"], workspace);
-  let added = 0;
-  let removed = 0;
-  let files = 0;
-  for (const line of r.stdout.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    files++;
-    const [a, d] = line.split("\t");
-    if (a && a !== "-") added += Number(a) || 0;
-    if (d && d !== "-") removed += Number(d) || 0;
-  }
-  return { files, added, removed };
+  const acc = { added: 0, removed: 0, paths: new Set<string>() };
+  parseNumstat(r.stdout, acc);
+  return { files: acc.paths.size, added: acc.added, removed: acc.removed };
 }
 
 // =======================================================================================

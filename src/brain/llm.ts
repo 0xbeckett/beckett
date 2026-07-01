@@ -23,6 +23,7 @@
  */
 
 import type { Logger } from "../types.ts";
+import { childEnv as strippedChildEnv } from "../env.ts";
 
 /** Tools denied on every brain call — judgment is pure reasoning (Spec 06 §3.3). */
 const DISALLOWED_TOOLS = "Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch";
@@ -91,16 +92,11 @@ interface RawRun {
 
 /**
  * Build the child env: inherit the parent (so `~/.claude` subscription auth resolves) but
- * strip the forbidden API keys so a brain call can NEVER run on API billing (Spec 00 §4).
+ * strip API-auth/endpoint overrides so a brain call can NEVER run on API billing (Spec 00 §4;
+ * centralized in src/env.ts).
  */
-function childEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined) env[k] = v;
-  }
-  delete env.ANTHROPIC_API_KEY;
-  delete env.OPENAI_API_KEY;
-  return env;
+function childEnv(): Record<string, string | undefined> {
+  return strippedChildEnv();
 }
 
 /** Spawn `claude` once, fully buffering stdout/stderr (brain calls are one-shot, non-stream). */

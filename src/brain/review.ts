@@ -35,6 +35,7 @@ import type {
 } from "../types.ts";
 import { MAX_RETRIES } from "../types.ts";
 import { callJSON, type RoleDeps } from "./llm.ts";
+import { isForbiddenEnvKey } from "../env.ts";
 import { reviewSystem, reviewUser, indent, tailText } from "./prompts.ts";
 import { gateOutcomeId } from "../ids.ts";
 
@@ -147,7 +148,7 @@ export function buildCheckEnv(timeoutS = 600, outputCapBytes = 16384): CheckEnv 
   const vars: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined) continue;
-    if (k === "ANTHROPIC_API_KEY" || k === "OPENAI_API_KEY") continue;
+    if (isForbiddenEnvKey(k)) continue;
     if (SECRET_PATTERNS.some((re) => re.test(k))) continue;
     vars[k] = v;
   }
