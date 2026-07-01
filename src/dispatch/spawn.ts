@@ -108,6 +108,13 @@ export interface SpawnWorkerArgs {
   repoRoot: string;
   /** Base ref the ticket's worktree was first branched from (the REVIEW diff base). */
   baseRef: string;
+  /**
+   * Optional progress sink: every {@link WorkerEvent} off the driver stream is forwarded here so the
+   * dispatcher can mirror the granular play-by-play into the ticket's Discord thread (see
+   * `src/discord/progress.ts`). Best-effort by contract — a throwing sink is swallowed and never
+   * disturbs the worker. Omitted in tests / when no thread is wired.
+   */
+  onProgress?: (ev: WorkerEvent, ctx: { stage: string; workerId: string }) => void;
   logger?: Logger;
 }
 
@@ -305,7 +312,7 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
  * Exported under both names: `spawnWorker` (task spec) and `spawnTicketWorker` (docs/V3.md §6).
  */
 export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHandle> {
-  const { ticket, stage, harness, config, repoRoot, baseRef } = args;
+  const { ticket, stage, harness, config, repoRoot, baseRef, onProgress } = args;
   const logger = (args.logger ?? log.child("dispatch.spawn")).child(`ticket.${ticket.identifier}`);
 
   const id = mintWorkerId();
@@ -315,8 +322,10 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   const envelope = buildEnvelope(harness, config);
   const scopeGuardPath = join(import.meta.dir, "../hooks/scope-guard.ts");
 
-  // claude owns its resume identity from t=0 via a pre-minted UUID; codex captures a thread id.
-  const preMintSession = harness.harness === "claude" ? randomUUID() : undefined;
+  // claude + pi own their resume identity from t=0 via a pre-minted UUID (claude --session-id,
+  // pi --session-id "create if missing"); codex can't be told an id, so it captures a thread id.
+  const preMintSession =
+    harness.harness === "claude" || harness.harness === "pi" ? randomUUID() : undefined;
 
   const driver: HarnessDriver = createDriver(harness.harness, config, logger);
 
@@ -341,6 +350,15 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   };
 
   const unsubscribe = driver.onEvent((e: WorkerEvent) => {
+    // Mirror the granular event to the ticket's Discord progress thread (best-effort — a broken
+    // sink must never derail the worker's own lifecycle bookkeeping below).
+    if (onProgress) {
+      try {
+        onProgress(e, { stage, workerId: id });
+      } catch (err) {
+        logger.warn("progress sink threw (ignored)", { err: String(err) });
+      }
+    }
     switch (e.kind) {
       case "session_started":
         if (state === "spawning") state = "running";

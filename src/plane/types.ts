@@ -42,7 +42,7 @@ export const TICKET_TERMINAL: ReadonlySet<TicketState> = new Set<TicketState>([
 // =======================================================================================
 
 /** A coding-agent CLI Beckett drives as a worker (matches root `Harness`, v3 subset). */
-export type HarnessName = "claude" | "codex";
+export type HarnessName = "claude" | "codex" | "pi";
 
 /** One stage's harness selection: which CLI, optionally which model + reasoning effort. */
 export interface HarnessSpec {

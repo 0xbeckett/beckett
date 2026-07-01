@@ -211,6 +211,42 @@ export class DiscordJsGateway implements DiscordGateway {
     return this.enqueue(channelId, content, opts);
   }
 
+  /**
+   * Open a public thread hanging off an existing message (Spec 05 exception: the ambient channel
+   * stays sparse, but a filed ticket gets a collapsible progress thread anchored to its ack). Returns
+   * the thread id — itself a sendable channel id, so {@link post} delivers into it. Unlike `post`,
+   * this has NO queue-on-disconnect safety net: it needs a live client and the anchor message to
+   * still exist, so it throws when either is missing and lets the caller (the progress hub) keep
+   * buffering + retry on a later event. `autoArchiveDuration` is the max (1 week) so a long worker's
+   * late events don't post into an already-archived thread.
+   */
+  async startThread(channelId: string, anchorMessageId: string, name: string): Promise<string> {
+    const client = this.client;
+    if (!this.connected || !client) {
+      throw new Error("discord gateway not connected — cannot open thread yet");
+    }
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased() || channel.isDMBased()) {
+      throw new Error(`discord channel ${channelId} cannot host a thread`);
+    }
+    // Fetch the anchor so the thread hangs off the exact ack message (not a standalone thread).
+    const anchor = await (channel as { messages: { fetch: (id: string) => Promise<unknown> } }).messages.fetch(
+      anchorMessageId,
+    );
+    const started = await (anchor as {
+      startThread: (o: { name: string; autoArchiveDuration: number }) => Promise<{ id: string }>;
+    }).startThread({ name: this.threadName(name), autoArchiveDuration: 10080 /* 1 week, the max */ });
+    this.lastEventTs = Date.now();
+    this.logger.info("discord progress thread opened", { channelId, anchorMessageId, threadId: started.id });
+    return started.id;
+  }
+
+  /** Discord thread names cap at 100 chars — trim so a long ticket title never rejects the call. */
+  private threadName(name: string): string {
+    const trimmed = name.trim() || "beckett";
+    return trimmed.length <= 100 ? trimmed : trimmed.slice(0, 99) + "…";
+  }
+
   isConnected(): boolean {
     return this.connected;
   }

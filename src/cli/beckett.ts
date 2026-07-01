@@ -25,6 +25,7 @@ import { loadAccess, grantAccess, revokeAccess, ACCESS_CAP } from "../discord/ac
 import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 import type { Ticket, TicketState } from "../plane/types.ts";
+import { projectSlug } from "../plane/cast.ts";
 
 const config = loadConfig();
 const paths = buildPaths(config);
@@ -37,6 +38,32 @@ function out(data: unknown): never {
 function fail(msg: string): never {
   process.stderr.write(`error: ${msg}\n`);
   process.exit(1);
+}
+
+/**
+ * The one code-project slug that targets Beckett's OWN source repo (`0xbeckett/beckett`). Filing work
+ * here is RESTRICTED: unrelated tickets have been mis-routed onto it (e.g. a "probabilities" model-list
+ * ticket read as "improve Beckett" → edited Beckett's own code), polluting the codebase. Overridable
+ * for a differently-named self-repo via env.
+ */
+const RESTRICTED_PROJECT = (process.env.BECKETT_SELF_PROJECT?.trim() || "beckett").toLowerCase();
+
+/**
+ * Refuse to file a ticket against the restricted self-repo unless `confirmed` (the `--confirm-beckett`
+ * flag). The message is aimed at the Concierge: it must re-confirm with the user that the work really
+ * belongs in Beckett's codebase before re-filing with the flag. A speed bump against mis-routing, not
+ * a cryptographic gate — the Concierge is instructed to add the flag ONLY after the user says yes.
+ */
+function guardRestrictedProject(project: string | undefined, confirmed: boolean): void {
+  if (!project) return; // no project → per-ticket sandbox, never the self-repo
+  if (projectSlug(project) !== RESTRICTED_PROJECT) return;
+  if (confirmed) return;
+  fail(
+    `"--project ${project}" targets Beckett's OWN source repo (${RESTRICTED_PROJECT}) — a RESTRICTED ` +
+      `project. Most work should build in its own repo, NOT edit Beckett itself. Confirm with the user ` +
+      `once more that this genuinely belongs in the beckett codebase; if they say yes, re-file the exact ` +
+      `same command with --confirm-beckett.`,
+  );
 }
 
 /** Minimal flag parser: returns { _: positional[], flags: {k:v|true} }. */
@@ -71,6 +98,21 @@ async function bus(cmd: string, args: Record<string, unknown>): Promise<never> {
     out(res.data ?? { ok: true });
   } catch (err) {
     fail((err as Error).message);
+  }
+}
+
+/**
+ * Fire a NON-fatal notification at the control bus and return regardless of outcome. Unlike
+ * {@link bus}, this never exits or fails the command: it exists so `ticket create`/`plan` can tell
+ * the running Concierge "I just filed OPS-N for channel X" (so it opens a progress thread) WITHOUT
+ * that being load-bearing — the same commands run by a human or in tests have no daemon socket, and
+ * the ticket must still be created and printed. A short timeout keeps a dead socket from stalling.
+ */
+async function notifyBus(cmd: string, args: Record<string, unknown>): Promise<void> {
+  try {
+    await callBus(SOCK, cmd, args, 5_000);
+  } catch {
+    /* best-effort: no daemon / busy bus — the ticket is already filed, so just move on */
   }
 }
 
@@ -457,6 +499,9 @@ async function main(): Promise<void> {
       const criteria = flags.criteria
         ? String(flags.criteria).split(";").map((s) => s.trim()).filter(Boolean)
         : [];
+      // Restricted self-repo gate — bounce back to the Concierge to re-confirm with the user before
+      // any ticket can build against 0xbeckett/beckett (mis-routing polluted the codebase).
+      guardRestrictedProject(flags.project ? String(flags.project) : undefined, !!flags["confirm-beckett"]);
       const ticket = await client.createIssue({
         title: String(flags.title),
         body: await readBody(),
@@ -469,6 +514,15 @@ async function main(): Promise<void> {
         // Stamp the originating Discord channel so updates route back to the conversation (closed loop).
         originChannel: flags.channel ? String(flags.channel) : undefined,
       });
+      // Tell the Concierge (if running) so it anchors a progress thread to this turn's ack. Gated on
+      // --channel: only the Concierge path stamps a channel, and it's the only place a thread can go.
+      if (flags.channel) {
+        await notifyBus("ticket.filed", {
+          identifier: ticket.identifier,
+          channelId: String(flags.channel),
+          title: String(flags.title),
+        });
+      }
       out({ id: ticket.id, identifier: ticket.identifier, url: ticket.url, state: ticket.state });
     }
     if (sub === "comment") {
@@ -547,6 +601,12 @@ async function main(): Promise<void> {
       }
     }
 
+    // Restricted self-repo gate — fail the WHOLE plan (before filing any node) if a node targets the
+    // beckett source repo without --confirm-beckett, so a mis-routed node can't slip in mid-DAG.
+    for (const t of tickets) {
+      guardRestrictedProject(t.project ? String(t.project) : undefined, !!flags["confirm-beckett"]);
+    }
+
     // 2. topological order (Kahn) — also the cycle detector
     const indeg = new Map<string, number>(tickets.map((t) => [t.key, (t.needs ?? []).length]));
     const dependents = new Map<string, string[]>(); // need → [keys that need it]
@@ -613,6 +673,17 @@ async function main(): Promise<void> {
       for (const row of createdLevel) {
         identForKey.set(row.key, row.identifier);
         filed.push(row.filed);
+      }
+    }
+    // A plan files N tickets under ONE ack — notify the Concierge for each so they all map onto the
+    // single progress thread (the hub keys threads by anchor, tickets by identifier). Best-effort.
+    if (channel) {
+      for (const row of filed) {
+        await notifyBus("ticket.filed", {
+          identifier: row.identifier,
+          channelId: channel,
+          title: String(byKey.get(row.key)?.title ?? row.identifier),
+        });
       }
     }
     out({ planned: filed.length, tickets: filed });

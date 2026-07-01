@@ -211,7 +211,7 @@ export async function runCheck(cmd: string, ws: string, env: CheckEnv): Promise<
 }
 
 /**
- * Run ALL checks sequentially in the worktree — no short-circuit, so the reviewer and Jason
+ * Run ALL checks sequentially in the worktree — no short-circuit, so the reviewer and jawrooo
  * see the full failure picture in one pass (Spec 11 §3.1). Empty `checks` ⇒ `allPass:true`
  * vacuously (a non-code node rests on review, Spec 11 §3.4).
  */

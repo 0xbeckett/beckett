@@ -43,7 +43,7 @@ export const CRITERIA_HEADING = "## Acceptance criteria";
 // =======================================================================================
 
 const HarnessSpecSchema: z.ZodType<HarnessSpec> = z.object({
-  harness: z.enum(["claude", "codex"]),
+  harness: z.enum(["claude", "codex", "pi"]),
   model: z.string().min(1).optional(),
   effort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
   reviewTier: z.enum(["self", "fresh"]).optional(),

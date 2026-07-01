@@ -50,7 +50,7 @@ export async function composeDelivery(
 }
 
 /**
- * The escalation message asking Jason to decide (B12). Persona-full applied. Falls back to a
+ * The escalation message asking jawrooo to decide (B12). Persona-full applied. Falls back to a
  * plain "tried it, here are the options" message on brain failure (Spec 06 §8.2 / Spec 11 §7.2).
  */
 export async function composeEscalation(

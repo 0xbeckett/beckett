@@ -35,7 +35,7 @@
  * and pumped as workers free their slots.
  */
 
-import type { Config, Logger } from "../types.ts";
+import type { Config, Logger, WorkerEvent } from "../types.ts";
 import type {
   Ticket,
   TicketState,
@@ -43,6 +43,7 @@ import type {
   PollEvent,
   HarnessSpec,
 } from "../plane/types.ts";
+import type { ProgressSink } from "../discord/progress.ts";
 import { log } from "../log.ts";
 import { commitWorktree, headSha, ensureProjectRepo } from "../worker/worktree.ts";
 import { projectSlug } from "../plane/cast.ts";
@@ -81,7 +82,15 @@ export interface DispatcherDeps {
     slug: string;
     repoRoot: string;
     description: string;
-  }) => Promise<{ url: string }>;
+    ticket?: string;
+  }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
+  /**
+   * Optional progress feed: the dispatcher forwards each worker's granular {@link WorkerEvent}
+   * stream here, keyed by ticket identifier, so it lands in the ticket's Discord thread (see
+   * `src/discord/progress.ts`). Injected from the Concierge's hub in `v3-main.ts`; omitted in
+   * tests / when Discord isn't wired.
+   */
+  progress?: ProgressSink;
   logger?: Logger;
 }
 
@@ -101,6 +110,12 @@ interface PendingSpawn {
   stage: string;
 }
 
+/** Outcome of {@link Dispatcher.publishProject} — gates whether a ticket may be marked done. */
+type PublishOutcome =
+  | { status: "skipped" } // no publisher wired (tests / no PAT) — nothing to gate on
+  | { status: "published"; url: string; kind: "pushed" | "pr"; prUrl?: string }
+  | { status: "failed"; error: string };
+
 // =======================================================================================
 // Dispatcher
 // =======================================================================================
@@ -113,7 +128,9 @@ export class Dispatcher {
     slug: string;
     repoRoot: string;
     description: string;
-  }) => Promise<{ url: string }>;
+    ticket?: string;
+  }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
+  private readonly progress?: ProgressSink;
   private readonly logger: Logger;
 
   /** At most one live worker per ticket (implement OR review). */
@@ -147,6 +164,7 @@ export class Dispatcher {
     this.config = deps.config;
     this.resolveRepoRoot = deps.resolveRepoRoot;
     this.publishRepo = deps.publishRepo;
+    this.progress = deps.progress;
     this.logger = deps.logger ?? log.child("dispatch.dispatcher");
   }
 
@@ -362,6 +380,11 @@ export class Dispatcher {
         config: this.config,
         repoRoot,
         baseRef,
+        // Mirror this worker's granular event stream into the ticket's Discord thread, keyed by the
+        // stable ticket identifier so implement/review/rework workers all post to the one thread.
+        onProgress: this.progress
+          ? (ev: WorkerEvent, ctx) => this.progress!.event(ticket.identifier, ev, ctx)
+          : undefined,
         logger: this.logger,
       });
     } catch (err) {
@@ -505,31 +528,26 @@ export class Dispatcher {
   }
 
   /**
-   * Publish a done ticket's project repo to GitHub and return its URL (or null). DETERMINISTIC —
-   * runs on every done so `0xbeckett/<slug>` always exists and is current, rather than relying on
-   * the worker to push by hand (which it skipped, leaving local-only repos that 404'd when Beckett
-   * handed out a guessed URL). Best-effort: a push failure is logged + noted on the ticket but never
-   * blocks the done transition. No-op when no `publishRepo` was injected (tests / no PAT).
+   * Publish a done ticket's checkout to GitHub and report the outcome. `skipped` when no `publishRepo`
+   * was injected (tests / no PAT) — there's nothing to gate on, so the caller still marks it done.
+   * `published` carries HOW it shipped (a repo push vs. a PR needing a human merge) so `done` wording
+   * stays honest. `failed` is the load-bearing case: the caller must NOT mark the ticket done (a
+   * done ticket whose work never left the box is the false-done this fixes — see OPS-30).
    */
-  private async publishProject(ticket: Ticket): Promise<string | null> {
-    if (!this.publishRepo) return null;
+  private async publishProject(ticket: Ticket): Promise<PublishOutcome> {
+    if (!this.publishRepo) return { status: "skipped" };
     const slug = projectSlug(ticket.project || ticket.identifier);
     const repoRoot = this.resolveRepoRoot(ticket);
     try {
-      const { url } = await this.publishRepo({ slug, repoRoot, description: ticket.title });
-      this.logger.info("project published to github", { ticket: ticket.identifier, url });
-      return url;
+      const r = await this.publishRepo({ slug, repoRoot, description: ticket.title, ticket: ticket.identifier });
+      this.logger.info("project published to github", { ticket: ticket.identifier, url: r.url, kind: r.kind });
+      return { status: "published", url: r.url, kind: r.kind, prUrl: r.prUrl };
     } catch (err) {
-      this.logger.warn("github publish failed (continuing)", {
+      this.logger.warn("github publish failed", {
         ticket: ticket.identifier,
         error: (err as Error).message,
       });
-      await this.postComment(
-        ticket.id,
-        `Couldn't push to GitHub (${(err as Error).message}). The work is committed locally in ` +
-          `\`${repoRoot}\` — a human can push it.`,
-      );
-      return null;
+      return { status: "failed", error: (err as Error).message };
     }
   }
 
@@ -591,22 +609,42 @@ export class Dispatcher {
   }
 
   /**
-   * Mark a ticket done before best-effort publishing so Plane dependents can start immediately.
-   * Publishing still runs and is still noted on the ticket, but GitHub latency is no longer in the
-   * critical path for the state transition or DAG promotion.
+   * Publish FIRST, then mark done — publish success now gates the done transition (and DAG promotion).
+   * This reverses the old "done before best-effort publish" ordering: that let a publish failure slip
+   * through as a green "done" while nothing shipped (the false-done, OPS-30). On failure the ticket is
+   * LEFT where it is (in_review/in_progress) with a loud "needs a courier" comment and dependents are
+   * NOT promoted — matching the existing rework-cap "leave it for a human" pattern. The tradeoff is
+   * conscious: publish latency now sits in the critical path before done, in exchange for never
+   * reporting done on work that didn't leave the box. DAG dependents build from the local
+   * `~/Projects/<slug>` checkout, so a PR-up-but-unmerged ticket doesn't starve them.
    */
   private async finishTicketAsDone(
     ticket: Ticket,
     messagePrefix: string,
     summary: string,
   ): Promise<void> {
+    const pub = await this.publishProject(ticket);
+    if (pub.status === "failed") {
+      await this.postComment(
+        ticket.id,
+        `The work is complete, but I couldn't publish it to GitHub (${pub.error}). It's committed ` +
+          `locally in \`${this.resolveRepoRoot(ticket)}\` — leaving this ticket for a human/courier ` +
+          `to push or PR (NOT marking it done, so it isn't lost).\n\n${summary}`,
+      );
+      this.logger.warn("publish failed — holding ticket (not done)", { ticket: ticket.identifier });
+      return; // no setState(done), no promote — the work isn't shipped
+    }
+
     await this.client.setState(ticket.id, "done");
     await this.promoteDependents(ticket);
-    const ghUrl = await this.publishProject(ticket);
-    await this.postComment(
-      ticket.id,
-      `${messagePrefix}${ghUrl ? `\n\nGitHub: ${ghUrl}` : ""}\n\n${summary}`,
-    );
+    // Honest wording: a PR still needs the human's merge; a direct push is actually shipped.
+    const link =
+      pub.status === "published"
+        ? pub.kind === "pr"
+          ? `\n\nPR opened (needs your merge): ${pub.prUrl ?? pub.url}`
+          : `\n\nShipped: ${pub.url}`
+        : "";
+    await this.postComment(ticket.id, `${messagePrefix}${link}\n\n${summary}`);
     this.baseShaForTicket.delete(ticket.id);
     this.reworkCount.delete(ticket.id);
   }

@@ -13,7 +13,7 @@
  *
  * Persona is parsed from `~/.beckett/persona.md` (frontmatter `base`/`examples` + markdown
  * body = `full`) and cached by mtime; a faithful built-in default is used when the file is
- * absent so the daemon always has a voice (Spec 00 §5 — chill, quippy, talks like Jason).
+ * absent so the daemon always has a voice (Spec 00 §5 — chill, quippy, talks like jawrooo).
  */
 
 import { readFileSync, statSync } from "node:fs";
@@ -42,7 +42,7 @@ export function assembleSystem(...layers: (string | undefined | null)[]): string
 
 /**
  * Built-in fallback voice (Spec 00 §5: chill, quippy, young, energetic-but-relaxed, talks
- * like Jason — casual, lowercase-friendly, dry wit). Used verbatim when `persona.md` is
+ * like jawrooo — casual, lowercase-friendly, dry wit). Used verbatim when `persona.md` is
  * absent so Beckett always has a coherent voice.
  */
 export const DEFAULT_PERSONA: Persona = {
@@ -51,7 +51,7 @@ export const DEFAULT_PERSONA: Persona = {
     "own your decisions and never bury a real caveat behind a quip. First person, plainspoken.",
   full:
     "You are Beckett, an agentic coworker who lives in Discord. Your voice is chill, quippy, " +
-    "young, energetic-but-relaxed — you talk like Jason: casual, lowercase-friendly, dry wit, " +
+    "young, energetic-but-relaxed — you talk like jawrooo: casual, lowercase-friendly, dry wit, " +
     "no corporate filler. You're warm and responsive but sparse: a receipt, not a stream of " +
     "progress spam. You own your decisions in the first person ('on it', 'i kept the old path', " +
     "'your call'). You never soften or omit a real caveat, assumption, or a merge/send question " +
@@ -344,7 +344,7 @@ text (no JSON, no preamble).`,
 export function escalationSystem(persona: Persona): string {
   return assembleSystem(
     personaVoice(persona),
-    `You are Beckett asking Jason for a decision in Discord, in your own voice. First person,
+    `You are Beckett asking jawrooo for a decision in Discord, in your own voice. First person,
 own it. Say briefly what happened and what's blocking, then lay out the options plainly (keep
 the keys/labels you're given). Don't bury the real question. Keep it tight. Output ONLY the
 message text (no JSON, no preamble).`,
@@ -497,7 +497,7 @@ export function escalationUser(escalation: Escalation, ctx?: BrainContext): stri
 What happened (your own account): ${escalation.reason}`,
     opts,
     renderFields(ctx),
-    "Write the in-channel message asking Jason to decide. First person, own it, don't bury the question.",
+    "Write the in-channel message asking jawrooo to decide. First person, own it, don't bury the question.",
   );
 }
 

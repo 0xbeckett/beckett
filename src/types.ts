@@ -28,13 +28,13 @@
 // =======================================================================================
 
 /** A coding-agent CLI Beckett drives as a subprocess (Spec 00 glossary). */
-export type Harness = "claude" | "codex";
+export type Harness = "claude" | "codex" | "pi";
 
 /**
  * The concrete driver implementation for a harness (Spec 02 §2).
  * `codex-app-server` (mid-turn steer) is reserved for v2 and intentionally absent.
  */
-export type DriverKind = "claude-cli-stream" | "codex-exec-oneshot";
+export type DriverKind = "claude-cli-stream" | "codex-exec-oneshot" | "pi-cli-stream";
 
 /** Reasoning depth; mapped per-harness at spawn (Spec 02 §9.1). */
 export type Effort = "low" | "medium" | "high" | "xhigh";
@@ -67,10 +67,10 @@ export enum TaskState {
   PLAN = "PLAN", // Opus writing the DAG + per-node acceptance criteria
   STAFF = "STAFF", // Opus assigning worker type per node (capability table)
   EXECUTING = "EXECUTING", // DAG executor running; many NODE FSMs live underneath
-  ESCALATED = "ESCALATED", // halted, awaiting Jason (from CLARIFY/EXECUTING/GATE)
+  ESCALATED = "ESCALATED", // halted, awaiting jawrooo (from CLARIFY/EXECUTING/GATE)
   DELIVERING = "DELIVERING", // Haiku composing + posting the final in-channel message
   DELIVERED = "DELIVERED", // terminal: success, handshake pending or resolved
-  ABORTED = "ABORTED", // terminal: hard-stopped by Jason or self-halt
+  ABORTED = "ABORTED", // terminal: hard-stopped by jawrooo or self-halt
   FAILED = "FAILED", // terminal: unrecoverable, escalation exhausted/declined
 }
 
@@ -471,7 +471,7 @@ export interface NodeRecord {
 // SECTION 7 — Escalation, decisions, intake (Spec 04 §9, Spec 03 §4, Spec 06 §1)
 // =======================================================================================
 
-/** One option offered to Jason at an escalation (Spec 04 §2). */
+/** One option offered to jawrooo at an escalation (Spec 04 §2). */
 export interface EscalationOption {
   key: string;
   label: string;
@@ -1375,6 +1375,16 @@ export interface Config {
       approval_policy: string;
       network_default: boolean;
     };
+    pi: {
+      enabled: boolean;
+      bin: string;
+      /** Provider id (pi `--provider`). "openai-codex" = ChatGPT/Codex OAuth backend. */
+      default_provider: string;
+      /** Model id (pi `--model`). e.g. "gpt-5.5". */
+      default_model: string;
+      /** Reasoning depth (pi `--thinking`): off|minimal|low|medium|high|xhigh. */
+      thinking: string;
+    };
   };
   paths: {
     home: string;
@@ -1622,6 +1632,14 @@ export interface DiscordGateway {
   stop(): Promise<void>;
   /** Post to a channel; returns the bot message id (for reply correlation). */
   post(channelId: string, content: string, opts?: ReplyOptions): Promise<string>;
+  /**
+   * Open a public thread hanging off an existing message and return the thread id. The thread id
+   * is itself a sendable channel id, so {@link post} delivers into the thread. Used by the progress
+   * feed (`src/discord/progress.ts`): the main channel stays sparse (the ack), while the thread
+   * carries the granular per-worker play-by-play. Throws if the anchor message can't be resolved or
+   * the client is offline (the caller keeps buffering and retries on a later event).
+   */
+  startThread(channelId: string, anchorMessageId: string, name: string): Promise<string>;
   /** Trigger the typing indicator in a channel (~10s; re-call to keep it alive). */
   sendTyping(channelId: string): Promise<void>;
   /** Register the inbound message handler (intake + awaiting-reply resolution). */

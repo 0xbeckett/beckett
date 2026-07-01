@@ -147,9 +147,30 @@ const ConfigSchema = z
             // Empty = defer to codex's own ~/.codex/config.toml model (account-appropriate).
             // The Concierge can still cast an explicit model per ticket.
             default_model: z.string().default(""),
-            sandbox_mode: z.string().min(1).default("workspace-write"),
+            // Sandbox OFF by default: `workspace-write` blocks network unless explicitly enabled,
+            // which silently broke every codex worker that needed to install a dep / curl / clone /
+            // enumerate (it "yaps about a network sandbox issue" and stalls). `danger-full-access`
+            // is codex's no-sandbox mode (full FS + network, no approval prompts) — the scope-guard
+            // hook + per-ticket project repos are the real containment here, not codex's sandbox.
+            // Dial back to "workspace-write" here (and flip network_default) to re-enable it.
+            sandbox_mode: z.string().min(1).default("danger-full-access"),
             approval_policy: z.string().min(1).default("never"),
-            network_default: z.boolean().default(false),
+            // Belt-and-suspenders: even if sandbox_mode is dialed back to workspace-write, workers
+            // get network by default. Nothing here should silently lose the network again.
+            network_default: z.boolean().default(true),
+          })
+          .default({}),
+        // pi (pi.dev / earendil-works) — the malleable, provider-agnostic coding agent that
+        // replaces codex as Beckett's non-claude worker. No network sandbox to fight; auth is the
+        // ChatGPT/Codex OAuth via the "openai-codex" provider (see ~/.pi/agent/auth.json). Model +
+        // reasoning default to gpt-5.5 @ high; a cast can override per ticket.
+        pi: z
+          .object({
+            enabled: z.boolean().default(true),
+            bin: z.string().min(1).default("pi"),
+            default_provider: z.string().min(1).default("openai-codex"),
+            default_model: z.string().min(1).default("gpt-5.5"),
+            thinking: z.string().min(1).default("high"),
           })
           .default({}),
       })

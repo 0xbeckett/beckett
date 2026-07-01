@@ -251,14 +251,14 @@ describe("advance on finish", () => {
 
   test("v3.1: publishes the project repo to GitHub on done and links the URL in the comment", async () => {
     const client = new FakeClient();
-    const calls: { slug: string; repoRoot: string; description: string }[] = [];
+    const calls: { slug: string; repoRoot: string; description: string; ticket?: string }[] = [];
     const d = new Dispatcher({
       client,
       config: cfg(),
       resolveRepoRoot: () => "/home/beckett/Projects/balloons-game",
       publishRepo: async (a) => {
         calls.push(a);
-        return { url: "https://github.com/0xbeckett/balloons-game" };
+        return { url: "https://github.com/0xbeckett/balloons-game", kind: "pushed" as const };
       },
     });
     const ticket = makeTicket({
@@ -270,16 +270,44 @@ describe("advance on finish", () => {
     await tick();
     created[0].finish("success", "shipped it");
     await tick();
-    // Published deterministically with the slugified project + its repo root, and the real URL
-    // (not a guess) is woven into the done comment so the Concierge can hand it out.
+    // Published deterministically with the slugified project + its repo root + the ticket id, and the
+    // real URL (not a guess) is woven into the done comment so the Concierge can hand it out.
     expect(calls).toEqual([
-      { slug: "balloons-game", repoRoot: "/home/beckett/Projects/balloons-game", description: "Build balloons" },
+      {
+        slug: "balloons-game",
+        repoRoot: "/home/beckett/Projects/balloons-game",
+        description: "Build balloons",
+        ticket: "OPS-1",
+      },
     ]);
     expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
     expect(client.comments.at(-1)!.body).toContain("https://github.com/0xbeckett/balloons-game");
   });
 
-  test("v3.1: a GitHub publish failure still lets the ticket reach done (best-effort)", async () => {
+  test("v3.1: a `pr` publish words the done comment as needing a human merge (not 'shipped')", async () => {
+    const client = new FakeClient();
+    const d = new Dispatcher({
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/home/beckett/Projects/probabilities",
+      publishRepo: async () => ({
+        url: "https://github.com/SSHdotCodes/probabilities",
+        kind: "pr" as const,
+        prUrl: "https://github.com/SSHdotCodes/probabilities/pull/7",
+      }),
+    });
+    const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "did it");
+    await tick();
+    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
+    const done = client.comments.at(-1)!.body;
+    expect(done).toContain("needs your merge");
+    expect(done).toContain("/pull/7");
+  });
+
+  test("v3.1: a GitHub publish FAILURE holds the ticket (not done) so work isn't lost (OPS-30)", async () => {
     const client = new FakeClient();
     const d = new Dispatcher({
       client,
@@ -294,8 +322,10 @@ describe("advance on finish", () => {
     await tick();
     created[0].finish("success", "shipped it");
     await tick();
-    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
-    expect(client.comments.some((c) => c.body.includes("Couldn't push to GitHub"))).toBe(true);
+    // Publish failed → the ticket must NOT be marked done (that was the false-done bug), and a loud
+    // "leave it for a human" comment is posted instead.
+    expect(client.setStateCalls).toEqual([]);
+    expect(client.comments.some((c) => c.body.includes("couldn't publish it to GitHub"))).toBe(true);
   });
 
   test("v3.1: explicit reviewTier 'fresh' forces in_review even at low effort", async () => {
@@ -353,7 +383,7 @@ describe("steering + cancel", () => {
     const ticket = makeTicket();
     await d.handle(stateChanged(ticket, "in_progress"));
     await tick();
-    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jason", body: "cap it at 10s", createdAt: "now" };
+    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "cap it at 10s", createdAt: "now" };
     await d.handle({ kind: "comment_added", ticket, comment });
     expect(created[0].nudges).toEqual(["cap it at 10s"]);
   });
