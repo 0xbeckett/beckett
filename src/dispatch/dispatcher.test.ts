@@ -12,7 +12,7 @@ import type { Config } from "../types.ts";
 import type { Ticket, TicketState, PollEvent, HarnessSpec, PlaneComment } from "../plane/types.ts";
 
 // ── controllable fake worker handle + spawn mock ────────────────────────────────────────────
-let spawnCalls: { ticketId: string; stage: string; harness: HarnessSpec }[] = [];
+let spawnCalls: { ticketId: string; stage: string; harness: HarnessSpec; baseRef: string }[] = [];
 let created: any[] = [];
 let counter = 0;
 /**
@@ -72,7 +72,7 @@ function makeHandle(ticket: Ticket, stage: string) {
 }
 
 const fakeSpawn = async (args: any) => {
-  spawnCalls.push({ ticketId: args.ticket.id, stage: args.stage, harness: args.harness });
+  spawnCalls.push({ ticketId: args.ticket.id, stage: args.stage, harness: args.harness, baseRef: args.baseRef });
   if (spawnGate) await spawnGate; // simulate slow worktree alloc + harness launch
   const h = makeHandle(args.ticket, args.stage);
   created.push(h);
@@ -178,7 +178,7 @@ function doneSignal(
   };
 }
 
-function newDispatcher(max_workers = 2, opts: { advanceOutboxPath?: string } = {}) {
+function newDispatcher(max_workers = 2, opts: { advanceOutboxPath?: string; runtimeStatePath?: string } = {}) {
   const client = new FakeClient();
   const d = new Dispatcher({
     client,
@@ -641,6 +641,61 @@ describe("rework cap", () => {
     const backToProgress = client.setStateCalls.filter((c) => c.state === "in_progress");
     expect(backToProgress).toHaveLength(2); // cycles 1 & 2 rework; cycle 3 stops, awaiting a human
     expect(client.comments.some((c) => c.body.includes("stopping"))).toBe(true);
+  });
+
+  test("rework count survives dispatcher restart", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-state-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const ticket = makeTicket({ state: "in_review" });
+      const { d: before, client } = newDispatcher(5, { runtimeStatePath });
+
+      for (let i = 0; i < 2; i++) {
+        await before.handle(stateChanged(ticket, "in_review"));
+        await tick();
+        created.at(-1)!.finish("success", "still broken", doneSignal("blocked"));
+        await tick();
+      }
+
+      const after = new Dispatcher({
+        client,
+        config: cfg(5),
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+        runtimeStatePath,
+      });
+      await after.handle(stateChanged(ticket, "in_review"));
+      await tick();
+      created.at(-1)!.finish("success", "still broken", doneSignal("blocked"));
+      await tick();
+
+      expect(client.setStateCalls.filter((c) => c.state === "in_progress")).toHaveLength(2);
+      expect(client.comments.at(-1)!.body).toContain("rework cycle 3/3");
+      expect(client.comments.at(-1)!.body).toContain("stopping");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("review base SHA survives dispatcher restart", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-base-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const ticket = makeTicket();
+      const { d: before } = newDispatcher(2, { runtimeStatePath });
+
+      await before.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      created[0].finish("success", "implemented");
+      await tick();
+
+      const { d: after } = newDispatcher(2, { runtimeStatePath });
+      await after.handle(stateChanged({ ...ticket, state: "in_review" }, "in_review"));
+      await tick();
+
+      expect(spawnCalls.at(-1)).toMatchObject({ stage: "review", baseRef: "base000" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

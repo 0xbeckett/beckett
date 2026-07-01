@@ -138,6 +138,7 @@ async function boot(): Promise<BootedSystem> {
     publishRepo,
     progress: concierge.progressSink(),
     advanceOutboxPath: join(buildPaths(config).beckettDir, "advance-outbox.jsonl"),
+    runtimeStatePath: join(buildPaths(config).beckettDir, "dispatcher-state.json"),
     logger: logger.child("dispatch"),
   });
 
