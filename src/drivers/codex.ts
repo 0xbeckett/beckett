@@ -24,7 +24,7 @@
  * - `codex exec` is STRICTLY ONE-SHOT (my-docs/codex-exec.md §2): prompt in → one turn →
  *   process exits. There is no mid-turn steer on the exec surface, so {@link sendNudge}
  *   *buffers* the instruction and reports `queued`; the buffered text is replayed as the
- *   prompt of the next {@link resume} via `codex exec resume --last "<instruction>"`, which
+ *   prompt of the next {@link resume} via `codex exec resume <thread_id> "<instruction>"`, which
  *   carries the full prior transcript/plan/approvals (my-docs/codex-exec.md §2.1).
  * - session id = the `thread_id` from `thread.started` (codex does not accept a caller-minted
  *   id on exec — it is captured, not supplied). Surfaced as {@link SpawnResult} and a
@@ -205,7 +205,7 @@ export class CodexDriver implements HarnessDriver {
    * Re-attach a paused/finished worker (Spec 02 §4.5). codex exec is one-shot, so a still-live
    * process means a turn is in flight: codex cannot be steered mid-turn, so resume() just lifts
    * the pause and leaves any buffered nudge to be applied after the turn ends. If the process
-   * has exited, this relaunches with `codex exec resume --last "<buffered instruction>"`,
+   * has exited, this relaunches with `codex exec resume <thread_id> "<buffered instruction>"`,
    * which replays the original transcript/plan/approvals and supplies the new instruction.
    */
   async resume(): Promise<void> {
@@ -226,7 +226,7 @@ export class CodexDriver implements HarnessDriver {
     }
 
     const prompt = this.takeBufferedPrompt();
-    this.log.info("relaunching with `codex exec resume --last`", {
+    this.log.info("relaunching with captured codex thread id", {
       sessionId: this.sessionId,
       promptLen: prompt.length,
     });
@@ -337,9 +337,12 @@ export class CodexDriver implements HarnessDriver {
 
     // Fail the launch if the thread never starts.
     this.spawnTimer = setTimeout(() => {
-      this.rejectSession?.(
-        new Error(`CodexDriver: no thread.started within ${SPAWN_TIMEOUT_MS}ms`),
-      );
+      const err = new Error(`CodexDriver: no thread.started within ${SPAWN_TIMEOUT_MS}ms`);
+      this.rejectSession?.(err);
+      this.resolveSession = null;
+      this.rejectSession = null;
+      this.setState("failed");
+      void this.killChild();
     }, SPAWN_TIMEOUT_MS);
 
     // Consume stdout (and drain stderr) without blocking the daemon.
@@ -350,7 +353,7 @@ export class CodexDriver implements HarnessDriver {
 
     // Watch for process exit (covers crashes that never emit a terminal turn line). The gen guard
     // means a child superseded by an auto-resume can't fire a spurious error-finish.
-    void child.exited.then((code) => this.onProcessExit(code, gen));
+    void child.exited.then((code) => this.onProcessExit(code, gen, child.pid, groupKill));
 
     // Arm the wall-clock watchdog once (survives resumes).
     if (!this.watchdog) {
@@ -414,7 +417,7 @@ export class CodexDriver implements HarnessDriver {
     const args: string[] = [
       "exec",
       "resume",
-      "--last",
+      this.sessionId ?? "--last",
       "--json",
       "--skip-git-repo-check",
       ...this.modelFlag(),
@@ -436,9 +439,18 @@ export class CodexDriver implements HarnessDriver {
     return ov;
   }
 
-  private async onProcessExit(code: number, gen: number): Promise<void> {
+  private async onProcessExit(
+    code: number,
+    gen: number,
+    pid: number,
+    groupKill: boolean,
+  ): Promise<void> {
     // A child we've already moved past (e.g. replaced by an auto-resume) — its exit is not ours.
-    if (gen !== this.childGen) return;
+    if (gen !== this.childGen) {
+      killGroup(pid, groupKill, this.log);
+      return;
+    }
+    this.child = null;
     if (this.spawnTimer) {
       clearTimeout(this.spawnTimer);
       this.spawnTimer = null;
@@ -511,6 +523,7 @@ export class CodexDriver implements HarnessDriver {
   private async killChild(): Promise<void> {
     const child = this.child;
     if (!child) return;
+    this.child = null;
     // Kill the whole process group (harness + descendants) so nothing is orphaned (OPS-50).
     await killProcessTree(child, { groupKill: this.groupKill, graceMs: SIGKILL_GRACE_MS, log: this.log });
   }

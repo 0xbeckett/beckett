@@ -391,9 +391,12 @@ export class ClaudeDriver implements HarnessDriver {
 
     // Fail the launch if init never arrives.
     this.spawnTimer = setTimeout(() => {
-      this.rejectSession?.(
-        new Error(`ClaudeDriver: no system/init within ${SPAWN_TIMEOUT_MS}ms`),
-      );
+      const err = new Error(`ClaudeDriver: no system/init within ${SPAWN_TIMEOUT_MS}ms`);
+      this.rejectSession?.(err);
+      this.resolveSession = null;
+      this.rejectSession = null;
+      this.setState("failed");
+      void this.killChild();
     }, SPAWN_TIMEOUT_MS);
 
     // Consume stdout (and drain stderr) without blocking the daemon.
@@ -493,6 +496,7 @@ export class ClaudeDriver implements HarnessDriver {
   }
 
   private async onProcessExit(code: number): Promise<void> {
+    this.child = null;
     if (this.spawnTimer) {
       clearTimeout(this.spawnTimer);
       this.spawnTimer = null;
@@ -561,6 +565,7 @@ export class ClaudeDriver implements HarnessDriver {
   private async killChild(): Promise<void> {
     const child = this.child;
     if (!child) return;
+    this.child = null;
     // Kill the whole process group (harness + descendants) so nothing is orphaned (OPS-50).
     await killProcessTree(child, { groupKill: this.groupKill, graceMs: SIGKILL_GRACE_MS, log: this.log });
     this.failPendingNudges();
@@ -822,6 +827,8 @@ export class ClaudeDriver implements HarnessDriver {
       ts,
     });
     this.finished = true;
+    this.stopWatchdog();
+    this.closeChildStdin();
 
     // success → handed to GATE (review); error subtypes → failed (Spec 02 §7.1 table).
     if (this.isTerminal()) {
@@ -835,6 +842,18 @@ export class ClaudeDriver implements HarnessDriver {
     // Rate-limit detection seam (Spec 02 §11, Risk-D is v1).
     this.detectRateLimitFromResult(obj, subtype, ts);
     this.failPendingNudges();
+  }
+
+  private closeChildStdin(): void {
+    const child = this.child;
+    if (!child) return;
+    const sink = child.stdin as { end?: () => void; close?: () => void } | undefined;
+    try {
+      sink?.end?.();
+      sink?.close?.();
+    } catch (err) {
+      this.log.debug("stdin close after result failed", { err: String(err) });
+    }
   }
 
   private detectRateLimitFromResult(
@@ -968,6 +987,14 @@ export class ClaudeDriver implements HarnessDriver {
       } catch (err) {
         this.log.warn("rate-limit subscriber threw", { err: String(err) });
       }
+    }
+  }
+
+  /** Clear the wall-clock watchdog interval (idempotent). */
+  private stopWatchdog(): void {
+    if (this.watchdog) {
+      clearInterval(this.watchdog);
+      this.watchdog = null;
     }
   }
 
