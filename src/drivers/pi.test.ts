@@ -1,15 +1,18 @@
 /**
  * Coverage for the PiDriver's event normalizer (`src/drivers/pi.ts`). The parser is the risky
  * part — it maps pi's `--mode json` NDJSON into Beckett's {@link WorkerEvent} stream — so it's
- * Also guards the OPS-56 regression: the session argv (never `--session-id`, which the installed
- * pi rejects → exit 1) and the preflight that catches that CLI/version drift.
+ * Also guards the OPS-56 / issue #12 regression: the modern session argv (`--session-id` for a
+ * caller-minted first launch) and the preflight that catches stale CLI/version drift.
  *
- * pinned here against event lines copied VERBATIM from a real `pi 0.72.1` run (session →
+ * pinned here against event lines copied from a real pi JSON run (session →
  * tool_execution → assistant message → agent_end), rather than trusting a live spawn. `handleLine`
  * is driven directly; spawn/process lifecycle is out of scope for a unit test.
  */
 
 import { expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PiDriver, piPreflight } from "./pi.ts";
 import type { Config, WorkerEvent } from "../types.ts";
 
@@ -132,7 +135,7 @@ test("kind is the pi-cli-stream driver tag", () => {
   expect(driver.kind).toBe("pi-cli-stream");
 });
 
-// ── OPS-56: session argv — never `--session-id` (which the installed pi rejects → exit 1). ──
+// ── issue #12: modern pi session argv. ──
 // buildArgs is private; drive it via bracket access with a stubbed session id + spec.
 function argsFor(isResume: boolean, sessionId: string | null): string[] {
   const driver = new PiDriver(config, quietLog) as unknown as {
@@ -145,16 +148,19 @@ function argsFor(isResume: boolean, sessionId: string | null): string[] {
   return driver.buildArgs("do the thing", isResume);
 }
 
-test("first launch passes NO session flag (pi mints its own id); never --session-id", () => {
-  const args = argsFor(/*isResume*/ false, "cafe1234-0000-0000-0000-000000000000");
-  expect(args).not.toContain("--session-id"); // the flag that killed every dispatch
-  expect(args).not.toContain("--session"); // fresh run: let pi mint + persist
+test("first launch pins Beckett's caller-minted id with --session-id", () => {
+  const id = "cafe1234-0000-0000-0000-000000000000";
+  const args = argsFor(/*isResume*/ false, id);
+  const i = args.indexOf("--session-id");
+  expect(i).toBeGreaterThanOrEqual(0);
+  expect(args[i + 1]).toBe(id);
+  expect(args).not.toContain("--session");
   expect(args).toContain("--mode");
   expect(args).toContain("json");
   expect(args[args.length - 1]).toBe("do the thing"); // prompt is the trailing positional
 });
 
-test("resume pins the captured id with --session <id> (not --session-id)", () => {
+test("resume pins the existing id with --session <id>", () => {
   const id = "cafe1234-0000-0000-0000-000000000000";
   const args = argsFor(/*isResume*/ true, id);
   expect(args).not.toContain("--session-id");
@@ -172,4 +178,55 @@ test("preflight FAILS loudly for a missing binary (no silent code-1)", async () 
   expect(pf.ok).toBe(false);
   expect(pf.problems.length).toBeGreaterThan(0);
   expect(pf.problems.join(" ")).toContain("definitely-not-a-real-pi-binary-xyz");
+});
+
+test("preflight rejects stale pi without --session-id support", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-old-pi-"));
+  const oldHome = process.env.HOME;
+  try {
+    const bin = join(dir, "pi-old");
+    writeFileSync(
+      bin,
+      [
+        "#!/bin/sh",
+        "case \"$1\" in",
+        "  --version) echo 0.72.1 ;;",
+        "  --help) echo '--mode --session --print' ;;",
+        "  *) exit 0 ;;",
+        "esac",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    chmodSync(bin, 0o755);
+    const authDir = join(dir, ".pi/agent");
+    mkdirSync(authDir, { recursive: true });
+    writeFileSync(join(authDir, "auth.json"), '{"openai-codex":{}}\n', "utf8");
+    process.env.HOME = dir;
+
+    const oldConfig = {
+      harness: { pi: { ...(config.harness as { pi: object }).pi, bin } },
+    } as unknown as Config;
+    const pf = await piPreflight(oldConfig);
+    expect(pf.ok).toBe(false);
+    expect(pf.problems.join(" ")).toContain("need >=0.78.0");
+    expect(pf.problems.join(" ")).toContain("--session-id");
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("process-exit diagnostics include the stderr tail", () => {
+  const driver = new PiDriver(config, quietLog) as unknown as {
+    recordStderr(text: string): void;
+    processExitMessage(code: number): string;
+    startupFailureMessage(reason: string): string;
+  };
+  driver.recordStderr("first line\nunknown option: --session-id");
+  const exit = driver.processExitMessage(1);
+  expect(exit).toContain("unknown option: --session-id");
+  const startup = driver.startupFailureMessage("code 1");
+  expect(startup).toContain("unknown option: --session-id");
 });
