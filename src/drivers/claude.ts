@@ -184,11 +184,14 @@ export class ClaudeDriver implements HarnessDriver {
   async spawn(spec: SpawnSpec): Promise<SpawnResult> {
     if (this.child) throw new Error("ClaudeDriver: already spawned (one driver = one process)");
     this.spec = spec;
+    // Crash recovery (issue #20): a caller-persisted session id relaunches `--resume <id>` so the
+    // worker keeps its transcript instead of re-paying the whole ticket's exploration cost.
+    const resume = spec.resumeSessionId?.trim();
     // Own resume identity from t=0: mint a UUID unless the caller supplied one (Spec 02 §4.1).
-    this.sessionId = spec.sessionId ?? crypto.randomUUID();
+    this.sessionId = resume || (spec.sessionId ?? crypto.randomUUID());
 
-    const args = this.buildArgs({ kind: "spawn", sessionId: this.sessionId });
-    return this.launch(args, /*isResume*/ false, spec.prompt);
+    const args = this.buildArgs({ kind: resume ? "resume" : "spawn", sessionId: this.sessionId });
+    return this.launch(args, /*isResume*/ Boolean(resume), spec.prompt);
   }
 
   // ===========================================================================

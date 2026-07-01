@@ -156,6 +156,11 @@ async function boot(): Promise<BootedSystem> {
   await concierge.start();
   await dispatcher.replayAdvances();
 
+  // Crash recovery (issue #20): BEFORE the poller re-staffs anything, sweep worker processes a
+  // crashed daemon orphaned, commit their ghost WIP, and arm session-resume hints so re-staffed
+  // tickets continue their interrupted sessions instead of re-running from scratch.
+  await dispatcher.recoverFromCrash();
+
   // Fan each poll batch to BOTH the dispatcher (acts on the work) and the Concierge (surfaces
   // milestones/errors back to the Discord conversation that filed the ticket — the closed loop).
   await poller.start((events) => {

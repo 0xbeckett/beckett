@@ -86,6 +86,10 @@ export interface TicketWorkerHandle {
   readonly workspace: string;
   /** The worktree branch carrying this worker's contribution. */
   readonly branch: string;
+  /** The harness session/thread id (crash-recovery ledger, issue #20). "" until captured. */
+  readonly sessionId: string;
+  /** The harness child pid (crash-recovery ledger orphan sweep). 0 until captured. */
+  readonly pid: number;
   /** Current lifecycle state (spawning→running→review/failed/aborted). */
   readonly state: WorkerState;
   /** The terminal result once finished; null while still live. */
@@ -117,6 +121,13 @@ export interface SpawnWorkerArgs {
   repoRoot: string;
   /** Base ref the ticket's worktree was first branched from (the REVIEW diff base). */
   baseRef: string;
+  /**
+   * Crash recovery (issue #20): the persisted session/thread id of this ticket-stage's previous
+   * worker, killed by a daemon restart/crash. When set, the driver relaunches IN RESUME MODE
+   * against it (keeping the transcript) and the prompt becomes a short "continue" instruction
+   * instead of the full ticket brief the session already carries.
+   */
+  resumeSessionId?: string;
   /**
    * Optional progress sink: every {@link WorkerEvent} off the driver stream is forwarded here so the
    * dispatcher can mirror the granular play-by-play into the ticket's Discord thread (see
@@ -206,6 +217,21 @@ function diffHint(baseRef?: string): string {
   return baseRef && baseRef !== "HEAD"
     ? `\`git diff ${baseRef}..HEAD\` (plus \`git status\` for anything uncommitted)`
     : "`git diff HEAD` and `git log`";
+}
+
+/**
+ * The continuation instruction for a RESUMED session (issue #20). The restored transcript already
+ * carries the full ticket brief; re-sending it would duplicate context. Any pre-restart WIP was
+ * committed by the shutdown drain / boot sweep, so the worker is pointed at git for ground truth.
+ */
+function buildResumePrompt(ticket: Ticket, stage: string): string {
+  return (
+    `A daemon restart interrupted your previous session on ticket [${ticket.identifier}] ` +
+    `${ticket.title}. This session RESUMES that one — your prior context is above, and any ` +
+    `work-in-progress was committed to the repo. Check \`git status\` and \`git log\` to see ` +
+    `exactly where you stopped, then continue the ${stage} work to completion. Finish with the ` +
+    `structured done-signal as originally instructed.`
+  );
 }
 
 /** The initial task brief (first user turn) handed to the worker. */
@@ -337,7 +363,7 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
  * Exported under both names: `spawnWorker` (task spec) and `spawnTicketWorker` (docs/V3.md §6).
  */
 export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHandle> {
-  const { ticket, stage, harness, config, repoRoot, baseRef, onProgress } = args;
+  const { ticket, stage, harness, config, repoRoot, baseRef, resumeSessionId, onProgress } = args;
   const logger = (args.logger ?? log.child("dispatch.spawn")).child(`ticket.${ticket.identifier}`);
 
   const id = mintWorkerId();
@@ -358,6 +384,8 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   // ── live-handle bookkeeping ──────────────────────────────────────────────────────────
   let state: WorkerState = "spawning";
   let result: TicketWorkerResult | null = null;
+  let sessionId = ""; // captured from the driver's SpawnResult (crash-recovery ledger, issue #20)
+  let pid = 0;
   let lastAssistantText = "";
   let finishedFired = false;
   let reaped = false;
@@ -417,18 +445,23 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
 
     const spec: SpawnSpec = {
       workerId: id,
-      prompt: buildPrompt(ticket, stage, baseRef),
+      prompt: resumeSessionId
+        ? buildResumePrompt(ticket, stage)
+        : buildPrompt(ticket, stage, baseRef),
       systemAppend: buildSystemAppend(ticket, stage, baseRef),
       workspace,
       scope,
       envelope,
       model: harness.model ?? "",
       sessionId: preMintSession,
+      resumeSessionId,
       doneSchemaPath,
       settingsPath,
     };
 
     const spawnResult = await driver.spawn(spec);
+    sessionId = spawnResult.sessionId;
+    pid = spawnResult.pid;
     state = "running";
     logger.info("ticket worker dispatched", {
       workerId: id,
@@ -436,6 +469,7 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
       harness: harness.harness,
       model: harness.model ?? "(driver default)",
       sessionId: spawnResult.sessionId,
+      resumed: Boolean(resumeSessionId),
       branch,
       baseRef,
       workspace,
@@ -455,6 +489,12 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     stage,
     workspace,
     branch,
+    get sessionId() {
+      return sessionId;
+    },
+    get pid() {
+      return pid;
+    },
     get state() {
       return state;
     },

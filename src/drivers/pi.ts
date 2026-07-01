@@ -316,9 +316,12 @@ export class PiDriver implements HarnessDriver {
       throw new Error(`PiDriver preflight failed (pi harness unusable): ${pf.problems.join("; ")}`);
     }
     this.log.info("pi preflight ok", { bin: pf.bin, nodeVersion: pf.nodeVersion, version: pf.version });
-    this.sessionId = spec.sessionId ?? randomUUID();
-    const args = this.buildArgs(spec.prompt, /*isResume*/ false);
-    return this.launch(args, /*isResume*/ false);
+    // Crash recovery (issue #20): a caller-persisted session id relaunches `--session <id>` so pi
+    // reuses the persisted transcript instead of re-paying the whole ticket's exploration cost.
+    const resume = spec.resumeSessionId?.trim();
+    this.sessionId = resume || (spec.sessionId ?? randomUUID());
+    const args = this.buildArgs(spec.prompt, /*isResume*/ Boolean(resume));
+    return this.launch(args, /*isResume*/ Boolean(resume));
   }
 
   /** Steer: pi exec is one-shot, so ALWAYS buffer and report `queued` (replayed on resume). */
