@@ -432,14 +432,19 @@ export class PiDriver implements HarnessDriver {
     const gen = ++this.childGen;
 
     this.spawnTimer = setTimeout(() => {
-      this.rejectSession?.(new Error(`PiDriver: no session line within ${SPAWN_TIMEOUT_MS}ms`));
+      const err = new Error(`PiDriver: no session line within ${SPAWN_TIMEOUT_MS}ms`);
+      this.rejectSession?.(err);
+      this.resolveSession = null;
+      this.rejectSession = null;
+      this.setState("failed");
+      void this.killChild();
     }, SPAWN_TIMEOUT_MS);
 
     this.readLoop = this.consumeStdout(child).catch((err) => {
       this.log.error("stdout read loop crashed", { err: String(err) });
     });
     void this.drainStderr(child);
-    void child.exited.then((code) => this.onProcessExit(code, gen));
+    void child.exited.then((code) => this.onProcessExit(code, gen, child.pid, groupKill));
 
     if (!this.watchdog) {
       this.watchdog = setInterval(() => this.tickWatchdog(), WATCHDOG_INTERVAL_MS);
@@ -472,8 +477,17 @@ export class PiDriver implements HarnessDriver {
     );
   }
 
-  private async onProcessExit(code: number, gen: number): Promise<void> {
-    if (gen !== this.childGen) return; // superseded child (auto-resume) — not ours
+  private async onProcessExit(
+    code: number,
+    gen: number,
+    pid: number,
+    groupKill: boolean,
+  ): Promise<void> {
+    if (gen !== this.childGen) {
+      killGroup(pid, groupKill, this.log);
+      return; // superseded child (auto-resume) — not ours
+    }
+    this.child = null;
     if (this.spawnTimer) {
       clearTimeout(this.spawnTimer);
       this.spawnTimer = null;
@@ -541,6 +555,7 @@ export class PiDriver implements HarnessDriver {
   private async killChild(): Promise<void> {
     const child = this.child;
     if (!child) return;
+    this.child = null;
     // Kill the whole process group (harness + descendants) so nothing is orphaned (OPS-50).
     await killProcessTree(child, { groupKill: this.groupKill, graceMs: SIGKILL_GRACE_MS, log: this.log });
   }
