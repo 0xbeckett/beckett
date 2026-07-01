@@ -24,6 +24,8 @@
  * Import style (whole repo, bun-native): explicit `.ts` extensions.
  */
 
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { log } from "../log.ts";
 import type { Logger } from "../types.ts";
 import type { PlaneClient } from "./client.ts";
@@ -35,13 +37,19 @@ interface Snapshot {
   state: TicketState;
   updatedAt: string;
   lastCommentAt: string; // ISO of the newest comment we've already emitted
+  lastCommentIds: Set<string>; // ids already emitted at lastCommentAt, for timestamp ties
   lastCommentSweepAt: number; // epoch ms of the last successful comment cursor check
 }
 
 type EventSlot = PollEvent | Promise<PollEvent[]>;
+interface CommentCursor {
+  lastCommentAt: string;
+  lastCommentIds: string[];
+}
 
 /** Backstop for Plane installs that do not bump issue updated_at on comments. */
 const COMMENT_FULL_SWEEP_MS = 60_000;
+const COMMENT_CURSOR_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 /** Constructor dependencies for {@link PlanePoller}. */
 export interface PlanePollerDeps {
@@ -51,6 +59,8 @@ export interface PlanePollerDeps {
   pollSecs?: number;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
+  /** Durable comment cursor path. When set, startup sees comments posted while the daemon was down. */
+  commentCursorPath?: string;
 }
 
 /** A non-action handler used by {@link PlanePoller.start}. */
@@ -61,6 +71,8 @@ export class PlanePoller {
   private readonly logger: Logger;
   private readonly pollSecs: number;
   private readonly now: () => number;
+  private readonly commentCursorPath?: string;
+  private readonly persistedCommentCursors = new Map<string, CommentCursor>();
 
   private readonly snapshot = new Map<string, Snapshot>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -71,6 +83,8 @@ export class PlanePoller {
     this.logger = deps.logger ?? log.child("plane.poll");
     this.pollSecs = deps.pollSecs ?? 5;
     this.now = deps.now ?? Date.now;
+    this.commentCursorPath = deps.commentCursorPath;
+    this.loadCommentCursors();
   }
 
   // ── primary surface (V3 §4) ────────────────────────────────────────────────────────────
@@ -109,7 +123,7 @@ export class PlanePoller {
         this.snapshot.set(ticket.id, {
           state: ticket.state,
           updatedAt: ticket.updatedAt,
-          lastCommentAt: new Date(this.now()).toISOString(),
+          ...this.initialCommentCursor(ticket.id),
           lastCommentSweepAt: tickStartedAt,
         });
         continue;
@@ -177,23 +191,30 @@ export class PlanePoller {
     }
     const nowIso = new Date(this.now()).toISOString();
     const recovery: PollEvent[] = [];
+    const commentRecovery: Promise<PollEvent[]>[] = [];
+    let recoverInProgress = 0;
     let inReview = 0;
     for (const ticket of tickets) {
-      this.snapshot.set(ticket.id, {
+      const snapshot: Snapshot = {
         state: ticket.state,
         updatedAt: ticket.updatedAt,
-        lastCommentAt: nowIso,
+        ...this.initialCommentCursor(ticket.id, nowIso),
         lastCommentSweepAt: this.now(),
-      });
+      };
+      this.snapshot.set(ticket.id, snapshot);
       if (ticket.state === "in_progress") {
         recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
+        recoverInProgress++;
+        commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
       } else if (ticket.state === "in_review") {
         inReview++;
+        commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
       }
     }
+    for (const events of await Promise.all(commentRecovery)) recovery.push(...events);
     this.logger.info("primed snapshot", {
       tickets: this.snapshot.size,
-      recover_in_progress: recovery.length,
+      recover_in_progress: recoverInProgress,
       in_review_awaiting_human: inReview,
     });
     if (inReview > 0) {
@@ -207,9 +228,10 @@ export class PlanePoller {
   // ── convenience self-scheduling surface (start/stop) ─────────────────────────────────────
 
   /**
-   * Prime the snapshot, then poll every `pollSecs` and hand each non-empty batch to `onEvents`.
-   * Ticks never overlap (a slow tick is skipped, not stacked). Idempotent: a second call is a
-   * no-op while already running.
+   * Prime the snapshot, then poll every `pollSecs` and hand each batch to `onEvents`. Empty batches
+   * are delivered too, so downstream maintenance like durable outbox replay runs on every tick.
+   * Ticks never overlap (a slow tick is skipped, not stacked). Idempotent: a second call is a no-op
+   * while already running.
    */
   async start(onEvents: PollEventSink): Promise<void> {
     if (this.timer) return;
@@ -238,7 +260,7 @@ export class PlanePoller {
     this.ticking = true;
     try {
       const events = await this.poll();
-      if (events.length > 0) await onEvents(events);
+      await onEvents(events);
     } catch (err) {
       // poll() is already non-throwing; this guards a throwing onEvents sink.
       this.logger.error("poll tick handler failed", { error: (err as Error).message });
@@ -255,11 +277,25 @@ export class PlanePoller {
   ): Promise<{ events: PollEvent[]; ok: boolean }> {
     try {
       const events: PollEvent[] = [];
-      const comments = await this.client.listComments(ticket.id, prev.lastCommentAt);
+      const comments = await this.client.listComments(ticket.id, prev.lastCommentAt, {
+        inclusive: prev.lastCommentIds.size > 0,
+      });
       for (const comment of comments) {
+        if (
+          comment.createdAt < prev.lastCommentAt ||
+          (comment.createdAt === prev.lastCommentAt && prev.lastCommentIds.has(comment.id))
+        ) {
+          continue;
+        }
         events.push({ kind: "comment_added", ticket, comment });
-        if (comment.createdAt > prev.lastCommentAt) prev.lastCommentAt = comment.createdAt;
+        if (comment.createdAt > prev.lastCommentAt) {
+          prev.lastCommentAt = comment.createdAt;
+          prev.lastCommentIds = new Set([comment.id]);
+        } else {
+          prev.lastCommentIds.add(comment.id);
+        }
       }
+      this.persistCommentCursor(ticket.id, prev);
       return { events, ok: true };
     } catch (err) {
       // Leave lastCommentAt and updatedAt unchanged so the comment is retried next tick.
@@ -268,6 +304,63 @@ export class PlanePoller {
         error: (err as Error).message,
       });
       return { events: [], ok: false };
+    }
+  }
+
+  private initialCommentCursor(
+    ticketId: string,
+    fallback = new Date(this.now()).toISOString(),
+  ): Pick<Snapshot, "lastCommentAt" | "lastCommentIds"> {
+    const lowerBound = new Date(this.now() - COMMENT_CURSOR_LOOKBACK_MS).toISOString();
+    const cursor = this.persistedCommentCursors.get(ticketId);
+    if (!cursor) return { lastCommentAt: fallback, lastCommentIds: new Set() };
+    return {
+      lastCommentAt: cursor.lastCommentAt > lowerBound ? cursor.lastCommentAt : lowerBound,
+      lastCommentIds: new Set(cursor.lastCommentIds),
+    };
+  }
+
+  private loadCommentCursors(): void {
+    if (!this.commentCursorPath || !existsSync(this.commentCursorPath)) return;
+    try {
+      const raw = JSON.parse(readFileSync(this.commentCursorPath, "utf8")) as Record<
+        string,
+        CommentCursor
+      >;
+      for (const [ticketId, cursor] of Object.entries(raw)) {
+        if (
+          typeof cursor?.lastCommentAt === "string" &&
+          Array.isArray(cursor.lastCommentIds) &&
+          cursor.lastCommentIds.every((id) => typeof id === "string")
+        ) {
+          this.persistedCommentCursors.set(ticketId, cursor);
+        }
+      }
+    } catch (err) {
+      this.logger.warn("comment cursor file unreadable; starting with empty cursors", {
+        path: this.commentCursorPath,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  private persistCommentCursor(ticketId: string, snapshot: Snapshot): void {
+    if (!this.commentCursorPath) return;
+    this.persistedCommentCursors.set(ticketId, {
+      lastCommentAt: snapshot.lastCommentAt,
+      lastCommentIds: [...snapshot.lastCommentIds].sort(),
+    });
+    try {
+      mkdirSync(dirname(this.commentCursorPath), { recursive: true });
+      const body = JSON.stringify(Object.fromEntries(this.persistedCommentCursors), null, 2) + "\n";
+      const tmp = `${this.commentCursorPath}.tmp`;
+      writeFileSync(tmp, body, "utf8");
+      renameSync(tmp, this.commentCursorPath);
+    } catch (err) {
+      this.logger.warn("comment cursor persist failed", {
+        path: this.commentCursorPath,
+        error: (err as Error).message,
+      });
     }
   }
 }

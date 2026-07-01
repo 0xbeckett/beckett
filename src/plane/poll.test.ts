@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PlanePoller } from "./poll.ts";
 import type { PlaneClient } from "./client.ts";
 import type { PlaneComment, Ticket } from "./types.ts";
@@ -118,5 +121,109 @@ describe("PlanePoller comment hot path", () => {
 
     const events = await eventsPromise;
     expect(events.map((e) => e.kind === "comment_added" ? e.comment.ticketId : "")).toEqual(["a", "b"]);
+  });
+
+  test("prime emits comments posted while the daemon was down", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-comment-cursor-"));
+    try {
+      const cursorPath = join(dir, "cursors.json");
+      const client = new FakePlaneClient();
+      const active = ticket({ updatedAt: "2026-01-01T00:10:00.000Z" });
+      client.tickets = [active];
+      client.comments.set("t1", [
+        comment("t1", { id: "old", createdAt: "2026-01-01T00:00:00.000Z" }),
+        comment("t1", { id: "during-down", createdAt: "2026-01-01T00:05:00.000Z" }),
+      ]);
+      await Bun.write(
+        cursorPath,
+        JSON.stringify({
+          t1: { lastCommentAt: "2026-01-01T00:00:00.000Z", lastCommentIds: ["old"] },
+        }),
+      );
+
+      const poller = new PlanePoller({
+        client: client as unknown as PlaneClient,
+        logger: quiet,
+        now: () => Date.parse("2026-01-01T00:10:00.000Z"),
+        commentCursorPath: cursorPath,
+      });
+
+      const events = await poller.prime();
+      expect(events).toEqual([
+        { kind: "state_changed", ticket: active, from: null, to: "in_progress" },
+        { kind: "comment_added", ticket: active, comment: comment("t1", { id: "during-down", createdAt: "2026-01-01T00:05:00.000Z" }) },
+      ]);
+      expect(readFileSync(cursorPath, "utf8")).toContain("during-down");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("same-timestamp comments are deduped by id instead of dropped", async () => {
+    class InclusiveFakePlaneClient extends FakePlaneClient {
+      override async listComments(
+        ticketId: string,
+        since?: string,
+        opts: { inclusive?: boolean } = {},
+      ): Promise<PlaneComment[]> {
+        this.commentCalls.push({ ticketId, since });
+        return (this.comments.get(ticketId) ?? []).filter((c) =>
+          !since ? true : opts.inclusive ? c.createdAt >= since : c.createdAt > since,
+        );
+      }
+    }
+    const dir = mkdtempSync(join(tmpdir(), "beckett-comment-tie-"));
+    try {
+      const cursorPath = join(dir, "cursors.json");
+      const client = new InclusiveFakePlaneClient();
+      client.tickets = [ticket()];
+      await Bun.write(
+        cursorPath,
+        JSON.stringify({
+          t1: { lastCommentAt: "2026-01-01T00:00:10.000Z", lastCommentIds: ["c1"] },
+        }),
+      );
+      const poller = new PlanePoller({
+        client: client as unknown as PlaneClient,
+        logger: quiet,
+        now: () => Date.parse("2026-01-01T00:01:00.000Z"),
+        commentCursorPath: cursorPath,
+      });
+      await poller.prime();
+      client.commentCalls = [];
+      const updated = ticket({ updatedAt: "2026-01-01T00:01:00.000Z" });
+      client.tickets = [updated];
+      client.comments.set("t1", [
+        comment("t1", { id: "c1", createdAt: "2026-01-01T00:00:10.000Z" }),
+        comment("t1", { id: "c2", createdAt: "2026-01-01T00:00:10.000Z" }),
+      ]);
+
+      const events = await poller.poll();
+      expect(client.commentCalls).toEqual([{ ticketId: "t1", since: "2026-01-01T00:00:10.000Z" }]);
+      expect(events).toEqual([
+        { kind: "comment_added", ticket: updated, comment: comment("t1", { id: "c2", createdAt: "2026-01-01T00:00:10.000Z" }) },
+      ]);
+      expect(readFileSync(cursorPath, "utf8")).toContain("c2");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("scheduled ticks deliver empty batches so downstream maintenance still runs", async () => {
+    const client = new FakePlaneClient();
+    client.tickets = [ticket()];
+    const poller = new PlanePoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    await poller.poll();
+
+    const seen: number[] = [];
+    await (
+      poller as unknown as {
+        tickOnce(onEvents: (events: unknown[]) => void | Promise<void>): Promise<void>;
+      }
+    ).tickOnce((events) => {
+      seen.push(events.length);
+    });
+
+    expect(seen).toEqual([0]);
   });
 });

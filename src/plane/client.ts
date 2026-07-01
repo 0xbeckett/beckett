@@ -19,6 +19,11 @@ import type { Config, Logger } from "../types.ts";
 import { parseCast, serializeCast } from "./cast.ts";
 import type { Casting, PlaneComment, Ticket, TicketState } from "./types.ts";
 
+const REQUEST_TIMEOUT_MS = 15_000;
+const REQUEST_MAX_ATTEMPTS = 3;
+const RETRY_BASE_MS = 250;
+const RETRY_MAX_MS = 5_000;
+
 // =======================================================================================
 // Public input/dependency shapes (the contract in docs/V3.md §3)
 // =======================================================================================
@@ -316,8 +321,15 @@ export class PlaneClient {
     return this.setState(id, state);
   }
 
-  /** Comments on an issue, oldest→newest. `since` (ISO) returns only strictly-newer comments. */
-  async listComments(ticketId: string, since?: string): Promise<PlaneComment[]> {
+  /**
+   * Comments on an issue, oldest→newest. `since` (ISO) returns newer comments by default; pass
+   * `{ inclusive: true }` when the caller tracks ids for comments sharing the cursor timestamp.
+   */
+  async listComments(
+    ticketId: string,
+    since?: string,
+    opts: { inclusive?: boolean } = {},
+  ): Promise<PlaneComment[]> {
     await this.bootstrap();
     const raw = await this.fetchAllPages(
       `${this.issuesPath()}${encodeURIComponent(ticketId)}/comments/`,
@@ -325,7 +337,9 @@ export class PlaneClient {
     let comments = raw
       .map((r) => this.hydrateComment(ticketId, r))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    if (since) comments = comments.filter((c) => c.createdAt > since);
+    if (since) {
+      comments = comments.filter((c) => (opts.inclusive ? c.createdAt >= since : c.createdAt > since));
+    }
     return comments;
   }
 
@@ -545,40 +559,78 @@ export class PlaneClient {
           .join("&")
       : "";
     const url = path + qs;
+    const payload = body === undefined ? undefined : JSON.stringify(body);
 
-    let res: Response;
-    try {
-      res = await this.fetchImpl(url, {
-        method,
-        headers: {
-          // Plane personal API tokens authenticate via X-API-Key (not Bearer).
-          "X-API-Key": token,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-    } catch (err) {
-      throw new PlaneApiError(0, `network error on ${method} ${url}: ${(err as Error).message}`);
-    }
-
-    if (res.status === 404) throw new PlaneApiError(404, `${method} ${url} → 404 not found`);
-    if (!res.ok) {
-      let detail = "";
+    for (let attempt = 1; attempt <= REQUEST_MAX_ATTEMPTS; attempt++) {
       try {
-        detail = (await res.text()).slice(0, 500);
-      } catch {
-        /* ignore body read failure */
+        const res = await this.fetchImpl(url, {
+          method,
+          headers: {
+            // Plane personal API tokens authenticate via X-API-Key (not Bearer).
+            "X-API-Key": token,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: payload,
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+
+        if (res.status === 404) throw new PlaneApiError(404, `${method} ${url} → 404 not found`);
+        if (!res.ok) {
+          let detail = "";
+          try {
+            detail = (await res.text()).slice(0, 500);
+          } catch {
+            /* ignore body read failure */
+          }
+          const err = new PlaneApiError(res.status, `${method} ${url} → ${res.status}: ${detail}`);
+          if (attempt < REQUEST_MAX_ATTEMPTS && shouldRetryStatus(res.status)) {
+            await this.sleep(retryDelayMs(attempt, res.headers.get("Retry-After")));
+            continue;
+          }
+          throw err;
+        }
+        if (res.status === 204) return undefined;
+        try {
+          return await res.json();
+        } catch {
+          return undefined;
+        }
+      } catch (err) {
+        if (err instanceof PlaneApiError) throw err;
+        if (attempt < REQUEST_MAX_ATTEMPTS) {
+          await this.sleep(retryDelayMs(attempt, null));
+          continue;
+        }
+        throw new PlaneApiError(0, `network error on ${method} ${url}: ${(err as Error).message}`);
       }
-      throw new PlaneApiError(res.status, `${method} ${url} → ${res.status}: ${detail}`);
     }
-    if (res.status === 204) return undefined;
-    try {
-      return await res.json();
-    } catch {
-      return undefined;
-    }
+    throw new PlaneApiError(0, `network error on ${method} ${url}: exhausted retries`);
   }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+}
+
+function shouldRetryStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+function retryDelayMs(attempt: number, retryAfter: string | null): number {
+  const hinted = parseRetryAfterMs(retryAfter);
+  if (hinted !== null) return Math.min(hinted, RETRY_MAX_MS);
+  const exp = RETRY_BASE_MS * 2 ** (attempt - 1);
+  return Math.min(RETRY_MAX_MS, exp + Math.floor(Math.random() * 100));
+}
+
+function parseRetryAfterMs(raw: string | null): number | null {
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const ts = Date.parse(raw);
+  if (!Number.isFinite(ts)) return null;
+  return Math.max(0, ts - Date.now());
 }
 
 /** Factory matching the repo's `createX(deps)` convention (see `createWorkerManager`). */
