@@ -25,7 +25,8 @@
  */
 
 import { test, expect, beforeAll } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, chmodSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, chmodSync, existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 
@@ -40,6 +41,7 @@ import { createWorkerManager, type DriverRegistry } from "../src/worker/manager.
 import { createDriver } from "../src/drivers/index.ts";
 import { createOrchestrator, type BeckettOrchestrator } from "../src/state/orchestrator.ts";
 import { staffFromPlan } from "../src/brain/plan.ts";
+import { NodeState, TaskState } from "../src/types.ts";
 import type {
   Brain,
   Config,
@@ -70,12 +72,11 @@ import type {
 
 const REPO_ROOT = process.cwd();
 const FAKE_HARNESS = join(REPO_ROOT, "src/test/fake-harness.ts");
-const SCRATCH = join("/tmp", "beckett-e2e", "recovery");
+const SCRATCH = mkdtempSync(join(tmpdir(), "beckett-recovery-"));
 const WRAPPER = join(SCRATCH, "fake-claude.sh");
 const log = makeLogger().child("e2e-recovery");
 
 beforeAll(() => {
-  rmSync(SCRATCH, { recursive: true, force: true });
   mkdirSync(SCRATCH, { recursive: true });
   writeFileSync(
     WRAPPER,
@@ -153,6 +154,10 @@ class FakeDiscord implements DiscordGateway {
     this.posts.push({ channelId, content, opts });
     return `msg_${++this.n}`;
   }
+  async startThread(_channelId: string, _anchorMessageId: string, _name: string): Promise<string> {
+    return `thread_${++this.n}`;
+  }
+  async sendTyping(_channelId: string): Promise<void> {}
   onMessage(_cb: (m: IncomingMessage) => void | Promise<void>): void {}
   isConnected(): boolean {
     return true;
@@ -370,7 +375,7 @@ test("daemon-restart: recover() --resumes a mid-run worker in its original workt
     )[0];
     return Boolean(row?.session_id) && row?.state === "running";
   });
-  await waitFor(() => d1.store.getNode(nodeId)?.state === "SUPERVISING");
+  await waitFor(() => d1.store.getNode(nodeId)?.state === NodeState.SUPERVISING);
 
   // Snapshot the durable "instant of death" checkpoint.
   const beforeRow = queryDb<{ id: string; session_id: string; workspace: string; pid: number | null; state: string }>(
@@ -383,7 +388,7 @@ test("daemon-restart: recover() --resumes a mid-run worker in its original workt
   const origWorkerId = beforeRow.id;
   expect(origSession).toBeTruthy();
   expect(beforeRow.state).toBe("running");
-  expect(d1.store.getNode(nodeId)?.state).toBe("SUPERVISING");
+  expect(d1.store.getNode(nodeId)?.state).toBe(NodeState.SUPERVISING);
 
   // KILL THE DAEMON: daemon #1 stops observing the worker as of now.
   daemon1Alive = false;
@@ -414,7 +419,7 @@ test("daemon-restart: recover() --resumes a mid-run worker in its original workt
   )[0]!;
   expect(frozen.state).toBe("running");
   expect(frozen.session_id).toBe(origSession);
-  expect(d1.store.getNode(nodeId)?.state).toBe("SUPERVISING");
+  expect(d1.store.getNode(nodeId)?.state).toBe(NodeState.SUPERVISING);
   d1.store.close();
 
   // ── Daemon #2: boot over the SAME store + project + worktree and recover() ───────────
@@ -444,9 +449,9 @@ test("daemon-restart: recover() --resumes a mid-run worker in its original workt
   expect(workerCount).toBe(1);
 
   // The node completes losing ≤1 turn: step-2 + step-3 are added on top of the surviving step-1.
-  const ok = await waitFor(() => d2.store.getTask(taskId)?.state === "DELIVERED");
+  const ok = await waitFor(() => d2.store.getTask(taskId)?.state === TaskState.DELIVERED);
   expect(ok).toBe(true);
-  expect(d2.store.getNode(nodeId)?.state).toBe("NODE_DONE");
+  expect(d2.store.getNode(nodeId)?.state).toBe(NodeState.NODE_DONE);
 
   const task = d2.store.getTask(taskId)!;
   const branch = task.project_branch!;

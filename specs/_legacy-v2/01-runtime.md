@@ -1,5 +1,8 @@
 # Beckett — Spec 01: Runtime
 
+> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/V3.md`](../../docs/V3.md).
+
+
 > Status: **draft v2.0** · 2026-06-28 · Owner: Jason
 > The runtime shape of v2: the thin bun **shell**, the **parent agent** it supervises, the
 > process model, config, and startup/shutdown/recovery. Honors [Spec 00](./00-overview.md);

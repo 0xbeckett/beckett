@@ -29,13 +29,19 @@ describe("hardCapSeconds", () => {
 });
 
 describe("wrapProcessGroup", () => {
-  test("wraps the command so the child leads its own process group (setsid available here)", () => {
+  test.if(Bun.which("setsid") !== null)("wraps the command so the child leads its own process group", () => {
     const { cmd, groupKill } = wrapProcessGroup("claude", ["-p", "--verbose"]);
     // setsid is present on the target (Linux); the harness runs under it as a group leader.
     expect(groupKill).toBe(true);
     expect(cmd.at(-3)).toBe("claude");
     expect(cmd.slice(-2)).toEqual(["-p", "--verbose"]);
     expect(cmd[0]).toContain("setsid");
+  });
+
+  test.if(Bun.which("setsid") === null)("falls back to single-pid kill when setsid is unavailable", () => {
+    const { cmd, groupKill } = wrapProcessGroup("claude", ["-p", "--verbose"]);
+    expect(groupKill).toBe(false);
+    expect(cmd).toEqual(["claude", "-p", "--verbose"]);
   });
 });
 

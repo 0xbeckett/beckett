@@ -3,13 +3,13 @@
  * and verifies it does the work in its isolated git worktree. This is the "can we actually
  * delegate to agents" check (no Plane needed; exercises driver + worktree + scope-guard + done).
  *
- * Run: bun run test/v3-delegation-e2e.ts
+ * Run: bun run scripts/e2e/v3-delegation-e2e.ts
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig } from "../src/config.ts";
-import { spawnWorker } from "../src/dispatch/spawn.ts";
-import type { Ticket } from "../src/plane/types.ts";
+import { loadConfig } from "../../src/config.ts";
+import { spawnWorker } from "../../src/dispatch/spawn.ts";
+import type { Ticket } from "../../src/plane/types.ts";
 
 const repoRoot = "/Users/jason/Code/beckett";
 const config = loadConfig();
@@ -31,6 +31,7 @@ const ticket: Ticket = {
     "GREETING.txt exists at the worktree root",
     "its content is exactly: hello from the beckett worker",
   ],
+  blockedBy: [],
   projectId: "p",
   url: "",
   updatedAt: "now",

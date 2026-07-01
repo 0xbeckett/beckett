@@ -23,7 +23,8 @@
  */
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
+import { mkdirSync, writeFileSync, chmodSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 
@@ -37,6 +38,7 @@ import { Tailer } from "../src/supervise/tailer.ts";
 import { createWorkerManager, type DriverRegistry } from "../src/worker/manager.ts";
 import { createDriver } from "../src/drivers/index.ts";
 import { createOrchestrator, type BeckettOrchestrator } from "../src/state/orchestrator.ts";
+import { NodeState, TaskState } from "../src/types.ts";
 import type {
   Brain,
   Config,
@@ -70,7 +72,7 @@ import { staffFromPlan } from "../src/brain/plan.ts";
 
 const REPO_ROOT = process.cwd();
 const FAKE_HARNESS = join(REPO_ROOT, "src/test/fake-harness.ts");
-const SCRATCH = join("/tmp", "beckett-e2e", "loop");
+const SCRATCH = mkdtempSync(join(tmpdir(), "beckett-loop-"));
 /** Wrapper so `harness.claude.bin` is a single executable token (no spaces). */
 const WRAPPER = join(SCRATCH, "fake-claude.sh");
 
@@ -80,7 +82,6 @@ const log = makeLogger().child("e2e");
 const FAKE_SPEED = "0.6";
 
 beforeAll(() => {
-  rmSync(SCRATCH, { recursive: true, force: true });
   mkdirSync(SCRATCH, { recursive: true });
   // A single executable wrapper that execs the fake harness with the current bun.
   writeFileSync(
@@ -241,6 +242,10 @@ class FakeDiscord implements DiscordGateway {
     this.posts.push({ channelId, content, opts });
     return `msg_${++this.n}`;
   }
+  async startThread(_channelId: string, _anchorMessageId: string, _name: string): Promise<string> {
+    return `thread_${++this.n}`;
+  }
+  async sendTyping(_channelId: string): Promise<void> {}
   onMessage(_cb: (m: IncomingMessage) => void | Promise<void>): void {}
   isConnected(): boolean {
     return true;
@@ -387,16 +392,16 @@ test("happy-path: full loop reaches DELIVERED with a real worktree diff + gate/o
   const h = makeHarness("happy", { scenario: "happy-path", checks: ["test -f sum.ts"], nl: ["a sum function exists"] });
 
   const taskId = await h.orchestrator.submit(intake("add a sum function"));
-  const ok = await waitFor(() => h.store.getTask(taskId)?.state === "DELIVERED");
+  const ok = await waitFor(() => h.store.getTask(taskId)?.state === TaskState.DELIVERED);
 
   const task = h.store.getTask(taskId)!;
   expect(ok).toBe(true);
-  expect(task.state).toBe("DELIVERED");
+  expect(task.state).toBe(TaskState.DELIVERED);
 
   // The single node gated green.
   const nodes = h.store.listNodesForTask(taskId);
   expect(nodes).toHaveLength(1);
-  expect(nodes[0]!.state).toBe("NODE_DONE");
+  expect(nodes[0]!.state).toBe(NodeState.NODE_DONE);
 
   // Real worktree branch + integration diff (the worker's files merged in).
   const projectBranch = task.project_branch!;
@@ -459,9 +464,9 @@ test("mid-task-nudge: a mid-run nudge is acked (echo) AND visibly changes worker
   expect(receipt.accepted).toBe("delivered");
 
   // Run finishes (the branch path ends with its own result).
-  await waitFor(() => h.store.getTask(taskId)?.state === "DELIVERED");
+  await waitFor(() => h.store.getTask(taskId)?.state === TaskState.DELIVERED);
   const task = h.store.getTask(taskId)!;
-  expect(task.state).toBe("DELIVERED");
+  expect(task.state).toBe(TaskState.DELIVERED);
 
   // Behavior branched: the worker wrote stop.txt and did NOT create c.txt.
   const branch = task.project_branch!;
@@ -493,7 +498,7 @@ test("no-progress: a drift smoke-alarm fires and surfaces, with no auto-kill", a
   const taskId = await h.orchestrator.submit(intake("look around the repo"));
   await waitFor(() => {
     const s = h.store.getTask(taskId)?.state;
-    return s === "DELIVERED" || s === "FAILED" || s === "ABORTED";
+    return s === TaskState.DELIVERED || s === TaskState.FAILED || s === TaskState.ABORTED;
   });
   const task = h.store.getTask(taskId)!;
 
@@ -512,7 +517,7 @@ test("no-progress: a drift smoke-alarm fires and surfaces, with no auto-kill", a
     "SELECT COUNT(*) AS c FROM workers WHERE state = 'aborted'",
   )[0]!.c;
   expect(aborted).toBe(0);
-  expect(task.state).toBe("DELIVERED");
+  expect(task.state).toBe(TaskState.DELIVERED);
 
   h.store.close();
 });

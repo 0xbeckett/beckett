@@ -20,3 +20,4 @@ dist/
 scratch/
 *.log
 .agents/
+.gstack/

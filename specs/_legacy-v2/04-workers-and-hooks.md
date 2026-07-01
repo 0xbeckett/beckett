@@ -1,5 +1,8 @@
 # Beckett — Spec 04: Workers & Hooks
 
+> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/V3.md`](../../docs/V3.md).
+
+
 > Status: **draft v2.0** · 2026-06-28 · Owner: Jason
 > The worker layer: how a child agent is spawned, isolated, steered, and observed. v2 is
 > **hybrid** — the salvaged Claude driver is the steerable primary; **sandcastle** spawns

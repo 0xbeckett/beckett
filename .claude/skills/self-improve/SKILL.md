@@ -38,7 +38,7 @@ context. This is the hot path — use it freely.
 Editing `src/**` is real self-modification and needs a service restart to take effect (the shell is
 a running process). So:
 - Edit → `bunx tsc --noEmit` (must pass) → commit + push.
-- A restart (`systemctl --user restart beckett-v2`) reloads the code but **kills your shell and
+- A restart (`systemctl --user restart beckett-v3`) reloads the code but **kills your shell and
   every running worker mid-flight** and resumes your session fresh. Don't do it casually while work
   is in progress. For anything non-trivial, or if you're unsure, make the change on a branch /
   surface it to Jason rather than restarting yourself blind. Treat self-restart like surgery on

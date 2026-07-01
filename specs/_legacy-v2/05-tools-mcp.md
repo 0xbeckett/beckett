@@ -1,5 +1,8 @@
 # Beckett — Spec 05: Tools & MCP
 
+> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/V3.md`](../../docs/V3.md).
+
+
 > Status: **draft v2.0** · 2026-06-28 · Owner: Jason
 > The surface the parent agent acts through: the **`beckett` CLI**, which the parent runs via
 > Bash. Stateful commands forward to the shell over a **unix control socket** (the shell holds
