@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { CodexDriver, estimateUsd } from "./codex.ts";
+import { CodexDriver, codexPreflight, estimateUsd } from "./codex.ts";
 import type { Config } from "../types.ts";
 
 const config = {
@@ -80,4 +80,16 @@ test("estimateUsd is null for unknown or blank models (honest, not invented)", (
   const tokens = { input: 1000, output: 100, cacheRead: 0, cacheCreate: 0 };
   expect(estimateUsd("", tokens)).toBeNull();
   expect(estimateUsd("some-future-model", tokens)).toBeNull();
+});
+
+// ── issue #17: preflight catches a broken/absent codex harness loudly. ──
+test("preflight FAILS loudly for a missing binary", async () => {
+  const badConfig = {
+    harness: {
+      codex: { ...(config.harness as { codex: object }).codex, bin: "definitely-not-a-real-codex-xyz" },
+    },
+  } as unknown as Config;
+  const pf = await codexPreflight(badConfig);
+  expect(pf.ok).toBe(false);
+  expect(pf.problems.join(" ")).toContain("definitely-not-a-real-codex-xyz");
 });

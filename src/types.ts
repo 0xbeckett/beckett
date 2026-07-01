@@ -203,6 +203,9 @@ export interface Worker {
 // SECTION 3 — WorkerEvent: normalized telemetry stream (Spec 02 §7)
 // =======================================================================================
 
+/** Why a harness failed (issue #17) — drives the dispatcher's per-class recovery policy. */
+export type ErrorClass = "auth" | "rate_limit" | "crash" | "timeout" | "spawn";
+
 /**
  * Both raw JSONL formats (claude stream-json / codex --json) normalize into this one
  * discriminated union (Spec 02 §7). The driver owns the raw parse; subscribers only see
@@ -235,6 +238,13 @@ export type WorkerEvent =
       subtype: string;
       structuredOutput: unknown | null;
       usage: TokenUsage;
+      /**
+       * Failure taxonomy (issue #17): WHY an error finish happened, so the dispatcher can pick
+       * the right response — `auth` (hold for a human login), `rate_limit` (back off / fall
+       * back), `timeout` (backstop cap), `spawn` (never became a process), `crash` (default
+       * bounded retry). Absent on success.
+       */
+      errorClass?: ErrorClass;
       ts: number;
     }
   | { kind: "error"; message: string; ts: number }
@@ -1366,6 +1376,8 @@ export interface Config {
     reviewer: string;
   };
   harness: {
+    /** Substitution order when a cast harness is unhealthy (issue #17 fallback chain). */
+    fallback_order: Harness[];
     // No `enabled` for claude: it is the backbone harness and the fallback for every disabled
     // cast — a switch that can't honestly be turned off is config theater (issue #31).
     claude: {

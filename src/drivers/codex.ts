@@ -55,8 +55,10 @@ import type {
   WorkerEvent,
   WorkerState,
 } from "../types.ts";
+import { join } from "node:path";
 import { makeLogger } from "../log.ts";
 import { hardCapSeconds, killGroup, killProcessTree, wrapProcessGroup } from "./proc.ts";
+import { classifyHarnessFailure, StderrRing } from "./failure.ts";
 
 /** The bun subprocess handle type (avoids a hard import of the `bun` module symbol). */
 type Child = ReturnType<typeof Bun.spawn>;
@@ -117,6 +119,44 @@ export function estimateUsd(model: string, tokens: TokenUsage): number | null {
   return (uncachedInput * p.input + tokens.cacheRead * p.cacheRead + tokens.output * p.output) / 1_000_000;
 }
 
+/** Preflight subprocess timeout — a wedged `--version` must not stall the dispatcher. */
+const PREFLIGHT_TIMEOUT_MS = 10_000;
+
+/**
+ * Static "is codex usable right now?" check (issue #17): binary resolves and reports a version,
+ * and the ChatGPT subscription login exists at `~/.codex/auth.json` (the child env strips API
+ * keys, so that login is the only auth path). Consulted (cached) by the dispatcher before
+ * casting and by `beckett doctor`.
+ */
+export async function codexPreflight(config: Config): Promise<{ ok: boolean; problems: string[] }> {
+  const problems: string[] = [];
+  const bin = config.harness.codex.bin;
+
+  try {
+    const v = Bun.spawnSync({ cmd: [bin, "--version"], stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
+    if (!v.success) {
+      problems.push(`\`${bin} --version\` exited ${v.exitCode}: ${v.stderr.toString().trim() || "(no output)"}`);
+    }
+  } catch (err) {
+    problems.push(
+      `codex binary "${bin}" is not runnable on PATH (${(err as Error).message}). ` +
+        `Install codex or fix config.harness.codex.bin.`,
+    );
+  }
+
+  const authPath = join(process.env.HOME ?? "", ".codex/auth.json");
+  try {
+    const f = Bun.file(authPath);
+    if (!(await f.exists()) || f.size === 0) {
+      problems.push(`no codex login at ${authPath} — run \`codex login\` (ChatGPT subscription).`);
+    }
+  } catch (err) {
+    problems.push(`could not read codex login at ${authPath} (${(err as Error).message}).`);
+  }
+
+  return { ok: problems.length === 0, problems };
+}
+
 export class CodexDriver implements HarnessDriver {
   readonly kind = "codex-exec-oneshot" as const;
 
@@ -141,6 +181,8 @@ export class CodexDriver implements HarnessDriver {
 
   // ── normalized-stream parse state ────────────────────────────────────────────
   private readonly subscribers = new Set<(e: WorkerEvent) => void>();
+  /** Last ~20 stderr lines — the self-diagnosing tail folded into failure messages (issue #17). */
+  private readonly stderrRing = new StderrRing();
   /** Item ids already counted as a tool call (dedup started/updated/completed). */
   private readonly seenToolIds = new Set<string>();
   /** The text of the most recent `agent_message` — the candidate structured done-signal. */
@@ -515,10 +557,13 @@ export class CodexDriver implements HarnessDriver {
     // turn line just before exit, and exec is one-shot so that line is the success signal.
     await this.readLoop;
 
-    // If the launch promise is still pending, the process died before the thread started.
+    // If the launch promise is still pending, the process died before the thread started —
+    // fail it with the stderr tail so the cause (binary/auth/node drift) is self-diagnosing.
     if (this.resolveSession && !this.threadStartedEmitted) {
       this.rejectSession?.(
-        new Error(`CodexDriver: process exited (code ${code}) before thread.started`),
+        new Error(
+          `CodexDriver: exited (code ${code}) before thread.started — ${this.processExitMessage(code)}`,
+        ),
       );
       this.resolveSession = null;
       this.rejectSession = null;
@@ -526,13 +571,15 @@ export class CodexDriver implements HarnessDriver {
     // If it exited without a terminal turn line, synthesize an error finish (crash path).
     if (!this.finished && !this.isTerminal()) {
       const ts = Date.now();
-      this.emit({ kind: "error", message: `codex process exited (code ${code})`, ts });
+      const message = this.processExitMessage(code);
+      this.emit({ kind: "error", message, ts });
       this.emit({
         kind: "finished",
         status: "error",
         subtype: "error_process_exit",
         structuredOutput: null,
         usage: { ...this.tokens },
+        errorClass: classifyHarnessFailure(message) ?? "crash",
         ts,
       });
       this.finished = true;
@@ -572,6 +619,7 @@ export class CodexDriver implements HarnessDriver {
       subtype: "error_wall_clock_cap",
       structuredOutput: null,
       usage: { ...this.tokens },
+      errorClass: "timeout",
       ts: Date.now(),
     });
   }
@@ -624,13 +672,24 @@ export class CodexDriver implements HarnessDriver {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true }).trim();
-        if (text) this.log.debug("codex stderr", { text });
+        if (text) {
+          this.log.debug("codex stderr", { text });
+          this.stderrRing.record(text);
+        }
       }
     } catch {
       // best-effort; stderr is diagnostic only
     } finally {
       reader.releaseLock();
     }
+  }
+
+  /** "codex process exited (code N)" + the stderr tail — self-diagnosing (issue #17). */
+  private processExitMessage(code: number): string {
+    const tail = this.stderrRing.tail();
+    return tail
+      ? `codex process exited (code ${code}). stderr tail:\n${tail}`
+      : `codex process exited (code ${code})`;
   }
 
   /**
@@ -735,6 +794,7 @@ export class CodexDriver implements HarnessDriver {
           subtype: "error_resume",
           structuredOutput: null,
           usage: { ...this.tokens },
+          errorClass: classifyHarnessFailure(String(err)) ?? "crash",
           ts: Date.now(),
         });
         this.finished = true;
@@ -777,6 +837,7 @@ export class CodexDriver implements HarnessDriver {
       subtype: "error_turn_failed",
       structuredOutput: null,
       usage: { ...this.tokens },
+      errorClass: classifyHarnessFailure(`${message}\n${this.stderrRing.tail()}`) ?? "crash",
       ts,
     });
     this.finished = true;

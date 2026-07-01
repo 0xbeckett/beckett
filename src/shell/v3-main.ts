@@ -34,6 +34,7 @@ import { projectSlug } from "../plane/cast.ts";
 import { createPlaneClient, type PlaneClient } from "../plane/client.ts";
 import { createPlanePoller, type PlanePoller } from "../plane/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
+import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, type Concierge } from "../concierge/index.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 
@@ -139,6 +140,9 @@ async function boot(): Promise<BootedSystem> {
     progress: concierge.progressSink(),
     advanceOutboxPath: join(buildPaths(config).beckettDir, "advance-outbox.jsonl"),
     runtimeStatePath: join(buildPaths(config).beckettDir, "dispatcher-state.json"),
+    // Harness health probe (issue #17): a dead harness (binary gone, login expired) becomes one
+    // clear substitution comment instead of a wedged ticket. ~5-min cached per harness.
+    preflight: (harness) => preflightFor(harness, config),
     logger: logger.child("dispatch"),
   });
 

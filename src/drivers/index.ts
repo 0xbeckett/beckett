@@ -12,14 +12,13 @@
  */
 
 import type { Config, Harness, HarnessDriver, Logger } from "../types.ts";
-import { ClaudeDriver } from "./claude.ts";
-import { CodexDriver } from "./codex.ts";
-import { PiDriver } from "./pi.ts";
+import { ClaudeDriver, claudePreflight } from "./claude.ts";
+import { CodexDriver, codexPreflight } from "./codex.ts";
+import { PiDriver, piPreflight } from "./pi.ts";
 
 export { ClaudeDriver } from "./claude.ts";
 export { CodexDriver } from "./codex.ts";
 export { PiDriver } from "./pi.ts";
-export type { RateLimitSignal } from "./claude.ts";
 
 /** Builds a fresh driver instance (one driver == one harness process). */
 export type DriverFactory = (config: Config, logger?: Logger) => HarnessDriver;
@@ -68,4 +67,54 @@ export function createDriver(
   logger?: Logger,
 ): HarnessDriver {
   return getDriverFactory(harness)(config, logger);
+}
+
+// =======================================================================================
+// Preflight registry (issue #17) — "is this harness usable RIGHT NOW?"
+// =======================================================================================
+
+/** The common shape of the per-driver preflights (binary, version, auth artifact). */
+export interface PreflightResult {
+  ok: boolean;
+  problems: string[];
+}
+
+const PREFLIGHT_TTL_MS = 5 * 60_000;
+const preflightCache = new Map<Harness, { at: number; result: PreflightResult }>();
+
+/**
+ * Run (or serve from a ~5-min cache) the harness's static preflight: binary resolves, reports a
+ * version, and its auth artifact exists. The dispatcher consults this BEFORE casting a worker so
+ * a dead harness produces one clear "unavailable: <reason>" substitution instead of a wedged
+ * ticket; `beckett doctor` runs the same checks. The cache keeps the per-spawn cost at zero
+ * while still noticing a fixed login within minutes.
+ */
+export async function preflightFor(
+  harness: Harness,
+  config: Config,
+  opts: { force?: boolean } = {},
+): Promise<PreflightResult> {
+  const cached = preflightCache.get(harness);
+  if (!opts.force && cached && Date.now() - cached.at < PREFLIGHT_TTL_MS) return cached.result;
+
+  let result: PreflightResult;
+  try {
+    switch (harness) {
+      case "claude":
+        result = await claudePreflight(config);
+        break;
+      case "codex":
+        result = await codexPreflight(config);
+        break;
+      case "pi":
+        result = await piPreflight(config);
+        break;
+      default:
+        result = { ok: false, problems: [`no driver registered for harness "${harness}"`] };
+    }
+  } catch (err) {
+    result = { ok: false, problems: [`preflight crashed: ${(err as Error).message}`] };
+  }
+  preflightCache.set(harness, { at: Date.now(), result });
+  return result;
 }

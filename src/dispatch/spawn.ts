@@ -31,6 +31,7 @@ import { join, dirname } from "node:path";
 import type {
   Config,
   Logger,
+  ErrorClass,
   FileScope,
   ResourceEnvelope,
   Effort,
@@ -66,6 +67,8 @@ export interface TicketWorkerResult {
    * dispatcher keys on this to handle the timeout gracefully (commit WIP, retry / return to ready).
    */
   timedOut: boolean;
+  /** Failure taxonomy off the driver's finished event (issue #17); undefined on success. */
+  errorClass?: ErrorClass;
 }
 
 /** Callback fired exactly once when a worker reaches a terminal `finished` event. */
@@ -82,6 +85,8 @@ export interface TicketWorkerHandle {
   readonly ticketId: string;
   /** "implement" | "review" | future stage names. */
   readonly stage: string;
+  /** The harness this worker actually ran on (post-substitution) — failure-policy input. */
+  readonly harness: string;
   /** Absolute path to this worker's git worktree (its cwd). */
   readonly workspace: string;
   /** The worktree branch carrying this worker's contribution. */
@@ -427,6 +432,7 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
           summary,
           structured: e.structuredOutput,
           timedOut: e.subtype === "error_wall_clock_cap",
+          errorClass: e.errorClass,
         };
         state = e.status === "success" ? "review" : "failed";
         logger.info("ticket worker finished", { workerId: id, stage, status: e.status });
@@ -487,6 +493,7 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     workerId: id,
     ticketId: ticket.id,
     stage,
+    harness: harness.harness,
     workspace,
     branch,
     get sessionId() {

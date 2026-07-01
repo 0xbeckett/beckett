@@ -53,6 +53,7 @@ import type {
 } from "../types.ts";
 import { makeLogger } from "../log.ts";
 import { hardCapSeconds, killGroup, killProcessTree, wrapProcessGroup } from "./proc.ts";
+import { classifyHarnessFailure, StderrRing } from "./failure.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -85,18 +86,6 @@ const FORBIDDEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] as const;
 /** Tool names whose calls imply a worktree write (Spec 02 §7.1 — file_change is derived). */
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
-/**
- * A rate-limit signal surfaced from the result/error shape. Risk-D (failover) is a v1
- * concern (Spec 02 §11); v0 only *exposes the hook* so the orchestrator can react later.
- */
-export interface RateLimitSignal {
-  source: "result" | "system";
-  /** Optional retry hint in ms if the harness surfaced one. */
-  retryAfterMs?: number;
-  detail: string;
-  ts: number;
-}
-
 interface PendingNudge {
   text: string;
   resolve: (r: NudgeReceipt) => void;
@@ -108,6 +97,46 @@ interface DiffStat {
   added: number;
   removed: number;
   files: number;
+}
+
+/** Preflight subprocess timeout — a wedged `--version` must not stall the dispatcher. */
+const PREFLIGHT_TIMEOUT_MS = 10_000;
+
+/**
+ * Static "is claude usable right now?" check (issue #17): binary resolves and reports a version
+ * (catches PATH/node drift), and the subscription login artifact exists. Linux keeps credentials
+ * at `~/.claude/.credentials.json`; macOS uses the Keychain, so the file check is skipped there.
+ * Consulted (cached) by the dispatcher before casting and by `beckett doctor`.
+ */
+export async function claudePreflight(config: Config): Promise<{ ok: boolean; problems: string[] }> {
+  const problems: string[] = [];
+  const bin = config.harness.claude.bin;
+
+  try {
+    const v = Bun.spawnSync({ cmd: [bin, "--version"], stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
+    if (!v.success) {
+      problems.push(`\`${bin} --version\` exited ${v.exitCode}: ${v.stderr.toString().trim() || "(no output)"}`);
+    }
+  } catch (err) {
+    problems.push(
+      `claude binary "${bin}" is not runnable on PATH (${(err as Error).message}). ` +
+        `Install claude or fix config.harness.claude.bin.`,
+    );
+  }
+
+  if (process.platform === "linux") {
+    const credsPath = join(process.env.HOME ?? "", ".claude/.credentials.json");
+    try {
+      const f = Bun.file(credsPath);
+      if (!(await f.exists()) || f.size === 0) {
+        problems.push(`no claude login at ${credsPath} — run \`claude\` once to sign in (subscription).`);
+      }
+    } catch (err) {
+      problems.push(`could not read claude login at ${credsPath} (${(err as Error).message}).`);
+    }
+  }
+
+  return { ok: problems.length === 0, problems };
 }
 
 export class ClaudeDriver implements HarnessDriver {
@@ -133,7 +162,8 @@ export class ClaudeDriver implements HarnessDriver {
 
   // ── normalized-stream parse state ────────────────────────────────────────────
   private readonly subscribers = new Set<(e: WorkerEvent) => void>();
-  private readonly rateLimitSubs = new Set<(s: RateLimitSignal) => void>();
+  /** Last ~20 stderr lines — the self-diagnosing tail folded into failure messages (issue #17). */
+  private readonly stderrRing = new StderrRing();
   private readonly seenMsgIds = new Set<string>();
   private readonly seenToolIds = new Set<string>();
   private expectTurnStart = true;
@@ -300,22 +330,13 @@ export class ClaudeDriver implements HarnessDriver {
   }
 
   // ===========================================================================
-  // onEvent / getTelemetry / onRateLimit
+  // onEvent / getTelemetry
   // ===========================================================================
 
   /** Subscribe to the normalized event stream; returns an unsubscribe fn (Spec 02 §3). */
   onEvent(cb: (e: WorkerEvent) => void): () => void {
     this.subscribers.add(cb);
     return () => this.subscribers.delete(cb);
-  }
-
-  /**
-   * Subscribe to rate-limit signals derived from the result/error shape. v0 exposes the
-   * seam for Risk-D failover (Spec 02 §11) without acting on it. Returns an unsubscribe fn.
-   */
-  onRateLimit(cb: (s: RateLimitSignal) => void): () => void {
-    this.rateLimitSubs.add(cb);
-    return () => this.rateLimitSubs.delete(cb);
   }
 
   /**
@@ -504,22 +525,27 @@ export class ClaudeDriver implements HarnessDriver {
       clearTimeout(this.spawnTimer);
       this.spawnTimer = null;
     }
-    // If the launch promise is still pending, the process died before init — fail it.
+    // If the launch promise is still pending, the process died before init — fail it, with the
+    // stderr tail so "exited before init" is self-diagnosing (binary missing? auth? node drift?).
     if (this.resolveSession && !this.sessionStartedEmitted) {
-      this.rejectSession?.(new Error(`ClaudeDriver: process exited (code ${code}) before init`));
+      this.rejectSession?.(
+        new Error(`ClaudeDriver: exited (code ${code}) before init — ${this.processExitMessage(code)}`),
+      );
       this.resolveSession = null;
       this.rejectSession = null;
     }
     // If it exited without a terminal result, synthesize an error finish (crash path).
     if (!this.finished && !this.isTerminal()) {
       const ts = Date.now();
-      this.emit({ kind: "error", message: `claude process exited (code ${code})`, ts });
+      const message = this.processExitMessage(code);
+      this.emit({ kind: "error", message, ts });
       this.emit({
         kind: "finished",
         status: "error",
         subtype: "error_process_exit",
         structuredOutput: null,
         usage: { ...this.tokens },
+        errorClass: classifyHarnessFailure(message) ?? "crash",
         ts,
       });
       this.finished = true;
@@ -561,6 +587,7 @@ export class ClaudeDriver implements HarnessDriver {
       subtype: "error_wall_clock_cap",
       structuredOutput: null,
       usage: { ...this.tokens },
+      errorClass: "timeout",
       ts: Date.now(),
     });
   }
@@ -614,13 +641,24 @@ export class ClaudeDriver implements HarnessDriver {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true }).trim();
-        if (text) this.log.debug("claude stderr", { text });
+        if (text) {
+          this.log.debug("claude stderr", { text });
+          this.stderrRing.record(text);
+        }
       }
     } catch {
       // best-effort; stderr is diagnostic only
     } finally {
       reader.releaseLock();
     }
+  }
+
+  /** "claude process exited (code N)" + the stderr tail — self-diagnosing (issue #17). */
+  private processExitMessage(code: number): string {
+    const tail = this.stderrRing.tail();
+    return tail
+      ? `claude process exited (code ${code}). stderr tail:\n${tail}`
+      : `claude process exited (code ${code})`;
   }
 
   /**
@@ -690,9 +728,10 @@ export class ClaudeDriver implements HarnessDriver {
       return;
     }
 
-    // api_retry / overloaded notices can carry a rate-limit hint (Spec 02 §11 seam).
+    // api_retry / overloaded notices hint at a rate limit; surface it in the log (the terminal
+    // result carries the authoritative classification via the finished event's errorClass).
     if (typeof obj.subtype === "string" && /rate.?limit|overload|api_retry/i.test(obj.subtype)) {
-      this.emitRateLimit({ source: "system", detail: `system/${obj.subtype}`, ts });
+      this.log.warn("rate-limit hint from system message", { subtype: obj.subtype });
     }
 
     // Any other system subtype (thinking_tokens, task_started, …) is tolerated as unknown.
@@ -821,12 +860,24 @@ export class ClaudeDriver implements HarnessDriver {
     // Prefer the streamed per-turn sum; fall back to result.usage if we never saw any.
     if (usage && !this.tokensFromStream) this.tokens = usage;
 
+    // Failure taxonomy (issue #17): name WHY this errored so the dispatcher can respond per
+    // class instead of blind-retrying an expired login or hammering a rate limit.
+    const errors = Array.isArray(obj.errors) ? obj.errors.join(" ") : "";
+    const errorClass = !isError
+      ? undefined
+      : subtype === "error_wall_clock_cap"
+        ? ("timeout" as const)
+        : this.isRateLimitResult(obj, subtype)
+          ? ("rate_limit" as const)
+          : (classifyHarnessFailure(`${errors}\n${this.stderrRing.tail()}`) ?? ("crash" as const));
+
     this.emit({
       kind: "finished",
       status: isError ? "error" : "success",
       subtype,
       structuredOutput: obj.structured_output ?? null,
       usage: { ...this.tokens },
+      errorClass,
       ts,
     });
     this.finished = true;
@@ -842,8 +893,6 @@ export class ClaudeDriver implements HarnessDriver {
       this.setState("failed");
     }
 
-    // Rate-limit detection seam (Spec 02 §11, Risk-D is v1).
-    this.detectRateLimitFromResult(obj, subtype, ts);
     this.failPendingNudges();
   }
 
@@ -859,24 +908,15 @@ export class ClaudeDriver implements HarnessDriver {
     }
   }
 
-  private detectRateLimitFromResult(
-    obj: Record<string, unknown>,
-    subtype: string,
-    ts: number,
-  ): void {
+  /** Rate-limit detection off the result shape — feeds the finished event's errorClass. */
+  private isRateLimitResult(obj: Record<string, unknown>, subtype: string): boolean {
     const status = typeof obj.api_error_status === "number" ? obj.api_error_status : undefined;
     const errors = Array.isArray(obj.errors) ? obj.errors.join(" ").toLowerCase() : "";
-    const hit =
+    return (
       status === 429 ||
       /rate.?limit|too many requests|overloaded|quota/.test(errors) ||
-      (subtype === "error_during_execution" && /rate.?limit|overload/.test(errors));
-    if (hit) {
-      this.emitRateLimit({
-        source: "result",
-        detail: `result/${subtype}${status ? ` status=${status}` : ""}`,
-        ts,
-      });
-    }
+      (subtype === "error_during_execution" && /rate.?limit|overload/.test(errors))
+    );
   }
 
   // ===========================================================================
@@ -978,17 +1018,6 @@ export class ClaudeDriver implements HarnessDriver {
         cb(e);
       } catch (err) {
         this.log.warn("event subscriber threw", { err: String(err), kind: e.kind });
-      }
-    }
-  }
-
-  private emitRateLimit(s: RateLimitSignal): void {
-    this.log.warn("rate-limit signal", { source: s.source, detail: s.detail });
-    for (const cb of this.rateLimitSubs) {
-      try {
-        cb(s);
-      } catch (err) {
-        this.log.warn("rate-limit subscriber threw", { err: String(err) });
       }
     }
   }
