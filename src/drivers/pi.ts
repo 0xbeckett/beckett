@@ -87,7 +87,15 @@ const PREFLIGHT_TIMEOUT_MS = 10_000;
 /** Minimum pi CLI version with the `--session-id` create-if-missing contract. */
 const MIN_PI_VERSION = "0.78.0";
 /** CLI flags the driver's invocation depends on — their absence signals version/protocol drift. */
-const REQUIRED_PI_FLAGS = ["--mode", "--session", "--session-id", "--print"] as const;
+const REQUIRED_PI_FLAGS = [
+  "--mode",
+  "--session",
+  "--session-id",
+  "--print",
+  "--no-extensions",
+  "--no-skills",
+  "--no-themes",
+] as const;
 /** Stderr ring size included in pi launch/process-exit diagnostics. */
 const STDERR_TAIL_LINES = 20;
 
@@ -260,6 +268,8 @@ export class PiDriver implements HarnessDriver {
   private turns = 0;
   private toolCalls = 0;
   private tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+  /** Accumulated real cost off `turn_end.message.usage.cost.total` (pi reports dollars). */
+  private usd: number | null = null;
 
   // ── steering (exec is one-shot → every nudge is buffered for the next resume) ──
   private readonly bufferedNudges: string[] = [];
@@ -382,7 +392,7 @@ export class PiDriver implements HarnessDriver {
       toolCalls: this.toolCalls,
       tokens: { ...this.tokens },
       diffLines: diff,
-      usdEstimate: null, // pi's JSONL carries a cost estimate, but we keep parity with codex (null)
+      usdEstimate: this.usd,
     };
   }
 
@@ -396,7 +406,19 @@ export class PiDriver implements HarnessDriver {
 
   private buildArgs(prompt: string, isResume: boolean): string[] {
     const pi = this.config.harness.pi;
-    const args: string[] = ["-p", "--mode", "json", "--provider", pi.default_provider];
+    // Pin the worker environment: pi auto-discovers extensions/skills/themes from the ticket repo
+    // AND the user dirs, so a stray install on the box would change worker behavior invisibly.
+    // Context-file discovery (AGENTS.md/CLAUDE.md in the ticket repo) stays ON — that's desirable.
+    const args: string[] = [
+      "-p",
+      "--mode",
+      "json",
+      "--no-extensions",
+      "--no-skills",
+      "--no-themes",
+      "--provider",
+      pi.default_provider,
+    ];
     const model = this.resolvedModel();
     if (model) args.push("--model", model);
     args.push("--thinking", this.resolvedThinking());
@@ -797,6 +819,14 @@ export class PiDriver implements HarnessDriver {
     if (usage) {
       this.addTokens(usage);
       this.emit({ kind: "turn_completed", usage, ts: Date.now() });
+    }
+    // pi reports a REAL per-turn dollar cost (`usage.cost.total`) — accumulate it so
+    // getTelemetry() surfaces actual spend instead of discarding it.
+    const cost = (message?.usage as Record<string, unknown> | undefined)?.cost as
+      | Record<string, unknown>
+      | undefined;
+    if (cost && typeof cost.total === "number" && Number.isFinite(cost.total)) {
+      this.usd = (this.usd ?? 0) + cost.total;
     }
   }
 

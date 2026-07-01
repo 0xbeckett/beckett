@@ -23,6 +23,29 @@ export type { Config } from "./types.ts";
 /** Env keys we must never read or set (Spec 00 §4 — subscription auth only). */
 const FORBIDDEN_ENV_KEYS = new Set(["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
 
+/**
+ * Flags `ClaudeDriver.buildArgs` composes itself — an extra_flags entry naming one of these
+ * would inject a conflicting duplicate (the driver's dedup is exact-token only). Each has a
+ * real config key or spec field; `--max-turns` is banned because envelopes are estimates,
+ * never hard caps (Spec 02 §7).
+ */
+const CLAUDE_DRIVER_OWNED_FLAGS = new Set([
+  "-p",
+  "--print",
+  "--input-format",
+  "--output-format",
+  "--permission-mode",
+  "--model",
+  "--effort",
+  "--session-id",
+  "--resume",
+  "--append-system-prompt",
+  "--mcp-config",
+  "--settings",
+  "--json-schema",
+  "--max-turns",
+]);
+
 // =======================================================================================
 // .env parsing (dependency-free)
 // =======================================================================================
@@ -127,9 +150,11 @@ const ConfigSchema = z
       .default({}),
     harness: z
       .object({
+        // No `enabled` switch for claude: it is the backbone harness and the fallback target
+        // whenever a cast names a disabled harness, so it can never honestly be off. (codex/pi
+        // `enabled` ARE real: Dispatcher#castFor falls back to claude when one is disabled.)
         claude: z
           .object({
-            enabled: z.boolean().default(true),
             bin: z.string().min(1).default("claude"),
             default_model: z.string().min(1).default("claude-sonnet-5"),
             // Reasoning effort handed to every claude worker via `claude --effort` (verified on
@@ -141,9 +166,24 @@ const ConfigSchema = z
             // autonomously without per-edit prompts (Spec 12 §1.7; Spec 02 §8). Honored by
             // ClaudeDriver.buildArgs.
             permission_mode: z.string().min(1).default("bypassPermissions"),
+            // Extra argv appended to every claude worker launch. Flags the driver already owns
+            // are REFUSED at load (see CLAUDE_DRIVER_OWNED_FLAGS): the driver's dedup is
+            // exact-token only, so `["--model","opus"]` would inject a second, conflicting
+            // `--model` — a silent misconfig this validation turns into a loud boot failure.
             extra_flags: z
               .array(z.string())
-              .default(["--verbose", "--replay-user-messages", "--include-hook-events"]),
+              .default(["--verbose", "--replay-user-messages", "--include-hook-events"])
+              .superRefine((flags, ctx) => {
+                const conflicts = flags.filter((f) => CLAUDE_DRIVER_OWNED_FLAGS.has(f));
+                if (conflicts.length) {
+                  ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message:
+                      `harness.claude.extra_flags may not override driver-owned flags: ` +
+                      `${conflicts.join(", ")} (set the matching config key instead)`,
+                  });
+                }
+              }),
           })
           .default({}),
         codex: z
@@ -153,6 +193,7 @@ const ConfigSchema = z
             // Empty = defer to codex's own ~/.codex/config.toml model (account-appropriate).
             // The Concierge can still cast an explicit model per ticket.
             default_model: z.string().default(""),
+            default_effort: z.enum(["low", "medium", "high", "xhigh"]).default("high"),
             // Sandbox OFF by default: `workspace-write` blocks network unless explicitly enabled,
             // which silently broke every codex worker that needed to install a dep / curl / clone /
             // enumerate (it "yaps about a network sandbox issue" and stalls). `danger-full-access`
@@ -176,7 +217,7 @@ const ConfigSchema = z
             bin: z.string().min(1).default("pi"),
             default_provider: z.string().min(1).default("openai-codex"),
             default_model: z.string().min(1).default("gpt-5.5"),
-            thinking: z.string().min(1).default("high"),
+            thinking: z.enum(["low", "medium", "high", "xhigh"]).default("high"),
           })
           .default({}),
       })

@@ -743,14 +743,48 @@ export class Dispatcher {
     });
   }
 
-  /** Resolve the casting entry for a stage, applying defaults (docs/V3.md §5). */
+  /**
+   * Resolve the casting entry for a stage, applying defaults (docs/V3.md §5). A cast naming a
+   * harness that is disabled in config (`harness.<h>.enabled = false`) falls back to claude —
+   * the enabled keys are real switches, not decoration. The cast's model is dropped on fallback
+   * (model ids are harness-specific); its effort survives (shared vocabulary).
+   */
   private castFor(ticket: Ticket, stage: string): HarnessSpec {
     const explicit = ticket.casting[stage];
-    if (explicit) return explicit;
-    if (stage === "review") {
-      return { harness: "claude", model: this.config.models.reviewer };
+    const spec: HarnessSpec =
+      explicit ??
+      (stage === "review"
+        ? { harness: "claude", model: this.config.models.reviewer }
+        : { harness: "claude" });
+    if (spec.harness !== "claude" && this.config.harness?.[spec.harness]?.enabled === false) {
+      this.logger.warn("cast harness is disabled in config — falling back to claude", {
+        ticket: ticket.identifier,
+        stage,
+        cast: spec.harness,
+      });
+      return { harness: "claude", effort: spec.effort };
     }
-    return { harness: "claude" };
+    return spec;
+  }
+
+  /**
+   * One-line spend telemetry for a finished worker, e.g. `12 turns · 34 tool calls · 1.2M tokens
+   * · ~$1.87`. The $ figure appears only when the driver has real/estimable cost data (claude's
+   * stream cost, pi's usage.cost, codex's price table) — never a made-up number. Best-effort:
+   * a telemetry failure yields "" rather than disturbing finish handling.
+   */
+  private spendLine(handle: TicketWorkerHandle): string {
+    try {
+      const t = handle.telemetry();
+      if (t.turns === 0 && t.toolCalls === 0) return "";
+      const total = t.tokens.input + t.tokens.output + t.tokens.cacheRead + t.tokens.cacheCreate;
+      const tokens =
+        total >= 1_000_000 ? `${(total / 1_000_000).toFixed(1)}M` : `${Math.round(total / 1_000)}k`;
+      const cost = t.usdEstimate != null ? ` · ~$${t.usdEstimate.toFixed(2)}` : "";
+      return `_${t.turns} turns · ${t.toolCalls} tool calls · ${tokens} tokens${cost}_`;
+    } catch {
+      return "";
+    }
   }
 
   // ── finish handling — advance the ticket + post a summary ────────────────────────────────
@@ -765,6 +799,11 @@ export class Dispatcher {
     // Free the slot first so a queued spawn can take it.
     if (this.workers.get(ticket.id) === handle) this.workers.delete(ticket.id);
     this.liveTickets.delete(ticket.id);
+
+    // Ride the spend counters into every downstream finish comment — the cheapest possible
+    // fleet-spend observability (turns/tools/tokens/$ per stage, straight off the driver).
+    const spend = this.spendLine(handle);
+    if (spend) summary = summary ? `${summary}\n\n${spend}` : spend;
 
     try {
       if (stage === "implement") {

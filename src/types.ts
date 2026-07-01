@@ -139,7 +139,8 @@ export interface TokenUsage {
 
 /**
  * Derived telemetry counters (Spec 02 §2/§7.3). Informational only — NEVER a budget gate
- * (Spec 00 §4 Economics: no USD ledger). `usdEstimate` is claude-only, codex = null.
+ * (Spec 00 §4 Economics: no USD ledger). `usdEstimate`: claude = stream cost, pi = accumulated
+ * `usage.cost.total`, codex = static price-table estimate (null when the model isn't priced).
  */
 export interface WorkerSpend {
   turns: number;
@@ -1365,8 +1366,9 @@ export interface Config {
     reviewer: string;
   };
   harness: {
+    // No `enabled` for claude: it is the backbone harness and the fallback for every disabled
+    // cast — a switch that can't honestly be turned off is config theater (issue #31).
     claude: {
-      enabled: boolean;
       bin: string;
       default_model: string;
       default_effort: Effort;
@@ -1377,6 +1379,7 @@ export interface Config {
       enabled: boolean;
       bin: string;
       default_model: string;
+      default_effort: Effort;
       sandbox_mode: string;
       approval_policy: string;
       network_default: boolean;
@@ -1388,8 +1391,8 @@ export interface Config {
       default_provider: string;
       /** Model id (pi `--model`). e.g. "gpt-5.5". */
       default_model: string;
-      /** Reasoning depth (pi `--thinking`): off|minimal|low|medium|high|xhigh. */
-      thinking: string;
+      /** Reasoning depth (pi `--thinking`). */
+      thinking: Effort;
     };
   };
   paths: {

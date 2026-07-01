@@ -37,9 +37,11 @@
  *   (Spec 02 §9.3).
  *
  * Economics (Spec 00 §4): codex's JSONL carries token counts but NO dollar cost field, so
- * `usdEstimate` in {@link getTelemetry} is always `null` (per the {@link WorkerSpend}
- * contract). Auth (Spec 00 §4): subscription only — the child env has any `OPENAI_API_KEY` /
- * `ANTHROPIC_API_KEY` stripped so `codex` always uses the `~/.codex` ChatGPT login.
+ * `usdEstimate` in {@link getTelemetry} is derived from a static $/Mtok price table keyed by
+ * the launch model ({@link estimateUsd}); `null` when the model isn't priced (or was deferred
+ * to codex's own config). Auth (Spec 00 §4): subscription only — the child env has any
+ * `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` stripped so `codex` always uses the `~/.codex`
+ * ChatGPT login.
  */
 
 import type {
@@ -84,6 +86,37 @@ interface DiffStat {
   files: number;
 }
 
+/**
+ * Static $/Mtok price table (codex's JSONL has no cost field — my-docs/codex-exec.md §1.5 says
+ * "a harness must apply its own price table"). Longest-prefix match on the LAUNCH model id (the
+ * driver is the source of truth for codex models — Spec 02 §2). Published OpenAI API prices,
+ * checked 2026-07; cached input is billed at the `cacheRead` rate. Unknown/blank model → null
+ * (an honest "don't know", never a made-up number).
+ */
+const USD_PER_MTOK: [prefix: string, price: { input: number; cacheRead: number; output: number }][] = [
+  ["gpt-5.5-codex", { input: 1.25, cacheRead: 0.125, output: 10 }],
+  ["gpt-5.5", { input: 1.25, cacheRead: 0.125, output: 10 }],
+  ["gpt-5-codex", { input: 1.25, cacheRead: 0.125, output: 10 }],
+  ["gpt-5-mini", { input: 0.25, cacheRead: 0.025, output: 2 }],
+  ["gpt-5-nano", { input: 0.05, cacheRead: 0.005, output: 0.4 }],
+  ["gpt-5", { input: 1.25, cacheRead: 0.125, output: 10 }],
+];
+
+/**
+ * Estimate cumulative spend for `model` from token counters; null when the model isn't priced.
+ * `tokens.cacheRead` (codex `cached_input_tokens`) is a PORTION of `tokens.input` (§1.5), so the
+ * cached share is billed at the cache rate and only the remainder at the full input rate.
+ */
+export function estimateUsd(model: string, tokens: TokenUsage): number | null {
+  const m = model.trim().toLowerCase();
+  if (!m) return null;
+  const entry = USD_PER_MTOK.find(([prefix]) => m.startsWith(prefix));
+  if (!entry) return null;
+  const p = entry[1];
+  const uncachedInput = Math.max(0, tokens.input - tokens.cacheRead);
+  return (uncachedInput * p.input + tokens.cacheRead * p.cacheRead + tokens.output * p.output) / 1_000_000;
+}
+
 export class CodexDriver implements HarnessDriver {
   readonly kind = "codex-exec-oneshot" as const;
 
@@ -117,7 +150,8 @@ export class CodexDriver implements HarnessDriver {
   private turns = 0;
   private toolCalls = 0;
   private tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
-  private usd: number | null = null; // ALWAYS null for codex (no cost field; Spec 02 §2)
+  // (no `usd` accumulator: codex's stream has no cost field — getTelemetry derives the
+  //  estimate from the cumulative token counters via the static price table below)
 
   // ── steering (exec is one-shot → every nudge is buffered for the next resume) ──
   private readonly bufferedNudges: string[] = [];
@@ -266,7 +300,8 @@ export class CodexDriver implements HarnessDriver {
   /**
    * Snapshot of derived counters (Spec 02 §7.3). Cheap: reads in-memory accumulators and
    * shells `git diff --numstat` (+ staged) in the worktree for the ground-truth diff size.
-   * `usdEstimate` is always `null` — codex's JSONL has no cost field (Spec 02 §2).
+   * `usdEstimate` is a static-price-table estimate off the cumulative token counters —
+   * `null` when the launch model has no table entry (codex's JSONL has no cost field).
    */
   getTelemetry() {
     const diff = this.diffStat();
@@ -275,7 +310,7 @@ export class CodexDriver implements HarnessDriver {
       toolCalls: this.toolCalls,
       tokens: { ...this.tokens },
       diffLines: diff,
-      usdEstimate: this.usd,
+      usdEstimate: estimateUsd(this.resolvedModel(), this.tokens),
     };
   }
 
@@ -433,7 +468,13 @@ export class CodexDriver implements HarnessDriver {
   /** Config-override (`-c key=value`) flags shared by spawn + resume (approvals + network). */
   private configOverrides(): string[] {
     const codex = this.config.harness.codex;
-    const ov: string[] = ["-c", `approval_policy=${codex.approval_policy}`];
+    const effort = this.spec?.envelope.effort ?? codex.default_effort;
+    const ov: string[] = [
+      "-c",
+      `approval_policy=${codex.approval_policy}`,
+      "-c",
+      `model_reasoning_effort="${effort}"`,
+    ];
     const network = (this.spec?.envelope.network ?? false) || codex.network_default;
     if (network) ov.push("-c", "sandbox_workspace_write.network_access=true");
     return ov;

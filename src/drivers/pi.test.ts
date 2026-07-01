@@ -218,6 +218,54 @@ test("preflight rejects stale pi without --session-id support", async () => {
   }
 });
 
+// ── issue #31: config & telemetry truthfulness. ──
+test("turn_end usage.cost.total accumulates into getTelemetry().usdEstimate", () => {
+  const { driver, feed } = harness();
+  feed({
+    type: "turn_end",
+    message: { role: "assistant", content: [], usage: { input: 100, output: 10, cost: { total: 0.0125 } } },
+    toolResults: [],
+  });
+  feed({
+    type: "turn_end",
+    message: { role: "assistant", content: [], usage: { input: 200, output: 20, cost: { total: 0.025 } } },
+    toolResults: [],
+  });
+  expect(driver.getTelemetry().usdEstimate).toBeCloseTo(0.0375, 6);
+});
+
+test("usdEstimate stays null when pi reports no cost", () => {
+  const { driver, feed } = harness();
+  feed({
+    type: "turn_end",
+    message: { role: "assistant", content: [], usage: { input: 100, output: 10 } },
+    toolResults: [],
+  });
+  expect(driver.getTelemetry().usdEstimate).toBeNull();
+});
+
+test("worker env is pinned: --no-extensions --no-skills --no-themes on every launch", () => {
+  for (const isResume of [false, true]) {
+    const args = argsFor(isResume, "cafe1234-0000-0000-0000-000000000000");
+    expect(args).toContain("--no-extensions");
+    expect(args).toContain("--no-skills");
+    expect(args).toContain("--no-themes");
+  }
+});
+
+test("un-cast worker falls back to config.harness.pi.thinking for --thinking", () => {
+  const driver = new PiDriver(config, quietLog) as unknown as {
+    sessionId: string | null;
+    spec: unknown;
+    buildArgs(prompt: string, isResume: boolean): string[];
+  };
+  driver.sessionId = null;
+  driver.spec = { envelope: {} }; // no cast effort
+  const args = driver.buildArgs("go", false);
+  const i = args.indexOf("--thinking");
+  expect(args[i + 1]).toBe("high"); // the config default, not claude's
+});
+
 test("process-exit diagnostics include the stderr tail", () => {
   const driver = new PiDriver(config, quietLog) as unknown as {
     recordStderr(text: string): void;
