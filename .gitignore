@@ -21,3 +21,6 @@ scratch/
 *.log
 .agents/
 .gstack/
+
+# wrangler local build cache
+web/.wrangler/
