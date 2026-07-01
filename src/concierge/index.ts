@@ -35,10 +35,36 @@ import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { serveBus, type BusRequest, type BusResponse } from "../shell/control-bus.ts";
 import { createDiscordGateway, type DiscordGateway } from "../discord/gateway.ts";
+import {
+  downloadAttachments,
+  buildAttachmentContent,
+  type TurnContentBlock,
+} from "../discord/attachments.ts";
+import {
+  ensureSeeded,
+  upsertIdentity,
+  loadIdentities,
+  resolveAddress,
+  type UserIdentity,
+} from "../discord/identity.ts";
 import { createProgressHub, type ProgressHub, type ProgressSink } from "../discord/progress.ts";
+
+/**
+ * What one chat turn hands the model: either a plain string (text-only turns, and every internal
+ * turn — handoffs, seeds, ticket updates) or an array of content blocks (a text block plus one or
+ * more base64 image blocks, so a Discord image reaches the model turn as real vision input).
+ */
+export type TurnMessage = string | TurnContentBlock[];
 
 /** The same env keys the worker driver strips — subscription auth only (Spec 00 §4). */
 const FORBIDDEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] as const;
+
+/**
+ * Ops channel that gets a one-line banner on every daemon boot (short git hash + subject) so a
+ * restart is visible and we can see exactly which commit is live. Hardcoded by design (it's an
+ * ops constant, not per-conversation), overridable via `BECKETT_STARTUP_CHANNEL_ID` for dev.
+ */
+const STARTUP_CHANNEL_ID = "1520658476974735490";
 
 /** Hard ceiling on one chat turn before we give up waiting for its `result` line. */
 const TURN_TIMEOUT_MS = 240_000;
@@ -161,7 +187,7 @@ export class ConciergeSession {
    * Run one chat turn. Writes the message as a user line and resolves with the assistant's
    * reply text once claude emits the turn's `result`. Single-flight via the internal queue.
    */
-  ask(message: string): Promise<string> {
+  ask(message: TurnMessage): Promise<string> {
     const run = this.queue.then(() => this.runTurn(message));
     // Keep the chain alive even if a turn rejects, so one bad turn never wedges the session.
     // Chain the rotation check AFTER the turn so any compaction lands at a turn boundary (never
@@ -191,7 +217,7 @@ export class ConciergeSession {
 
   // ── internals ────────────────────────────────────────────────────────────────────────
 
-  private async runTurn(message: string): Promise<string> {
+  private async runTurn(message: TurnMessage): Promise<string> {
     if (this.stopped) throw new Error("concierge session stopped");
     if (!this.child) await this.launch(/*resume*/ true);
     const child = this.child;
@@ -294,13 +320,15 @@ export class ConciergeSession {
     return env;
   }
 
-  private writeUserLine(content: string): void {
+  private writeUserLine(content: TurnMessage): void {
     const child = this.child;
     if (!child) throw new Error("concierge: no live process to write to");
     const sink = child.stdin as { write?: (s: string) => void; flush?: () => void } | undefined;
     if (!sink || typeof sink.write !== "function") {
       throw new Error("concierge: process stdin is not writable");
     }
+    // `content` is passed straight through to the model turn — a string for text-only turns, or an
+    // array of content blocks (text + base64 image) so images render as vision input (OPS-31).
     const line =
       JSON.stringify({
         type: "user",
@@ -624,11 +652,34 @@ export class Concierge {
 
   /** Bring the session up first (fail fast on a bad launch), then go live on Discord. */
   async start(): Promise<void> {
+    this.seedIdentities();
     await this.session.start();
     this.gateway.onMessage((m) => this.onMessage(m));
     await this.gateway.start();
     this.serveControlBus();
+    // Announce the boot (with the live commit) once the gateway is up. Best-effort + non-blocking:
+    // a failed post must never hold up — or crash — the daemon coming online.
+    void this.announceStartup();
     this.log.info("concierge online", { model: this.config.concierge.model });
+  }
+
+  /**
+   * Post a one-time startup banner to {@link STARTUP_CHANNEL_ID} with the current git commit
+   * (short hash + subject) so each restart is visible and the running code is unambiguous. Fires
+   * once per boot (called from {@link start}); best-effort — never throws, never blocks startup.
+   */
+  private async announceStartup(): Promise<void> {
+    const channelId = process.env.BECKETT_STARTUP_CHANNEL_ID?.trim() || STARTUP_CHANNEL_ID;
+    try {
+      const { short, subject } = await currentGitCommit(defaultRepoRoot());
+      const line = subject
+        ? `beckett daemon restarted — now live on \`${short}\` (${subject})`
+        : `beckett daemon restarted — now live on \`${short}\``;
+      await this.gateway.post(channelId, line);
+      this.log.info("posted startup banner", { channelId, commit: short });
+    } catch (err) {
+      this.log.warn("startup banner failed (continuing)", { channelId, err: String(err) });
+    }
   }
 
   async stop(): Promise<void> {
@@ -839,7 +890,9 @@ export class Concierge {
   async onMessage(m: IncomingMessage): Promise<void> {
     if (!m.mentionsBot) return;
     const content = m.content.trim();
-    if (!content) return;
+    // Engage when there's text OR files to look at. An image-only message (a screenshot with no
+    // caption) used to die on this guard — now that we can see attachments it's a real turn.
+    if (!content && m.attachments.length === 0) return;
 
     // Track this turn so a `beckett discord reply` the Concierge runs while answering it counts as
     // THE reply (and suppresses the auto-post below) instead of producing a second message.
@@ -859,7 +912,8 @@ export class Concierge {
     void this.gateway.sendTyping(m.channelId);
 
     try {
-      const reply = await this.session.ask(frameUserTurn(m.channelId, content));
+      const turn = await this.buildTurn(m, content);
+      const reply = await this.session.ask(turn);
       keepTyping = false;
       clearInterval(typing);
       const text = reply.trim();
@@ -885,6 +939,94 @@ export class Concierge {
       if (this.activeMention === mention) this.activeMention = null;
     }
   }
+
+  /**
+   * Turn an inbound message into the turn the session sees. With no attachments it's just the framed
+   * text. With attachments (images, screenshots, pdfs, anything dragged in) we pull the bytes down
+   * locally, then split them: images become **base64 image content blocks appended to the turn** so
+   * they reach the model as real vision input, while non-image / oversized / failed downloads become
+   * a text manifest of Read-able paths (the session is a full `claude` harness — its Read tool opens
+   * those). This is the OPS-31 fix: OPS-27 only ever emitted the manifest, so images never actually
+   * reached the model turn. Best-effort: a failed download degrades to a manifest note, never drops
+   * the turn; a turn with no inlinable image is a plain string exactly as before.
+   */
+  private async buildTurn(m: IncomingMessage, content: string): Promise<TurnMessage> {
+    const speaker = this.resolveSpeaker(m);
+    if (m.attachments.length === 0)
+      return frameUserTurn(m.channelId, speaker, m.messageId, content);
+    let images: TurnContentBlock[] = [];
+    let manifest = "";
+    try {
+      const downloaded = await downloadAttachments(m.attachments, {
+        attachmentsDir: buildPaths(this.config).attachmentsDir,
+        messageId: m.messageId,
+        logger: this.log.child("attachments"),
+      });
+      const built = await buildAttachmentContent(downloaded, this.log.child("attachments"));
+      images = built.images;
+      manifest = built.manifest;
+    } catch (err) {
+      // downloadAttachments/buildAttachmentContent are already best-effort; belt-and-suspenders so a
+      // bad upload never drops the whole message — fall back to whatever text the person typed.
+      this.log.warn("attachment handling failed; sending text only", {
+        messageId: m.messageId,
+        err: String(err),
+      });
+    }
+    const body = content && manifest ? `${content}\n${manifest}` : content || manifest;
+    const framed = frameUserTurn(m.channelId, speaker, m.messageId, body);
+    // No inlinable image → the turn is a plain string, byte-for-byte as text-only turns always were.
+    if (images.length === 0) return framed;
+    // Otherwise: a text block (framed message + any non-image manifest) followed by the image blocks.
+    return [{ type: "text", text: framed }, ...images];
+  }
+
+  /**
+   * Resolve WHO is speaking for the turn stamp (OPS-42). Reads this id's stored identity (known /
+   * preferred name), marks it as the owner iff it matches the env-provided owner id (so the
+   * session-context owner identity is bound to ONE person, not applied to whoever is typing), and
+   * refreshes the cached live `display_name` so the map self-populates as people talk. Best-effort:
+   * a store read/write failure degrades to "just the live display name", never drops the turn.
+   */
+  private resolveSpeaker(m: IncomingMessage): SpeakerContext {
+    const isOwner = this.ownerId() !== undefined && m.userId === this.ownerId();
+    let identity: UserIdentity | undefined;
+    try {
+      const file = buildPaths(this.config).identitiesFile;
+      identity = loadIdentities(file)[m.userId];
+      // Keep the cached display name current (and stamp ownership on the record if it's the owner
+      // and we hadn't yet). Never overwrite a chosen known/preferred name.
+      const display = m.authorDisplayName?.trim();
+      const patch: Parameters<typeof upsertIdentity>[2] = {};
+      if (display && display !== identity?.display_name) patch.display_name = display;
+      if (isOwner && !identity?.is_owner) patch.is_owner = true;
+      if (Object.keys(patch).length > 0) identity = upsertIdentity(file, m.userId, patch);
+    } catch (err) {
+      this.log.warn("identity resolve failed (using live display name only)", {
+        userId: m.userId,
+        err: String(err),
+      });
+    }
+    return { userId: m.userId, displayName: m.authorDisplayName, identity, isOwner };
+  }
+
+  /** The env-provided owner's Discord user id, if set (binds the owner identity to one person). */
+  private ownerId(): string | undefined {
+    const id = process.env.DISCORD_OWNER_ID?.trim();
+    return id && /^\d{1,20}$/.test(id) ? id : undefined;
+  }
+
+  /**
+   * Seed the identity map with its day-one entries (the example mapping + the owner, bound to the
+   * env owner id). Idempotent and additive — see {@link ensureSeeded}. Best-effort at startup.
+   */
+  private seedIdentities(): void {
+    try {
+      ensureSeeded(buildPaths(this.config).identitiesFile, this.ownerId());
+    } catch (err) {
+      this.log.warn("identity seed failed (continuing)", { err: String(err) });
+    }
+  }
 }
 
 /** Factory: build a Concierge from options (mirrors the repo's `createX` convention). */
@@ -899,6 +1041,33 @@ export function createConcierge(opts: ConciergeOptions = {}): Concierge {
 /** Repo root = two levels up from `src/concierge/` (matches the `site` group in beckett.ts). */
 function defaultRepoRoot(): string {
   return join(import.meta.dir, "..", "..");
+}
+
+/**
+ * Read the running code's git commit — short hash + subject line — from `repoRoot`. Used by the
+ * startup banner so a restart shows exactly what's live. Best-effort: any failure (not a repo, no
+ * git, detached weirdness) degrades to `{ short: "unknown", subject: "" }` rather than throwing.
+ */
+export async function currentGitCommit(
+  repoRoot: string,
+): Promise<{ short: string; subject: string }> {
+  const run = async (args: string[]): Promise<string> => {
+    const proc = Bun.spawn({
+      cmd: ["git", "-C", repoRoot, ...args],
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const out = (await new Response(proc.stdout).text()).trim();
+    await proc.exited;
+    return out;
+  };
+  try {
+    const short = (await run(["rev-parse", "--short", "HEAD"])) || "unknown";
+    const subject = await run(["log", "-1", "--pretty=%s"]);
+    return { short, subject };
+  } catch {
+    return { short: "unknown", subject: "" };
+  }
 }
 
 /** Read the sibling `concierge.md` — the stable operating doctrine half of the system prompt. */
@@ -956,13 +1125,49 @@ the slang is the surface. underneath you're sharp and you actually ship. when th
 file the ticket and let it cook, same as always. don't let the vibe make you sloppy or vague. be the
 guy who talks like this AND gets it done.`;
 
+/** Who is speaking, resolved for the turn stamp (OPS-42). */
+export interface SpeakerContext {
+  userId: string;
+  /** Live Discord display name off the incoming message, if any. */
+  displayName?: string;
+  /** The stored record (known/preferred name), if we've seen this id before. */
+  identity?: UserIdentity;
+  /** True only when this id is the env-provided owner — binds owner identity to ONE person. */
+  isOwner: boolean;
+}
+
+/** JSON-escape a name so a quote/newline in a Discord nick can't break the single-line stamp. */
+function stampField(value: string): string {
+  return JSON.stringify(value);
+}
+
 /**
- * Prefix a Discord turn with its channel id so the Concierge can stamp `--channel <id>` onto any
- * ticket it files (the routing key that lets updates flow back here — see `concierge.md`). Kept
- * to one terse line so it doesn't crowd the actual message or bleed into the Concierge's voice.
+ * Prefix a Discord turn with WHO is speaking and WHERE, so the Concierge (a) stamps `--channel
+ * <id>` onto any ticket it files (the routing key that lets updates flow back here) and (b) knows
+ * exactly which person it's talking to — their Discord user id, their display name, the name to
+ * address them by, and whether they're the owner. Kept to two terse machine-readable lines so it
+ * doesn't crowd the message or bleed into the Concierge's voice. Different user ids therefore read
+ * as different people even in the same channel — no more assuming every message is "the user".
  */
-function frameUserTurn(channelId: string, content: string): string {
-  return `[channel:${channelId}]\n${content}`;
+function frameUserTurn(
+  channelId: string,
+  speaker: SpeakerContext,
+  messageId: string,
+  content: string,
+): string {
+  const parts = [`user:${speaker.userId}`];
+  const address = resolveAddress(speaker.identity);
+  const display = speaker.displayName?.trim();
+  // `address` = how to call them (preferred → known → display). Also surface the raw Discord
+  // display name when it differs, so a rename is visible without losing the chosen address.
+  if (address) parts.push(`address:${stampField(address)}`);
+  if (display && display !== address) parts.push(`display:${stampField(display)}`);
+  if (speaker.identity?.notes) parts.push(`notes:${stampField(speaker.identity.notes)}`);
+  if (speaker.isOwner) parts.push("role:owner");
+  // `msg:` is the exact message being answered — carried through so a reply targets THAT message,
+  // not just the channel (Jason's steer, OPS-42). The native reply already uses it; surfacing it
+  // in the stamp lets the Concierge quote/`--reply-to` the precise message when it matters.
+  return `[channel:${channelId}] [${parts.join(" ")} msg:${messageId}]\n${content}`;
 }
 
 /** The marker the dispatcher prepends to its own Plane comments (mirrors `BECKETT_COMMENT_MARKER`). */

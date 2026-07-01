@@ -18,12 +18,44 @@
  *    wedging the daemon or filling the disk.
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, basename, extname } from "node:path";
 import type { IncomingAttachment, Logger } from "../types.ts";
 
 /** Per-file ceiling. Discord's own default upload cap is 25 MiB; we allow a little headroom. */
 export const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Per-image ceiling for *inlining* as a base64 image block in the model turn. The Anthropic vision
+ * API rejects a single base64 image over ~5 MB, and base64 inflates bytes ~33% — so an image past
+ * this cap is NOT inlined; it degrades to a manifest line the harness Read tool can still open
+ * (Read downsamples). This is smaller than {@link MAX_ATTACHMENT_BYTES}: we still download big
+ * images, we just don't stuff them into the turn as vision input.
+ */
+export const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** The base64 image media types the Anthropic Messages API accepts as `image` content blocks. */
+export const SUPPORTED_IMAGE_MEDIA_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+] as const;
+
+/** A base64 image content block — the shape claude's stream-json passes through to the model turn. */
+export interface ImageContentBlock {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string };
+}
+
+/** A plain text content block (the framed message + any non-image manifest). */
+export interface TextContentBlock {
+  type: "text";
+  text: string;
+}
+
+/** One block of a structured model turn: text or an inlined image. */
+export type TurnContentBlock = TextContentBlock | ImageContentBlock;
 
 /** How long to wait on a single CDN fetch before giving up (best-effort, never hangs). */
 const FETCH_TIMEOUT_MS = 30_000;
@@ -152,6 +184,79 @@ export function formatAttachmentManifest(results: DownloadedAttachment[]): strin
   );
   const got = results.filter((r) => r.ok).length;
   return `[${results.length} attachment${results.length === 1 ? "" : "s"}, ${got} saved locally — use your Read tool to open them:\n${lines.join("\n")}]`;
+}
+
+/**
+ * Resolve a downloaded attachment to a supported image media type, or null if it isn't an image we
+ * can inline as a base64 block. Trusts Discord's declared `contentType` first (stripping any
+ * `; charset=…` suffix), then falls back to the filename extension — `.contentType` is null for
+ * some uploads, so the extension is the safety net that still catches an obvious `.png`.
+ */
+export function imageMediaType(a: { name: string; contentType: string | null }): string | null {
+  const declared = a.contentType?.toLowerCase().split(";")[0]?.trim();
+  if (declared && (SUPPORTED_IMAGE_MEDIA_TYPES as readonly string[]).includes(declared)) {
+    return declared;
+  }
+  switch (extname(a.name).toLowerCase()) {
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".png":
+      return "image/png";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Turn downloaded attachments into model-turn content. This is the fix for the OPS-27 gap: images are
+ * read back off disk and encoded as **base64 image content blocks** so they actually reach the model
+ * turn as vision input — rather than only being named in a text manifest and left for the model to
+ * (maybe) open with its Read tool. Non-image files, oversized images, failed downloads, and any image
+ * we can't read all degrade to a text `manifest` of Read-able paths (the harness Read tool handles
+ * those). Best-effort: a per-image read failure drops that one image to the manifest, never the turn.
+ */
+export async function buildAttachmentContent(
+  results: DownloadedAttachment[],
+  logger?: Logger,
+): Promise<{ images: ImageContentBlock[]; manifest: string }> {
+  const images: ImageContentBlock[] = [];
+  const forManifest: DownloadedAttachment[] = [];
+  for (const r of results) {
+    if (!r.ok) {
+      forManifest.push(r);
+      continue;
+    }
+    const media = imageMediaType(r);
+    if (!media || r.size > MAX_INLINE_IMAGE_BYTES) {
+      // Not an inlinable image (wrong type, or too big for the vision API) — let the Read tool have it.
+      forManifest.push(r);
+      continue;
+    }
+    try {
+      const bytes = await readFile(r.localPath);
+      if (bytes.byteLength > MAX_INLINE_IMAGE_BYTES) {
+        forManifest.push(r);
+        continue;
+      }
+      images.push({
+        type: "image",
+        source: { type: "base64", media_type: media, data: bytes.toString("base64") },
+      });
+      logger?.info("inlined image into model turn", { name: r.name, media, bytes: bytes.byteLength });
+    } catch (err) {
+      logger?.warn("could not read downloaded image for inlining; falling back to manifest", {
+        name: r.name,
+        err: String(err),
+      });
+      forManifest.push(r);
+    }
+  }
+  return { images, manifest: formatAttachmentManifest(forManifest) };
 }
 
 /** Compact human bytes for logs/manifest (e.g. "240 KB", "1.2 MB"). */

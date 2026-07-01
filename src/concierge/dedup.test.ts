@@ -65,6 +65,7 @@ function mention(): IncomingMessage {
     channelId: CHAN,
     content: "@beckett where my site at",
     mentionsBot: true,
+    attachments: [],
   } as unknown as IncomingMessage;
 }
 

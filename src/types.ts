@@ -721,6 +721,8 @@ export interface IncomingAttachment {
 export interface IncomingMessage {
   messageId: string;
   userId: string;
+  /** The speaker's live Discord display name (guild nick → global name → username), if known. */
+  authorDisplayName?: string;
   channelId: string;
   guildId: string | null;
   content: string;
@@ -1329,6 +1331,7 @@ export interface Paths {
   attachmentsDir: string; // <beckettDir>/attachments — downloaded Discord attachments
   accessFile: string; // <beckettDir>/access.txt — Discord user whitelist (invite-only beta)
   imagesDir: string; // <beckettDir>/images — generated images (beckett image)
+  identitiesFile: string; // <beckettDir>/identities.json — per-user known/preferred names (OPS-42)
 }
 
 /** The full validated config (Spec 01 §4). Every key has a default so an empty config boots. */
