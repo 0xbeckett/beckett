@@ -68,7 +68,7 @@ don't print a full verbatim init line):
   "subtype": "init",
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
   "cwd": "/Users/jason/Code/beckett",
-  "model": "claude-opus-4-8",
+  "model": "claude-opus-4-9",
   "permissionMode": "default",
   "tools": ["Read", "Edit", "Bash", "Glob", "Grep", "..."],
   "mcp_servers": [{ "name": "playwright", "status": "connected" }],
@@ -94,7 +94,7 @@ Per-step token usage is on `message.message.usage`. Messages from a subagent car
   "message": {
     "id": "msg_01ABC",
     "role": "assistant",
-    "model": "claude-opus-4-8",
+    "model": "claude-opus-4-9",
     "content": [
       { "type": "text", "text": "I'll read the file first." },
       { "type": "tool_use", "id": "toolu_01XYZ", "name": "Read",
@@ -218,7 +218,7 @@ full verbatim line, but every field below is documented):
     "cache_read_input_tokens": 48000
   },
   "modelUsage": {
-    "claude-opus-4-8": {
+    "claude-opus-4-9": {
       "inputTokens": 12000, "outputTokens": 850,
       "cacheReadInputTokens": 48000, "cacheCreationInputTokens": 3000,
       "costUSD": 0.0421

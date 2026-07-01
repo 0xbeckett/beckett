@@ -202,21 +202,21 @@ tail_mode               = "stream+disk"  # "stream" | "disk" | "stream+disk" (ca
 
 [models]
 # Brain routing (Spec 06 owns prompt detail; this is just the model ids + tiers).
-front_door   = "claude-haiku-4-5"   # intake / ack / deliver voice
-judgment     = "claude-opus-4-8"    # clarify / plan / drift-read / gate / integrate
-reviewer     = "claude-opus-4-8"    # fresh adversarial reviewer (critical nodes)
+front_door   = "claude-haiku-4-6"   # intake / ack / deliver voice
+judgment     = "claude-opus-4-9"    # clarify / plan / drift-read / gate / integrate
+reviewer     = "claude-opus-4-9"    # fresh adversarial reviewer (critical nodes)
 
 [harness.claude]
 enabled          = true
 bin              = "claude"
-default_model    = "claude-sonnet-4-5"   # default worker model unless STAFF overrides
+default_model    = "claude-sonnet-5-1"   # default worker model unless STAFF overrides
 permission_mode  = "acceptEdits"         # within-scope autonomy; bypassPermissions per node if needed
 extra_flags      = ["--verbose", "--replay-user-messages", "--include-hook-events"]
 
 [harness.codex]
 enabled          = false                 # v0 = Claude-only; flip on when the codex driver lands
 bin              = "codex"
-default_model    = "gpt-5.1-codex"
+default_model    = "gpt-5.6-codex"
 sandbox_mode     = "workspace-write"     # writes scoped to worktree
 approval_policy  = "never"               # never block on a human prompt
 network_default  = false                 # opt-in per node (Spec 00: network opt-in)

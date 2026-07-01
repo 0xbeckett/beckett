@@ -209,7 +209,7 @@ description: >
 metadata:
   type: worker-note
   harness: codex
-  model: gpt-5-codex
+  model: gpt-5.6-codex
   task_type: data-layer
   derived_from: outcomes#q-codex-data-layer
   stat_window: last-40-gates

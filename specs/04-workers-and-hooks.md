@@ -65,7 +65,7 @@ Run-to-completion harnesses. sandcastle owns spawn + sandbox provider + branch/m
 ```ts
 import { run, codex, pi } from "@ai-hero/sandcastle";
 const result = await run({
-  agent: codex("gpt-5.1-codex"),          // or pi(...)
+  agent: codex("gpt-5.6-codex"),          // or pi(...)
   sandbox: docker(),                      // or no-sandbox for worktree-only isolation
   prompt: workerPrompt,                   // criteria + scope + task
   branchStrategy: { type: "branch", branch: worker.branch },

@@ -118,7 +118,7 @@ function makeBeckettDir(name: string): { beckettDir: string; config: Config; pat
     [
       "[harness.claude]",
       `bin = ${JSON.stringify(WRAPPER)}`,
-      'default_model = "claude-sonnet-4-5"',
+      'default_model = "claude-sonnet-5-1"',
       "extra_flags = []",
       "",
       "[supervise]",
@@ -181,7 +181,7 @@ class FakeBrain implements Brain {
       dependsOn: [],
       scopePaths: ["**"],
       criteria: { checks: this.o.checks, nl: this.o.nl ?? ["the task is completed in the worktree"] },
-      suggestedWorker: { harness: "claude", model: "claude-sonnet-4-5", effort: "low" },
+      suggestedWorker: { harness: "claude", model: "claude-sonnet-5-1", effort: "low" },
       reviewTier: "self",
       envelope: { turnTarget: 6, wallClockSecs: 120 },
     };

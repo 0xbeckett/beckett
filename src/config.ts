@@ -114,9 +114,9 @@ const ConfigSchema = z
       .default({}),
     models: z
       .object({
-        front_door: z.string().min(1).default("claude-haiku-4-5"),
-        judgment: z.string().min(1).default("claude-opus-4-8"),
-        reviewer: z.string().min(1).default("claude-opus-4-8"),
+        front_door: z.string().min(1).default("claude-haiku-4-6"),
+        judgment: z.string().min(1).default("claude-opus-4-9"),
+        reviewer: z.string().min(1).default("claude-opus-4-9"),
       })
       .default({}),
     harness: z
@@ -125,9 +125,9 @@ const ConfigSchema = z
           .object({
             enabled: z.boolean().default(true),
             bin: z.string().min(1).default("claude"),
-            default_model: z.string().min(1).default("claude-sonnet-5"),
+            default_model: z.string().min(1).default("claude-sonnet-5-1"),
             // Reasoning effort handed to every claude worker via `claude --effort` (verified on
-            // claude 2.1.197). Sonnet 5 @ xhigh is the v3.1 worker default — fast cold boots with
+            // claude 2.1.197). Sonnet 5.1 @ xhigh is the v3.1 worker default — fast cold boots with
             // full reasoning. A ticket may cast a lower effort per stage. Honored by
             // ClaudeDriver.buildArgs + dispatch/spawn#buildEnvelope.
             default_effort: z.enum(["low", "medium", "high", "xhigh"]).default("xhigh"),
@@ -234,7 +234,7 @@ const ConfigSchema = z
     // v3 — the Concierge (long-lived `claude -p` Opus agent that owns Discord, files tickets).
     concierge: z
       .object({
-        model: z.string().min(1).default("claude-opus-4-8"),
+        model: z.string().min(1).default("claude-opus-4-9"),
         // Context-size ceiling (summed input tokens) at which the session auto-compacts by rotating
         // to a fresh session seeded with a handoff summary (issue #5). Configurable so it can be
         // driven low in tests/harnesses to exercise a real rotation without burning ~190k tokens.

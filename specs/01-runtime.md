@@ -117,7 +117,7 @@ invalid). Secrets live in `.env`, not here. All keys optional with defaults.
 max_workers   = 2          # global live-worker cap (v0=2, v1=4)
 
 [parent]
-model         = "claude-opus-4-8"
+model         = "claude-opus-4-9"
 idle_resume   = true       # auto --resume on crash
 
 [supervise]                 # watcher thresholds (Spec 04 §4)
@@ -132,19 +132,19 @@ checkin_default_s    = 600
 [harness.claude]
 enabled       = true
 bin           = "claude"
-default_model = "claude-sonnet-4-5"   # default worker model unless the parent overrides
+default_model = "claude-sonnet-5-1"   # default worker model unless the parent overrides
 
 [harness.codex]               # via sandcastle
 enabled       = false         # v0 = Claude-only; flip on when wired
 bin           = "codex"
-default_model = "gpt-5.1-codex"
+default_model = "gpt-5.6-codex"
 network       = false         # opt-in per worker
 
 [review]
 check_timeout_s     = 600
 diff_lines_critical = 150
 files_critical      = 8
-reviewer_model      = "claude-opus-4-8"
+reviewer_model      = "claude-opus-4-9"
 
 [retry]
 max_redispatch  = 3

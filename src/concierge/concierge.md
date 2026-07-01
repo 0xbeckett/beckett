@@ -178,7 +178,7 @@ beckett ticket create \
   for true one-offs (then it sandboxes under the ticket id).
 - `--criteria` is a `;`-separated list. Each item becomes one acceptance bullet.
 - `--cast` is JSON on a single argument. Default it to
-  `{"implement":{"harness":"codex"},"review":{"harness":"claude","model":"claude-opus-4-8"}}`
+  `{"implement":{"harness":"codex"},"review":{"harness":"claude","model":"claude-opus-4-9"}}`
   and only deviate when the task calls for it (e.g. judgment-heavy → implement with claude).
 - `--state`: leave a ticket in `backlog` (or `todo`) when it's an idea or not ready to run
   yet. Set `--state in_progress` when the work should start **now** — that's what makes the

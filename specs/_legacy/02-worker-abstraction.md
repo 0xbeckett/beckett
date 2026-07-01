@@ -68,7 +68,7 @@ interface Worker {
 
   harness:   Harness;
   driver:    DriverKind;
-  model:     string;            // exact launch model id, e.g. "claude-opus-4-8" / "gpt-5.1-codex"
+  model:     string;            // exact launch model id, e.g. "claude-opus-4-9" / "gpt-5.6-codex"
                                 // ⚠️ Codex does NOT emit the model in its stream (openai/codex#14736)
                                 //    — this field is the source of truth for Codex.
 
@@ -337,7 +337,7 @@ codex exec \
   --skip-git-repo-check \               # worktrees are valid git dirs but skip the guard to be safe
   --output-schema "$DONE_SCHEMA" \      # constrain final message → structured done-signal (§5.5)
   -o "$WORKSPACE/.beckett/last-message.txt" \  # also write final agent_message to a file (robust grab)
-  -c model='"gpt-5.1-codex"' \          # model id (TOML-quoted string). Recorded in Worker.model too.
+  -c model='"gpt-5.6-codex"' \          # model id (TOML-quoted string). Recorded in Worker.model too.
   -c model_reasoning_effort='"high"' \  # effort (§7.1)
   "$PROMPT"                             # the node task. (systemAppend is prepended into $PROMPT, §5.3)
 ```
@@ -389,7 +389,7 @@ codex exec resume "$THREAD_ID" \
   --json -C "$WORKSPACE" --sandbox workspace-write --ask-for-approval never \
   --skip-git-repo-check --output-schema "$DONE_SCHEMA" \
   -o "$WORKSPACE/.beckett/last-message.txt" \
-  -c model='"gpt-5.1-codex"' -c model_reasoning_effort='"high"' \
+  -c model='"gpt-5.6-codex"' -c model_reasoning_effort='"high"' \
   "$DEQUEUED_NUDGE_OR_FOLLOWUP"
 ```
 
@@ -487,7 +487,7 @@ Claude `result.subtype` → terminal `WorkerState`:
 | `error_during_execution` | `failed` (resumable via `--resume`) |
 
 ⚠️ Effort: with `--effort` unverified, the envelope's `effort` maps to a **model tier** at spawn
-(e.g. `high`/`xhigh`→`claude-opus-4-8`, `medium`/`low`→a Sonnet). Recorded in `Worker.model`.
+(e.g. `high`/`xhigh`→`claude-opus-4-9`, `medium`/`low`→a Sonnet). Recorded in `Worker.model`.
 
 ### 7.2 Codex → WorkerEvent (normalization table)
 
@@ -716,7 +716,7 @@ const driver = new ClaudeDriver(worker);
 // spawn — cwd is the worktree; hook + persona + done-schema attached
 await driver.spawn({
   workerId: "wk_7f3a", prompt: nodeTask, systemAppend: scopeCriteriaPersona,
-  workspace: ws, scope, envelope, model: "claude-opus-4-8",
+  workspace: ws, scope, envelope, model: "claude-opus-4-9",
   sessionId: wkUuid, mcpConfigPath, doneSchemaPath,
 });
 // → process running with: --input-format stream-json --output-format stream-json --verbose
@@ -744,12 +744,12 @@ const driver = new CodexDriver(worker);
 
 await driver.spawn({
   workerId: "wk_9c2b", prompt: scopeCriteriaPersona + "\n\n" + nodeTask,  // §5.3 prepend
-  systemAppend: "", workspace: ws, scope, envelope, model: "gpt-5.1-codex",
+  systemAppend: "", workspace: ws, scope, envelope, model: "gpt-5.6-codex",
   mcpConfigPath, doneSchemaPath,
 });
 // → codex exec --json -C <ws> --sandbox workspace-write --ask-for-approval never
 //   --skip-git-repo-check --output-schema <done> -o <ws>/.beckett/last-message.txt
-//   -c model='"gpt-5.1-codex"' -c model_reasoning_effort='"high"' "<prompt>"
+//   -c model='"gpt-5.6-codex"' -c model_reasoning_effort='"high"' "<prompt>"
 //   (+ -c sandbox_workspace_write.network_access=true  iff envelope.network)
 
 driver.onEvent(e => supervisor.ingest(worker, e));

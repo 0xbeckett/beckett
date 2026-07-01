@@ -728,7 +728,7 @@ codex exec \
   --ask-for-approval never \             # never hang on a prompt
   --output-schema "$VERDICT_SCHEMA" \    # → ReviewVerdict as final agent_message (validate ourselves!)
   -o "$WS/.beckett/verdict.json" \       # robust grab of the final message
-  -c model='"gpt-5.1-codex"' \
+  -c model='"gpt-5.6-codex"' \
   "$REVIEW_PROMPT"                        # same adversarial prompt as §5.3
 ```
 
@@ -795,7 +795,7 @@ blast_radius_critical  = 2          # ≥N dependents → critical (§4.1)
 diff_lines_critical    = 150
 files_critical         = 8
 review_turn_cap        = 12         # reviewer --max-turns (no $ budget)
-reviewer_model         = "claude-opus-4-8"
+reviewer_model         = "claude-opus-4-9"
 cross_provider_enabled = false      # v0 = false (Claude-only); flip on once Codex is wired (§9)
 panic_nodes            = false      # auto-select the N-reviewer panel for security/irreversible (§8)
 panel_n                = 3

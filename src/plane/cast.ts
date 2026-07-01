@@ -8,7 +8,7 @@
  *
  *   ```beckett-cast
  *   { "implement": {"harness":"codex"},
- *     "review": {"harness":"claude","model":"claude-opus-4-8"} }
+ *     "review": {"harness":"claude","model":"claude-opus-4-9"} }
  *   ```
  *
  *   ## Acceptance criteria

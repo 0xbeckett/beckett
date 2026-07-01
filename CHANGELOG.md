@@ -58,9 +58,9 @@ a simple site took ~31 min where plain Claude Code took ~18. v3.1 attacks the pe
   - cast `effort` `high`/`xhigh` (or omit, or `reviewTier: "fresh"`) → a fresh adversarial reviewer
     runs, as before. Reserved for correctness-critical / hard-to-reverse work.
   The Concierge's doctrine now biases trivial/visual/low-risk work to one pass.
-- **Sonnet 5 @ xhigh workers.** The default worker model is `claude-sonnet-5` and its reasoning
+- **Sonnet 5.1 @ xhigh workers.** The default worker model is `claude-sonnet-5-1` and its reasoning
   effort is now actually wired to the CLI (`claude --effort`, default `xhigh`). Cheaper, faster
-  cold boots without giving up depth. The Concierge stays on Opus (`claude-opus-4-8`) — it writes
+  cold boots without giving up depth. The Concierge stays on Opus (`claude-opus-4-9`) — it writes
   the better prompts.
 
 ### More robust

@@ -18,7 +18,7 @@ import type { Logger } from "../types.ts";
 
 export interface ParentOptions {
   bin: string; // claude binary (BECKETT_CLAUDE_BIN or config)
-  model: string; // parent model (e.g. claude-opus-4-8)
+  model: string; // parent model (e.g. claude-opus-4-9)
   cwd: string; // repo root, so .claude/skills + hooks load (NOT --bare)
   systemPrompt: () => string; // built fresh on each (re)spawn: doctrine + self-editable persona
   sessionFile: string; // where to persist the parent session id

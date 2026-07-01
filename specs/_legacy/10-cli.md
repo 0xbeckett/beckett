@@ -219,7 +219,7 @@ beckett ps [task] [flags]
 TASK  STATE       NODE   WORKER  HARNESS         STATE     TURNS  DIFF        ACT   WHAT
 42    supervising
               └─  42.1   w-7f3a  claude/sonnet   running      16  +812 / 6f    4s   auth: mapping call sites
-              └─  42.2   w-9c2d  codex/gpt-5.1   running       7  +120 / 2f   22s   tests: scaffolding suite
+              └─  42.2   w-9c2d  codex/gpt-5.6   running       7  +120 / 2f   22s   tests: scaffolding suite
               └─  42.3    —       —     —         queued        —   —           —    docs (waits 42.1)
 51    supervising
               └─  51.1   w-1a0b  claude/sonnet   paused        9  +1.2k / 11f  5m   refactor: HELD (your pause)
@@ -239,7 +239,7 @@ TASK  STATE       NODE   WORKER  HARNESS         STATE     TURNS  DIFF        AC
 ```
 WORKER  TASK  NODE  HARNESS        STATE    TURNS  TOOLS  DIFF        BLOCKED  NUDGES  ACT
 w-7f3a  42    42.1  claude/sonnet  running     16     58  +812 / 6f   —        0       4s
-w-9c2d  42    42.2  codex/gpt-5.1  running      7     19  +120 / 2f   —        1q      22s
+w-9c2d  42    42.2  codex/gpt-5.6  running      7     19  +120 / 2f   —        1q      22s
 w-1a0b  51    51.1  claude/sonnet  paused       9     31  +1.2k / 11f —        0       5m
 ```
 
@@ -391,7 +391,7 @@ beckett logs [flags]
 
 ```
 14:01:55  info   daemon          ready (recovered 2 workers, queue 0)
-14:02:01  info   dispatch  42.2  w-9c2d  codex/gpt-5.1  worktree .beckett/worktrees/42.2
+14:02:01  info   dispatch  42.2  w-9c2d  codex/gpt-5.6  worktree .beckett/worktrees/42.2
 14:03:02  info   nudge     42.1  w-7f3a  queued→delivered  (cli, jason)
 14:03:03  warn   supervise 42.1  w-7f3a  over_envelope + no_diff_progress → reschedule
 14:05:10  error  worker    37.4  w-3e1f  exit 1 (non-zero) → re-dispatch 1/3
@@ -598,7 +598,7 @@ itself just stops + captures.
 
 ```
 $ beckett abort 37.4
-⚠ Abort w-3e1f (37.4, codex/gpt-5.1, running 22 turns)?
+⚠ Abort w-3e1f (37.4, codex/gpt-5.6, running 22 turns)?
   Partial work (+540 / 7f) is preserved on the branch; the node may re-dispatch (retry 1/3).
   Continue? [y/N] y
 ✓ aborted w-3e1f — diff preserved on beckett/37.4 · session saved · reason: "aborted via CLI by jason"

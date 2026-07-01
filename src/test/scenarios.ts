@@ -409,7 +409,7 @@ const SUM_TEST = [
 
 const happyPath: Scenario = {
   name: "happy-path",
-  defaultModel: "claude-sonnet-4-5",
+  defaultModel: "claude-sonnet-5-1",
   beats: (ctx) => [
     say(ctx, "I'll add the pure `sum` function plus a passing test, scoped to this worktree."),
     E(60, lineStreamDelta(ctx, "Writing sum.ts")),
@@ -431,7 +431,7 @@ const happyPath: Scenario = {
 
 const noProgress: Scenario = {
   name: "no-progress",
-  defaultModel: "claude-sonnet-4-5",
+  defaultModel: "claude-sonnet-5-1",
   beats: (ctx) => [
     say(ctx, "Let me explore the codebase before changing anything."),
     // Repeated identical reads, zero file writes → trips no_diff_progress AND
@@ -456,7 +456,7 @@ const noProgress: Scenario = {
 
 const scopeViolation: Scenario = {
   name: "scope-violation",
-  defaultModel: "claude-sonnet-4-5",
+  defaultModel: "claude-sonnet-5-1",
   beats: (ctx) => {
     const badId = rid("toolu_");
     return [
@@ -487,7 +487,7 @@ const scopeViolation: Scenario = {
 
 const maxTurnsFail: Scenario = {
   name: "max-turns-fail",
-  defaultModel: "claude-sonnet-4-5",
+  defaultModel: "claude-sonnet-5-1",
   beats: (ctx) => [
     say(ctx, "Starting a long, looping task."),
     ...writeTurn(ctx, "attempt-1.txt", "partial work\n"),
@@ -508,7 +508,7 @@ const maxTurnsFail: Scenario = {
 
 const midTaskNudge: Scenario = {
   name: "mid-task-nudge",
-  defaultModel: "claude-sonnet-4-5",
+  defaultModel: "claude-sonnet-5-1",
   // Default (un-nudged) path: create a.txt, b.txt, c.txt across three turns. Mirrors the
   // verified loom-desk Risk-A probe so the integration test can assert the nudge branch.
   beats: (ctx) => [
@@ -546,7 +546,7 @@ const midTaskNudge: Scenario = {
 
 const daemonRestart: Scenario = {
   name: "daemon-restart",
-  defaultModel: "claude-sonnet-4-5",
+  defaultModel: "claude-sonnet-5-1",
   // Fresh spawn: write step-1, begin step-2, then CRASH mid-turn (no result line).
   beats: (ctx) => [
     say(ctx, "Multi-step task. Step 1 of 3.", 150),

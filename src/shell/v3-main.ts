@@ -56,7 +56,7 @@ function resolveRepoRoot(ticket: Ticket): string {
 /**
  * Beckett version. v3.1 — the "go faster" release: workers run in the project checkout (no
  * per-stage worktrees), effort-scaled review (trivial work self-reviews in one pass), and
- * Sonnet 5 @ xhigh workers. See CHANGELOG.md.
+ * Sonnet 5.1 @ xhigh workers. See CHANGELOG.md.
  */
 export const BECKETT_VERSION = "3.1.1";
 

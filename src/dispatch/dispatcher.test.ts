@@ -133,7 +133,7 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
 function cfg(max_workers = 2): Config {
   return {
     concurrency: { max_workers },
-    models: { reviewer: "claude-opus-4-8" },
+    models: { reviewer: "claude-opus-4-9" },
   } as unknown as Config;
 }
 
@@ -177,7 +177,7 @@ describe("spawn on state change", () => {
     const { d } = newDispatcher();
     await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
     await tick();
-    expect(spawnCalls[0]).toMatchObject({ stage: "review", harness: { harness: "claude", model: "claude-opus-4-8" } });
+    expect(spawnCalls[0]).toMatchObject({ stage: "review", harness: { harness: "claude", model: "claude-opus-4-9" } });
   });
 
   test("does not double-staff a ticket that already has a live worker", async () => {

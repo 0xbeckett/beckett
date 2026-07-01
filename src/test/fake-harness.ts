@@ -79,11 +79,12 @@ const VALUE_FLAGS = new Set([
   "--fake-scenario",
 ]);
 
-/** Claude resolves bare model aliases to full ids (loom-desk: `sonnet` → claude-sonnet-4-6). */
+/** Claude resolves bare model aliases to full ids (e.g. `sonnet` → the current full Sonnet id);
+ *  the fake harness mirrors that resolution using the next-gen ids below. */
 const MODEL_ALIASES: Record<string, string> = {
-  sonnet: "claude-sonnet-4-5",
-  opus: "claude-opus-4-8",
-  haiku: "claude-haiku-4-5",
+  sonnet: "claude-sonnet-5-1",
+  opus: "claude-opus-4-9",
+  haiku: "claude-haiku-4-6",
 };
 
 export interface ParsedArgs {

@@ -102,7 +102,7 @@ class GateBlockingBrain implements Brain {
       dependsOn: [],
       scopePaths: ["**"],
       criteria: { checks: ["true"], nl: ["a sum function exists"] },
-      suggestedWorker: { harness: "claude", model: "claude-sonnet-4-5", effort: "low" },
+      suggestedWorker: { harness: "claude", model: "claude-sonnet-5-1", effort: "low" },
       reviewTier: "self",
       envelope: { turnTarget: 6, wallClockSecs: 120 },
     };
@@ -179,7 +179,7 @@ function makeBeckettDir(): { config: Config; paths: Paths } {
     [
       "[harness.claude]",
       `bin = ${JSON.stringify(WRAPPER)}`,
-      'default_model = "claude-sonnet-4-5"',
+      'default_model = "claude-sonnet-5-1"',
       "extra_flags = []",
       "",
       "[concurrency]",

@@ -41,7 +41,7 @@ beforeAll(() => {
   chmodSync(WRAPPER, 0o755);
   writeFileSync(
     join(SCRATCH, "beckett", "config.toml"),
-    ["[harness.claude]", `bin = ${JSON.stringify(WRAPPER)}`, 'default_model = "claude-sonnet-4-5"', "extra_flags = []"].join("\n"),
+    ["[harness.claude]", `bin = ${JSON.stringify(WRAPPER)}`, 'default_model = "claude-sonnet-5-1"', "extra_flags = []"].join("\n"),
   );
   writeFileSync(join(SCRATCH, "beckett", ".env"), "");
   writeFileSync(join(SCRATCH, "beckett", "persona.md"), "Beckett.\n");
@@ -83,7 +83,7 @@ test("daemon-restart: a crashed worker resumes via --resume <session_id>, losing
     workspace: ws,
     scope: { ownedGlobs: ["**"], readGlobs: null, description: "the worktree" },
     envelope: { effort: "low", turnCap: 12, wallClockS: 120, network: false },
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-5-1",
     doneSchemaPath: join(ws, "done-schema.json"),
   };
   writeFileSync(spec.doneSchemaPath, "{}");

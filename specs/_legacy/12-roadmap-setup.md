@@ -216,7 +216,7 @@ max_workers = 2                     # v0: one worker really, headroom of 2 (Spec
 [harness.claude]
 enabled = true
 bin = "claude"
-default_model = "claude-sonnet-4-5"
+default_model = "claude-sonnet-5-1"
 permission_mode = "bypassPermissions"   # bounded by worktree + PreToolUse hook (Spec 02 §8)
 
 [harness.codex]

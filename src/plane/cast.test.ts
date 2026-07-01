@@ -11,7 +11,7 @@ describe("cast round-trip", () => {
   test("serialize → parse recovers casting, criteria, and body", () => {
     const casting: Casting = {
       implement: { harness: "codex" },
-      review: { harness: "claude", model: "claude-opus-4-8" },
+      review: { harness: "claude", model: "claude-opus-4-9" },
     };
     const criteria = ["endpoint returns 200", "covered by a test"];
     const body = "Wire the /health endpoint.";
@@ -64,8 +64,8 @@ describe("cast round-trip", () => {
 
   test("frontend cast (claude/opus implement) round-trips", () => {
     const casting: Casting = {
-      implement: { harness: "claude", model: "claude-opus-4-8", effort: "high" },
-      review: { harness: "claude", model: "claude-opus-4-8" },
+      implement: { harness: "claude", model: "claude-opus-4-9", effort: "high" },
+      review: { harness: "claude", model: "claude-opus-4-9" },
     };
     const parsed = parseCast(serializeCast(casting, ["pixels are right"], "Build the settings panel."));
     expect(parsed.casting).toEqual(casting);

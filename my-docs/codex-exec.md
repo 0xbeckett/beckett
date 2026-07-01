@@ -292,7 +292,7 @@ Location: `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`). All keys o
 
 ```toml
 # --- model ---
-model = "gpt-5.1-codex"            # model id
+model = "gpt-5.6-codex"            # model id
 model_provider = "openai"          # "openai" | "ollama" | "lmstudio" | "amazon-bedrock" | custom
 model_reasoning_effort = "high"    # e.g. "minimal" | "low" | "medium" | "high" | "xhigh" (model-dependent)
 
@@ -322,7 +322,7 @@ include_only = ["PATH", "HOME"]    # whitelist
 
 # --- profiles: named bundles of the above, selected via --profile NAME ---
 [profiles.ci]
-model = "gpt-5.1-codex"
+model = "gpt-5.6-codex"
 approval_policy = "never"
 sandbox_mode = "workspace-write"
 
@@ -334,10 +334,10 @@ notify = ["python3", "/path/to/notify.py"]   # receives JSON arg, e.g. agent-tur
 
 - Value is parsed as TOML, so **strings need embedded quotes**:
   ```bash
-  codex exec -c model='"gpt-5.1-codex"' -c sandbox_workspace_write.network_access=true "…"
+  codex exec -c model='"gpt-5.6-codex"' -c sandbox_workspace_write.network_access=true "…"
   ```
 - Dotted keys address nested tables: `-c sandbox_workspace_write.network_access=true`.
-- Bare booleans/numbers don't need quotes; strings do (`model='"gpt-5.1"'`).
+- Bare booleans/numbers don't need quotes; strings do (`model='"gpt-5.6"'`).
 - Profiles: `--profile ci` loads a `[profiles.ci]` block; individual `-c` overrides still win on top.
 - Precedence (low→high): config.toml defaults → `[profiles.NAME]` → explicit CLI flags / `-c`.
 
@@ -476,7 +476,7 @@ codex exec resume --last "Now add unit tests for the new code"
 codex exec resume 7f9f9a2e-1b3c-4c7a-9b0e-... "Address review comments"
 
 # Override config inline (note TOML quoting on strings)
-codex exec -c model='"gpt-5.1-codex"' -c sandbox_workspace_write.network_access=true "…"
+codex exec -c model='"gpt-5.6-codex"' -c sandbox_workspace_write.network_access=true "…"
 
 # Fully unsandboxed inside an already-isolated VM/container
 codex exec --dangerously-bypass-approvals-and-sandbox --json "…"
