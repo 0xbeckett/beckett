@@ -77,10 +77,13 @@ const fakeSpawn = async (args: any) => {
 };
 
 let provisioned: string[] = [];
+let commitResult: { committed: boolean; sha: string | null } = { committed: true, sha: "commit000" };
+let diffSince = true;
 mock.module("./spawn.ts", () => ({ spawnWorker: fakeSpawn, spawnTicketWorker: fakeSpawn }));
 mock.module("../worker/worktree.ts", () => ({
-  commitWorktree: async () => ({ committed: false, sha: null }),
+  commitWorktree: async () => commitResult,
   headSha: async () => "base000", // v3.1 per-ticket diff base (fake repo has no real HEAD)
+  hasDiffSince: async () => diffSince,
   currentBranch: async () => "main",
   ensureProjectRepo: async (repoRoot: string, slug: string) => {
     provisioned.push(slug);
@@ -142,6 +145,19 @@ function stateChanged(ticket: Ticket, to: TicketState, from: TicketState | null 
   return { kind: "state_changed", ticket, from, to };
 }
 
+function doneSignal(
+  status: "complete" | "blocked" | "partial",
+  over: Partial<{ summary: string; filesChanged: string[]; checksRun: string[] | null; blockedReason: string | null }> = {},
+) {
+  return {
+    status,
+    summary: over.summary ?? (status === "complete" ? "complete" : "not complete"),
+    filesChanged: over.filesChanged ?? ["src/app.ts"],
+    checksRun: over.checksRun ?? ["bun test"],
+    blockedReason: over.blockedReason ?? (status === "complete" ? null : "needs more work"),
+  };
+}
+
 function newDispatcher(max_workers = 2) {
   const client = new FakeClient();
   const d = new Dispatcher({
@@ -158,6 +174,8 @@ beforeEach(() => {
   counter = 0;
   spawnGate = null;
   provisioned = [];
+  commitResult = { committed: true, sha: "commit000" };
+  diffSince = true;
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────────────────
@@ -384,7 +402,7 @@ describe("advance on finish", () => {
     const { d, client } = newDispatcher();
     await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
     await tick();
-    created[0].finish("success", "looks good", { status: "complete" });
+    created[0].finish("success", "looks good", doneSignal("complete"));
     await tick();
     expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
   });
@@ -393,9 +411,58 @@ describe("advance on finish", () => {
     const { d, client } = newDispatcher();
     await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
     await tick();
-    created[0].finish("success", "missing tests", { status: "blocked" });
+    created[0].finish("success", "missing tests", doneSignal("blocked"));
     await tick();
     expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "in_progress" }]);
+  });
+
+  test("self-tier implement blocked signal goes to fresh review instead of done", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "blocked", doneSignal("blocked"));
+    await tick();
+    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "in_review" }]);
+    expect(client.comments.at(-1)!.body).toContain("self-review is disabled");
+  });
+
+  test("review success with no structured verdict retries review and never auto-passes", async () => {
+    const { d, client } = newDispatcher();
+    await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
+    await tick();
+    created[0].finish("success", "plain text only");
+    await tick();
+    await tick();
+    expect(client.setStateCalls).toHaveLength(0);
+    expect(spawnCalls.filter((c) => c.stage === "review")).toHaveLength(2);
+    expect(client.comments.at(-1)!.body).toContain("schema-valid structured verdict");
+  });
+
+  test("reviewer crash retries review without consuming a rework cycle", async () => {
+    const { d, client } = newDispatcher();
+    await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
+    await tick();
+    created[0].finish("error", "driver crashed");
+    await tick();
+    await tick();
+    expect(client.setStateCalls).toHaveLength(0);
+    expect(spawnCalls.filter((c) => c.stage === "review")).toHaveLength(2);
+    expect(client.comments.at(-1)!.body).toContain("does not count as a rework cycle");
+    expect(client.comments.at(-1)!.body).not.toContain("Review found issues");
+  });
+
+  test("zero-diff self-tier implement is held for fresh review instead of done", async () => {
+    commitResult = { committed: false, sha: null };
+    diffSince = false;
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "claimed done", doneSignal("complete", { filesChanged: [] }));
+    await tick();
+    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "in_review" }]);
+    expect(client.comments.at(-1)!.body).toContain("no diff");
   });
 });
 
@@ -457,7 +524,7 @@ describe("rework cap", () => {
     for (let i = 0; i < 3; i++) {
       await d.handle(stateChanged(ticket, "in_review"));
       await tick();
-      created[created.length - 1].finish("success", "still broken", { status: "blocked" });
+      created[created.length - 1].finish("success", "still broken", doneSignal("blocked"));
       await tick();
     }
     const backToProgress = client.setStateCalls.filter((c) => c.state === "in_progress");

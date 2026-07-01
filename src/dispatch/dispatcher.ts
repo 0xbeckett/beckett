@@ -21,11 +21,12 @@
  *   | created                       | —                    | no spawn (log)                          |
  *
  *   on worker finish (work is committed in the ticket's own project repo, `~/Projects/<slug>`):
- *     implement success, review tier `self`  → setState(done)       (ONE pass — worker self-reviewed)
- *     implement success, review tier `fresh` → setState(in_review)  + summary comment
- *     implement error                        → comment + LEAVE in in_progress for a human
- *     review   pass                          → setState(done) + verdict comment
- *     review   fail                          → setState(in_progress) + verdict comment (re-work)
+ *     implement success, self + real diff    → setState(done)       (ONE pass — worker self-reviewed)
+ *     implement success, fresh/no self-pass   → setState(in_review)  + summary comment
+ *     implement incomplete/error             → retry or return to todo with WIP
+ *     review   complete verdict              → setState(done) + verdict comment
+ *     review   blocked/partial verdict       → setState(in_progress) + verdict comment (re-work)
+ *     review   infra/schema failure          → retry review, then hold for a human
  *
  * Review tier (see {@link reviewTierFor}) derives from the cast `effort` (low/medium → self;
  * high/xhigh/unset → fresh) or an explicit `reviewTier` on the implement cast.
@@ -35,7 +36,7 @@
  * and pumped as workers free their slots.
  */
 
-import type { Config, Logger, WorkerEvent } from "../types.ts";
+import type { Config, Logger, WorkerEvent, DoneSignal } from "../types.ts";
 import type {
   Ticket,
   TicketState,
@@ -45,7 +46,7 @@ import type {
 } from "../plane/types.ts";
 import type { ProgressSink } from "../discord/progress.ts";
 import { log } from "../log.ts";
-import { commitWorktree, headSha, ensureProjectRepo } from "../worker/worktree.ts";
+import { commitWorktree, headSha, hasDiffSince, ensureProjectRepo } from "../worker/worktree.ts";
 import { projectSlug } from "../plane/cast.ts";
 import { hardCapSeconds } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
@@ -112,6 +113,9 @@ const MAX_REWORK_CYCLES = 3;
  */
 const MAX_IMPLEMENT_RETRIES = 3;
 
+/** Max review infra/schema retries before the dispatcher stops and waits for a human verdict. */
+const MAX_REVIEW_INFRA_RETRIES = 1;
+
 /** A spawn deferred because the concurrency cap was reached. */
 interface PendingSpawn {
   ticket: Ticket;
@@ -141,6 +145,38 @@ type PublishOutcome =
   | { status: "skipped" } // no publisher wired (tests / no PAT) — nothing to gate on
   | { status: "published"; url: string; kind: "pushed" | "pr"; prUrl?: string }
   | { status: "failed"; error: string };
+
+function parseDoneSignal(structured: unknown): DoneSignal | null {
+  if (!structured || typeof structured !== "object" || Array.isArray(structured)) return null;
+  const o = structured as Record<string, unknown>;
+  const allowed = new Set(["status", "summary", "filesChanged", "checksRun", "blockedReason"]);
+  if (Object.keys(o).some((key) => !allowed.has(key))) return null;
+  const status = o.status;
+  if (status !== "complete" && status !== "blocked" && status !== "partial") return null;
+  if (typeof o.summary !== "string") return null;
+  if (!Array.isArray(o.filesChanged) || !o.filesChanged.every((f) => typeof f === "string")) return null;
+  if (
+    o.checksRun !== null &&
+    (!Array.isArray(o.checksRun) || !o.checksRun.every((c) => typeof c === "string"))
+  ) {
+    return null;
+  }
+  if (o.blockedReason !== null && typeof o.blockedReason !== "string") return null;
+
+  return {
+    status,
+    summary: o.summary,
+    filesChanged: o.filesChanged,
+    ...(Array.isArray(o.checksRun) ? { checksRun: o.checksRun } : {}),
+    ...(typeof o.blockedReason === "string" ? { blockedReason: o.blockedReason } : {}),
+  };
+}
+
+function doneSignalSummary(signal: DoneSignal, fallback: string): string {
+  const blockedReason = signal.blockedReason ? `\n\nBlocked reason:\n${signal.blockedReason}` : "";
+  const summary = signal.summary || fallback;
+  return `${summary}${blockedReason}`;
+}
 
 // =======================================================================================
 // Dispatcher
@@ -190,6 +226,8 @@ export class Dispatcher {
   private readonly reworkCount = new Map<string, number>();
   /** Per-ticket count of implement workers that ended without a clean finish, to bound auto-retry. */
   private readonly implementRetries = new Map<string, number>();
+  /** Per-ticket count of review crashes or malformed verdicts; separate from real rework cycles. */
+  private readonly reviewInfraRetries = new Map<string, number>();
 
   constructor(deps: DispatcherDeps) {
     this.client = deps.client;
@@ -307,6 +345,7 @@ export class Dispatcher {
     const handle = this.workers.get(ticket.id);
     this.baseShaForTicket.delete(ticket.id);
     this.implementRetries.delete(ticket.id);
+    this.reviewInfraRetries.delete(ticket.id);
     this.staffing.delete(ticket.id); // drop any mid-spawn reservation so doSpawn discards it
     this.dropPending(ticket.id);
     this.releaseRepo(ticket.id);
@@ -568,14 +607,22 @@ export class Dispatcher {
       return;
     }
 
+    const signal = parseDoneSignal(handle.result?.structured);
+    if (signal && (signal.status === "blocked" || signal.status === "partial")) {
+      await this.onImplementReportedIncomplete(ticket, handle, signal, summary);
+      return;
+    }
+
     // Capture any uncommitted work the worker left in the checkout so review/rework (and the
     // human) can see it. The worker may have committed already; this is the safety net.
+    let committedContribution = false;
     try {
       const commit = await commitWorktree(
         handle.workspace,
         `beckett: ${ticket.identifier} implement (${handle.workerId})`,
       );
       if (commit.committed) {
+        committedContribution = true;
         this.logger.info("committed implementation", { ticket: ticket.identifier, sha: commit.sha });
       }
     } catch (err) {
@@ -590,6 +637,17 @@ export class Dispatcher {
     // a separate adversarial reviewer (the in_review stage), as before. Done tickets promote DAG
     // dependents immediately here; the later poller state_changed(done) is only a restart backstop.
     if (this.reviewTierFor(ticket) === "self") {
+      if (!(await this.hasTicketContribution(ticket, handle, committedContribution))) {
+        await this.client.setState(ticket.id, "in_review");
+        await this.postComment(
+          ticket.id,
+          `Self-review withheld → **in_review** because the implement worker finished with no diff against the ticket base.\n\n${summary}`,
+        );
+        this.logger.warn("self-review withheld: zero-diff implementation", {
+          ticket: ticket.identifier,
+        });
+        return;
+      }
       await this.finishTicketAsDone(ticket, "Self-reviewed → **done** (one pass).", summary);
       this.logger.info("ticket self-reviewed → done", { ticket: ticket.identifier });
       return;
@@ -598,6 +656,49 @@ export class Dispatcher {
     await this.client.setState(ticket.id, "in_review");
     await this.postComment(ticket.id, `Implementation complete → **in_review**.\n\n${summary}`);
     this.logger.info("ticket advanced to in_review", { ticket: ticket.identifier });
+  }
+
+  private async onImplementReportedIncomplete(
+    ticket: Ticket,
+    handle: TicketWorkerHandle,
+    signal: DoneSignal,
+    summary: string,
+  ): Promise<void> {
+    const reason = doneSignalSummary(signal, summary);
+    if (this.reviewTierFor(ticket) === "self") {
+      const sha = await this.commitWip(ticket, handle);
+      const at = sha ? ` at \`${sha.slice(0, 9)}\`` : "";
+      await this.client.setState(ticket.id, "in_review");
+      await this.postComment(
+        ticket.id,
+        `The implement worker reported **${signal.status}**, so self-review is disabled and this ` +
+          `is going to a fresh review instead of being marked done. I committed any WIP${at}.\n\n${reason}`,
+      );
+      this.logger.warn("self-tier implement reported incomplete — sent to review", {
+        ticket: ticket.identifier,
+        status: signal.status,
+      });
+      return;
+    }
+
+    await this.onImplementIncomplete(ticket, handle, reason);
+  }
+
+  private async hasTicketContribution(
+    ticket: Ticket,
+    handle: TicketWorkerHandle,
+    committedContribution: boolean,
+  ): Promise<boolean> {
+    if (committedContribution) return true;
+    try {
+      return await hasDiffSince(handle.workspace, this.baseShaForTicket.get(ticket.id) ?? null);
+    } catch (err) {
+      this.logger.warn("could not verify implementation diff; withholding self-review", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
+      return false;
+    }
   }
 
   /**
@@ -744,8 +845,23 @@ export class Dispatcher {
     status: "success" | "error",
     summary: string,
   ): Promise<void> {
-    const passed = this.reviewPassed(handle, status);
-    if (passed) {
+    if (status !== "success") {
+      await this.onReviewInfraFailure(ticket, `Reviewer exited with ${status}.`, summary);
+      return;
+    }
+
+    const signal = parseDoneSignal(handle.result?.structured);
+    if (!signal) {
+      await this.onReviewInfraFailure(
+        ticket,
+        "Reviewer finished without a schema-valid structured verdict.",
+        summary,
+      );
+      return;
+    }
+
+    this.reviewInfraRetries.delete(ticket.id);
+    if (signal.status === "complete") {
       await this.finishTicketAsDone(ticket, "Review passed → **done**.", summary);
       this.logger.info("ticket advanced to done", { ticket: ticket.identifier });
       return;
@@ -779,20 +895,36 @@ export class Dispatcher {
     });
   }
 
-  /**
-   * Verdict from a finished reviewer. A clean finish whose structured done-signal says
-   * `blocked`/`partial` is a FAIL; an errored reviewer process is also a FAIL (re-work). A clean
-   * `complete` (or a clean finish with no structured verdict) is a PASS.
-   */
-  private reviewPassed(handle: TicketWorkerHandle, status: "success" | "error"): boolean {
-    if (status !== "success") return false;
-    const structured = handle.result?.structured;
-    if (structured && typeof structured === "object") {
-      const s = (structured as Record<string, unknown>).status;
-      if (s === "blocked" || s === "partial") return false;
-      if (s === "complete") return true;
+  private async onReviewInfraFailure(ticket: Ticket, reason: string, summary: string): Promise<void> {
+    const attempts = (this.reviewInfraRetries.get(ticket.id) ?? 0) + 1;
+    this.reviewInfraRetries.set(ticket.id, attempts);
+
+    if (attempts <= MAX_REVIEW_INFRA_RETRIES) {
+      await this.postComment(
+        ticket.id,
+        `${reason} Retrying the review gate (attempt ${attempts}/${MAX_REVIEW_INFRA_RETRIES}); ` +
+          `this does not count as a rework cycle.\n\n${summary}`,
+      );
+      this.logger.warn("review infra/schema failure — retrying review", {
+        ticket: ticket.identifier,
+        attempts,
+        reason,
+      });
+      this.spawnGuarded(ticket, "review");
+      return;
     }
-    return true; // clean finish, no explicit blocking verdict
+
+    this.reviewInfraRetries.delete(ticket.id);
+    await this.postComment(
+      ticket.id,
+      `${reason} Review still did not produce a reliable verdict after ${MAX_REVIEW_INFRA_RETRIES} ` +
+        `retry, so I'm leaving this in **in_review** for a human instead of marking it done or ` +
+        `sending it back as failed work.\n\n${summary}`,
+    );
+    this.logger.warn("review infra/schema retries exhausted — leaving for human", {
+      ticket: ticket.identifier,
+      reason,
+    });
   }
 
   /**
@@ -835,6 +967,7 @@ export class Dispatcher {
     this.baseShaForTicket.delete(ticket.id);
     this.reworkCount.delete(ticket.id);
     this.implementRetries.delete(ticket.id);
+    this.reviewInfraRetries.delete(ticket.id);
   }
 
   // ── dependency promotion (the `beckett plan` DAG) ────────────────────────────────────────
@@ -896,6 +1029,7 @@ export class Dispatcher {
     const handle = this.workers.get(ticketId);
     this.baseShaForTicket.delete(ticketId);
     this.implementRetries.delete(ticketId);
+    this.reviewInfraRetries.delete(ticketId);
     this.staffing.delete(ticketId); // drop any mid-spawn reservation so doSpawn discards it
     this.dropPending(ticketId);
     this.releaseRepo(ticketId);
