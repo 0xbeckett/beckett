@@ -150,9 +150,15 @@ export interface WorkerSpend {
   usdEstimate: number | null;
 }
 
-/** Acceptance: a nudge is delivered (claude, acked) or queued (codex / buffered). */
+/**
+ * What actually happened to a steer (issue #19 — "queued" used to mean three different
+ * things). `delivered` = acked into the live turn (claude echo). `queued` = written/buffered,
+ * applies within THIS process's lifetime. `will-restart` = buffered by a one-shot harness and
+ * will trigger a full relaunch after the current run. `dropped` = the worker already finished;
+ * the text will never be applied (the dispatcher surfaces this on the ticket).
+ */
 export interface NudgeReceipt {
-  accepted: "delivered" | "queued";
+  accepted: "delivered" | "queued" | "will-restart" | "dropped";
   at: number; // epoch ms
 }
 

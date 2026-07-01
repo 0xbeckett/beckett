@@ -49,6 +49,7 @@ import {
 } from "../discord/identity.ts";
 import { createProgressHub, type ProgressHub, type ProgressSink } from "../discord/progress.ts";
 import { classify, loadAccess, type AccessLevel } from "../discord/access.ts";
+import { childEnv as strippedChildEnv } from "../env.ts";
 
 /**
  * What one chat turn hands the model: either a plain string (text-only turns, and every internal
@@ -56,9 +57,6 @@ import { classify, loadAccess, type AccessLevel } from "../discord/access.ts";
  * more base64 image blocks, so a Discord image reaches the model turn as real vision input).
  */
 export type TurnMessage = string | TurnContentBlock[];
-
-/** The same env keys the worker driver strips — subscription auth only (Spec 00 §4). */
-const FORBIDDEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] as const;
 
 /**
  * Ops channel that gets a one-line banner on every daemon boot (short git hash + subject) so a
@@ -329,8 +327,8 @@ export class ConciergeSession {
   }
 
   private childEnv(): Record<string, string | undefined> {
-    const env: Record<string, string | undefined> = { ...process.env };
-    for (const k of FORBIDDEN_ENV_KEYS) delete env[k];
+    // API-auth/endpoint overrides stripped centrally (src/env.ts — subscription auth only).
+    const env = strippedChildEnv();
     // Make sure the Bash tool can find `beckett`/`claude` regardless of the daemon's PATH.
     const home = process.env.HOME ?? "";
     const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");

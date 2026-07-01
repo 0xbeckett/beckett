@@ -8,8 +8,9 @@
  * errors surface at boot, never mid-task.
  *
  * Subscription auth ONLY (Spec 00 §4): the `.env` loader deliberately REFUSES to import
- * `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` into the environment — Beckett drives `claude` /
- * `codex` through their `~/.claude` / `~/.codex` subscription logins, never an API key.
+ * API-auth/endpoint overrides (`ANTHROPIC_*` / `OPENAI_*` / `CLAUDE_CODE_*` — src/env.ts)
+ * into the environment — Beckett drives `claude` / `codex` through their `~/.claude` /
+ * `~/.codex` subscription logins, never an API key.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -17,11 +18,9 @@ import { parse as parseToml } from "smol-toml";
 import { z } from "zod";
 import type { Config } from "./types.ts";
 import { resolveBeckettDir, bootFiles, type PathEnv } from "./paths.ts";
+import { isForbiddenEnvKey } from "./env.ts";
 
 export type { Config } from "./types.ts";
-
-/** Env keys we must never read or set (Spec 00 §4 — subscription auth only). */
-const FORBIDDEN_ENV_KEYS = new Set(["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
 
 /**
  * Flags `ClaudeDriver.buildArgs` composes itself — an extra_flags entry naming one of these
@@ -67,7 +66,7 @@ export function parseEnv(body: string): Record<string, string> {
 
     const key = withoutExport.slice(0, eq).trim();
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
-    if (FORBIDDEN_ENV_KEYS.has(key)) continue;
+    if (isForbiddenEnvKey(key)) continue;
 
     let value = withoutExport.slice(eq + 1).trim();
     if (
