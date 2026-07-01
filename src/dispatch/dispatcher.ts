@@ -146,6 +146,13 @@ type DispatcherLiveEntry =
       waitingFor?: string;
     };
 
+export interface DispatcherShutdownResult {
+  liveWorkers: number;
+  queuedSpawns: number;
+  completed: number;
+  timedOut: boolean;
+}
+
 /** Outcome of {@link Dispatcher.publishProject} — gates whether a ticket may be marked done. */
 type PublishOutcome =
   | { status: "skipped" } // no publisher wired (tests / no PAT) — nothing to gate on
@@ -204,6 +211,8 @@ export class Dispatcher {
 
   /** At most one live worker per ticket (implement OR review). */
   private readonly workers = new Map<string, TicketWorkerHandle>();
+  /** Full ticket metadata for live workers, needed for shutdown WIP commits. */
+  private readonly liveTickets = new Map<string, Ticket>();
   /**
    * Repo HEAD sha captured when a ticket FIRST entered `implement` — the REVIEW/rework diff base.
    * v3.1 runs every stage of a ticket in the one project checkout (no per-stage branch), so the
@@ -289,6 +298,83 @@ export class Dispatcher {
     return [...live, ...queued];
   }
 
+  /**
+   * Stop live workers during daemon shutdown, preserving any dirty checkout as a WIP commit before
+   * process exit. Bounded so SIGTERM handling cannot hang indefinitely under systemd.
+   */
+  async drainForShutdown(
+    reason = "daemon shutdown",
+    timeoutMs = 20_000,
+  ): Promise<DispatcherShutdownResult> {
+    const live = [...this.workers.entries()];
+    const queuedSpawns = this.pending.length;
+    this.pending.splice(0);
+    if (live.length === 0) {
+      this.logger.info("dispatcher shutdown drain: no live workers", { queuedSpawns });
+      return { liveWorkers: 0, queuedSpawns, completed: 0, timedOut: false };
+    }
+
+    this.logger.warn("dispatcher shutdown drain: stopping live workers", {
+      liveWorkers: live.length,
+      queuedSpawns,
+      timeoutMs,
+      reason,
+    });
+
+    let completed = 0;
+    const drain = Promise.allSettled(
+      live.map(async ([ticketId, handle]) => {
+        const ticket = this.liveTickets.get(ticketId);
+        this.workers.delete(ticketId);
+        this.liveTickets.delete(ticketId);
+        this.staffing.delete(ticketId);
+        try {
+          await handle.abort(reason);
+        } catch (err) {
+          this.logger.warn("shutdown worker abort failed", {
+            ticketId,
+            workerId: handle.id,
+            error: (err as Error).message,
+          });
+        }
+        const sha = ticket ? await this.commitWip(ticket, handle) : null;
+        try {
+          await handle.reap();
+        } catch (err) {
+          this.logger.warn("shutdown worker reap failed", {
+            ticketId,
+            workerId: handle.id,
+            error: (err as Error).message,
+          });
+        } finally {
+          this.releaseRepo(ticketId);
+        }
+        completed++;
+        this.logger.info("shutdown drained worker", {
+          ticket: ticket?.identifier ?? ticketId,
+          workerId: handle.id,
+          wipSha: sha,
+        });
+      }),
+    );
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    });
+    const result = await Promise.race([drain, timeout]);
+    if (timer) clearTimeout(timer);
+    const timedOut = result === "timeout";
+    if (timedOut) {
+      this.logger.warn("dispatcher shutdown drain timed out", {
+        liveWorkers: live.length,
+        completed,
+        timeoutMs,
+      });
+    }
+    return { liveWorkers: live.length, queuedSpawns, completed, timedOut };
+  }
+
   // ── event routing ────────────────────────────────────────────────────────────────────
 
   private async handleOne(event: PollEvent): Promise<void> {
@@ -365,6 +451,7 @@ export class Dispatcher {
     this.implementRetries.delete(ticket.id);
     this.reviewInfraRetries.delete(ticket.id);
     this.staffing.delete(ticket.id); // drop any mid-spawn reservation so doSpawn discards it
+    this.liveTickets.delete(ticket.id);
     this.dropPending(ticket.id);
     this.releaseRepo(ticket.id);
     if (!handle) {
@@ -388,6 +475,7 @@ export class Dispatcher {
     this.implementRetries.delete(ticket.id);
     this.reviewInfraRetries.delete(ticket.id);
     this.staffing.delete(ticket.id);
+    this.liveTickets.delete(ticket.id);
     this.dropPending(ticket.id);
     this.releaseRepo(ticket.id);
     if (!handle) {
@@ -592,6 +680,7 @@ export class Dispatcher {
     }
 
     this.workers.set(ticket.id, handle);
+    this.liveTickets.set(ticket.id, ticket);
     handle.onDone((status, summary) => {
       void this.onWorkerDone(ticket, stage, handle, status, summary);
     });
@@ -624,6 +713,7 @@ export class Dispatcher {
   ): Promise<void> {
     // Free the slot first so a queued spawn can take it.
     if (this.workers.get(ticket.id) === handle) this.workers.delete(ticket.id);
+    this.liveTickets.delete(ticket.id);
 
     try {
       if (stage === "implement") {
@@ -1129,6 +1219,7 @@ export class Dispatcher {
     this.reworkCount.delete(ticketId);
     this.implementRetries.delete(ticketId);
     this.reviewInfraRetries.delete(ticketId);
+    this.liveTickets.delete(ticketId);
   }
 
   // ── reaping + comments ───────────────────────────────────────────────────────────────
@@ -1140,6 +1231,7 @@ export class Dispatcher {
     this.implementRetries.delete(ticketId);
     this.reviewInfraRetries.delete(ticketId);
     this.staffing.delete(ticketId); // drop any mid-spawn reservation so doSpawn discards it
+    this.liveTickets.delete(ticketId);
     this.dropPending(ticketId);
     this.releaseRepo(ticketId);
     if (!handle) return;
