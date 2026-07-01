@@ -48,6 +48,7 @@ import {
   type UserIdentity,
 } from "../discord/identity.ts";
 import { createProgressHub, type ProgressHub, type ProgressSink } from "../discord/progress.ts";
+import { classify, loadAccess, type AccessLevel } from "../discord/access.ts";
 
 /**
  * What one chat turn hands the model: either a plain string (text-only turns, and every internal
@@ -71,6 +72,12 @@ const TURN_TIMEOUT_MS = 240_000;
 
 /** Discord shows "typing…" for ~10s; re-trigger inside this window while a turn runs. */
 const TYPING_INTERVAL_MS = 8_000;
+
+/** Do not let an outsider spam the static denial reply into a channel/DM. */
+const ACCESS_DENY_REPLY_MS = 5 * 60_000;
+
+const ACCESS_DENY_TEXT =
+  "I can't run Beckett turns for you yet. Ask the owner to grant access with `beckett access grant <your Discord user id>`.";
 
 /**
  * Default context-size ceiling (summed input tokens) at which we auto-compact the session.
@@ -632,6 +639,8 @@ export class Concierge {
     /** Tickets filed during this turn (via `beckett ticket create`/`plan`), awaiting a thread anchor. */
     pendingTickets: { identifier: string; title: string }[];
   } | null = null;
+  /** Last static denial by channel+user, so denied DMs/mentions cannot spam Discord. */
+  private readonly accessDenyAt = new Map<string, number>();
 
   constructor(opts: ConciergeOptions = {}) {
     this.config = opts.config ?? loadConfig();
@@ -894,6 +903,12 @@ export class Concierge {
     // caption) used to die on this guard — now that we can see attachments it's a real turn.
     if (!content && m.attachments.length === 0) return;
 
+    const access = this.accessLevelFor(m.userId);
+    if (access === "outsider") {
+      await this.denyOutsider(m);
+      return;
+    }
+
     // Track this turn so a `beckett discord reply` the Concierge runs while answering it counts as
     // THE reply (and suppresses the auto-post below) instead of producing a second message.
     const mention = {
@@ -1014,6 +1029,34 @@ export class Concierge {
   private ownerId(): string | undefined {
     const id = process.env.DISCORD_OWNER_ID?.trim();
     return id && /^\d{1,20}$/.test(id) ? id : undefined;
+  }
+
+  private accessLevelFor(userId: string): AccessLevel {
+    try {
+      return classify(userId, this.ownerId(), loadAccess(buildPaths(this.config).accessFile));
+    } catch (err) {
+      this.log.warn("access classification failed; denying by default", { userId, err: String(err) });
+      return "outsider";
+    }
+  }
+
+  private async denyOutsider(m: IncomingMessage): Promise<void> {
+    this.log.warn("discord access denied", {
+      userId: m.userId,
+      channelId: m.channelId,
+      guildId: m.guildId,
+      messageId: m.messageId,
+    });
+    const key = `${m.channelId}:${m.userId}`;
+    const now = Date.now();
+    const last = this.accessDenyAt.get(key) ?? 0;
+    if (now - last < ACCESS_DENY_REPLY_MS) return;
+    this.accessDenyAt.set(key, now);
+    await this.gateway
+      .post(m.channelId, ACCESS_DENY_TEXT, { replyToMessageId: m.messageId })
+      .catch((err) =>
+        this.log.warn("access denial reply failed", { userId: m.userId, channelId: m.channelId, err: String(err) }),
+      );
   }
 
   /**

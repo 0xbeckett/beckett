@@ -6,7 +6,7 @@
  */
 
 import { test, expect, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Concierge, type ConciergeSession, type TurnMessage } from "./index.ts";
@@ -85,14 +85,16 @@ function stamp(turn: TurnMessage): string {
 
 test("turn stamp carries the speaker's user id, display name, and the message id", async () => {
   tmpBeckettDir();
+  process.env.DISCORD_OWNER_ID = ALICE;
   const asks: TurnMessage[] = [];
   const c = new Concierge({ config: config(), session: fakeSession(asks), gateway: fakeGateway() });
   await c.onMessage(message({ userId: ALICE, authorDisplayName: "alice", messageId: "m9" }));
-  expect(stamp(asks[0]!)).toBe(`[channel:${CHAN}] [user:${ALICE} display:"alice" msg:m9]\nhey`);
+  expect(stamp(asks[0]!)).toBe(`[channel:${CHAN}] [user:${ALICE} display:"alice" role:owner msg:m9]\nhey`);
 });
 
 test("a stored preferred_address is honored on later turns", async () => {
   const dir = tmpBeckettDir();
+  process.env.DISCORD_OWNER_ID = ALICE;
   upsertIdentity(join(dir, "identities.json"), ALICE, { preferred_address: "Sam" });
   const asks: TurnMessage[] = [];
   const c = new Concierge({ config: config(), session: fakeSession(asks), gateway: fakeGateway() });
@@ -102,8 +104,9 @@ test("a stored preferred_address is honored on later turns", async () => {
 });
 
 test("the env owner id is tagged role:owner; a different id in the same channel is not", async () => {
-  tmpBeckettDir();
+  const dir = tmpBeckettDir();
   process.env.DISCORD_OWNER_ID = OWNER;
+  writeFileSync(join(dir, "access.txt"), `${BOB}\n`, "utf8");
   const asks: TurnMessage[] = [];
   const c = new Concierge({ config: config(), session: fakeSession(asks), gateway: fakeGateway() });
 
