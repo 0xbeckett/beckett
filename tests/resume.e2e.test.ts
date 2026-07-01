@@ -17,7 +17,8 @@
  */
 
 import { test, expect, beforeAll } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, existsSync, chmodSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, chmodSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadConfig } from "../src/config.ts";
@@ -27,12 +28,11 @@ import type { WorkerEvent, SpawnSpec, Config } from "../src/types.ts";
 
 const REPO_ROOT = process.cwd();
 const FAKE_HARNESS = join(REPO_ROOT, "src/test/fake-harness.ts");
-const SCRATCH = join("/tmp", "beckett-e2e", "resume");
+const SCRATCH = mkdtempSync(join(tmpdir(), "beckett-resume-"));
 const WRAPPER = join(SCRATCH, "fake-claude.sh");
 const log = makeLogger().child("e2e-resume");
 
 beforeAll(() => {
-  rmSync(SCRATCH, { recursive: true, force: true });
   mkdirSync(join(SCRATCH, "beckett", "memory"), { recursive: true });
   writeFileSync(
     WRAPPER,

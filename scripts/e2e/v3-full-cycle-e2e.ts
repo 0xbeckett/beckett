@@ -5,12 +5,12 @@
  * done. Spawns real Claude workers in real git worktrees. Cleans up the ticket at the end.
  *
  * Run (with `ssh -fN -L 8751:localhost:8750 loom-desk` up):
- *   PLANE_INTERNAL_URL=http://localhost:8751 PLANE_API_TOKEN=… bun run test/v3-full-cycle-e2e.ts
+ *   PLANE_INTERNAL_URL=http://localhost:8751 PLANE_API_TOKEN=... bun run scripts/e2e/v3-full-cycle-e2e.ts
  */
-import { loadConfig } from "../src/config.ts";
-import { PlaneClient } from "../src/plane/client.ts";
-import { PlanePoller } from "../src/plane/poll.ts";
-import { Dispatcher } from "../src/dispatch/dispatcher.ts";
+import { loadConfig } from "../../src/config.ts";
+import { PlaneClient } from "../../src/plane/client.ts";
+import { PlanePoller } from "../../src/plane/poll.ts";
+import { Dispatcher } from "../../src/dispatch/dispatcher.ts";
 
 const repoRoot = "/Users/jason/Code/beckett";
 const config = {

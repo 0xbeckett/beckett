@@ -1,5 +1,8 @@
 # Beckett — Spec 07: Roadmap & Setup
 
+> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/V3.md`](../../docs/V3.md).
+
+
 > Status: **draft v2.0** · 2026-06-28 · Owner: Jason
 > The v2 build order, the loom-desk setup checklist, and the verify-first risks. Honors
 > [Spec 00](./00-overview.md). The build order maps to the approved re-architecture plan.

@@ -1,5 +1,8 @@
 # Beckett — Spec 02: Doctrine (how the parent decides)
 
+> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/V3.md`](../../docs/V3.md).
+
+
 > Status: **draft v2.0** · 2026-06-28 · Owner: Jason
 > This is the parent agent's **operating doctrine** — how it judges a task, picks the lightest
 > sufficient path, runs the heavy path when it must, and escalates. It is *reasoning guidance*,

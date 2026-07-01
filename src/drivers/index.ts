@@ -6,10 +6,9 @@
  * executor never `new` a driver — they ask the registry for one and hold only the typed
  * interface.
  *
- * v0 scope (Spec 12 §3): Claude only, single node. The `codex` slot is intentionally left
- * **unregistered** — the seam is here (add a `codex:` factory when `CodexDriver` lands), but
- * `codex-exec-oneshot` is NOT implemented in v0 (Spec 02 §5 / §11). Asking for it fails loudly
- * rather than silently degrading.
+ * v3 registers the three supported harnesses: Claude for live steering, Codex for one-shot
+ * `codex exec`, and Pi for one-shot `pi -p`. Asking for anything else fails loudly rather than
+ * silently degrading.
  */
 
 import type { Config, Harness, HarnessDriver, Logger } from "../types.ts";
@@ -42,14 +41,14 @@ export function hasDriver(harness: Harness): boolean {
   return harness in FACTORIES && FACTORIES[harness] !== undefined;
 }
 
-/** The set of harnesses with a usable driver in this build (v0: `["claude"]`). */
+/** The set of harnesses with a usable driver in this build. */
 export function availableHarnesses(): Harness[] {
   return (Object.keys(FACTORIES) as Harness[]).filter((h) => FACTORIES[h] !== undefined);
 }
 
 /**
- * Resolve the factory for a harness. Throws a clear error for an unregistered harness
- * (e.g. `codex` in v0) so the caller escalates instead of silently doing nothing.
+ * Resolve the factory for a harness. Throws a clear error for an unregistered harness so the
+ * caller escalates instead of silently doing nothing.
  */
 export function getDriverFactory(harness: Harness): DriverFactory {
   const factory = FACTORIES[harness];

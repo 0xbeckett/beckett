@@ -18,7 +18,8 @@
  */
 
 import { test, expect, beforeAll } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
+import { mkdirSync, writeFileSync, chmodSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 
@@ -33,6 +34,7 @@ import { createWorkerManager, type DriverRegistry } from "../src/worker/manager.
 import { createDriver } from "../src/drivers/index.ts";
 import { createOrchestrator, type BeckettOrchestrator } from "../src/state/orchestrator.ts";
 import { staffFromPlan } from "../src/brain/plan.ts";
+import { NodeState, TaskState } from "../src/types.ts";
 import type {
   Brain,
   Config,
@@ -59,12 +61,11 @@ import type {
 
 const REPO_ROOT = process.cwd();
 const FAKE_HARNESS = join(REPO_ROOT, "src/test/fake-harness.ts");
-const SCRATCH = join("/tmp", "beckett-e2e", "nudge-race");
+const SCRATCH = mkdtempSync(join(tmpdir(), "beckett-nudge-race-"));
 const WRAPPER = join(SCRATCH, "fake-claude.sh");
 const log = makeLogger().child("e2e-nudge-race");
 
 beforeAll(() => {
-  rmSync(SCRATCH, { recursive: true, force: true });
   mkdirSync(SCRATCH, { recursive: true });
   writeFileSync(
     WRAPPER,
@@ -153,6 +154,10 @@ class FakeDiscord implements DiscordGateway {
     this.posts.push({ channelId, content });
     return `msg_${++this.n}`;
   }
+  async startThread(_channelId: string, _anchorMessageId: string, _name: string): Promise<string> {
+    return `thread_${++this.n}`;
+  }
+  async sendTyping(_channelId: string): Promise<void> {}
   onMessage(_cb: (m: IncomingMessage) => void | Promise<void>): void {}
   isConnected(): boolean {
     return true;
@@ -331,8 +336,8 @@ test("nudge-vs-finish: a late nudge into a GATING node is queued without regress
   // The worker's result lands; handleFinished walks INTEGRATING → REVIEWING → GATING and BLOCKS
   // inside the scripted gate(). The node is now pinned at GATING with the worker already finished
   // (finishedWorkers has it) but its handle still live (reap only runs after NODE_DONE).
-  await waitFor(() => d.brain.gateEntered && d.store.getNode(nodeId)?.state === "GATING");
-  expect(d.store.getNode(nodeId)?.state).toBe("GATING");
+  await waitFor(() => d.brain.gateEntered && d.store.getNode(nodeId)?.state === NodeState.GATING);
+  expect(d.store.getNode(nodeId)?.state).toBe(NodeState.GATING);
   expect(d.workerManager.get(workerId)).toBeTruthy(); // handle still live → nudge() won't throw
 
   // FIRE THE RACING NUDGE into the finish window.
@@ -341,7 +346,7 @@ test("nudge-vs-finish: a late nudge into a GATING node is queued without regress
   // The steer is accepted-but-buffered (the finished worker's driver queues it), and CRUCIALLY the
   // node FSM was NOT touched: it must still be GATING — no NUDGING write, no SUPERVISING regression.
   expect(receipt.accepted).toBe("queued");
-  expect(d.store.getNode(nodeId)?.state).toBe("GATING");
+  expect(d.store.getNode(nodeId)?.state).toBe(NodeState.GATING);
 
   // The nudge persisted (persist-first) but stayed 'queued' — it never drove the FSM.
   const nudges = queryDb<{ status: string; node_id: string }>(
@@ -362,9 +367,9 @@ test("nudge-vs-finish: a late nudge into a GATING node is queued without regress
 
   // Release the gate; the node finishes cleanly to NODE_DONE / DELIVERED.
   d.brain.release();
-  const ok = await waitFor(() => d.store.getTask(taskId)?.state === "DELIVERED");
+  const ok = await waitFor(() => d.store.getTask(taskId)?.state === TaskState.DELIVERED);
   expect(ok).toBe(true);
-  expect(d.store.getNode(nodeId)?.state).toBe("NODE_DONE");
+  expect(d.store.getNode(nodeId)?.state).toBe(NodeState.NODE_DONE);
 
   d.store.close();
 });

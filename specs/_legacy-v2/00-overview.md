@@ -1,10 +1,13 @@
 # Beckett — Spec 00: Overview & Canon (v2)
 
+> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/V3.md`](../../docs/V3.md).
+
+
 > **Anchor document.** Defines the vision, vocabulary, and canonical decisions. If a deeper
 > spec contradicts this file, this file wins (or this file is wrong and we fix it *here* first).
 >
 > Status: **draft v2.0** · 2026-06-28 · Owner: Jason
-> Supersedes the v0.1 spec set (archived in [`_legacy/`](./_legacy/)). v2 is a re-architecture,
+> Supersedes the v0.1 spec set (archived in [`_legacy/`](../_legacy/)). v2 is a re-architecture,
 > not a tweak: Beckett stops being a hand-coded orchestration engine and *becomes an agent*.
 
 ---
@@ -167,5 +170,5 @@ The repo itself is a **Claude Code agent project**: `.claude/skills/`, `.claude/
 | 07 | [Roadmap & Setup](./07-roadmap.md) | v2 build order, loom-desk setup, verify-first risks |
 
 Deep research & harness wire-formats live in [`../my-docs/`](../my-docs/). The v0.1 spec set is
-preserved in [`_legacy/`](./_legacy/) — its formats (criteria, review verdict, action classes,
+preserved in [`_legacy/`](../_legacy/) — its formats (criteria, review verdict, action classes,
 memory schema, smoke-alarm thresholds) are still canonical and carried forward here.

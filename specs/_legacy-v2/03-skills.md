@@ -1,5 +1,8 @@
 # Beckett — Spec 03: Skills (the playbook)
 
+> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/V3.md`](../../docs/V3.md).
+
+
 > Status: **draft v2.0** · 2026-06-28 · Owner: Jason
 > The parent agent's on-demand playbook. Each skill is a markdown `SKILL.md` under
 > `.claude/skills/<name>/` that the parent loads when its chosen path ([Spec 02](./02-doctrine.md))

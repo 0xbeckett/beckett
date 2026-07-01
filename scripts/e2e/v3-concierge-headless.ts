@@ -4,14 +4,14 @@
  * ticket with the codex-implement / Opus-review casting. Run on a host where `claude` + the
  * `beckett` CLI + Plane are reachable (loom-desk), with PLANE_* in the env / ~/.beckett.
  *
- *   bun run test/v3-concierge-headless.ts
+ *   bun run scripts/e2e/v3-concierge-headless.ts
  */
 import { join } from "node:path";
-import { loadConfig } from "../src/config.ts";
-import { ConciergeSession } from "../src/concierge/index.ts";
-import { PlaneClient } from "../src/plane/client.ts";
+import { loadConfig } from "../../src/config.ts";
+import { ConciergeSession } from "../../src/concierge/index.ts";
+import { PlaneClient } from "../../src/plane/client.ts";
 
-const repoRoot = process.env.BECKETT_REPO_ROOT ?? join(import.meta.dir, "..");
+const repoRoot = process.env.BECKETT_REPO_ROOT ?? join(import.meta.dir, "../..");
 const config = loadConfig();
 const client = new PlaneClient({ config });
 const before = (await client.listIssues()).length;
