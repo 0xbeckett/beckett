@@ -211,7 +211,8 @@ test("plain text message (no attachments) is unchanged — a bare framed string,
   await concierge.onMessage(message({ content: "@beckett you up", attachments: [] }));
 
   expect(asks).toHaveLength(1);
-  expect(asks[0]).toBe(`[channel:${CHAN}]\n@beckett you up`); // still a plain string, not an array
+  // still a plain string, not an array — now carrying the speaker stamp (OPS-42)
+  expect(asks[0]).toBe(`[channel:${CHAN}] [user:u1 msg:${MSG}]\n@beckett you up`);
   expect(imageBlocks(asks[0]!)).toHaveLength(0);
 });
 

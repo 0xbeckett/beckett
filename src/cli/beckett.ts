@@ -22,6 +22,7 @@ import { CfDns } from "../agency/cloudflare.ts";
 import { CodexImageGen } from "../agency/imagegen.ts";
 import { TunnelDeployer } from "../shell/deploy.ts";
 import { loadAccess, grantAccess, revokeAccess, ACCESS_CAP } from "../discord/access.ts";
+import { loadIdentities, getIdentity, upsertIdentity } from "../discord/identity.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 import type { Ticket, TicketState } from "../plane/types.ts";
 
@@ -123,6 +124,44 @@ async function main(): Promise<void> {
       out({ remembered: node.name, type: node.type });
     }
     fail(`unknown: beckett memory ${sub ?? ""}`);
+  }
+
+  // ── identity (in-process: per-user Discord name map, ~/.beckett/identities.json) ───────────
+  // How Beckett records "call me X" durably against a Discord user id, and reads back who an id
+  // is. Keyed on the user id from the turn stamp `[user:<id> ...]`. Addressing only — never store
+  // contact info (email/phone) here; that must never surface in channel (OPS-42 privacy rule).
+  if (group === "identity") {
+    const file = paths.identitiesFile;
+    if (sub === "set") {
+      const { flags } = parse(rest);
+      const id = flags.user ? String(flags.user).trim() : "";
+      if (!id) fail('usage: beckett identity set --user <discordId> [--name "X"] [--known "Y"] [--notes "..."] [--clear-name]');
+      const patch: Parameters<typeof upsertIdentity>[2] = {};
+      // --name is the "call me X" case → preferred_address (what they want to be called).
+      if (flags.name !== undefined) patch.preferred_address = String(flags.name);
+      if (flags["clear-name"]) patch.preferred_address = "";
+      if (flags.known !== undefined) patch.known_name = String(flags.known);
+      if (flags.notes !== undefined) patch.notes = String(flags.notes);
+      if (flags.display !== undefined) patch.display_name = String(flags.display);
+      if (Object.keys(patch).length === 0) fail("nothing to set — pass --name, --known, --notes, or --display");
+      let rec;
+      try {
+        rec = upsertIdentity(file, id, patch);
+      } catch (err) {
+        fail((err as Error).message);
+      }
+      out({ ok: true, userId: id, identity: rec });
+    }
+    if (sub === "show") {
+      const { flags, _ } = parse(rest);
+      const id = (flags.user ? String(flags.user) : _[0] ?? "").trim();
+      if (!id) fail("usage: beckett identity show --user <discordId>");
+      out({ userId: id, identity: getIdentity(file, id) ?? null });
+    }
+    if (sub === "list") {
+      out({ identities: loadIdentities(file) });
+    }
+    fail(`unknown: beckett identity ${sub ?? ""} (use set|show|list)`);
   }
 
   // ── work (in-process: the on-disk worker ledger — survives shell restarts) ────────────────
@@ -608,7 +647,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: reload | persona | access ls|grant|revoke | discord reply | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: reload | persona | access ls|grant|revoke | identity set|show|list | discord reply | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 main().catch((err) => fail((err as Error).message));

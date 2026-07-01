@@ -286,9 +286,15 @@ export class DiscordJsGateway implements DiscordGateway {
     // of Beckett's messages (the reply-ping lands in `repliedUser`, which `.users.has()` MISSES —
     // that bug silently dropped every reply-style mention). `ignoreEveryone` avoids @everyone noise.
     const directMention = botId ? msg.mentions.has(botId, { ignoreEveryone: true }) : false;
+    // The human-friendly name to address the speaker by: guild nickname first (what the server
+    // calls them), then their global display name, then the raw username. Threaded through so
+    // each turn knows WHO is talking, not just which channel (OPS-42).
+    const displayName =
+      msg.member?.displayName || msg.author.globalName || msg.author.username || undefined;
     return {
       messageId: msg.id,
       userId: msg.author.id,
+      authorDisplayName: displayName,
       channelId: msg.channelId,
       guildId: msg.guildId ?? null,
       content: msg.content,
