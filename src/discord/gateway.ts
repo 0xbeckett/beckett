@@ -80,6 +80,8 @@ export class DiscordJsGateway implements DiscordGateway {
 
   /** Outbound posts buffered while disconnected (Spec 01 §6 — flushed on reconnect). */
   private readonly outbound: QueuedPost[] = [];
+  /** Message ids posted by this process, used to recognize native no-ping replies to Beckett. */
+  private readonly ownMessageIds = new Set<string>();
 
   /** Liveness, tracked from shard lifecycle events (more accurate than client.isReady). */
   private connected = false;
@@ -272,15 +274,17 @@ export class DiscordJsGateway implements DiscordGateway {
         len: msg.content.length,
         mentionsBot: client.user ? msg.mentions.has(client.user.id) : undefined,
       });
-      const m = this.normalize(msg);
-      const handler = this.handler;
-      if (!handler) return;
       // Isolate handler failures — a thrown intake/route must never kill the gateway.
       void Promise.resolve()
-        .then(() => handler(m))
+        .then(async () => {
+          const m = await this.normalize(msg);
+          const handler = this.handler;
+          if (!handler) return;
+          await handler(m);
+        })
         .catch((err) =>
           this.logger.error("discord onMessage handler threw", {
-            messageId: m.messageId,
+            messageId: msg.id,
             error: String(err),
           }),
         );
@@ -314,7 +318,7 @@ export class DiscordJsGateway implements DiscordGateway {
   }
 
   /** Normalize a raw discord.js message into the contract's {@link IncomingMessage}. */
-  private normalize(msg: Message): IncomingMessage {
+  private async normalize(msg: Message): Promise<IncomingMessage> {
     const botId = this.client?.user?.id;
     const isDM = msg.guildId === null;
     // A DM addressed to the bot is an address even without an explicit @mention (Spec 05
@@ -322,6 +326,7 @@ export class DiscordJsGateway implements DiscordGateway {
     // of Beckett's messages (the reply-ping lands in `repliedUser`, which `.users.has()` MISSES —
     // that bug silently dropped every reply-style mention). `ignoreEveryone` avoids @everyone noise.
     const directMention = botId ? msg.mentions.has(botId, { ignoreEveryone: true }) : false;
+    const replyToBot = botId ? await this.referencesBot(msg, botId) : false;
     // The human-friendly name to address the speaker by: guild nickname first (what the server
     // calls them), then their global display name, then the raw username. Threaded through so
     // each turn knows WHO is talking, not just which channel (OPS-42).
@@ -335,7 +340,7 @@ export class DiscordJsGateway implements DiscordGateway {
       guildId: msg.guildId ?? null,
       content: msg.content,
       repliedToId: msg.reference?.messageId ?? null,
-      mentionsBot: isDM || directMention,
+      mentionsBot: isDM || directMention || replyToBot,
       authorIsBot: msg.author.bot,
       createdAt: msg.createdTimestamp,
       // Every file dragged into the message (images, txt, pdf, md, anything). The shell
@@ -349,6 +354,20 @@ export class DiscordJsGateway implements DiscordGateway {
         size: a.size,
       })),
     };
+  }
+
+  private async referencesBot(msg: Message, botId: string): Promise<boolean> {
+    const refId = msg.reference?.messageId;
+    if (!refId) return false;
+    if (this.ownMessageIds.has(refId)) return true;
+    const repliedUser = (msg.mentions as { repliedUser?: { id?: string } }).repliedUser;
+    if (repliedUser?.id === botId) return true;
+    try {
+      const ref = await msg.fetchReference();
+      return ref.author.id === botId;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -370,7 +389,7 @@ export class DiscordJsGateway implements DiscordGateway {
     }
   }
 
-  /** Actually send a message now; returns the sent message id. Caps at 2000 chars. */
+  /** Actually send a message now; returns the first sent message id. Splits overlong content. */
   private async sendNow(
     channelId: string,
     content: string,
@@ -394,19 +413,30 @@ export class DiscordJsGateway implements DiscordGateway {
       }
     }
 
-    const payload: MessageCreateOptions = { content: this.cap(content) };
-    if (opts?.replyToMessageId) {
-      // Native reply-to: visual threading without threads + the strong correlation key
-      // (Spec 05 §4.2). failIfNotExists=false so a deleted ask doesn't reject the post.
-      payload.reply = { messageReference: opts.replyToMessageId, failIfNotExists: false };
+    const chunks = splitDiscordContent(content);
+    if (chunks.length === 0 && (!opts?.files || opts.files.length === 0)) {
+      throw new Error("discord post needs text or files");
     }
-    if (opts?.files && opts.files.length > 0) {
-      payload.files = opts.files.map((path) => new AttachmentBuilder(path));
-    }
+    if (chunks.length === 0) chunks.push("");
 
-    const sent = await channel.send(payload);
+    let firstId: string | null = null;
+    for (let i = 0; i < chunks.length; i++) {
+      const payload: MessageCreateOptions = { content: chunks[i]! };
+      if (i === 0 && opts?.replyToMessageId) {
+        // Native reply-to: visual threading without threads + the strong correlation key
+        // (Spec 05 §4.2). failIfNotExists=false so a deleted ask doesn't reject the post.
+        payload.reply = { messageReference: opts.replyToMessageId, failIfNotExists: false };
+      }
+      if (i === 0 && opts?.files && opts.files.length > 0) {
+        payload.files = opts.files.map((path) => new AttachmentBuilder(path));
+      }
+
+      const sent = await channel.send(payload);
+      this.ownMessageIds.add(sent.id);
+      firstId ??= sent.id;
+    }
     this.lastEventTs = Date.now();
-    return sent.id;
+    return firstId!;
   }
 
   /** Buffer a post until reconnect; the promise resolves with the real id when it lands. */
@@ -450,14 +480,24 @@ export class DiscordJsGateway implements DiscordGateway {
     }
   }
 
-  /** Hard-cap content at Discord's 2000-char limit (Spec 05 §9.1) — a transport safety net. */
-  private cap(content: string): string {
-    if (content.length <= DISCORD_MAX_CHARS) return content;
-    this.logger.warn("discord content exceeds 2000 chars; truncating", {
-      length: content.length,
-    });
-    return content.slice(0, DISCORD_MAX_CHARS - 1) + "…";
+}
+
+/** Split Discord content without truncating, preferring paragraph/newline/word boundaries. */
+export function splitDiscordContent(content: string, limit = DISCORD_MAX_CHARS): string[] {
+  if (content.length === 0) return [];
+  const chunks: string[] = [];
+  let rest = content;
+  while (rest.length > limit) {
+    const window = rest.slice(0, limit + 1);
+    let cut = window.lastIndexOf("\n\n", limit);
+    if (cut < Math.floor(limit * 0.4)) cut = window.lastIndexOf("\n", limit);
+    if (cut < Math.floor(limit * 0.4)) cut = window.lastIndexOf(" ", limit);
+    if (cut <= 0) cut = limit;
+    chunks.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
   }
+  if (rest.length > 0) chunks.push(rest);
+  return chunks;
 }
 
 /** Factory: build a {@link DiscordGateway} from options (the daemon wires the impl). */

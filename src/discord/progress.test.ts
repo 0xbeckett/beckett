@@ -8,6 +8,9 @@
  */
 
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ProgressHub, formatEvent, type ThreadCapableGateway, type ProgressContext } from "./progress.ts";
 import type { WorkerEvent } from "../types.ts";
 
@@ -205,4 +208,44 @@ test("a failed thread-open retries and eventually posts", async () => {
   expect(rec.threads.length).toBeGreaterThanOrEqual(1);
   expect(rec.posts.map((p) => p.content).join("")).toContain("recovered");
   hub.dispose();
+});
+
+test("a permanently unthreadable channel degrades to parent-channel digests", async () => {
+  const { gateway, rec } = fakeGateway();
+  gateway.startThread = async () => {
+    throw new Error("discord channel dm-1 cannot host a thread");
+  };
+  const hub = new ProgressHub(gateway, quietLog, { flushIntervalMs: 5, openRetryMs: 10 });
+  hub.openThread({ channelId: CHAN, anchorMessageId: ACK, ticketIdent: "OPS-1", title: "OPS-1 · dm" });
+  hub.event("OPS-1", finished("success", "done from dm"), IMPL);
+  await settle();
+
+  expect(rec.threads).toHaveLength(0);
+  expect(rec.posts.some((p) => p.channelId === CHAN && p.content.includes("done from dm"))).toBe(true);
+  expect(rec.posts.some((p) => p.content.includes("Progress thread unavailable"))).toBe(true);
+  hub.dispose();
+});
+
+test("thread mapping persists across a hub restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-progress-state-"));
+  try {
+    const stateFile = join(dir, "progress-threads.json");
+    const first = fakeGateway();
+    const hub1 = new ProgressHub(first.gateway, quietLog, { flushIntervalMs: 5, stateFile });
+    hub1.openThread({ channelId: CHAN, anchorMessageId: ACK, ticketIdent: "OPS-1", title: "OPS-1 · scan" });
+    await settle();
+    expect(first.rec.threads).toHaveLength(1);
+    hub1.dispose();
+
+    const second = fakeGateway();
+    const hub2 = new ProgressHub(second.gateway, quietLog, { flushIntervalMs: 5, stateFile });
+    hub2.event("OPS-1", finished("success", "after restart"), IMPL);
+    await settle();
+
+    expect(second.rec.threads).toHaveLength(0);
+    expect(second.rec.posts).toEqual([{ channelId: "thread-1", content: "✓ implement success: after restart" }]);
+    hub2.dispose();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
