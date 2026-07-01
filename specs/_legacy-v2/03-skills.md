@@ -28,6 +28,11 @@ Each skill's `SKILL.md` carries: **purpose**, **when to use** (and when not), **
 gathers**, **the output/format it produces**, and the **decision rules** (the businesslike
 layer-2 instructions from the old brain prompts).
 
+**Loading invariant:** skills are on-demand. The parent may discover names/descriptions so it can
+choose a path, but a skill body is injected only after that path explicitly selects it. There is no
+fallback that loads every skill when the selected list is empty. "No selected skills" must be the
+same prompt surface as baseline: no extra skill text, no hidden playbook tax.
+
 ---
 
 ## 2. Skill catalog
