@@ -51,7 +51,7 @@ import type { ProgressSink } from "../discord/progress.ts";
 import { log } from "../log.ts";
 import { commitWorktree, headSha, hasDiffSince, ensureProjectRepo } from "../worker/worktree.ts";
 import { projectSlug } from "../plane/cast.ts";
-import { hardCapSeconds } from "../drivers/proc.ts";
+import { hardCapSeconds, sweepLedgeredWorker } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
 import { AdvanceOutbox, type AdvanceOperation } from "./advance-outbox.ts";
 
@@ -103,6 +103,8 @@ export interface DispatcherDeps {
   advanceOutboxPath?: string;
   /** JSON path for restart-surviving dispatcher ticket memory (base SHA + retry/rework counters). */
   runtimeStatePath?: string;
+  /** Test seam for {@link Dispatcher.recoverFromCrash}'s orphan sweep; default ps-verifies + kills. */
+  sweepOrphan?: (pid: number, expectedBin: string) => boolean;
   logger?: Logger;
 }
 
@@ -157,12 +159,31 @@ export interface DispatcherShutdownResult {
   timedOut: boolean;
 }
 
+/**
+ * One live worker's crash-recovery ledger entry (issue #20), persisted in the runtime-state file
+ * at spawn and removed on clean finish/cancel/park — but KEPT by the shutdown drain, so the next
+ * boot can sweep the orphan pid (crash case) and resume the persisted session instead of
+ * re-running the whole ticket from scratch.
+ */
+interface LedgeredWorker {
+  identifier: string;
+  stage: string;
+  workerId: string;
+  sessionId: string;
+  pid: number;
+  repoRoot: string;
+  harness: string;
+  spawnedAt: number;
+}
+
 interface DispatcherRuntimeState {
   version: 1;
   baseShaForTicket: Record<string, string>;
   reworkCount: Record<string, number>;
   implementRetries: Record<string, number>;
   reviewInfraRetries: Record<string, number>;
+  /** Crash-recovery worker ledger, keyed by ticket id (absent in pre-ledger state files). */
+  liveWorkers?: Record<string, LedgeredWorker>;
 }
 
 /** Outcome of {@link Dispatcher.publishProject} — gates whether a ticket may be marked done. */
@@ -227,6 +248,29 @@ function parseNumberRecord(value: unknown, field: string): Record<string, number
   return out;
 }
 
+/** Lenient ledger parse: a malformed entry is dropped (recovery is best-effort), never fatal. */
+function parseLedger(value: unknown): Record<string, LedgeredWorker> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, LedgeredWorker> = {};
+  for (const [ticketId, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object") continue;
+    const w = raw as Record<string, unknown>;
+    if (typeof w.identifier !== "string" || typeof w.stage !== "string") continue;
+    if (typeof w.sessionId !== "string" || typeof w.repoRoot !== "string") continue;
+    out[ticketId] = {
+      identifier: w.identifier,
+      stage: w.stage,
+      workerId: typeof w.workerId === "string" ? w.workerId : "",
+      sessionId: w.sessionId,
+      pid: Number.isInteger(w.pid) ? (w.pid as number) : 0,
+      repoRoot: w.repoRoot,
+      harness: typeof w.harness === "string" ? w.harness : "claude",
+      spawnedAt: typeof w.spawnedAt === "number" ? w.spawnedAt : 0,
+    };
+  }
+  return out;
+}
+
 function parseRuntimeState(value: unknown): DispatcherRuntimeState {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("runtime state must be an object");
@@ -239,6 +283,7 @@ function parseRuntimeState(value: unknown): DispatcherRuntimeState {
     reworkCount: parseNumberRecord(raw.reworkCount, "reworkCount"),
     implementRetries: parseNumberRecord(raw.implementRetries, "implementRetries"),
     reviewInfraRetries: parseNumberRecord(raw.reviewInfraRetries, "reviewInfraRetries"),
+    liveWorkers: parseLedger(raw.liveWorkers),
   };
 }
 
@@ -296,6 +341,14 @@ export class Dispatcher {
   private readonly implementRetries = new Map<string, number>();
   /** Per-ticket count of review crashes or malformed verdicts; separate from real rework cycles. */
   private readonly reviewInfraRetries = new Map<string, number>();
+  /** Crash-recovery ledger for CURRENTLY live workers (persisted; see {@link LedgeredWorker}). */
+  private readonly liveLedger = new Map<string, LedgeredWorker>();
+  /** Ledger entries loaded from a previous daemon's state file, consumed by {@link recoverFromCrash}. */
+  private recoveredWorkers: Record<string, LedgeredWorker> | null = null;
+  /** Per-ticket resume hints produced by recovery: the next same-stage spawn resumes this session. */
+  private readonly resumables = new Map<string, { stage: string; sessionId: string; harness: string }>();
+  /** Orphan-sweep hook (injectable for tests); defaults to the ps-verified group kill in proc.ts. */
+  private readonly sweepOrphan: (pid: number, expectedBin: string) => boolean;
 
   constructor(deps: DispatcherDeps) {
     this.client = deps.client;
@@ -308,7 +361,71 @@ export class Dispatcher {
       ? new AdvanceOutbox(deps.advanceOutboxPath, this.logger.child("advance-outbox"))
       : undefined;
     this.runtimeStatePath = deps.runtimeStatePath;
+    this.sweepOrphan =
+      deps.sweepOrphan ?? ((pid, expectedBin) => sweepLedgeredWorker(pid, expectedBin, this.logger));
     this.loadRuntimeState();
+  }
+
+  /**
+   * Boot-time crash recovery (issue #20). Call ONCE, after construction and BEFORE the poller
+   * starts re-staffing tickets. For every worker the previous daemon left in the ledger:
+   *   1. sweep its process group if still alive (daemon crash → setsid'd orphans keep editing
+   *      the checkout with no watchdog; ps-verified so a recycled pid is never killed),
+   *   2. commit any ghost WIP in its checkout so re-staff base-sha captures aren't polluted,
+   *   3. record a resume hint so the re-staffed same-stage worker resumes the persisted session
+   *      instead of re-paying the whole ticket's exploration cost.
+   * The ledger is then cleared (those workers are no longer live).
+   */
+  async recoverFromCrash(): Promise<void> {
+    const recovered = this.recoveredWorkers;
+    this.recoveredWorkers = null;
+    if (!recovered) return;
+    const entries = Object.entries(recovered);
+    if (entries.length === 0) return;
+
+    let swept = 0;
+    for (const [ticketId, w] of entries) {
+      if (w.pid > 0) {
+        try {
+          if (this.sweepOrphan(w.pid, this.harnessBin(w.harness))) swept++;
+        } catch (err) {
+          this.logger.warn("orphan sweep failed", { pid: w.pid, error: (err as Error).message });
+        }
+      }
+      try {
+        const commit = await commitWorktree(
+          w.repoRoot,
+          `beckett: ${w.identifier} restart WIP (${w.workerId || "unknown worker"})`,
+        );
+        if (commit.committed) {
+          this.logger.info("committed ghost WIP from interrupted worker", {
+            ticket: w.identifier,
+            sha: commit.sha,
+          });
+        }
+      } catch (err) {
+        this.logger.warn("restart WIP commit failed", {
+          ticket: w.identifier,
+          repoRoot: w.repoRoot,
+          error: (err as Error).message,
+        });
+      }
+      if (w.sessionId) {
+        this.resumables.set(ticketId, { stage: w.stage, sessionId: w.sessionId, harness: w.harness });
+      }
+    }
+    this.persistRuntimeState(); // liveLedger is empty now — clears the on-disk ledger
+    this.logger.info("crash recovery complete", {
+      interrupted: entries.length,
+      sweptOrphans: swept,
+      resumable: this.resumables.size,
+    });
+  }
+
+  /** The binary name expected on a ledgered worker's command line (for the ps identity check). */
+  private harnessBin(harness: string): string {
+    const h = this.config.harness as unknown as Record<string, { bin?: string } | undefined>;
+    return h?.[harness]?.bin || harness;
   }
 
   // ── public surface ─────────────────────────────────────────────────────────────────────
@@ -648,7 +765,25 @@ export class Dispatcher {
 
   /** The real spawn path (cap already checked). Registers the finish handler. */
   private async doSpawn(ticket: Ticket, stage: string, repoRoot: string): Promise<void> {
-    const spec = this.castFor(ticket, stage);
+    let spec = this.castFor(ticket, stage);
+
+    // Crash recovery (issue #20): a restart-interrupted same-stage worker left a persisted
+    // session — resume it instead of re-running the whole ticket from a fresh prompt. The hint is
+    // consumed here (one attempt); the session belongs to the ORIGINAL harness, so it wins over a
+    // conflicting cast (the cast effort is kept — shared vocabulary).
+    const hint = this.resumables.get(ticket.id);
+    const resumeSessionId = hint && hint.stage === stage ? hint.sessionId : undefined;
+    if (hint && resumeSessionId) {
+      this.resumables.delete(ticket.id);
+      if (hint.harness !== spec.harness) {
+        spec = { harness: hint.harness as HarnessSpec["harness"], effort: spec.effort };
+      }
+      this.logger.info("resuming interrupted worker session after restart", {
+        ticket: ticket.identifier,
+        stage,
+        harness: spec.harness,
+      });
+    }
 
     // v3.1: ensure the ticket's OWN project repo exists before any stage runs — clone
     // `0xbeckett/<slug>` if it's already on GitHub (a continuing project, or Beckett's source for a
@@ -688,33 +823,45 @@ export class Dispatcher {
     }
     const baseRef = this.baseShaForTicket.get(ticket.id) ?? "HEAD";
 
+    // Mirror this worker's granular event stream into the ticket's Discord thread, keyed by the
+    // stable ticket identifier so implement/review/rework workers all post to the one thread.
+    const onProgress = this.progress
+      ? (ev: WorkerEvent, ctx: { stage: string; workerId: string }) =>
+          this.progress!.event(ticket.identifier, ev, ctx)
+      : undefined;
+    const spawnArgs = {
+      ticket,
+      stage,
+      harness: spec,
+      config: this.config,
+      repoRoot,
+      baseRef,
+      onProgress,
+      logger: this.logger,
+    };
+
     let handle: TicketWorkerHandle;
     try {
-      handle = await spawnWorker({
-        ticket,
-        stage,
-        harness: spec,
-        config: this.config,
-        repoRoot,
-        baseRef,
-        // Mirror this worker's granular event stream into the ticket's Discord thread, keyed by the
-        // stable ticket identifier so implement/review/rework workers all post to the one thread.
-        onProgress: this.progress
-          ? (ev: WorkerEvent, ctx) => this.progress!.event(ticket.identifier, ev, ctx)
-          : undefined,
-        logger: this.logger,
-      });
+      handle = await spawnWorker({ ...spawnArgs, resumeSessionId });
     } catch (err) {
-      this.logger.error("spawn failed", {
-        ticket: ticket.identifier,
-        stage,
-        error: (err as Error).message,
-      });
-      await this.postComment(
-        ticket.id,
-        `Could not start the ${stage} worker: ${(err as Error).message}. Leaving for a human.`,
-      );
-      return; // launchSpawn's finally releases the reservation + pumps
+      // A failed RESUME (stale session file, harness drift) must degrade to a fresh worker —
+      // never strand the ticket on a recovery optimization.
+      if (resumeSessionId) {
+        this.logger.warn("session resume failed — falling back to a fresh worker", {
+          ticket: ticket.identifier,
+          stage,
+          error: (err as Error).message,
+        });
+        try {
+          handle = await spawnWorker(spawnArgs);
+        } catch (err2) {
+          await this.reportSpawnFailure(ticket, stage, err2 as Error);
+          return; // launchSpawn's finally releases the reservation + pumps
+        }
+      } else {
+        await this.reportSpawnFailure(ticket, stage, err as Error);
+        return; // launchSpawn's finally releases the reservation + pumps
+      }
     }
 
     // If the ticket was cancelled/reaped DURING the spawn gap, its reservation was dropped from
@@ -732,6 +879,20 @@ export class Dispatcher {
 
     this.workers.set(ticket.id, handle);
     this.liveTickets.set(ticket.id, ticket);
+    // Crash-recovery ledger (issue #20): persist this worker's identity so a daemon restart can
+    // sweep its orphan and resume its session. Removed on clean finish/cancel/park; kept by the
+    // shutdown drain on purpose (the drained session is the thing the next boot resumes).
+    this.liveLedger.set(ticket.id, {
+      identifier: ticket.identifier,
+      stage,
+      workerId: handle.id,
+      sessionId: handle.sessionId ?? "",
+      pid: handle.pid ?? 0,
+      repoRoot,
+      harness: spec.harness,
+      spawnedAt: Date.now(),
+    });
+    this.persistRuntimeState();
     handle.onDone((status, summary) => {
       void this.onWorkerDone(ticket, stage, handle, status, summary);
     });
@@ -741,6 +902,19 @@ export class Dispatcher {
       workerId: handle.id,
       harness: spec.harness,
     });
+  }
+
+  /** Loud, consistent spawn-failure surfacing: log + ticket comment ("leaving for a human"). */
+  private async reportSpawnFailure(ticket: Ticket, stage: string, err: Error): Promise<void> {
+    this.logger.error("spawn failed", {
+      ticket: ticket.identifier,
+      stage,
+      error: err.message,
+    });
+    await this.postComment(
+      ticket.id,
+      `Could not start the ${stage} worker: ${err.message}. Leaving for a human.`,
+    );
   }
 
   /**
@@ -799,6 +973,9 @@ export class Dispatcher {
     // Free the slot first so a queued spawn can take it.
     if (this.workers.get(ticket.id) === handle) this.workers.delete(ticket.id);
     this.liveTickets.delete(ticket.id);
+    // A cleanly-finished worker leaves the crash-recovery ledger: there is nothing to sweep or
+    // resume for it (the NEXT stage gets a fresh session on purpose).
+    if (this.liveLedger.delete(ticket.id)) this.persistRuntimeState();
 
     // Ride the spend counters into every downstream finish comment — the cheapest possible
     // fleet-spend observability (turns/tools/tokens/$ per stage, straight off the driver).
@@ -1317,6 +1494,8 @@ export class Dispatcher {
     this.implementRetries.delete(ticketId);
     this.reviewInfraRetries.delete(ticketId);
     this.liveTickets.delete(ticketId);
+    this.liveLedger.delete(ticketId);
+    this.resumables.delete(ticketId);
     this.persistRuntimeState();
   }
 
@@ -1404,6 +1583,10 @@ export class Dispatcher {
       this.replaceMap(this.reworkCount, parsed.reworkCount);
       this.replaceMap(this.implementRetries, parsed.implementRetries);
       this.replaceMap(this.reviewInfraRetries, parsed.reviewInfraRetries);
+      // Workers the previous daemon left behind — consumed by recoverFromCrash() at boot.
+      if (parsed.liveWorkers && Object.keys(parsed.liveWorkers).length > 0) {
+        this.recoveredWorkers = parsed.liveWorkers;
+      }
       this.logger.info("loaded dispatcher runtime state", {
         path: this.runtimeStatePath,
         tickets: new Set([
@@ -1429,6 +1612,7 @@ export class Dispatcher {
       reworkCount: Object.fromEntries(this.reworkCount),
       implementRetries: Object.fromEntries(this.implementRetries),
       reviewInfraRetries: Object.fromEntries(this.reviewInfraRetries),
+      liveWorkers: Object.fromEntries(this.liveLedger),
     };
     try {
       mkdirSync(dirname(this.runtimeStatePath), { recursive: true });

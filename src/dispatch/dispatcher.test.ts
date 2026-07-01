@@ -12,7 +12,13 @@ import type { Config } from "../types.ts";
 import type { Ticket, TicketState, PollEvent, HarnessSpec, PlaneComment } from "../plane/types.ts";
 
 // ── controllable fake worker handle + spawn mock ────────────────────────────────────────────
-let spawnCalls: { ticketId: string; stage: string; harness: HarnessSpec; baseRef: string }[] = [];
+let spawnCalls: {
+  ticketId: string;
+  stage: string;
+  harness: HarnessSpec;
+  baseRef: string;
+  resumeSessionId?: string;
+}[] = [];
 let created: any[] = [];
 let counter = 0;
 /**
@@ -34,6 +40,8 @@ function makeHandle(ticket: Ticket, stage: string) {
     stage,
     workspace: `/tmp/fake-wt/${counter}`,
     branch: `beckett/wk_${counter}/${ticket.identifier}`,
+    sessionId: `sess-${counter}`,
+    pid: 1000 + counter,
     get state() {
       return state;
     },
@@ -71,8 +79,19 @@ function makeHandle(ticket: Ticket, stage: string) {
   return h;
 }
 
+let failNextResumeSpawn = false;
 const fakeSpawn = async (args: any) => {
-  spawnCalls.push({ ticketId: args.ticket.id, stage: args.stage, harness: args.harness, baseRef: args.baseRef });
+  spawnCalls.push({
+    ticketId: args.ticket.id,
+    stage: args.stage,
+    harness: args.harness,
+    baseRef: args.baseRef,
+    resumeSessionId: args.resumeSessionId,
+  });
+  if (args.resumeSessionId && failNextResumeSpawn) {
+    failNextResumeSpawn = false;
+    throw new Error("stale session — cannot resume");
+  }
   if (spawnGate) await spawnGate; // simulate slow worktree alloc + harness launch
   const h = makeHandle(args.ticket, args.stage);
   created.push(h);
@@ -203,6 +222,7 @@ beforeEach(() => {
   commitResult = { committed: true, sha: "commit000" };
   commitCalls = [];
   diffSince = true;
+  failNextResumeSpawn = false;
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────────────────
@@ -714,6 +734,141 @@ describe("rework cap", () => {
       await tick();
 
       expect(spawnCalls.at(-1)).toMatchObject({ stage: "review", baseRef: "base000" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── issue #20: crash-recovery worker ledger + session resume ─────────────────────────────
+describe("crash recovery", () => {
+  function readState(path: string) {
+    return JSON.parse(readFileSync(path, "utf8"));
+  }
+
+  test("spawn writes the worker ledger; clean finish removes the entry", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-ledger-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const { d } = newDispatcher(2, { runtimeStatePath });
+      const ticket = makeTicket();
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+
+      const live = readState(runtimeStatePath).liveWorkers;
+      expect(live[ticket.id]).toMatchObject({
+        stage: "implement",
+        sessionId: "sess-1",
+        pid: 1001,
+        harness: "claude",
+      });
+
+      created[0].finish("success", "done");
+      await tick();
+      expect(readState(runtimeStatePath).liveWorkers).toEqual({});
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("boot sweeps the orphan, commits ghost WIP, and resumes the interrupted session", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-recover-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const ticket = makeTicket();
+      const { d: before } = newDispatcher(2, { runtimeStatePath });
+      await before.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      // No finish — simulate the daemon dying with the worker live (ledger entry persists).
+
+      const swept: { pid: number; bin: string }[] = [];
+      const { client } = { client: new FakeClient() };
+      const after = new Dispatcher({
+        client,
+        config: cfg(2),
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+        runtimeStatePath,
+        sweepOrphan: (pid, bin) => {
+          swept.push({ pid, bin });
+          return true;
+        },
+      });
+      await after.recoverFromCrash();
+
+      expect(swept).toEqual([{ pid: 1001, bin: "claude" }]);
+      // Ghost WIP committed in the recorded repo root with the restart marker.
+      expect(commitCalls.some((c) => c.message.includes("restart WIP"))).toBe(true);
+      // The on-disk ledger is cleared once recovery consumed it.
+      expect(readState(runtimeStatePath).liveWorkers).toEqual({});
+
+      // Re-staff the same stage → the spawn resumes the persisted session.
+      await after.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      expect(spawnCalls.at(-1)).toMatchObject({ stage: "implement", resumeSessionId: "sess-1" });
+
+      // The hint is consumed: a later same-stage spawn is fresh.
+      created.at(-1)!.finish("error", "crashed again");
+      await tick();
+      const retry = spawnCalls.at(-1)!;
+      expect(retry.resumeSessionId).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a failed resume falls back to a fresh worker instead of stranding the ticket", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-resumefail-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const ticket = makeTicket();
+      const { d: before } = newDispatcher(2, { runtimeStatePath });
+      await before.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+
+      const after = new Dispatcher({
+        client: new FakeClient(),
+        config: cfg(2),
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+        runtimeStatePath,
+        sweepOrphan: () => false,
+      });
+      await after.recoverFromCrash();
+
+      failNextResumeSpawn = true;
+      await after.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+
+      const [resumeAttempt, freshFallback] = spawnCalls.slice(-2);
+      expect(resumeAttempt!.resumeSessionId).toBe("sess-1");
+      expect(freshFallback!.resumeSessionId).toBeUndefined();
+      expect(freshFallback!.stage).toBe("implement");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a recovered implement session is NOT resumed for a review stage", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-stagemismatch-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const ticket = makeTicket();
+      const { d: before } = newDispatcher(2, { runtimeStatePath });
+      await before.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+
+      const after = new Dispatcher({
+        client: new FakeClient(),
+        config: cfg(2),
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+        runtimeStatePath,
+        sweepOrphan: () => false,
+      });
+      await after.recoverFromCrash();
+      await after.handle(stateChanged({ ...ticket, state: "in_review" }, "in_review"));
+      await tick();
+
+      expect(spawnCalls.at(-1)).toMatchObject({ stage: "review" });
+      expect(spawnCalls.at(-1)!.resumeSessionId).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

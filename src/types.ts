@@ -1550,6 +1550,13 @@ export interface SpawnSpec {
   envelope: ResourceEnvelope;
   model: string;
   sessionId?: string; // optional caller-minted UUID (claude --session-id); else captured
+  /**
+   * Crash recovery (issue #20): when set, the driver LAUNCHES IN RESUME MODE against this
+   * persisted session/thread id instead of starting fresh — `prompt` becomes the next user turn
+   * of the restored transcript (claude `--resume`, pi `--session`, `codex exec resume`).
+   * Takes precedence over {@link sessionId}.
+   */
+  resumeSessionId?: string;
   mcpConfigPath?: string;
   doneSchemaPath: string; // JSON-schema file for the structured done-signal
   // v3.1: external settings file (claude --settings) carrying the scope-guard hook. Used when the

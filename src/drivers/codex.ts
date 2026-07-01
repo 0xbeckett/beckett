@@ -192,6 +192,17 @@ export class CodexDriver implements HarnessDriver {
   async spawn(spec: SpawnSpec): Promise<SpawnResult> {
     if (this.child) throw new Error("CodexDriver: already spawned (one driver = one process)");
     this.spec = spec;
+
+    // Crash recovery (issue #20): a caller-persisted THREAD id (captured from a previous run's
+    // thread.started) relaunches `codex exec resume <id>`, restoring the prior transcript instead
+    // of re-paying the whole ticket's exploration cost.
+    const resume = spec.resumeSessionId?.trim();
+    if (resume) {
+      this.sessionId = resume;
+      const args = this.buildResumeArgs(this.composePrompt(spec));
+      return this.launch(args, /*isResume*/ true);
+    }
+
     // codex exec does not accept a caller-minted id; it is captured from thread.started.
     this.sessionId = spec.sessionId ?? null;
 

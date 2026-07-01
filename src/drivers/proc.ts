@@ -54,6 +54,45 @@ export function wrapProcessGroup(bin: string, args: string[]): { cmd: string[]; 
 }
 
 /**
+ * Boot-time sweep of a worker process recorded in the crash-recovery ledger (issue #20): when the
+ * DAEMON died (kill -9, OOM, crash), its setsid'd workers survive as orphans with no watchdog and
+ * keep editing the checkout — this reaps them before any re-staff. UNLIKE {@link killGroup}, the
+ * daemon that spawned this pid is gone, so the pid may have been RECYCLED by an unrelated process:
+ * we first verify via `ps` that the command line still looks like the recorded harness, and skip
+ * (loudly) when it doesn't. Returns true when a live orphan was found and killed.
+ */
+export function sweepLedgeredWorker(pid: number, expectedBin: string, log?: Logger): boolean {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  let command: string;
+  try {
+    const ps = Bun.spawnSync({ cmd: ["ps", "-o", "command=", "-p", String(pid)], stdout: "pipe", stderr: "pipe" });
+    command = ps.stdout.toString().trim();
+  } catch {
+    return false; // no ps available — never blind-kill a possibly-recycled pid
+  }
+  if (!command) return false; // already gone
+  if (!command.includes(expectedBin)) {
+    log?.warn("ledgered pid is alive but is NOT the recorded harness (pid recycled?) — not killing", {
+      pid,
+      expectedBin,
+      command: command.slice(0, 120),
+    });
+    return false;
+  }
+  try {
+    process.kill(-pid, "SIGKILL"); // the whole group (harness + descendants)
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL"); // not a group leader (setsid unavailable at spawn)
+    } catch {
+      return false; // gone between the ps check and the kill
+    }
+  }
+  log?.warn("swept orphaned worker process group from a previous daemon", { pid, command: command.slice(0, 120) });
+  return true;
+}
+
+/**
  * Best-effort SIGKILL sweep of a harness's process group AFTER its leader has already exited (the
  * crash / clean-exit path, where we no longer hold a live child handle). Reaps any descendant the
  * harness left behind so a subsequent retry worker can't collide with a still-running orphan
