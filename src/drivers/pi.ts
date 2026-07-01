@@ -33,8 +33,10 @@
  *   same id resumes). Captured/confirmed from the `session` line as the source of truth.
  * - Done-signal: pi has no `--output-schema`, so the structured done-signal is parsed leniently
  *   from the final assistant message (raw JSON, a ```json fence, or a trailing object).
- * - abort() = SIGTERM→SIGKILL, retain the session id. A driver-owned wall-clock watchdog caps
- *   any run at `envelope.wallClockS`.
+ * - abort() = SIGTERM→SIGKILL of the whole process group, retain the session id. A driver-owned
+ *   wall-clock watchdog enforces a GENEROUS, configurable backstop cap
+ *   (`config.supervise.worker_hard_cap_s`) — a runaway safety net, not a work limit — and on a trip
+ *   group-kills the tree then emits a terminal `finished` for graceful dispatcher handling (OPS-50).
  *
  * Auth (Spec 00 §4): subscription/OAuth only — the child env strips `OPENAI_API_KEY` /
  * `ANTHROPIC_API_KEY` so pi uses the `~/.pi/agent/auth.json` login (the ChatGPT/Codex OAuth via
@@ -58,7 +60,7 @@ import type {
   WorkerState,
 } from "../types.ts";
 import { makeLogger } from "../log.ts";
-import { hardCapSeconds, killProcessTree, wrapProcessGroup } from "./proc.ts";
+import { hardCapSeconds, killGroup, killProcessTree, wrapProcessGroup } from "./proc.ts";
 
 /** The bun subprocess handle type (avoids a hard import of the `bun` module symbol). */
 type Child = ReturnType<typeof Bun.spawn>;
@@ -369,6 +371,8 @@ export class PiDriver implements HarnessDriver {
       this.finished = true;
       this.setState("failed");
     }
+    // Sweep any descendant the harness left running so a retry worker can't collide with an orphan.
+    killGroup(this.pid ?? -1, this.groupKill, this.log);
   }
 
   private tickWatchdog(): void {

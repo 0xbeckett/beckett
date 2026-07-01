@@ -30,8 +30,10 @@
  * - abort() = SIGTERM→SIGKILL the process, retain the session id (Spec 02 §4.5). resume()
  *   relaunches the same invocation with `--resume <session_id>` from the same cwd, replaying
  *   any nudge buffered across the kill as the first user turn.
- * - A driver-owned wall-clock watchdog guarantees no run exceeds `envelope.wallClockS`
- *   (Spec 02 §9.3).
+ * - A driver-owned wall-clock watchdog enforces a GENEROUS, configurable backstop cap
+ *   (`config.supervise.worker_hard_cap_s`, drivers/proc.ts#hardCapSeconds) — a runaway safety net,
+ *   not a work limit. On a trip it kills the whole process group (no orphans) then emits a terminal
+ *   `finished` (subtype `error_wall_clock_cap`) so the dispatcher handles it gracefully (OPS-50).
  *
  * Economics (Spec 00 §4): tokens / `total_cost_usd` are telemetry only — never a budget gate.
  * Auth (Spec 00 §4): subscription only — the child env has any `ANTHROPIC_API_KEY` /
@@ -50,7 +52,7 @@ import type {
   WorkerState,
 } from "../types.ts";
 import { makeLogger } from "../log.ts";
-import { hardCapSeconds, killProcessTree, wrapProcessGroup } from "./proc.ts";
+import { hardCapSeconds, killGroup, killProcessTree, wrapProcessGroup } from "./proc.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -517,6 +519,8 @@ export class ClaudeDriver implements HarnessDriver {
       this.setState("failed");
     }
     this.failPendingNudges();
+    // Sweep any descendant the harness left running so a retry worker can't collide with an orphan.
+    killGroup(this.pid ?? -1, this.groupKill, this.log);
   }
 
   private tickWatchdog(): void {

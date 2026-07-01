@@ -53,10 +53,28 @@ export function wrapProcessGroup(bin: string, args: string[]): { cmd: string[]; 
   return { cmd: [bin, ...args], groupKill: false };
 }
 
+/**
+ * Best-effort SIGKILL sweep of a harness's process group AFTER its leader has already exited (the
+ * crash / clean-exit path, where we no longer hold a live child handle). Reaps any descendant the
+ * harness left behind so a subsequent retry worker can't collide with a still-running orphan
+ * (the OPS-45 "orphan stomps index.html" bug). Safe against PID reuse: the kernel keeps the leader's
+ * PID reserved as a PGID while the group is non-empty, so `-pid` only ever targets our own group.
+ * A no-op unless the harness was launched as a group leader (see {@link wrapProcessGroup}).
+ */
+export function killGroup(pid: number, groupKill: boolean, log?: Logger): void {
+  if (!groupKill || !Number.isInteger(pid) || pid <= 1) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+    log?.info("swept lingering process group after harness exit", { pid });
+  } catch {
+    // group already empty / gone — nothing to sweep
+  }
+}
+
 /** The minimal subprocess surface {@link killProcessTree} needs (Bun.Subprocess satisfies it). */
 interface Killable {
   pid: number;
-  kill: (sig?: number | string) => void;
+  kill: (sig?: number | NodeJS.Signals) => void;
   exited: Promise<number>;
 }
 
@@ -72,9 +90,9 @@ export async function killProcessTree(
   opts: { groupKill: boolean; graceMs: number; log?: Logger },
 ): Promise<void> {
   const pid = child.pid;
-  const signal = (sig: string): void => {
+  const signal = (sig: NodeJS.Signals): void => {
     try {
-      if (opts.groupKill) process.kill(-pid, sig as NodeJS.Signals);
+      if (opts.groupKill) process.kill(-pid, sig);
       else child.kill(sig);
     } catch {
       // already gone (ESRCH) or not permitted — best-effort by contract

@@ -30,7 +30,10 @@
  *   id on exec — it is captured, not supplied). Surfaced as {@link SpawnResult} and a
  *   `session_started` event so the manager can persist it for `--resume`.
  * - abort() = SIGTERM→SIGKILL the process, retain the thread id (Spec 02 §4.5).
- * - A driver-owned wall-clock watchdog guarantees no run exceeds `envelope.wallClockS`
+ * - A driver-owned wall-clock watchdog enforces a GENEROUS, configurable backstop cap
+ *   (`config.supervise.worker_hard_cap_s`) — a runaway safety net, not a work limit. On a trip it
+ *   group-kills the process tree (no orphans) then emits a terminal `finished` for graceful
+ *   dispatcher handling (OPS-50). Formerly capped each run at `envelope.wallClockS`
  *   (Spec 02 §9.3).
  *
  * Economics (Spec 00 §4): codex's JSONL carries token counts but NO dollar cost field, so
@@ -51,7 +54,7 @@ import type {
   WorkerState,
 } from "../types.ts";
 import { makeLogger } from "../log.ts";
-import { hardCapSeconds, killProcessTree, wrapProcessGroup } from "./proc.ts";
+import { hardCapSeconds, killGroup, killProcessTree, wrapProcessGroup } from "./proc.ts";
 
 /** The bun subprocess handle type (avoids a hard import of the `bun` module symbol). */
 type Child = ReturnType<typeof Bun.spawn>;
@@ -467,6 +470,8 @@ export class CodexDriver implements HarnessDriver {
       this.finished = true;
       this.setState("failed");
     }
+    // Sweep any descendant the harness left running so a retry worker can't collide with an orphan.
+    killGroup(this.pid ?? -1, this.groupKill, this.log);
   }
 
   private tickWatchdog(): void {

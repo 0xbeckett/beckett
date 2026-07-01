@@ -47,6 +47,7 @@ import type { ProgressSink } from "../discord/progress.ts";
 import { log } from "../log.ts";
 import { commitWorktree, headSha, ensureProjectRepo } from "../worker/worktree.ts";
 import { projectSlug } from "../plane/cast.ts";
+import { hardCapSeconds } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
 
 // =======================================================================================
@@ -104,6 +105,13 @@ export const BECKETT_COMMENT_MARKER = "<!-- beckett:dispatcher -->";
 /** Max implement↔review round-trips before the dispatcher stops auto-reworking and waits for a human. */
 const MAX_REWORK_CYCLES = 3;
 
+/**
+ * Max times an implement worker that ended WITHOUT a clean finish (hit the backstop wall-clock cap,
+ * crashed, or errored) is auto-respawned to continue from its committed WIP before the dispatcher
+ * stops retrying and returns the ticket to a ready state (OPS-50).
+ */
+const MAX_IMPLEMENT_RETRIES = 3;
+
 /** A spawn deferred because the concurrency cap was reached. */
 interface PendingSpawn {
   ticket: Ticket;
@@ -158,6 +166,8 @@ export class Dispatcher {
   private readonly ownCommentIds = new Set<string>();
   /** Per-ticket implement↔review round-trips, to bound auto-rework. */
   private readonly reworkCount = new Map<string, number>();
+  /** Per-ticket count of implement workers that ended without a clean finish, to bound auto-retry. */
+  private readonly implementRetries = new Map<string, number>();
 
   constructor(deps: DispatcherDeps) {
     this.client = deps.client;
@@ -260,6 +270,7 @@ export class Dispatcher {
   private async onCancelled(ticket: Ticket): Promise<void> {
     const handle = this.workers.get(ticket.id);
     this.baseShaForTicket.delete(ticket.id);
+    this.implementRetries.delete(ticket.id);
     this.staffing.delete(ticket.id); // drop any mid-spawn reservation so doSpawn discards it
     if (!handle) {
       this.logger.info("ticket cancelled (no live worker)", { ticket: ticket.identifier });
@@ -474,11 +485,7 @@ export class Dispatcher {
     summary: string,
   ): Promise<void> {
     if (status !== "success") {
-      this.logger.warn("implement failed — leaving for human", { ticket: ticket.identifier });
-      await this.postComment(
-        ticket.id,
-        `Implementation did not complete — leaving this ticket in **in_progress** for a human.\n\n${summary}`,
-      );
+      await this.onImplementIncomplete(ticket, handle, summary);
       return;
     }
 
@@ -512,6 +519,107 @@ export class Dispatcher {
     await this.client.setState(ticket.id, "in_review");
     await this.postComment(ticket.id, `Implementation complete → **in_review**.\n\n${summary}`);
     this.logger.info("ticket advanced to in_review", { ticket: ticket.identifier });
+  }
+
+  /**
+   * An implement worker ended WITHOUT a clean finish — it tripped the generous backstop wall-clock
+   * cap, crashed, or the harness errored. The fix for the OPS-50 "silent wedge": never leave the
+   * ticket sitting in in_progress with nothing running. We (1) commit whatever WIP is in the
+   * checkout so it's never lost, then (2) either retry — re-spawn an implement worker that continues
+   * from that committed WIP (bounded by {@link MAX_IMPLEMENT_RETRIES}) — or, once retries are spent,
+   * push the WIP to GitHub if we can and return the ticket to a ready state (`todo`) with a loud
+   * comment so a human can pick it up. Both paths post a status comment saying what happened and
+   * where the worker stopped.
+   */
+  private async onImplementIncomplete(
+    ticket: Ticket,
+    handle: TicketWorkerHandle,
+    summary: string,
+  ): Promise<void> {
+    const timedOut = handle.result?.timedOut === true;
+    const reason = timedOut
+      ? `hit the ${Math.round(hardCapSeconds(this.config) / 60)}-minute safety cap`
+      : `stopped without finishing (crash or harness error)`;
+
+    // 1. Safety-net commit so the WIP survives for the retry AND the human (the worker may have
+    //    already committed; this captures anything still in the working tree).
+    const sha = await this.commitWip(ticket, handle);
+    const at = sha ? ` at \`${sha.slice(0, 9)}\`` : "";
+
+    // 2. Bound the auto-retry so a persistently-failing ticket can't churn forever.
+    const attempts = (this.implementRetries.get(ticket.id) ?? 0) + 1;
+    this.implementRetries.set(ticket.id, attempts);
+
+    if (attempts <= MAX_IMPLEMENT_RETRIES) {
+      await this.postComment(
+        ticket.id,
+        `The worker ${reason} before finishing. I committed its work-in-progress${at} and am ` +
+          `retrying (attempt ${attempts}/${MAX_IMPLEMENT_RETRIES}), continuing from the committed ` +
+          `work.\n\nWhere it stopped:\n${summary}`,
+      );
+      this.logger.warn("implement incomplete — retrying", {
+        ticket: ticket.identifier,
+        attempts,
+        timedOut,
+      });
+      // The old worker's whole process tree is already dead (the driver group-killed it before
+      // signalling done), so a fresh worker can safely edit the same checkout. The ticket stays in
+      // in_progress but is once again ACTIVELY staffed — not silently wedged.
+      this.spawnGuarded(ticket, "implement");
+      return;
+    }
+
+    // 3. Retries exhausted. Never leave it stuck in in_progress: push the WIP so a human has it, then
+    //    return the ticket to a ready state (`todo`) with a loud comment.
+    this.implementRetries.delete(ticket.id);
+    const pub = await this.publishProject(ticket);
+    const link =
+      pub.status === "published"
+        ? pub.kind === "pr"
+          ? `\n\nWIP pushed as a PR: ${pub.prUrl ?? pub.url}`
+          : `\n\nWIP pushed: ${pub.url}`
+        : "";
+    await this.postComment(
+      ticket.id,
+      `The worker ${reason} again — that's ${MAX_IMPLEMENT_RETRIES} retries with no clean finish, ` +
+        `so I'm stopping automatic retries and moving this back to **todo** so it isn't stuck in ` +
+        `progress. Its WIP is committed${at}.${link}\n\nWhere it stopped:\n${summary}`,
+    );
+    try {
+      await this.client.setState(ticket.id, "todo");
+      this.logger.warn("implement retries exhausted — returned ticket to todo", {
+        ticket: ticket.identifier,
+      });
+    } catch (err) {
+      this.logger.warn("could not return ticket to todo after exhausted retries", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /**
+   * Commit whatever is in a ticket's checkout as a WIP snapshot, best-effort. Returns the new commit
+   * sha, or null when there was nothing to commit (or the commit failed) — never throws.
+   */
+  private async commitWip(ticket: Ticket, handle: TicketWorkerHandle): Promise<string | null> {
+    try {
+      const commit = await commitWorktree(
+        handle.workspace,
+        `beckett: ${ticket.identifier} WIP (${handle.workerId})`,
+      );
+      if (commit.committed) {
+        this.logger.info("committed WIP", { ticket: ticket.identifier, sha: commit.sha });
+        return commit.sha ?? null;
+      }
+      return null;
+    } catch (err) {
+      this.logger.warn("WIP commit failed", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
+      return null;
+    }
   }
 
   /**
@@ -647,6 +755,7 @@ export class Dispatcher {
     await this.postComment(ticket.id, `${messagePrefix}${link}\n\n${summary}`);
     this.baseShaForTicket.delete(ticket.id);
     this.reworkCount.delete(ticket.id);
+    this.implementRetries.delete(ticket.id);
   }
 
   // ── dependency promotion (the `beckett plan` DAG) ────────────────────────────────────────
@@ -707,6 +816,7 @@ export class Dispatcher {
   private async reapTicket(ticketId: string, reason: string): Promise<void> {
     const handle = this.workers.get(ticketId);
     this.baseShaForTicket.delete(ticketId);
+    this.implementRetries.delete(ticketId);
     this.staffing.delete(ticketId); // drop any mid-spawn reservation so doSpawn discards it
     if (!handle) return;
     this.workers.delete(ticketId);

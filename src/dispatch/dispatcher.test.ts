@@ -57,9 +57,10 @@ function makeHandle(ticket: Ticket, stage: string) {
     async reap() {
       h.reaped = true;
     },
-    // test trigger: complete the worker with a status + optional structured done-signal
-    finish(status: "success" | "error", summary: string, structured: unknown = null) {
-      result = { status, summary, structured };
+    // test trigger: complete the worker with a status + optional structured done-signal.
+    // `timedOut` simulates the driver's backstop wall-clock finish (subtype error_wall_clock_cap).
+    finish(status: "success" | "error", summary: string, structured: unknown = null, timedOut = false) {
+      result = { status, summary, structured, timedOut };
       state = status === "success" ? "review" : "failed";
       for (const cb of doneCbs) cb(status, summary);
     },
@@ -202,13 +203,48 @@ describe("advance on finish", () => {
     expect(client.comments[0]!.body.startsWith(BECKETT_COMMENT_MARKER)).toBe(true);
   });
 
-  test("implement error → no state change, left for a human", async () => {
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) await tick();
+  };
+
+  test("implement incomplete (error) → commits WIP, comments, retries in place (no state change)", async () => {
     const { d, client } = newDispatcher();
     await d.handle(stateChanged(makeTicket(), "in_progress"));
     await tick();
     created[0].finish("error", "blew up");
-    await tick();
+    await settle();
+    // Retried in place: a SECOND implement worker was spawned, and the ticket was NOT moved out of
+    // in_progress (it's actively staffed again, never silently wedged).
+    expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(2);
     expect(client.setStateCalls).toHaveLength(0);
+    expect(client.comments.at(-1)!.body).toContain("retrying (attempt 1/3)");
+  });
+
+  test("implement timeout (backstop cap) → status comment names the cap and retries", async () => {
+    const { d, client } = newDispatcher();
+    await d.handle(stateChanged(makeTicket(), "in_progress"));
+    await tick();
+    created[0].finish("error", "ran long", null, /*timedOut*/ true);
+    await settle();
+    expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(2);
+    const body = client.comments.at(-1)!.body;
+    expect(body).toContain("safety cap");
+    expect(body).toContain("Where it stopped:");
+    expect(client.setStateCalls).toHaveLength(0);
+  });
+
+  test("implement incomplete past the retry cap → returns ticket to todo (never stuck in_progress)", async () => {
+    const { d, client } = newDispatcher();
+    await d.handle(stateChanged(makeTicket(), "in_progress"));
+    // 4 incomplete finishes: 3 retries, then the 4th exhausts the cap and returns to todo.
+    for (let i = 0; i < 4; i++) {
+      await settle();
+      const live = created.at(-1)!;
+      live.finish("error", `stall ${i}`, null, true);
+    }
+    await settle();
+    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "todo" }]);
+    expect(client.comments.at(-1)!.body).toContain("moving this back to **todo**");
   });
 
   test("v3.1: self-review tier (low effort) → done in one pass, no in_review relay", async () => {
