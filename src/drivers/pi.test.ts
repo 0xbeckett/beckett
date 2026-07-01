@@ -1,13 +1,16 @@
 /**
  * Coverage for the PiDriver's event normalizer (`src/drivers/pi.ts`). The parser is the risky
  * part — it maps pi's `--mode json` NDJSON into Beckett's {@link WorkerEvent} stream — so it's
- * pinned here against event lines copied VERBATIM from a real `pi 0.78.0` run (session →
+ * Also guards the OPS-56 regression: the session argv (never `--session-id`, which the installed
+ * pi rejects → exit 1) and the preflight that catches that CLI/version drift.
+ *
+ * pinned here against event lines copied VERBATIM from a real `pi 0.72.1` run (session →
  * tool_execution → assistant message → agent_end), rather than trusting a live spawn. `handleLine`
  * is driven directly; spawn/process lifecycle is out of scope for a unit test.
  */
 
 import { expect, test } from "bun:test";
-import { PiDriver } from "./pi.ts";
+import { PiDriver, piPreflight } from "./pi.ts";
 import type { Config, WorkerEvent } from "../types.ts";
 
 /** Minimal config exposing just what the parser reads. */
@@ -127,4 +130,46 @@ test("a malformed line becomes kind:unknown, never throws", () => {
 test("kind is the pi-cli-stream driver tag", () => {
   const { driver } = harness();
   expect(driver.kind).toBe("pi-cli-stream");
+});
+
+// ── OPS-56: session argv — never `--session-id` (which the installed pi rejects → exit 1). ──
+// buildArgs is private; drive it via bracket access with a stubbed session id + spec.
+function argsFor(isResume: boolean, sessionId: string | null): string[] {
+  const driver = new PiDriver(config, quietLog) as unknown as {
+    sessionId: string | null;
+    spec: unknown;
+    buildArgs(prompt: string, isResume: boolean): string[];
+  };
+  driver.sessionId = sessionId;
+  driver.spec = { envelope: { effort: "high" } };
+  return driver.buildArgs("do the thing", isResume);
+}
+
+test("first launch passes NO session flag (pi mints its own id); never --session-id", () => {
+  const args = argsFor(/*isResume*/ false, "cafe1234-0000-0000-0000-000000000000");
+  expect(args).not.toContain("--session-id"); // the flag that killed every dispatch
+  expect(args).not.toContain("--session"); // fresh run: let pi mint + persist
+  expect(args).toContain("--mode");
+  expect(args).toContain("json");
+  expect(args[args.length - 1]).toBe("do the thing"); // prompt is the trailing positional
+});
+
+test("resume pins the captured id with --session <id> (not --session-id)", () => {
+  const id = "cafe1234-0000-0000-0000-000000000000";
+  const args = argsFor(/*isResume*/ true, id);
+  expect(args).not.toContain("--session-id");
+  const i = args.indexOf("--session");
+  expect(i).toBeGreaterThanOrEqual(0);
+  expect(args[i + 1]).toBe(id);
+});
+
+// ── OPS-56: preflight catches a broken/absent pi harness loudly. ──
+test("preflight FAILS loudly for a missing binary (no silent code-1)", async () => {
+  const badConfig = {
+    harness: { pi: { ...(config.harness as { pi: object }).pi, bin: "definitely-not-a-real-pi-binary-xyz" } },
+  } as unknown as Config;
+  const pf = await piPreflight(badConfig);
+  expect(pf.ok).toBe(false);
+  expect(pf.problems.length).toBeGreaterThan(0);
+  expect(pf.problems.join(" ")).toContain("definitely-not-a-real-pi-binary-xyz");
 });
