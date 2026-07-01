@@ -116,7 +116,25 @@ const MAX_IMPLEMENT_RETRIES = 3;
 interface PendingSpawn {
   ticket: Ticket;
   stage: string;
+  repoRoot: string;
+  waitingFor?: string;
 }
+
+interface RepoOwner {
+  ticketId: string;
+  identifier: string;
+}
+
+type DispatcherLiveEntry =
+  | { state: "live"; ticketId: string; workerId: string; repoRoot: string | null }
+  | {
+      state: "queued";
+      ticketId: string;
+      workerId: null;
+      stage: string;
+      repoRoot: string;
+      waitingFor?: string;
+    };
 
 /** Outcome of {@link Dispatcher.publishProject} — gates whether a ticket may be marked done. */
 type PublishOutcome =
@@ -162,6 +180,10 @@ export class Dispatcher {
    * `atCap()` undercounted → the concurrency cap was silently bypassed (runaway fan-out).
    */
   private readonly staffing = new Set<string>();
+  /** Project repos currently reserved by a live, spawning, or finishing ticket. */
+  private readonly repoOwners = new Map<string, RepoOwner>();
+  /** Reverse lookup so release paths can free the project repo for this ticket. */
+  private readonly repoByTicket = new Map<string, string>();
   /** Ids of comments the dispatcher itself posted — never read back as steering (Fix: self-nudge). */
   private readonly ownCommentIds = new Set<string>();
   /** Per-ticket implement↔review round-trips, to bound auto-rework. */
@@ -192,9 +214,23 @@ export class Dispatcher {
     }
   }
 
-  /** The live workers, one entry per ticket with an active worker. */
-  live(): { ticketId: string; workerId: string }[] {
-    return [...this.workers.entries()].map(([ticketId, h]) => ({ ticketId, workerId: h.id }));
+  /** Current active and queued dispatcher work, including repo queue context for status surfaces. */
+  live(): DispatcherLiveEntry[] {
+    const live = [...this.workers.entries()].map(([ticketId, h]) => ({
+      state: "live" as const,
+      ticketId,
+      workerId: h.id,
+      repoRoot: this.repoByTicket.get(ticketId) ?? null,
+    }));
+    const queued = this.pending.map((p) => ({
+      state: "queued" as const,
+      ticketId: p.ticket.id,
+      workerId: null,
+      stage: p.stage,
+      repoRoot: p.repoRoot,
+      waitingFor: p.waitingFor,
+    }));
+    return [...live, ...queued];
   }
 
   // ── event routing ────────────────────────────────────────────────────────────────────
@@ -272,8 +308,11 @@ export class Dispatcher {
     this.baseShaForTicket.delete(ticket.id);
     this.implementRetries.delete(ticket.id);
     this.staffing.delete(ticket.id); // drop any mid-spawn reservation so doSpawn discards it
+    this.dropPending(ticket.id);
+    this.releaseRepo(ticket.id);
     if (!handle) {
       this.logger.info("ticket cancelled (no live worker)", { ticket: ticket.identifier });
+      this.pump();
       return;
     }
     this.logger.warn("ticket cancelled — aborting worker", {
@@ -301,18 +340,38 @@ export class Dispatcher {
   /** Spawn immediately if a slot is free, else enqueue for {@link pump}. */
   private spawnGuarded(ticket: Ticket, stage: string): void {
     if (this.isStaffed(ticket.id)) return; // already staffed (live or mid-spawn)
+    const repoRoot = this.resolveRepoRoot(ticket);
     if (this.atCap()) {
-      this.pending.push({ ticket, stage });
+      this.pending.push({ ticket, stage, repoRoot });
       this.logger.info("spawn queued (concurrency cap reached)", {
         ticket: ticket.identifier,
         stage,
+        repoRoot,
         inUse: this.workers.size + this.staffing.size,
         cap: this.config.concurrency.max_workers,
         queueDepth: this.pending.length,
       });
       return;
     }
-    this.launchSpawn(ticket, stage);
+    const owner = this.repoOwners.get(repoRoot);
+    if (owner) {
+      this.pending.push({ ticket, stage, repoRoot, waitingFor: owner.identifier });
+      this.logger.info("spawn queued (project repo busy)", {
+        ticket: ticket.identifier,
+        stage,
+        repoRoot,
+        waitingFor: owner.identifier,
+        queueDepth: this.pending.length,
+      });
+      if (owner.ticketId !== ticket.id) {
+        void this.postComment(
+          ticket.id,
+          `Waiting for ${owner.identifier} to free \`${repoRoot}\` before starting this ${stage} worker.`,
+        );
+      }
+      return;
+    }
+    this.launchSpawn(ticket, stage, repoRoot);
   }
 
   /**
@@ -321,14 +380,18 @@ export class Dispatcher {
    * reservation is released — into {@link workers} on success, or dropped on failure — by
    * {@link doSpawn}; the queue is pumped once the spawn settles.
    */
-  private launchSpawn(ticket: Ticket, stage: string): void {
+  private launchSpawn(ticket: Ticket, stage: string, repoRoot: string): void {
     this.staffing.add(ticket.id);
-    void this.doSpawn(ticket, stage)
+    this.repoOwners.set(repoRoot, { ticketId: ticket.id, identifier: ticket.identifier });
+    this.repoByTicket.set(ticket.id, repoRoot);
+    this.refreshRepoWaiters(repoRoot, ticket.identifier);
+    void this.doSpawn(ticket, stage, repoRoot)
       .catch(() => {
         /* doSpawn handles its own errors + ticket comment */
       })
       .finally(() => {
         this.staffing.delete(ticket.id); // no-op if doSpawn already moved it into `workers`
+        if (!this.workers.has(ticket.id)) this.releaseRepo(ticket.id);
         this.pump();
       });
   }
@@ -336,16 +399,31 @@ export class Dispatcher {
   /** Admit queued spawns while slots are free. */
   private pump(): void {
     while (this.pending.length > 0 && !this.atCap()) {
-      const next = this.pending.shift()!;
-      if (this.isStaffed(next.ticket.id)) continue; // staffed since it was queued
-      this.launchSpawn(next.ticket, next.stage);
+      let launchAt = -1;
+      for (let i = 0; i < this.pending.length; i++) {
+        const candidate = this.pending[i]!;
+        if (this.isStaffed(candidate.ticket.id)) {
+          this.pending.splice(i, 1);
+          i--;
+          continue;
+        }
+        const owner = this.repoOwners.get(candidate.repoRoot);
+        if (owner) {
+          candidate.waitingFor = owner.identifier;
+          continue;
+        }
+        launchAt = i;
+        break;
+      }
+      if (launchAt === -1) return;
+      const next = this.pending.splice(launchAt, 1)[0]!;
+      this.launchSpawn(next.ticket, next.stage, next.repoRoot);
     }
   }
 
   /** The real spawn path (cap already checked). Registers the finish handler. */
-  private async doSpawn(ticket: Ticket, stage: string): Promise<void> {
+  private async doSpawn(ticket: Ticket, stage: string, repoRoot: string): Promise<void> {
     const spec = this.castFor(ticket, stage);
-    const repoRoot = this.resolveRepoRoot(ticket);
 
     // v3.1: ensure the ticket's OWN project repo exists before any stage runs — clone
     // `0xbeckett/<slug>` if it's already on GitHub (a continuing project, or Beckett's source for a
@@ -474,6 +552,7 @@ export class Dispatcher {
       });
     } finally {
       await handle.reap();
+      this.releaseRepo(ticket.id);
       this.pump();
     }
   }
@@ -818,12 +897,34 @@ export class Dispatcher {
     this.baseShaForTicket.delete(ticketId);
     this.implementRetries.delete(ticketId);
     this.staffing.delete(ticketId); // drop any mid-spawn reservation so doSpawn discards it
+    this.dropPending(ticketId);
+    this.releaseRepo(ticketId);
     if (!handle) return;
     this.workers.delete(ticketId);
     this.logger.info("reaping worker", { ticketId, workerId: handle.id, reason });
     await handle.abort(reason);
     await handle.reap();
     this.pump();
+  }
+
+  private dropPending(ticketId: string): void {
+    for (let i = this.pending.length - 1; i >= 0; i--) {
+      if (this.pending[i]!.ticket.id === ticketId) this.pending.splice(i, 1);
+    }
+  }
+
+  private releaseRepo(ticketId: string): void {
+    const repoRoot = this.repoByTicket.get(ticketId);
+    if (!repoRoot) return;
+    const owner = this.repoOwners.get(repoRoot);
+    if (owner?.ticketId === ticketId) this.repoOwners.delete(repoRoot);
+    this.repoByTicket.delete(ticketId);
+  }
+
+  private refreshRepoWaiters(repoRoot: string, waitingFor: string): void {
+    for (const pending of this.pending) {
+      if (pending.repoRoot === repoRoot) pending.waitingFor = waitingFor;
+    }
   }
 
   /** Post a dispatcher comment, tagged with the bot marker so it is never read back as steering. */

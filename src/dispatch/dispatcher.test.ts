@@ -144,7 +144,11 @@ function stateChanged(ticket: Ticket, to: TicketState, from: TicketState | null 
 
 function newDispatcher(max_workers = 2) {
   const client = new FakeClient();
-  const d = new Dispatcher({ client, config: cfg(max_workers), resolveRepoRoot: () => "/tmp/repo" });
+  const d = new Dispatcher({
+    client,
+    config: cfg(max_workers),
+    resolveRepoRoot: (ticket) => `/tmp/repo/${ticket.project ?? ticket.identifier}`,
+  });
   return { d, client };
 }
 
@@ -479,6 +483,56 @@ describe("concurrency cap", () => {
     expect(spawnCalls[1]!.ticketId).toBe("b");
   });
 
+  test("same-project tickets serialize on the project repo even when worker slots are free", async () => {
+    const { d, client } = newDispatcher(2);
+    const a = makeTicket({ id: "a", identifier: "OPS-A", project: "balloons" });
+    const b = makeTicket({ id: "b", identifier: "OPS-B", project: "balloons" });
+
+    await d.handle(stateChanged(a, "in_progress"));
+    await tick();
+    await d.handle(stateChanged(b, "in_progress"));
+    await tick();
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(d.live()).toEqual([
+      { state: "live", ticketId: "a", workerId: "wk_1", repoRoot: "/tmp/repo/balloons" },
+      {
+        state: "queued",
+        ticketId: "b",
+        workerId: null,
+        stage: "implement",
+        repoRoot: "/tmp/repo/balloons",
+        waitingFor: "OPS-A",
+      },
+    ]);
+    expect(client.comments.at(-1)!.body).toContain("Waiting for OPS-A to free `/tmp/repo/balloons`");
+
+    created[0].finish("success", "a done");
+    await tick();
+
+    expect(spawnCalls).toHaveLength(2);
+    expect(spawnCalls[1]!.ticketId).toBe("b");
+  });
+
+  test("cancelling a same-project worker releases the queued ticket", async () => {
+    const { d } = newDispatcher(2);
+    const a = makeTicket({ id: "a", identifier: "OPS-A", project: "balloons" });
+    const b = makeTicket({ id: "b", identifier: "OPS-B", project: "balloons" });
+
+    await d.handle(stateChanged(a, "in_progress"));
+    await tick();
+    await d.handle(stateChanged(b, "in_progress"));
+    await tick();
+    expect(spawnCalls).toHaveLength(1);
+
+    await d.handle({ kind: "cancelled", ticket: a });
+    await tick();
+
+    expect(created[0].aborted).toBe(true);
+    expect(spawnCalls).toHaveLength(2);
+    expect(spawnCalls[1]!.ticketId).toBe("b");
+  });
+
   // ── regression: the runaway fan-out (cap=2 but 18 workers in prod) ──────────────────────────
   // Root cause: a worker's handle only lands in `workers` AFTER the slow async spawn, so duplicate
   // events for the same ticket arriving during that gap each passed `workers.has()` and launched
@@ -516,7 +570,9 @@ describe("concurrency cap", () => {
 
     release();
     await tick();
-    expect(d.live()).toHaveLength(2); // still exactly the cap; the other 3 are queued
+    const status = d.live();
+    expect(status.filter((s) => s.state === "live")).toHaveLength(2); // still exactly the cap
+    expect(status.filter((s) => s.state === "queued")).toHaveLength(3);
     expect(spawnCalls).toHaveLength(2);
   });
 });
