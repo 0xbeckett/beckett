@@ -62,6 +62,19 @@
   @keyframes drift4{to{transform:translate(-6%,7%) scale(1.1)}}
   @media(max-width:880px){.aurora b{filter:blur(48px)}}
 
+  /* voxel parallax scene — hand-rolled isometric voxels on canvas, pre-rendered once
+     per layer then translated on the GPU (transform only) for scroll/mouse parallax.
+     three depth planes sit BEHIND all copy (z-index 0, under .wrap's z-index 1) and are
+     dimmed so the dark theme + orange accent still lead. static under reduced-motion. */
+  .voxel{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;
+    -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 12%,#000 82%,transparent);
+    mask-image:linear-gradient(180deg,transparent 0,#000 12%,#000 82%,transparent)}
+  .vx{position:absolute;top:0;left:0;will-change:transform;transform:translateZ(0)}
+  #vxbg{opacity:.4;filter:blur(.5px)}
+  #vxmid{opacity:.82}
+  #vxfg{opacity:.6}
+  @media(max-width:880px){#vxfg{opacity:.4}#vxmid{opacity:.62}}
+
   .cur{position:fixed;top:0;left:0;width:8px;height:8px;border-radius:50%;background:var(--accent);z-index:60;
     pointer-events:none;transform:translate(-50%,-50%);mix-blend-mode:difference;
     transition:width .25s var(--eo),height .25s var(--eo)}
@@ -217,6 +230,7 @@
 <body>
 <div class="cur" id="cur" aria-hidden="true"></div>
 <div class="aurora" aria-hidden="true"><b class="b1"></b><b class="b2"></b><b class="b3"></b><b class="b4"></b></div>
+<div class="voxel" aria-hidden="true"><canvas class="vx" id="vxbg"></canvas><canvas class="vx" id="vxmid"></canvas><canvas class="vx" id="vxfg"></canvas></div>
 
 <nav>
   <div class="nav-in">
@@ -329,6 +343,101 @@
 <script src="https://cdn.jsdelivr.net/npm/@studio-freight/lenis@1.0.42/dist/lenis.min.js"></script>
 <script>
   var RM=window.matchMedia&&window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+  /* ── voxel parallax scene ──────────────────────────────────────────────
+     Hand-rolled isometric voxel art, no WebGL / no deps. Each depth layer is
+     rendered ONCE to its own canvas, then only its CSS transform is animated
+     for scroll + mouse parallax — so the per-frame cost is a GPU composite of
+     three layers, trivially 60fps. Static (no rAF) under reduced-motion. */
+  (function(){
+    var bg=document.getElementById('vxbg'),mid=document.getElementById('vxmid'),fg=document.getElementById('vxfg');
+    if(!bg||!mid||!fg)return;
+    var layers=[bg,mid,fg];
+
+    // integer-ish deterministic pseudo-random so art is stable across renders/resizes
+    function rnd(x,y,z){var h=(x*374761393+y*668265263+z*2246822519)>>>0;h=(h^(h>>>13))*1274126177>>>0;return (h>>>0)/4294967295;}
+    function shade(hex,f){var n=parseInt(hex.slice(1),16),r=(n>>16)&255,g=(n>>8)&255,b=n&255;
+      r=Math.min(255,r*f)|0;g=Math.min(255,g*f)|0;b=Math.min(255,b*f)|0;
+      return 'rgb('+r+','+g+','+b+')';}
+
+    // draw a single cube; sx,sy = centre of its top face
+    function voxel(ctx,sx,sy,TW,base){
+      var TH=TW/2,H=TW,top=shade(base,1.06),lf=shade(base,.6),rf=shade(base,.82);
+      ctx.beginPath();ctx.moveTo(sx,sy-TH);ctx.lineTo(sx+TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx-TW,sy);ctx.closePath();
+      ctx.fillStyle=top;ctx.strokeStyle=top;ctx.lineWidth=1;ctx.fill();ctx.stroke();
+      ctx.beginPath();ctx.moveTo(sx-TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx,sy+TH+H);ctx.lineTo(sx-TW,sy+H);ctx.closePath();
+      ctx.fillStyle=lf;ctx.strokeStyle=lf;ctx.fill();ctx.stroke();
+      ctx.beginPath();ctx.moveTo(sx+TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx,sy+TH+H);ctx.lineTo(sx+TW,sy+H);ctx.closePath();
+      ctx.fillStyle=rf;ctx.strokeStyle=rf;ctx.fill();ctx.stroke();
+    }
+    // draw a voxel list (each {gx,gy,gz,c}) at screen origin ox,oy with tile size TW
+    function cluster(ctx,vox,ox,oy,TW){
+      var TH=TW/2,H=TW;
+      vox.sort(function(a,b){return (a.gx+a.gy)-(b.gx+b.gy)||a.gz-b.gz;});
+      vox.forEach(function(v){voxel(ctx,ox+(v.gx-v.gy)*TW,oy+(v.gx+v.gy)*TH-v.gz*H,TW,v.c);});
+    }
+
+    var PINK=['#ffc2de','#ff9ec6','#f77fb2','#ffb0d4'],
+        GRASS='#7fce7f',DIRT='#6a5140',TRUNK='#7c5a44',
+        HILL=['#463c68','#3a3357','#514a78','#2f2a47'],
+        FGCOL=['#ff9ec6','#8f7bd6','#7fce7f','#ffc2de'];
+
+    // ── BACKGROUND: rolling low-contrast hills (distant terrain) ──
+    function terrain(){var v=[];for(var gx=-9;gx<=9;gx++)for(var gy=-2;gy<=8;gy++){
+      var h=Math.round(1.4+1.3*(Math.sin(gx*.55)+Math.cos(gy*.6))+rnd(gx,gy,3)*1.2);if(h<0)h=0;
+      for(var gz=0;gz<=h;gz++)v.push({gx:gx,gy:gy,gz:gz,c:HILL[(gz+9)%HILL.length]});
+    }return v;}
+
+    // ── MIDGROUND: cherry-blossom voxel tree on a grass platter ──
+    function tree(){var v=[];
+      for(var gx=-4;gx<=4;gx++)for(var gy=-4;gy<=4;gy++){var d=gx*gx+gy*gy;
+        if(d<19){v.push({gx:gx,gy:gy,gz:0,c:GRASS});v.push({gx:gx,gy:gy,gz:-1,c:DIRT});}}
+      for(var gz=1;gz<=4;gz++)v.push({gx:0,gy:0,gz:gz,c:TRUNK});
+      v.push({gx:1,gy:0,gz:4,c:TRUNK});v.push({gx:0,gy:-1,gz:4,c:TRUNK});
+      for(var bx=-4;bx<=4;bx++)for(var by=-4;by<=4;by++)for(var bz=4;bz<=9;bz++){
+        var dz=bz-6.7,r=bx*bx+by*by+dz*dz*1.5;
+        if(r<12.5&&rnd(bx,by,bz)>0.16)v.push({gx:bx,gy:by,gz:bz,c:PINK[(Math.abs(bx+by*2+bz)>>>0)%PINK.length]});
+      }return v;}
+    // small floating grass island
+    function island(s){var v=[];for(var gx=-s;gx<=s;gx++)for(var gy=-s;gy<=s;gy++){
+      if(gx*gx+gy*gy<=s*s+1){v.push({gx:gx,gy:gy,gz:0,c:GRASS});v.push({gx:gx,gy:gy,gz:-1,c:DIRT});
+        if(gx*gx+gy*gy<=Math.max(0,s*s-3))v.push({gx:gx,gy:gy,gz:-2,c:DIRT});}}return v;}
+
+    var W,H,DPR;
+    function fit(cv){DPR=Math.min(2,window.devicePixelRatio||1);W=window.innerWidth;H=window.innerHeight;
+      cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+'px';cv.style.height=H+'px';
+      var c=cv.getContext('2d');c.setTransform(DPR,0,0,DPR,0,0);c.clearRect(0,0,W,H);return c;}
+
+    function render(){
+      // background hills, spread low and wide
+      var cb=fit(bg);cluster(cb,terrain(),W*0.5,H*0.66,Math.max(9,W*0.008));
+      // midground: hero tree + a couple floating chunks
+      var cm=fit(mid);var TWm=Math.max(11,Math.min(15,W*0.011));
+      cluster(cm,island(2),W*0.19,H*0.34,TWm*0.72);
+      cluster(cm,island(2),W*0.85,H*0.42,TWm*0.82);
+      cluster(cm,tree(),W*0.66,H*0.58,TWm);
+      // foreground: chunky bits drifting near the edges
+      var cf=fit(fg);var TWf=Math.max(16,W*0.017);
+      var spots=[[0.06,0.28],[0.94,0.2],[0.1,0.82],[0.9,0.78],[0.5,0.94],[0.03,0.55]];
+      spots.forEach(function(s,i){var n=1+(i%3);var vv=[];
+        for(var k=0;k<n;k++)vv.push({gx:k,gy:0,gz:(i+k)%2,c:FGCOL[(i+k)%FGCOL.length]});
+        cluster(cf,vv,W*s[0],H*s[1],TWf);});
+    }
+    render();
+
+    if(RM)return; // static scene, no parallax
+
+    var sc=window.scrollY||0,mx=0,my=0,cmx=0,cmy=0;
+    var fS=[0.05,0.13,0.24],fM=[7,17,32]; // per-layer scroll & mouse strengths (bg→fg)
+    addEventListener('scroll',function(){sc=window.scrollY||window.pageYOffset||0;},{passive:true});
+    addEventListener('mousemove',function(e){mx=(e.clientX/W-0.5)*2;my=(e.clientY/H-0.5)*2;});
+    (function loop(){cmx+=(mx-cmx)*.06;cmy+=(my-cmy)*.06;
+      for(var i=0;i<3;i++){var x=-cmx*fM[i],y=-sc*fS[i]-cmy*fM[i]*0.6;
+        layers[i].style.transform='translate3d('+x.toFixed(1)+'px,'+y.toFixed(1)+'px,0)';}
+      requestAnimationFrame(loop);})();
+
+    var rt;addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(render,180);},{passive:true});
+  })();
 
   if(!RM&&window.Lenis){
     var lenis=new Lenis({lerp:.1,smoothWheel:true});
