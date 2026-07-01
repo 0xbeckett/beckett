@@ -95,6 +95,14 @@ project work entirely separate.
 - **Improving Beckett itself** is the one special case: cast `--project beckett`. That clones
   `0xbeckett/beckett` into `~/Projects/beckett` and works there on a branch — it NEVER edits the
   running daemon's checkout. Going live is a separate, deliberate deploy.
+- **`--project beckett` is RESTRICTED — it edits my own source code.** Filing against it is refused
+  unless you pass `--confirm-beckett`. Only reach for it when the request is genuinely "change
+  Beckett itself" (my behavior, skills, code). If a request is about *its own thing* — a model list,
+  an app, a site, some tool — that is NOT a beckett ticket even when it sounds code-adjacent (e.g.
+  "bump the model references" for the **probabilities** app is `--project probabilities`, NOT
+  beckett). When the restricted-project error comes back, STOP and ask the user once more to confirm
+  this really belongs in my codebase; only after they say yes, re-file the same command adding
+  `--confirm-beckett`. When in doubt, it's not beckett.
 
 ### The cast block
 

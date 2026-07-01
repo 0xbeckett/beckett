@@ -395,6 +395,37 @@ export async function currentBranch(repoRoot: string): Promise<string> {
 /** GitHub org/account Beckett owns and pushes project repos to (override via `BECKETT_GH_ORG`). */
 export const GH_ORG = process.env.BECKETT_GH_ORG?.trim() || "0xbeckett";
 
+/**
+ * The bot git identity every commit in a project checkout must carry. Set repo-LOCAL on each
+ * checkout (see {@link applyRepoIdentity}) so nothing — the dispatcher's safety-net commit OR the
+ * worker's own inline `git commit`s — can silently inherit a dev box's ambient/personal identity
+ * (the `jason.awz2005@icloud.com` leak: `frgmt0`/`kcodes0`-authored commits in the repo history).
+ * Overridable for a differently-named bot via env; defaults match Beckett's GitHub account noreply.
+ */
+export const BOT_GIT_NAME = process.env.BECKETT_GIT_NAME?.trim() || "Beckett";
+export const BOT_GIT_EMAIL =
+  process.env.BECKETT_GIT_EMAIL?.trim() || `${GH_ORG}@users.noreply.github.com`;
+
+/**
+ * Pin repo-local `user.name`/`user.email` to the bot identity ({@link BOT_GIT_NAME}/{@link
+ * BOT_GIT_EMAIL}). Applied on EVERY {@link ensureProjectRepo} call — including for checkouts that
+ * already exist — because the leak is correct-by-construction only if no commit can ever fall back
+ * to ambient config, and the existing `~/Projects/*` checkouts on the live box predate this. Local
+ * config also wins over any global/personal identity for both fresh clones and shared worktrees.
+ * Best-effort: a config failure is logged, never fatal (it must not block real work).
+ */
+async function applyRepoIdentity(repoRoot: string): Promise<void> {
+  for (const [key, value] of [
+    ["user.name", BOT_GIT_NAME],
+    ["user.email", BOT_GIT_EMAIL],
+  ] as const) {
+    const r = await runGit(["config", key, value], repoRoot);
+    if (r.code !== 0) {
+      logger.warn("could not pin repo git identity", { repoRoot, key, stderr: r.stderr.trim() });
+    }
+  }
+}
+
 const projectRepoEnsures = new Map<string, Promise<void>>();
 
 /**
@@ -417,7 +448,10 @@ export async function ensureProjectRepo(repoRoot: string, slug: string): Promise
 }
 
 async function ensureProjectRepoUncached(repoRoot: string, slug: string): Promise<void> {
-  if (existsSync(`${repoRoot}/.git`)) return; // already provisioned
+  if (existsSync(`${repoRoot}/.git`)) {
+    await applyRepoIdentity(repoRoot); // re-pin every call — existing checkouts predate this
+    return;
+  }
   const parent = dirname(repoRoot);
   mkdirSync(parent, { recursive: true });
 
@@ -425,11 +459,13 @@ async function ensureProjectRepoUncached(repoRoot: string, slug: string): Promis
   const onGitHub = (await runGit(["ls-remote", remote, "HEAD"], parent)).code === 0;
   if (onGitHub) {
     await git(["clone", remote, repoRoot], parent);
+    await applyRepoIdentity(repoRoot);
     logger.info("provisioned project repo by clone", { repoRoot, remote });
     return;
   }
 
   mkdirSync(repoRoot, { recursive: true });
   await git(["init", "-b", "main"], repoRoot);
+  await applyRepoIdentity(repoRoot);
   logger.info("provisioned new project repo (git init)", { repoRoot, slug });
 }

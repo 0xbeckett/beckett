@@ -698,7 +698,15 @@ export class Concierge {
   private frameUpdate(event: PollEvent): string | null {
     if (event.kind === "comment_added") {
       if (!isDispatcherComment(event.comment)) return null; // human/worker chatter — not ours to echo
-      return this.updateTurn(event.ticket, stripCommentMarker(event.comment.body));
+      const body = stripCommentMarker(event.comment.body);
+      // Intermediate pipeline progress — "Implementation complete → in_review" — is NOT a user-facing
+      // milestone: the person already got an ack when they asked, and the `done` ping lands right
+      // after review. Surfacing this too is what produced the back-to-back "okay, I did the thing"
+      // then "awesome, it's done" pair. Drop ONLY the review-advance (the `→ in_review` transition);
+      // rework / error / human-handoff comments (which say "in_review" without the `→` arrow, or name
+      // a human) still surface — those the person genuinely needs. Matches `dispatcher.ts` :490.
+      if (isReviewAdvanceComment(body)) return null;
+      return this.updateTurn(event.ticket, body);
     }
     if (event.kind === "cancelled") {
       return this.updateTurn(event.ticket, `Ticket was cancelled.`);
@@ -706,8 +714,11 @@ export class Concierge {
     if (event.kind === "state_changed" && event.to === "done") {
       // `done` is the one milestone the comment feed misses: the poller stops collecting comments
       // once a ticket is terminal (poll.ts), so the dispatcher's "Review passed → done" comment
-      // never arrives as a comment_added. Surface it from the state transition instead.
-      return this.updateTurn(event.ticket, `Review passed — shipped, ticket is **done**.`);
+      // never arrives as a comment_added. Surface it from the state transition instead. Wording is
+      // deliberately NEUTRAL — a ticket can reach done by a direct push OR an open PR awaiting a human
+      // merge (see dispatcher `ensurePublished`), so "shipped" would be a lie for the PR case; the
+      // exact push-vs-PR detail + link lives in the ticket's done comment.
+      return this.updateTurn(event.ticket, `Review passed — ticket is **done**.`);
     }
     // Other `state_changed` (→in_review, →in_progress rework) and `created` already arrive as the
     // dispatcher's own comments on a still-active ticket, so we don't double-surface them here.
@@ -872,6 +883,16 @@ function isDispatcherComment(comment: PlaneComment): boolean {
 /** Drop the leading `<!-- beckett… -->` marker line so the Concierge paraphrases just the prose. */
 function stripCommentMarker(body: string): string {
   return body.replace(/^\s*<!--\s*beckett[^>]*-->\s*/i, "").trim();
+}
+
+/**
+ * True for the dispatcher's "Implementation complete → in_review" advance — the intermediate step we
+ * deliberately don't ping the person about (they already have an ack; `done` pings next). Keyed on
+ * the `→ in_review` transition ARROW so it never matches the rework-cap human-handoff ("leaving this
+ * in in_review for a human", no arrow) or the "→ done"/"→ in_progress" comments, which must surface.
+ */
+function isReviewAdvanceComment(body: string): boolean {
+  return /→\s*\*{0,2}in_review/i.test(body);
 }
 
 // Run standalone: `bun src/concierge/index.ts` brings the Concierge online.

@@ -58,13 +58,39 @@ test("relays a dispatcher milestone comment as one turn carrying the right --cha
   concierge.notify({
     kind: "comment_added",
     ticket: ticket(),
-    comment: dispatcherComment("Implementation complete → **in_review**."),
+    comment: dispatcherComment("Review found issues → back to **in_progress** for re-work."),
   });
   await Promise.resolve();
   expect(asks.length).toBe(1);
   expect(asks[0]).toContain(`beckett discord reply --channel ${CHAN}`);
-  expect(asks[0]).toContain("in_review");
+  expect(asks[0]).toContain("in_progress");
   expect(asks[0]).not.toContain("beckett:dispatcher"); // marker stripped before the concierge sees it
+});
+
+test("does NOT ping for the intermediate `→ in_review` advance (avoids the double-message)", () => {
+  const { concierge, asks } = harness();
+  // The person already has an ack; the `done` ping lands after review. This intermediate advance is
+  // exactly the "okay, I did the thing" half of the back-to-back pair — it must stay silent.
+  concierge.notify({
+    kind: "comment_added",
+    ticket: ticket(),
+    comment: dispatcherComment("Implementation complete → **in_review**."),
+  });
+  expect(asks.length).toBe(0);
+});
+
+test("still surfaces a human-handoff that mentions in_review (no `→` arrow — keep it)", () => {
+  const { concierge, asks } = harness();
+  concierge.notify({
+    kind: "comment_added",
+    ticket: ticket(),
+    comment: dispatcherComment(
+      "Review found issues, and this is rework cycle 3/3 — stopping automatic rework and leaving " +
+        "this in **in_review** for a human to take over.",
+    ),
+  });
+  expect(asks.length).toBe(1);
+  expect(asks[0]).toContain("human");
 });
 
 test("ignores human/worker comments — only Beckett's own narration is echoed", () => {
@@ -82,7 +108,7 @@ test("surfaces `done` from the state transition (the comment feed misses termina
   concierge.notify({ kind: "state_changed", ticket: ticket({ state: "done" }), from: "in_review", to: "done" });
   expect(asks.length).toBe(1);
   expect(asks[0]).toContain(`--channel ${CHAN}`);
-  expect(asks[0]?.toLowerCase()).toContain("shipped");
+  expect(asks[0]?.toLowerCase()).toContain("done");
 });
 
 test("does not double-surface non-terminal state changes (covered by the comment)", () => {
@@ -97,7 +123,7 @@ test("drops (does not surface) an update for a ticket with no origin channel", (
   concierge.notify({
     kind: "comment_added",
     ticket: ticket({ originChannel: undefined }),
-    comment: dispatcherComment("Implementation complete → in_review."),
+    comment: dispatcherComment("Review found issues → back to **in_progress** for re-work."),
   });
   expect(asks.length).toBe(0);
 });
@@ -115,7 +141,8 @@ test("a full lifecycle batch yields exactly one ping per real milestone", async 
   ];
   concierge.notify(events);
   await Promise.resolve();
-  // in_review milestone + rework milestone + done = 3 pings; created/in_progress/human all skipped.
-  expect(asks.length).toBe(3);
+  // rework milestone + done = 2 pings; created/in_progress/human AND the `→ in_review` advance are
+  // all skipped (the advance is intermediate — see the double-message fix).
+  expect(asks.length).toBe(2);
   expect(asks.every((a) => a.includes(`--channel ${CHAN}`))).toBe(true);
 });

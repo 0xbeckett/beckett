@@ -24,6 +24,7 @@ import { TunnelDeployer } from "../shell/deploy.ts";
 import { loadAccess, grantAccess, revokeAccess, ACCESS_CAP } from "../discord/access.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 import type { Ticket, TicketState } from "../plane/types.ts";
+import { projectSlug } from "../plane/cast.ts";
 
 const config = loadConfig();
 const paths = buildPaths(config);
@@ -36,6 +37,32 @@ function out(data: unknown): never {
 function fail(msg: string): never {
   process.stderr.write(`error: ${msg}\n`);
   process.exit(1);
+}
+
+/**
+ * The one code-project slug that targets Beckett's OWN source repo (`0xbeckett/beckett`). Filing work
+ * here is RESTRICTED: unrelated tickets have been mis-routed onto it (e.g. a "probabilities" model-list
+ * ticket read as "improve Beckett" → edited Beckett's own code), polluting the codebase. Overridable
+ * for a differently-named self-repo via env.
+ */
+const RESTRICTED_PROJECT = (process.env.BECKETT_SELF_PROJECT?.trim() || "beckett").toLowerCase();
+
+/**
+ * Refuse to file a ticket against the restricted self-repo unless `confirmed` (the `--confirm-beckett`
+ * flag). The message is aimed at the Concierge: it must re-confirm with the user that the work really
+ * belongs in Beckett's codebase before re-filing with the flag. A speed bump against mis-routing, not
+ * a cryptographic gate — the Concierge is instructed to add the flag ONLY after the user says yes.
+ */
+function guardRestrictedProject(project: string | undefined, confirmed: boolean): void {
+  if (!project) return; // no project → per-ticket sandbox, never the self-repo
+  if (projectSlug(project) !== RESTRICTED_PROJECT) return;
+  if (confirmed) return;
+  fail(
+    `"--project ${project}" targets Beckett's OWN source repo (${RESTRICTED_PROJECT}) — a RESTRICTED ` +
+      `project. Most work should build in its own repo, NOT edit Beckett itself. Confirm with the user ` +
+      `once more that this genuinely belongs in the beckett codebase; if they say yes, re-file the exact ` +
+      `same command with --confirm-beckett.`,
+  );
 }
 
 /** Minimal flag parser: returns { _: positional[], flags: {k:v|true} }. */
@@ -415,6 +442,9 @@ async function main(): Promise<void> {
       const criteria = flags.criteria
         ? String(flags.criteria).split(";").map((s) => s.trim()).filter(Boolean)
         : [];
+      // Restricted self-repo gate — bounce back to the Concierge to re-confirm with the user before
+      // any ticket can build against 0xbeckett/beckett (mis-routing polluted the codebase).
+      guardRestrictedProject(flags.project ? String(flags.project) : undefined, !!flags["confirm-beckett"]);
       const ticket = await client.createIssue({
         title: String(flags.title),
         body: await readBody(),
@@ -503,6 +533,12 @@ async function main(): Promise<void> {
         if (!keys.has(need)) fail(`plan: ticket "${t.key}" needs unknown key "${need}"`);
         if (need === t.key) fail(`plan: ticket "${t.key}" cannot depend on itself`);
       }
+    }
+
+    // Restricted self-repo gate — fail the WHOLE plan (before filing any node) if a node targets the
+    // beckett source repo without --confirm-beckett, so a mis-routed node can't slip in mid-DAG.
+    for (const t of tickets) {
+      guardRestrictedProject(t.project ? String(t.project) : undefined, !!flags["confirm-beckett"]);
     }
 
     // 2. topological order (Kahn) — also the cycle detector

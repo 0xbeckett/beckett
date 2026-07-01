@@ -244,6 +244,30 @@ interface RunResult {
 /** Env keys that must NEVER be passed to a subprocess (Spec 00 §4 — subscription auth only). */
 const FORBIDDEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"];
 
+/** GitHub creates a fork asynchronously — poll this many times before pushing to it. */
+const FORK_READY_TRIES = 10;
+/** Delay between fork-readiness polls. */
+const FORK_READY_DELAY_MS = 1500;
+
+/** Sleep helper for fork-readiness polling (real timers; publish runs off the hot path). */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Parse `owner/repo` out of a git remote URL — https (`https://github.com/o/r.git`), ssh
+ * (`git@github.com:o/r.git`), or a bare `o/r`. Returns null if it doesn't look like a GitHub repo.
+ */
+export function parseRepoNwo(url: string): string | null {
+  const cleaned = url.trim().replace(/\.git$/, "");
+  const m =
+    cleaned.match(/[:/]([^/:]+\/[^/:]+)$/) ?? // https or ssh: capture the trailing owner/repo
+    cleaned.match(/^([^/:]+\/[^/:]+)$/); // already a bare owner/repo
+  const nwo = m?.[1];
+  if (!nwo) return null;
+  return /^[^/]+\/[^/]+$/.test(nwo) ? nwo : null;
+}
+
 /** A copy of `process.env` with the forbidden API-key vars removed. */
 function sanitizedEnv(): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = { ...process.env };
@@ -285,6 +309,21 @@ export interface GitHubClientOptions {
   /** Resolve a repo "org/name" to its local working dir (for `git push`). */
   resolveRepoDir: (repo: string) => string;
   logger: Logger;
+  /** Subprocess runner — injectable so the publish decision tree is unit-testable (defaults to the
+   *  real {@link run}). Tests pass a fake that matches on argv and returns canned `gh`/`git` output. */
+  run?: (cmd: string[], opts?: { cwd?: string; env?: Record<string, string | undefined> }) => Promise<RunResult>;
+}
+
+/** The outcome of {@link GitHubCli.ensurePublished} — carries HOW the work shipped so callers can
+ *  word "done" honestly: `pushed` = landed on the repo's default branch; `pr` = a PR is open and
+ *  still needs a human merge (a cloned upstream, or an existing shared repo). */
+export interface PublishResult {
+  nameWithOwner: string;
+  url: string;
+  /** `pushed` → merged to the default branch; `pr` → PR opened, awaiting a human merge. */
+  kind: "pushed" | "pr";
+  /** The PR's web URL when `kind === "pr"` (the thing a human reviews/merges). */
+  prUrl?: string;
 }
 
 /**
@@ -295,7 +334,14 @@ export interface GitHubClientOptions {
  * `mergePR` behind {@link Agency.perform}.
  */
 export class GitHubCli implements GitHubClient {
-  constructor(private readonly opts: GitHubClientOptions) {}
+  private readonly runner: (
+    cmd: string[],
+    opts?: { cwd?: string; env?: Record<string, string | undefined> },
+  ) => Promise<RunResult>;
+
+  constructor(private readonly opts: GitHubClientOptions) {
+    this.runner = opts.run ?? run;
+  }
 
   /** Whether GitHub agency is usable (a PAT is configured). */
   get available(): boolean {
@@ -336,12 +382,15 @@ export class GitHubCli implements GitHubClient {
     };
   }
 
-  /** Push a local ref to a remote branch over authenticated HTTPS (Spec 07 §3.3). FREE caller. */
-  async pushBranch(repo: string, localRef: string, remoteBranch: string): Promise<void> {
-    this.requireCreds("push branch");
+  /**
+   * Authenticated `git push <repo-url> <localRef>:refs/heads/<remoteBranch>` from an explicit working
+   * dir. The publish flow pushes the SAME checkout to different remotes (a fork for a cross-fork PR),
+   * so the cwd is passed in rather than derived from `resolveRepoDir` (which would guess the wrong dir
+   * for a fork). Low-level: callers gate FREE-ness.
+   */
+  private async gitPush(cwd: string, repo: string, localRef: string, remoteBranch: string): Promise<void> {
     const url = `${this.gitHost()}/${repo}.git`;
-    const cwd = this.opts.resolveRepoDir(repo);
-    const r = await run(["git", "push", url, `${localRef}:refs/heads/${remoteBranch}`], {
+    const r = await this.runner(["git", "push", url, `${localRef}:refs/heads/${remoteBranch}`], {
       cwd,
       env: this.gitEnv(),
     });
@@ -349,6 +398,12 @@ export class GitHubCli implements GitHubClient {
       throw new Error(`git push failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
     }
     this.opts.logger.info("branch pushed", { repo, remoteBranch });
+  }
+
+  /** Push a local ref to a remote branch over authenticated HTTPS (Spec 07 §3.3). FREE caller. */
+  async pushBranch(repo: string, localRef: string, remoteBranch: string): Promise<void> {
+    this.requireCreds("push branch");
+    await this.gitPush(this.opts.resolveRepoDir(repo), repo, localRef, remoteBranch);
   }
 
   /**
@@ -371,7 +426,7 @@ export class GitHubCli implements GitHubClient {
       args.push("--source", p.sourceDir, "--remote", "origin");
       if (p.push) args.push("--push");
     }
-    const r = await run(args, { cwd: p.sourceDir, env: this.ghEnv() });
+    const r = await this.runner(args, { cwd: p.sourceDir, env: this.ghEnv() });
     if (r.code !== 0) {
       throw new Error(`gh repo create failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
     }
@@ -389,7 +444,7 @@ export class GitHubCli implements GitHubClient {
   async repoExists(nameWithOwner: string): Promise<boolean> {
     if (!this.available) return false;
     const repo = nameWithOwner.includes("/") ? nameWithOwner : `${this.opts.account}/${nameWithOwner}`;
-    const r = await run(["gh", "repo", "view", repo, "--json", "name"], { env: this.ghEnv() });
+    const r = await this.runner(["gh", "repo", "view", repo, "--json", "name"], { env: this.ghEnv() });
     return r.code === 0;
   }
 
@@ -402,7 +457,7 @@ export class GitHubCli implements GitHubClient {
   async setPublic(nameWithOwner: string): Promise<void> {
     this.requireCreds("set repo visibility");
     const repo = nameWithOwner.includes("/") ? nameWithOwner : `${this.opts.account}/${nameWithOwner}`;
-    const r = await run(["gh", "api", "--method", "PATCH", `repos/${repo}`, "-F", "private=false"], {
+    const r = await this.runner(["gh", "api", "--method", "PATCH", `repos/${repo}`, "-F", "private=false"], {
       env: this.ghEnv(),
     });
     if (r.code !== 0) {
@@ -411,38 +466,175 @@ export class GitHubCli implements GitHubClient {
   }
 
   /**
-   * Idempotently publish a local repo to `<account>/<slug>` (public) and push HEAD → `main`. If the
-   * repo doesn't exist yet it's created from `sourceDir` and pushed in one shot; if it already
-   * exists (a continuing project) HEAD is pushed to its `main`. Returns the repo's web URL. This is
-   * the deterministic path the dispatcher calls when a ticket reaches done — workers no longer push
-   * by hand (that was unreliable and left repos that 404'd). FREE: new repos are reversible.
+   * Idempotently publish a done ticket's checkout to GitHub, returning HOW it shipped (a
+   * {@link PublishResult}). Three cases, each detect-and-continue so a re-run never throws on
+   * "already exists" (the original bug: `gh repo create` blew up because the cloned checkout already
+   * had an `origin`, and the ticket had already been marked done, so the work silently never shipped):
+   *
+   *   1. **Cloned third-party upstream** (`origin` points outside our account) → fork it under our
+   *      account, push a ticket branch to the fork, open a PR back to the upstream's default branch.
+   *      We can't push to someone else's repo and merging is a human call → `kind: "pr"`.
+   *   2. **A repo we already own** (a continuing/shared project, e.g. the beckett self-repo) → push a
+   *      ticket branch and open a PR against its default branch. NEVER `HEAD→main` (that's the
+   *      non-fast-forward "fetch first" reject that stranded shared-repo tickets) → `kind: "pr"`.
+   *   3. **Brand-new project we own** → create it from `sourceDir` and push `HEAD→main` in one shot →
+   *      `kind: "pushed"`.
    */
-  async ensurePublished(p: { slug: string; sourceDir: string; description?: string }): Promise<{
-    nameWithOwner: string;
-    url: string;
-  }> {
+  async ensurePublished(p: {
+    slug: string;
+    sourceDir: string;
+    description?: string;
+    /** Ticket identifier — names the PR branch (`beckett/<ticket>`) + the PR body. Defaults to slug. */
+    ticket?: string;
+  }): Promise<PublishResult> {
     this.requireCreds("publish repo");
-    const repo = `${this.opts.account}/${p.slug}`;
-    if (await this.repoExists(repo)) {
-      await this.pushBranch(repo, "HEAD", "main");
-      // Push is the critical part; visibility is best-effort so it never blocks shipping the code.
-      try {
-        await this.setPublic(repo);
-      } catch (err) {
-        this.opts.logger.warn("could not make repo public (left as-is)", {
-          repo,
-          err: (err as Error).message,
-        });
-      }
-      return { nameWithOwner: repo, url: `${this.gitHost()}/${repo}` };
+    const ref = (p.ticket ?? p.slug).toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+    const branch = `beckett/${ref}`;
+    const title = p.description?.trim() || `beckett: ${p.slug}`;
+    const body =
+      `Automated contribution by Beckett${p.ticket ? ` for ${p.ticket}` : ""}.` +
+      (p.description ? `\n\n${p.description}` : "");
+
+    // Case 1 — cloned from a third-party upstream: fork → push branch to fork → PR to upstream.
+    const upstream = await this.originUpstream(p.sourceDir);
+    if (upstream) {
+      const fork = await this.ensureFork(upstream);
+      await this.gitPush(p.sourceDir, fork, "HEAD", branch);
+      const base = await this.defaultBranch(upstream);
+      const pr = await this.ensurePR({ repo: upstream, base, head: `${this.opts.account}:${branch}`, title, body });
+      this.opts.logger.info("published via upstream PR", { upstream, fork, branch, pr: pr.url });
+      return { nameWithOwner: upstream, url: `${this.gitHost()}/${upstream}`, kind: "pr", prUrl: pr.url };
     }
-    return this.createRepo({
+
+    const repo = `${this.opts.account}/${p.slug}`;
+
+    // Case 2 — a repo we already own (a continuing project, incl. beckett's own repos): ship straight
+    // to its default branch. Integrate the remote tip FIRST (fetch + rebase) so this isn't the
+    // non-fast-forward "fetch first" reject that stranded OPS-25/27; keeping the branch current also
+    // keeps it visible to DAG dependents that clone fresh. A rebase CONFLICT throws → the dispatcher
+    // holds the ticket for a human (never a silent false-done).
+    if (await this.repoExists(repo)) {
+      await this.setPublicSafe(repo);
+      await this.pushToDefaultBranch(p.sourceDir, repo);
+      this.opts.logger.info("published via push to default branch", { repo });
+      return { nameWithOwner: repo, url: `${this.gitHost()}/${repo}`, kind: "pushed" };
+    }
+
+    // Case 3 — brand-new project we own: create + push HEAD→main in one shot.
+    const created = await this.createRepo({
       name: p.slug,
       private: false, // project repos are public so links Beckett hands out actually resolve
       description: p.description,
       sourceDir: p.sourceDir,
       push: true,
     });
+    return { ...created, kind: "pushed" };
+  }
+
+  /**
+   * Push the checkout's HEAD to a repo we own, on its default branch, WITHOUT a non-fast-forward
+   * reject: fetch the remote tip and rebase local commits onto it first, then push. If the remote
+   * branch doesn't exist yet (a just-created/empty repo) the fetch fails harmlessly and the push
+   * creates it. A rebase conflict aborts and throws — the caller turns that into a "needs a human"
+   * hold rather than force-pushing over someone's (or a parallel worker's) commits.
+   */
+  private async pushToDefaultBranch(cwd: string, repo: string): Promise<void> {
+    const base = await this.defaultBranch(repo);
+    const url = `${this.gitHost()}/${repo}.git`;
+    const fetch = await this.runner(["git", "fetch", url, base], { cwd, env: this.gitEnv() });
+    if (fetch.code === 0) {
+      const rebase = await this.runner(["git", "rebase", "FETCH_HEAD"], { cwd, env: this.gitEnv() });
+      if (rebase.code !== 0) {
+        await this.runner(["git", "rebase", "--abort"], { cwd, env: this.gitEnv() });
+        throw new Error(
+          `publish: local work conflicts with ${repo}@${base} and can't auto-rebase — needs a human ` +
+            `(${rebase.stderr.trim() || rebase.stdout.trim()})`,
+        );
+      }
+    }
+    await this.gitPush(cwd, repo, "HEAD", base);
+  }
+
+  /** `setPublic` that never throws — visibility is cosmetic and must not block shipping the code. */
+  private async setPublicSafe(repo: string): Promise<void> {
+    try {
+      await this.setPublic(repo);
+    } catch (err) {
+      this.opts.logger.warn("could not make repo public (left as-is)", { repo, err: (err as Error).message });
+    }
+  }
+
+  /**
+   * The upstream `owner/repo` when `sourceDir`'s `origin` points OUTSIDE our account (a cloned
+   * third-party repo). Null when there's no `origin` (a fresh `git init` project) or `origin` is
+   * already ours (a continuing project we own) — both handled by the own-repo cases.
+   */
+  private async originUpstream(sourceDir: string): Promise<string | null> {
+    const r = await this.runner(["git", "remote", "get-url", "origin"], { cwd: sourceDir });
+    if (r.code !== 0) return null; // no origin remote → fresh/owned project
+    const nwo = parseRepoNwo(r.stdout.trim());
+    if (!nwo) return null;
+    const owner = nwo.split("/")[0] ?? "";
+    if (owner.toLowerCase() === this.opts.account.toLowerCase()) return null; // already ours
+    return nwo;
+  }
+
+  /** A repo's default branch (`main`/`master`/…) via the API; falls back to `main` if unknown. */
+  private async defaultBranch(repo: string): Promise<string> {
+    const r = await this.runner(
+      ["gh", "repo", "view", repo, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"],
+      { env: this.ghEnv() },
+    );
+    const name = r.code === 0 ? r.stdout.trim() : "";
+    return name || "main";
+  }
+
+  /**
+   * Ensure a fork of `upstream` exists under our account and return its `owner/repo`. `gh repo fork`
+   * is idempotent (a no-op when the fork already exists) but GitHub creates the fork ASYNC, so we
+   * poll `repoExists` until it's queryable before the caller pushes to it.
+   */
+  private async ensureFork(upstream: string): Promise<string> {
+    const fork = `${this.opts.account}/${upstream.split("/")[1]}`;
+    const r = await this.runner(["gh", "repo", "fork", upstream, "--clone=false"], { env: this.ghEnv() });
+    if (r.code !== 0 && !/already exists|forked|exists/i.test(`${r.stderr}${r.stdout}`)) {
+      throw new Error(`gh repo fork failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+    for (let i = 0; i < FORK_READY_TRIES; i++) {
+      if (await this.repoExists(fork)) return fork;
+      await delay(FORK_READY_DELAY_MS);
+    }
+    return fork; // let the subsequent push surface any genuine "fork not ready" error
+  }
+
+  /** Open a PR, but return an already-open one instead of failing (idempotent publish re-runs). */
+  private async ensurePR(p: OpenPRParams): Promise<{ number: number; url: string }> {
+    const existing = await this.findOpenPR(p.repo, p.head);
+    if (existing) return existing;
+    try {
+      return await this.openPR(p);
+    } catch (err) {
+      const again = await this.findOpenPR(p.repo, p.head); // racy/pre-existing → re-query, don't fail
+      if (again) return again;
+      throw err;
+    }
+  }
+
+  /** The open PR for `head` on `repo` (matches on the branch name, cross-fork `owner:branch` too). */
+  private async findOpenPR(repo: string, head: string): Promise<{ number: number; url: string } | null> {
+    const branch = head.includes(":") ? (head.split(":").pop() ?? head) : head;
+    const r = await this.runner(
+      ["gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,url", "--limit", "1"],
+      { env: this.ghEnv() },
+    );
+    if (r.code !== 0) return null;
+    try {
+      const arr = JSON.parse(r.stdout) as Array<{ number: number; url: string }>;
+      const first = arr[0];
+      return first ? { number: first.number, url: first.url } : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Open a PR as itself (Spec 07 §3.3). FREE: a proposal, not a change to main. */
@@ -457,7 +649,7 @@ export class GitHubCli implements GitHubClient {
       "--body", p.body,
     ];
     if (p.draft) args.push("--draft");
-    const r = await run(args, { cwd: this.opts.resolveRepoDir(p.repo), env: this.ghEnv() });
+    const r = await this.runner(args, { cwd: this.opts.resolveRepoDir(p.repo), env: this.ghEnv() });
     if (r.code !== 0) {
       throw new Error(`gh pr create failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
     }
@@ -478,7 +670,7 @@ export class GitHubCli implements GitHubClient {
     if (p.body !== undefined) args.push("--body", p.body);
     if (p.base !== undefined) args.push("--base", p.base);
     if (args.length === 5) return; // nothing to change
-    const r = await run(args, { cwd: this.opts.resolveRepoDir(repo), env: this.ghEnv() });
+    const r = await this.runner(args, { cwd: this.opts.resolveRepoDir(repo), env: this.ghEnv() });
     if (r.code !== 0) {
       throw new Error(`gh pr edit failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
     }
@@ -489,7 +681,7 @@ export class GitHubCli implements GitHubClient {
     this.requireCreds("review PR");
     const flag =
       rv.event === "APPROVE" ? "--approve" : rv.event === "REQUEST_CHANGES" ? "--request-changes" : "--comment";
-    const r = await run(
+    const r = await this.runner(
       ["gh", "pr", "review", String(n), "--repo", repo, flag, "--body", rv.body],
       { cwd: this.opts.resolveRepoDir(repo), env: this.ghEnv() },
     );
@@ -505,7 +697,7 @@ export class GitHubCli implements GitHubClient {
   async mergePR(repo: string, n: number, strategy: MergeStrategy): Promise<void> {
     this.requireCreds("merge PR");
     const flag = strategy === "merge" ? "--merge" : strategy === "rebase" ? "--rebase" : "--squash";
-    const r = await run(
+    const r = await this.runner(
       ["gh", "pr", "merge", String(n), "--repo", repo, flag, "--delete-branch"],
       { cwd: this.opts.resolveRepoDir(repo), env: this.ghEnv() },
     );
@@ -518,7 +710,7 @@ export class GitHubCli implements GitHubClient {
   /** Whether a PR's status checks are all green (Spec 07 §3.6) — the pre-handshake gate. */
   async isGreen(repo: string, n: number): Promise<boolean> {
     this.requireCreds("check PR status");
-    const r = await run(
+    const r = await this.runner(
       ["gh", "pr", "view", String(n), "--repo", repo, "--json", "statusCheckRollup"],
       { cwd: this.opts.resolveRepoDir(repo), env: this.ghEnv() },
     );
