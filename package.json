@@ -11,7 +11,7 @@
     "beckett": "bun src/cli/beckett.ts",
     "daemon": "bun src/daemon.ts",
     "build": "bun build src/shell/main.ts --target=bun --outdir=dist",
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "bun x tsc --noEmit",
     "cli": "bun src/cli/index.ts",
     "test": "bun test"
   },

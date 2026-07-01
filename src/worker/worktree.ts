@@ -395,6 +395,8 @@ export async function currentBranch(repoRoot: string): Promise<string> {
 /** GitHub org/account Beckett owns and pushes project repos to (override via `BECKETT_GH_ORG`). */
 export const GH_ORG = process.env.BECKETT_GH_ORG?.trim() || "0xbeckett";
 
+const projectRepoEnsures = new Map<string, Promise<void>>();
+
 /**
  * Ensure a ticket's project repo exists at `repoRoot` — v3.1. A ticket builds its OWN repo under
  * `~/Projects/<slug>`, decoupled from Beckett's source. If `<GH_ORG>/<slug>` already exists on
@@ -404,6 +406,17 @@ export const GH_ORG = process.env.BECKETT_GH_ORG?.trim() || "0xbeckett";
  * the github skill. Idempotent — a no-op once `repoRoot/.git` exists.
  */
 export async function ensureProjectRepo(repoRoot: string, slug: string): Promise<void> {
+  const existing = projectRepoEnsures.get(repoRoot);
+  if (existing) return existing;
+
+  const ensure = ensureProjectRepoUncached(repoRoot, slug).finally(() => {
+    projectRepoEnsures.delete(repoRoot);
+  });
+  projectRepoEnsures.set(repoRoot, ensure);
+  return ensure;
+}
+
+async function ensureProjectRepoUncached(repoRoot: string, slug: string): Promise<void> {
   if (existsSync(`${repoRoot}/.git`)) return; // already provisioned
   const parent = dirname(repoRoot);
   mkdirSync(parent, { recursive: true });

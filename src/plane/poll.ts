@@ -13,7 +13,9 @@
  *   - new comments on a non-terminal ticket → one `comment_added` per new comment.
  *
  * The poller is read-only and robust: any Plane API error is logged and swallowed (the snapshot
- * is preserved and the tick simply yields fewer/no events). It does NOT spawn anything.
+ * is preserved and the tick simply yields fewer/no events). It does NOT spawn anything. Hot-path
+ * note: comment reads are gated by issue `updatedAt` and run in parallel for changed tickets, so
+ * an unchanged active board does not spend one Plane round-trip per ticket on every tick.
  *
  * Two drive modes:
  *   - The shell calls {@link PlanePoller.poll} on a `config.plane.poll_secs` interval (V3 §4).
@@ -28,18 +30,24 @@ import type { PlaneClient } from "./client.ts";
 import { TICKET_TERMINAL } from "./types.ts";
 import type { PollEvent, Ticket, TicketState } from "./types.ts";
 
-/** One ticket's last-observed signal triplet. */
+/** One ticket's last-observed state plus comment cursors. */
 interface Snapshot {
   state: TicketState;
   updatedAt: string;
   lastCommentAt: string; // ISO of the newest comment we've already emitted
+  lastCommentSweepAt: number; // epoch ms of the last successful comment cursor check
 }
+
+type EventSlot = PollEvent | Promise<PollEvent[]>;
+
+/** Backstop for Plane installs that do not bump issue updated_at on comments. */
+const COMMENT_FULL_SWEEP_MS = 60_000;
 
 /** Constructor dependencies for {@link PlanePoller}. */
 export interface PlanePollerDeps {
   client: PlaneClient;
   logger?: Logger;
-  /** Self-schedule interval for {@link PlanePoller.start} (seconds). Defaults to 15. */
+  /** Self-schedule interval for {@link PlanePoller.start} (seconds). Defaults to 5. */
   pollSecs?: number;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
@@ -61,7 +69,7 @@ export class PlanePoller {
   constructor(deps: PlanePollerDeps) {
     this.client = deps.client;
     this.logger = deps.logger ?? log.child("plane.poll");
-    this.pollSecs = deps.pollSecs ?? 15;
+    this.pollSecs = deps.pollSecs ?? 5;
     this.now = deps.now ?? Date.now;
   }
 
@@ -82,8 +90,9 @@ export class PlanePoller {
       return [];
     }
 
-    const events: PollEvent[] = [];
+    const slots: EventSlot[] = [];
     const seen = new Set<string>();
+    const tickStartedAt = this.now();
 
     for (const ticket of tickets) {
       seen.add(ticket.id);
@@ -93,29 +102,42 @@ export class PlanePoller {
         // First sight: announce creation; seed comment cursor at "now" so we never replay the
         // ticket's whole comment history. If it appears already in an active state, also emit a
         // state_changed{from:null} so the Dispatcher can pick up in-flight work.
-        events.push({ kind: "created", ticket });
+        slots.push({ kind: "created", ticket });
         if (ticket.state === "in_progress" || ticket.state === "in_review") {
-          events.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
+          slots.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
         }
         this.snapshot.set(ticket.id, {
           state: ticket.state,
           updatedAt: ticket.updatedAt,
           lastCommentAt: new Date(this.now()).toISOString(),
+          lastCommentSweepAt: tickStartedAt,
         });
         continue;
       }
 
       // State transition.
       if (prev.state !== ticket.state) {
-        events.push({ kind: "state_changed", ticket, from: prev.state, to: ticket.state });
-        if (ticket.state === "cancelled") events.push({ kind: "cancelled", ticket });
+        slots.push({ kind: "state_changed", ticket, from: prev.state, to: ticket.state });
+        if (ticket.state === "cancelled") slots.push({ kind: "cancelled", ticket });
         prev.state = ticket.state;
       }
-      prev.updatedAt = ticket.updatedAt;
 
-      // New comments (only worth checking while the ticket can still host a worker).
-      if (!TICKET_TERMINAL.has(ticket.state)) {
-        await this.collectComments(ticket, prev, events);
+      // New comments (only worth checking while the ticket can still host a worker). Plane bumps
+      // issue updated_at on comment writes; the periodic sweep is only a compatibility backstop.
+      const issueChanged = prev.updatedAt !== ticket.updatedAt;
+      const dueForSweep = tickStartedAt - prev.lastCommentSweepAt >= COMMENT_FULL_SWEEP_MS;
+      if (!TICKET_TERMINAL.has(ticket.state) && (issueChanged || dueForSweep)) {
+        slots.push(
+          this.collectComments(ticket, prev).then((result) => {
+            if (result.ok) {
+              prev.updatedAt = ticket.updatedAt;
+              prev.lastCommentSweepAt = tickStartedAt;
+            }
+            return result.events;
+          }),
+        );
+      } else {
+        prev.updatedAt = ticket.updatedAt;
       }
     }
 
@@ -124,7 +146,13 @@ export class PlanePoller {
       if (!seen.has(id)) this.snapshot.delete(id);
     }
 
-    return events;
+    const batches = await Promise.all(
+      slots.map(async (slot) => {
+        const resolved = await slot;
+        return Array.isArray(resolved) ? resolved : [resolved];
+      }),
+    );
+    return batches.flat();
   }
 
   /**
@@ -155,6 +183,7 @@ export class PlanePoller {
         state: ticket.state,
         updatedAt: ticket.updatedAt,
         lastCommentAt: nowIso,
+        lastCommentSweepAt: this.now(),
       });
       if (ticket.state === "in_progress") {
         recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
@@ -223,20 +252,22 @@ export class PlanePoller {
   private async collectComments(
     ticket: Ticket,
     prev: Snapshot,
-    events: PollEvent[],
-  ): Promise<void> {
+  ): Promise<{ events: PollEvent[]; ok: boolean }> {
     try {
+      const events: PollEvent[] = [];
       const comments = await this.client.listComments(ticket.id, prev.lastCommentAt);
       for (const comment of comments) {
         events.push({ kind: "comment_added", ticket, comment });
         if (comment.createdAt > prev.lastCommentAt) prev.lastCommentAt = comment.createdAt;
       }
+      return { events, ok: true };
     } catch (err) {
-      // Leave lastCommentAt unchanged so the comment is retried next tick.
+      // Leave lastCommentAt and updatedAt unchanged so the comment is retried next tick.
       this.logger.warn("poll: listComments failed for ticket", {
         ticketId: ticket.id,
         error: (err as Error).message,
       });
+      return { events: [], ok: false };
     }
   }
 }

@@ -208,10 +208,6 @@ export class ClaudeDriver implements HarnessDriver {
       return { accepted: "queued", at: Date.now() };
     }
 
-    this.writeUserLine(msg);
-    this.setState("nudging");
-    this.log.info("nudge written to stdin", { len: msg.length });
-
     return new Promise<NudgeReceipt>((resolve) => {
       const timer = setTimeout(() => {
         // No echo in time → it is buffered inside claude but unacked; report honestly.
@@ -221,6 +217,18 @@ export class ClaudeDriver implements HarnessDriver {
         resolve({ accepted: "queued", at: Date.now() });
       }, ACK_TIMEOUT_MS);
       this.pendingNudges.push({ text: msg, resolve, timer });
+      try {
+        this.writeUserLine(msg);
+        this.setState("nudging");
+        this.log.info("nudge written to stdin", { len: msg.length });
+      } catch (err) {
+        const idx = this.pendingNudges.findIndex((p) => p.timer === timer);
+        if (idx >= 0) this.pendingNudges.splice(idx, 1);
+        clearTimeout(timer);
+        this.bufferedNudges.push(msg);
+        this.log.warn("nudge write failed; buffered for resume", { error: String(err) });
+        resolve({ accepted: "queued", at: Date.now() });
+      }
     });
   }
 
@@ -841,7 +849,11 @@ export class ClaudeDriver implements HarnessDriver {
       }) + "\n";
     const fileSink = sink as { write: (s: string) => void; flush?: () => void };
     fileSink.write(line);
-    fileSink.flush?.();
+    try {
+      fileSink.flush?.();
+    } catch (err) {
+      this.log.debug("stdin flush failed after write (continuing)", { err: String(err) });
+    }
   }
 
   private flushBufferedNudges(): void {

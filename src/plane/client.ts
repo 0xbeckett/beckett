@@ -241,6 +241,7 @@ export class PlaneClient {
   private statesByName: Map<string, PlaneState> | null = null; // name(lower) -> state
   private idToTicketState: Map<string, TicketState> | null = null;
   private cachedStates: PlaneState[] | null = null;
+  private bootstrapPromise: Promise<void> | null = null;
 
   constructor(deps: PlaneClientDeps) {
     this.config = deps.config;
@@ -420,8 +421,15 @@ export class PlaneClient {
 
   private async bootstrap(): Promise<void> {
     if (this.projectId && this.statesByName && this.idToTicketState) return;
-    await this.resolveProject();
-    await this.loadStates();
+    if (!this.bootstrapPromise) {
+      this.bootstrapPromise = (async () => {
+        await this.resolveProject();
+        await this.loadStates();
+      })().finally(() => {
+        this.bootstrapPromise = null;
+      });
+    }
+    await this.bootstrapPromise;
   }
 
   private async resolveProject(): Promise<void> {
