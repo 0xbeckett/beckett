@@ -159,6 +159,16 @@ describe("PlanePoller comment hot path", () => {
     }
   });
 
+  test("prime re-staffs tickets already in review", async () => {
+    const client = new FakePlaneClient();
+    const reviewing = ticket({ state: "in_review" });
+    client.tickets = [reviewing];
+    const poller = new PlanePoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+
+    const events = await poller.prime();
+    expect(events).toEqual([{ kind: "state_changed", ticket: reviewing, from: null, to: "in_review" }]);
+  });
+
   test("same-timestamp comments are deduped by id instead of dropped", async () => {
     class InclusiveFakePlaneClient extends FakePlaneClient {
       override async listComments(
