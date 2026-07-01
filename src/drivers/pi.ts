@@ -8,10 +8,13 @@
  * fight — its containment here is the same as every worker's: it runs inside the ticket's own
  * project repo (`~/Projects/<slug>`), which is the only thing it should touch.
  *
- * Mechanism (verified against the installed `pi` 0.78.0, `--mode json` NDJSON stream):
+ * Mechanism (verified against the installed `pi` 0.72.1, `--mode json` NDJSON stream):
  *
+ *   # first launch — let pi mint + persist its own session id (captured from the `session` line):
  *   pi -p --mode json --provider <p> --model <m> --thinking <lvl> \
- *      --append-system-prompt <systemAppend> --session-id <uuid> "<prompt>"
+ *      --append-system-prompt <systemAppend> "<prompt>"
+ *   # resume — pin the captured id so pi reloads the persisted transcript in the same cwd:
+ *   pi -p --mode json --provider <p> --model <m> --thinking <lvl> --session <id> "<prompt>"
  *
  * - cwd = the project repo (pi is rooted to the process cwd — there is no `-C`), set on spawn.
  * - `--mode json` emits a JSON Lines stream. The events we normalize (Spec 02 §7):
@@ -26,11 +29,16 @@
  *   becomes `kind:'unknown'` and NEVER throws.
  * - `pi -p` is STRICTLY ONE-SHOT: prompt in → run → exit. Like codex there is no mid-turn steer,
  *   so {@link sendNudge} BUFFERS the instruction and reports `queued`; it is replayed as the
- *   prompt of the next {@link resume} (`pi --session-id <id> "<instruction>"`, which reuses the
+ *   prompt of the next {@link resume} (`pi --session <id> "<instruction>"`, which reuses the
  *   persisted session transcript). A turn that ends with buffered steering auto-resumes to apply
  *   it rather than finishing.
- * - session id = pre-minted UUID passed via `--session-id` (pi "creates it if missing", so the
- *   same id resumes). Captured/confirmed from the `session` line as the source of truth.
+ * - session id = pi mints + persists its OWN id on the first launch; we DON'T pre-pin it. This
+ *   pi build (0.72.x) resumes an existing on-disk session via `--session <id|path>` and errors
+ *   ("No session found") if that id doesn't already exist, so a caller-minted id cannot be forced
+ *   on a fresh run (the later `--session-id`-that-creates flag does not exist here — passing it is
+ *   in fact what killed every dispatch: `Error: Unknown option: --session-id` → exit 1 before the
+ *   `session` line, OPS-56). The real id is captured from the `session` line as the source of truth
+ *   and replayed via `--session <id>` on resume (same cwd → pi finds the persisted transcript).
  * - Done-signal: pi has no `--output-schema`, so the structured done-signal is parsed leniently
  *   from the final assistant message (raw JSON, a ```json fence, or a trailing object).
  * - abort() = SIGTERM→SIGKILL of the whole process group, retain the session id. A driver-owned
@@ -78,11 +86,99 @@ const DEFAULT_RESUME_PROMPT = "Please continue from where you left off.";
 /** pi tool names that mutate files → we synthesize a file_change from their args.path. */
 const EDIT_TOOL_NAMES = new Set(["write", "edit", "multiedit", "multi_edit", "apply_patch"]);
 
+/** How long the preflight lets a `pi --version` / `--help` probe run before giving up. */
+const PREFLIGHT_TIMEOUT_MS = 10_000;
+/** CLI flags the driver's invocation depends on — their absence signals version/protocol drift. */
+const REQUIRED_PI_FLAGS = ["--mode", "--session", "--print"] as const;
+
 /** A subset of the diff stat used for derived telemetry counters. */
 interface DiffStat {
   added: number;
   removed: number;
   files: number;
+}
+
+/**
+ * The PATH a pi child runs under: prefix `~/.local/bin` & `~/.bun/bin` so `pi` both RESOLVES and
+ * RUNS under the modern node there (pi needs node ≥20; the system node is older). Shared by the
+ * live child env and the {@link piPreflight} probe so preflight tests the SAME binary a spawn would.
+ */
+function piChildPath(base = process.env.PATH): string {
+  const home = process.env.HOME ?? "";
+  const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");
+  return base ? `${extra}:${base}` : extra;
+}
+
+/** The verdict of a {@link piPreflight} run: is the pi harness usable, and if not, why. */
+export interface PiPreflight {
+  ok: boolean;
+  bin: string;
+  version: string | null;
+  problems: string[];
+}
+
+/**
+ * Fast, offline health check for the pi harness — run at dispatch so a broken pi surfaces LOUDLY
+ * and immediately instead of silently killing whatever ticket happened to be cast to it (OPS-56).
+ * Three cheap local probes, no network:
+ *   1. the binary resolves and runs (`pi --version`);
+ *   2. the CLI still advertises the flags the driver invokes (`--mode`, `--session`, `--print`) —
+ *      catches the exact version/protocol drift that took pi down (the `--session-id` removal);
+ *   3. a pi login exists (`~/.pi/agent/auth.json`, non-empty) — subscription/OAuth auth is present.
+ */
+export async function piPreflight(config: Config): Promise<PiPreflight> {
+  const bin = config.harness.pi.bin;
+  const problems: string[] = [];
+  const env = { ...process.env, PATH: piChildPath() };
+  for (const k of FORBIDDEN_ENV_KEYS) delete (env as Record<string, string | undefined>)[k];
+
+  // 1 — binary resolves + reports a version.
+  let version: string | null = null;
+  try {
+    const v = Bun.spawnSync({ cmd: [bin, "--version"], env, stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
+    if (v.success) {
+      // pi prints its version to stderr; fall back across both streams.
+      const raw = `${v.stdout.toString()}\n${v.stderr.toString()}`.trim();
+      version = raw.split("\n").map((l) => l.trim()).find(Boolean) || null;
+    } else {
+      problems.push(`\`${bin} --version\` exited ${v.exitCode}: ${v.stderr.toString().trim() || "(no output)"}`);
+    }
+  } catch (err) {
+    problems.push(
+      `pi binary "${bin}" is not runnable on PATH (${(err as Error).message}). ` +
+        `Install pi or fix config.harness.pi.bin.`,
+    );
+  }
+
+  // 2 — CLI/protocol drift: confirm the flags the driver emits still exist.
+  try {
+    const h = Bun.spawnSync({ cmd: [bin, "--help"], env, stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
+    const help = `${h.stdout.toString()}\n${h.stderr.toString()}`;
+    if (help.trim()) {
+      const missing = REQUIRED_PI_FLAGS.filter((f) => !help.includes(f));
+      if (missing.length) {
+        problems.push(
+          `installed pi (${version ?? "unknown version"}) no longer advertises ${missing.join(", ")} — ` +
+            `CLI/protocol drift; the PiDriver invocation needs updating.`,
+        );
+      }
+    }
+  } catch {
+    /* a --help failure is already implied by the --version failure in (1) */
+  }
+
+  // 3 — pi login present (subscription/OAuth; the child strips API keys and relies on this).
+  const authPath = join(process.env.HOME ?? "", ".pi/agent/auth.json");
+  try {
+    const f = Bun.file(authPath);
+    if (!(await f.exists()) || f.size === 0) {
+      problems.push(`no pi login at ${authPath} — run \`pi\` once to sign in (subscription/OAuth).`);
+    }
+  } catch (err) {
+    problems.push(`could not read pi login at ${authPath} (${(err as Error).message}).`);
+  }
+
+  return { ok: problems.length === 0, bin, version, problems };
 }
 
 export class PiDriver implements HarnessDriver {
@@ -101,6 +197,8 @@ export class PiDriver implements HarnessDriver {
   private pid: number | null = null;
 
   private workerState: WorkerState = "spawning";
+  /** Tail of the child's stderr (diagnostic) — folded into the startup-failure message. */
+  private stderrTail = "";
   private finished = false;
   private spawnedAt = 0;
   private lastActivityTs = 0;
@@ -152,7 +250,18 @@ export class PiDriver implements HarnessDriver {
   async spawn(spec: SpawnSpec): Promise<SpawnResult> {
     if (this.child) throw new Error("PiDriver: already spawned (one driver = one process)");
     this.spec = spec;
-    // Pre-mint if the caller didn't (pi accepts an arbitrary --session-id and creates it).
+    // Preflight FIRST: a dead pi harness (missing binary, CLI drift, no login) must surface loudly
+    // here — before we launch a child that would otherwise exit 1 before its session line and take
+    // the ticket down silently (OPS-56).
+    const pf = await piPreflight(this.config);
+    if (!pf.ok) {
+      this.log.error("pi preflight FAILED — harness unusable", { bin: pf.bin, version: pf.version, problems: pf.problems });
+      throw new Error(`PiDriver preflight failed (pi harness unusable): ${pf.problems.join("; ")}`);
+    }
+    this.log.info("pi preflight ok", { bin: pf.bin, version: pf.version });
+    // Keep a throwaway identity so currentSessionId is populated pre-handshake; it is NEVER passed
+    // to pi on the first launch (see buildArgs). pi mints + persists the real id, which we capture
+    // from the `session` line and use for resume.
     this.sessionId = spec.sessionId ?? randomUUID();
     const args = this.buildArgs(spec.prompt, /*isResume*/ false);
     return this.launch(args, /*isResume*/ false);
@@ -177,7 +286,7 @@ export class PiDriver implements HarnessDriver {
 
   /**
    * Re-attach a paused/finished worker. If the process is still live a turn is in flight (pi can't
-   * be steered mid-turn) so we just lift the pause. If it exited, relaunch with `--session-id <id>`
+   * be steered mid-turn) so we just lift the pause. If it exited, relaunch with `--session <id>`
    * and the buffered instruction as the new prompt — pi reuses the persisted session transcript.
    */
   async resume(): Promise<void> {
@@ -193,7 +302,7 @@ export class PiDriver implements HarnessDriver {
     if (!this.sessionId) throw new Error("PiDriver: resume without a session id");
 
     const prompt = this.takeBufferedPrompt();
-    this.log.info("relaunching pi with --session-id (resume)", {
+    this.log.info("relaunching pi with --session (resume)", {
       sessionId: this.sessionId,
       promptLen: prompt.length,
     });
@@ -247,7 +356,12 @@ export class PiDriver implements HarnessDriver {
     const model = this.resolvedModel();
     if (model) args.push("--model", model);
     args.push("--thinking", this.resolvedThinking());
-    if (this.sessionId) args.push("--session-id", this.sessionId);
+    // Session identity: pi 0.72.x pins/resumes an EXISTING on-disk session with `--session <id>`
+    // and has NO caller-mints-a-fresh-id flag (`--session-id` is rejected → exit 1, OPS-56). So we
+    // only pass `--session` on resume, when `this.sessionId` is the real id pi minted + persisted on
+    // the first launch (captured from the `session` line). On the first launch we pass nothing and
+    // let pi mint its own id.
+    if (isResume && this.sessionId) args.push("--session", this.sessionId);
     // System prompt (scope + criteria + persona) only on the FIRST launch — the persisted session
     // already carries it on resume, and re-appending would duplicate it.
     if (!isResume && this.spec?.systemAppend?.trim()) {
@@ -337,10 +451,25 @@ export class PiDriver implements HarnessDriver {
   private childEnv(): Record<string, string | undefined> {
     const env: Record<string, string | undefined> = { ...process.env };
     for (const k of FORBIDDEN_ENV_KEYS) delete env[k];
-    const home = process.env.HOME ?? "";
-    const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");
-    env.PATH = env.PATH ? `${extra}:${env.PATH}` : extra;
+    env.PATH = piChildPath(env.PATH);
     return env;
+  }
+
+  /**
+   * A loud, actionable message for the #1 pi failure: the child dies before its `session`
+   * handshake. Folds in the captured stderr tail (e.g. `Error: Unknown option: --session-id`)
+   * so the real cause is visible instead of the opaque bare "exited before session line" (OPS-56).
+   */
+  private startupFailureMessage(code: number): string {
+    const tail = this.stderrTail.trim();
+    const detail = tail
+      ? ` pi stderr: ${JSON.stringify(tail)}.`
+      : " pi printed nothing to stderr.";
+    return (
+      `PiDriver: pi exited (code ${code}) before emitting its session line — the harness never ` +
+      `started.${detail} Common causes: a pi CLI/version drift (an unknown flag), a bad ` +
+      `harness.pi.bin, or a missing/expired pi login (~/.pi/agent/auth.json). Run the pi preflight.`
+    );
   }
 
   private async onProcessExit(code: number, gen: number): Promise<void> {
@@ -352,7 +481,7 @@ export class PiDriver implements HarnessDriver {
     await this.readLoop; // drain any final stdout (agent_end may be the last line before exit)
 
     if (this.resolveSession && !this.sessionEmitted) {
-      this.rejectSession?.(new Error(`PiDriver: process exited (code ${code}) before session line`));
+      this.rejectSession?.(new Error(this.startupFailureMessage(code)));
       this.resolveSession = null;
       this.rejectSession = null;
     }
@@ -455,7 +584,12 @@ export class PiDriver implements HarnessDriver {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true }).trim();
-        if (text) this.log.debug("pi stderr", { text });
+        if (text) {
+          this.log.debug("pi stderr", { text });
+          // Keep the last ~1KB so a startup crash (e.g. `Error: Unknown option: …`) is reported
+          // verbatim instead of the opaque "exited before session line" (OPS-56).
+          this.stderrTail = `${this.stderrTail}${this.stderrTail ? "\n" : ""}${text}`.slice(-1024);
+        }
       }
     } catch {
       // best-effort; stderr is diagnostic only

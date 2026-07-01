@@ -1,5 +1,29 @@
 # Changelog
 
+## v3.3.1 — pi harness back from the dead (OPS-56) (2026-07-01)
+
+**Every pi dispatch was dying at launch** with `PiDriver: process exited (code 1) before session
+line` — so all backend/systems tickets cast to pi went silent and had to fall back to claude.
+
+- **Root cause: CLI/version drift.** The PiDriver was written against pi 0.78.0's
+  `--session-id <uuid>` (creates-if-missing) flag, but the installed pi is **0.72.1**, which has no
+  such flag — it rejects it outright (`Error: Unknown option: --session-id`) and exits 1 *before*
+  printing its `session` handshake line. Auth, the binary path, and the NDJSON protocol were all
+  fine; the single bad flag took the whole harness down.
+- **Fix.** pi 0.72.x pins/resumes an *existing* on-disk session via `--session <id>` and cannot be
+  handed a caller-minted id for a fresh run. So the driver now passes **no** session flag on the
+  first launch — pi mints + persists its own id, which we capture from the `session` line — and
+  replays it with `--session <id>` on resume (same cwd → pi reloads the transcript). Verified with a
+  real end-to-end pi ticket (spawn → tool call → file write → `finished`/success with parsed
+  done-signal).
+- **Hardened the failure mode.** A fast, offline **preflight** (`piPreflight`) now runs at every
+  spawn and fails *loudly* if the pi harness is unusable — missing/unrunnable binary, CLI flag
+  drift (it checks pi still advertises `--mode`/`--session`/`--print`), or a missing pi login
+  (`~/.pi/agent/auth.json`). And when a child still dies before its session line, the error now
+  folds in the captured **stderr tail** (e.g. the `Unknown option` line) plus the likely causes,
+  instead of the opaque bare message. A dead pi harness surfaces immediately at dispatch rather than
+  silently killing whichever ticket happened to be cast to it.
+
 ## v3.3 — progress threads + pi replaces codex (2026-07-01)
 
 Two features and a sandbox fix.

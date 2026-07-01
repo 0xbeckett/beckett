@@ -328,8 +328,12 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   const envelope = buildEnvelope(harness, config);
   const scopeGuardPath = join(import.meta.dir, "../hooks/scope-guard.ts");
 
-  // claude + pi own their resume identity from t=0 via a pre-minted UUID (claude --session-id,
-  // pi --session-id "create if missing"); codex can't be told an id, so it captures a thread id.
+  // claude owns its resume identity from t=0 via a pre-minted UUID (claude --session-id). pi and
+  // codex cannot be told an id: the installed pi (0.72.x) has no "create if missing" flag — it only
+  // resumes an EXISTING session via --session <id> (passing --session-id killed every dispatch,
+  // OPS-56) — so both MINT their own id, which the driver captures from the handshake line. We still
+  // hand pi a throwaway pre-mint so its currentSessionId is populated pre-handshake; the driver
+  // never forwards it to pi and overwrites it with pi's real id.
   const preMintSession =
     harness.harness === "claude" || harness.harness === "pi" ? randomUUID() : undefined;
 
