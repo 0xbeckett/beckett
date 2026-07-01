@@ -35,7 +35,7 @@
  * testable).
  */
 
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { isAbsolute, relative, resolve, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
@@ -132,16 +132,30 @@ class StdinChannel {
   private promptResolve!: (p: string) => void;
   readonly prompt: Promise<string> = new Promise((r) => (this.promptResolve = r));
   private sawPrompt: boolean;
+  private bridgeTimer: ReturnType<typeof setInterval> | null = null;
+  private bridgeOffset = 0;
+  private bridgeBuf = "";
 
   /** @param promptKnown true when the prompt came from a positional arg (all stdin = nudges). */
-  constructor(private readonly promptKnown: boolean) {
+  constructor(
+    private readonly promptKnown: boolean,
+    private readonly bridgePath?: string,
+  ) {
     this.sawPrompt = promptKnown;
     if (promptKnown) this.promptResolve("");
   }
 
   /** Start consuming stdin lines (does not block; swallows errors on close). */
   start(): void {
-    void this.run();
+    if (this.bridgePath) this.startBridge();
+    else void this.run();
+  }
+
+  stop(): void {
+    if (this.bridgeTimer) {
+      clearInterval(this.bridgeTimer);
+      this.bridgeTimer = null;
+    }
   }
 
   private async run(): Promise<void> {
@@ -184,6 +198,30 @@ class StdinChannel {
 
   getPromptText(): string {
     return this.promptText;
+  }
+
+  private startBridge(): void {
+    const poll = () => {
+      if (!this.bridgePath || !existsSync(this.bridgePath)) return;
+      let body = "";
+      try {
+        body = readFileSync(this.bridgePath, "utf8");
+      } catch {
+        return;
+      }
+      if (body.length <= this.bridgeOffset) return;
+      const next = this.bridgeBuf + body.slice(this.bridgeOffset);
+      this.bridgeOffset = body.length;
+      const lines = next.split(/\r?\n/);
+      this.bridgeBuf = lines.pop() ?? "";
+      for (const line of lines) {
+        const raw = line.trim();
+        if (raw) this.handle(raw);
+      }
+    };
+    poll();
+    this.bridgeTimer = setInterval(poll, 10);
+    this.bridgeTimer.unref?.();
   }
 }
 
@@ -282,7 +320,7 @@ export async function runHarness(cfg: HarnessConfig): Promise<number> {
   const promptArg = ""; // claude -p with stream-json input takes the prompt over stdin
 
   // stdin channel (prompt + nudges). Start reading immediately.
-  const stdin = new StdinChannel(Boolean(promptArg));
+  const stdin = new StdinChannel(Boolean(promptArg), env.BECKETT_STDIN_BRIDGE);
   stdin.start();
 
   // Scenario selection: flag → env → prompt tag → default.
@@ -378,6 +416,7 @@ export async function runHarness(cfg: HarnessConfig): Promise<number> {
         }),
       );
       await flushStdout();
+      stdin.stop();
       return 0;
     }
 
@@ -419,6 +458,7 @@ export async function runHarness(cfg: HarnessConfig): Promise<number> {
     }),
   );
   await flushStdout();
+  stdin.stop();
   return 0;
 }
 
