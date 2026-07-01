@@ -109,6 +109,12 @@ const ConfigSchema = z
         repeated_tool_calls_n: posInt.default(4),
         overrun_factor: z.number().positive().default(1.5),
         checkin_default_s: posInt.default(600),
+        // Generous, configurable backstop wall-clock cap (seconds) enforced by the per-worker
+        // watchdog (drivers/proc.ts#hardCapSeconds). A runaway-worker safety net, NOT a normal work
+        // limit — real tickets routinely need far more than the old tight per-effort caps. Floor of
+        // 1800s (30min) so it can never be tightened back into the retired 600s guillotine (OPS-50);
+        // default 3600s (60min).
+        worker_hard_cap_s: int.min(1800).default(3600),
         tail_mode: z.enum(["stream", "disk", "stream+disk"]).default("stream+disk"),
       })
       .default({}),

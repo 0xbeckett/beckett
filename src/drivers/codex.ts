@@ -51,6 +51,7 @@ import type {
   WorkerState,
 } from "../types.ts";
 import { makeLogger } from "../log.ts";
+import { hardCapSeconds, killProcessTree, wrapProcessGroup } from "./proc.ts";
 
 /** The bun subprocess handle type (avoids a hard import of the `bun` module symbol). */
 type Child = ReturnType<typeof Bun.spawn>;
@@ -87,6 +88,8 @@ export class CodexDriver implements HarnessDriver {
   private readonly log: Logger;
 
   private child: Child | null = null;
+  /** True when the child was launched as its own process-group leader (setsid) — enables tree-kill. */
+  private groupKill = false;
   private spec: SpawnSpec | null = null;
 
   /** Source of truth for resume identity; captured from `thread.started` (not minted). */
@@ -302,10 +305,15 @@ export class CodexDriver implements HarnessDriver {
       sessionId: this.sessionId,
     });
 
+    // Launch as a NEW process group (setsid) so abort/timeout can kill the whole tree with one
+    // group signal, leaving no orphaned descendant to keep mutating the checkout (OPS-50).
+    const { cmd, groupKill } = wrapProcessGroup(bin, args);
+    this.groupKill = groupKill;
+
     let child: Child;
     try {
       child = Bun.spawn({
-        cmd: [bin, ...args],
+        cmd,
         cwd: spec.workspace,
         // codex exec blocks on stdin even when the prompt is an argument (loom-desk Risk note):
         // closing stdin (≈ `</dev/null`) gives it an immediate EOF so it proceeds.
@@ -463,36 +471,43 @@ export class CodexDriver implements HarnessDriver {
 
   private tickWatchdog(): void {
     if (!this.spec || this.finished || this.isTerminal()) return;
+    const capS = hardCapSeconds(this.config);
     const totalS = (Date.now() - this.spawnedAt) / 1000;
-    if (totalS > this.spec.envelope.wallClockS) {
-      this.log.warn("wall-clock cap exceeded — aborting", {
-        wallClockS: this.spec.envelope.wallClockS,
-        totalS: Math.round(totalS),
-      });
-      void this.abort(`wall-clock cap ${this.spec.envelope.wallClockS}s exceeded`);
-    }
+    if (totalS <= capS) return;
+    // Trip the generous backstop cap. Set finished up-front so this can't re-enter and so
+    // onProcessExit (fired by the kill below) won't also synthesize a finish.
+    this.finished = true;
+    void this.timeOut(capS, totalS);
+  }
+
+  /**
+   * Handle a hard-cap timeout GRACEFULLY (never a silent death, OPS-50): kill the whole process
+   * tree FIRST — so no orphan is still mutating the checkout when the dispatcher reacts — then emit
+   * a terminal `finished` (subtype `error_wall_clock_cap`) the dispatcher keys on to commit WIP,
+   * comment on the ticket, and retry / return it to a ready state.
+   */
+  private async timeOut(capS: number, totalS: number): Promise<void> {
+    this.log.warn("hard wall-clock cap hit — timing out worker (backstop, not a work limit)", {
+      hardCapS: capS,
+      totalS: Math.round(totalS),
+    });
+    this.setState("aborted");
+    await this.killChild();
+    this.emit({
+      kind: "finished",
+      status: "error",
+      subtype: "error_wall_clock_cap",
+      structuredOutput: null,
+      usage: { ...this.tokens },
+      ts: Date.now(),
+    });
   }
 
   private async killChild(): Promise<void> {
     const child = this.child;
     if (!child) return;
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // already gone
-    }
-    const killed = await Promise.race([
-      child.exited.then(() => true),
-      new Promise<boolean>((r) => setTimeout(() => r(false), SIGKILL_GRACE_MS)),
-    ]);
-    if (!killed) {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // already gone
-      }
-      await child.exited;
-    }
+    // Kill the whole process group (harness + descendants) so nothing is orphaned (OPS-50).
+    await killProcessTree(child, { groupKill: this.groupKill, graceMs: SIGKILL_GRACE_MS, log: this.log });
   }
 
   // ===========================================================================

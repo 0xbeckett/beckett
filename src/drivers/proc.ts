@@ -1,0 +1,99 @@
+/**
+ * Beckett — driver process-lifecycle helpers (`src/drivers/proc.ts`)
+ * =======================================================================================
+ * Small, driver-agnostic helpers shared by the claude/codex/pi drivers for two things the
+ * three of them used to hand-roll (and drift on):
+ *
+ *   1. The GENEROUS, CONFIGURABLE wall-clock backstop cap the per-worker watchdog enforces
+ *      ({@link hardCapSeconds}). This is a runaway-worker safety net, NOT a normal work limit —
+ *      real tickets routinely need far more than the old tight per-effort caps. The old 600s
+ *      "guillotine" (OPS-50) is gone; the driver watchdog now trips only at this backstop.
+ *
+ *   2. Killing a harness AND ITS WHOLE PROCESS TREE ({@link wrapProcessGroup} + {@link
+ *      killProcessTree}). A `claude`/`pi`/`codex` worker forks descendants (bash tool runs, MCP
+ *      servers, sub-agent harnesses). SIGKILL on the harness pid ALONE orphans those descendants —
+ *      they reparent to init and keep mutating the checkout (the OPS-45/OPS-50 "orphan stomps
+ *      files" bug). Launching the harness as its own process-group leader (`setsid`) lets us signal
+ *      the entire group with one `kill(-pgid)` so nothing survives the reap.
+ */
+
+import type { Config, Logger } from "../types.ts";
+
+/**
+ * Absolute path to `setsid`, resolved once at load. `null` when unavailable (non-Linux / a minimal
+ * image) — in that case callers must fall back to a single-pid kill and MUST NOT group-kill (a
+ * negative-pid signal would otherwise hit the daemon's own process group).
+ */
+const SETSID_BIN: string | null = (() => {
+  try {
+    return Bun.which("setsid");
+  } catch {
+    return null;
+  }
+})();
+
+/**
+ * The generous, configurable backstop wall-clock cap (seconds) the per-worker watchdog enforces.
+ * Reads `config.supervise.worker_hard_cap_s`. Defensive floor of 1800s (30min) so a stray config
+ * value can never tighten it back into the old guillotine; defaults to 3600s (60min) when unset.
+ */
+export function hardCapSeconds(config: Config): number {
+  const v = config.supervise?.worker_hard_cap_s;
+  return typeof v === "number" && v >= 1800 ? v : 3600;
+}
+
+/**
+ * Wrap a harness command so the launched process becomes a NEW process-group leader (via `setsid`),
+ * so {@link killProcessTree} can later kill the ENTIRE tree — the harness plus every bash/MCP/
+ * sub-agent child it forked — with one group signal. Returns `groupKill:false` when `setsid` is
+ * unavailable; callers then fall back to a single-pid kill (never a negative-pid group kill).
+ */
+export function wrapProcessGroup(bin: string, args: string[]): { cmd: string[]; groupKill: boolean } {
+  if (SETSID_BIN) return { cmd: [SETSID_BIN, bin, ...args], groupKill: true };
+  return { cmd: [bin, ...args], groupKill: false };
+}
+
+/** The minimal subprocess surface {@link killProcessTree} needs (Bun.Subprocess satisfies it). */
+interface Killable {
+  pid: number;
+  kill: (sig?: number | string) => void;
+  exited: Promise<number>;
+}
+
+/**
+ * Kill a spawned harness and ALL its descendants, escalating SIGTERM→SIGKILL after a grace. When
+ * the child was launched as a group leader (see {@link wrapProcessGroup}), signals the whole
+ * process group (`-pid`) so no orphan survives; otherwise falls back to the single pid. Idempotent
+ * and best-effort — every syscall is guarded (ESRCH once the process is already gone) and the final
+ * wait is time-boxed so a wedged descendant can never hang the daemon.
+ */
+export async function killProcessTree(
+  child: Killable,
+  opts: { groupKill: boolean; graceMs: number; log?: Logger },
+): Promise<void> {
+  const pid = child.pid;
+  const signal = (sig: string): void => {
+    try {
+      if (opts.groupKill) process.kill(-pid, sig as NodeJS.Signals);
+      else child.kill(sig);
+    } catch {
+      // already gone (ESRCH) or not permitted — best-effort by contract
+    }
+  };
+
+  signal("SIGTERM");
+  const exitedInTime = await Promise.race([
+    child.exited.then(() => true),
+    new Promise<boolean>((r) => setTimeout(() => r(false), opts.graceMs)),
+  ]);
+  if (exitedInTime) return;
+
+  opts.log?.warn("harness did not exit on SIGTERM — SIGKILL the process tree", { pid });
+  signal("SIGKILL");
+  // SIGKILL on the group leader is fatal, but time-box the wait so we never block on a stuck
+  // descendant holding the group open.
+  await Promise.race([
+    child.exited,
+    new Promise<void>((r) => setTimeout(r, opts.graceMs)),
+  ]);
+}
