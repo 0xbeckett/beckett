@@ -35,7 +35,18 @@ import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { serveBus, type BusRequest, type BusResponse } from "../shell/control-bus.ts";
 import { createDiscordGateway, type DiscordGateway } from "../discord/gateway.ts";
-import { downloadAttachments, formatAttachmentManifest } from "../discord/attachments.ts";
+import {
+  downloadAttachments,
+  buildAttachmentContent,
+  type TurnContentBlock,
+} from "../discord/attachments.ts";
+
+/**
+ * What one chat turn hands the model: either a plain string (text-only turns, and every internal
+ * turn — handoffs, seeds, ticket updates) or an array of content blocks (a text block plus one or
+ * more base64 image blocks, so a Discord image reaches the model turn as real vision input).
+ */
+export type TurnMessage = string | TurnContentBlock[];
 
 /** The same env keys the worker driver strips — subscription auth only (Spec 00 §4). */
 const FORBIDDEN_ENV_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] as const;
@@ -168,7 +179,7 @@ export class ConciergeSession {
    * Run one chat turn. Writes the message as a user line and resolves with the assistant's
    * reply text once claude emits the turn's `result`. Single-flight via the internal queue.
    */
-  ask(message: string): Promise<string> {
+  ask(message: TurnMessage): Promise<string> {
     const run = this.queue.then(() => this.runTurn(message));
     // Keep the chain alive even if a turn rejects, so one bad turn never wedges the session.
     // Chain the rotation check AFTER the turn so any compaction lands at a turn boundary (never
@@ -198,7 +209,7 @@ export class ConciergeSession {
 
   // ── internals ────────────────────────────────────────────────────────────────────────
 
-  private async runTurn(message: string): Promise<string> {
+  private async runTurn(message: TurnMessage): Promise<string> {
     if (this.stopped) throw new Error("concierge session stopped");
     if (!this.child) await this.launch(/*resume*/ true);
     const child = this.child;
@@ -301,13 +312,15 @@ export class ConciergeSession {
     return env;
   }
 
-  private writeUserLine(content: string): void {
+  private writeUserLine(content: TurnMessage): void {
     const child = this.child;
     if (!child) throw new Error("concierge: no live process to write to");
     const sink = child.stdin as { write?: (s: string) => void; flush?: () => void } | undefined;
     if (!sink || typeof sink.write !== "function") {
       throw new Error("concierge: process stdin is not writable");
     }
+    // `content` is passed straight through to the model turn — a string for text-only turns, or an
+    // array of content blocks (text + base64 image) so images render as vision input (OPS-31).
     const line =
       JSON.stringify({
         type: "user",
@@ -816,15 +829,18 @@ export class Concierge {
   }
 
   /**
-   * Turn an inbound message into the single user line the session sees. With no attachments it's
-   * just the framed text. With attachments (images, screenshots, pdfs, anything dragged in) we pull
-   * the bytes down locally and append a manifest of Read-able paths — the session is a full `claude`
-   * harness, so a downloaded image is opened by its Read tool and rendered as real vision input
-   * (this mirrors the shell's parent-injection path). Best-effort: a failed/oversized download
-   * degrades to a note in the manifest and never drops the turn.
+   * Turn an inbound message into the turn the session sees. With no attachments it's just the framed
+   * text. With attachments (images, screenshots, pdfs, anything dragged in) we pull the bytes down
+   * locally, then split them: images become **base64 image content blocks appended to the turn** so
+   * they reach the model as real vision input, while non-image / oversized / failed downloads become
+   * a text manifest of Read-able paths (the session is a full `claude` harness — its Read tool opens
+   * those). This is the OPS-31 fix: OPS-27 only ever emitted the manifest, so images never actually
+   * reached the model turn. Best-effort: a failed download degrades to a manifest note, never drops
+   * the turn; a turn with no inlinable image is a plain string exactly as before.
    */
-  private async buildTurn(m: IncomingMessage, content: string): Promise<string> {
+  private async buildTurn(m: IncomingMessage, content: string): Promise<TurnMessage> {
     if (m.attachments.length === 0) return frameUserTurn(m.channelId, content);
+    let images: TurnContentBlock[] = [];
     let manifest = "";
     try {
       const downloaded = await downloadAttachments(m.attachments, {
@@ -832,17 +848,23 @@ export class Concierge {
         messageId: m.messageId,
         logger: this.log.child("attachments"),
       });
-      manifest = formatAttachmentManifest(downloaded);
+      const built = await buildAttachmentContent(downloaded, this.log.child("attachments"));
+      images = built.images;
+      manifest = built.manifest;
     } catch (err) {
-      // downloadAttachments is already best-effort; belt-and-suspenders so a bad upload never
-      // drops the whole message — fall back to whatever text the person typed.
+      // downloadAttachments/buildAttachmentContent are already best-effort; belt-and-suspenders so a
+      // bad upload never drops the whole message — fall back to whatever text the person typed.
       this.log.warn("attachment handling failed; sending text only", {
         messageId: m.messageId,
         err: String(err),
       });
     }
     const body = content && manifest ? `${content}\n${manifest}` : content || manifest;
-    return frameUserTurn(m.channelId, body);
+    const framed = frameUserTurn(m.channelId, body);
+    // No inlinable image → the turn is a plain string, byte-for-byte as text-only turns always were.
+    if (images.length === 0) return framed;
+    // Otherwise: a text block (framed message + any non-image manifest) followed by the image blocks.
+    return [{ type: "text", text: framed }, ...images];
   }
 }
 
