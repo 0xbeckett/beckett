@@ -65,6 +65,7 @@ import type {
 } from "../types.ts";
 import { makeLogger } from "../log.ts";
 import { hardCapSeconds, killGroup, killProcessTree, wrapProcessGroup } from "./proc.ts";
+import { classifyHarnessFailure } from "./failure.ts";
 
 /** The bun subprocess handle type (avoids a hard import of the `bun` module symbol). */
 type Child = ReturnType<typeof Bun.spawn>;
@@ -585,6 +586,7 @@ export class PiDriver implements HarnessDriver {
           blockedReason: message,
         },
         usage: { ...this.tokens },
+        errorClass: classifyHarnessFailure(message) ?? "crash",
         ts,
       });
       this.finished = true;
@@ -624,6 +626,7 @@ export class PiDriver implements HarnessDriver {
       subtype: "error_wall_clock_cap",
       structuredOutput: null,
       usage: { ...this.tokens },
+      errorClass: "timeout",
       ts: Date.now(),
     });
   }
@@ -854,6 +857,7 @@ export class PiDriver implements HarnessDriver {
           subtype: "error_resume",
           structuredOutput: null,
           usage: { ...this.tokens },
+          errorClass: classifyHarnessFailure(String(err)) ?? "crash",
           ts: Date.now(),
         });
         this.finished = true;

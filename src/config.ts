@@ -150,6 +150,12 @@ const ConfigSchema = z
       .default({}),
     harness: z
       .object({
+        // Substitution order when a cast harness fails preflight or dies on auth/rate-limit
+        // (issue #17): the dispatcher walks this list for the first enabled + healthy harness.
+        // A claude outage must not stall the fleet while a working pi/codex login sits idle.
+        fallback_order: z
+          .array(z.enum(["claude", "codex", "pi"]))
+          .default(["claude", "pi", "codex"]),
         // No `enabled` switch for claude: it is the backbone harness and the fallback target
         // whenever a cast names a disabled harness, so it can never honestly be off. (codex/pi
         // `enabled` ARE real: Dispatcher#castFor falls back to claude when one is disabled.)

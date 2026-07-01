@@ -29,7 +29,7 @@ let counter = 0;
  */
 let spawnGate: Promise<void> | null = null;
 
-function makeHandle(ticket: Ticket, stage: string) {
+function makeHandle(ticket: Ticket, stage: string, harness = "claude") {
   const doneCbs = new Set<(s: "success" | "error", sum: string) => void>();
   let result: any = null;
   let state = "running";
@@ -38,6 +38,7 @@ function makeHandle(ticket: Ticket, stage: string) {
     workerId: `wk_${counter}`,
     ticketId: ticket.id,
     stage,
+    harness,
     workspace: `/tmp/fake-wt/${counter}`,
     branch: `beckett/wk_${counter}/${ticket.identifier}`,
     sessionId: `sess-${counter}`,
@@ -70,8 +71,14 @@ function makeHandle(ticket: Ticket, stage: string) {
     },
     // test trigger: complete the worker with a status + optional structured done-signal.
     // `timedOut` simulates the driver's backstop wall-clock finish (subtype error_wall_clock_cap).
-    finish(status: "success" | "error", summary: string, structured: unknown = null, timedOut = false) {
-      result = { status, summary, structured, timedOut };
+    finish(
+      status: "success" | "error",
+      summary: string,
+      structured: unknown = null,
+      timedOut = false,
+      errorClass?: string,
+    ) {
+      result = { status, summary, structured, timedOut, errorClass };
       state = status === "success" ? "review" : "failed";
       for (const cb of doneCbs) cb(status, summary);
     },
@@ -93,7 +100,7 @@ const fakeSpawn = async (args: any) => {
     throw new Error("stale session — cannot resume");
   }
   if (spawnGate) await spawnGate; // simulate slow worktree alloc + harness launch
-  const h = makeHandle(args.ticket, args.stage);
+  const h = makeHandle(args.ticket, args.stage, args.harness.harness);
   created.push(h);
   return h;
 };
@@ -202,7 +209,14 @@ function doneSignal(
   };
 }
 
-function newDispatcher(max_workers = 2, opts: { advanceOutboxPath?: string; runtimeStatePath?: string } = {}) {
+function newDispatcher(
+  max_workers = 2,
+  opts: {
+    advanceOutboxPath?: string;
+    runtimeStatePath?: string;
+    preflight?: (harness: string) => Promise<{ ok: boolean; problems: string[] }>;
+  } = {},
+) {
   const client = new FakeClient();
   const d = new Dispatcher({
     client,
@@ -872,6 +886,91 @@ describe("crash recovery", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── issue #17: preflight fallback chain + failure taxonomy policy ─────────────────────────
+describe("preflight + failure taxonomy", () => {
+  const healthy = async () => ({ ok: true, problems: [] });
+
+  test("a cast harness that fails preflight is substituted with a comment", async () => {
+    const { d, client } = newDispatcher(2, {
+      preflight: async (h: string) =>
+        h === "codex" ? { ok: false, problems: ["no codex login"] } : { ok: true, problems: [] },
+    });
+    const ticket = makeTicket({ casting: { implement: { harness: "codex", effort: "low" } } });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]).toMatchObject({ harness: { harness: "claude", effort: "low" } });
+    const note = client.comments.find((c) => c.body.includes("unavailable"));
+    expect(note?.body).toContain("no codex login");
+    expect(note?.body).toContain("**claude**");
+  });
+
+  test("no healthy harness → spawn-failure path (bounded retry comment), never a wedge", async () => {
+    const { d, client } = newDispatcher(2, {
+      preflight: async () => ({ ok: false, problems: ["everything is down"] }),
+    });
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    expect(spawnCalls).toHaveLength(0);
+    const note = client.comments.at(-1);
+    expect(note?.body).toContain("Could not start the implement worker");
+    expect(note?.body).toContain("Retrying in 30s (attempt 1/3)");
+  });
+
+  test("auth-classed death with no alternative parks the ticket with the login fix", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    client.board.push(ticket);
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    created[0].finish("error", "claude said: not logged in", null, false, "auth");
+    await tick();
+
+    expect(client.setStateCalls.at(-1)).toMatchObject({ state: "todo" });
+    const park = client.comments.at(-1)!;
+    expect(park.body).toContain("login looks expired");
+    expect(park.body).toContain("sign in by running `claude`");
+    expect(spawnCalls).toHaveLength(1); // no doomed respawn
+  });
+
+  test("auth-classed death moves the ticket to a healthy fallback harness", async () => {
+    const { d, client } = newDispatcher(2, { preflight: healthy });
+    const ticket = makeTicket();
+    client.board.push(ticket);
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    created[0].finish("error", "not logged in", null, false, "auth");
+    await tick();
+
+    expect(spawnCalls).toHaveLength(2);
+    expect(spawnCalls[1]!.harness.harness).toBe("pi"); // next in the default fallback order
+    const note = client.comments.find((c) => c.body.includes("continuing this ticket on **pi**"));
+    expect(note).toBeDefined();
+  });
+
+  test("rate-limit death with no alternative backs off instead of instant-respawning", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    client.board.push(ticket);
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    created[0].finish("error", "429 too many requests", null, false, "rate_limit");
+    await tick();
+
+    expect(spawnCalls).toHaveLength(1); // respawn is DEFERRED behind the backoff timer
+    const note = client.comments.at(-1)!;
+    expect(note.body).toContain("rate-limited");
+    expect(note.body).toContain("backing off 30s");
+    expect(client.setStateCalls).toHaveLength(0); // still in_progress, actively scheduled
   });
 });
 

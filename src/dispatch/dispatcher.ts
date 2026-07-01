@@ -39,7 +39,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Config, Logger, WorkerEvent, DoneSignal } from "../types.ts";
+import type { Config, Harness, Logger, WorkerEvent, DoneSignal } from "../types.ts";
 import type {
   Ticket,
   TicketState,
@@ -105,6 +105,12 @@ export interface DispatcherDeps {
   runtimeStatePath?: string;
   /** Test seam for {@link Dispatcher.recoverFromCrash}'s orphan sweep; default ps-verifies + kills. */
   sweepOrphan?: (pid: number, expectedBin: string) => boolean;
+  /**
+   * Harness health probe (issue #17): consulted before casting so a dead harness produces one
+   * clear substitution instead of a wedged ticket. Wire `preflightFor` from `drivers/index.ts`
+   * in production (v3-main does); omitted in tests → every harness is presumed healthy.
+   */
+  preflight?: (harness: Harness) => Promise<{ ok: boolean; problems: string[] }>;
   logger?: Logger;
 }
 
@@ -127,6 +133,20 @@ const MAX_IMPLEMENT_RETRIES = 3;
 
 /** Max review infra/schema retries before the dispatcher stops and waits for a human verdict. */
 const MAX_REVIEW_INFRA_RETRIES = 1;
+
+/**
+ * Backoff before re-attempting a failed SPAWN (issue #17): a harness that would not even start
+ * won't be fixed by an instant retry, so give transient causes (network blip, box load) room —
+ * 30s, then 2m, then 10m — before parking the ticket for a human.
+ */
+const SPAWN_RETRY_DELAYS_MS = [30_000, 120_000, 600_000] as const;
+
+/** Per-harness "how a human fixes auth" hint for park comments (issue #17). */
+const LOGIN_HINTS: Record<string, string> = {
+  claude: "sign in by running `claude` as the beckett user (subscription login)",
+  codex: "run `codex login` as the beckett user (ChatGPT subscription)",
+  pi: "run `pi` once as the beckett user to sign in",
+};
 
 /** A spawn deferred because the concurrency cap was reached. */
 interface PendingSpawn {
@@ -349,6 +369,12 @@ export class Dispatcher {
   private readonly resumables = new Map<string, { stage: string; sessionId: string; harness: string }>();
   /** Orphan-sweep hook (injectable for tests); defaults to the ps-verified group kill in proc.ts. */
   private readonly sweepOrphan: (pid: number, expectedBin: string) => boolean;
+  /** Harness health probe (issue #17); absent → every harness is presumed healthy. */
+  private readonly preflight?: (harness: Harness) => Promise<{ ok: boolean; problems: string[] }>;
+  /** Pending delayed spawn retries (issue #17 backoff), keyed by ticket id. */
+  private readonly spawnRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** One-shot cast substitutions from classed-failure recovery (issue #17), by ticket id. */
+  private readonly castOverrides = new Map<string, { stage: string; spec: HarnessSpec }>();
 
   constructor(deps: DispatcherDeps) {
     this.client = deps.client;
@@ -363,6 +389,7 @@ export class Dispatcher {
     this.runtimeStatePath = deps.runtimeStatePath;
     this.sweepOrphan =
       deps.sweepOrphan ?? ((pid, expectedBin) => sweepLedgeredWorker(pid, expectedBin, this.logger));
+    this.preflight = deps.preflight;
     this.loadRuntimeState();
   }
 
@@ -480,6 +507,8 @@ export class Dispatcher {
     const live = [...this.workers.entries()];
     const queuedSpawns = this.pending.length;
     this.pending.splice(0);
+    for (const timer of this.spawnRetryTimers.values()) clearTimeout(timer);
+    this.spawnRetryTimers.clear();
     if (live.length === 0) {
       this.logger.info("dispatcher shutdown drain: no live workers", { queuedSpawns });
       return { liveWorkers: 0, queuedSpawns, completed: 0, timedOut: false };
@@ -767,12 +796,20 @@ export class Dispatcher {
   private async doSpawn(ticket: Ticket, stage: string, repoRoot: string): Promise<void> {
     let spec = this.castFor(ticket, stage);
 
+    // A classed-failure recovery (auth/rate-limit substitution) pinned a one-shot cast override
+    // for this ticket-stage — it wins over the ticket's own casting.
+    const override = this.castOverrides.get(ticket.id);
+    if (override && override.stage === stage) {
+      this.castOverrides.delete(ticket.id);
+      spec = { ...override.spec, effort: override.spec.effort ?? spec.effort };
+    }
+
     // Crash recovery (issue #20): a restart-interrupted same-stage worker left a persisted
     // session — resume it instead of re-running the whole ticket from a fresh prompt. The hint is
     // consumed here (one attempt); the session belongs to the ORIGINAL harness, so it wins over a
     // conflicting cast (the cast effort is kept — shared vocabulary).
     const hint = this.resumables.get(ticket.id);
-    const resumeSessionId = hint && hint.stage === stage ? hint.sessionId : undefined;
+    let resumeSessionId = hint && hint.stage === stage ? hint.sessionId : undefined;
     if (hint && resumeSessionId) {
       this.resumables.delete(ticket.id);
       if (hint.harness !== spec.harness) {
@@ -783,6 +820,23 @@ export class Dispatcher {
         stage,
         harness: spec.harness,
       });
+    }
+
+    // Preflight the cast harness (issue #17): a dead harness (binary gone, login expired) must
+    // produce ONE clear substitution comment, not a wedged ticket. Substituting loses any resume
+    // hint (the session belongs to the unhealthy harness) — a fresh start elsewhere beats a wedge.
+    const healthy = await this.pickHealthyHarness(ticket, stage, spec);
+    if (!healthy) {
+      await this.onSpawnFailure(
+        ticket,
+        stage,
+        new Error("no healthy harness available (all preflights failed — check `beckett doctor`)"),
+      );
+      return; // launchSpawn's finally releases the reservation + pumps
+    }
+    if (healthy.harness !== spec.harness) {
+      resumeSessionId = undefined; // the persisted session belongs to the unhealthy harness
+      spec = healthy;
     }
 
     // v3.1: ensure the ticket's OWN project repo exists before any stage runs — clone
@@ -797,9 +851,10 @@ export class Dispatcher {
         repoRoot,
         error: (err as Error).message,
       });
-      await this.postComment(
-        ticket.id,
-        `Could not provision the project repo at \`${repoRoot}\`: ${(err as Error).message}. Leaving for a human.`,
+      await this.onSpawnFailure(
+        ticket,
+        stage,
+        new Error(`could not provision the project repo at \`${repoRoot}\`: ${(err as Error).message}`),
       );
       return; // launchSpawn's finally releases the reservation + pumps
     }
@@ -855,11 +910,11 @@ export class Dispatcher {
         try {
           handle = await spawnWorker(spawnArgs);
         } catch (err2) {
-          await this.reportSpawnFailure(ticket, stage, err2 as Error);
+          await this.onSpawnFailure(ticket, stage, err2 as Error);
           return; // launchSpawn's finally releases the reservation + pumps
         }
       } else {
-        await this.reportSpawnFailure(ticket, stage, err as Error);
+        await this.onSpawnFailure(ticket, stage, err as Error);
         return; // launchSpawn's finally releases the reservation + pumps
       }
     }
@@ -904,17 +959,201 @@ export class Dispatcher {
     });
   }
 
-  /** Loud, consistent spawn-failure surfacing: log + ticket comment ("leaving for a human"). */
-  private async reportSpawnFailure(ticket: Ticket, stage: string, err: Error): Promise<void> {
-    this.logger.error("spawn failed", {
+  /**
+   * A worker could not be STARTED (spawn/provision failure — issue #17). Never wedge the ticket
+   * in a fake `in_progress`: review-stage failures ride the existing review-infra retry; other
+   * stages get a bounded, backed-off re-spawn (30s/2m/10m), and on exhaustion the ticket is
+   * parked in `todo` with a loud comment — parked tickets cost zero tokens and are never
+   * re-staffed until a human moves them back.
+   */
+  private async onSpawnFailure(ticket: Ticket, stage: string, err: Error): Promise<void> {
+    this.logger.error("spawn failed", { ticket: ticket.identifier, stage, error: err.message });
+
+    if (stage === "review") {
+      await this.onReviewInfraFailure(ticket, `Could not start the review worker: ${err.message}.`, "");
+      return;
+    }
+
+    const attempts = (this.implementRetries.get(ticket.id) ?? 0) + 1;
+    this.implementRetries.set(ticket.id, attempts);
+    this.persistRuntimeState();
+
+    if (attempts <= MAX_IMPLEMENT_RETRIES) {
+      const delayMs = SPAWN_RETRY_DELAYS_MS[Math.min(attempts - 1, SPAWN_RETRY_DELAYS_MS.length - 1)]!;
+      await this.postComment(
+        ticket.id,
+        `Could not start the ${stage} worker: ${err.message}\n\nRetrying in ` +
+          `${Math.round(delayMs / 1000)}s (attempt ${attempts}/${MAX_IMPLEMENT_RETRIES}).`,
+      );
+      const timer = setTimeout(() => {
+        this.spawnRetryTimers.delete(ticket.id);
+        this.spawnGuarded(ticket, stage);
+      }, delayMs);
+      this.spawnRetryTimers.set(ticket.id, timer);
+      return;
+    }
+
+    this.implementRetries.delete(ticket.id);
+    this.persistRuntimeState();
+    await this.advanceTicket(
+      ticket,
+      "todo",
+      `Could not start a ${stage} worker after ${MAX_IMPLEMENT_RETRIES} attempts ` +
+        `(${err.message}). Parking this in **todo** — nothing is running and nothing will ` +
+        `auto-retry; move it back to **in_progress** once the cause is fixed.`,
+    );
+    this.logger.warn("spawn retries exhausted — parked ticket", { ticket: ticket.identifier, stage });
+  }
+
+  /**
+   * Class-specific handling for an implement worker that died on AUTH or RATE_LIMIT (issue #17).
+   * First choice: substitute the next enabled + healthy harness (a claude outage must not stall
+   * the fleet while a pi/codex login sits idle). Otherwise: auth parks the ticket with the exact
+   * login command a human must run (retrying an expired login never succeeds); rate_limit
+   * schedules a bounded, backed-off retry on the same harness.
+   */
+  private async onClassedImplementFailure(
+    ticket: Ticket,
+    handle: TicketWorkerHandle,
+    errorClass: "auth" | "rate_limit",
+    summary: string,
+    at: string,
+  ): Promise<void> {
+    const failed = handle.harness as Harness;
+    const cause =
+      errorClass === "auth"
+        ? `**${failed}**'s login looks expired/invalid`
+        : `**${failed}** is rate-limited`;
+
+    // First choice: move the work to a healthy harness.
+    if (this.preflight) {
+      const order = this.config.harness?.fallback_order ?? ["claude", "pi", "codex"];
+      for (const candidate of order) {
+        if (candidate === failed) continue;
+        if (candidate !== "claude" && this.config.harness?.[candidate]?.enabled === false) continue;
+        const pf = await this.preflight(candidate);
+        if (!pf.ok) continue;
+        const attempts = (this.implementRetries.get(ticket.id) ?? 0) + 1;
+        this.implementRetries.set(ticket.id, attempts);
+        this.persistRuntimeState();
+        if (attempts > MAX_IMPLEMENT_RETRIES) break; // fall through to park below
+        this.castOverrides.set(ticket.id, { stage: "implement", spec: { harness: candidate } });
+        await this.postComment(
+          ticket.id,
+          `${cause}, so I'm continuing this ticket on **${candidate}** instead (WIP committed${at}, ` +
+            `attempt ${attempts}/${MAX_IMPLEMENT_RETRIES}).\n\nWhere it stopped:\n${summary}`,
+        );
+        this.logger.warn("classed failure — substituting harness", {
+          ticket: ticket.identifier,
+          errorClass,
+          failed,
+          substitute: candidate,
+        });
+        this.spawnGuarded(ticket, "implement");
+        return;
+      }
+    }
+
+    if (errorClass === "auth") {
+      this.implementRetries.delete(ticket.id);
+      this.persistRuntimeState();
+      await this.advanceTicket(
+        ticket,
+        "todo",
+        `${cause} and no other harness is available, so I'm parking this in **todo** — retrying ` +
+          `would burn tokens against a closed door. Fix: ${LOGIN_HINTS[failed] ?? `re-auth ${failed}`}, ` +
+          `then move the ticket back to **in_progress**. WIP is committed${at}.\n\n${summary}`,
+      );
+      this.logger.warn("auth failure — parked ticket for re-login", {
+        ticket: ticket.identifier,
+        harness: failed,
+      });
+      return;
+    }
+
+    // rate_limit with no substitute: bounded retry with real backoff on the same harness.
+    const attempts = (this.implementRetries.get(ticket.id) ?? 0) + 1;
+    this.implementRetries.set(ticket.id, attempts);
+    this.persistRuntimeState();
+    if (attempts <= MAX_IMPLEMENT_RETRIES) {
+      const delayMs = SPAWN_RETRY_DELAYS_MS[Math.min(attempts - 1, SPAWN_RETRY_DELAYS_MS.length - 1)]!;
+      await this.postComment(
+        ticket.id,
+        `${cause} — backing off ${Math.round(delayMs / 1000)}s before retrying (attempt ` +
+          `${attempts}/${MAX_IMPLEMENT_RETRIES}). WIP committed${at}.`,
+      );
+      const timer = setTimeout(() => {
+        this.spawnRetryTimers.delete(ticket.id);
+        this.spawnGuarded(ticket, "implement");
+      }, delayMs);
+      this.spawnRetryTimers.set(ticket.id, timer);
+      return;
+    }
+    this.implementRetries.delete(ticket.id);
+    this.persistRuntimeState();
+    await this.advanceTicket(
+      ticket,
+      "todo",
+      `${cause} and it hasn't cleared after ${MAX_IMPLEMENT_RETRIES} backed-off retries. Parking ` +
+        `in **todo**; move it back to **in_progress** when capacity returns. WIP committed${at}.`,
+    );
+    this.logger.warn("rate-limit retries exhausted — parked ticket", { ticket: ticket.identifier });
+  }
+
+  /** Cancel a pending backed-off spawn retry (ticket cancelled/parked/done). */
+  private cancelSpawnRetry(ticketId: string): void {
+    const timer = this.spawnRetryTimers.get(ticketId);
+    if (timer) {
+      clearTimeout(timer);
+      this.spawnRetryTimers.delete(ticketId);
+    }
+  }
+
+  /**
+   * Health-check the cast harness and, when it fails preflight, walk `harness.fallback_order`
+   * for the first enabled + healthy substitute (issue #17). Substitution posts ONE clear ticket
+   * comment naming the cause. Returns null when no harness is usable. Without an injected
+   * preflight (tests), every harness is presumed healthy.
+   */
+  private async pickHealthyHarness(
+    ticket: Ticket,
+    stage: string,
+    spec: HarnessSpec,
+  ): Promise<HarnessSpec | null> {
+    if (!this.preflight) return spec;
+
+    const cast = await this.preflight(spec.harness);
+    if (cast.ok) return spec;
+
+    const order = this.config.harness?.fallback_order ?? ["claude", "pi", "codex"];
+    for (const candidate of order) {
+      if (candidate === spec.harness) continue;
+      if (candidate !== "claude" && this.config.harness?.[candidate]?.enabled === false) continue;
+      const pf = await this.preflight(candidate);
+      if (!pf.ok) continue;
+      this.logger.warn("cast harness failed preflight — substituting", {
+        ticket: ticket.identifier,
+        stage,
+        cast: spec.harness,
+        substitute: candidate,
+        problems: cast.problems,
+      });
+      await this.postComment(
+        ticket.id,
+        `**${spec.harness}** is unavailable (${cast.problems.join("; ")}) — running the ` +
+          `${stage} stage on **${candidate}** instead.`,
+      );
+      // The cast model is harness-specific — drop it; the shared effort vocabulary survives.
+      return { harness: candidate, effort: spec.effort };
+    }
+
+    this.logger.error("no healthy harness for spawn", {
       ticket: ticket.identifier,
       stage,
-      error: err.message,
+      cast: spec.harness,
+      problems: cast.problems,
     });
-    await this.postComment(
-      ticket.id,
-      `Could not start the ${stage} worker: ${err.message}. Leaving for a human.`,
-    );
+    return null;
   }
 
   /**
@@ -1131,6 +1370,15 @@ export class Dispatcher {
     //    already committed; this captures anything still in the working tree).
     const sha = await this.commitWip(ticket, handle);
     const at = sha ? ` at \`${sha.slice(0, 9)}\`` : "";
+
+    // Failure taxonomy (issue #17): auth and rate-limit deaths get a class-specific response —
+    // a blind instant retry either burns tokens against a closed door (auth never self-heals)
+    // or hammers the very limit that killed the worker.
+    const errorClass = handle.result?.errorClass;
+    if (errorClass === "auth" || errorClass === "rate_limit") {
+      await this.onClassedImplementFailure(ticket, handle, errorClass, summary, at);
+      return;
+    }
 
     // 2. Bound the auto-retry so a persistently-failing ticket can't churn forever.
     const attempts = (this.implementRetries.get(ticket.id) ?? 0) + 1;
@@ -1439,6 +1687,9 @@ export class Dispatcher {
     comment: string,
     opts: { promoteDependents?: boolean } = {},
   ): Promise<boolean> {
+    // Any dispatcher-driven move out of a running state invalidates a scheduled backed-off
+    // respawn — a timer firing on a parked/done ticket would staff work nobody asked for.
+    if (state !== "in_progress" && state !== "in_review") this.cancelSpawnRetry(ticket.id);
     const op: AdvanceOperation = {
       id: randomUUID(),
       ticketId: ticket.id,
@@ -1489,6 +1740,8 @@ export class Dispatcher {
   }
 
   private clearTicketMemory(ticketId: string): void {
+    this.cancelSpawnRetry(ticketId);
+    this.castOverrides.delete(ticketId);
     this.baseShaForTicket.delete(ticketId);
     this.reworkCount.delete(ticketId);
     this.implementRetries.delete(ticketId);
