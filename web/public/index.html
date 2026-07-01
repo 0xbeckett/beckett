@@ -121,9 +121,11 @@
 
   /* animated svg mark */
   .markwrap{position:relative;display:grid;place-items:center;aspect-ratio:1;max-width:380px;margin-inline:auto;width:100%}
-  .markwrap::before{content:"";position:absolute;inset:8%;border-radius:50%;
-    background:radial-gradient(circle,var(--accent-dim),transparent 70%);filter:blur(8px)}
+  .markwrap::before{content:"";position:absolute;inset:-4%;border-radius:50%;
+    background:radial-gradient(circle,rgba(9,9,11,.62) 0,rgba(9,9,11,.34) 42%,transparent 68%),
+      radial-gradient(circle,var(--accent-dim),transparent 70%);filter:blur(10px)}
   .mark-svg{width:78%;height:auto;position:relative;animation:float 7s ease-in-out infinite}
+  .mark-vox{width:100%;height:100%;position:relative;animation:float 7s ease-in-out infinite}
   @keyframes float{0%,100%{transform:translateY(-5px)}50%{transform:translateY(5px)}}
   .mark-svg path{stroke:var(--ink);stroke-width:.95;fill:none;stroke-linecap:round;stroke-linejoin:round;
     stroke-dasharray:340;stroke-dashoffset:340;animation:draw 2.6s var(--eo) forwards;
@@ -260,7 +262,7 @@
       <div class="micro rv">invite-only beta · gotta pitch your way in (show proof, no yapping)</div>
     </div>
     <div class="markwrap rv">
-      <svg class="mark-svg" id="mark" viewBox="6 45 99 84" aria-label="Beckett"></svg>
+      <canvas class="mark-vox" id="markvox" role="img" aria-label="Beckett"></canvas>
     </div>
   </section>
 
@@ -462,22 +464,68 @@
   (function(){var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.16,rootMargin:'0px 0px -6% 0px'});
     document.querySelectorAll('.rv').forEach(function(n,i){n.style.transitionDelay=(i%3*55)+'ms';io.observe(n);});})();
 
-  /* inject the kept SVG's line-art into the hero mark, then draw it on (stroke-dashoffset) */
+  /* hero wordmark: "BECKETT" built from chunky isometric voxels, rendered once to a
+     canvas in the same iso style + blossom palette as the parallax scene so it reads
+     as part of the voxel world rather than flat text sitting on top of it. */
   (function(){
-    var m=document.getElementById('mark');if(!m)return;
-    fetch('/beckett.svg').then(function(r){return r.text();}).then(function(txt){
-      var doc=new DOMParser().parseFromString(txt,'image/svg+xml');
-      var paths=doc.querySelectorAll('path[stroke]');  // line-art only, skip the dark fill body
-      paths.forEach(function(p){
-        var np=document.createElementNS('http://www.w3.org/2000/svg','path');
-        np.setAttribute('d',p.getAttribute('d'));
-        m.appendChild(np);
-      });
-      if(RM){m.querySelectorAll('path').forEach(function(p){p.style.strokeDashoffset='0';p.style.animation='none';});return;}
-      // stagger the draw per-path for a hand-drawn feel
-      m.querySelectorAll('path').forEach(function(p,i){p.style.animationDelay=(i*0.12)+'s';});
-      setTimeout(function(){m.classList.add('lit');}, 3600);
-    }).catch(function(){m.style.display='none';});
+    var cv=document.getElementById('markvox');if(!cv)return;
+    var ctx=cv.getContext('2d');
+    // — same cube shading as the scene: bright top diamond, dark left + mid right faces —
+    function shade(hex,f){var n=parseInt(hex.slice(1),16),r=(n>>16)&255,g=(n>>8)&255,b=n&255;
+      r=Math.min(255,r*f)|0;g=Math.min(255,g*f)|0;b=Math.min(255,b*f)|0;return 'rgb('+r+','+g+','+b+')';}
+    function voxel(sx,sy,TW,base){
+      var TH=TW/2,H=TW,top=shade(base,1.06),lf=shade(base,.6),rf=shade(base,.82);
+      ctx.beginPath();ctx.moveTo(sx,sy-TH);ctx.lineTo(sx+TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx-TW,sy);ctx.closePath();
+      ctx.fillStyle=top;ctx.strokeStyle=top;ctx.lineWidth=1;ctx.fill();ctx.stroke();
+      ctx.beginPath();ctx.moveTo(sx-TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx,sy+TH+H);ctx.lineTo(sx-TW,sy+H);ctx.closePath();
+      ctx.fillStyle=lf;ctx.strokeStyle=lf;ctx.fill();ctx.stroke();
+      ctx.beginPath();ctx.moveTo(sx+TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx,sy+TH+H);ctx.lineTo(sx+TW,sy+H);ctx.closePath();
+      ctx.fillStyle=rf;ctx.strokeStyle=rf;ctx.fill();ctx.stroke();
+    }
+    // 5x7 pixel glyphs (top row first)
+    var FONT={
+      B:['11110','10001','10001','11110','10001','10001','11110'],
+      E:['11111','10000','10000','11110','10000','10000','11111'],
+      C:['01110','10001','10000','10000','10000','10001','01110'],
+      K:['10001','10010','10100','11000','10100','10010','10001'],
+      T:['11111','00100','00100','00100','00100','00100','00100']
+    };
+    var WORD='BECKETT';
+    // blossom-world palette (scene pinks / purple / green) — one hue per letter
+    var HUE=['#ff9ec6','#f77fb2','#8f7bd6','#7fce7f','#ffb0d4','#8f7bd6','#ff9ec6'];
+    // build voxel list. p = column across the whole word; the word runs along the iso
+    // axis (gx+, gy-) so it reads horizontally; t = depth for chunky 2-deep letters.
+    var vox=[],p=0;
+    for(var li=0;li<WORD.length;li++){
+      var g=FONT[WORD[li]],col=HUE[li];
+      for(var c=0;c<5;c++){
+        for(var r=0;r<7;r++){ if(g[r][c]==='1'){
+          for(var t=0;t<2;t++) vox.push({p:p+c,t:t,gz:6-r,c:col});
+        }}
+      }
+      p+=6; // 5 wide + 1 gap
+    }
+    // painter's order: back depth first, then bottom-up within a column
+    vox.sort(function(a,b){return a.t-b.t||a.gz-b.gz;});
+    // screen coords per unit-TW (TH=0.5, H=1): x=2p (centre), y=0.5t-gz (top centre).
+    // include cube extent: x±1 (half top diamond), y from -0.5 (top) to +0.5+1 (body).
+    var bx0=1e9,bx1=-1e9,by0=1e9,by1=-1e9;
+    vox.forEach(function(v){var cx=2*v.p,cy=0.5*v.t-v.gz;
+      if(cx-1<bx0)bx0=cx-1;if(cx+1>bx1)bx1=cx+1;
+      if(cy-0.5<by0)by0=cy-0.5;if(cy+1.5>by1)by1=cy+1.5;});
+
+    function render(){
+      var DPR=Math.min(2,window.devicePixelRatio||1);
+      var box=cv.getBoundingClientRect(),Wc=box.width||300,Hc=box.height||300;
+      cv.width=Wc*DPR;cv.height=Hc*DPR;
+      ctx.setTransform(DPR,0,0,DPR,0,0);ctx.clearRect(0,0,Wc,Hc);
+      var TW=Math.min((Wc*0.94)/(bx1-bx0),(Hc*0.9)/(by1-by0));TW=Math.max(3,TW);
+      var TH=TW/2,H=TW;
+      var ox=(Wc-(bx0+bx1)*TW)/2,oy=(Hc-(by0+by1)*TW)/2;
+      vox.forEach(function(v){voxel(ox+2*v.p*TW,oy+(v.t*TH-v.gz*H),TW,v.c);});
+    }
+    render();
+    var rt;addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(render,180);},{passive:true});
   })();
 
   /* cta wordplay: "lets beck it" → scribble → "@beckett" mention, on loop */
