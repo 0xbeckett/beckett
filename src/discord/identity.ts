@@ -156,13 +156,14 @@ export function upsertIdentity(
 }
 
 /**
- * How to address this person, in priority order: what they asked to be called →
- * a name we know them by → their live Discord display name. Undefined if we have nothing
- * (the caller then falls back to the live display name off the incoming message).
+ * The DELIBERATE name to address this person by: what they asked to be called →
+ * a name we know them by. Deliberately does NOT fall back to the live Discord display name — a
+ * display name isn't a chosen/known name, and the caller surfaces it separately so the model can
+ * use it as its own fallback. Undefined when we have no deliberate name on file.
  */
 export function resolveAddress(identity: UserIdentity | undefined): string | undefined {
   if (!identity) return undefined;
-  return identity.preferred_address || identity.known_name || identity.display_name || undefined;
+  return identity.preferred_address || identity.known_name || undefined;
 }
 
 /** The seed entry every install ships with, so the map has a real example on day one. */

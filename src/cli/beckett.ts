@@ -22,7 +22,7 @@ import { CfDns } from "../agency/cloudflare.ts";
 import { CodexImageGen } from "../agency/imagegen.ts";
 import { TunnelDeployer } from "../shell/deploy.ts";
 import { loadAccess, grantAccess, revokeAccess, ACCESS_CAP } from "../discord/access.ts";
-import { loadIdentities, getIdentity, upsertIdentity } from "../discord/identity.ts";
+import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 import type { Ticket, TicketState } from "../plane/types.ts";
 
@@ -132,6 +132,9 @@ async function main(): Promise<void> {
   // contact info (email/phone) here; that must never surface in channel (OPS-42 privacy rule).
   if (group === "identity") {
     const file = paths.identitiesFile;
+    // Guarantee the day-one entries exist however this map is first touched (the daemon also
+    // seeds at startup) — additive + idempotent, binds the owner to DISCORD_OWNER_ID if set.
+    ensureSeeded(file, process.env.DISCORD_OWNER_ID?.trim());
     if (sub === "set") {
       const { flags } = parse(rest);
       const id = flags.user ? String(flags.user).trim() : "";

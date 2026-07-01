@@ -73,9 +73,10 @@ test("upsert rejects a non-snowflake id", () => {
   expect(() => upsertIdentity(file, "not-an-id", { known_name: "x" })).toThrow();
 });
 
-test("resolveAddress priority: preferred → known → display", () => {
+test("resolveAddress priority: preferred → known (never the raw display name)", () => {
   expect(resolveAddress(undefined)).toBeUndefined();
-  expect(resolveAddress({ display_name: "d", created_at: 0, updated_at: 0 })).toBe("d");
+  // A display name alone is NOT a deliberate address — resolveAddress stays undefined.
+  expect(resolveAddress({ display_name: "d", created_at: 0, updated_at: 0 })).toBeUndefined();
   expect(resolveAddress({ known_name: "k", display_name: "d", created_at: 0, updated_at: 0 })).toBe(
     "k",
   );
