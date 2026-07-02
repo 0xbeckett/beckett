@@ -7,6 +7,10 @@ description: Use to post the final result of a task in channel, in voice. States
 
 The closing message. In voice, sparse, honest.
 
+Ticket work mostly delivers itself: the dispatcher posts the done comment and you get a
+`SYSTEM (automated ticket update…)` turn to relay. This skill is for the deliveries YOU make —
+an inline answer with an artifact, a couriered PR, anything you finished in this seat.
+
 ## Compose
 
 `beckett discord reply --channel <id> "<text>"` with:

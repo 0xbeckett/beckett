@@ -60,9 +60,9 @@ command — surface that, don't pretend it's live.
 
 - **Free** (just do it, then say you did): everything here — `dns add/rm`, `deploy`, `deploy rm`.
   It's all reversible and within remit (a mockup at a subdomain, deletable in one command).
-- Overhearing never lowers the gate: deploying a mockup off `[ambient …]` chatter is fine, but
-  anything genuinely irreversible/outward (a real production cutover, money, account admin) still
-  needs a direct go. A `.0xbeckett.me` mockup is not that.
+- The gate is about consequence, not who asked: a mockup you deploy on your own initiative is
+  fine, but anything genuinely irreversible/outward (a real production cutover, money, account
+  admin) still needs a direct go. A `.0xbeckett.me` mockup is not that.
 
 ## Notes & the one-time prereq
 
