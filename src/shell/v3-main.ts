@@ -134,6 +134,17 @@ async function boot(): Promise<BootedSystem> {
   //    further down (FIRST of the live parts) so a bad claude launch fails the whole boot early.
   const concierge = createConcierge({ config, logger: logger.child("concierge"), plane: client });
 
+  // 3. Poller — feeds each batch of events straight to the dispatcher. `start()` primes the
+  //    snapshot first (so we don't replay history) then self-schedules every poll_secs.
+  //    Constructed BEFORE the dispatcher so the dispatcher's instant-advance path (issue #33)
+  //    can reference it.
+  const poller = createPlanePoller({
+    client,
+    logger: logger.child("plane.poll"),
+    pollSecs: config.plane.poll_secs,
+    commentCursorPath: join(buildPaths(config).beckettDir, "comment-cursors.json"),
+  });
+
   // 4. Dispatcher — consumes PollEvents, owns the worker lifecycle. Its workers' granular event
   //    streams are mirrored into each ticket's Discord thread via the Concierge's progress hub.
   const dispatcher = createDispatcher({
@@ -147,6 +158,13 @@ async function boot(): Promise<BootedSystem> {
     // Harness health probe (issue #17): a dead harness (binary gone, login expired) becomes one
     // clear substitution comment instead of a wedged ticket. ~5-min cached per harness.
     preflight: (harness) => preflightFor(harness, config),
+    // Instant milestone path (issue #33): a dispatcher-written advance reaches Discord NOW
+    // (concierge.notify) instead of after the next poll, and the poller's snapshot is synced so
+    // the same transition isn't re-emitted as a duplicate ping ≤5s later.
+    onAdvance: (event) => {
+      poller.observe(event);
+      concierge.notify(event);
+    },
     logger: logger.child("dispatch"),
   });
 
@@ -156,14 +174,9 @@ async function boot(): Promise<BootedSystem> {
     restaff: (id, harness) => dispatcher.restaff(id, harness as Harness | undefined),
   });
 
-  // 3. Poller — feeds each batch of events straight to the dispatcher. `start()` primes the
-  //    snapshot first (so we don't replay history) then self-schedules every poll_secs.
-  const poller = createPlanePoller({
-    client,
-    logger: logger.child("plane.poll"),
-    pollSecs: config.plane.poll_secs,
-    commentCursorPath: join(buildPaths(config).beckettDir, "comment-cursors.json"),
-  });
+  // Instant tick on filing (issue #33): `beckett ticket create --channel …` pings the control bus;
+  // poking the poller staffs the fresh ticket in well under a second instead of the 0–5s poll gap.
+  concierge.setTicketFiledListener(() => poller.poke());
 
   // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
   // the daemon-wide halves the Concierge can't see itself. The Concierge merges in its own

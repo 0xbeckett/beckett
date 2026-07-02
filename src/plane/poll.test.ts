@@ -40,9 +40,21 @@ class FakePlaneClient {
   tickets: Ticket[] = [];
   comments = new Map<string, PlaneComment[]>();
   commentCalls: { ticketId: string; since?: string }[] = [];
+  /** Full-hydration fetches the poller paid — the polling diet (issue #33) asserts on this. */
+  getIssueCalls: string[] = [];
 
   async listIssues(): Promise<Ticket[]> {
     return this.tickets;
+  }
+
+  /** The slim id+updated_at sweep the poller diffs before paying any hydration (issue #33). */
+  async listIssueHeads(): Promise<Array<{ id: string; updatedAt: string }>> {
+    return this.tickets.map((t) => ({ id: t.id, updatedAt: t.updatedAt }));
+  }
+
+  async getIssue(id: string): Promise<Ticket | null> {
+    this.getIssueCalls.push(id);
+    return this.tickets.find((t) => t.id === id) ?? null;
   }
 
   async listComments(ticketId: string, since?: string): Promise<PlaneComment[]> {
@@ -255,10 +267,10 @@ describe("PlanePoller stats (issue #30)", () => {
     const client = new FakePlaneClient();
     client.tickets = [ticket()];
     let boom = true;
-    const listIssues = client.listIssues.bind(client);
-    client.listIssues = async () => {
+    const listIssueHeads = client.listIssueHeads.bind(client);
+    client.listIssueHeads = async () => {
       if (boom) throw new Error("plane down");
-      return listIssues();
+      return listIssueHeads();
     };
     const poller = new PlanePoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
 
@@ -271,5 +283,76 @@ describe("PlanePoller stats (issue #30)", () => {
     await poller.poll();
     expect(poller.stats().consecutiveFailures).toBe(0);
     expect(poller.stats().lastPollAt).toBe(0);
+  });
+});
+
+describe("polling diet + instant paths (issue #33)", () => {
+  test("an unchanged board costs zero hydrations after first sight", async () => {
+    const client = new FakePlaneClient();
+    client.tickets = [ticket()];
+    const poller = new PlanePoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+
+    await poller.poll(); // first sight hydrates once
+    expect(client.getIssueCalls).toEqual(["t1"]);
+    await poller.poll();
+    await poller.poll();
+    expect(client.getIssueCalls).toEqual(["t1"]); // slim head sweep only — no re-hydration
+  });
+
+  test("only the ticket whose updated_at moved is hydrated", async () => {
+    const client = new FakePlaneClient();
+    client.tickets = [
+      ticket({ id: "a", identifier: "OPS-A" }),
+      ticket({ id: "b", identifier: "OPS-B" }),
+    ];
+    const poller = new PlanePoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    await poller.poll();
+    client.getIssueCalls = [];
+
+    client.tickets = [
+      ticket({ id: "a", identifier: "OPS-A" }),
+      ticket({ id: "b", identifier: "OPS-B", updatedAt: "2026-01-01T00:00:05.000Z" }),
+    ];
+    await poller.poll();
+    expect(client.getIssueCalls).toEqual(["b"]);
+  });
+
+  test("observe() suppresses the duplicate of a dispatcher-written advance", async () => {
+    const client = new FakePlaneClient();
+    const t = ticket();
+    client.tickets = [t];
+    const poller = new PlanePoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    await poller.poll();
+
+    // The dispatcher advanced the ticket to done and already notified the concierge directly.
+    const done = ticket({ state: "done", updatedAt: "2026-01-01T00:00:09.000Z" });
+    poller.observe({ kind: "state_changed", ticket: done, from: t.state, to: "done" });
+    client.tickets = [done];
+
+    const events = await poller.poll();
+    expect(events.filter((e) => e.kind === "state_changed")).toEqual([]);
+  });
+
+  test("poke() runs an immediate tick instead of waiting out the poll interval", async () => {
+    const client = new FakePlaneClient();
+    const batches: unknown[][] = [];
+    const poller = new PlanePoller({
+      client: client as unknown as PlaneClient,
+      logger: quiet,
+      pollSecs: 3_600, // the interval alone would never fire inside this test
+      now: () => 0,
+    });
+    await poller.start((events) => {
+      batches.push(events);
+    });
+
+    client.tickets = [ticket()];
+    poller.poke();
+    await tick();
+    await tick();
+    poller.stop();
+
+    const kinds = batches.flat().map((e) => (e as { kind: string }).kind);
+    expect(kinds).toContain("created");
   });
 });

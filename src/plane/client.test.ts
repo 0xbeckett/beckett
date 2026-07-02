@@ -56,3 +56,71 @@ test("req does not retry non-transient 4xx responses", async () => {
   await expect(privateReq(client, "GET", "https://plane.test/x")).rejects.toBeInstanceOf(PlaneApiError);
   expect(calls).toBe(1);
 });
+
+// ── issue #33: the polling diet's client half ───────────────────────────────────────────────
+
+/** Routing fetch fake: bootstrap (projects + states) plus caller-supplied routes, logging URLs. */
+function dietFetch(route: (url: string) => Response | null, calls: string[]): typeof fetch {
+  return (async (url: string | URL | Request) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.includes("/projects/") && !u.includes("/issues/")) {
+      return Response.json({ results: [{ id: "p1", identifier: "OPS", name: "ops" }] });
+    }
+    if (u.includes("/states/")) {
+      return Response.json({
+        results: [
+          { id: "s1", name: "Backlog" },
+          { id: "s2", name: "Todo" },
+          { id: "s3", name: "In Progress" },
+          { id: "s4", name: "In Review" },
+          { id: "s5", name: "Done" },
+          { id: "s6", name: "Cancelled" },
+        ],
+      });
+    }
+    return route(u) ?? Response.json({ results: [] });
+  }) as unknown as typeof fetch;
+}
+
+test("listIssueHeads sweeps with fields=id,updated_at only", async () => {
+  const calls: string[] = [];
+  const fetchImpl = dietFetch((u) => {
+    if (u.includes("/issues/")) {
+      return Response.json({ results: [{ id: "t1", updated_at: "2026-01-01T00:00:00Z" }] });
+    }
+    return null;
+  }, calls);
+  const client = new PlaneClient({ config, token: "tok", logger: quiet, fetch: fetchImpl });
+
+  const heads = await client.listIssueHeads();
+  expect(heads).toEqual([{ id: "t1", updatedAt: "2026-01-01T00:00:00Z" }]);
+  const sweep = calls.find((u) => u.includes("/issues/?") || u.includes("fields="));
+  expect(sweep).toContain("fields=id%2Cupdated_at");
+});
+
+test("listComments stops paginating once a newest-first page reaches past `since`", async () => {
+  const calls: string[] = [];
+  let commentPage = 0;
+  const fetchImpl = dietFetch((u) => {
+    if (u.includes("/comments/")) {
+      commentPage++;
+      // Page 1 (newest-first) already reaches behind the cursor — page 2 must never be fetched.
+      return Response.json({
+        results: [
+          { id: "new", created_at: "2026-01-01T00:00:20Z", comment_html: "<p>new</p>" },
+          { id: "old", created_at: "2026-01-01T00:00:01Z", comment_html: "<p>old</p>" },
+        ],
+        next_page_results: true,
+        next_cursor: "cursor-2",
+      });
+    }
+    return null;
+  }, calls);
+  const client = new PlaneClient({ config, token: "tok", logger: quiet, fetch: fetchImpl });
+
+  const comments = await client.listComments("t1", "2026-01-01T00:00:10Z");
+  expect(commentPage).toBe(1); // early stop — the 200-comment history is never re-walked
+  expect(comments.map((c) => c.id)).toEqual(["new"]); // filtered to strictly-after `since`, ascending
+  expect(calls.find((u) => u.includes("/comments/"))).toContain("order_by=-created_at");
+});

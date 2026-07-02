@@ -36,6 +36,8 @@ import type { PollEvent, Ticket, TicketState } from "./types.ts";
 interface Snapshot {
   state: TicketState;
   updatedAt: string;
+  /** The last hydrated ticket — reused for the comment sweep so unchanged tickets cost zero hydrations (issue #33). */
+  ticket: Ticket;
   lastCommentAt: string; // ISO of the newest comment we've already emitted
   lastCommentIds: Set<string>; // ids already emitted at lastCommentAt, for timestamp ties
   lastCommentSweepAt: number; // epoch ms of the last successful comment cursor check
@@ -77,6 +79,10 @@ export class PlanePoller {
   private readonly snapshot = new Map<string, Snapshot>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /** The sink handed to {@link start} — kept so {@link poke} can run an immediate tick (issue #33). */
+  private sink: PollEventSink | null = null;
+  /** A poke arrived while a tick was in flight — run one more as soon as it finishes. */
+  private pokePending = false;
 
   // Health counters for `beckett status` (issue #30): when the last poll landed and how many
   // ticks in a row failed to reach Plane. "Last poll 4s ago, 0 failures" is the healthy answer.
@@ -95,18 +101,21 @@ export class PlanePoller {
   // ── primary surface (V3 §4) ────────────────────────────────────────────────────────────
 
   /**
-   * One poll cycle: fetch the project's issues, diff against the snapshot, advance the snapshot,
-   * and return the new events in order. Never throws — API failures yield an empty/partial batch.
+   * One poll cycle. The polling diet (issue #33): sweep the board with the SLIM head list
+   * (id + updated_at only — no descriptions, no hydration), then hydrate ONLY the tickets whose
+   * `updated_at` actually moved. An unchanged 500-ticket board costs one slim request and zero
+   * hydrations — the same tick as a 20-ticket board. Never throws — API failures yield an
+   * empty/partial batch.
    */
   async poll(): Promise<PollEvent[]> {
-    let tickets: Ticket[];
+    let heads: Array<{ id: string; updatedAt: string }>;
     try {
-      tickets = await this.client.listIssues();
+      heads = await this.client.listIssueHeads();
       this.consecutiveFailures = 0;
       this.lastPollAt = this.now();
     } catch (err) {
       this.consecutiveFailures += 1;
-      this.logger.warn("poll: listIssues failed — skipping tick", {
+      this.logger.warn("poll: listIssueHeads failed — skipping tick", {
         error: (err as Error).message,
         consecutiveFailures: this.consecutiveFailures,
       });
@@ -117,8 +126,50 @@ export class PlanePoller {
     const seen = new Set<string>();
     const tickStartedAt = this.now();
 
-    for (const ticket of tickets) {
-      seen.add(ticket.id);
+    // Partition the board: changed/new ids need a hydrate; unchanged non-terminal tickets may
+    // still owe the periodic comment backstop (runs off the CACHED ticket — no hydration).
+    const changedIds: string[] = [];
+    for (const head of heads) {
+      seen.add(head.id);
+      const prev = this.snapshot.get(head.id);
+      if (!prev || prev.updatedAt !== head.updatedAt) {
+        changedIds.push(head.id);
+        continue;
+      }
+      const dueForSweep = tickStartedAt - prev.lastCommentSweepAt >= COMMENT_FULL_SWEEP_MS;
+      if (!TICKET_TERMINAL.has(prev.state) && dueForSweep) {
+        const cached = prev.ticket;
+        slots.push(
+          this.collectComments(cached, prev).then((result) => {
+            if (result.ok) prev.lastCommentSweepAt = tickStartedAt;
+            return result.events;
+          }),
+        );
+      }
+    }
+
+    const hydrated = await Promise.all(
+      changedIds.map(async (id) => {
+        try {
+          return await this.client.getIssue(id);
+        } catch (err) {
+          this.logger.warn("poll: getIssue failed for changed ticket — retried next tick", {
+            ticketId: id,
+            error: (err as Error).message,
+          });
+          return undefined; // snapshot untouched → updated_at still differs → retried next tick
+        }
+      }),
+    );
+
+    for (let i = 0; i < changedIds.length; i++) {
+      const ticket = hydrated[i];
+      if (ticket === undefined) continue; // fetch failed — retry next tick
+      if (ticket === null) {
+        // Deleted between the sweep and the hydrate — same hygiene as vanishing from the board.
+        this.snapshot.delete(changedIds[i]!);
+        continue;
+      }
       const prev = this.snapshot.get(ticket.id);
 
       if (!prev) {
@@ -132,6 +183,7 @@ export class PlanePoller {
         this.snapshot.set(ticket.id, {
           state: ticket.state,
           updatedAt: ticket.updatedAt,
+          ticket,
           ...this.initialCommentCursor(ticket.id),
           lastCommentSweepAt: tickStartedAt,
         });
@@ -144,12 +196,11 @@ export class PlanePoller {
         if (ticket.state === "cancelled") slots.push({ kind: "cancelled", ticket });
         prev.state = ticket.state;
       }
+      prev.ticket = ticket;
 
       // New comments (only worth checking while the ticket can still host a worker). Plane bumps
-      // issue updated_at on comment writes; the periodic sweep is only a compatibility backstop.
-      const issueChanged = prev.updatedAt !== ticket.updatedAt;
-      const dueForSweep = tickStartedAt - prev.lastCommentSweepAt >= COMMENT_FULL_SWEEP_MS;
-      if (!TICKET_TERMINAL.has(ticket.state) && (issueChanged || dueForSweep)) {
+      // issue updated_at on comment writes, and we only get here when updated_at moved.
+      if (!TICKET_TERMINAL.has(ticket.state)) {
         slots.push(
           this.collectComments(ticket, prev).then((result) => {
             if (result.ok) {
@@ -210,6 +261,7 @@ export class PlanePoller {
       const snapshot: Snapshot = {
         state: ticket.state,
         updatedAt: ticket.updatedAt,
+        ticket,
         ...this.initialCommentCursor(ticket.id, nowIso),
         lastCommentSweepAt: this.now(),
       };
@@ -243,6 +295,7 @@ export class PlanePoller {
    */
   async start(onEvents: PollEventSink): Promise<void> {
     if (this.timer) return;
+    this.sink = onEvents;
     const recovery = await this.prime();
     if (recovery.length > 0) {
       this.logger.info("re-dispatching in-flight tickets after restart", { count: recovery.length });
@@ -286,7 +339,41 @@ export class PlanePoller {
       this.logger.error("poll tick handler failed", { error: (err as Error).message });
     } finally {
       this.ticking = false;
+      if (this.pokePending) {
+        this.pokePending = false;
+        setTimeout(() => this.poke(), 0);
+      }
     }
+  }
+
+  /**
+   * Run one tick NOW (issue #33): `beckett ticket create --state in_progress` already pings the
+   * control bus, so v3-main routes that ping here and the dispatcher staffs the ticket in well
+   * under a second instead of waiting out the 0–5s poll gap. A poke during an in-flight tick is
+   * remembered and runs one follow-up tick (the freshly-filed ticket must not slip through).
+   * No-op before {@link start}.
+   */
+  poke(): void {
+    if (!this.sink || !this.timer) return;
+    if (this.ticking) {
+      this.pokePending = true;
+      return;
+    }
+    void this.tickOnce(this.sink);
+  }
+
+  /**
+   * Fold an externally-observed state transition into the snapshot (issue #33): when the
+   * DISPATCHER advances a ticket it also notifies the concierge directly, so the next poll must
+   * not re-emit the same transition as a duplicate event. The comment cursor is untouched — the
+   * advance comment still flows (on non-terminal states) exactly as before.
+   */
+  observe(event: PollEvent): void {
+    if (event.kind !== "state_changed") return;
+    const prev = this.snapshot.get(event.ticket.id);
+    if (!prev) return;
+    prev.state = event.to;
+    prev.ticket = { ...prev.ticket, state: event.to };
   }
 
   // ── internals ────────────────────────────────────────────────────────────────────────────
