@@ -1,5 +1,22 @@
 # Changelog
 
+## v3.6.1 — config & secrets contract (issue #34) (2026-07-01)
+
+- **`.env.example` is now the full inventory**: every key the code (or the Plane stack) consumes,
+  with per-key mint/scope/rotation notes — including honest "legacy, safe to remove" labels for
+  the dead keys found on the box. `beckett doctor` already gates against this list.
+- **`deploy/config.toml.example`** — every config key at its default, generated from the live zod
+  schema via `beckett config print-default`; a drift test fails CI the moment the schema and the
+  example disagree, and a round-trip test proves the example passes the strict validator.
+- **Encrypted secrets backup** — `deploy/backup-secrets.sh` pulls the five recovery-critical files
+  (.env, config.toml, claude/codex/pi logins) off the box and age-encrypts them to
+  `~/.beckett-backups/` on the Mac (private key exists only there). First backup taken and
+  decrypt-verified. NOT committed — the repo is public; the issue's in-repo sops file would have
+  put encrypted secrets in permanent public history. Restore procedure in `deploy/host-setup.md`:
+  a box rebuild is clone + one `age -d | ssh tar -x` + `install.sh`.
+- **Discord token rotation** flagged to Jason on Discord with the exact 4-step procedure — the
+  dev-portal reset is human-only.
+
 ## v3.6.0 — pipeline latency + polling diet (issue #33) (2026-07-01)
 
 - **Polling diet**: each tick now sweeps the board with a slim `fields=id,updated_at` request

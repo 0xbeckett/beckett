@@ -4,11 +4,11 @@
  * driver-owned flag past the exact-token dedup in `ClaudeDriver.buildArgs`.
  */
 
-import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "./config.ts";
+import { defaultConfigToml, loadConfig, validateConfig } from "./config.ts";
 
 /** Load a config from a literal TOML body in an isolated temp beckett dir. */
 function loadToml(body: string) {
@@ -40,4 +40,16 @@ test("per-harness default efforts land where they should", () => {
   expect(config.harness.codex.default_effort).toBe("low");
   expect(config.harness.pi.thinking).toBe("medium");
   expect(config.harness.claude.default_effort).toBe("xhigh"); // untouched default
+});
+
+describe("default-config example drift (issue #34)", () => {
+  test("deploy/config.toml.example matches the live schema's defaults", () => {
+    const committed = readFileSync(join(import.meta.dir, "..", "deploy", "config.toml.example"), "utf8");
+    expect(committed).toBe(defaultConfigToml());
+  });
+
+  test("the generated example round-trips through the strict validator", () => {
+    const parsed = Bun.TOML.parse(defaultConfigToml());
+    expect(() => validateConfig(parsed)).not.toThrow();
+  });
 });

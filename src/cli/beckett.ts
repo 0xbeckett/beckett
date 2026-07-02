@@ -763,6 +763,16 @@ async function main(): Promise<void> {
     process.exit(report.ok ? 0 : 1);
   }
 
+  // ── config (in-process; issue #34) ─────────────────────────────────────────────────────────
+  if (group === "config") {
+    if (sub === "print-default") {
+      const { defaultConfigToml } = await import("../config.ts");
+      process.stdout.write(defaultConfigToml());
+      process.exit(0);
+    }
+    fail("usage: beckett config print-default  (regenerates deploy/config.toml.example)");
+  }
+
   // ── top-level (control bus) ──────────────────────────────────────────────────────────────
   if (group === "discord" && sub === "reply") {
     const { _, flags } = parse(rest);

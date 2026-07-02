@@ -347,3 +347,43 @@ export function validateConfig(raw: unknown): Config {
 export function defaultConfig(): Config {
   return validateConfig({});
 }
+
+// =======================================================================================
+// Default-config TOML rendering (issue #34)
+// =======================================================================================
+
+/** Serialize one TOML value. Strings quoted; arrays inline; numbers/booleans literal. */
+function tomlValue(v: unknown): string {
+  if (typeof v === "string") return JSON.stringify(v); // TOML basic strings ≡ JSON string escaping
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) return `[${v.map(tomlValue).join(", ")}]`;
+  throw new Error(`configToToml: unsupported value ${JSON.stringify(v)}`);
+}
+
+/** Depth-first table writer: scalars first, then child tables as [a.b.c] sections. */
+function tomlSection(out: string[], path: string[], obj: Record<string, unknown>): void {
+  const scalars = Object.entries(obj).filter(([, v]) => typeof v !== "object" || Array.isArray(v));
+  const tables = Object.entries(obj).filter(([, v]) => typeof v === "object" && v !== null && !Array.isArray(v));
+  if (path.length > 0 && scalars.length > 0) out.push(`[${path.join(".")}]`);
+  for (const [k, v] of scalars) out.push(`${k} = ${tomlValue(v)}`);
+  if (scalars.length > 0) out.push("");
+  for (const [k, v] of tables) tomlSection(out, [...path, k], v as Record<string, unknown>);
+}
+
+/**
+ * Render {@link defaultConfig} as TOML — the generator behind `beckett config print-default`
+ * and the committed `deploy/config.toml.example` (issue #34). Generated from the live zod
+ * schema, so the example CANNOT drift from the code: a schema change fails the drift test
+ * until the example is regenerated.
+ */
+export function defaultConfigToml(): string {
+  const out: string[] = [
+    "# Beckett — every config key at its DEFAULT value (issue #34).",
+    "# The live file is ~/.beckett/config.toml on the box; only put keys you're OVERRIDING there",
+    "# (validation is strict: schema-pruned keys must be removed in the same deploy).",
+    "# Regenerate after any schema change:  bun src/cli/beckett.ts config print-default",
+    "",
+  ];
+  tomlSection(out, [], defaultConfig() as unknown as Record<string, unknown>);
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
