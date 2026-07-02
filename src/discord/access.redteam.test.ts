@@ -150,14 +150,14 @@ describe("discord/access red-team", () => {
   });
 
   describe("enforcement reality", () => {
-    it("Discord injection still forwards outsider messages to the parent with only a bouncer directive", () => {
-      const mainSource = readFileSync(resolve(import.meta.dir, "../shell/main.ts"), "utf8");
-
-      expect(mainSource).toContain("const level = classify(m.userId, ownerId, access);");
-      expect(mainSource).toContain('level === "outsider"');
-      expect(mainSource).toContain("parent.inject(full);");
-      expect(mainSource).toContain("BOUNCER MODE");
-      expect(mainSource).not.toContain("if (level === \"outsider\") return");
+    it("the v3 concierge hard-drops outsider turns in code (never a prompt-level bouncer)", () => {
+      // The retired v2 shell forwarded outsider messages to the model with only a "BOUNCER MODE"
+      // directive — prompt-level security. v3 gates in code: an outsider's turn is denied before
+      // the model ever sees it (issue #28 deleted the v2 path; this pins the v3 invariant).
+      const conciergeSource = readFileSync(resolve(import.meta.dir, "../concierge/index.ts"), "utf8");
+      expect(conciergeSource).toContain('if (access === "outsider")');
+      expect(conciergeSource).toContain("this.denyOutsider(m)");
+      expect(conciergeSource).not.toContain("BOUNCER MODE");
     });
   });
 

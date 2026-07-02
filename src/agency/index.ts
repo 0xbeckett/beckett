@@ -29,14 +29,12 @@
 
 import { join } from "node:path";
 import type {
-  Agency,
   ActionType,
   ActionContext,
   GateActionResult,
   HandshakeSpec,
   PendingAction,
   PendingActionClass,
-  PendingActionRow,
   GitHubClient,
   OpenPRParams,
   UpdatePRParams,
@@ -46,7 +44,6 @@ import type {
   GmailAuth,
   Config,
   Paths,
-  Store,
   Logger,
 } from "../types.ts";
 import { ActionClass } from "../types.ts";
@@ -774,208 +771,3 @@ export function loadIdentity(config: Config, env: NodeJS.ProcessEnv = process.en
     osUser: env.BECKETT_OS_USER ?? "beckett",
   };
 }
-
-// =======================================================================================
-// BeckettAgency — the one choke point (Spec 07 §2.4)
-// =======================================================================================
-
-export interface AgencyOptions {
-  identity: Identity;
-  store: Store;
-  paths: Paths;
-  github?: GitHubClient;
-  logger?: Logger;
-  /** Resolve a repo "org/name" to its local working dir; defaults to <projects>/<name>. */
-  resolveRepoDir?: (repo: string) => string;
-}
-
-/**
- * The action-class gate (Spec 07 §2.4). Every outward action funnels through {@link perform}.
- * FREE runs immediately; HANDSHAKE_GATED stages a persisted {@link PendingAction} and returns
- * a `pending` handle (the irreversible thunk is held for {@link executeApproved} and is
- * rehydratable from `(actionClass, payload)` after a restart, Spec 07 §5.3); ALWAYS_ASK
- * throws {@link GateRefused}.
- */
-export class BeckettAgency implements Agency {
-  readonly github: GitHubClient;
-  readonly identity: Identity;
-  private readonly store: Store;
-  private readonly logger: Logger;
-  private readonly resolveRepoDir: (repo: string) => string;
-  /** In-process execute thunks for pending actions staged this run (lost on restart → rehydrate). */
-  private readonly pendingThunks = new Map<string, () => Promise<unknown>>();
-
-  constructor(opts: AgencyOptions) {
-    this.identity = opts.identity;
-    this.store = opts.store;
-    this.logger = opts.logger ?? rootLog.child("agency");
-    this.resolveRepoDir =
-      opts.resolveRepoDir ??
-      ((repo: string) => join(opts.paths.projects, repo.split("/").pop() ?? repo));
-    this.github =
-      opts.github ??
-      new GitHubCli({
-        pat: opts.identity.github.pat,
-        account: opts.identity.github.account,
-        apiBase: opts.identity.github.apiBase,
-        resolveRepoDir: this.resolveRepoDir,
-        logger: this.logger,
-      });
-  }
-
-  /** Whether GitHub agency has credentials (drives graceful degradation in DELIVER). */
-  get githubAvailable(): boolean {
-    return this.identity.github.pat.length > 0;
-  }
-
-  classify(type: ActionType, ctx: ActionContext): ActionClass {
-    return classifyAction(type, ctx);
-  }
-
-  /**
-   * The one door (Spec 07 §2.4). Returns `done` for FREE (after running `execute`); `pending`
-   * for HANDSHAKE_GATED (a PendingAction is staged + persisted, `execute` is held, NOT run);
-   * throws {@link GateRefused} for ALWAYS_ASK.
-   */
-  async perform<T>(
-    type: ActionType,
-    ctx: ActionContext,
-    execute: () => Promise<T>,
-    handshake?: HandshakeSpec,
-  ): Promise<GateActionResult<T>> {
-    const cls = this.classify(type, ctx);
-    this.logger.debug("gate.classify", { type, cls });
-
-    switch (cls) {
-      case ActionClass.FREE: {
-        const value = await execute();
-        return { status: "done", value };
-      }
-
-      case ActionClass.HANDSHAKE_GATED: {
-        if (!handshake) {
-          throw new Error(`agency: gated action "${type}" requires a HandshakeSpec (Spec 07 §2.4)`);
-        }
-        const pa = this.stagePendingAction(type, ctx, handshake);
-        // Hold the live thunk for same-process execution on approval; rehydratable otherwise.
-        this.pendingThunks.set(pa.id, execute as () => Promise<unknown>);
-        return { status: "pending", pendingAction: pa };
-      }
-
-      case ActionClass.ALWAYS_ASK:
-      default:
-        throw new GateRefused(type, ctx);
-    }
-  }
-
-  /** Persist a PendingAction row + return the in-memory handle (Spec 07 §5.1; Spec 09 §2.11). */
-  private stagePendingAction(
-    type: ActionType,
-    ctx: ActionContext,
-    handshake: HandshakeSpec,
-  ): PendingAction {
-    const taskId = typeof ctx.taskId === "string" ? ctx.taskId : "";
-    const userId = typeof ctx.userId === "string" ? ctx.userId : "";
-    if (!taskId || !userId) {
-      throw new Error(
-        `agency: gated action "${type}" needs ctx.taskId and ctx.userId to stage a PendingAction`,
-      );
-    }
-    const now = Date.now();
-    const expiresAt = handshake.expiresAt ?? now + DEFAULT_HANDSHAKE_MS;
-    const actionClass = handshake.actionClass ?? pendingClassFor(type);
-
-    const pa: PendingAction = {
-      id: pendingActionId(),
-      taskId,
-      userId,
-      actionClass,
-      payload: handshake.payload,
-      promptText: handshake.promptText,
-      status: "pending",
-      createdAt: now,
-      expiresAt,
-    };
-
-    const row: PendingActionRow = {
-      id: pa.id,
-      task_id: taskId,
-      user_id: userId,
-      action_class: actionClass,
-      payload_json: JSON.stringify(handshake.payload),
-      prompt_text: handshake.promptText,
-      posted_msg_id: null,
-      status: "pending",
-      decided_by: null,
-      created_at: now,
-      decided_at: null,
-      expires_at: expiresAt,
-    };
-    this.store.createPendingAction(row); // emits handshake.posted (Spec 09)
-    this.logger.info("handshake staged", { pendingActionId: pa.id, type, actionClass });
-    return pa;
-  }
-
-  /**
-   * Execute a handshake-approved action and mark it `executed` (Spec 07 §5.2). Uses the live
-   * thunk if this is the same daemon run; otherwise rehydrates the irreversible op from the
-   * persisted `(action_class, payload)` (Spec 07 §5.3 — restart-safe, no closure state).
-   * The caller (orchestrator) is responsible for having recorded the user's `go`.
-   */
-  async executeApproved(pa: PendingActionRow): Promise<GateActionResult<unknown>> {
-    const thunk = this.pendingThunks.get(pa.id);
-    const value = thunk ? await thunk() : await this.rehydrateAndRun(pa);
-    this.pendingThunks.delete(pa.id);
-    this.store.setPendingActionStatus(pa.id, "executed", pa.decided_by ?? undefined);
-    return { status: "done", value };
-  }
-
-  /**
-   * Reconstruct + run a pending action's irreversible op from its persisted payload after a
-   * restart (Spec 07 §5.3). v0 rehydrates `merge_pr`; other classes are not reconstructable in
-   * v0 and surface a clear error rather than a silent no-op.
-   */
-  private async rehydrateAndRun(pa: PendingActionRow): Promise<unknown> {
-    const payload = JSON.parse(pa.payload_json) as Record<string, unknown>;
-    switch (pa.action_class) {
-      case "merge_pr": {
-        const repo = String(payload.repo);
-        const number = Number(payload.number);
-        const strategy = (payload.strategy as MergeStrategy) ?? "squash";
-        await this.github.mergePR(repo, number, strategy);
-        return { merged: true, repo, number, strategy };
-      }
-      default:
-        throw new Error(
-          `agency: cannot rehydrate pending action class "${pa.action_class}" in v0 ` +
-            `(${pa.id}) — only merge_pr is reconstructable; re-issue the action from the orchestrator`,
-        );
-    }
-  }
-}
-
-// =======================================================================================
-// Factory
-// =======================================================================================
-
-/**
- * Build the wired {@link BeckettAgency} from config + paths + store (Spec 01 wiring). Loads
- * the {@link Identity} from `.env`, constructs the GitHub client, and resolves repo dirs under
- * `paths.projects`. If `GITHUB_PAT` is absent the agency still builds — classify/perform work,
- * and GitHub ops degrade gracefully (see {@link PR_PENDING_CREDS_NOTE}).
- */
-export function createAgency(
-  config: Config,
-  paths: Paths,
-  store: Store,
-  env: NodeJS.ProcessEnv = process.env,
-): BeckettAgency {
-  const identity = loadIdentity(config, env);
-  return new BeckettAgency({ identity, store, paths });
-}
-
-/** Compile-time check: BeckettAgency satisfies the frozen Agency contract. */
-const _agencyCheck: (a: BeckettAgency) => Agency = (a) => a;
-void _agencyCheck;
-
-export type { Agency } from "../types.ts";

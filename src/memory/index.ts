@@ -48,15 +48,12 @@ import type {
   Memory,
   MemoryEdge,
   MemoryGraph,
-  MemoryIndexRow,
-  MemoryLinkRow,
   MemoryNode,
   NodeType,
   RecallQuery,
   RecallResult,
   RememberIntent,
   ScoredNode,
-  Store,
 } from "../types.ts";
 import { log as rootLog } from "../log.ts";
 
@@ -127,8 +124,6 @@ const META_TAIL = ["created", "updated", "source", "confidence", "ttl"];
 export interface MemoryDeps {
   /** Absolute path to the memory dir (Paths.memoryDir, e.g. ~/.beckett/memory). */
   memoryDir: string;
-  /** Persistence repository for the SQLite mirror + event log (Spec 09). Optional for tests. */
-  store?: Store;
   /** Logger; defaults to the root logger's `memory` child. */
   logger?: Logger;
   /** Git-version the memory dir on every write (Spec 08 §8.2). Default true; best-effort. */
@@ -146,7 +141,6 @@ export function createMemory(deps: MemoryDeps): MemoryStore {
 
 export class MemoryStore implements Memory {
   private readonly dir: string;
-  private readonly store?: Store;
   private readonly logger: Logger;
   private readonly git: boolean;
   /** Single in-process async mutex serializing writes (Spec 08 §8.1). */
@@ -156,7 +150,6 @@ export class MemoryStore implements Memory {
 
   constructor(deps: MemoryDeps) {
     this.dir = deps.memoryDir;
-    this.store = deps.store;
     this.logger = deps.logger ?? rootLog.child("memory");
     this.git = deps.git ?? true;
   }
@@ -240,11 +233,6 @@ export class MemoryStore implements Memory {
 
     // 5. Regenerate the always-loaded index (Spec 08 §4.5) + mirror + event + commit.
     this.atomicWrite(join(this.dir, "MEMORY.md"), renderIndex(g));
-    this.mirror(g);
-    this.store?.appendEvent({
-      type: "memory.note_written",
-      payload: { op, name, type, reason: intent.reason },
-    });
     this.commit(`memory: ${op} ${name}`);
 
     const result = g.nodes.get(name);
@@ -252,11 +240,12 @@ export class MemoryStore implements Memory {
     return result;
   }
 
-  // ── reindex (Spec 09 §2.12) ─────────────────────────────────────────────────────────
+  // ── reindex ──────────────────────────────────────────────────────────────────────────
 
+  /** Rebuild + validate the in-memory graph from the markdown tree (the files ARE the store —
+   *  the v2 SQLite mirror was deleted with the rest of the retired stack, issue #28). */
   async reindex(): Promise<void> {
-    const g = this.buildGraph();
-    this.mirror(g);
+    this.buildGraph();
   }
 
   // ── graph build (Spec 08 §2.3) ──────────────────────────────────────────────────────
@@ -314,45 +303,6 @@ export class MemoryStore implements Memory {
 
     const index = buildIndex(nodes);
     return { nodes, out, in: inE, index, builtAt: Date.now() };
-  }
-
-  // ── SQLite mirror (Spec 08 §2.4 / Spec 09 §2.12) ────────────────────────────────────
-
-  private mirror(g: MemoryGraph): void {
-    if (!this.store) return;
-    const rows: MemoryIndexRow[] = [];
-    const links: MemoryLinkRow[] = [];
-    const seenLinks = new Set<string>();
-    const now = Date.now();
-    for (const node of g.nodes.values()) {
-      if (node.phantom) continue; // phantoms have no file/path to index
-      const raw = this.rawCache.get(node.path) ?? "";
-      rows.push({
-        id: node.name,
-        path: node.path,
-        title: node.name,
-        kind: node.type,
-        tags_json: JSON.stringify(asStringArray(node.metadata.aliases)),
-        summary: node.description || null,
-        content_hash: sha256(raw),
-        mtime: node.mtime,
-        updated_at: now,
-      });
-      for (const e of g.out.get(node.name) ?? []) {
-        const key = `${e.from} ${e.to}`;
-        if (seenLinks.has(key)) continue;
-        seenLinks.add(key);
-        links.push({ src_id: e.from, dst_path: e.to });
-      }
-    }
-    try {
-      this.store.upsertMemoryIndex(rows, links);
-    } catch (err) {
-      // Files win; a mirror failure is logged, never fatal (Spec 08 §2.4).
-      this.logger.warn("memory: SQLite mirror failed (files remain canonical)", {
-        err: String(err),
-      });
-    }
   }
 
   // ── filesystem helpers (Spec 08 §8.1) ───────────────────────────────────────────────
