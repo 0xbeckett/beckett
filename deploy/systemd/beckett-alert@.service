@@ -1,0 +1,8 @@
+[Unit]
+Description=Beckett — Discord failure alert for %i (raw webhook; fires when the daemon itself died)
+
+[Service]
+Type=oneshot
+# The webhook URL lives with the other secrets. `-` = optional: no .env, no alert, no error.
+EnvironmentFile=-%h/.beckett/.env
+ExecStart=%h/beckett/deploy/alert.sh %i terminal

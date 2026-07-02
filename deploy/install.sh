@@ -9,7 +9,8 @@ mkdir -p "${UNIT_DIR}"
 
 # Symlink every unit in deploy/systemd — the repo is the source of truth; editing the live
 # copy under ~/.config drifts silently (that is exactly what this script ends).
-for unit in "${REPO_DIR}"/deploy/systemd/*.service; do
+for unit in "${REPO_DIR}"/deploy/systemd/*.service "${REPO_DIR}"/deploy/systemd/*.timer; do
+  [ -e "${unit}" ] || continue
   name="$(basename "${unit}")"
   ln -sf "${unit}" "${UNIT_DIR}/${name}"
   echo "linked ${name}"
@@ -26,5 +27,7 @@ done
 
 systemctl --user daemon-reload
 systemctl --user enable --now beckett-v3.service
+# Weekly doctor heartbeat (issue #30) — a no-op until DISCORD_ALERT_WEBHOOK_URL is set.
+systemctl --user enable --now beckett-heartbeat.timer
 systemctl --user is-active beckett-v3.service
 echo "beckett-v3 installed and running"

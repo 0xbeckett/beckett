@@ -35,7 +35,7 @@ import { createPlaneClient, type PlaneClient } from "../plane/client.ts";
 import { createPlanePoller, type PlanePoller } from "../plane/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
 import { preflightFor } from "../drivers/index.ts";
-import { createConcierge, type Concierge } from "../concierge/index.ts";
+import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 
 /**
@@ -164,6 +164,20 @@ async function boot(): Promise<BootedSystem> {
     pollSecs: config.plane.poll_secs,
     commentCursorPath: join(buildPaths(config).beckettDir, "comment-cursors.json"),
   });
+
+  // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
+  // the daemon-wide halves the Concierge can't see itself. The Concierge merges in its own
+  // (Discord gateway, session) when serving the command.
+  const bootedAt = Date.now();
+  concierge.setStatusProvider(async () => ({
+    version: BECKETT_VERSION,
+    commit: (await currentGitCommit(join(import.meta.dir, "..", ".."))).short,
+    pid: process.pid,
+    uptimeSecs: Math.round((Date.now() - bootedAt) / 1000),
+    workers: dispatcher.statusWorkers(),
+    poller: poller.stats(),
+    plane: { baseUrl: config.plane.base_url, ...client.stats() },
+  }));
 
   // Start the Concierge FIRST (of the live parts) so a bad claude launch fails the whole boot
   //    before we begin polling. (Constructed above so its progress sink could be wired in.)

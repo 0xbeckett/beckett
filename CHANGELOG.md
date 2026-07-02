@@ -1,5 +1,28 @@
 # Changelog
 
+## v3.5.0 — ops visibility (issue #30) (2026-07-01)
+
+Before this, the only truth about prod was journalctl. Now:
+
+- **`beckett status`** — a `status` control-bus command + CLI (`--pretty`): version/commit/uptime,
+  poller last-poll age + consecutive failures, Plane last HTTP status/error, Discord gateway
+  liveness, concierge session (context tokens, rotations, queue, crashes), and a per-worker table
+  (ticket, stage, harness, pid, elapsed, last-event age). One ssh command answers "is prod healthy
+  and what is it doing right now".
+- **`beckett doctor`** — rebuilt for v3, probing under the DAEMON's PATH (the login shell hid the
+  node-18 pi crash): binaries + version minimums, forced harness preflights, LIVE token probes
+  (Plane/Discord/GitHub/Cloudflare/alert webhook), env completeness against the committed
+  `.env.example`, harness process-leak sweep (orphans + off-ledger workers), control.sock probe,
+  cloudflared ingress validation, disk space. Regression tests assert each detection the issue
+  was opened for. Non-zero exit when anything fails.
+- **Crash alerting** — `deploy/alert.sh` posts to a raw Discord webhook (`DISCORD_ALERT_WEBHOOK_URL`),
+  deliberately not via the daemon: `ExecStopPost` alerts every unclean death within seconds
+  (rate-limited), `OnFailure=beckett-alert@%n` + `StartLimitBurst` fires the terminal
+  crash-loop alert. 25 silent daemon restarts in 3.5 days never happens again.
+- **Logs + heartbeat** — beckett-rpc now logs to journald (the old `append:` rpc.log grew
+  unrotated); a weekly `beckett-heartbeat.timer` posts a doctor report so alert-channel silence
+  actually means healthy.
+
 ## v3.4.0 — the reliability wave (issues #11–#29) (2026-07-01)
 
 One PR per GitHub issue, merged + deployed in sequence:

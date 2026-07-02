@@ -709,6 +709,60 @@ async function main(): Promise<void> {
     out({ planned: filed.length, tickets: filed });
   }
 
+  // ── status (control bus → the live daemon; issue #30) ─────────────────────────────────────
+  // One command answering "is prod healthy and what is it doing right now". From the Mac:
+  //   ssh beckett@loom-desk 'cd beckett && bun src/cli/beckett.ts status --pretty'
+  if (group === "status") {
+    const { flags } = parse([sub, ...rest].filter(Boolean) as string[]);
+    let res;
+    try {
+      res = await callBus(SOCK, "status", {}, 5_000);
+    } catch (err) {
+      fail(`daemon not answering on control.sock (${(err as Error).message}) — is beckett-v3.service running?`);
+    }
+    if (!res.ok) fail(res.error ?? "status failed");
+    const data = (res.data ?? {}) as Record<string, any>;
+    if (!flags.pretty) out(data);
+    const lines: string[] = [];
+    lines.push(`beckett v${data.version} @ ${data.commit} — pid ${data.pid}, up ${fmtSecs(data.uptimeSecs)}`);
+    lines.push(`discord:   ${data.discord?.connected ? "connected" : "DISCONNECTED"}`);
+    const p = data.poller ?? {};
+    lines.push(
+      `poller:    last poll ${p.lastPollAgeMs != null ? `${Math.round(p.lastPollAgeMs / 1000)}s ago` : "never"}` +
+        (p.consecutiveFailures ? `, ${p.consecutiveFailures} CONSECUTIVE FAILURES` : ""),
+    );
+    const pl = data.plane ?? {};
+    lines.push(`plane:     last HTTP ${pl.lastHttpStatus ?? "-"}${pl.lastError ? ` (last error: ${pl.lastError})` : ""}`);
+    const c = data.concierge ?? {};
+    lines.push(
+      `concierge: ${c.contextTokens ?? "?"} ctx tokens (ceiling ${c.rotateAtTokens ?? "?"}), ` +
+        `${c.rotations ?? 0} rotations, queue ${c.queueDepth ?? 0}, crashes ${c.consecutiveCrashes ?? 0}`,
+    );
+    const workers = Array.isArray(data.workers) ? data.workers : [];
+    lines.push(`workers:   ${workers.length === 0 ? "none" : workers.length}`);
+    for (const w of workers) {
+      lines.push(
+        w.state === "live"
+          ? `  ${w.ticket} · ${w.stage} on ${w.harness} (pid ${w.pid ?? "?"}) — up ${fmtSecs(w.elapsedSecs)}, last event ${w.lastEventAgeSecs != null ? `${w.lastEventAgeSecs}s ago` : "never"} [${w.workerState}]`
+          : `  ${w.ticket} · ${w.stage} QUEUED (waiting for ${w.waitingFor})`,
+      );
+    }
+    out(lines.join("\n"));
+  }
+
+  // ── doctor (in-process health probe; works with the daemon down; issue #30) ────────────────
+  if (group === "doctor") {
+    const { flags } = parse([sub, ...rest].filter(Boolean) as string[]);
+    const { runDoctor, renderReport, daemonPath } = await import("../ops/doctor.ts");
+    const { homedir } = await import("node:os");
+    // Probe under the DAEMON's PATH, not this login shell's — the login shell hides exactly the
+    // failures that only bite under systemd (the node-18 pi crash).
+    process.env.PATH = daemonPath(homedir());
+    const report = await runDoctor({ config });
+    process.stdout.write((flags.json ? JSON.stringify(report, null, 2) : renderReport(report)) + "\n");
+    process.exit(report.ok ? 0 : 1);
+  }
+
   // ── top-level (control bus) ──────────────────────────────────────────────────────────────
   if (group === "discord" && sub === "reply") {
     const { _, flags } = parse(rest);
@@ -741,7 +795,17 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: reload | persona | access ls|grant|revoke | identity set|show|list | discord reply | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | identity set|show|list | discord reply | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+}
+
+/** "3742" → "1h 2m 22s" (status rendering only). */
+function fmtSecs(secs: unknown): string {
+  const n = typeof secs === "number" && Number.isFinite(secs) ? Math.max(0, Math.round(secs)) : null;
+  if (n === null) return "?";
+  const h = Math.floor(n / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  const s = n % 60;
+  return h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
 main().catch((err) => fail((err as Error).message));

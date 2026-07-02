@@ -216,6 +216,8 @@ export class ConciergeSession {
   private lastHandoff = "";
   /** Consecutive unexpected child exits with no successful turn in between (crash-loop alarm). */
   private consecutiveCrashes = 0;
+  /** Completed rotations (auto-compaction + persona reloads) this process — `beckett status`. */
+  private rotations = 0;
   /** When the last rotation attempt failed — gates the retry so we don't re-pay the handoff turn. */
   private rotateFailedAt = 0;
   /** Alerted when the child crash-loops (wired by the Concierge to the ops channel). */
@@ -795,8 +797,22 @@ export class ConciergeSession {
     // Persist the new identity + handoff so a deploy right after this rotation still resumes —
     // and if the resume fails, the fresh session re-grounds from this same note (issue #24).
     if (summary) this.lastHandoff = summary;
+    this.rotations += 1;
     this.persistSessionState();
     this.log.info("concierge re-grounding complete", { reason, from: oldSession, to: this.sessionId });
+  }
+
+  /** Session health for `beckett status` (issue #30): identity, context pressure, crash/rotation counts. */
+  stats(): Record<string, unknown> {
+    return {
+      sessionId: this.sessionId,
+      model: this.model,
+      contextTokens: this.lastContextTokens,
+      rotateAtTokens: this.rotateAtTokens,
+      rotations: this.rotations,
+      queueDepth: this.queueDepth(),
+      consecutiveCrashes: this.consecutiveCrashes,
+    };
   }
 
   // ── restart persistence (issue #24) ─────────────────────────────────────────────────────
@@ -897,6 +913,12 @@ export class Concierge {
     restaff(id: string, harness?: string): Promise<{ ticket: string; stage: string; harness?: string }>;
   } | null = null;
   /**
+   * Daemon-wide status assembler wired in by v3-main (issue #30): answers the `status` bus command
+   * with poller/dispatcher/Plane health the Concierge can't see itself. Null until wired — the bus
+   * command then answers with the Concierge-local half only.
+   */
+  private statusProvider: (() => Record<string, unknown> | Promise<Record<string, unknown>>) | null = null;
+  /**
    * Plane read access for milestone enrichment (issue #21): the poller stops collecting comments
    * on terminal tickets, so the `done` ping fetches the dispatcher's done comment here to carry
    * the artifact/PR link. Optional — absent (tests), the ping falls back to the ticket URL only.
@@ -951,6 +973,11 @@ export class Concierge {
   /** Wire the dispatcher levers (v3-main, after the dispatcher exists). See {@link dispatcherOps}. */
   setDispatcherOps(ops: NonNullable<Concierge["dispatcherOps"]>): void {
     this.dispatcherOps = ops;
+  }
+
+  /** Wire the daemon-wide status assembler (v3-main, issue #30). See {@link statusProvider}. */
+  setStatusProvider(fn: NonNullable<Concierge["statusProvider"]>): void {
+    this.statusProvider = fn;
   }
 
   /**
@@ -1102,6 +1129,27 @@ export class Concierge {
       }
       this.onTicketFiled(channelId, identifier, title);
       return { ok: true, data: { tracked: true } };
+    }
+    if (req.cmd === "status") {
+      // "Is prod healthy and what is it doing right now?" in one bus round-trip (issue #30). The
+      // daemon-wide half (uptime/version/poller/workers/Plane) comes from the provider v3-main
+      // wires in; the Concierge adds the halves only it can see (Discord gateway, its session).
+      try {
+        const base = this.statusProvider ? await this.statusProvider() : {};
+        return {
+          ok: true,
+          data: {
+            ...base,
+            discord: {
+              connected: this.gateway.isConnected(),
+              lastEventAgeMs: this.gateway.lastEventAgeMs(),
+            },
+            concierge: this.session.stats(),
+          },
+        };
+      } catch (err) {
+        return { ok: false, error: `status assembly failed: ${(err as Error).message}` };
+      }
     }
     if (req.cmd === "ticket.restaff") {
       // Operator lever (issue #21): abort a ticket's worker (WIP committed) and spawn a fresh one,

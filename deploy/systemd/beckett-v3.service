@@ -2,6 +2,13 @@
 Description=Beckett v3 — Plane ticket-queue (Opus concierge + poller + dispatcher)
 After=network-online.target
 Wants=network-online.target
+# Crash-loop alerting (issue #30): 30 starts inside 10 minutes means something is wrong at boot —
+# stop restarting (a tight loop burns CPU forever and helps nobody) and fire the terminal alert.
+# Normal operation (a crash every so often + Restart=always) never gets near this limit.
+StartLimitIntervalSec=600
+StartLimitBurst=30
+# %N (suffix stripped) — %n would double the suffix in the template instance name.
+OnFailure=beckett-alert@%N.service
 
 [Service]
 Type=simple
@@ -19,7 +26,11 @@ TimeoutStopSec=30
 EnvironmentFile=-%h/.beckett/.env
 # The concierge + claude/pi/codex workers must resolve on PATH (a systemd unit does not inherit
 # the interactive PATH). ~/.local/bin carries the modern node that pi needs (node >= 20).
+# MUST stay in sync with `daemonPath()` in src/ops/doctor.ts — the doctor probes under this PATH.
 Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+# Every unclean death posts a Discord alert within seconds (rate-limited in the script; clean
+# stops are silent). Runs alongside Restart=always — the alert says systemd is already on it.
+ExecStopPost=%h/beckett/deploy/alert.sh %n
 
 [Install]
 WantedBy=default.target

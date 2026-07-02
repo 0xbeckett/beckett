@@ -78,6 +78,11 @@ export class PlanePoller {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
 
+  // Health counters for `beckett status` (issue #30): when the last poll landed and how many
+  // ticks in a row failed to reach Plane. "Last poll 4s ago, 0 failures" is the healthy answer.
+  private lastPollAt: number | null = null;
+  private consecutiveFailures = 0;
+
   constructor(deps: PlanePollerDeps) {
     this.client = deps.client;
     this.logger = deps.logger ?? log.child("plane.poll");
@@ -97,9 +102,13 @@ export class PlanePoller {
     let tickets: Ticket[];
     try {
       tickets = await this.client.listIssues();
+      this.consecutiveFailures = 0;
+      this.lastPollAt = this.now();
     } catch (err) {
+      this.consecutiveFailures += 1;
       this.logger.warn("poll: listIssues failed — skipping tick", {
         error: (err as Error).message,
+        consecutiveFailures: this.consecutiveFailures,
       });
       return [];
     }
@@ -183,7 +192,10 @@ export class PlanePoller {
     let tickets: Ticket[];
     try {
       tickets = await this.client.listIssues();
+      this.consecutiveFailures = 0;
+      this.lastPollAt = this.now();
     } catch (err) {
+      this.consecutiveFailures += 1;
       this.logger.warn("prime: listIssues failed — snapshot left empty", {
         error: (err as Error).message,
       });
@@ -240,6 +252,18 @@ export class PlanePoller {
       void this.tickOnce(onEvents);
     }, this.pollSecs * 1000);
     this.logger.info("poller started", { pollSecs: this.pollSecs });
+  }
+
+  /**
+   * Poll-loop health for `beckett status` (issue #30). `lastPollAgeMs` is null until the first
+   * successful poll; `consecutiveFailures` counts back-to-back ticks that never reached Plane.
+   */
+  stats(): { lastPollAt: number | null; lastPollAgeMs: number | null; consecutiveFailures: number } {
+    return {
+      lastPollAt: this.lastPollAt,
+      lastPollAgeMs: this.lastPollAt === null ? null : this.now() - this.lastPollAt,
+      consecutiveFailures: this.consecutiveFailures,
+    };
   }
 
   /** Stop the self-scheduled interval (no-op if not running). The snapshot is retained. */
