@@ -1,5 +1,24 @@
 # Changelog
 
+## v3.5.1 — doctrine coherence (issue #32) (2026-07-01)
+
+The loaded doctrine no longer contradicts itself, describes retired machinery, or promises
+senses that don't exist:
+
+- **Deleted** `parent-doctrine.md` (100% v2) and the `flows`/`staff`/`review`/`proactive` skills
+  (dead `beckett flow`/`worker spawn` commands; reviewer-spawning the doctrine forbids; an
+  `[ambient …]` sense v3 never delivers). `grep -r "beckett worker|beckett work |beckett flow"
+  .claude/` → zero hits.
+- **Rewritten** `intake` (ack-first via CLI for tasks, plain reply for questions — now agrees
+  with concierge.md; real v3 stamp format) and `plan` (the actual `beckett plan` JSON DAG, not
+  the v2 node schema). `self-improve` now routes repo-owned changes (skills/doctrine/code)
+  through a `--project beckett` ticket instead of instructing hand-edits to the deploy checkout.
+- **concierge.md**: honest senses section (@mentions + system turns only — no overhearing); the
+  walled-off-PR section rewritten around the real trigger (the dispatcher's publish-failure
+  "needs a courier" park); new "when the machinery stalls" guidance (retry noise vs todo-return
+  vs the rework-cap lever — `in_review → in_progress` respawns an implementer); honest
+  "queued it" phrasing for the ≤5s dispatch gap.
+
 ## v3.5.0 — ops visibility (issue #30) (2026-07-01)
 
 Before this, the only truth about prod was journalctl. Now:

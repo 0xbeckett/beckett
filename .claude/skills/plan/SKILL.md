@@ -1,48 +1,48 @@
 ---
 name: plan
-description: Use to define "done" before doing real work. Lite mode (criteria only) for a one-worker task; full mode (DAG + criteria) for a heavy multi-worker task. Skip for trivial inline work.
+description: Use ONLY for genuinely big work with real structure — separate pieces that run in parallel or must run in order. Files the whole dependency DAG in one shot with `beckett plan`. For everything else, file ONE ticket.
 ---
 
 # plan
 
-Define **done** before doing. Author acceptance criteria; for the heavy path, also the DAG.
+File a multi-ticket dependency DAG with one command. **The bar is high on purpose**: almost
+everything is ONE `beckett ticket create`. Reach for a plan only when you can name the distinct
+pieces AND how they depend. Over-decomposition is the failure mode — five workers, five reviews,
+five repos for what one worker finishes in a pass.
 
-## Acceptance criteria (mandatory for any non-trivial work)
+## The command
 
-```ts
-interface AcceptanceCriteria {
-  checks: string[];           // shell commands; exit 0 = pass (deterministic floor)
-  nl: string[];               // atomic English statements; reviewer judges met/not-met (ceiling)
-  interfaceContract?: string; // boundary contract with parallel nodes, if any
-}
+`beckett plan` reads JSON on stdin (or `--file`):
+
+```
+beckett plan <<'JSON'
+{ "channel": "<the [channel:…] id from the turn>",
+  "tickets": [
+    { "key": "schema", "title": "Add the votes table + migration",
+      "project": "polls",
+      "criteria": ["migration up/down", "indexed by poll_id"],
+      "cast": {"implement":{"harness":"pi","effort":"medium"}} },
+    { "key": "api", "title": "POST /vote + GET /results endpoints",
+      "project": "polls", "needs": ["schema"],
+      "cast": {"implement":{"harness":"pi","effort":"medium"}} },
+    { "key": "ui", "title": "Voting widget + live results bar chart",
+      "project": "polls", "needs": ["api"],
+      "cast": {"implement":{"harness":"claude","effort":"low"}} }
+  ] }
+JSON
 ```
 
-**Authoring rules:**
-- Every node has criteria (checks and/or nl; empty = a defect).
-- Checks run **as-is**: non-interactive, deterministic, scoped to the node (`npm test -- src/auth`),
-  network-free unless the node's envelope opts in. Prefer the project's own scripts.
-- NL statements are **atomic and verifiable from the diff**: one claim each. Cover the request
-  **+ error handling + backward-compat + "no check was weakened to pass."**
-  - bad: "code is good." good: "malformed/expired tokens are rejected with 401, not 500."
+Each ticket: `key` (unique, referenced by `needs`), `title`, optional `body` / `criteria`
+(array) / `cast` / `project` / `needs` (array of keys). It validates the DAG (unique keys, known
+edges, no cycles) before filing anything, then files in dependency order: roots start NOW
+(`in_progress`), dependents wait in `backlog` and are auto-promoted when every blocker hits
+`done`. You never babysit the sequencing.
 
-## DAG (heavy path only)
+## Rules
 
-Decompose into the **smallest right** set of nodes. Per node:
-`{ id, title, intent, dependsOn, scopePaths, criteria, suggestedWorker, envelope, reviewTier, initialCheckIn }`
-
-- **Acyclic.** Depend only on what *must* come first — maximize parallelism.
-- **Scope is a contract:** non-overlapping `scopePaths` across concurrent nodes (no merge
-  conflicts by choice).
-- `suggestedWorker` is a proposal; `staff` confirms it.
-- `initialCheckIn`: what should be true by when ("edits landing; if diff is 0 it's stuck").
-
-## Standing to refuse
-
-If the spec self-contradicts or can't be decomposed sanely, **emit no nodes and say why** in
-channel. A bad plan is worse than a question.
-
-## Output
-
-Keep the plan in your working context (and as a short note if the task is long-running). The
-criteria you author here are exactly what you'll paste into each worker's prompt and what
-`review` checks against.
+- Same craft per node as a single ticket: sharp title, checkable criteria, the right `cast`
+  (see doctrine — pi for backend/spec grind, claude for frontend/taste; always name an `effort`).
+- Nodes that share a `project` build in the same repo, in dependency order. Mixed
+  backend+frontend is the classic split (pi node → claude node).
+- Pass `channel` at the top level so every node's updates route back to the conversation.
+- Announce the shape in one line: "Filed a 3-step plan (OPS-50→51→52): schema, then API, then UI."
