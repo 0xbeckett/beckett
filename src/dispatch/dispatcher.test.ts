@@ -19,6 +19,7 @@ let spawnCalls: {
   baseRef: string;
   resumeSessionId?: string;
   steering?: string[];
+  reviewDiff?: string;
 }[] = [];
 let created: any[] = [];
 let counter = 0;
@@ -107,6 +108,7 @@ const fakeSpawn = async (args: any) => {
     baseRef: args.baseRef,
     resumeSessionId: args.resumeSessionId,
     steering: args.steering,
+    reviewDiff: args.reviewDiff,
   });
   if (args.resumeSessionId && failNextResumeSpawn) {
     failNextResumeSpawn = false;
@@ -122,6 +124,7 @@ let provisioned: string[] = [];
 let commitResult: { committed: boolean; sha: string | null } = { committed: true, sha: "commit000" };
 let commitCalls: { workspace: string; message: string }[] = [];
 let diffSince = true;
+let fakeReviewDiff = "diff --git a/x.ts b/x.ts\n+added";
 mock.module("./spawn.ts", () => ({ spawnWorker: fakeSpawn, spawnTicketWorker: fakeSpawn }));
 mock.module("../worker/worktree.ts", () => ({
   commitWorktree: async (workspace: string, message: string) => {
@@ -134,6 +137,7 @@ mock.module("../worker/worktree.ts", () => ({
   ensureProjectRepo: async (repoRoot: string, slug: string) => {
     provisioned.push(slug);
   },
+  readDiff: async () => fakeReviewDiff, // issue #27: pre-read diff handed to reviewers
 }));
 
 const { Dispatcher, BECKETT_COMMENT_MARKER } = await import("./dispatcher.ts");
@@ -286,11 +290,46 @@ describe("spawn on state change", () => {
     expect(spawnCalls[0]!.harness.harness).toBe("claude");
   });
 
-  test("in_review spawns a reviewer defaulting to claude/opus", async () => {
+  test("in_review spawns a reviewer with the configured model at scaled effort (issue #27)", async () => {
     const { d } = newDispatcher();
     await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
     await tick();
-    expect(spawnCalls[0]).toMatchObject({ stage: "review", harness: { harness: "claude", model: "claude-opus-4-8" } });
+    // Model from config.models.reviewer; effort defaults to "high" (never the xhigh fall-through).
+    expect(spawnCalls[0]).toMatchObject({
+      stage: "review",
+      harness: { harness: "claude", model: "claude-opus-4-8", effort: "high" },
+    });
+  });
+
+  test("review effort scales from the implement cast (low → medium, xhigh → xhigh)", async () => {
+    const { d } = newDispatcher();
+    const low = makeTicket({ id: "t-low", identifier: "OPS-L", state: "in_review", casting: { implement: { harness: "pi", effort: "low" } } });
+    await d.handle(stateChanged(low, "in_review"));
+    await tick();
+    const heavy = makeTicket({ id: "t-hi", identifier: "OPS-H", state: "in_review", casting: { implement: { harness: "claude", effort: "xhigh" } } });
+    await d.handle(stateChanged(heavy, "in_review"));
+    await tick();
+    expect(spawnCalls[0]!.harness.effort).toBe("medium");
+    expect(spawnCalls[1]!.harness.effort).toBe("xhigh");
+  });
+
+  test("an explicit review cast keeps its effort; one without gets the scaled default", async () => {
+    const { d } = newDispatcher();
+    const pinned = makeTicket({ id: "t-p", identifier: "OPS-P", state: "in_review", casting: { review: { harness: "claude", model: "claude-opus-4-8", effort: "xhigh" } } });
+    await d.handle(stateChanged(pinned, "in_review"));
+    await tick();
+    const bare = makeTicket({ id: "t-b", identifier: "OPS-B", state: "in_review", casting: { review: { harness: "claude" } } });
+    await d.handle(stateChanged(bare, "in_review"));
+    await tick();
+    expect(spawnCalls[0]!.harness).toMatchObject({ model: "claude-opus-4-8", effort: "xhigh" });
+    expect(spawnCalls[1]!.harness.effort).toBe("high");
+  });
+
+  test("the reviewer receives the pre-read contribution diff (issue #27)", async () => {
+    const { d } = newDispatcher();
+    await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
+    await tick();
+    expect(spawnCalls[0]!.reviewDiff).toContain("diff --git a/x.ts");
   });
 
   test("does not double-staff a ticket that already has a live worker", async () => {

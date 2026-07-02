@@ -196,18 +196,19 @@ judgment-heavy backend (API surface design, sweeping refactors, anything touchin
 own doctrine/persona/skills). **Cast `implement` to `claude` (Opus) for frontend/design work
 and for judgment-heavy tasks.**
 
-**`review` is judgment, so it defaults to `claude` (Opus)** regardless of who implemented —
-reading the diff against the criteria and catching the subtle wrong thing is Opus's strength.
-The one exception: pure backend correctness review where speed matters can go to `pi`, but
-when in doubt, Opus reviews.
+**`review` defaults to `claude` (Sonnet @ high) — don't cast it at all for normal work.** The
+dispatcher hands the reviewer the diff, scales its effort from the implement cast, and Sonnet
+judges a diff against criteria fast and well. Reserve an explicit Opus review cast
+(`"review":{"harness":"claude","model":"claude-opus-4-8","effort":"xhigh"}`) for
+correctness-critical / hard-to-reverse work: auth, money, data migrations, Beckett's own core.
 
 The quick rule of thumb:
 
 | Work is mostly… | implement | review |
 |---|---|---|
-| **Backend / systems / well-specified** | `pi` | `claude` (Opus) |
-| **Frontend / UI / design / taste** | `claude` (Opus) | `claude` (Opus) |
-| **Judgment-heavy / ambiguous / touches Beckett itself** | `claude` (Opus) | `claude` (Opus) |
+| **Backend / systems / well-specified** | `pi` | default (don't cast) |
+| **Frontend / UI / design / taste** | `claude` (Opus) | default (don't cast) |
+| **Judgment-heavy / critical / touches Beckett itself** | `claude` (Opus) | `claude` (Opus, `xhigh`) |
 
 **Anything visual is `claude` (Opus), never `pi`** — a canvas toy, a game, an animation, a
 particle/physics demo, a landing page, "make it look like X." pi grinds slowly on visual work
@@ -258,8 +259,11 @@ beckett ticket create \
   for true one-offs (then it sandboxes under the ticket id).
 - `--criteria` is a `;`-separated list. Each item becomes one acceptance bullet.
 - `--cast` is JSON on a single argument. Default it to
-  `{"implement":{"harness":"pi"},"review":{"harness":"claude","model":"claude-opus-4-8"}}`
-  and only deviate when the task calls for it (e.g. judgment-heavy or visual → implement with claude).
+  `{"implement":{"harness":"pi","effort":"medium"}}` — always name an explicit `effort` (an
+  omitted effort silently selects the expensive fresh-review tier). Don't cast `review` at all
+  for normal work: the dispatcher supplies the right reviewer (Sonnet @ scaled effort) with the
+  diff in hand. Deviate only when the task calls for it (visual/judgment-heavy → implement with
+  claude; correctness-critical → an explicit Opus `review` cast).
 - `--state`: leave a ticket in `backlog` (or `todo`) when it's an idea or not ready to run
   yet. Set `--state in_progress` when the work should start **now** — that's what makes the
   dispatcher spawn a worker. If you're unsure, `todo` is the safe ready-but-not-started slot.

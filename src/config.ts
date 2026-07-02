@@ -148,7 +148,10 @@ const ConfigSchema = z
       .object({
         front_door: z.string().min(1).default("claude-haiku-4-5"),
         judgment: z.string().min(1).default("claude-opus-4-8"),
-        reviewer: z.string().min(1).default("claude-opus-4-8"),
+        // Default reviewer model (issue #27): Sonnet reads a diff against criteria extremely well
+        // at a fraction of Opus cost/latency. Opus reviews remain one explicit cast away
+        // (`review: {model: "claude-opus-4-8", effort: "xhigh"}`) for correctness-critical work.
+        reviewer: z.string().min(1).default("claude-sonnet-5"),
       })
       .default({}),
     harness: z
