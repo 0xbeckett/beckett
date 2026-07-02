@@ -43,6 +43,7 @@ import type {
 } from "../types.ts";
 import { TASK_TERMINAL, TaskState } from "../types.ts";
 import { loadConfig, defaultConfig } from "../config.ts";
+import { piPreflight } from "../drivers/index.ts";
 import { buildPaths } from "../paths.ts";
 import { openReadOnly } from "../persistence/store.ts";
 import { readEvents, type EventQuery } from "../persistence/events.ts";
@@ -1248,6 +1249,28 @@ async function cmdDoctor(ctx: Ctx, p: ParsedArgs): Promise<number> {
   // codex auth
   if (ctx.config.harness.codex.enabled) checks.push(await checkBin(ctx.config.harness.codex.bin, ".codex", "codex auth"));
   else checks.push({ name: "codex auth", status: "WARN", detail: "disabled in config (harness.codex.enabled = false) — v0 Claude-only" });
+
+  // pi harness health (OPS-56): fast preflight so a dead pi surfaces here, LOUDLY, instead of
+  // silently killing whatever ticket happened to be cast to it. `beckett doctor pi` additionally
+  // runs a live probe (a real trivial turn) to catch a started-but-dead harness (dead quota/login)
+  // the offline checks can't see — a token round-trip, so it's opt-in via the `pi` subcommand.
+  if (ctx.config.harness.pi.enabled) {
+    const piDeep = p.positional[1] === "pi";
+    const piCfg = piDeep
+      ? { ...ctx.config, harness: { ...ctx.config.harness, pi: { ...ctx.config.harness.pi, preflight_live_probe: true } } }
+      : ctx.config;
+    const pf = await piPreflight(piCfg);
+    // Offline breakage (bad binary / CLI drift / missing login) is a hard FAIL; a live-probe-only
+    // failure means the harness is installed but the provider is down — a credential fix (WARN).
+    const offlineBroken = pf.problems.some((x) => !x.startsWith("live probe:"));
+    const status = pf.ok ? "OK" : offlineBroken ? "FAIL" : "WARN";
+    const detail = pf.ok
+      ? `ok · pi ${pf.version} · node ${pf.nodeVersion}${pf.liveProbed ? " · provider live" : " (run \`beckett doctor pi\` for a live provider probe)"}`
+      : pf.problems.join("; ");
+    checks.push({ name: "pi harness", status, detail });
+  } else {
+    checks.push({ name: "pi harness", status: "WARN", detail: "disabled in config (harness.pi.enabled = false)" });
+  }
 
   // config valid
   try { loadConfig(); checks.push({ name: "config", status: "OK", detail: `${ctx.paths.configFile} valid` }); }

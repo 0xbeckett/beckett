@@ -463,7 +463,9 @@ export class PiDriver implements HarnessDriver {
     // mints its own id, which we capture from the `session` line. We NEVER pass `--session-id`.
     const resumeId = spec.sessionId?.trim() || null;
     this.sessionId = resumeId;
-    const args = this.buildArgs(this.composePrompt(spec), /*isResume*/ Boolean(resumeId));
+    // pi takes the prompt as its trailing arg; the scope+criteria+persona go via
+    // `--append-system-prompt` (first launch only — see buildArgs).
+    const args = this.buildArgs(spec.prompt, /*isResume*/ Boolean(resumeId));
     return this.launch(args, /*isResume*/ Boolean(resumeId));
   }
 
@@ -647,12 +649,6 @@ export class PiDriver implements HarnessDriver {
   /** pi `--thinking` reuses the resource envelope's effort (same low|medium|high|xhigh vocab). */
   private resolvedThinking(): string {
     return this.spec?.envelope.effort || this.config.harness.pi.default_effort;
-  }
-
-  /** pi -p has no system-prompt channel we can't also pass via `--append-system-prompt`, but we
-   * fold `systemAppend` into the prompt head on RESUME (the flag is only sent on first launch). */
-  private composePrompt(spec: SpawnSpec): string {
-    return spec.prompt;
   }
 
   private buildArgs(prompt: string, isResume: boolean): string[] {
