@@ -40,6 +40,13 @@ import {
   buildAttachmentContent,
   type TurnContentBlock,
 } from "../discord/attachments.ts";
+import {
+  ensureSeeded,
+  upsertIdentity,
+  loadIdentities,
+  resolveAddress,
+  type UserIdentity,
+} from "../discord/identity.ts";
 
 /**
  * What one chat turn hands the model: either a plain string (text-only turns, and every internal
@@ -621,6 +628,7 @@ export class Concierge {
 
   /** Bring the session up first (fail fast on a bad launch), then go live on Discord. */
   async start(): Promise<void> {
+    this.seedIdentities();
     await this.session.start();
     this.gateway.onMessage((m) => this.onMessage(m));
     await this.gateway.start();
@@ -839,7 +847,9 @@ export class Concierge {
    * the turn; a turn with no inlinable image is a plain string exactly as before.
    */
   private async buildTurn(m: IncomingMessage, content: string): Promise<TurnMessage> {
-    if (m.attachments.length === 0) return frameUserTurn(m.channelId, content);
+    const speaker = this.resolveSpeaker(m);
+    if (m.attachments.length === 0)
+      return frameUserTurn(m.channelId, speaker, m.messageId, content);
     let images: TurnContentBlock[] = [];
     let manifest = "";
     try {
@@ -860,11 +870,58 @@ export class Concierge {
       });
     }
     const body = content && manifest ? `${content}\n${manifest}` : content || manifest;
-    const framed = frameUserTurn(m.channelId, body);
+    const framed = frameUserTurn(m.channelId, speaker, m.messageId, body);
     // No inlinable image → the turn is a plain string, byte-for-byte as text-only turns always were.
     if (images.length === 0) return framed;
     // Otherwise: a text block (framed message + any non-image manifest) followed by the image blocks.
     return [{ type: "text", text: framed }, ...images];
+  }
+
+  /**
+   * Resolve WHO is speaking for the turn stamp (OPS-42). Reads this id's stored identity (known /
+   * preferred name), marks it as the owner iff it matches the env-provided owner id (so the
+   * session-context owner identity is bound to ONE person, not applied to whoever is typing), and
+   * refreshes the cached live `display_name` so the map self-populates as people talk. Best-effort:
+   * a store read/write failure degrades to "just the live display name", never drops the turn.
+   */
+  private resolveSpeaker(m: IncomingMessage): SpeakerContext {
+    const isOwner = this.ownerId() !== undefined && m.userId === this.ownerId();
+    let identity: UserIdentity | undefined;
+    try {
+      const file = buildPaths(this.config).identitiesFile;
+      identity = loadIdentities(file)[m.userId];
+      // Keep the cached display name current (and stamp ownership on the record if it's the owner
+      // and we hadn't yet). Never overwrite a chosen known/preferred name.
+      const display = m.authorDisplayName?.trim();
+      const patch: Parameters<typeof upsertIdentity>[2] = {};
+      if (display && display !== identity?.display_name) patch.display_name = display;
+      if (isOwner && !identity?.is_owner) patch.is_owner = true;
+      if (Object.keys(patch).length > 0) identity = upsertIdentity(file, m.userId, patch);
+    } catch (err) {
+      this.log.warn("identity resolve failed (using live display name only)", {
+        userId: m.userId,
+        err: String(err),
+      });
+    }
+    return { userId: m.userId, displayName: m.authorDisplayName, identity, isOwner };
+  }
+
+  /** The env-provided owner's Discord user id, if set (binds the owner identity to one person). */
+  private ownerId(): string | undefined {
+    const id = process.env.DISCORD_OWNER_ID?.trim();
+    return id && /^\d{1,20}$/.test(id) ? id : undefined;
+  }
+
+  /**
+   * Seed the identity map with its day-one entries (the example mapping + the owner, bound to the
+   * env owner id). Idempotent and additive — see {@link ensureSeeded}. Best-effort at startup.
+   */
+  private seedIdentities(): void {
+    try {
+      ensureSeeded(buildPaths(this.config).identitiesFile, this.ownerId());
+    } catch (err) {
+      this.log.warn("identity seed failed (continuing)", { err: String(err) });
+    }
   }
 }
 
@@ -964,13 +1021,49 @@ the slang is the surface. underneath you're sharp and you actually ship. when th
 file the ticket and let it cook, same as always. don't let the vibe make you sloppy or vague. be the
 guy who talks like this AND gets it done.`;
 
+/** Who is speaking, resolved for the turn stamp (OPS-42). */
+export interface SpeakerContext {
+  userId: string;
+  /** Live Discord display name off the incoming message, if any. */
+  displayName?: string;
+  /** The stored record (known/preferred name), if we've seen this id before. */
+  identity?: UserIdentity;
+  /** True only when this id is the env-provided owner — binds owner identity to ONE person. */
+  isOwner: boolean;
+}
+
+/** JSON-escape a name so a quote/newline in a Discord nick can't break the single-line stamp. */
+function stampField(value: string): string {
+  return JSON.stringify(value);
+}
+
 /**
- * Prefix a Discord turn with its channel id so the Concierge can stamp `--channel <id>` onto any
- * ticket it files (the routing key that lets updates flow back here — see `concierge.md`). Kept
- * to one terse line so it doesn't crowd the actual message or bleed into the Concierge's voice.
+ * Prefix a Discord turn with WHO is speaking and WHERE, so the Concierge (a) stamps `--channel
+ * <id>` onto any ticket it files (the routing key that lets updates flow back here) and (b) knows
+ * exactly which person it's talking to — their Discord user id, their display name, the name to
+ * address them by, and whether they're the owner. Kept to two terse machine-readable lines so it
+ * doesn't crowd the message or bleed into the Concierge's voice. Different user ids therefore read
+ * as different people even in the same channel — no more assuming every message is "the user".
  */
-function frameUserTurn(channelId: string, content: string): string {
-  return `[channel:${channelId}]\n${content}`;
+function frameUserTurn(
+  channelId: string,
+  speaker: SpeakerContext,
+  messageId: string,
+  content: string,
+): string {
+  const parts = [`user:${speaker.userId}`];
+  const address = resolveAddress(speaker.identity);
+  const display = speaker.displayName?.trim();
+  // `address` = how to call them (preferred → known → display). Also surface the raw Discord
+  // display name when it differs, so a rename is visible without losing the chosen address.
+  if (address) parts.push(`address:${stampField(address)}`);
+  if (display && display !== address) parts.push(`display:${stampField(display)}`);
+  if (speaker.identity?.notes) parts.push(`notes:${stampField(speaker.identity.notes)}`);
+  if (speaker.isOwner) parts.push("role:owner");
+  // `msg:` is the exact message being answered — carried through so a reply targets THAT message,
+  // not just the channel (Jason's steer, OPS-42). The native reply already uses it; surfacing it
+  // in the stamp lets the Concierge quote/`--reply-to` the precise message when it matters.
+  return `[channel:${channelId}] [${parts.join(" ")} msg:${messageId}]\n${content}`;
 }
 
 /** The marker the dispatcher prepends to its own Plane comments (mirrors `BECKETT_COMMENT_MARKER`). */
