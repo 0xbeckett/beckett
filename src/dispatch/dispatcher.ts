@@ -38,7 +38,7 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { Config, Harness, Logger, WorkerEvent, DoneSignal } from "../types.ts";
 import type {
   Ticket,
@@ -49,7 +49,17 @@ import type {
 } from "../plane/types.ts";
 import type { ProgressSink } from "../discord/progress.ts";
 import { log } from "../log.ts";
-import { commitWorktree, headSha, hasDiffSince, ensureProjectRepo, readDiff } from "../worker/worktree.ts";
+import {
+  commitWorktree,
+  headSha,
+  hasDiffSince,
+  ensureProjectRepo,
+  readDiff,
+  createWorktree,
+  removeWorktree,
+  fetchRemote,
+  SCAFFOLDING_DIR,
+} from "../worker/worktree.ts";
 import { projectSlug } from "../plane/cast.ts";
 import { hardCapSeconds, sweepLedgeredWorker } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
@@ -87,6 +97,9 @@ export interface GitOps {
   hasDiffSince: typeof hasDiffSince;
   ensureProjectRepo: typeof ensureProjectRepo;
   readDiff: typeof readDiff;
+  createWorktree: typeof createWorktree;
+  removeWorktree: typeof removeWorktree;
+  fetchRemote: typeof fetchRemote;
 }
 
 export interface DispatcherDeps {
@@ -388,10 +401,23 @@ export class Dispatcher {
    * `atCap()` undercounted → the concurrency cap was silently bypassed (runaway fan-out).
    */
   private readonly staffing = new Set<string>();
-  /** Project repos currently reserved by a live, spawning, or finishing ticket. */
+  /**
+   * Legacy per-repo exclusivity map. v3.2 runs each ticket in its OWN worktree, so same-repo
+   * tickets are no longer serialized — {@link launchSpawn} stops populating this, leaving the
+   * guards in {@link spawnGuarded}/{@link pump} to always see "free" (concurrent under the cap).
+   * Kept (inert) rather than ripping out the guard scaffolding.
+   */
   private readonly repoOwners = new Map<string, RepoOwner>();
   /** Reverse lookup so release paths can free the project repo for this ticket. */
   private readonly repoByTicket = new Map<string, string>();
+  /** Ticket id → its allocated worktree path, so terminal paths can tear it down. */
+  private readonly workspaceByTicket = new Map<string, string>();
+  /**
+   * Per-repo promise chain that serializes the git ALLOC step (fetch + `git worktree add`) so
+   * concurrent same-repo spawns can't race on the shared `.git` index/HEAD locks. Only the alloc
+   * is serialized; the workers themselves then run in parallel in their isolated worktrees.
+   */
+  private readonly repoAllocChain = new Map<string, Promise<unknown>>();
   /** Ids of comments the dispatcher itself posted — never read back as steering (Fix: self-nudge). */
   private readonly ownCommentIds = new Set<string>();
   /** Per-ticket implement↔review round-trips, to bound auto-rework. */
@@ -428,7 +454,17 @@ export class Dispatcher {
   constructor(deps: DispatcherDeps) {
     this.client = deps.client;
     this.config = deps.config;
-    this.git = { commitWorktree, headSha, hasDiffSince, ensureProjectRepo, readDiff, ...deps.gitOps };
+    this.git = {
+      commitWorktree,
+      headSha,
+      hasDiffSince,
+      ensureProjectRepo,
+      readDiff,
+      createWorktree,
+      removeWorktree,
+      fetchRemote,
+      ...deps.gitOps,
+    };
     this.resolveRepoRoot = deps.resolveRepoRoot;
     this.publishRepo = deps.publishRepo;
     this.progress = deps.progress;
@@ -845,6 +881,7 @@ export class Dispatcher {
     this.releaseRepo(ticket.id);
     if (!handle) {
       this.logger.info("ticket cancelled (no live worker)", { ticket: ticket.identifier });
+      await this.disposeWorktree(ticket.id);
       this.pump();
       return;
     }
@@ -855,6 +892,8 @@ export class Dispatcher {
     this.workers.delete(ticket.id);
     await handle.abort("ticket cancelled");
     await handle.reap();
+    // Aborted + reaped → nothing holds the tree; remove it (the work is unwanted).
+    await this.disposeWorktree(ticket.id);
     this.pump();
   }
 
@@ -1013,9 +1052,9 @@ export class Dispatcher {
    */
   private launchSpawn(ticket: Ticket, stage: string, repoRoot: string): void {
     this.staffing.add(ticket.id);
-    this.repoOwners.set(repoRoot, { ticketId: ticket.id, identifier: ticket.identifier });
+    // v3.2: no per-repo reservation — each ticket gets its own worktree, so same-repo tickets run
+    // concurrently under the global cap. Only the `staffing` dedup + `atCap()` gate admission.
     this.repoByTicket.set(ticket.id, repoRoot);
-    this.refreshRepoWaiters(repoRoot, ticket.identifier);
     void this.doSpawn(ticket, stage, repoRoot)
       .catch(() => {
         /* doSpawn handles its own errors + ticket comment */
@@ -1025,6 +1064,44 @@ export class Dispatcher {
         if (!this.workers.has(ticket.id)) this.releaseRepo(ticket.id);
         this.pump();
       });
+  }
+
+  /**
+   * Allocate (or reuse) the ticket's own worktree. Serialized per-repo via {@link repoAllocChain}
+   * so concurrent same-repo spawns don't race `git fetch`/`worktree add` on the shared `.git`;
+   * the workers then run in parallel in their isolated trees. First allocation branches from a
+   * freshly-fetched `origin/main` (no stale-base stacking — the OPS-59/61 failure); later stages
+   * (review/rework) reuse the existing tree so they see the in-progress work.
+   */
+  private prepareWorktree(ticket: Ticket, repoRoot: string): Promise<string> {
+    const prior = this.repoAllocChain.get(repoRoot) ?? Promise.resolve();
+    const run = prior.catch(() => {}).then(() => this.allocateTicketWorktree(ticket, repoRoot));
+    this.repoAllocChain.set(repoRoot, run.catch(() => {}));
+    return run;
+  }
+
+  private async allocateTicketWorktree(ticket: Ticket, repoRoot: string): Promise<string> {
+    const firstTouch = !this.workspaceByTicket.has(ticket.id);
+    const workspace = this.workspaceByTicket.get(ticket.id) ?? join(repoRoot, SCAFFOLDING_DIR, "worktrees", ticket.id);
+    // Fresh base only when first cutting the tree; a reused tree keeps its in-progress commits.
+    if (firstTouch) await this.git.fetchRemote(repoRoot);
+    const branch = `beckett/${ticket.identifier.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
+    await this.git.createWorktree({ repoRoot, workspace, branch, baseRef: "origin/main", reuseIfExists: true });
+    this.workspaceByTicket.set(ticket.id, workspace);
+    return workspace;
+  }
+
+  /** Tear down a ticket's worktree (best-effort) once it's terminal-and-shipped or cancelled. */
+  private async disposeWorktree(ticketId: string): Promise<void> {
+    const workspace = this.workspaceByTicket.get(ticketId);
+    if (!workspace) return;
+    const repoRoot = this.repoByTicket.get(ticketId) ?? dirname(dirname(dirname(workspace)));
+    this.workspaceByTicket.delete(ticketId);
+    try {
+      await this.git.removeWorktree(repoRoot, workspace);
+    } catch (err) {
+      this.logger.warn("worktree teardown failed (leaving it)", { ticketId, error: (err as Error).message });
+    }
   }
 
   /** Admit queued spawns while slots are free. */
@@ -1119,12 +1196,32 @@ export class Dispatcher {
       return; // launchSpawn's finally releases the reservation + pumps
     }
 
-    // Capture the diff base the first time a ticket implements: every stage shares the one
-    // checkout, so this sha is how a later REVIEW sees the ticket's whole contribution. A git
-    // hiccup here must never block the spawn — the reviewer just falls back to diffing HEAD.
+    // Allocate (or reuse) the ticket's OWN worktree, off a freshly-fetched origin/main. A failure
+    // here leaves the ticket for a human rather than spawning a worker with nowhere to work.
+    let workspace: string;
+    try {
+      workspace = await this.prepareWorktree(ticket, repoRoot);
+    } catch (err) {
+      this.logger.error("worktree allocation failed", {
+        ticket: ticket.identifier,
+        repoRoot,
+        error: (err as Error).message,
+      });
+      await this.onSpawnFailure(
+        ticket,
+        stage,
+        new Error(`could not allocate a worktree under \`${repoRoot}\`: ${(err as Error).message}`),
+      );
+      return; // launchSpawn's finally releases the reservation + pumps
+    }
+    const branch = `beckett/${ticket.identifier.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
+
+    // Capture the diff base the first time a ticket implements: the worktree branches from
+    // origin/main, so its HEAD-before-any-work is how a later REVIEW sees the ticket's whole
+    // contribution. A git hiccup here must never block the spawn — review falls back to diffing HEAD.
     if (stage === "implement" && !this.baseShaForTicket.has(ticket.id)) {
       try {
-        const sha = await this.git.headSha(repoRoot);
+        const sha = await this.git.headSha(workspace);
         if (sha) {
           this.baseShaForTicket.set(ticket.id, sha);
           this.persistRuntimeState();
@@ -1154,7 +1251,7 @@ export class Dispatcher {
     let reviewDiff: string | undefined;
     if (stage === "review") {
       try {
-        reviewDiff = await this.git.readDiff(repoRoot, baseRef);
+        reviewDiff = await this.git.readDiff(workspace, baseRef);
       } catch (err) {
         this.logger.warn("review diff pre-read failed (reviewer will diff itself)", {
           ticket: ticket.identifier,
@@ -1168,6 +1265,8 @@ export class Dispatcher {
       harness: spec,
       config: this.config,
       repoRoot,
+      workspace,
+      branch,
       baseRef,
       onProgress,
       steering,
@@ -1874,7 +1973,10 @@ export class Dispatcher {
   private async publishProject(ticket: Ticket): Promise<PublishOutcome> {
     if (!this.publishRepo) return { status: "skipped" };
     const slug = projectSlug(ticket.project || ticket.identifier);
-    const repoRoot = this.resolveRepoRoot(ticket);
+    // Publish FROM the ticket's worktree (its work lives on `beckett/<ticket>`, not repoRoot's
+    // main). Because that tree was cut from a fresh origin/main, the push/rebase is clean — this
+    // is precisely what removes the stale-base conflict that stranded OPS-59/61.
+    const repoRoot = this.workspaceByTicket.get(ticket.id) ?? this.resolveRepoRoot(ticket);
     try {
       const r = await this.publishRepo({ slug, repoRoot, description: ticket.title, ticket: ticket.identifier });
       this.logger.info("project published to github", { ticket: ticket.identifier, url: r.url, kind: r.kind });
@@ -2027,6 +2129,10 @@ export class Dispatcher {
     const advanced = await this.advanceTicket(ticket, "done", `${messagePrefix}${link}\n\n${summary}`, {
       promoteDependents: true,
     });
+    // Shipped → the worktree has served its purpose; tear it down (best-effort). Only on a real
+    // `done`: a park-to-todo (publish failed / retries exhausted) KEEPS the tree so a human/courier
+    // can recover the committed work.
+    if (advanced) await this.disposeWorktree(ticket.id);
     return advanced;
   }
 

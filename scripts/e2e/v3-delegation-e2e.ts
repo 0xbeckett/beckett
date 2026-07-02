@@ -44,6 +44,8 @@ const handle = await spawnWorker({
   harness: { harness: harnessName, effort: "low" },
   config,
   repoRoot,
+  workspace: repoRoot, // e2e smoke test runs directly in the repo (no worktree isolation needed)
+  branch: "beckett/e2e",
   baseRef: "HEAD",
 });
 console.log("  worker:", handle.id, "| workspace:", handle.workspace, "| branch:", handle.branch);

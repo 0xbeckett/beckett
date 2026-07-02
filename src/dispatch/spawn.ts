@@ -47,7 +47,7 @@ import { projectSlug } from "../plane/cast.ts";
 import { createDriver } from "../drivers/index.ts";
 import { workerId as mintWorkerId } from "../ids.ts";
 import { log } from "../log.ts";
-import { excludeFromGit, installScaffoldingGuardHook, currentBranch, SCAFFOLDING_DIR } from "../worker/worktree.ts";
+import { excludeFromGit, installScaffoldingGuardHook, SCAFFOLDING_DIR } from "../worker/worktree.ts";
 import { scopeGuardSpec } from "../hooks/scope-guard.ts";
 import { renderClaudeSettings } from "../hooks/registry.ts";
 
@@ -143,8 +143,17 @@ export interface SpawnWorkerArgs {
   /** The casting entry for this stage (which harness/model/effort). */
   harness: HarnessSpec;
   config: Config;
-  /** Absolute git repo root the worktree is allocated under. */
+  /** Absolute git repo root the worktree is allocated under (the shared project `.git`). */
   repoRoot: string;
+  /**
+   * Absolute path to the ticket's own git worktree — the worker's cwd. The dispatcher allocates it
+   * (off a fresh `origin/main`) and reuses it across the ticket's implement/review/rework stages,
+   * so every stage sees the same in-progress tree. Isolated per ticket, enabling same-repo
+   * concurrency without the stale-base stacking that stranded OPS-59/61.
+   */
+  workspace: string;
+  /** The ticket's worktree branch (e.g. `beckett/<ticket>`), carrying its contribution. */
+  branch: string;
   /** Base ref the ticket's worktree was first branched from (the REVIEW diff base). */
   baseRef: string;
   /**
@@ -459,13 +468,13 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
  * Exported under both names: `spawnWorker` (task spec) and `spawnTicketWorker` (docs/V3.md §6).
  */
 export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHandle> {
-  const { ticket, stage, harness, config, repoRoot, baseRef, resumeSessionId, onProgress, steering, reviewDiff } =
+  const { ticket, stage, harness, config, repoRoot, workspace, branch, baseRef, resumeSessionId, onProgress, steering, reviewDiff } =
     args;
   const logger = (args.logger ?? log.child("dispatch.spawn")).child(`ticket.${ticket.identifier}`);
 
   const id = mintWorkerId();
-  const workspace = repoRoot; // v3.1: the ticket's own project repo (the dispatcher provisioned it)
-  const branch = await currentBranch(repoRoot); // informational: the project repo's branch
+  // workspace/branch: the ticket's own worktree (dispatcher-allocated off fresh origin/main, reused
+  // across stages). repoRoot stays the shared project `.git` the worktree is attached to.
   const scope = buildScope(ticket);
   const envelope = buildEnvelope(harness, config);
   const scopeGuardPath = join(import.meta.dir, "../hooks/scope-guard.ts");

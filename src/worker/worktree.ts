@@ -446,6 +446,28 @@ export async function currentBranch(repoRoot: string): Promise<string> {
   return name || "HEAD";
 }
 
+/**
+ * Best-effort `git fetch origin` so a fresh per-ticket worktree can branch from an up-to-date
+ * `origin/main` instead of a stale local checkout (the drift that stranded OPS-59/61). Project
+ * repos are public, so this is unauthenticated. NEVER throws — a missing origin, offline box, or
+ * private repo just leaves the worktree to branch from whatever local base exists (createWorktree
+ * falls back to HEAD). Returns whether the fetch actually succeeded (for logging only).
+ */
+export async function fetchRemote(repoRoot: string, remote = "origin"): Promise<boolean> {
+  const hasRemote = (await runGit(["remote", "get-url", remote], repoRoot)).code === 0;
+  if (!hasRemote) return false;
+  const r = await runGit(["fetch", "--quiet", remote], repoRoot);
+  if (r.code !== 0) {
+    logger.warn("git fetch failed; worktree will branch from local base", {
+      repoRoot,
+      remote,
+      error: r.stderr.trim() || r.stdout.trim(),
+    });
+    return false;
+  }
+  return true;
+}
+
 /** GitHub org/account Beckett owns and pushes project repos to (override via `BECKETT_GH_ORG`). */
 export const GH_ORG = process.env.BECKETT_GH_ORG?.trim() || "0xbeckett";
 

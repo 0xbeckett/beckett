@@ -126,6 +126,8 @@ let commitResult: { committed: boolean; sha: string | null } = { committed: true
 let commitCalls: { workspace: string; message: string }[] = [];
 let diffSince = true;
 let fakeReviewDiff = "diff --git a/x.ts b/x.ts\n+added";
+let worktreeAdds: { workspace: string; branch: string }[] = [];
+let worktreeRemoves: string[] = [];
 mock.module("./spawn.ts", () => ({ spawnWorker: fakeSpawn, spawnTicketWorker: fakeSpawn }));
 // The dispatcher's git ops, faked via dependency injection (deps.gitOps) rather than
 // `mock.module("../worker/worktree.ts")`. bun's module mock is process-global and leaked these
@@ -142,6 +144,16 @@ const gitFakes: Partial<GitOps> = {
     provisioned.push(slug);
   },
   readDiff: async () => fakeReviewDiff, // issue #27: pre-read diff handed to reviewers
+  // v3.2 worktrees: faked so tests never touch real git. createWorktree records + echoes a handle;
+  // removeWorktree records teardown; fetchRemote is a no-op success.
+  createWorktree: async (opts) => {
+    worktreeAdds.push({ workspace: opts.workspace, branch: opts.branch });
+    return { repoRoot: opts.repoRoot, workspace: opts.workspace, branch: opts.branch };
+  },
+  removeWorktree: async (_repoRoot: string, workspace: string) => {
+    worktreeRemoves.push(workspace);
+  },
+  fetchRemote: async () => true,
 };
 
 const { Dispatcher, BECKETT_COMMENT_MARKER } = await import("./dispatcher.ts");
@@ -258,6 +270,8 @@ beforeEach(() => {
   commitResult = { committed: true, sha: "commit000" };
   commitCalls = [];
   diffSince = true;
+  worktreeAdds = [];
+  worktreeRemoves = [];
   failNextResumeSpawn = false;
 });
 
@@ -530,12 +544,13 @@ describe("advance on finish", () => {
     await tick();
     created[0].finish("success", "shipped it");
     await tick();
-    // Published deterministically with the slugified project + its repo root + the ticket id, and the
-    // real URL (not a guess) is woven into the done comment so the Concierge can hand it out.
+    // Published deterministically with the slugified project + the ticket id, and the real URL (not
+    // a guess) woven into the done comment. v3.2: the publish SOURCE is the ticket's worktree (where
+    // its work lives on `beckett/<ticket>`), not the bare project root.
     expect(calls).toEqual([
       {
         slug: "balloons-game",
-        repoRoot: "/home/beckett/Projects/balloons-game",
+        repoRoot: "/home/beckett/Projects/balloons-game/.beckett/worktrees/tkt-1",
         description: "Build balloons",
         ticket: "OPS-1",
       },
@@ -1258,7 +1273,9 @@ describe("preflight + failure taxonomy", () => {
 describe("concurrency cap", () => {
   test("over-cap spawns queue and pump when a slot frees", async () => {
     const { d } = newDispatcher(1);
-    const a = makeTicket({ id: "a", identifier: "OPS-A" });
+    // `a` is self-review tier so its clean finish goes straight to done (no re-spawned reviewer to
+    // grab the freed slot) — isolating the pump-on-free behavior this test is about.
+    const a = makeTicket({ id: "a", identifier: "OPS-A", casting: { implement: { harness: "claude", effort: "low" } } });
     const b = makeTicket({ id: "b", identifier: "OPS-B" });
     await d.handle(stateChanged(a, "in_progress"));
     await tick();
@@ -1266,13 +1283,13 @@ describe("concurrency cap", () => {
     await tick();
     expect(spawnCalls).toHaveLength(1); // b queued behind the cap of 1
 
-    created[0].finish("success", "a done"); // frees the slot → pump spawns b
+    created[0].finish("success", "a done"); // a → done → frees the slot → pump spawns b
     await tick();
     expect(spawnCalls).toHaveLength(2);
     expect(spawnCalls[1]!.ticketId).toBe("b");
   });
 
-  test("same-project tickets serialize on the project repo even when worker slots are free", async () => {
+  test("v3.2: same-project tickets run concurrently, each in its own worktree", async () => {
     const { d, client } = newDispatcher(2);
     const a = makeTicket({ id: "a", identifier: "OPS-A", project: "balloons" });
     const b = makeTicket({ id: "b", identifier: "OPS-B", project: "balloons" });
@@ -1282,44 +1299,39 @@ describe("concurrency cap", () => {
     await d.handle(stateChanged(b, "in_progress"));
     await tick();
 
-    expect(spawnCalls).toHaveLength(1);
-    expect(d.live()).toEqual([
-      { state: "live", ticketId: "a", workerId: "wk_1", repoRoot: "/tmp/repo/balloons" },
-      {
-        state: "queued",
-        ticketId: "b",
-        workerId: null,
-        stage: "implement",
-        repoRoot: "/tmp/repo/balloons",
-        waitingFor: "OPS-A",
-      },
-    ]);
-    expect(client.comments.at(-1)!.body).toContain("Waiting for OPS-A to free `/tmp/repo/balloons`");
-
-    created[0].finish("success", "a done");
-    await tick();
-
+    // No per-repo serialization anymore: both spawn under the cap, each cutting its own worktree
+    // branch off the shared project repo.
     expect(spawnCalls).toHaveLength(2);
-    expect(spawnCalls[1]!.ticketId).toBe("b");
+    expect(
+      d
+        .live()
+        .filter((s) => s.state === "live")
+        .map((s) => s.ticketId)
+        .sort(),
+    ).toEqual(["a", "b"]);
+    expect(worktreeAdds.map((w) => w.branch).sort()).toEqual(["beckett/ops-a", "beckett/ops-b"]);
+    expect(client.comments.some((c) => c.body.includes("Waiting for"))).toBe(false);
   });
 
-  test("cancelling a same-project worker releases the queued ticket", async () => {
+  test("cancelling a live worker frees a capped slot for a queued ticket", async () => {
     const { d } = newDispatcher(2);
-    const a = makeTicket({ id: "a", identifier: "OPS-A", project: "balloons" });
-    const b = makeTicket({ id: "b", identifier: "OPS-B", project: "balloons" });
-
+    const a = makeTicket({ id: "a", identifier: "OPS-A" });
+    const b = makeTicket({ id: "b", identifier: "OPS-B" });
+    const c = makeTicket({ id: "c", identifier: "OPS-C" });
     await d.handle(stateChanged(a, "in_progress"));
     await tick();
     await d.handle(stateChanged(b, "in_progress"));
     await tick();
-    expect(spawnCalls).toHaveLength(1);
+    await d.handle(stateChanged(c, "in_progress"));
+    await tick();
+    expect(spawnCalls).toHaveLength(2); // c queued behind the cap of 2
 
     await d.handle({ kind: "cancelled", ticket: a });
     await tick();
 
     expect(created[0].aborted).toBe(true);
-    expect(spawnCalls).toHaveLength(2);
-    expect(spawnCalls[1]!.ticketId).toBe("b");
+    expect(spawnCalls).toHaveLength(3);
+    expect(spawnCalls[2]!.ticketId).toBe("c");
   });
 
   // ── regression: the runaway fan-out (cap=2 but 18 workers in prod) ──────────────────────────
@@ -1355,6 +1367,7 @@ describe("concurrency cap", () => {
     // before any handle registers. Only 2 (the cap) may be admitted; the rest queue.
     const tickets = Array.from({ length: 5 }, (_, i) => makeTicket({ id: `t${i}`, identifier: `OPS-${i}` }));
     await Promise.all(tickets.map((t) => d.handle(stateChanged(t, "in_progress"))));
+    await tick(); // let the 2 admitted spawns reach the (gated) fake; the 3 over-cap stay queued
     expect(spawnCalls).toHaveLength(2); // cap respected even though no handle has registered yet
 
     release();
@@ -1363,6 +1376,60 @@ describe("concurrency cap", () => {
     expect(status.filter((s) => s.state === "live")).toHaveLength(2); // still exactly the cap
     expect(status.filter((s) => s.state === "queued")).toHaveLength(3);
     expect(spawnCalls).toHaveLength(2);
+  });
+});
+
+describe("worktrees (v3.2)", () => {
+  test("implement + review share ONE worktree; done tears it down", async () => {
+    const { d } = newDispatcher();
+    const ticket = makeTicket(); // fresh tier → implement, then a separate review
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "implemented");
+    await tick(); // → in_review; the reviewer self-spawns in the SAME worktree
+
+    const workspaces = new Set(worktreeAdds.map((w) => w.workspace));
+    expect(workspaces.size).toBe(1); // reused across implement + review, not re-cut
+    const ws = [...workspaces][0]!;
+    expect(ws).toContain("/.beckett/worktrees/tkt-1");
+    expect(worktreeAdds[0]!.branch).toBe("beckett/ops-1");
+
+    created.at(-1)!.finish("success", "looks good", doneSignal("complete"));
+    await tick();
+    expect(worktreeRemoves).toContain(ws); // shipped → torn down
+  });
+
+  test("a cancelled ticket's worktree is torn down", async () => {
+    const { d } = newDispatcher();
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    const ws = worktreeAdds[0]!.workspace;
+
+    await d.handle({ kind: "cancelled", ticket });
+    await tick();
+    expect(worktreeRemoves).toContain(ws);
+  });
+
+  test("a publish-failed park-to-todo KEEPS the worktree (a human/courier needs the work)", async () => {
+    const client = new FakeClient();
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/tmp/repo/x",
+      publishRepo: async () => {
+        throw new Error("gh down");
+      },
+    });
+    const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "done"); // self-review → done attempt → publish fails → park todo
+    await tick();
+
+    expect(client.setStateCalls).toContainEqual({ id: "tkt-1", state: "todo" });
+    expect(worktreeRemoves).toHaveLength(0); // preserved, not torn down
   });
 });
 
