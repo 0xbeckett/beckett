@@ -15,22 +15,26 @@
 import type { Config, Harness, HarnessDriver, Logger } from "../types.ts";
 import { ClaudeDriver } from "./claude.ts";
 import { CodexDriver } from "./codex.ts";
+import { PiDriver } from "./pi.ts";
 
 export { ClaudeDriver } from "./claude.ts";
 export { CodexDriver } from "./codex.ts";
+export { PiDriver, piPreflight } from "./pi.ts";
+export type { PiPreflight } from "./pi.ts";
 export type { RateLimitSignal } from "./claude.ts";
 
 /** Builds a fresh driver instance (one driver == one harness process). */
 export type DriverFactory = (config: Config, logger?: Logger) => HarnessDriver;
 
 /**
- * The harness → driver-factory table. v3: both `claude` (live-steerable stream) and `codex`
- * (one-shot `codex exec`, steer-via-resume) are registered so the dispatcher can cast either
- * harness per stage (Spec 02 §5; docs/V3.md §7).
+ * The harness → driver-factory table. v3: `claude` (live-steerable stream), `codex` (one-shot
+ * `codex exec`, steer-via-resume), and `pi` (one-shot `pi -p --mode json`, steer-via-resume) are
+ * all registered so the dispatcher can cast any of the three per stage (Spec 02 §5; docs/V3.md §7).
  */
 const FACTORIES: Partial<Record<Harness, DriverFactory>> = {
   claude: (config, logger) => new ClaudeDriver(config, logger),
   codex: (config, logger) => new CodexDriver(config, logger),
+  pi: (config, logger) => new PiDriver(config, logger),
 };
 
 /** Whether a driver is registered for `harness`. */

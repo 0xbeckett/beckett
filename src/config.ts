@@ -152,6 +152,25 @@ const ConfigSchema = z
             network_default: z.boolean().default(false),
           })
           .default({}),
+        // pi (the malleable, provider-agnostic coding CLI) run one-shot as `pi -p --mode json`.
+        // Auth is subscription/OAuth via ~/.pi/agent/auth.json (the child strips API keys) — the
+        // default provider is `openai-codex` (the ChatGPT/Codex login) driving gpt-5.5 @ high; a
+        // cast can override provider/model/effort per ticket. The driver DELIBERATELY does not pass
+        // `--session-id`: pi mints its own session id (captured from the `session` line) and resumes
+        // via `--session <id>`, which exists in every pi build — see OPS-56 root cause in pi.ts.
+        pi: z
+          .object({
+            enabled: z.boolean().default(true),
+            bin: z.string().min(1).default("pi"),
+            default_provider: z.string().min(1).default("openai-codex"),
+            default_model: z.string().min(1).default("gpt-5.5"),
+            default_effort: z.enum(["low", "medium", "high", "xhigh"]).default("high"),
+            // Run a cheap live turn during preflight to catch a started-but-dead harness (expired
+            // login / exhausted quota) that the offline checks can't see. Off by default: it costs
+            // a token round-trip per dispatch; enable where a silent-dead pi is worse than the cost.
+            preflight_live_probe: z.boolean().default(false),
+          })
+          .default({}),
       })
       .default({}),
     paths: z

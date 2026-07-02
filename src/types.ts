@@ -28,13 +28,14 @@
 // =======================================================================================
 
 /** A coding-agent CLI Beckett drives as a subprocess (Spec 00 glossary). */
-export type Harness = "claude" | "codex";
+export type Harness = "claude" | "codex" | "pi";
 
 /**
  * The concrete driver implementation for a harness (Spec 02 §2).
  * `codex-app-server` (mid-turn steer) is reserved for v2 and intentionally absent.
+ * `pi-cli-oneshot` drives the `pi` CLI (`pi -p --mode json`) run-to-completion, like codex.
  */
-export type DriverKind = "claude-cli-stream" | "codex-exec-oneshot";
+export type DriverKind = "claude-cli-stream" | "codex-exec-oneshot" | "pi-cli-oneshot";
 
 /** Reasoning depth; mapped per-harness at spawn (Spec 02 §9.1). */
 export type Effort = "low" | "medium" | "high" | "xhigh";
@@ -1374,6 +1375,14 @@ export interface Config {
       sandbox_mode: string;
       approval_policy: string;
       network_default: boolean;
+    };
+    pi: {
+      enabled: boolean;
+      bin: string;
+      default_provider: string;
+      default_model: string;
+      default_effort: Effort;
+      preflight_live_probe: boolean;
     };
   };
   paths: {

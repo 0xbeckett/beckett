@@ -113,7 +113,9 @@ function consumesSlot(state: WorkerState): boolean {
 
 /** Driver kind for a harness (Spec 02 §2). */
 function driverKindFor(harness: Harness): DriverKind {
-  return harness === "claude" ? "claude-cli-stream" : "codex-exec-oneshot";
+  if (harness === "claude") return "claude-cli-stream";
+  if (harness === "pi") return "pi-cli-oneshot";
+  return "codex-exec-oneshot";
 }
 
 /** The structured done-signal JSON schema (Spec 02 §6). Written per-worker for the driver. */
@@ -349,12 +351,17 @@ export class DefaultWorkerManager implements WorkerManager {
 
     // claude resume relaunches with --resume <sessionId>; a fresh claude gets a caller-minted UUID
     // so we own resume identity from t=0 (Spec 02 §4.1). codex captures its thread_id (undefined).
+    // pi mints its OWN id on a fresh run (undefined here; captured from the `session` line), but a
+    // RESUME must replay the captured id via `--session <id>` — so pass it back on resume (OPS-56).
+    const priorSession = req.resumeSessionId ?? prior?.session_id ?? undefined;
     const preMintSession =
       harness === "claude"
         ? req.isResume
-          ? req.resumeSessionId ?? prior?.session_id ?? undefined
+          ? priorSession
           : randomUUID()
-        : undefined;
+        : harness === "pi" && req.isResume
+          ? priorSession
+          : undefined;
 
     // Build the Worker record first (state=spawning) so control/driver can bind to it. On resume we
     // carry the prior telemetry forward so the supervisor's counters don't re-trip on reattach.
