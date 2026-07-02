@@ -35,6 +35,8 @@ import { createPlanePoller, type PlanePoller } from "../plane/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
 import { createConcierge, type Concierge } from "../concierge/index.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
+import { buildPaths } from "../paths.ts";
+import { ThreadRegistry } from "../discord/threads.ts";
 
 /**
  * Root under which every ticket builds its OWN project repo — one directory per code project,
@@ -54,11 +56,10 @@ function resolveRepoRoot(ticket: Ticket): string {
 }
 
 /**
- * Beckett version. v3.1 — the "go faster" release: workers run in the project checkout (no
- * per-stage worktrees), effort-scaled review (trivial work self-reviews in one pass), and
- * Sonnet 5 @ xhigh workers. See CHANGELOG.md.
+ * Beckett version. v3.2 — thread-native steering (OPS-59): each ticket gets a Discord work thread,
+ * and messages inside Beckett's own threads steer the worker without an @mention. See CHANGELOG.md.
  */
-export const BECKETT_VERSION = "3.1.1";
+export const BECKETT_VERSION = "3.2.0";
 
 /** The live v3 system — held so {@link shutdown} can tear every part down in order. */
 interface BootedSystem {
@@ -140,8 +141,16 @@ async function boot(): Promise<BootedSystem> {
   });
 
   // 5. Concierge — owns Discord, files tickets. Start it FIRST so a bad claude launch fails the
-  //    whole boot before we begin polling.
-  const concierge = createConcierge({ config, logger: logger.child("concierge") });
+  //    whole boot before we begin polling. Wire the OPS-59 work-thread plumbing: a persistent
+  //    thread↔ticket registry, and a live-worker probe backed by the dispatcher so a message in a
+  //    work thread is routed as steering to a running worker (vs handled conversationally when none).
+  const threads = new ThreadRegistry(buildPaths(config).threadsFile, logger.child("concierge"));
+  const concierge = createConcierge({
+    config,
+    logger: logger.child("concierge"),
+    threads,
+    workerLive: (ticketId) => dispatcher.live().some((w) => w.ticketId === ticketId),
+  });
   await concierge.start();
 
   // Fan each poll batch to BOTH the dispatcher (acts on the work) and the Concierge (surfaces

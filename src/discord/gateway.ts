@@ -211,6 +211,31 @@ export class DiscordJsGateway implements DiscordGateway {
     return this.enqueue(channelId, content, opts);
   }
 
+  /**
+   * Create a thread under a text channel and return its id (OPS-59). Beckett spins one up per ticket
+   * so the work conversation has its own room; messages inside it are then routed to the worker as
+   * steering without an @mention. Throws loudly on a bad parent channel — the caller treats thread
+   * creation as best-effort (a failure just means that ticket stays mention-gated in its channel).
+   */
+  async createThread(parentChannelId: string, name: string): Promise<string> {
+    const client = this.client;
+    if (!client) throw new Error("discord gateway not started");
+    const channel = await client.channels.fetch(parentChannelId);
+    // A thread can only be created under a text-based, non-thread guild channel.
+    const c = channel as
+      | ({ isThread?: () => boolean; threads?: { create: (o: Record<string, unknown>) => Promise<{ id: string }> } })
+      | null;
+    if (!c || c.isThread?.() || typeof c.threads?.create !== "function") {
+      throw new Error(`discord channel ${parentChannelId} cannot host a thread`);
+    }
+    // 1440 min = 24h auto-archive; a public thread so everyone in the channel can steer. Discord
+    // caps thread names at 100 chars — slice defensively so a long ticket title can't reject it.
+    const threadName = name.length > 100 ? name.slice(0, 99) + "…" : name;
+    const thread = await c.threads.create({ name: threadName, autoArchiveDuration: 1440 });
+    this.lastEventTs = Date.now();
+    return thread.id;
+  }
+
   isConnected(): boolean {
     return this.connected;
   }
@@ -291,11 +316,17 @@ export class DiscordJsGateway implements DiscordGateway {
     // each turn knows WHO is talking, not just which channel (OPS-42).
     const displayName =
       msg.member?.displayName || msg.author.globalName || msg.author.username || undefined;
+    // In a thread, `msg.channelId` is the thread's own id and `channel.parentId` is the channel it
+    // hangs under. Surfacing the parent lets the router tell a Beckett work thread apart from its
+    // parent channel (OPS-59). Duck-typed + guarded — a partial/uncached channel just yields null.
+    const channel = msg.channel as { isThread?: () => boolean; parentId?: string | null } | null;
+    const parentId = channel?.isThread?.() ? channel.parentId ?? null : null;
     return {
       messageId: msg.id,
       userId: msg.author.id,
       authorDisplayName: displayName,
       channelId: msg.channelId,
+      parentId,
       guildId: msg.guildId ?? null,
       content: msg.content,
       repliedToId: msg.reference?.messageId ?? null,

@@ -725,6 +725,12 @@ export interface IncomingMessage {
   /** The speaker's live Discord display name (guild nick → global name → username), if known. */
   authorDisplayName?: string;
   channelId: string;
+  /**
+   * When the message is in a thread, the thread's PARENT channel id; null/undefined in a normal
+   * channel or DM. Lets the router tell a thread apart from its parent (OPS-59 — only Beckett-created
+   * threads bypass the mention gate; the parent channel never does).
+   */
+  parentId?: string | null;
   guildId: string | null;
   content: string;
   repliedToId: string | null; // the strong correlation key
@@ -1333,6 +1339,7 @@ export interface Paths {
   accessFile: string; // <beckettDir>/access.txt — Discord user whitelist (invite-only beta)
   imagesDir: string; // <beckettDir>/images — generated images (beckett image)
   identitiesFile: string; // <beckettDir>/identities.json — per-user known/preferred names (OPS-42)
+  threadsFile: string; // <beckettDir>/threads.json — Beckett-created work threads ↔ tickets (OPS-59)
 }
 
 /** The full validated config (Spec 01 §4). Every key has a default so an empty config boots. */
@@ -1631,6 +1638,12 @@ export interface DiscordGateway {
   stop(): Promise<void>;
   /** Post to a channel; returns the bot message id (for reply correlation). */
   post(channelId: string, content: string, opts?: ReplyOptions): Promise<string>;
+  /**
+   * Create a thread under a text channel and return its id (OPS-59 — Beckett's own work threads).
+   * Optional: legacy mocks/gateways may omit it; callers guard on its presence. `post(threadId, …)`
+   * targets the thread thereafter (a thread IS a sendable channel).
+   */
+  createThread?(parentChannelId: string, name: string): Promise<string>;
   /** Trigger the typing indicator in a channel (~10s; re-call to keep it alive). */
   sendTyping(channelId: string): Promise<void>;
   /** Register the inbound message handler (intake + awaiting-reply resolution). */

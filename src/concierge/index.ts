@@ -30,11 +30,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config, IncomingMessage, Logger } from "../types.ts";
 import type { PollEvent, PlaneComment, Ticket } from "../plane/types.ts";
+import { TICKET_TERMINAL } from "../plane/types.ts";
 import { log as rootLog } from "../log.ts";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { serveBus, type BusRequest, type BusResponse } from "../shell/control-bus.ts";
 import { createDiscordGateway, type DiscordGateway } from "../discord/gateway.ts";
+import { ThreadRegistry, type ThreadEntry } from "../discord/threads.ts";
+import { loadAccess, classify } from "../discord/access.ts";
 import {
   downloadAttachments,
   buildAttachmentContent,
@@ -594,6 +597,18 @@ export interface ConciergeOptions {
   gateway?: DiscordGateway;
   /** Inject a session (tests); defaults to a real ConciergeSession. */
   session?: ConciergeSession;
+  /**
+   * The Beckett-created work-thread registry (OPS-59). Injected by v3-main so it's shared/persistent;
+   * when omitted (most unit tests) the thread-native features are simply inert — every message stays
+   * mention-gated exactly as before, so this is a pure widening only when a registry is present.
+   */
+  threads?: ThreadRegistry;
+  /**
+   * Read-only probe: is a worker running on this ticket RIGHT NOW? Wired by v3-main to the
+   * dispatcher's live-worker set. Decides whether a work-thread message is relayed as steering to a
+   * live worker vs handled conversationally (ticket parked/done). Defaults to "never live".
+   */
+  workerLive?: (ticketId: string) => boolean;
 }
 
 /**
@@ -606,6 +621,10 @@ export class Concierge {
   private readonly log: Logger;
   private readonly gateway: DiscordGateway;
   private readonly session: ConciergeSession;
+  /** Beckett-created work threads ↔ tickets (OPS-59). Null ⇒ thread-native steering is inert. */
+  private readonly threads: ThreadRegistry | null;
+  /** Is a worker live on this ticket? (dispatcher-backed; defaults to never-live.) */
+  private readonly workerLive: (ticketId: string) => boolean;
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
   private busStop: (() => void) | null = null;
   /**
@@ -624,6 +643,8 @@ export class Concierge {
     this.gateway = opts.gateway ?? createDiscordGateway({ config: this.config, logger: this.log });
     this.session =
       opts.session ?? new ConciergeSession({ config: this.config, logger: this.log });
+    this.threads = opts.threads ?? null;
+    this.workerLive = opts.workerLive ?? (() => false);
   }
 
   /** Bring the session up first (fail fast on a bad launch), then go live on Discord. */
@@ -731,6 +752,9 @@ export class Concierge {
   notify(events: PollEvent | PollEvent[]): void {
     const batch = Array.isArray(events) ? events : [events];
     for (const event of batch) {
+      // Thread lifecycle (OPS-59): spin up a work thread when a ticket starts, cool it when the
+      // ticket goes terminal. Fire-and-forget + best-effort so it never blocks/holds the poll loop.
+      void this.manageThreadLifecycle(event);
       const framed = this.frameUpdate(event);
       if (!framed) continue; // not worth surfacing, or no channel to route back to
       // Don't await: the turn serializes on the session's own queue; the poll loop moves on.
@@ -765,9 +789,80 @@ export class Concierge {
     return null;
   }
 
+  // ── work threads (OPS-59: thread-native steering) ──────────────────────────────────────
+
+  /**
+   * React to a poll event's effect on Beckett's own work threads (OPS-59). No-op unless a
+   * {@link ThreadRegistry} is wired. Best-effort throughout — a Discord/API hiccup here must never
+   * disrupt the poll→notify loop, and a failure just leaves that ticket mention-gated in its channel.
+   *   - ticket → `in_progress` (a worker is about to run): open a thread under the origin channel.
+   *   - ticket → terminal (done/cancelled): cool the thread so it stops auto-triggering.
+   */
+  private async manageThreadLifecycle(event: PollEvent): Promise<void> {
+    const reg = this.threads;
+    if (!reg) return;
+    try {
+      if (event.kind === "cancelled") return this.coolThread(event.ticket, "cancelled");
+      if (event.kind === "state_changed") {
+        if (TICKET_TERMINAL.has(event.to)) return this.coolThread(event.ticket, event.to);
+        if (event.to === "in_progress") return await this.ensureThread(event.ticket);
+      }
+    } catch (err) {
+      this.log.warn("work-thread lifecycle handling failed (ignored)", {
+        ticket: event.ticket.identifier,
+        kind: event.kind,
+        err: String(err),
+      });
+    }
+  }
+
+  /**
+   * Open (once) a Discord work thread for a ticket under its origin channel and register it, then
+   * drop a kickoff message so it has content and the person knows they can steer just by talking in
+   * it. Idempotent (a live thread already exists ⇒ no-op); silently skipped when the ticket has no
+   * origin channel or the gateway can't create threads (legacy/test) — the ticket stays mention-gated.
+   */
+  private async ensureThread(ticket: Ticket): Promise<void> {
+    const reg = this.threads;
+    if (!reg || reg.hasActiveTicketThread(ticket.id)) return;
+    const parent = ticket.originChannel;
+    if (!parent) return; // filed outside Discord — nowhere to hang a thread
+    const create = this.gateway.createThread?.bind(this.gateway);
+    if (!create) return; // gateway can't make threads → stay mention-gated (no widening)
+    const name = `${ticket.identifier}: ${ticket.title}`.trim();
+    const threadId = await create(parent, name);
+    reg.register({
+      threadId,
+      ticketId: ticket.id,
+      ticketIdentifier: ticket.identifier,
+      parentChannelId: parent,
+    });
+    this.log.info("opened work thread for ticket", { ticket: ticket.identifier, threadId, parent });
+    await this.gateway
+      .post(
+        threadId,
+        `on **${ticket.identifier}** — ${ticket.title}. talk to me in this thread to steer the worker, no @ needed.`,
+      )
+      .catch((err) => this.log.debug("thread kickoff post failed (ignored)", { err: String(err) }));
+  }
+
+  /** Cool a ticket's work thread on a terminal transition — it stops auto-triggering (goes cold). */
+  private coolThread(ticket: Ticket, reason: string): void {
+    const entry = this.threads?.markTerminalByTicket(ticket.id);
+    if (entry) {
+      this.log.info("work thread cooled (ticket terminal)", {
+        ticket: ticket.identifier,
+        threadId: entry.threadId,
+        reason,
+      });
+    }
+  }
+
   /** Build the synthetic update turn (or null when the ticket can't be routed back to a channel). */
   private updateTurn(ticket: Ticket, detail: string): string | null {
-    const channel = ticket.originChannel;
+    // Prefer the ticket's work thread if Beckett opened one — the work conversation lives there. A
+    // cooled (terminal) thread still receives its final note; only inbound auto-triggering stops.
+    const channel = this.threads?.getByTicket(ticket.id)?.threadId ?? ticket.originChannel;
     if (!channel) {
       // This is the exact failure the closed loop exists to prevent: an update with nowhere to go,
       // because the ticket was filed without --channel. Warn loudly — silence here recreates the bug.
@@ -787,13 +882,38 @@ export class Concierge {
   }
 
   /**
-   * Handle one inbound Discord message. We only engage when addressed (an @mention or a DM —
-   * the gateway folds both into `mentionsBot`); ambient chatter is left alone here. Failures
-   * are isolated so a bad turn can never take down the gateway. Public: it is an external
-   * entrypoint (the gateway calls it) and is exercised directly in tests.
+   * Handle one inbound Discord message. We engage when addressed — an @mention or DM (the gateway
+   * folds both into `mentionsBot`) — OR when the message lands in one of Beckett's OWN active work
+   * threads (OPS-59): inside a thread Beckett opened for a ticket, an allowed user steers the worker
+   * just by talking, no @ needed. Ambient chatter elsewhere is left alone. Failures are isolated so
+   * a bad turn can never take down the gateway. Public: the gateway calls it; tests exercise it.
    */
   async onMessage(m: IncomingMessage): Promise<void> {
-    if (!m.mentionsBot) return;
+    // Loop guard: never react to bots or our own messages (the gateway drops bots too, but this is
+    // the load-bearing self-loop guard for the thread bypass — belt and suspenders).
+    if (m.authorIsBot) return;
+
+    // Is this inside one of OUR OWN active (non-terminal) work threads? Only those bypass the mention
+    // requirement. Anyone else's thread, the parent channel, or a cooled/terminal thread is NOT here,
+    // so it stays mention-gated exactly as before (that's how "ONLY threads Beckett created" holds).
+    const threadEntry =
+      this.threads && this.threads.isActive(m.channelId) ? this.threads.get(m.channelId) : undefined;
+    const viaThread = !m.mentionsBot && !!threadEntry;
+
+    if (!m.mentionsBot && !threadEntry) return;
+
+    // ACCESS GATE — applies to the thread bypass ONLY (the @mention path keeps its existing behavior,
+    // whatever that is elsewhere). This widening must grant NO new access: only access.txt members +
+    // the owner trip the worker in a work thread, same as anywhere. A non-allowed user gets nothing.
+    if (viaThread && !this.isAccessAllowed(m.userId)) {
+      this.log.info("thread message ignored — user not on the access list (no new access granted)", {
+        userId: m.userId,
+        threadId: m.channelId,
+        ticket: threadEntry!.ticketIdentifier,
+      });
+      return;
+    }
+
     const content = m.content.trim();
     // Engage when there's text OR files to look at. An image-only message (a screenshot with no
     // caption) used to die on this guard — now that we can see attachments it's a real turn.
@@ -811,7 +931,12 @@ export class Concierge {
     void this.gateway.sendTyping(m.channelId);
 
     try {
-      const turn = await this.buildTurn(m, content);
+      // Steering framing applies to the no-mention thread bypass ONLY (an explicit @mention — even
+      // inside a work thread — stays on the normal mention path, where access is gatekept as anywhere).
+      const turn =
+        viaThread && threadEntry
+          ? await this.buildThreadTurn(m, content, threadEntry)
+          : await this.buildTurn(m, content);
       const reply = await this.session.ask(turn);
       keepTyping = false;
       clearInterval(typing);
@@ -833,6 +958,55 @@ export class Concierge {
         .catch(() => undefined);
     } finally {
       if (this.activeMention === mention) this.activeMention = null;
+    }
+  }
+
+  /**
+   * The access gate for the thread bypass (OPS-59). Reuses the SAME `access.txt` + owner model as
+   * everywhere else (no separate list): owner and members pass, outsiders are denied. FAIL-SAFE — if
+   * access can't be resolved for any reason we DENY the bypass, so an error can never widen access.
+   */
+  private isAccessAllowed(userId: string): boolean {
+    try {
+      const accessFile = buildPaths(this.config).accessFile;
+      return classify(userId, this.ownerId(), loadAccess(accessFile)) !== "outsider";
+    } catch (err) {
+      this.log.warn("access check failed — denying thread bypass (fail-safe)", {
+        userId,
+        err: String(err),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Frame a work-thread message (OPS-59). The person is inside a thread Beckett opened for a ticket,
+   * so this is addressed to the worker. If a worker is running right now, the turn instructs the
+   * Concierge to relay it as STEERING via `beckett ticket comment` (the exact existing path: the
+   * dispatcher picks the comment up and nudges the live worker, which applies it at its next safe
+   * boundary). If no worker is live (ticket parked/done), it's just a conversation in the thread.
+   * Reuses {@link buildTurn} for the who/where stamp + any attachments, prepending the directive.
+   */
+  private async buildThreadTurn(
+    m: IncomingMessage,
+    content: string,
+    entry: ThreadEntry,
+  ): Promise<TurnMessage> {
+    const live = this.workerLiveSafe(entry.ticketId);
+    const directive = live ? steerDirective(entry) : parkedThreadDirective(entry);
+    const base = await this.buildTurn(m, content);
+    // Prepend the directive: as a leading line for a text turn, or a leading text block for an
+    // image turn (so vision input still rides along).
+    if (typeof base === "string") return `${directive}\n\n${base}`;
+    return [{ type: "text", text: directive }, ...base];
+  }
+
+  /** Probe worker liveness for a ticket, never throwing (a bad probe defaults to "not live"). */
+  private workerLiveSafe(ticketId: string): boolean {
+    try {
+      return this.workerLive(ticketId);
+    } catch {
+      return false;
     }
   }
 
@@ -1064,6 +1238,38 @@ function frameUserTurn(
   // not just the channel (Jason's steer, OPS-42). The native reply already uses it; surfacing it
   // in the stamp lets the Concierge quote/`--reply-to` the precise message when it matters.
   return `[channel:${channelId}] [${parts.join(" ")} msg:${messageId}]\n${content}`;
+}
+
+/**
+ * Directive prepended to a work-thread message when a worker is LIVE on the ticket (OPS-59). Tells
+ * the Concierge to relay it as steering through the existing `beckett ticket comment` path — the
+ * dispatcher turns that comment into a `worker.nudge`, which the driver applies at its next safe
+ * boundary (between turns / after the current tool call), so it lands near-immediately without
+ * corrupting work in flight.
+ */
+function steerDirective(entry: ThreadEntry): string {
+  return (
+    `SYSTEM (work-thread steering — NOT casual chat): the message below arrived in the work thread ` +
+    `for ticket ${entry.ticketIdentifier} (id ${entry.ticketId}), which has a WORKER RUNNING right now. ` +
+    `Relay it to that worker as a steering nudge by running from your Bash tool:\n` +
+    `  beckett ticket comment ${entry.ticketId} "<the instruction, tightened into a clear directive for the worker>"\n` +
+    `That queues the nudge; the worker applies it at its next safe boundary, so it takes effect ` +
+    `near-immediately without breaking an in-flight tool call. Keep any thread reply to a short ` +
+    `one-liner (or nothing) — don't paste the raw command output back.`
+  );
+}
+
+/**
+ * Directive prepended to a work-thread message when NO worker is live on the ticket (parked between
+ * stages, or done) (OPS-59). There's nothing to steer, so the Concierge just replies conversationally
+ * in the thread as it normally would.
+ */
+function parkedThreadDirective(entry: ThreadEntry): string {
+  return (
+    `SYSTEM: the message below arrived in the work thread for ticket ${entry.ticketIdentifier} ` +
+    `(id ${entry.ticketId}). No worker is running on it right now (parked between stages, or done), ` +
+    `so there's nothing live to steer — just reply conversationally in this thread as usual.`
+  );
 }
 
 /** The marker the dispatcher prepends to its own Plane comments (mirrors `BECKETT_COMMENT_MARKER`). */

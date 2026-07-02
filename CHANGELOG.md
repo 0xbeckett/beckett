@@ -1,5 +1,28 @@
 # Changelog
 
+## v3.2.0 — thread-native steering (OPS-59) (2026-07-01)
+
+Beckett now opens a **work thread** for each ticket when it starts, and treats messages inside
+its own work threads as addressed to the worker — no @mention required. This lets a person steer
+the running worker by just talking in the thread.
+
+- **Thread as the steering surface.** When a ticket enters `in_progress`, the Concierge opens a
+  Discord thread under the ticket's origin channel, registers it (`~/.beckett/threads.json`), and
+  drops a kickoff line. Milestone/update pings for that ticket then route into the thread.
+- **Mention gate widened, precisely.** A message in a thread **Beckett itself created** is handled
+  as if @mentioned. This applies ONLY to Beckett's own threads — arbitrary threads and the parent
+  channel stay mention-gated. Enforced by registry membership, not a loose heuristic.
+- **Access model unchanged.** The thread bypass reuses the same `access.txt` + owner gate as
+  everywhere; only members/owner trip the worker in a work thread. It grants **no new access** —
+  outsiders get nothing, and the gate fails safe (deny) if access can't be resolved.
+- **No self-loops.** Bot messages and Beckett's own messages never engage.
+- **Steering injection.** A work-thread message on a ticket with a live worker is relayed as a
+  steering nudge via the existing `beckett ticket comment` → dispatcher → `worker.nudge` path, so
+  it lands at the worker's next safe boundary (between turns / after a tool call) without
+  corrupting work in flight. No live worker ⇒ the Concierge just replies conversationally in-thread.
+- **Cold when done.** When the ticket reaches a terminal state (done/cancelled), its thread is
+  cooled and stops auto-triggering.
+
 ## v3.1.1 — first-real-tickets bug fixes (2026-06-30)
 
 The first batch of real tickets (the `random` and `gravity-well` sites) surfaced four bugs:
