@@ -1208,6 +1208,8 @@ export class Concierge {
         ...(claimsActiveTurn ? { replyToMessageId: active!.messageId } : {}),
         ...(files.length > 0 ? { files } : {}),
       };
+      // A long reply may land as several human-cadence messages (OPS-62); `post` returns the FIRST
+      // message id (the reply-correlation anchor), so `data.messageId` keeps its single-id contract.
       const messageId = await this.gateway.post(channelId, text, opts);
       if (claimsActiveTurn && active) {
         active.repliedViaCli = true;

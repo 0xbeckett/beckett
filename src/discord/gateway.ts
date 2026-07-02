@@ -43,6 +43,7 @@ import type {
   Logger,
 } from "../types.ts";
 import { log as rootLog } from "../log.ts";
+import { chunkReply, delaySchedule, TOTAL_DELAY_BUDGET_MS } from "./chunk.ts";
 
 /** Discord's hard per-message ceiling (Spec 05 §9.1). */
 const DISCORD_MAX_CHARS = 2000;
@@ -413,14 +414,38 @@ export class DiscordJsGateway implements DiscordGateway {
       }
     }
 
-    const chunks = splitDiscordContent(content);
+    // Two-stage split: first into natural, human-cadence sections (OPS-62 — paragraph/sentence
+    // boundaries, code fences kept whole; a short reply stays ONE section, unchanged), then each
+    // section into hard 2000-char pieces Discord will actually accept. Short text ⇒ one message,
+    // byte-for-byte as before.
+    const chunks = chunkReply(content).flatMap((section) => splitDiscordContent(section));
     if (chunks.length === 0 && (!opts?.files || opts.files.length === 0)) {
       throw new Error("discord post needs text or files");
     }
     if (chunks.length === 0) chunks.push("");
 
+    // Inter-message delays make several messages read as a person typing, not one API dump. Scaled
+    // to chunk length + jittered, with a total budget so a very long reply can't take forever.
+    const gaps = delaySchedule(chunks.map((c) => c.length));
+    let capped = false;
+
     let firstId: string | null = null;
     for (let i = 0; i < chunks.length; i++) {
+      if (i > 0) {
+        const gap = gaps[i - 1] ?? 0;
+        if (gap > 0) {
+          // Keep the "typing…" indicator alive across the pause so the wait reads as composing.
+          void this.sendTyping(channelId);
+          await new Promise((r) => setTimeout(r, gap));
+        } else if (!capped) {
+          capped = true;
+          this.logger.info("discord humanized-delay budget reached; posting remainder promptly", {
+            channelId,
+            messages: chunks.length,
+            budgetMs: TOTAL_DELAY_BUDGET_MS,
+          });
+        }
+      }
       const payload: MessageCreateOptions = { content: chunks[i]! };
       if (i === 0 && opts?.replyToMessageId) {
         // Native reply-to: visual threading without threads + the strong correlation key
@@ -436,6 +461,9 @@ export class DiscordJsGateway implements DiscordGateway {
       firstId ??= sent.id;
     }
     this.lastEventTs = Date.now();
+    // The FIRST message id is the reply-correlation anchor (Spec 05 §4.1): it carries the native
+    // reply-to + any file attachments, so returning it keeps the messageId contract intact even
+    // when a long reply lands as several messages.
     return firstId!;
   }
 
