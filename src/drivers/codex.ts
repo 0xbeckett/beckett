@@ -45,6 +45,7 @@ import type { Config, HarnessDriver, Logger, SpawnResult, SpawnSpec, TokenUsage 
 import { join } from "node:path";
 import { OneShotDriver } from "./base.ts";
 import { classifyHarnessFailure } from "./failure.ts";
+import { childEnv } from "../env.ts";
 
 /** codex item `type`s that represent a tool invocation (counted once per item id). */
 const TOOL_ITEM_TYPES = new Set(["command_execution", "mcp_tool_call", "web_search"]);
@@ -94,7 +95,9 @@ export async function codexPreflight(config: Config): Promise<{ ok: boolean; pro
   const bin = config.harness.codex.bin;
 
   try {
-    const v = Bun.spawnSync({ cmd: [bin, "--version"], stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
+    // Explicit env so Bun resolves the executable against the LIVE process PATH (issue #30 —
+    // without it, spawnSync uses the startup PATH and `beckett doctor`'s override is invisible).
+    const v = Bun.spawnSync({ cmd: [bin, "--version"], env: childEnv(), stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
     if (!v.success) {
       problems.push(`\`${bin} --version\` exited ${v.exitCode}: ${v.stderr.toString().trim() || "(no output)"}`);
     }

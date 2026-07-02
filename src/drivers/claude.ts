@@ -91,7 +91,10 @@ export async function claudePreflight(config: Config): Promise<{ ok: boolean; pr
   const bin = config.harness.claude.bin;
 
   try {
-    const v = Bun.spawnSync({ cmd: [bin, "--version"], stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
+    // Explicit env: Bun resolves the executable against the CHILD env's PATH when one is passed,
+    // but against the process's STARTUP PATH when it isn't — which made this preflight blind to
+    // `beckett doctor`'s daemon-PATH override (issue #30) while pi's (which passes env) saw it.
+    const v = Bun.spawnSync({ cmd: [bin, "--version"], env: childEnv(), stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
     if (!v.success) {
       problems.push(`\`${bin} --version\` exited ${v.exitCode}: ${v.stderr.toString().trim() || "(no output)"}`);
     }
