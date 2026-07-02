@@ -4,7 +4,7 @@ import type { Config, WorkerEvent, WorkerState } from "../types.ts";
 
 const config = {
   harness: {},
-  supervise: { worker_hard_cap_s: 3600 },
+  supervise: { worker_hard_cap_s: 3600, worker_stall_s: 300 },
 } as unknown as Config;
 
 const quietLog = (() => {
@@ -38,11 +38,16 @@ interface Guts {
   finished: boolean;
   workerState: WorkerState;
   childGen: number;
+  spec: unknown;
+  lastProgressTs: number;
+  lastStallEmitTs: number;
   stderrRing: { record(text: string): void };
   sendNudge(msg: string): Promise<{ accepted: string }>;
   takeBufferedPrompt(): string;
   onProcessExit(code: number, gen: number, pid: number, groupKill: boolean): Promise<void>;
   timeOut(capS: number, totalS: number): Promise<void>;
+  tickStall(): void;
+  emit(e: WorkerEvent): void;
   onEvent(cb: (e: WorkerEvent) => void): () => void;
   getTelemetry(): { diffLines: { added: number; removed: number; files: number } };
 }
@@ -133,6 +138,54 @@ test("the hard-cap timeout emits a graceful error_wall_clock_cap finish", async 
   expect(finished.subtype).toBe("error_wall_clock_cap");
   expect(finished.errorClass).toBe("timeout");
   expect(d.workerState).toBe("aborted");
+});
+
+// ── stall detection (issue #21) ──────────────────────────────────────────────────
+
+test("no progress for the stall window emits ONE stalled signal per silent window", () => {
+  const d = makeDriver();
+  const events: WorkerEvent[] = [];
+  d.onEvent((e) => events.push(e));
+  d.workerState = "running";
+  d.lastProgressTs = Date.now() - 301_000; // idle past the 300s window
+
+  d.tickStall();
+  d.tickStall(); // same window — must NOT double-signal
+
+  const stalls = events.filter((e) => e.kind === "stalled");
+  expect(stalls).toHaveLength(1);
+  if (stalls[0]?.kind !== "stalled") throw new Error("unreachable");
+  expect(stalls[0].idleMs).toBeGreaterThanOrEqual(300_000);
+});
+
+test("a progress event resets the stall clock; echoes and stall signals do not", () => {
+  const d = makeDriver();
+  d.workerState = "running";
+  const stale = Date.now() - 301_000;
+  d.lastProgressTs = stale;
+
+  // user_echo is NOT progress (a wedged worker can still echo a nudge) …
+  d.emit({ kind: "user_echo", text: "status check", ts: Date.now() });
+  expect(d.lastProgressTs).toBe(stale);
+  // … our own stall signal is not progress either …
+  d.emit({ kind: "stalled", idleMs: 301_000, ts: Date.now() });
+  expect(d.lastProgressTs).toBe(stale);
+  // … but a tool call IS.
+  d.emit({ kind: "tool_call", tool: "Bash", input: {}, toolId: "t1", ts: Date.now() });
+  expect(d.lastProgressTs).toBeGreaterThan(stale);
+});
+
+test("stall detection is off when worker_stall_s is 0", () => {
+  const d = new TestDriver() as unknown as Guts;
+  (d as unknown as { config: { supervise: { worker_stall_s: number } } }).config = {
+    supervise: { worker_hard_cap_s: 3600, worker_stall_s: 0 },
+  } as never;
+  const events: WorkerEvent[] = [];
+  d.onEvent((e) => events.push(e));
+  d.workerState = "running";
+  d.lastProgressTs = Date.now() - 10_000_000;
+  d.tickStall();
+  expect(events.filter((e) => e.kind === "stalled")).toHaveLength(0);
 });
 
 // ── telemetry ────────────────────────────────────────────────────────────────────

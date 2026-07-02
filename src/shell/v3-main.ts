@@ -28,7 +28,7 @@ import { homedir } from "node:os";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { log as rootLog } from "../log.ts";
-import type { Config, Logger } from "../types.ts";
+import type { Config, Harness, Logger } from "../types.ts";
 import type { Ticket } from "../plane/types.ts";
 import { projectSlug } from "../plane/cast.ts";
 import { createPlaneClient, type PlaneClient } from "../plane/client.ts";
@@ -128,7 +128,7 @@ async function boot(): Promise<BootedSystem> {
   // 5. Concierge — owns Discord (and the progress-thread hub the dispatcher feeds). Constructed
   //    here (cheap, no I/O) so its progress sink can be wired into the dispatcher below; started
   //    further down (FIRST of the live parts) so a bad claude launch fails the whole boot early.
-  const concierge = createConcierge({ config, logger: logger.child("concierge") });
+  const concierge = createConcierge({ config, logger: logger.child("concierge"), plane: client });
 
   // 4. Dispatcher — consumes PollEvents, owns the worker lifecycle. Its workers' granular event
   //    streams are mirrored into each ticket's Discord thread via the Concierge's progress hub.
@@ -144,6 +144,12 @@ async function boot(): Promise<BootedSystem> {
     // clear substitution comment instead of a wedged ticket. ~5-min cached per harness.
     preflight: (harness) => preflightFor(harness, config),
     logger: logger.child("dispatch"),
+  });
+
+  // Wire the Concierge's intervention levers (issue #21): `beckett ticket restaff` on the control
+  // bus routes here. Done post-construction because the Concierge is built first (progress sink).
+  concierge.setDispatcherOps({
+    restaff: (id, harness) => dispatcher.restaff(id, harness as Harness | undefined),
   });
 
   // 3. Poller — feeds each batch of events straight to the dispatcher. `start()` primes the

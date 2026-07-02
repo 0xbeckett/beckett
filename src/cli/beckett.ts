@@ -488,6 +488,18 @@ async function main(): Promise<void> {
       url: t.url,
       updatedAt: t.updatedAt,
     });
+    /**
+     * Accept a Plane uuid OR a human identifier ("OPS-42") everywhere a ticket id is expected —
+     * the Concierge reasons in identifiers, and forcing uuids produced spurious "no such ticket"
+     * dead ends when it stepped in (issue #21).
+     */
+    const resolveTicketId = async (key: string): Promise<string> => {
+      if (/^[0-9a-f-]{32,}$/i.test(key)) return key;
+      const all = await client.listIssues();
+      const t = all.find((x) => x.identifier.toLowerCase() === key.toLowerCase());
+      if (!t) fail(`no such ticket: ${key}`);
+      return t.id;
+    };
 
     if (sub === "create") {
       if (!flags.title) {
@@ -532,7 +544,7 @@ async function main(): Promise<void> {
       const positional = _.slice(1).join(" ").trim();
       const body = positional || (await readBody());
       if (!body) fail("beckett ticket comment: empty body");
-      out(await client.addComment(id, body));
+      out(await client.addComment(await resolveTicketId(id), body));
     }
     if (sub === "state") {
       const id = _[0];
@@ -540,8 +552,16 @@ async function main(): Promise<void> {
       if (!id || !state) {
         fail("usage: beckett ticket state <id> <backlog|todo|in_progress|in_review|done|cancelled>");
       }
-      await client.setState(id, state as TicketState);
+      await client.setState(await resolveTicketId(id), state as TicketState);
       out({ id, state });
+    }
+    if (sub === "restaff") {
+      // Operator lever (issue #21): routed over the control bus to the live dispatcher, which
+      // aborts the ticket's worker (committing WIP) and spawns a fresh one — optionally on a
+      // different harness. Only works while the v3 daemon is running (it owns the workers).
+      const id = _[0];
+      if (!id) fail("usage: beckett ticket restaff <id> [--harness claude|codex|pi]");
+      await bus("ticket.restaff", { id, harness: flags.harness ? String(flags.harness) : undefined });
     }
     if (sub === "list") {
       const tickets = await client.listIssues();
@@ -552,11 +572,11 @@ async function main(): Promise<void> {
     if (sub === "show" || sub === "get") {
       const id = _[0];
       if (!id) fail(`usage: beckett ticket ${sub} <id>`);
-      const ticket = await client.getIssue(id);
+      const ticket = await client.getIssue(await resolveTicketId(id));
       if (!ticket) fail(`no such ticket: ${id}`);
       out(ticket);
     }
-    fail("usage: beckett ticket create|comment|state|list|show <...>");
+    fail("usage: beckett ticket create|comment|state|list|show|restaff <...>");
   }
 
   // ── plan (in-process: file a whole dependency DAG at once) ───────────────────────────────
