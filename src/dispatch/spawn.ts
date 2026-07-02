@@ -44,7 +44,7 @@ import { projectSlug } from "../plane/cast.ts";
 import { createDriver } from "../drivers/index.ts";
 import { workerId as mintWorkerId } from "../ids.ts";
 import { log } from "../log.ts";
-import { excludeFromGit, currentBranch } from "../worker/worktree.ts";
+import { excludeFromGit, installScaffoldingGuardHook, currentBranch, SCAFFOLDING_DIR } from "../worker/worktree.ts";
 import { scopeGuardSpec } from "../hooks/scope-guard.ts";
 import { renderClaudeSettings } from "../hooks/registry.ts";
 
@@ -264,7 +264,7 @@ function writeWorkerMeta(
   scopeGuardPath: string,
   ownedGlobs: string[],
 ): { doneSchemaPath: string; settingsPath: string } {
-  const metaDir = join(repoRoot, ".beckett");
+  const metaDir = join(repoRoot, SCAFFOLDING_DIR);
   mkdirSync(metaDir, { recursive: true });
 
   const settingsPath = join(metaDir, "worker-settings.json");
@@ -363,7 +363,10 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
 
   // ── wire scope-guard into the project repo (already provisioned by the dispatcher), then launch ──
   try {
-    await excludeFromGit(workspace, [".beckett/"]);
+    await excludeFromGit(workspace, [`${SCAFFOLDING_DIR}/`]);
+    // Universal guard: strip the scaffolding from the index on every commit, whoever runs it — so a
+    // worker's own `git add -f .beckett && git commit` can never sweep bookkeeping into the diff (OPS-61).
+    await installScaffoldingGuardHook(workspace);
     const { doneSchemaPath, settingsPath } = writeWorkerMeta(workspace, scopeGuardPath, scope.ownedGlobs);
 
     const spec: SpawnSpec = {

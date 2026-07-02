@@ -52,6 +52,7 @@ import type {
 import { ActionClass } from "../types.ts";
 import { pendingActionId } from "../ids.ts";
 import { log as rootLog } from "../log.ts";
+import { SCAFFOLDING_DIR } from "../worker/worktree.ts";
 
 // =======================================================================================
 // Errors
@@ -337,10 +338,35 @@ export class GitHubCli implements GitHubClient {
   }
 
   /** Push a local ref to a remote branch over authenticated HTTPS (Spec 07 §3.3). FREE caller. */
+  /**
+   * Belt-and-suspenders before any push (OPS-61): Beckett's internal scaffolding (`.beckett/` — the
+   * done-signal schema, scope-guard settings, worker state) must never reach a remote or a PR diff.
+   * It is excluded + hook-stripped at the commit boundary, but if a prior code path somehow committed
+   * it we strip it here with a cleanup commit so the pushed branch is clean. Almost always a no-op.
+   */
+  private async stripTrackedScaffolding(cwd: string): Promise<void> {
+    const tracked = await run(["git", "ls-files", "--", SCAFFOLDING_DIR], { cwd, env: this.gitEnv() });
+    if (tracked.code !== 0 || tracked.stdout.trim() === "") return; // nothing tracked → clean already
+    this.opts.logger.warn("scaffolding was tracked in the branch — stripping before push", { cwd });
+    const rm = await run(["git", "rm", "-r", "--cached", "--quiet", "--", SCAFFOLDING_DIR], { cwd, env: this.gitEnv() });
+    if (rm.code !== 0) {
+      throw new Error(`refusing to push: could not strip ${SCAFFOLDING_DIR} (${rm.code}): ${rm.stderr.trim()}`);
+    }
+    const commit = await run(
+      ["git", "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", "beckett: strip internal scaffolding"],
+      { cwd, env: this.gitEnv() },
+    );
+    if (commit.code !== 0) {
+      throw new Error(`refusing to push: could not commit ${SCAFFOLDING_DIR} strip (${commit.code}): ${commit.stderr.trim()}`);
+    }
+  }
+
   async pushBranch(repo: string, localRef: string, remoteBranch: string): Promise<void> {
     this.requireCreds("push branch");
     const url = `${this.gitHost()}/${repo}.git`;
     const cwd = this.opts.resolveRepoDir(repo);
+    // `HEAD`/branch refs point at the checked-out tree we can clean; a bare sha we can't, so skip.
+    if (localRef === "HEAD" || !/^[0-9a-f]{7,40}$/i.test(localRef)) await this.stripTrackedScaffolding(cwd);
     const r = await run(["git", "push", url, `${localRef}:refs/heads/${remoteBranch}`], {
       cwd,
       env: this.gitEnv(),
@@ -422,6 +448,9 @@ export class GitHubCli implements GitHubClient {
     url: string;
   }> {
     this.requireCreds("publish repo");
+    // Clean the source tree once up front so the new-repo path (`gh repo create --push`, which
+    // bypasses pushBranch) can't publish Beckett's scaffolding either (OPS-61).
+    await this.stripTrackedScaffolding(p.sourceDir);
     const repo = `${this.opts.account}/${p.slug}`;
     if (await this.repoExists(repo)) {
       await this.pushBranch(repo, "HEAD", "main");
@@ -513,6 +542,52 @@ export class GitHubCli implements GitHubClient {
       throw new Error(`gh pr merge failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
     }
     this.opts.logger.info("PR merged", { repo, number: n, strategy });
+  }
+
+  /**
+   * The lifecycle state of a PR — `"OPEN" | "CLOSED" | "MERGED"` (Spec 07 §3.4). Throws a clear
+   * error (via `gh`) if the PR number doesn't exist or auth can't see it. When `repo` is empty
+   * the current repo (cwd) is used, matching how the other pr verbs resolve their target.
+   */
+  async prState(repo: string, n: number): Promise<string> {
+    this.requireCreds("view PR");
+    const repoArgs = repo ? ["--repo", repo] : [];
+    const r = await run(
+      ["gh", "pr", "view", String(n), ...repoArgs, "--json", "state"],
+      { cwd: this.opts.resolveRepoDir(repo), env: this.ghEnv() },
+    );
+    if (r.code !== 0) {
+      throw new Error(`gh pr view failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+    try {
+      return String((JSON.parse(r.stdout) as { state?: string }).state ?? "").toUpperCase();
+    } catch {
+      throw new Error(`gh pr view returned unparseable JSON for PR #${n}`);
+    }
+  }
+
+  /**
+   * Close an OPEN PR without merging (Spec 07 §3.4). Unlike {@link mergePR} this is reversible
+   * (a closed PR can be reopened), but it is still an outward-facing state change. We check the
+   * current state first so the caller gets a deterministic, human-legible error when the PR is
+   * already closed/merged or doesn't exist — independent of `gh`'s exit-code quirks. Returns the
+   * resulting state on success. When `repo` is empty the current repo (cwd) is used.
+   */
+  async closePR(repo: string, n: number): Promise<{ repo: string; number: number; state: string }> {
+    this.requireCreds("close PR");
+    const state = await this.prState(repo, n); // throws clearly if the PR doesn't exist / is invisible
+    if (state === "MERGED") throw new Error(`PR #${n} is already merged — cannot close`);
+    if (state === "CLOSED") throw new Error(`PR #${n} is already closed`);
+    const repoArgs = repo ? ["--repo", repo] : [];
+    const r = await run(
+      ["gh", "pr", "close", String(n), ...repoArgs],
+      { cwd: this.opts.resolveRepoDir(repo), env: this.ghEnv() },
+    );
+    if (r.code !== 0) {
+      throw new Error(`gh pr close failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+    this.opts.logger.info("PR closed", { repo, number: n });
+    return { repo, number: n, state: "CLOSED" };
   }
 
   /** Whether a PR's status checks are all green (Spec 07 §3.6) — the pre-handshake gate. */

@@ -17,11 +17,22 @@
  *    REVIEW/checkpoint diffs without staging their contents.
  */
 
-import { mkdirSync, existsSync, appendFileSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, chmodSync, realpathSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { log } from "../log.ts";
 
 const logger = log.child("worktree");
+
+/**
+ * Beckett's internal worker/dispatcher scaffolding directory, written into every worktree at spawn
+ * (the done-signal schema + scope-guard settings) and also the parent of the worktrees themselves.
+ * It is Beckett's bookkeeping, NOT project work, and must NEVER be staged, committed, or pushed —
+ * leaking it once turned a whole PR into junk (OPS-61). Guarded three independent ways: `info/exclude`
+ * (blocks `git add -A`/`git add .`), a shared `pre-commit` hook that strips it from the index under
+ * ANY committer ({@link installScaffoldingGuardHook}, defeats `git add -f`), and an explicit strip in
+ * {@link commitWorktree}. Beckett's own source checkout additionally `.gitignore`s it.
+ */
+export const SCAFFOLDING_DIR = ".beckett";
 
 /** Result of a raw git invocation. */
 interface GitResult {
@@ -240,6 +251,40 @@ export async function excludeFromGit(workspace: string, patterns: string[]): Pro
   }
 }
 
+/**
+ * Install a shared `pre-commit` hook that strips {@link SCAFFOLDING_DIR} from the index before any
+ * commit is created — the universal guard that makes Beckett's bookkeeping impossible to commit no
+ * matter who runs `git commit` (the worker's own shell, {@link commitWorktree}, or any future path),
+ * even after a deliberate `git add -f .beckett`. `info/exclude` alone can't stop a forced add; this
+ * can. Resolved via `git rev-parse --git-path hooks`, which in a linked worktree points at the repo's
+ * shared hooks dir, so one install protects the main repo and every worktree. We never clobber a
+ * project's own pre-commit hook: if one exists that isn't ours we leave it and rely on the code-path
+ * strip in {@link commitWorktree}. Idempotent.
+ */
+export async function installScaffoldingGuardHook(workspace: string): Promise<void> {
+  const marker = "beckett-scaffolding-guard";
+  const hooksDirRaw = (await git(["rev-parse", "--git-path", "hooks"], workspace)).trim();
+  const hooksDir = hooksDirRaw.startsWith("/") ? hooksDirRaw : `${workspace}/${hooksDirRaw}`;
+  const hookPath = `${hooksDir}/pre-commit`;
+  try {
+    const existing = readFileSync(hookPath, "utf8");
+    if (!existing.includes(marker)) {
+      logger.warn("pre-commit hook exists and isn't ours — leaving it; commit-path strip still guards", { hookPath });
+      return;
+    }
+  } catch {
+    /* no hook yet — install below */
+  }
+  mkdirSync(hooksDir, { recursive: true });
+  const script =
+    `#!/bin/sh\n` +
+    `# ${marker}: never let Beckett's internal bookkeeping (${SCAFFOLDING_DIR}/) into a commit (OPS-61).\n` +
+    `git rm -r --cached --ignore-unmatch --quiet -- ${SCAFFOLDING_DIR} >/dev/null 2>&1 || true\n`;
+  writeFileSync(hookPath, script);
+  chmodSync(hookPath, 0o755);
+  logger.info("installed scaffolding-guard pre-commit hook", { hookPath });
+}
+
 // =======================================================================================
 // Diff readout (Spec 02 §7.4) — used by REVIEW, checkpoint, abort capture
 // =======================================================================================
@@ -287,6 +332,10 @@ export async function commitWorktree(
   author?: CommitAuthor,
 ): Promise<CommitResult> {
   await git(["add", "-A"], workspace);
+  // Belt-and-suspenders: strip Beckett's own scaffolding from the index before committing, even if a
+  // prior `git add -f .beckett` forced it in past the exclude. The pre-commit hook does this too; we
+  // repeat it here so the guarantee holds on this path independent of hook state (OPS-61).
+  await runGit(["rm", "-r", "--cached", "--ignore-unmatch", "--quiet", "--", SCAFFOLDING_DIR], workspace);
   const status = (await runGit(["status", "--porcelain"], workspace)).stdout.trim();
   if (status === "") return { committed: false, sha: null };
 
