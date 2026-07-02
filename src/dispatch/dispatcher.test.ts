@@ -10,10 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../types.ts";
 import type { Ticket, TicketState, PollEvent, HarnessSpec, PlaneComment } from "../plane/types.ts";
-// The real module, so the mock below can be a COMPLETE stand-in (spread + override). bun's
-// `mock.module` replaces the module process-wide; a partial mock link-errors any OTHER file that
-// imports a name we omit (e.g. agency/index.ts's `SCAFFOLDING_DIR`) when load order interleaves.
-import * as actualWorktree from "../worker/worktree.ts";
+import type { GitOps } from "./dispatcher.ts";
 
 // ── controllable fake worker handle + spawn mock ────────────────────────────────────────────
 let spawnCalls: {
@@ -130,21 +127,22 @@ let commitCalls: { workspace: string; message: string }[] = [];
 let diffSince = true;
 let fakeReviewDiff = "diff --git a/x.ts b/x.ts\n+added";
 mock.module("./spawn.ts", () => ({ spawnWorker: fakeSpawn, spawnTicketWorker: fakeSpawn }));
-mock.module("../worker/worktree.ts", () => ({
-  ...actualWorktree, // keep every real export (SCAFFOLDING_DIR, the scaffolding-guard helpers, …) so
-  // a leaked link never fails; override only the git-touching ops this suite must fake.
-  commitWorktree: async (workspace: string, message: string) => {
-    commitCalls.push({ workspace, message });
+// The dispatcher's git ops, faked via dependency injection (deps.gitOps) rather than
+// `mock.module("../worker/worktree.ts")`. bun's module mock is process-global and leaked these
+// fakes into other files that need the REAL worktree.ts (scaffolding-guard's real-git tests),
+// failing order-dependently on CI. Injecting keeps worktree.ts un-mocked for everyone else.
+const gitFakes: Partial<GitOps> = {
+  commitWorktree: async (workspace: string, _message: string) => {
+    commitCalls.push({ workspace, message: _message });
     return commitResult;
   },
   headSha: async () => "base000", // v3.1 per-ticket diff base (fake repo has no real HEAD)
   hasDiffSince: async () => diffSince,
-  currentBranch: async () => "main",
-  ensureProjectRepo: async (repoRoot: string, slug: string) => {
+  ensureProjectRepo: async (_repoRoot: string, slug: string) => {
     provisioned.push(slug);
   },
   readDiff: async () => fakeReviewDiff, // issue #27: pre-read diff handed to reviewers
-}));
+};
 
 const { Dispatcher, BECKETT_COMMENT_MARKER } = await import("./dispatcher.ts");
 
@@ -242,6 +240,7 @@ function newDispatcher(
 ) {
   const client = new FakeClient();
   const d = new Dispatcher({
+    gitOps: gitFakes,
     client,
     config: cfg(max_workers),
     resolveRepoRoot: (ticket) => `/tmp/repo/${ticket.project ?? ticket.identifier}`,
@@ -278,6 +277,7 @@ describe("spawn on state change", () => {
     const config = cfg();
     (config.harness as unknown as { codex: { enabled: boolean } }).codex.enabled = false;
     const d = new Dispatcher({
+    gitOps: gitFakes,
       client,
       config,
       resolveRepoRoot: (ticket) => `/tmp/repo/${ticket.project ?? ticket.identifier}`,
@@ -512,6 +512,7 @@ describe("advance on finish", () => {
     const client = new FakeClient();
     const calls: { slug: string; repoRoot: string; description: string; ticket?: string }[] = [];
     const d = new Dispatcher({
+    gitOps: gitFakes,
       client,
       config: cfg(),
       resolveRepoRoot: () => "/home/beckett/Projects/balloons-game",
@@ -546,6 +547,7 @@ describe("advance on finish", () => {
   test("v3.1: a `pr` publish words the done comment as needing a human merge (not 'shipped')", async () => {
     const client = new FakeClient();
     const d = new Dispatcher({
+    gitOps: gitFakes,
       client,
       config: cfg(),
       resolveRepoRoot: () => "/home/beckett/Projects/probabilities",
@@ -569,6 +571,7 @@ describe("advance on finish", () => {
   test("v3.1: a GitHub publish FAILURE parks the ticket for courier work", async () => {
     const client = new FakeClient();
     const d = new Dispatcher({
+    gitOps: gitFakes,
       client,
       config: cfg(),
       resolveRepoRoot: () => "/tmp/repo",
@@ -984,6 +987,7 @@ describe("rework cap", () => {
       }
 
       const after = new Dispatcher({
+    gitOps: gitFakes,
         client,
         config: cfg(5),
         resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
@@ -1072,6 +1076,7 @@ describe("crash recovery", () => {
       const swept: { pid: number; bin: string }[] = [];
       const { client } = { client: new FakeClient() };
       const after = new Dispatcher({
+    gitOps: gitFakes,
         client,
         config: cfg(2),
         resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
@@ -1114,6 +1119,7 @@ describe("crash recovery", () => {
       await tick();
 
       const after = new Dispatcher({
+    gitOps: gitFakes,
         client: new FakeClient(),
         config: cfg(2),
         resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
@@ -1145,6 +1151,7 @@ describe("crash recovery", () => {
       await tick();
 
       const after = new Dispatcher({
+    gitOps: gitFakes,
         client: new FakeClient(),
         config: cfg(2),
         resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
@@ -1410,6 +1417,7 @@ describe("pipeline latency (issue #33)", () => {
     const dependent = makeTicket({ id: "b", identifier: "OPS-B", state: "backlog", blockedBy: ["OPS-A"] });
     client.board = [blocker, dependent];
     const d = new Dispatcher({
+    gitOps: gitFakes,
       client,
       config: cfg(),
       resolveRepoRoot: () => "/tmp/repo",
@@ -1437,6 +1445,7 @@ describe("pipeline latency (issue #33)", () => {
     const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
     client.board = [ticket];
     const d = new Dispatcher({
+    gitOps: gitFakes,
       client,
       config: cfg(),
       resolveRepoRoot: () => "/tmp/repo",
@@ -1458,6 +1467,7 @@ describe("pipeline latency (issue #33)", () => {
     const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
     client.board = [ticket];
     const d = new Dispatcher({
+    gitOps: gitFakes,
       client,
       config: cfg(),
       resolveRepoRoot: () => "/tmp/repo",

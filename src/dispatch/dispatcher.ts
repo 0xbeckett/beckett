@@ -76,9 +76,24 @@ export interface PlaneClientLike {
 }
 
 /** Construction dependencies for the {@link Dispatcher} (docs/V3.md §5). */
+/**
+ * The git/worktree ops the dispatcher performs. Grouped so tests can inject fakes via
+ * {@link DispatcherDeps.gitOps} WITHOUT `mock.module`-ing `../worker/worktree.ts` — that mock is
+ * process-global in bun and leaked its fakes into other files' real-git tests (scaffolding-guard).
+ */
+export interface GitOps {
+  commitWorktree: typeof commitWorktree;
+  headSha: typeof headSha;
+  hasDiffSince: typeof hasDiffSince;
+  ensureProjectRepo: typeof ensureProjectRepo;
+  readDiff: typeof readDiff;
+}
+
 export interface DispatcherDeps {
   client: PlaneClientLike;
   config: Config;
+  /** Override any git op (tests inject fakes here); unset ops use the real worktree.ts impl. */
+  gitOps?: Partial<GitOps>;
   /** Resolve the absolute path of a ticket's own project repo (`~/Projects/<slug>`). */
   resolveRepoRoot: (ticket: Ticket) => string;
   /**
@@ -336,6 +351,7 @@ function parseRuntimeState(value: unknown): DispatcherRuntimeState {
 export class Dispatcher {
   private readonly client: PlaneClientLike;
   private readonly config: Config;
+  private readonly git: GitOps;
   private readonly resolveRepoRoot: (ticket: Ticket) => string;
   private readonly publishRepo?: (args: {
     slug: string;
@@ -412,6 +428,7 @@ export class Dispatcher {
   constructor(deps: DispatcherDeps) {
     this.client = deps.client;
     this.config = deps.config;
+    this.git = { commitWorktree, headSha, hasDiffSince, ensureProjectRepo, readDiff, ...deps.gitOps };
     this.resolveRepoRoot = deps.resolveRepoRoot;
     this.publishRepo = deps.publishRepo;
     this.progress = deps.progress;
@@ -454,7 +471,7 @@ export class Dispatcher {
         }
       }
       try {
-        const commit = await commitWorktree(
+        const commit = await this.git.commitWorktree(
           w.repoRoot,
           `beckett: ${w.identifier} restart WIP (${w.workerId || "unknown worker"})`,
         );
@@ -1087,7 +1104,7 @@ export class Dispatcher {
     // self-improvement ticket), else `git init` a fresh one. A worker never touches Beckett's live
     // source. A provisioning failure leaves the ticket for a human rather than spawning blind.
     try {
-      await ensureProjectRepo(repoRoot, projectSlug(ticket.project || ticket.identifier));
+      await this.git.ensureProjectRepo(repoRoot, projectSlug(ticket.project || ticket.identifier));
     } catch (err) {
       this.logger.error("project repo provisioning failed", {
         ticket: ticket.identifier,
@@ -1107,7 +1124,7 @@ export class Dispatcher {
     // hiccup here must never block the spawn — the reviewer just falls back to diffing HEAD.
     if (stage === "implement" && !this.baseShaForTicket.has(ticket.id)) {
       try {
-        const sha = await headSha(repoRoot);
+        const sha = await this.git.headSha(repoRoot);
         if (sha) {
           this.baseShaForTicket.set(ticket.id, sha);
           this.persistRuntimeState();
@@ -1137,7 +1154,7 @@ export class Dispatcher {
     let reviewDiff: string | undefined;
     if (stage === "review") {
       try {
-        reviewDiff = await readDiff(repoRoot, baseRef);
+        reviewDiff = await this.git.readDiff(repoRoot, baseRef);
       } catch (err) {
         this.logger.warn("review diff pre-read failed (reviewer will diff itself)", {
           ticket: ticket.identifier,
@@ -1639,7 +1656,7 @@ export class Dispatcher {
     // human) can see it. The worker may have committed already; this is the safety net.
     let committedContribution = false;
     try {
-      const commit = await commitWorktree(
+      const commit = await this.git.commitWorktree(
         handle.workspace,
         `beckett: ${ticket.identifier} implement (${handle.workerId})`,
       );
@@ -1712,7 +1729,7 @@ export class Dispatcher {
   ): Promise<boolean> {
     if (committedContribution) return true;
     try {
-      return await hasDiffSince(handle.workspace, this.baseShaForTicket.get(ticket.id) ?? null);
+      return await this.git.hasDiffSince(handle.workspace, this.baseShaForTicket.get(ticket.id) ?? null);
     } catch (err) {
       this.logger.warn("could not verify implementation diff; withholding self-review", {
         ticket: ticket.identifier,
@@ -1816,7 +1833,7 @@ export class Dispatcher {
    */
   private async commitWip(ticket: Ticket, handle: TicketWorkerHandle): Promise<string | null> {
     try {
-      const commit = await commitWorktree(
+      const commit = await this.git.commitWorktree(
         handle.workspace,
         `beckett: ${ticket.identifier} WIP (${handle.workerId})`,
       );
