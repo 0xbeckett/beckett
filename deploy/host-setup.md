@@ -26,15 +26,33 @@ bun (`/usr/local/bin/bun`), node ≥ 20 via fnm into `~/.local/bin`, `claude`, `
 `gh`, `rg`/`fd`/`jq`/`yq`, cloudflared. See `my-docs/loom-desk-setup-log.md` and the
 beckett-self-provisions-tools principle: this is a baseline, Beckett installs what it needs.
 
-## 4. Credentials (from the secrets backup — never in git)
+## 4. Credentials (from the encrypted backup — never in git)
 
 | File | What |
 |---|---|
-| `~/.beckett/.env` | `DISCORD_TOKEN`, `PLANE_API_TOKEN`, `GITHUB_PAT`, `DISCORD_ALERT_WEBHOOK_URL`, … — the committed `.env.example` is the full inventory (`beckett doctor` flags drift) |
+| `~/.beckett/.env` | `DISCORD_TOKEN`, `PLANE_API_TOKEN`, `GITHUB_PAT`, `DISCORD_ALERT_WEBHOOK_URL`, … — the committed `.env.example` is the full inventory with per-key mint/scope notes (`beckett doctor` flags drift) |
 | `~/.claude/.credentials.json` | claude subscription login |
 | `~/.codex/auth.json` | codex ChatGPT login |
 | `~/.pi/agent/auth.json` | pi OAuth login |
-| `~/.beckett/config.toml` | runtime overrides (validated strict — prune keys when the schema prunes) |
+| `~/.beckett/config.toml` | runtime overrides (validated strict — prune keys when the schema prunes; `deploy/config.toml.example` = every key at its default) |
+
+### The encrypted backup (issue #34)
+
+All five files are backed up age-encrypted to the **Mac** (`~/.beckett-backups/`); the age private
+key (`~/.config/age/beckett-backup.key`) exists ONLY there. Backups are deliberately not committed
+— this repo is public, and public git history is forever.
+
+- **After any secret change** (rotation, new key), from the Mac: `./deploy/backup-secrets.sh`
+  (pulls, encrypts, and decrypt-verifies in one step).
+- **Restore onto a fresh box**, from the Mac:
+
+  ```bash
+  age -d -i ~/.config/age/beckett-backup.key \
+    ~/.beckett-backups/beckett-secrets-<newest>.tar.age | ssh beckett@HOST 'tar -x -C ~'
+  ```
+
+  Then continue at step 5 below. A from-scratch environment is `git clone` + this one command +
+  `./deploy/install.sh` — zero source-reading.
 
 ## 5. Clone + units
 
