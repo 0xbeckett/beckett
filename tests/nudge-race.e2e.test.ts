@@ -343,9 +343,10 @@ test("nudge-vs-finish: a late nudge into a GATING node is queued without regress
   // FIRE THE RACING NUDGE into the finish window.
   const receipt = await d.orchestrator.nudge(workerId, "actually, also handle negatives", "user_jason", "cli");
 
-  // The steer is accepted-but-buffered (the finished worker's driver queues it), and CRUCIALLY the
-  // node FSM was NOT touched: it must still be GATING — no NUDGING write, no SUPERVISING regression.
-  expect(receipt.accepted).toBe("queued");
+  // The finished worker's driver reports the steer HONESTLY as dropped (issue #22 — nothing will
+  // ever replay it; the v3 dispatcher re-routes on this receipt), and CRUCIALLY the node FSM was
+  // NOT touched: it must still be GATING — no NUDGING write, no SUPERVISING regression.
+  expect(receipt.accepted).toBe("dropped");
   expect(d.store.getNode(nodeId)?.state).toBe(NodeState.GATING);
 
   // The nudge persisted (persist-first) but stayed 'queued' — it never drove the FSM.

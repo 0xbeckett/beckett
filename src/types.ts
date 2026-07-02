@@ -1565,6 +1565,12 @@ export interface HarnessDriver {
   onEvent(cb: (e: WorkerEvent) => void): () => void;
   /** Snapshot of derived counters (cheap; reads accumulators + git diff --stat). */
   getTelemetry(): WorkerSpend;
+  /**
+   * Drain any steering that was buffered but never reached the model (issue #22): claude buffers
+   * while paused/dead; one-shot harnesses buffer for a resume a crash can pre-empt. Called by
+   * the spawn glue at finish so unapplied user words are re-routed, never silently dropped.
+   */
+  drainUnappliedNudges?(): string[];
 }
 
 /** Inputs to spawn one harness process (Spec 02 §3). */
