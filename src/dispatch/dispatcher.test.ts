@@ -10,6 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../types.ts";
 import type { Ticket, TicketState, PollEvent, HarnessSpec, PlaneComment } from "../plane/types.ts";
+// The real module, so the mock below can be a COMPLETE stand-in (spread + override). bun's
+// `mock.module` replaces the module process-wide; a partial mock link-errors any OTHER file that
+// imports a name we omit (e.g. agency/index.ts's `SCAFFOLDING_DIR`) when load order interleaves.
+import * as actualWorktree from "../worker/worktree.ts";
 
 // ── controllable fake worker handle + spawn mock ────────────────────────────────────────────
 let spawnCalls: {
@@ -127,6 +131,8 @@ let diffSince = true;
 let fakeReviewDiff = "diff --git a/x.ts b/x.ts\n+added";
 mock.module("./spawn.ts", () => ({ spawnWorker: fakeSpawn, spawnTicketWorker: fakeSpawn }));
 mock.module("../worker/worktree.ts", () => ({
+  ...actualWorktree, // keep every real export (SCAFFOLDING_DIR, the scaffolding-guard helpers, …) so
+  // a leaked link never fails; override only the git-touching ops this suite must fake.
   commitWorktree: async (workspace: string, message: string) => {
     commitCalls.push({ workspace, message });
     return commitResult;
