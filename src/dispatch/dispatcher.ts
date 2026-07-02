@@ -698,6 +698,74 @@ export class Dispatcher {
 
   // ── spawning + concurrency ─────────────────────────────────────────────────────────────
 
+  /**
+   * Operator lever (issue #21): abort whatever worker a ticket has (committing its WIP) and
+   * spawn a fresh one for the ticket's current stage — optionally pinned to a different harness.
+   * Exposed to the Concierge as `beckett ticket restaff <id> [--harness h]` via the control bus.
+   * Accepts a Plane uuid OR a human identifier ("OPS-42").
+   */
+  async restaff(
+    idOrIdentifier: string,
+    harness?: Harness,
+  ): Promise<{ ticket: string; stage: string; harness?: Harness }> {
+    const ticket = await this.findTicket(idOrIdentifier);
+    if (!ticket) throw new Error(`no such ticket: ${idOrIdentifier}`);
+    const stage = ticket.state === "in_review" ? "review" : "implement";
+    if (ticket.state !== "in_progress" && ticket.state !== "in_review") {
+      throw new Error(
+        `ticket ${ticket.identifier} is in "${ticket.state}" — move it to in_progress/in_review ` +
+          `to (re)staff it`,
+      );
+    }
+
+    const handle = this.workers.get(ticket.id);
+    this.cancelSpawnRetry(ticket.id);
+    this.dropPending(ticket.id);
+    this.staffing.delete(ticket.id);
+    if (handle) {
+      this.logger.warn("restaff: aborting live worker", {
+        ticket: ticket.identifier,
+        workerId: handle.id,
+        stage,
+      });
+      this.workers.delete(ticket.id);
+      this.liveTickets.delete(ticket.id);
+      if (this.liveLedger.delete(ticket.id)) this.persistRuntimeState();
+      await handle.abort("restaffed by operator");
+      await handle.reap();
+      await this.commitWip(ticket, handle);
+      this.releaseRepo(ticket.id);
+    }
+    if (harness) this.castOverrides.set(ticket.id, { stage, spec: { harness } });
+
+    await this.postComment(
+      ticket.id,
+      `Restaffing the ${stage} worker${harness ? ` on **${harness}**` : ""} (operator request). ` +
+        `Any work-in-progress was committed and the new worker continues from it.`,
+    );
+    this.spawnGuarded(ticket, stage);
+    return { ticket: ticket.identifier, stage, harness };
+  }
+
+  /** Resolve a ticket by Plane uuid or human identifier ("OPS-42"), else null. */
+  private async findTicket(idOrIdentifier: string): Promise<Ticket | null> {
+    const key = idOrIdentifier.trim();
+    if (!key) return null;
+    // Identifiers look like "OPS-42"; uuids don't contain an unprefixed short slug-dash-number.
+    if (/^[0-9a-f-]{32,}$/i.test(key) && this.client.getIssue) {
+      try {
+        const t = await this.client.getIssue(key);
+        if (t) return t;
+      } catch {
+        /* fall through to the identifier scan */
+      }
+    }
+    const all = await this.client.listIssues();
+    return (
+      all.find((t) => t.id === key || t.identifier.toLowerCase() === key.toLowerCase()) ?? null
+    );
+  }
+
   /** True if a worker is live, OR a spawn is mid-flight, for this ticket (airtight dedup). */
   private isStaffed(ticketId: string): boolean {
     return this.workers.has(ticketId) || this.staffing.has(ticketId);
@@ -951,12 +1019,77 @@ export class Dispatcher {
     handle.onDone((status, summary) => {
       void this.onWorkerDone(ticket, stage, handle, status, summary);
     });
+    handle.onStalled((idleMs, strikes) => {
+      void this.onWorkerStalled(ticket, stage, handle, idleMs, strikes).catch((err) =>
+        this.logger.warn("stall handling failed", { ticket: ticket.identifier, err: String(err) }),
+      );
+    });
     this.logger.info("worker spawned for ticket", {
       ticket: ticket.identifier,
       stage,
       workerId: handle.id,
       harness: spec.harness,
     });
+  }
+
+  /**
+   * The stall escalation ladder (issue #21). A worker that emits nothing for
+   * `supervise.worker_stall_s` gets ONE automated status-check nudge (strike 1); if it stays
+   * silent through another full window (strike 2), it is aborted and routed through the normal
+   * incomplete/retry machinery — its committed WIP survives and the ticket never wedges a slot
+   * until the hard cap. Every step is narrated on the ticket, which the Concierge surfaces to
+   * Discord (the dispatcher-comment feed IS the alarm channel).
+   */
+  private async onWorkerStalled(
+    ticket: Ticket,
+    stage: string,
+    handle: TicketWorkerHandle,
+    idleMs: number,
+    strikes: number,
+  ): Promise<void> {
+    if (this.workers.get(ticket.id) !== handle) return; // superseded/reaped — not ours anymore
+    if (handle.result) return; // a real finish is already in flight; onDone owns the ticket
+    const idleMin = Math.max(1, Math.round(idleMs / 60_000));
+
+    if (strikes <= 1) {
+      this.logger.warn("worker stalled — sending status-check nudge (strike 1)", {
+        ticket: ticket.identifier,
+        stage,
+        workerId: handle.id,
+        idleMin,
+      });
+      await handle.nudge(
+        `Status check: you have produced no visible activity for ~${idleMin} minute(s). ` +
+          `Reply with a one-line status (what you are doing and what, if anything, is blocking ` +
+          `you) and continue. If you are stuck on a hung command or prompt, kill it and take a ` +
+          `different approach.`,
+      );
+      await this.postComment(
+        ticket.id,
+        `The ${stage} worker went quiet (~${idleMin} min with no activity). I sent it a status ` +
+          `check; if it stays silent I'll stop it and restart from its committed work.`,
+      );
+      return;
+    }
+
+    this.logger.warn("worker stalled through its status check — aborting for retry (strike 2)", {
+      ticket: ticket.identifier,
+      stage,
+      workerId: handle.id,
+      idleMin,
+    });
+    await handle.abort("stalled: no activity through two stall windows");
+    if (handle.result) return; // finish raced the abort; the onDone path owns the outcome
+    // Route through the normal finished-with-error machinery: commit WIP, bounded retry
+    // (implement) / review-infra retry (review), park on exhaustion — never a wedged slot.
+    void this.onWorkerDone(
+      ticket,
+      stage,
+      handle,
+      "error",
+      `The worker stalled (~${idleMin} minutes with no activity) and did not respond to a ` +
+        `status check, so I stopped it.`,
+    );
   }
 
   /**

@@ -66,6 +66,14 @@ function makeHandle(ticket: Ticket, stage: string, harness = "claude") {
     onFinished(cb: (s: "success" | "error", sum: string) => void) {
       h.onDone(cb);
     },
+    onStalled(cb: (idleMs: number, strikes: number) => void) {
+      h.stallCbs.add(cb);
+    },
+    stallCbs: new Set<(idleMs: number, strikes: number) => void>(),
+    // test trigger: simulate the driver's stalled signal (issue #21 escalation ladder input).
+    stall(idleMs: number, strikes: number) {
+      for (const cb of h.stallCbs) cb(idleMs, strikes);
+    },
     async reap() {
       h.reaped = true;
     },
@@ -609,6 +617,97 @@ describe("v3.1 project-repo provisioning", () => {
     await d.handle(stateChanged(ticket, "in_progress"));
     await tick();
     expect(provisioned).toContain("balloons-game"); // sanitized slug
+  });
+});
+
+describe("stall escalation ladder (issue #21)", () => {
+  test("strike 1 sends a status-check nudge and narrates it on the ticket", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    created[0].stall(320_000, 1);
+    await tick();
+
+    expect(created[0].nudges).toHaveLength(1);
+    expect(created[0].nudges[0]).toContain("Status check");
+    expect(created[0].aborted).toBe(false);
+    expect(client.comments.at(-1)!.body).toContain("went quiet");
+  });
+
+  test("strike 2 aborts the worker and rides the implement retry machinery", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    created[0].stall(320_000, 1);
+    await tick();
+    created[0].stall(640_000, 2);
+    await tick();
+    await tick();
+
+    expect(created[0].aborted).toBe(true);
+    // The abort routed through onImplementIncomplete: WIP narrated + a fresh retry worker.
+    expect(client.comments.some((c) => c.body.includes("retrying"))).toBe(true);
+    expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(2);
+  });
+
+  test("a stall signal after a real finish is ignored (no double handling)", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    created[0].finish("success", "did it", doneSignal("complete"));
+    await tick();
+    const commentsBefore = client.comments.length;
+    created[0].stall(320_000, 1);
+    await tick();
+
+    expect(created[0].nudges).toHaveLength(0);
+    expect(client.comments.length).toBe(commentsBefore);
+  });
+});
+
+describe("restaff lever (issue #21)", () => {
+  test("restaff aborts the live worker, commits WIP, and spawns a fresh one", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    client.board.push(ticket);
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    const r = await d.restaff("OPS-1");
+    await tick();
+
+    expect(r).toMatchObject({ ticket: "OPS-1", stage: "implement" });
+    expect(created[0].aborted).toBe(true);
+    expect(created[0].reaped).toBe(true);
+    expect(spawnCalls).toHaveLength(2);
+    expect(client.comments.some((c) => c.body.includes("Restaffing"))).toBe(true);
+  });
+
+  test("restaff --harness pins the fresh worker to the requested harness", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    client.board.push(ticket);
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    await d.restaff(ticket.id, "pi");
+    await tick();
+
+    expect(spawnCalls).toHaveLength(2);
+    expect(spawnCalls[1]!.harness.harness).toBe("pi");
+  });
+
+  test("restaff refuses tickets that are not in an active state", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ state: "done" });
+    client.board.push(ticket);
+    await expect(d.restaff(ticket.id)).rejects.toThrow(/move it to in_progress/);
   });
 });
 

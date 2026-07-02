@@ -137,6 +137,10 @@ const ConfigSchema = z
         // 1800s (30min) so it can never be tightened back into the retired 600s guillotine (OPS-50);
         // default 3600s (60min).
         worker_hard_cap_s: int.min(1800).default(3600),
+        // Stall window (issue #21): a worker with NO progress event for this many seconds gets a
+        // `stalled` signal (driver watchdog) and the dispatcher escalates nudge → abort+retry,
+        // instead of burning a slot until the hard cap. 0 disables stall detection.
+        worker_stall_s: nonNegInt.default(300),
         tail_mode: z.enum(["stream", "disk", "stream+disk"]).default("stream+disk"),
       })
       .default({}),

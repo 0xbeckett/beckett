@@ -254,6 +254,12 @@ export type WorkerEvent =
       ts: number;
     }
   | { kind: "error"; message: string; ts: number }
+  /**
+   * Stall signal (issue #21): the driver watchdog saw NO progress event for
+   * `supervise.worker_stall_s`. NON-terminal — the dispatcher escalates (nudge → abort+retry).
+   * Emitted at most once per silent window; `idleMs` is time since the last progress event.
+   */
+  | { kind: "stalled"; idleMs: number; ts: number }
   /** Forward-compat fallthrough: any raw line we recognized but don't model (Spec 02 §7). */
   | { kind: "unknown"; raw: unknown; ts: number };
 
@@ -1374,6 +1380,9 @@ export interface Config {
     /** Generous backstop wall-clock cap (s) the per-worker watchdog enforces — a runaway safety
      *  net, not a work limit (drivers/proc.ts#hardCapSeconds). Floor 1800, default 3600. */
     worker_hard_cap_s: number;
+    /** Stall window (s): no progress event for this long → the driver emits a `stalled` signal
+     *  and the dispatcher escalates (nudge → abort+retry). 0 disables. Default 300 (issue #21). */
+    worker_stall_s: number;
     tail_mode: "stream" | "disk" | "stream+disk";
   };
   models: {

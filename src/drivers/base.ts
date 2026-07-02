@@ -71,6 +71,13 @@ export abstract class BaseDriver {
   protected finished = false;
   protected spawnedAt = 0;
   protected lastActivityTs = 0;
+  /**
+   * Epoch ms of the last REAL-progress event (turns/tools/text/files — not echoes or our own
+   * stall signals). The stall clock (issue #21) keys on this so a nudge ack can't mask a wedge.
+   */
+  protected lastProgressTs = 0;
+  /** When the last `stalled` signal was emitted — at most one per silent window. */
+  protected lastStallEmitTs = 0;
   /** Incremented per child process; an exit whose gen != current is a superseded child (ignored). */
   protected childGen = 0;
 
@@ -215,6 +222,7 @@ export abstract class BaseDriver {
     this.setState("spawning");
     this.spawnedAt = this.spawnedAt || Date.now();
     this.lastActivityTs = Date.now();
+    this.lastProgressTs = Date.now(); // launch counts as progress — the stall clock starts now
 
     const sessionReady = new Promise<SpawnResult>((resolve, reject) => {
       this.resolveSession = resolve;
@@ -345,11 +353,35 @@ export abstract class BaseDriver {
     if (!this.spec || this.finished || this.isTerminal()) return;
     const capS = hardCapSeconds(this.config);
     const totalS = (Date.now() - this.spawnedAt) / 1000;
-    if (totalS <= capS) return;
-    // Trip the generous backstop cap. Set finished up-front so this can't re-enter and so
-    // onProcessExit (fired by the kill below) won't also synthesize a finish.
-    this.finished = true;
-    void this.timeOut(capS, totalS);
+    if (totalS > capS) {
+      // Trip the generous backstop cap. Set finished up-front so this can't re-enter and so
+      // onProcessExit (fired by the kill below) won't also synthesize a finish.
+      this.finished = true;
+      void this.timeOut(capS, totalS);
+      return;
+    }
+    this.tickStall();
+  }
+
+  /**
+   * Stall detection (issue #21): no PROGRESS event for `supervise.worker_stall_s` → emit a
+   * non-terminal `stalled` signal for the dispatcher's escalation ladder (nudge → abort+retry).
+   * Keys on {@link lastProgressTs} — a nudge echo or our own stall signal must not reset the
+   * clock, or a wedged-but-echoing worker would be nudged forever. One signal per silent window.
+   */
+  protected tickStall(): void {
+    const stallS = this.config.supervise?.worker_stall_s ?? 0;
+    if (!stallS || this.lastProgressTs <= 0 || this.workerState === "paused") return;
+    const now = Date.now();
+    const idleMs = now - this.lastProgressTs;
+    if (idleMs < stallS * 1000) return;
+    if (now - this.lastStallEmitTs < stallS * 1000) return; // already signalled this window
+    this.lastStallEmitTs = now;
+    this.log.warn("worker stalled — no progress event within the stall window", {
+      idleS: Math.round(idleMs / 1000),
+      stallS,
+    });
+    this.emit({ kind: "stalled", idleMs, ts: now });
   }
 
   /**
@@ -447,8 +479,23 @@ export abstract class BaseDriver {
   // small shared helpers
   // ===========================================================================
 
+  /** Event kinds that count as REAL worker progress (reset the stall clock, issue #21). */
+  private static readonly PROGRESS_KINDS = new Set<WorkerEvent["kind"]>([
+    "session_started",
+    "turn_started",
+    "assistant_text",
+    "tool_call",
+    "tool_result",
+    "file_change",
+    "plan_update",
+    "turn_completed",
+    "finished",
+  ]);
+
   protected emit(e: WorkerEvent): void {
-    this.lastActivityTs = e.ts;
+    // Our own stall signal is not activity — counting it would reset the very clock it reports.
+    if (e.kind !== "stalled") this.lastActivityTs = e.ts;
+    if (BaseDriver.PROGRESS_KINDS.has(e.kind)) this.lastProgressTs = e.ts;
     for (const cb of this.subscribers) {
       try {
         cb(e);

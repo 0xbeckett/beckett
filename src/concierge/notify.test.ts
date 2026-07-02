@@ -103,12 +103,40 @@ test("ignores human/worker comments — only Beckett's own narration is echoed",
   expect(asks.length).toBe(0);
 });
 
-test("surfaces `done` from the state transition (the comment feed misses terminal tickets)", () => {
+test("surfaces `done` from the state transition (the comment feed misses terminal tickets)", async () => {
   const { concierge, asks } = harness();
   concierge.notify({ kind: "state_changed", ticket: ticket({ state: "done" }), from: "in_review", to: "done" });
+  await new Promise((r) => setTimeout(r, 0)); // done pings frame async (artifact-link fetch)
   expect(asks.length).toBe(1);
   expect(asks[0]).toContain(`--channel ${CHAN}`);
   expect(asks[0]?.toLowerCase()).toContain("done");
+});
+
+test("the done ping carries the artifact link from the dispatcher's done comment (issue #21)", async () => {
+  const asks: string[] = [];
+  const session = {
+    ask: (m: string) => {
+      asks.push(m);
+      return Promise.resolve("");
+    },
+  } as unknown as ConciergeSession;
+  const plane = {
+    listComments: async () => [
+      comment("<!-- beckett:dispatcher -->\nSelf-reviewed → **done** (one pass).\n\nShipped: https://github.com/0xbeckett/healthz"),
+    ],
+  };
+  const concierge = new Concierge({ config, session, gateway: {} as never, plane });
+  concierge.notify({ kind: "state_changed", ticket: ticket({ state: "done" }), from: "in_review", to: "done" });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(1);
+  expect(asks[0]).toContain("https://github.com/0xbeckett/healthz");
+});
+
+test("boot recovery (from: null) tells the user the ticket is being re-staffed (issue #21)", () => {
+  const { concierge, asks } = harness();
+  concierge.notify({ kind: "state_changed", ticket: ticket(), from: null, to: "in_progress" });
+  expect(asks.length).toBe(1);
+  expect(asks[0]).toContain("restarted");
 });
 
 test("does not double-surface non-terminal state changes (covered by the comment)", () => {

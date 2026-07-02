@@ -74,6 +74,9 @@ export interface TicketWorkerResult {
 /** Callback fired exactly once when a worker reaches a terminal `finished` event. */
 export type DoneCallback = (status: "success" | "error", summary: string) => void;
 
+/** Callback fired on each driver stall signal (issue #21) with idle time + consecutive strikes. */
+export type StallCallback = (idleMs: number, strikes: number) => void;
+
 /**
  * The live worker handle the dispatcher tracks per ticket. Superset of the task spec and the
  * `docs/V3.md` §6 contract so either caller's expectations hold.
@@ -110,6 +113,12 @@ export interface TicketWorkerHandle {
   onDone(cb: DoneCallback): void;
   /** Register a finish callback (docs/V3.md §6 name). Same semantics as {@link onDone}. */
   onFinished(cb: DoneCallback): void;
+  /**
+   * Register a stall callback (issue #21): fired on each driver `stalled` signal with the idle
+   * time and the CONSECUTIVE strike count (resets when the worker shows real progress). The
+   * dispatcher's ladder: strike 1 → status-check nudge; strike 2 → abort + retry.
+   */
+  onStalled(cb: StallCallback): void;
   /** Tear down: unsubscribe from the driver stream and remove the git worktree. Idempotent. */
   reap(): Promise<void>;
 }
@@ -395,6 +404,9 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   let finishedFired = false;
   let reaped = false;
   const doneCbs = new Set<DoneCallback>();
+  const stallCbs = new Set<StallCallback>();
+  /** Consecutive stall signals with no real progress between them (issue #21 ladder input). */
+  let stallStrikes = 0;
 
   const fireDone = (status: "success" | "error", summary: string): void => {
     if (finishedFired) return;
@@ -418,6 +430,8 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
         logger.warn("progress sink threw (ignored)", { err: String(err) });
       }
     }
+    // Real progress clears the stall ladder (the driver's stall clock keys on the same kinds).
+    if (e.kind !== "stalled" && e.kind !== "user_echo" && e.kind !== "unknown") stallStrikes = 0;
     switch (e.kind) {
       case "session_started":
         if (state === "spawning") state = "running";
@@ -425,6 +439,17 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
       case "assistant_text":
         if (!e.partial && e.text.trim()) lastAssistantText = e.text;
         break;
+      case "stalled": {
+        stallStrikes += 1;
+        for (const cb of stallCbs) {
+          try {
+            cb(e.idleMs, stallStrikes);
+          } catch (err) {
+            logger.warn("stall callback threw", { err: String(err) });
+          }
+        }
+        break;
+      }
       case "finished": {
         const summary = summaryFrom(e.structuredOutput, lastAssistantText);
         result = {
@@ -525,6 +550,9 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     },
     onFinished(cb: DoneCallback): void {
       handle.onDone(cb);
+    },
+    onStalled(cb: StallCallback): void {
+      stallCbs.add(cb);
     },
     async reap(): Promise<void> {
       if (reaped) return;

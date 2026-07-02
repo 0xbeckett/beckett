@@ -611,6 +611,8 @@ export interface ConciergeOptions {
   gateway?: DiscordGateway;
   /** Inject a session (tests); defaults to a real ConciergeSession. */
   session?: ConciergeSession;
+  /** Plane read access for milestone enrichment (issue #21) — the shared PlaneClient in prod. */
+  plane?: { listComments(ticketId: string): Promise<PlaneComment[]> };
 }
 
 /**
@@ -632,6 +634,20 @@ export class Concierge {
   private readonly progress: ProgressHub;
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
   private busStop: (() => void) | null = null;
+  /**
+   * Dispatcher levers wired in AFTER construction (v3-main creates the Concierge first so its
+   * progress sink can feed the dispatcher). Serves `beckett ticket restaff` from the control bus
+   * (issue #21). Null until wired — the bus op then answers with a clear "not available" error.
+   */
+  private dispatcherOps: {
+    restaff(id: string, harness?: string): Promise<{ ticket: string; stage: string; harness?: string }>;
+  } | null = null;
+  /**
+   * Plane read access for milestone enrichment (issue #21): the poller stops collecting comments
+   * on terminal tickets, so the `done` ping fetches the dispatcher's done comment here to carry
+   * the artifact/PR link. Optional — absent (tests), the ping falls back to the ticket URL only.
+   */
+  private readonly plane: { listComments(ticketId: string): Promise<PlaneComment[]> } | null;
   /**
    * The @mention turn currently in flight, if any. Tracked so the two posting paths can't BOTH
    * fire for one turn (the duplicate-message bug): if the Concierge answers a live @mention by
@@ -657,9 +673,15 @@ export class Concierge {
     this.gateway = opts.gateway ?? createDiscordGateway({ config: this.config, logger: this.log });
     this.session =
       opts.session ?? new ConciergeSession({ config: this.config, logger: this.log });
+    this.plane = opts.plane ?? null;
     this.progress = createProgressHub(this.gateway, this.log, {
       stateFile: progressStateFile(this.config, this.log),
     });
+  }
+
+  /** Wire the dispatcher levers (v3-main, after the dispatcher exists). See {@link dispatcherOps}. */
+  setDispatcherOps(ops: NonNullable<Concierge["dispatcherOps"]>): void {
+    this.dispatcherOps = ops;
   }
 
   /**
@@ -797,6 +819,24 @@ export class Concierge {
       this.onTicketFiled(channelId, identifier, title);
       return { ok: true, data: { tracked: true } };
     }
+    if (req.cmd === "ticket.restaff") {
+      // Operator lever (issue #21): abort a ticket's worker (WIP committed) and spawn a fresh one,
+      // optionally on a different harness. Routed to the dispatcher wired in by v3-main.
+      if (!this.dispatcherOps) {
+        return { ok: false, error: "restaff unavailable — the dispatcher is not wired (v3 daemon only)" };
+      }
+      const id = typeof req.args.id === "string" ? req.args.id.trim() : "";
+      if (!id) return { ok: false, error: "usage: beckett ticket restaff <id> [--harness claude|codex|pi]" };
+      const harness = typeof req.args.harness === "string" && req.args.harness.trim()
+        ? req.args.harness.trim()
+        : undefined;
+      try {
+        const r = await this.dispatcherOps.restaff(id, harness);
+        return { ok: true, data: r };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    }
     if (req.cmd !== "discord.reply") {
       return { ok: false, error: `concierge bus: unknown command "${req.cmd}"` };
     }
@@ -841,6 +881,16 @@ export class Concierge {
   notify(events: PollEvent | PollEvent[]): void {
     const batch = Array.isArray(events) ? events : [events];
     for (const event of batch) {
+      // `done` is enriched asynchronously (it fetches the done comment for the artifact link,
+      // issue #21) — everything else frames synchronously.
+      if (event.kind === "state_changed" && event.to === "done") {
+        void this.buildDoneUpdate(event.ticket)
+          .then((framed) => (framed ? this.session.ask(framed) : undefined))
+          .catch((err) =>
+            this.log.warn("concierge done-update turn failed (ignored)", { err: String(err) }),
+          );
+        continue;
+      }
       const framed = this.frameUpdate(event);
       if (!framed) continue; // not worth surfacing, or no channel to route back to
       // Don't await: the turn serializes on the session's own queue; the poll loop moves on.
@@ -848,6 +898,28 @@ export class Concierge {
         this.log.warn("concierge update turn failed (ignored)", { err: String(err) }),
       );
     }
+  }
+
+  /**
+   * Frame the `done` milestone WITH the artifact link (issue #21): the poller stops collecting
+   * comments on terminal tickets, so the dispatcher's own done comment (which carries the
+   * "Shipped:"/"PR opened:" URL) never arrives as a comment event. Fetch it here so the payoff
+   * message of the whole pipeline is "done: <link>", not a bare "done". Best-effort: without a
+   * Plane client (tests) or a parseable link, degrade to the plain done ping + ticket URL.
+   */
+  private async buildDoneUpdate(ticket: Ticket): Promise<string | null> {
+    let detail = `Review passed — ticket is **done**.`;
+    try {
+      const comments = (await this.plane?.listComments(ticket.id)) ?? [];
+      const doneComment = [...comments].reverse().find((c) => isDispatcherComment(c));
+      const link = doneComment ? artifactLinkFrom(stripCommentMarker(doneComment.body)) : null;
+      if (link) detail += `\nArtifact: ${link}`;
+    } catch (err) {
+      this.log.debug("done-link fetch failed (plain done ping)", { err: String(err) });
+    }
+    if (ticket.url) detail += `\nTicket: ${ticket.url}`;
+    detail += `\nInclude the artifact link in your reply so the person can click straight through.`;
+    return this.updateTurn(ticket, detail);
   }
 
   /**
@@ -871,6 +943,23 @@ export class Concierge {
     }
     if (event.kind === "cancelled") {
       return this.updateTurn(event.ticket, `Ticket was cancelled.`);
+    }
+    // Boot recovery (issue #21): the poller's prime emits `from: null` for tickets that were
+    // mid-flight when the daemon went down and are being re-staffed. Tell the person instead of
+    // leaving it a journal-only warning — but let the Concierge judge (a routine redeploy restart
+    // doesn't need a ping per ticket).
+    if (
+      event.kind === "state_changed" &&
+      event.from === null &&
+      (event.to === "in_progress" || event.to === "in_review")
+    ) {
+      const stage = event.to === "in_review" ? "review" : "implementation";
+      return this.updateTurn(
+        event.ticket,
+        `The daemon restarted while this ticket was mid-${stage}; I'm re-staffing it so the work ` +
+          `continues from its committed progress. If you've already told this channel about this ` +
+          `restart (or it was a routine redeploy), skip the ping.`,
+      );
     }
     if (event.kind === "state_changed" && event.to === "done") {
       // `done` is the one milestone the comment feed misses: the poller stops collecting comments
@@ -1241,6 +1330,17 @@ function isDispatcherComment(comment: PlaneComment): boolean {
 /** Drop the leading `<!-- beckett… -->` marker line so the Concierge paraphrases just the prose. */
 function stripCommentMarker(body: string): string {
   return body.replace(/^\s*<!--\s*beckett[^>]*-->\s*/i, "").trim();
+}
+
+/**
+ * Pull the artifact/PR link out of a dispatcher done comment (issue #21). The comment says
+ * "Shipped: <url>" or "PR opened (needs your merge): <url>"; prefer a GitHub URL over any other
+ * (a public site URL may also appear), else take the first URL. Null when the comment has none.
+ */
+export function artifactLinkFrom(body: string): string | null {
+  const urls = body.match(/https?:\/\/[^\s)>\]]+/g) ?? [];
+  if (urls.length === 0) return null;
+  return urls.find((u) => u.includes("github.com")) ?? urls[0]!;
 }
 
 /**
