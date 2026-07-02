@@ -58,17 +58,24 @@ test("parseRepoNwo handles https, ssh, bare, and rejects junk", () => {
   expect(parseRepoNwo("")).toBeNull();
 });
 
-test("case 3 — fresh owned project (no origin, repo absent): create + push HEAD→main", async () => {
+test("case 3 — fresh owned project (no origin, repo absent): create empty, then push HEAD→main", async () => {
   const { gh, calls } = cli((j) => {
     if (j.startsWith("git remote get-url origin")) return fail("no origin"); // fresh
     if (j.startsWith("gh repo view 0xbeckett/balloons")) return fail("404"); // repoExists → no
     if (j.startsWith("gh repo create")) return ok("https://github.com/0xbeckett/balloons\n");
+    if (j.startsWith("git ls-files")) return ok(""); // no tracked scaffolding to strip
+    if (j.startsWith("git push")) return ok();
     return undefined;
   });
   const r = await gh.ensurePublished({ slug: "balloons", sourceDir: "/src", description: "d", ticket: "OPS-9" });
   expect(r.kind).toBe("pushed");
   expect(r.url).toContain("0xbeckett/balloons");
-  expect(calls.some((c) => c.startsWith("gh repo create"))).toBe(true);
+  // Repo created WITHOUT --source/--push (branch-name-agnostic), then HEAD pushed to `main` by name
+  // — so a worktree on `beckett/<ticket>` still yields a `main`-default repo, not a weirdly-named one.
+  const create = calls.find((c) => c.startsWith("gh repo create"))!;
+  expect(create).not.toContain("--push");
+  const push = calls.find((c) => c.startsWith("git push"))!;
+  expect(push).toContain("HEAD:refs/heads/main");
   expect(calls.some((c) => c.startsWith("gh pr create"))).toBe(false); // fresh project → no PR
 });
 

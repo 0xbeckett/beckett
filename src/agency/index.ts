@@ -544,14 +544,16 @@ export class GitHubCli implements GitHubClient {
       return { nameWithOwner: repo, url: `${this.gitHost()}/${repo}`, kind: "pushed" };
     }
 
-    // Case 3 — brand-new project we own: create + push HEAD→main in one shot.
+    // Case 3 — brand-new project we own: create the empty repo, then push the source tree's HEAD to
+    // an explicit `main`. Under v3.2 worktrees HEAD rides the ticket's branch (`beckett/<ticket>`),
+    // so we must name the remote branch `main` rather than let `gh repo create --push` make the
+    // local branch name the repo's default. gitPush also strips any tracked scaffolding first.
     const created = await this.createRepo({
       name: p.slug,
       private: false, // project repos are public so links Beckett hands out actually resolve
       description: p.description,
-      sourceDir: p.sourceDir,
-      push: true,
     });
+    await this.gitPush(p.sourceDir, created.nameWithOwner, "HEAD", "main");
     return { ...created, kind: "pushed" };
   }
 
