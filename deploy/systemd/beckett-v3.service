@@ -1,0 +1,25 @@
+[Unit]
+Description=Beckett v3 — Plane ticket-queue (Opus concierge + poller + dispatcher)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/beckett
+ExecStart=/usr/local/bin/bun src/shell/v3-main.ts
+# Always come back — a crash, an OOM kill, or a clean-looking exit all mean the coworker is
+# offline until something restarts it. Crash recovery (issue #20) makes restarts safe.
+Restart=always
+RestartSec=3
+# Pair with the dispatcher's graceful shutdown drain (20s budget): give SIGTERM time to commit
+# WIP and persist the resume ledger before systemd escalates to SIGKILL.
+TimeoutStopSec=30
+# Secrets (DISCORD_TOKEN, PLANE_API_TOKEN, GITHUB_PAT, …) live in ~/.beckett/.env — loaded by
+# the daemon itself too, but exporting here keeps child tooling consistent. `-` = optional.
+EnvironmentFile=-%h/.beckett/.env
+# The concierge + claude/pi/codex workers must resolve on PATH (a systemd unit does not inherit
+# the interactive PATH). ~/.local/bin carries the modern node that pi needs (node >= 20).
+Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

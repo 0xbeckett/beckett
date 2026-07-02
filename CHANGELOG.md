@@ -1,5 +1,22 @@
 # Changelog
 
+## v3.4.0 — the reliability wave (issues #11–#29) (2026-07-01)
+
+One PR per GitHub issue, merged + deployed in sequence:
+
+- **#11** token-leak sweep (superseded-child sweep before auto-resume relaunch).
+- **#31** harness config truthfulness (`enabled` switches that are real, per-harness efforts, `extra_flags` validation).
+- **#20** crash recovery: worker ledger, boot orphan sweep, `--resume` session recovery.
+- **#17** harness preflight + failure taxonomy (auth/rate-limit/crash/timeout/spawn) + fallback chain.
+- **#19** shared `BaseDriver`/`OneShotDriver` lifecycle; centralized child-env strip + numstat.
+- **#21** worker supervision: stall ladder (nudge → abort+retry), `beckett ticket restaff`, artifact links on done pings, step-in skills.
+- **#22** never drop a steer: held comments fold into the next brief; honest nudge receipts end-to-end.
+- **#24** concierge session robustness: deploys resume the conversation, timeout isolation, reply-claim correlation, fast acks, crash-loop alarm.
+- **#25** turn economics: ack-first doctrine, one turn per poll batch, noise pre-filter, `concierge.effort` knob, leaner worker briefs.
+- **#27** right-sized review: Sonnet default at scaled effort with the diff inlined in the prompt.
+- **#28** deleted the retired v2 stack (−13.6k LOC, 76 dead type exports, ~24 dead config keys).
+- **#29** one-command versioned deploys: units in `deploy/systemd/`, `deploy/deploy-prod.sh`, one version source (package.json), clone-role contract.
+
 ## v3.3.1 — pi harness back from the dead (OPS-56) (2026-07-01)
 
 **Every pi dispatch was dying at launch** with `PiDriver: process exited (code 1) before session
