@@ -315,7 +315,9 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       checks.push({ name: "env: required keys", level: "ok", detail: `all ${inv.required.length} present` });
     }
     if (missingOpt.length > 0) {
-      checks.push({ name: "env: optional keys", level: "warn", detail: `not set: ${missingOpt.join(", ")}` });
+      // Informational, not a warn: optional means optional — a permanently-yellow line here
+      // would train people to ignore the warns that matter.
+      checks.push({ name: "env: optional keys", level: "skip", detail: `${missingOpt.length} not set (optional): ${missingOpt.join(", ")}` });
     }
     if (undocumented.length > 0) {
       checks.push({ name: "env: undocumented keys", level: "warn", detail: `in .env but not .env.example: ${undocumented.join(", ")} — document or remove` });
