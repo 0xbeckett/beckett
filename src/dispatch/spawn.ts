@@ -33,6 +33,7 @@ import type {
   Logger,
   ErrorClass,
   FileScope,
+  NudgeReceipt,
   ResourceEnvelope,
   Effort,
   SpawnSpec,
@@ -69,6 +70,12 @@ export interface TicketWorkerResult {
   timedOut: boolean;
   /** Failure taxonomy off the driver's finished event (issue #17); undefined on success. */
   errorClass?: ErrorClass;
+  /**
+   * Steering the driver buffered but never delivered to the model (issue #22) — drained at
+   * finish so the dispatcher can carry the user's words into the next stage instead of
+   * silently dropping them. Empty when everything was applied.
+   */
+  unappliedNudges: string[];
 }
 
 /** Callback fired exactly once when a worker reaches a terminal `finished` event. */
@@ -105,8 +112,13 @@ export interface TicketWorkerHandle {
 
   /** Live spend counters off the driver (turns/tools/tokens/$) — for finish-comment telemetry. */
   telemetry(): WorkerSpend;
-  /** STEERING: inject a mid-flight nudge (claude: next turn boundary; codex: queued). */
-  nudge(text: string): Promise<void>;
+  /**
+   * STEERING: inject a mid-flight nudge. Returns the driver's honest receipt (issue #22):
+   * `delivered` (acked live), `queued` (inside the harness, unacked), `will-restart` (one-shot —
+   * applies when the current run ends), or `dropped` (arrived after the terminal finish; the
+   * dispatcher must re-route it, not trust it).
+   */
+  nudge(text: string): Promise<NudgeReceipt["accepted"]>;
   /** CANCEL: hard-stop the harness process, retaining its session id. */
   abort(reason?: string): Promise<void>;
   /** Register a finish callback (task-spec name). Fired once with the terminal status. */
@@ -149,6 +161,11 @@ export interface SpawnWorkerArgs {
    * disturbs the worker. Omitted in tests / when no thread is wired.
    */
   onProgress?: (ev: WorkerEvent, ctx: { stage: string; workerId: string }) => void;
+  /**
+   * Steering comments that arrived while no worker was live (issue #22) — folded into the head
+   * of the worker's prompt so the user's words provably reach the first model turn.
+   */
+  steering?: string[];
   logger?: Logger;
 }
 
@@ -238,30 +255,41 @@ function diffHint(baseRef?: string): string {
  * carries the full ticket brief; re-sending it would duplicate context. Any pre-restart WIP was
  * committed by the shutdown drain / boot sweep, so the worker is pointed at git for ground truth.
  */
-function buildResumePrompt(ticket: Ticket, stage: string): string {
+function buildResumePrompt(ticket: Ticket, stage: string, steering?: string[]): string {
   return (
     `A daemon restart interrupted your previous session on ticket [${ticket.identifier}] ` +
     `${ticket.title}. This session RESUMES that one — your prior context is above, and any ` +
     `work-in-progress was committed to the repo. Check \`git status\` and \`git log\` to see ` +
     `exactly where you stopped, then continue the ${stage} work to completion. Finish with the ` +
-    `structured done-signal as originally instructed.`
+    `structured done-signal as originally instructed.${steeringBlock(steering)}`
   );
 }
 
+/**
+ * The steering block folded into a prompt when comments arrived while no worker was live
+ * (issue #22): the user's words must provably reach the first model turn, not vanish.
+ */
+function steeringBlock(steering: string[] | undefined): string {
+  if (!steering || steering.length === 0) return "";
+  const notes = steering.map((s) => `- ${s.trim()}`).join("\n");
+  return `\n\nSteering from the user since this ticket was filed (treat as part of the brief):\n${notes}`;
+}
+
 /** The initial task brief (first user turn) handed to the worker. */
-function buildPrompt(ticket: Ticket, stage: string, baseRef?: string): string {
+function buildPrompt(ticket: Ticket, stage: string, baseRef?: string, steering?: string[]): string {
   const header = `[${ticket.identifier}] ${ticket.title}`;
   const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";
   const crit = `\n\nAcceptance criteria:\n${criteriaBlock(ticket.criteria)}`;
+  const steer = steeringBlock(steering);
   if (stage === "review") {
     return (
-      `Review the implementation for ticket ${header}.${body}${crit}\n\n` +
+      `Review the implementation for ticket ${header}.${body}${crit}${steer}\n\n` +
       `The implementation is committed in the repo you're in (your cwd). Inspect it with ` +
       `${diffHint(baseRef)}, then verify it against EVERY acceptance criterion above. Do not ` +
       `modify the implementation — your job is to judge it.`
     );
   }
-  return `${header}${body}${crit}`;
+  return `${header}${body}${crit}${steer}`;
 }
 
 /** The businesslike worker persona + scope + criteria system append (stage-aware). */
@@ -377,7 +405,7 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
  * Exported under both names: `spawnWorker` (task spec) and `spawnTicketWorker` (docs/V3.md §6).
  */
 export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHandle> {
-  const { ticket, stage, harness, config, repoRoot, baseRef, resumeSessionId, onProgress } = args;
+  const { ticket, stage, harness, config, repoRoot, baseRef, resumeSessionId, onProgress, steering } = args;
   const logger = (args.logger ?? log.child("dispatch.spawn")).child(`ticket.${ticket.identifier}`);
 
   const id = mintWorkerId();
@@ -458,6 +486,9 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
           structured: e.structuredOutput,
           timedOut: e.subtype === "error_wall_clock_cap",
           errorClass: e.errorClass,
+          // Steering the driver buffered but never applied (issue #22) — the dispatcher carries
+          // it into the next stage rather than letting it die with this process.
+          unappliedNudges: driver.drainUnappliedNudges?.() ?? [],
         };
         state = e.status === "success" ? "review" : "failed";
         logger.info("ticket worker finished", { workerId: id, stage, status: e.status });
@@ -477,8 +508,8 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     const spec: SpawnSpec = {
       workerId: id,
       prompt: resumeSessionId
-        ? buildResumePrompt(ticket, stage)
-        : buildPrompt(ticket, stage, baseRef),
+        ? buildResumePrompt(ticket, stage, steering)
+        : buildPrompt(ticket, stage, baseRef, steering),
       systemAppend: buildSystemAppend(ticket, stage, baseRef),
       workspace,
       scope,
@@ -536,9 +567,10 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     telemetry(): WorkerSpend {
       return driver.getTelemetry();
     },
-    async nudge(text: string): Promise<void> {
+    async nudge(text: string): Promise<NudgeReceipt["accepted"]> {
       const receipt = await driver.sendNudge(text);
       logger.info("ticket worker nudged", { workerId: id, accepted: receipt.accepted, len: text.length });
+      return receipt.accepted; // honest receipt — the dispatcher narrates anything but "delivered"
     },
     async abort(reason = "aborted"): Promise<void> {
       await driver.abort(reason);

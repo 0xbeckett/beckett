@@ -227,12 +227,17 @@ export class ClaudeDriver extends BaseDriver implements HarnessDriver {
    * user turn of the next resume (Spec 02 §4.5).
    */
   async sendNudge(msg: string): Promise<NudgeReceipt> {
-    const deliverable =
-      this.child !== null &&
-      !this.finished &&
-      this.workerState !== "paused" &&
-      !this.isTerminal();
+    // After the terminal finish nothing will ever replay a buffered nudge (v3 never resumes a
+    // finished worker) — report `dropped` honestly so the dispatcher re-routes the words
+    // instead of trusting a receipt for a delivery that cannot happen (issue #22).
+    if (this.finished || this.isTerminal()) {
+      this.log.warn("nudge arrived after finish — dropped (nothing will ever replay it)", {
+        state: this.workerState,
+      });
+      return { accepted: "dropped", at: Date.now() };
+    }
 
+    const deliverable = this.child !== null && this.workerState !== "paused";
     if (!deliverable) {
       this.bufferedNudges.push(msg);
       this.log.info("nudge buffered (worker not live)", { state: this.workerState });
@@ -695,6 +700,14 @@ export class ClaudeDriver extends BaseDriver implements HarnessDriver {
     const pending = this.bufferedNudges.splice(0, this.bufferedNudges.length);
     for (const msg of pending) this.writeUserLine(msg);
     this.log.info("flushed buffered nudges", { count: pending.length });
+  }
+
+  /**
+   * Steering buffered while paused/dead that no resume ever replayed (issue #22) — v3 never
+   * calls resume() on a finished claude worker, so without this drain those words vanish.
+   */
+  drainUnappliedNudges(): string[] {
+    return this.bufferedNudges.splice(0, this.bufferedNudges.length);
   }
 
   private matchNudgeEcho(text: string): void {

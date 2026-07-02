@@ -18,6 +18,7 @@ let spawnCalls: {
   harness: HarnessSpec;
   baseRef: string;
   resumeSessionId?: string;
+  steering?: string[];
 }[] = [];
 let created: any[] = [];
 let counter = 0;
@@ -52,8 +53,10 @@ function makeHandle(ticket: Ticket, stage: string, harness = "claude") {
     nudges: [] as string[],
     aborted: false,
     reaped: false,
+    nudgeReceipt: "delivered" as string, // tests override to simulate queued/will-restart/dropped
     async nudge(t: string) {
       h.nudges.push(t);
+      return h.nudgeReceipt;
     },
     async abort() {
       h.aborted = true;
@@ -85,8 +88,9 @@ function makeHandle(ticket: Ticket, stage: string, harness = "claude") {
       structured: unknown = null,
       timedOut = false,
       errorClass?: string,
+      unappliedNudges: string[] = [],
     ) {
-      result = { status, summary, structured, timedOut, errorClass };
+      result = { status, summary, structured, timedOut, errorClass, unappliedNudges };
       state = status === "success" ? "review" : "failed";
       for (const cb of doneCbs) cb(status, summary);
     },
@@ -102,6 +106,7 @@ const fakeSpawn = async (args: any) => {
     harness: args.harness,
     baseRef: args.baseRef,
     resumeSessionId: args.resumeSessionId,
+    steering: args.steering,
   });
   if (args.resumeSessionId && failNextResumeSpawn) {
     failNextResumeSpawn = false;
@@ -708,6 +713,101 @@ describe("restaff lever (issue #21)", () => {
     const ticket = makeTicket({ state: "done" });
     client.board.push(ticket);
     await expect(d.restaff(ticket.id)).rejects.toThrow(/move it to in_progress/);
+  });
+});
+
+describe("never drop a steer (issue #22)", () => {
+  test("a comment with no live worker is held and folded into the next worker's brief", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ state: "todo" });
+    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "actually cap it at 10s", createdAt: "now" };
+    await d.handle({ kind: "comment_added", ticket, comment });
+    expect(client.comments.at(-1)!.body).toContain("holding this comment");
+
+    await d.handle(stateChanged({ ...ticket, state: "in_progress" }, "in_progress"));
+    await tick();
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]!.steering).toEqual(["actually cap it at 10s"]);
+  });
+
+  test("a comment during the finish window (worker has a result) is held for the next stage", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ casting: { review: { harness: "claude" } } });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "did it", doneSignal("complete"));
+    // Comment lands while the finish is being processed (handle still registered, result set):
+    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "also add logging", createdAt: "now" };
+    await d.handle({ kind: "comment_added", ticket, comment });
+    await tick();
+    await tick();
+
+    expect(created[0].nudges).toHaveLength(0); // never trusted to a finished worker
+    // …and the reviewer spawn (or next stage) carries the steer in its brief.
+    const review = spawnCalls.find((c) => c.stage === "review");
+    if (review) {
+      expect(review.steering).toEqual(["also add logging"]);
+    } else {
+      // finish raced ahead of the comment: the steer must still be held, not dropped
+      expect(client.comments.some((c) => c.body.includes("holding this comment"))).toBe(true);
+    }
+  });
+
+  test("a dropped nudge receipt re-routes the steer instead of trusting it", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].nudgeReceipt = "dropped";
+    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "use bun not npm", createdAt: "now" };
+    await d.handle({ kind: "comment_added", ticket, comment });
+
+    expect(client.comments.at(-1)!.body).toContain("already finished");
+    // Held: the next spawn for this ticket folds it in.
+    created[0].finish("error", "crashed");
+    await tick();
+    await tick();
+    expect(spawnCalls).toHaveLength(2);
+    expect(spawnCalls[1]!.steering).toEqual(["use bun not npm"]);
+  });
+
+  test("a will-restart receipt gets an honest one-line narration", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ casting: { implement: { harness: "codex" } } });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].nudgeReceipt = "will-restart";
+    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "prefer sqlite", createdAt: "now" };
+    await d.handle({ kind: "comment_added", ticket, comment });
+
+    expect(created[0].nudges).toEqual(["prefer sqlite"]);
+    expect(client.comments.at(-1)!.body).toContain("applies when its current run ends");
+  });
+
+  test("unapplied buffered nudges at finish are carried into the retry's brief", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("error", "crashed mid-run", null, false, undefined, ["please add tests"]);
+    await tick();
+    await tick();
+
+    expect(client.comments.some((c) => c.body.includes("finished before applying"))).toBe(true);
+    expect(spawnCalls).toHaveLength(2); // the retry
+    expect(spawnCalls[1]!.steering).toEqual(["please add tests"]);
+  });
+
+  test("steers orphaned by `done` are surfaced with a reopen hint, not dropped", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ state: "todo" });
+    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "tweak the copy", createdAt: "now" };
+    await d.handle({ kind: "comment_added", ticket, comment });
+
+    await d.handle(stateChanged({ ...ticket, state: "done" }, "done", "in_review"));
+    const last = client.comments.at(-1)!.body;
+    expect(last).toContain("tweak the copy");
+    expect(last).toContain("in_progress");
   });
 });
 

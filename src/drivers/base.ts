@@ -580,6 +580,11 @@ export abstract class OneShotDriver extends BaseDriver {
     return pending.length ? pending.join("\n\n") : DEFAULT_RESUME_PROMPT;
   }
 
+  /** Steering buffered for a resume that never happened (issue #22) — drained at finish. */
+  drainUnappliedNudges(): string[] {
+    return this.bufferedNudges.splice(0, this.bufferedNudges.length);
+  }
+
   /**
    * Re-attach a paused/finished worker. A still-live process means a run is in flight (one-shot
    * harnesses can't be steered mid-run) so resume just lifts the pause; buffered steering

@@ -204,6 +204,8 @@ interface DispatcherRuntimeState {
   reviewInfraRetries: Record<string, number>;
   /** Crash-recovery worker ledger, keyed by ticket id (absent in pre-ledger state files). */
   liveWorkers?: Record<string, LedgeredWorker>;
+  /** Steering comments awaiting the next worker, keyed by ticket id (issue #22 — restart-proof). */
+  pendingSteers?: Record<string, string[]>;
 }
 
 /** Outcome of {@link Dispatcher.publishProject} — gates whether a ticket may be marked done. */
@@ -268,6 +270,18 @@ function parseNumberRecord(value: unknown, field: string): Record<string, number
   return out;
 }
 
+/** Lenient pending-steer parse (issue #22): a malformed entry is dropped, never fatal. */
+function parseSteers(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string[]> = {};
+  for (const [ticketId, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!Array.isArray(raw)) continue;
+    const steers = raw.filter((s): s is string => typeof s === "string" && s.trim().length > 0);
+    if (steers.length) out[ticketId] = steers;
+  }
+  return out;
+}
+
 /** Lenient ledger parse: a malformed entry is dropped (recovery is best-effort), never fatal. */
 function parseLedger(value: unknown): Record<string, LedgeredWorker> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -304,6 +318,7 @@ function parseRuntimeState(value: unknown): DispatcherRuntimeState {
     implementRetries: parseNumberRecord(raw.implementRetries, "implementRetries"),
     reviewInfraRetries: parseNumberRecord(raw.reviewInfraRetries, "reviewInfraRetries"),
     liveWorkers: parseLedger(raw.liveWorkers),
+    pendingSteers: parseSteers(raw.pendingSteers),
   };
 }
 
@@ -367,6 +382,14 @@ export class Dispatcher {
   private recoveredWorkers: Record<string, LedgeredWorker> | null = null;
   /** Per-ticket resume hints produced by recovery: the next same-stage spawn resumes this session. */
   private readonly resumables = new Map<string, { stage: string; sessionId: string; harness: string }>();
+
+  /**
+   * Steering comments that arrived while no worker could take them (issue #22): pre-spawn, the
+   * spawn gap, queued at the cap, between rework cycles, or after a finish. Held per ticket,
+   * persisted (restart-proof), and consumed by the next spawn (folded into the prompt) or
+   * flushed as a nudge when they land mid-spawn-gap. NEVER silently dropped.
+   */
+  private readonly pendingSteers = new Map<string, string[]>();
   /** Orphan-sweep hook (injectable for tests); defaults to the ps-verified group kill in proc.ts. */
   private readonly sweepOrphan: (pid: number, expectedBin: string) => boolean;
   /** Harness health probe (issue #17); absent → every harness is presumed healthy. */
@@ -612,10 +635,22 @@ export class Dispatcher {
         if (this.workers.has(ticket.id)) return; // already has a reviewer
         this.spawnGuarded(ticket, "review");
         return;
-      case "done":
+      case "done": {
+        // Unapplied steering on a finished ticket must not vanish (issue #22): tell the human
+        // how to act on it before the ticket's memory is cleared.
+        const orphaned = this.takeSteers(ticket.id);
+        if (orphaned.length > 0) {
+          await this.postComment(
+            ticket.id,
+            `This ticket finished with ${orphaned.length === 1 ? "a steering comment" : `${orphaned.length} steering comments`} that no worker applied:\n` +
+              orphaned.map((s) => `> ${s.split("\n")[0]}`).join("\n") +
+              `\n\nMove the ticket back to **in_progress** (or file a follow-up) to act on ${orphaned.length === 1 ? "it" : "them"}.`,
+          );
+        }
         await this.reapTicket(ticket.id, "ticket done");
         await this.promoteDependents(ticket);
         return;
+      }
       case "cancelled":
         await this.onCancelled(ticket);
         return;
@@ -626,27 +661,92 @@ export class Dispatcher {
     }
   }
 
+  /**
+   * A human comment is a STEER and must never vanish (issue #22). Live worker → nudge it and
+   * narrate any receipt weaker than `delivered`. No live worker (pre-spawn, spawn gap, queued at
+   * the cap, between stages, finished-but-not-advanced) → hold it in {@link pendingSteers}
+   * (persisted) for the next worker, and say so on the ticket.
+   */
   private async onComment(ticket: Ticket, comment: PlaneComment): Promise<void> {
-    const handle = this.workers.get(ticket.id);
-    if (!handle) {
-      this.logger.debug("comment on ticket with no live worker — ignored", {
-        ticket: ticket.identifier,
-      });
-      return;
-    }
     if (this.isBeckettComment(comment)) {
       return; // our own summary/status comment — never self-nudge
     }
+    const handle = this.workers.get(ticket.id);
+
+    if (!handle || handle.result) {
+      if (ticket.state === "done" || ticket.state === "cancelled") {
+        // Shouldn't normally arrive (the poller stops collecting on terminal tickets), but if it
+        // does: never silence — tell the human how to act on it.
+        await this.postComment(
+          ticket.id,
+          `This comment landed after the ticket was **${ticket.state}**, so no worker will see ` +
+            `it. Move the ticket back to **in_progress** (or file a follow-up) to act on it.`,
+        );
+        return;
+      }
+      this.bufferSteer(ticket, comment.body);
+      await this.postComment(
+        ticket.id,
+        `No worker is live on this ticket right now, so I'm holding this comment and will hand ` +
+          `it to the next worker (it becomes part of their brief).`,
+      );
+      return;
+    }
+
     this.logger.info("steering live worker from comment", {
       ticket: ticket.identifier,
       workerId: handle.id,
       author: comment.author,
     });
-    await handle.nudge(comment.body);
+    const accepted = await handle.nudge(comment.body);
+    if (accepted === "delivered") return; // acked live — nothing to narrate
+
+    if (accepted === "dropped") {
+      // The worker finished between the poll and the nudge — carry the words to the next stage.
+      this.bufferSteer(ticket, comment.body);
+      await this.postComment(
+        ticket.id,
+        `The worker had already finished when this comment arrived, so I'm holding it and will ` +
+          `hand it to the next worker on this ticket.`,
+      );
+      return;
+    }
+    // `queued` (claude: inside the harness, unacked) / `will-restart` (one-shot: applies when
+    // the current run ends). Honest one-liner so the user's mental model stays true.
+    await this.postComment(
+      ticket.id,
+      accepted === "will-restart"
+        ? `Steering received. This worker's harness can't take mid-run input, so your note ` +
+          `applies when its current run ends (it restarts with your note as the next instruction).`
+        : `Steering received and queued — the worker picks it up at its next turn boundary.`,
+    );
+  }
+
+  /** Hold a steering comment for the next worker on this ticket (persisted, issue #22). */
+  private bufferSteer(ticket: Ticket, text: string): void {
+    const steers = this.pendingSteers.get(ticket.id) ?? [];
+    steers.push(text);
+    this.pendingSteers.set(ticket.id, steers);
+    this.persistRuntimeState();
+    this.logger.info("steering comment held for next worker", {
+      ticket: ticket.identifier,
+      pending: steers.length,
+    });
+  }
+
+  /** Drain the held steers for a ticket (consumed by the next spawn / flush). */
+  private takeSteers(ticketId: string): string[] {
+    const steers = this.pendingSteers.get(ticketId);
+    if (!steers || steers.length === 0) return [];
+    this.pendingSteers.delete(ticketId);
+    this.persistRuntimeState();
+    return steers;
   }
 
   private async onCancelled(ticket: Ticket): Promise<void> {
     const handle = this.workers.get(ticket.id);
+    // Cancelled = the work is not wanted; held steering dies with it (deliberate, issue #22).
+    if (this.pendingSteers.delete(ticket.id)) this.persistRuntimeState();
     this.clearTicketMemory(ticket.id);
     this.staffing.delete(ticket.id); // drop any mid-spawn reservation so doSpawn discards it
     this.dropPending(ticket.id);
@@ -952,6 +1052,9 @@ export class Dispatcher {
       ? (ev: WorkerEvent, ctx: { stage: string; workerId: string }) =>
           this.progress!.event(ticket.identifier, ev, ctx)
       : undefined;
+    // Held steering (issue #22): comments that arrived while no worker was live become part of
+    // this worker's brief — the user's words provably reach the first model turn.
+    const steering = this.takeSteers(ticket.id);
     const spawnArgs = {
       ticket,
       stage,
@@ -960,6 +1063,7 @@ export class Dispatcher {
       repoRoot,
       baseRef,
       onProgress,
+      steering,
       logger: this.logger,
     };
 
@@ -1024,6 +1128,22 @@ export class Dispatcher {
         this.logger.warn("stall handling failed", { ticket: ticket.identifier, err: String(err) }),
       );
     });
+    // Spawn-gap steers (issue #22): a comment that landed AFTER this worker's prompt was built
+    // but BEFORE it registered would otherwise wait for a next stage that may never come — flush
+    // it as a nudge now that the worker is live.
+    const lateSteers = this.takeSteers(ticket.id);
+    if (lateSteers.length > 0) {
+      void handle
+        .nudge(lateSteers.join("\n\n"))
+        .then((accepted) => {
+          if (accepted === "dropped") {
+            for (const s of lateSteers) this.bufferSteer(ticket, s);
+          }
+        })
+        .catch((err) =>
+          this.logger.warn("late-steer flush failed", { ticket: ticket.identifier, err: String(err) }),
+        );
+    }
     this.logger.info("worker spawned for ticket", {
       ticket: ticket.identifier,
       stage,
@@ -1348,6 +1468,17 @@ export class Dispatcher {
     // A cleanly-finished worker leaves the crash-recovery ledger: there is nothing to sweep or
     // resume for it (the NEXT stage gets a fresh session on purpose).
     if (this.liveLedger.delete(ticket.id)) this.persistRuntimeState();
+
+    // Steering the driver buffered but never applied (issue #22): carry the user's words into
+    // the next stage (retry / review / rework prompt) instead of letting them die here.
+    const unapplied = handle.result?.unappliedNudges ?? [];
+    if (unapplied.length > 0) {
+      for (const s of unapplied) this.bufferSteer(ticket, s);
+      await this.postComment(
+        ticket.id,
+        `The worker finished before applying ${unapplied.length === 1 ? "a steering note" : `${unapplied.length} steering notes`} — carrying ${unapplied.length === 1 ? "it" : "them"} into the next stage's brief.`,
+      );
+    }
 
     // Ride the spend counters into every downstream finish comment — the cheapest possible
     // fleet-spend observability (turns/tools/tokens/$ per stage, straight off the driver).
@@ -1973,6 +2104,13 @@ export class Dispatcher {
       if (parsed.liveWorkers && Object.keys(parsed.liveWorkers).length > 0) {
         this.recoveredWorkers = parsed.liveWorkers;
       }
+      // Steering that was awaiting a worker when the daemon went down (issue #22).
+      if (parsed.pendingSteers) {
+        this.pendingSteers.clear();
+        for (const [ticketId, steers] of Object.entries(parsed.pendingSteers)) {
+          this.pendingSteers.set(ticketId, steers);
+        }
+      }
       this.logger.info("loaded dispatcher runtime state", {
         path: this.runtimeStatePath,
         tickets: new Set([
@@ -1999,6 +2137,7 @@ export class Dispatcher {
       implementRetries: Object.fromEntries(this.implementRetries),
       reviewInfraRetries: Object.fromEntries(this.reviewInfraRetries),
       liveWorkers: Object.fromEntries(this.liveLedger),
+      pendingSteers: Object.fromEntries(this.pendingSteers),
     };
     try {
       mkdirSync(dirname(this.runtimeStatePath), { recursive: true });
