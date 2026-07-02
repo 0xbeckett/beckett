@@ -150,6 +150,16 @@ interface PendingTurn {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** A turn admitted by {@link ConciergeSession.ask} and awaiting its slot in the pump. */
+interface QueuedTurn {
+  message: TurnMessage;
+  meta?: unknown;
+  /** Priority turns (person mentions) jump ahead of queued update turns (issue #25). */
+  priority: boolean;
+  resolve: (reply: string) => void;
+  reject: (err: Error) => void;
+}
+
 export interface ConciergeSessionOptions {
   config: Config;
   logger?: Logger;
@@ -180,8 +190,13 @@ export class ConciergeSession {
 
   private child: Child | null = null;
   private pending: PendingTurn | null = null;
-  /** Serializes turns: each `ask` chains onto the previous so claude sees one input at a time. */
-  private queue: Promise<unknown> = Promise.resolve();
+  /**
+   * Serializes turns (claude sees one input at a time) as a REAL queue, not a promise chain, so
+   * person mentions can jump ahead of queued update turns (issue #25).
+   */
+  private readonly turnQueue: QueuedTurn[] = [];
+  /** True while the pump is draining {@link turnQueue} (at most one turn runs at a time). */
+  private pumping = false;
   private stopped = false;
   /** Latest summed input-token count (input + cache_creation + cache_read) — the live context size. */
   private lastContextTokens = 0;
@@ -207,8 +222,6 @@ export class ConciergeSession {
   private readonly onCrashLoop?: (info: { count: number; code: number }) => void;
 
   // ── turn bookkeeping (issue #24) ─────────────────────────────────────────────────────────
-  /** Turns queued or in flight — the Concierge's fast-ack signal. */
-  private inFlight = 0;
   /** Caller-supplied metadata of the CURRENTLY EXECUTING turn (reply-claim correlation). */
   private currentMeta: unknown = null;
 
@@ -253,26 +266,50 @@ export class ConciergeSession {
    * reply text once claude emits the turn's `result`. Single-flight via the internal queue.
    * `meta` identifies the caller's turn (e.g. the @mention being answered) — exposed via
    * {@link getCurrentMeta} while THIS turn executes, so a CLI reply can be correlated to the
-   * turn that issued it (issue #24 reply-claim race).
+   * turn that issued it (issue #24 reply-claim race). `opts.priority` turns (person mentions)
+   * jump ahead of queued update turns (issue #25) but never pre-empt a RUNNING turn.
    */
-  ask(message: TurnMessage, meta?: unknown): Promise<string> {
-    const run = this.queue.then(() => this.runTurn(message, meta));
-    this.inFlight += 1;
-    // Keep the chain alive even if a turn rejects, so one bad turn never wedges the session.
-    // Chain the rotation check AFTER the turn so any compaction lands at a turn boundary (never
-    // mid-turn) and the next ask() waits for the fresh session to be live.
-    this.queue = run
-      .catch(() => undefined)
-      .then(() => {
-        this.inFlight -= 1;
-        return this.maybeRotate();
-      });
-    return run;
+  ask(message: TurnMessage, meta?: unknown, opts?: { priority?: boolean }): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const entry: QueuedTurn = { message, meta, priority: opts?.priority === true, resolve, reject };
+      if (entry.priority) {
+        const firstNormal = this.turnQueue.findIndex((t) => !t.priority);
+        if (firstNormal >= 0) this.turnQueue.splice(firstNormal, 0, entry);
+        else this.turnQueue.push(entry);
+      } else {
+        this.turnQueue.push(entry);
+      }
+      void this.pump();
+    });
+  }
+
+  /**
+   * Drain the turn queue one turn at a time. Rotation (auto-compaction / persona reload) runs
+   * between turns — never mid-turn. A rejected turn never wedges the pump.
+   */
+  private async pump(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      while (this.turnQueue.length > 0) {
+        const entry = this.turnQueue.shift()!;
+        try {
+          entry.resolve(await this.runTurn(entry.message, entry.meta));
+        } catch (err) {
+          entry.reject(err instanceof Error ? err : new Error(String(err)));
+        }
+        await this.maybeRotate();
+      }
+    } finally {
+      this.pumping = false;
+    }
+    // An entry admitted in the teardown gap re-arms the pump (belt-and-suspenders).
+    if (this.turnQueue.length > 0) void this.pump();
   }
 
   /** Turns queued or in flight right now — the Concierge's fast-ack signal (issue #24). */
   queueDepth(): number {
-    return this.inFlight;
+    return this.turnQueue.length + (this.pumping ? 1 : 0);
   }
 
   /** The `meta` of the turn currently executing (null between turns). See {@link ask}. */
@@ -280,13 +317,16 @@ export class ConciergeSession {
     return this.currentMeta;
   }
 
-  /** Stop the session and reject any in-flight turn. */
+  /** Stop the session and reject any in-flight or queued turn. */
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.pending) {
       clearTimeout(this.pending.timer);
       this.pending.reject(new Error("concierge session stopped"));
       this.pending = null;
+    }
+    for (const entry of this.turnQueue.splice(0, this.turnQueue.length)) {
+      entry.reject(new Error("concierge session stopped"));
     }
     const child = this.child;
     this.child = null;
@@ -410,6 +450,9 @@ export class ConciergeSession {
     // init + the turn; a dead launch (bad bin/auth) surfaces as that first turn failing.
   }
 
+  // NOTE: the Concierge session stays MCP-free ON PURPOSE (OPS-43): every capability it needs is
+  // a `beckett …` CLI command through its Bash tool, which keeps the tool surface auditable and
+  // the context lean. Do not add `--mcp-config` here.
   private buildArgs(isResume: boolean): string[] {
     const args = [
       "-p",
@@ -424,6 +467,9 @@ export class ConciergeSession {
       "--model",
       this.model,
     ];
+    // Reasoning effort for the chat seat (issue #25) — a config knob; empty = CLI default.
+    const effort = this.config.concierge.effort?.trim();
+    if (effort) args.push("--effort", effort);
     if (isResume) args.push("--resume", this.sessionId);
     else args.push("--session-id", this.sessionId);
     // Compose the prompt FRESH at each launch (doctrine + the editable persona) so a reload or a
@@ -645,7 +691,23 @@ export class ConciergeSession {
   requestReload(): void {
     if (this.stopped) return;
     this.reloadPending = true;
-    this.queue = this.queue.then(() => this.maybeRotate());
+    // Idle → rotate promptly (nothing else will pump the boundary check). Busy → the pump's
+    // between-turns maybeRotate picks it up; rotation must never run mid-turn.
+    if (!this.pumping && this.turnQueue.length === 0) {
+      void this.rotateWhileIdle();
+    }
+  }
+
+  /** Run the boundary rotation check while the pump is idle (guards against a racing ask()). */
+  private async rotateWhileIdle(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      await this.maybeRotate();
+    } finally {
+      this.pumping = false;
+    }
+    if (this.turnQueue.length > 0) void this.pump();
   }
 
   /**
@@ -1103,21 +1165,34 @@ export class Concierge {
    */
   notify(events: PollEvent | PollEvent[]): void {
     const batch = Array.isArray(events) ? events : [events];
+    // Frame every worth-surfacing event first (`done` frames async — it fetches the artifact
+    // link, issue #21), then fold the whole poll batch into ONE session turn (issue #25): a DAG
+    // wave of milestones costs one full-context turn, not one per event.
+    const frames: Promise<string | null>[] = [];
+    const idents: string[] = [];
     for (const event of batch) {
-      // `done` is enriched asynchronously (it fetches the done comment for the artifact link,
-      // issue #21) — everything else frames synchronously.
       if (event.kind === "state_changed" && event.to === "done") {
-        void this.buildDoneUpdate(event.ticket)
-          .then((framed) => (framed ? this.askUpdate(framed, event.ticket.identifier) : undefined))
-          .catch((err) =>
-            this.log.warn("concierge done-update turn failed (ignored)", { err: String(err) }),
-          );
+        frames.push(
+          this.buildDoneUpdate(event.ticket).catch((err) => {
+            this.log.warn("done-update framing failed (skipped)", { err: String(err) });
+            return null;
+          }),
+        );
+        idents.push(event.ticket.identifier);
         continue;
       }
       const framed = this.frameUpdate(event);
       if (!framed) continue; // not worth surfacing, or no channel to route back to
-      this.askUpdate(framed, event.ticket.identifier);
+      frames.push(Promise.resolve(framed));
+      idents.push(event.ticket.identifier);
     }
+    if (frames.length === 0) return;
+    void Promise.all(frames).then((resolved) => {
+      const updates = resolved.filter((u): u is string => Boolean(u));
+      if (updates.length === 0) return;
+      const combined = updates.length === 1 ? updates[0]! : combineUpdateTurns(updates);
+      this.askUpdate(combined, idents.join(","));
+    });
   }
 
   /**
@@ -1174,6 +1249,15 @@ export class Concierge {
       // rework / error / human-handoff comments (which say "in_review" without the `→` arrow, or name
       // a human) still surface — those the person genuinely needs. Matches `dispatcher.ts` :490.
       if (isReviewAdvanceComment(body)) return null;
+      // Known-noise shapes (issue #25): a full Opus turn concluding "do nothing" is a waste —
+      // pre-filter cheaply, but log so nothing is invisibly dropped.
+      if (isRoutineNoiseComment(body)) {
+        this.log.debug("routine dispatcher comment not surfaced", {
+          ticket: event.ticket.identifier,
+          head: body.slice(0, 80),
+        });
+        return null;
+      }
       return this.updateTurn(event.ticket, body);
     }
     if (event.kind === "cancelled") {
@@ -1278,8 +1362,9 @@ export class Concierge {
 
     try {
       const turn = await this.buildTurn(m, content);
-      // The mention rides as the turn's meta so CLI replies correlate to THIS turn (issue #24).
-      const reply = await this.session.ask(turn, mention);
+      // The mention rides as the turn's meta so CLI replies correlate to THIS turn (issue #24);
+      // person turns take PRIORITY over queued ticket-update turns (issue #25).
+      const reply = await this.session.ask(turn, mention, { priority: true });
       keepTyping = false;
       clearInterval(typing);
       const text = reply.trim();
@@ -1578,6 +1663,21 @@ function stripCommentMarker(body: string): string {
 }
 
 /**
+ * Fold several already-framed update turns into ONE session turn (issue #25). Each frame carries
+ * its own ticket/channel/reply instructions; the wrapper tells the model to handle them together
+ * and group same-channel notes into one message.
+ */
+function combineUpdateTurns(updates: string[]): string {
+  const items = updates.map((u, i) => `--- update ${i + 1} of ${updates.length} ---\n${u}`).join("\n\n");
+  return (
+    `SYSTEM (automated ticket updates — ${updates.length} in this batch; NOT from a user):\n` +
+    `Handle ALL of the following in this one turn. Group updates for the same channel into a ` +
+    `single message; skip the routine ones; reply via \`beckett discord reply\` per the ` +
+    `instructions inside each update.\n\n${items}`
+  );
+}
+
+/**
  * Pull the artifact/PR link out of a dispatcher done comment (issue #21). The comment says
  * "Shipped: <url>" or "PR opened (needs your merge): <url>"; prefer a GitHub URL over any other
  * (a public site URL may also appear), else take the first URL. Null when the comment has none.
@@ -1594,6 +1694,18 @@ export function artifactLinkFrom(body: string): string | null {
  * the `→ in_review` transition ARROW so it never matches the rework-cap human-handoff ("leaving this
  * in in_review for a human", no arrow) or the "→ done"/"→ in_progress" comments, which must surface.
  */
+/**
+ * Routine dispatcher narration that never needs a person's attention (issue #25): a DAG node
+ * starting because its blockers cleared, and bounded retry heartbeats. The interesting outcomes
+ * (verdicts, parks, errors, stalls, done) still surface.
+ */
+export function isRoutineNoiseComment(body: string): boolean {
+  return (
+    /all blockers done.*starting now/i.test(body) ||
+    /retrying\s*(?:in \d+\w*\s*)?\(attempt \d+\/\d+\)/i.test(body)
+  );
+}
+
 function isReviewAdvanceComment(body: string): boolean {
   return /→\s*\*{0,2}in_review/i.test(body);
 }
