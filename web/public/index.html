@@ -173,8 +173,10 @@
   @keyframes bl{50%{opacity:0}}
 
   /* trust strip: a proper slab, so it reads over any part of the world */
-  .strip{padding:20px 26px;border:1px solid #000;background:rgba(18,17,28,.92);
-    box-shadow:var(--bevel),6px 6px 0 rgba(0,0,0,.38);
+  /* full-bleed: break out of .wrap's 1140px cap so the slab spans the whole viewport edge-to-edge */
+  .strip{width:100vw;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);
+    padding:20px 28px;border-top:1px solid #000;border-bottom:1px solid #000;background:rgba(18,17,28,.92);
+    box-shadow:var(--bevel),0 6px 0 rgba(0,0,0,.38);
     margin-top:18px;display:flex;align-items:center;gap:30px;flex-wrap:wrap;justify-content:center;
     font-family:var(--pix);font-size:10px;color:var(--faint)}
   .strip b{color:var(--dim);font-weight:400}
