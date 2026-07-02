@@ -22,8 +22,10 @@ git checkout main
 git pull --ff-only origin main
 bun install --frozen-lockfile
 bun x tsc --noEmit                      # never restart onto broken code
-# prune the dead per-worker branches the retired flow left behind (and any new strays)
-git for-each-ref --format='%(refname:short)' 'refs/heads/beckett/wk_*' | xargs -r git branch -D
+# prune the dead per-worker branches the retired flow left behind (and any new strays).
+# Two patterns because for-each-ref globs are pathname-aware: `*` stops at `/`, so nested
+# branches like beckett/wk_0012f678/OPS-11 need the `/**` form.
+git for-each-ref --format='%(refname:short)' 'refs/heads/beckett/wk_*' 'refs/heads/beckett/wk_*/**' | xargs -r git branch -D
 systemctl --user restart beckett-v3.service
 sleep 5
 systemctl --user is-active beckett-v3.service
