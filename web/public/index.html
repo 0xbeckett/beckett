@@ -463,23 +463,45 @@
       balloon:['#ff6a2c','#ffae8a','#ff3d7f','#ffd66b'],basket:'#7c5a44'
     };
 
-    // ── the valley floor: grass with a winding sand path + scattered flowers ──
-    function ground(nx){var v=[];for(var gx=-nx;gx<=nx;gx++){
+    // gentle rolling height field — layered value-noise, kept low so the meadow
+    // reads as soft hills, never spiky. Flattened along the sand path.
+    function gh(gx,gy){
+      var n=Math.sin(gx*.17)*1.25+Math.cos(gy*.21)*1.05
+           +Math.sin((gx*.6+gy*.85)*.5)*.85
+           +(rnd(gx>>1,gy>>1,23)-.5)*1.7;
+      var h=Math.round(n*.7+1.1);
+      return h<0?0:(h>3?3:h);
+    }
+    // ── the valley floor: hilly grass with a winding sand path + flowers ──
+    //  back/front widen the meadow far past the old gy:-5..5 strip so it reads
+    //  as a landscape; each column is filled solid to the floor (no gaps).
+    function ground(nx,back,front){var v=[];for(var gx=-nx;gx<=nx;gx++){
       var py=Math.round(Math.sin(gx*.14)*2.2);
-      for(var gy=-5;gy<=5;gy++){
+      for(var gy=-back;gy<=front;gy++){
         var isPath=(gy===py||gy===py+1);
-        v.push({gx:gx,gy:gy,gz:0,c:isPath?((gx+gy)&1?C.pathA:C.pathB):((gx+gy)&1?C.grass:C.grassD)});
-        v.push({gx:gx,gy:gy,gz:-1,c:C.dirt});v.push({gx:gx,gy:gy,gz:-2,c:C.dirtD});
-        if(!isPath&&rnd(gx,gy,42)>.986)v.push({gx:gx,gy:gy,gz:1,c:C.flower[(gx*7+gy*13&1023)%C.flower.length]});
+        // trails ride a flatter grade so the path stays readable over the hills
+        var top=isPath?Math.round((gh(gx,py)+gh(gx,py+1))/2*.5):gh(gx,gy);
+        v.push({gx:gx,gy:gy,gz:top,c:isPath?((gx+gy)&1?C.pathA:C.pathB):((gx+gy)&1?C.grass:C.grassD)});
+        for(var dz=top-1;dz>=-2;dz--)v.push({gx:gx,gy:gy,gz:dz,c:dz===top-1?C.dirt:C.dirtD});
+        if(!isPath&&rnd(gx,gy,42)>.986)v.push({gx:gx,gy:gy,gz:top+1,c:C.flower[(gx*7+gy*13&1023)%C.flower.length]});
       }}return v;}
 
     // ── snow-capped mountains with rougher, noise-eroded flanks ──
-    function mountain(base,h,seed){var v=[];for(var lvl=0;lvl<h;lvl++){var r=base-lvl;if(r<1)break;
+    function mountain(base,h,seed){var v=[];
+      // grassy apron: a foot of meadow + dirt the rocky flanks rise out of, so
+      // the base sits ON the terrain instead of floating on the sky plane.
+      var fr=base+2;
+      for(var gx=-fr;gx<=fr;gx++)for(var gy=-fr;gy<=fr;gy++){
+        var dd=gx*gx+gy*gy;if(dd>fr*fr+fr)continue;
+        v.push({gx:gx,gy:gy,gz:0,c:(gx+gy)&1?C.grass:C.grassD});
+        v.push({gx:gx,gy:gy,gz:-1,c:C.dirt});v.push({gx:gx,gy:gy,gz:-2,c:C.dirtD});
+      }
+      for(var lvl=0;lvl<h;lvl++){var r=base-lvl;if(r<1)break;
       for(var gx=-r;gx<=r;gx++)for(var gy=-r;gy<=r;gy++){
         var e=(rnd(gx+seed*31,gy-seed*17,lvl)*2.4-1.2)*r*.5;
         if(gx*gx+gy*gy<=r*r+r+e){
           var snow=lvl>=h-2||(lvl===h-3&&rnd(gx,gy,seed)>.55);
-          v.push({gx:gx,gy:gy,gz:lvl,c:snow?C.snow:(lvl&1?C.stone:C.stoneD)});
+          v.push({gx:gx,gy:gy,gz:lvl+1,c:snow?C.snow:(lvl&1?C.stone:C.stoneD)});
         }}}return v;}
 
     // ── flat drifting cloud slabs, Minecraft-style ──
@@ -582,10 +604,10 @@
       var mob=(window.innerWidth<720);
       // ── BACKGROUND: snow-capped range on the horizon + a distant balloon ──
       var cb=fit(bg),TWb=Math.max(6,W*0.0058);
-      cluster(cb,mountain(6,7,1),W*0.16,H*0.50,TWb);
-      cluster(cb,mountain(8,9,2),W*0.40,H*0.53,TWb);
-      cluster(cb,mountain(5,6,3),W*0.63,H*0.50,TWb);
-      cluster(cb,mountain(7,8,4),W*0.84,H*0.54,TWb);
+      cluster(cb,mountain(6,7,1),W*0.16,H*0.66,TWb);
+      cluster(cb,mountain(8,9,2),W*0.40,H*0.70,TWb);
+      cluster(cb,mountain(5,6,3),W*0.63,H*0.66,TWb);
+      cluster(cb,mountain(7,8,4),W*0.84,H*0.71,TWb);
       cluster(cb,balloon(),W*0.14,H*0.22,TWb*1.5);
 
       // ── CLOUDS: drawn twice across a double-width canvas so the drift wraps ──
@@ -596,28 +618,35 @@
 
       // ── MIDGROUND: the valley floor + everything that lives on it ──
       var cm=fit(mid),TWm=Math.max(9,Math.min(14,W*0.0105)),by=H*0.84;
-      cluster(cm,ground(Math.ceil(W/(2*TWm))+3),W*0.5,H*0.88,TWm);
-      cluster(cm,pine(),W*0.10,by-6,TWm*0.9);
-      cluster(cm,fence(5),W*0.155,by+2,TWm);
-      cluster(cm,cabin(),W*0.24,by,TWm);
+      var gox=W*0.5,goy=H*0.88,THm=TWm/2;
+      cluster(cm,ground(Math.ceil(W/(2*TWm))+3,15,6),gox,goy,TWm);
+      // terrain height (in ground-voxel units) under a given screen point, so
+      // props ride ON the hills instead of clipping into or floating over them.
+      function lift(px,py){var u=(px-gox)/TWm,w=(py-goy)/THm;
+        return gh(Math.round((u+w)/2),Math.round((w-u)/2))*TWm;}
+      function place(vox,px,py,tw){cluster(cm,vox,px,py-lift(px,py),tw);}
+      place(pine(),W*0.10,by-6,TWm*0.9);
+      place(fence(5),W*0.155,by+2,TWm);
+      var cabX=W*0.24,cabL=lift(cabX,by);
+      cluster(cm,cabin(),cabX,by-cabL,TWm);
       // lit windows + door spill (window cells sit at gx1/3,gy0,gz2 of the cabin)
-      glow(cm,W*0.24+TWm,by+TWm*.5-2*TWm,TWm*4.5,'255,214,107',.5);
-      glow(cm,W*0.24+3*TWm,by+TWm*1.5-2*TWm,TWm*4.5,'255,214,107',.5);
+      glow(cm,cabX+TWm,by-cabL+TWm*.5-2*TWm,TWm*4.5,'255,214,107',.5);
+      glow(cm,cabX+3*TWm,by-cabL+TWm*1.5-2*TWm,TWm*4.5,'255,214,107',.5);
       // chimney smoke, drifting up-right and fading
       [[1,1,7,.5],[2,1,8,.38],[2,0,9,.28],[3,0,10,.18]].forEach(function(s){
         cm.globalAlpha=s[3];
-        voxel(cm,W*0.24+(s[0]-s[1])*TWm,by+(s[0]+s[1])*TWm/2-s[2]*TWm,TWm*.8,C.smoke,1);
+        voxel(cm,cabX+(s[0]-s[1])*TWm,by-cabL+(s[0]+s[1])*TWm/2-s[2]*TWm,TWm*.8,C.smoke,1);
         cm.globalAlpha=1;});
-      cluster(cm,pine(),W*0.40,by+4,TWm*0.95);
-      cluster(cm,wheat(),W*0.465,by+14,TWm);
-      cluster(cm,pond(),W*0.56,by+18,TWm*1.05);
-      cluster(cm,cherry(),W*0.72,by-2,TWm);
-      cluster(cm,pine(),W*0.90,by+6,TWm*0.9);
+      place(pine(),W*0.40,by+4,TWm*0.95);
+      place(wheat(),W*0.465,by+14,TWm);
+      place(pond(),W*0.56,by+18,TWm*1.05);
+      place(cherry(),W*0.72,by-2,TWm);
+      place(pine(),W*0.90,by+6,TWm*0.9);
       // torches pacing the path — warm pools of light along the valley
       [[.34,10],[.63,6],[.82,12]].forEach(function(t){
-        var tx=W*t[0],ty=by+t[1];
-        cluster(cm,torch(),tx,ty,TWm*.85);
-        glow(cm,tx,ty-2.1*TWm*.85,TWm*5.5,'255,190,90',.32);});
+        var tx=W*t[0],ty=by+t[1],tl=lift(tx,ty);
+        cluster(cm,torch(),tx,ty-tl,TWm*.85);
+        glow(cm,tx,ty-tl-2.1*TWm*.85,TWm*5.5,'255,190,90',.32);});
 
       // ── NEAR BALLOON: its own little canvas so it can bob without re-rendering ──
       var bw=mob?150:240,bh=mob?200:320;
