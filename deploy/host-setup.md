@@ -30,7 +30,7 @@ beckett-self-provisions-tools principle: this is a baseline, Beckett installs wh
 
 | File | What |
 |---|---|
-| `~/.beckett/.env` | `DISCORD_TOKEN`, `PLANE_API_TOKEN`, `GITHUB_PAT`, … |
+| `~/.beckett/.env` | `DISCORD_TOKEN`, `PLANE_API_TOKEN`, `GITHUB_PAT`, `DISCORD_ALERT_WEBHOOK_URL`, … — the committed `.env.example` is the full inventory (`beckett doctor` flags drift) |
 | `~/.claude/.credentials.json` | claude subscription login |
 | `~/.codex/auth.json` | codex ChatGPT login |
 | `~/.pi/agent/auth.json` | pi OAuth login |
@@ -41,8 +41,18 @@ beckett-self-provisions-tools principle: this is a baseline, Beckett installs wh
 ```bash
 git clone https://github.com/0xbeckett/beckett.git ~/beckett
 cd ~/beckett && bun install --frozen-lockfile
-./deploy/install.sh        # links deploy/systemd/* into ~/.config/systemd/user, enables beckett-v3
+./deploy/install.sh        # links deploy/systemd/* (units + timers), enables beckett-v3 + heartbeat
 ```
+
+## Ops visibility (issue #30)
+
+- `bun src/cli/beckett.ts status --pretty` — what the live daemon is doing right now.
+- `bun src/cli/beckett.ts doctor` — would Beckett work right now (binaries under the daemon PATH,
+  live token probes, env drift, leaked worker processes)? Non-zero exit on any failing check.
+- Crash alerts: every unclean unit death posts to `DISCORD_ALERT_WEBHOOK_URL` via `deploy/alert.sh`
+  (rate-limited); a crash loop past the start limit fires `beckett-alert@<unit>` and stays down.
+- `beckett-heartbeat.timer` posts a weekly doctor report — silence in the alert channel means
+  healthy, not "alerting is broken too".
 
 ## 6. Deploys
 

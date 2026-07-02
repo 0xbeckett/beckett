@@ -237,3 +237,39 @@ describe("PlanePoller comment hot path", () => {
     expect(seen).toEqual([0]);
   });
 });
+
+describe("PlanePoller stats (issue #30)", () => {
+  test("successful polls stamp lastPollAt and keep failures at zero", async () => {
+    const client = new FakePlaneClient();
+    client.tickets = [ticket()];
+    let clock = 1_000;
+    const poller = new PlanePoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => clock });
+
+    expect(poller.stats()).toEqual({ lastPollAt: null, lastPollAgeMs: null, consecutiveFailures: 0 });
+    await poller.poll();
+    clock = 4_000;
+    expect(poller.stats()).toEqual({ lastPollAt: 1_000, lastPollAgeMs: 3_000, consecutiveFailures: 0 });
+  });
+
+  test("failed polls count consecutively and a success resets", async () => {
+    const client = new FakePlaneClient();
+    client.tickets = [ticket()];
+    let boom = true;
+    const listIssues = client.listIssues.bind(client);
+    client.listIssues = async () => {
+      if (boom) throw new Error("plane down");
+      return listIssues();
+    };
+    const poller = new PlanePoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+
+    await poller.poll();
+    await poller.poll();
+    expect(poller.stats().consecutiveFailures).toBe(2);
+    expect(poller.stats().lastPollAt).toBeNull();
+
+    boom = false;
+    await poller.poll();
+    expect(poller.stats().consecutiveFailures).toBe(0);
+    expect(poller.stats().lastPollAt).toBe(0);
+  });
+});

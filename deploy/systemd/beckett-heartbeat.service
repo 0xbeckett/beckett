@@ -1,0 +1,9 @@
+[Unit]
+Description=Beckett — weekly doctor heartbeat to Discord (issue #30)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/beckett
+EnvironmentFile=-%h/.beckett/.env
+Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/beckett/deploy/heartbeat.sh

@@ -378,6 +378,8 @@ export class Dispatcher {
   private readonly reviewInfraRetries = new Map<string, number>();
   /** Crash-recovery ledger for CURRENTLY live workers (persisted; see {@link LedgeredWorker}). */
   private readonly liveLedger = new Map<string, LedgeredWorker>();
+  /** Epoch ms of each live worker's last driver event — the "is it moving?" status signal (#30). */
+  private readonly lastEventAt = new Map<string, number>();
   /** Ledger entries loaded from a previous daemon's state file, consumed by {@link recoverFromCrash}. */
   private recoveredWorkers: Record<string, LedgeredWorker> | null = null;
   /** Per-ticket resume hints produced by recovery: the next same-stage spawn resumes this session. */
@@ -514,6 +516,41 @@ export class Dispatcher {
       workerId: null,
       stage: p.stage,
       repoRoot: p.repoRoot,
+      waitingFor: p.waitingFor,
+    }));
+    return [...live, ...queued];
+  }
+
+  /**
+   * The `beckett status` worker table (issue #30): one row per live worker with everything an
+   * operator needs to judge health at a glance — who is working on what, on which harness/pid,
+   * for how long, and how long since it last showed a sign of life.
+   */
+  statusWorkers(): Array<Record<string, unknown>> {
+    const now = Date.now();
+    // Self-pruning: entries for finished workers die here, so the map never grows unbounded.
+    for (const id of [...this.lastEventAt.keys()]) {
+      if (!this.workers.has(id)) this.lastEventAt.delete(id);
+    }
+    const live = [...this.workers.entries()].map(([ticketId, h]) => {
+      const ledger = this.liveLedger.get(ticketId);
+      const lastEvent = this.lastEventAt.get(ticketId);
+      return {
+        state: "live",
+        ticket: ledger?.identifier ?? this.liveTickets.get(ticketId)?.identifier ?? ticketId,
+        stage: h.stage,
+        harness: h.harness,
+        workerId: h.id,
+        pid: h.pid || null,
+        workerState: h.state,
+        elapsedSecs: ledger ? Math.round((now - ledger.spawnedAt) / 1000) : null,
+        lastEventAgeSecs: lastEvent === undefined ? null : Math.round((now - lastEvent) / 1000),
+      };
+    });
+    const queued = this.pending.map((p) => ({
+      state: "queued",
+      ticket: p.ticket.identifier,
+      stage: p.stage,
       waitingFor: p.waitingFor,
     }));
     return [...live, ...queued];
@@ -1048,10 +1085,11 @@ export class Dispatcher {
 
     // Mirror this worker's granular event stream into the ticket's Discord thread, keyed by the
     // stable ticket identifier so implement/review/rework workers all post to the one thread.
-    const onProgress = this.progress
-      ? (ev: WorkerEvent, ctx: { stage: string; workerId: string }) =>
-          this.progress!.event(ticket.identifier, ev, ctx)
-      : undefined;
+    const onProgress = (ev: WorkerEvent, ctx: { stage: string; workerId: string }) => {
+      // Status heartbeat (issue #30): `beckett status` reports how long each worker has been silent.
+      this.lastEventAt.set(ticket.id, Date.now());
+      this.progress?.event(ticket.identifier, ev, ctx);
+    };
     // Held steering (issue #22): comments that arrived while no worker was live become part of
     // this worker's brief — the user's words provably reach the first model turn.
     const steering = this.takeSteers(ticket.id);

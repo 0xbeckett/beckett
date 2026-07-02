@@ -240,6 +240,12 @@ export class PlaneClient {
   private readonly fetchImpl: typeof fetch;
   private readonly apiBase: string;
 
+  // Rolling health counters for the `beckett status` surface (issue #30).
+  private lastHttpStatus: number | null = null;
+  private lastOkAt: number | null = null;
+  private lastErrorAt: number | null = null;
+  private lastError: string | null = null;
+
   // Lazily-resolved + cached project + workflow-state lookups.
   private projectId: string | null = null;
   private projectIdentifier: string | null = null;
@@ -260,6 +266,19 @@ export class PlaneClient {
   }
 
   // ── public surface (docs/V3.md §3) ───────────────────────────────────────────────────
+
+  /**
+   * Rolling API health for `beckett status` (issue #30): the last HTTP status Plane returned,
+   * when the last successful call landed, and the last error seen. Purely observational.
+   */
+  stats(): { lastHttpStatus: number | null; lastOkAt: number | null; lastErrorAt: number | null; lastError: string | null } {
+    return {
+      lastHttpStatus: this.lastHttpStatus,
+      lastOkAt: this.lastOkAt,
+      lastErrorAt: this.lastErrorAt,
+      lastError: this.lastError,
+    };
+  }
 
   /** All issues in the configured project, hydrated to {@link Ticket}s. `updatedSince` narrows. */
   async listIssues(opts?: { updatedSince?: string }): Promise<Ticket[]> {
@@ -574,8 +593,9 @@ export class PlaneClient {
           body: payload,
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
+        this.lastHttpStatus = res.status;
 
-        if (res.status === 404) throw new PlaneApiError(404, `${method} ${url} → 404 not found`);
+        if (res.status === 404) throw this.recordError(new PlaneApiError(404, `${method} ${url} → 404 not found`));
         if (!res.ok) {
           let detail = "";
           try {
@@ -588,8 +608,9 @@ export class PlaneClient {
             await this.sleep(retryDelayMs(attempt, res.headers.get("Retry-After")));
             continue;
           }
-          throw err;
+          throw this.recordError(err);
         }
+        this.lastOkAt = Date.now();
         if (res.status === 204) return undefined;
         try {
           return await res.json();
@@ -602,10 +623,19 @@ export class PlaneClient {
           await this.sleep(retryDelayMs(attempt, null));
           continue;
         }
-        throw new PlaneApiError(0, `network error on ${method} ${url}: ${(err as Error).message}`);
+        throw this.recordError(
+          new PlaneApiError(0, `network error on ${method} ${url}: ${(err as Error).message}`),
+        );
       }
     }
-    throw new PlaneApiError(0, `network error on ${method} ${url}: exhausted retries`);
+    throw this.recordError(new PlaneApiError(0, `network error on ${method} ${url}: exhausted retries`));
+  }
+
+  /** Stamp the health counters with a terminal request failure; returns the error for `throw`. */
+  private recordError(err: PlaneApiError): PlaneApiError {
+    this.lastErrorAt = Date.now();
+    this.lastError = err.message.slice(0, 300);
+    return err;
   }
 
   private sleep(ms: number): Promise<void> {
