@@ -1,18 +1,14 @@
 {
   "name": "beckett",
   "version": "3.1.1",
-  "description": "Beckett — an agentic coworker reached in Discord. A harness over harnesses.",
+  "description": "Beckett \u2014 an agentic coworker reached in Discord. A harness over harnesses.",
   "type": "module",
   "private": true,
-  "module": "src/daemon.ts",
+  "module": "src/shell/v3-main.ts",
   "scripts": {
-    "shell": "bun src/shell/main.ts",
     "v3": "bun src/shell/v3-main.ts",
     "beckett": "bun src/cli/beckett.ts",
-    "daemon": "bun src/daemon.ts",
-    "build": "bun build src/shell/main.ts --target=bun --outdir=dist",
     "typecheck": "bun x tsc --noEmit",
-    "cli": "bun src/cli/index.ts",
     "test": "bun test"
   },
   "dependencies": {

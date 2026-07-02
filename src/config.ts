@@ -114,23 +114,10 @@ const ConfigSchema = z
         // can stay >1 and `beckett plan` DAG nodes run in parallel. The waste v3.1 removed was a
         // fresh worktree per STAGE, not isolation itself (Spec 12 §1.7 — "headroom of 2").
         max_workers: posInt.default(2),
-        queue_max: posInt.default(256),
-        per_task_soft: posInt.default(4),
-      })
-      .default({}),
-    retry: z
-      .object({
-        max_redispatch: nonNegInt.max(10).default(3),
-        backoff_base_ms: posInt.default(2000),
-        backoff_max_ms: posInt.default(300000),
       })
       .default({}),
     supervise: z
       .object({
-        drift_no_progress_turns: posInt.default(3),
-        repeated_tool_calls_n: posInt.default(4),
-        overrun_factor: z.number().positive().default(1.5),
-        checkin_default_s: posInt.default(600),
         // Generous, configurable backstop wall-clock cap (seconds) enforced by the per-worker
         // watchdog (drivers/proc.ts#hardCapSeconds). A runaway-worker safety net, NOT a normal work
         // limit — real tickets routinely need far more than the old tight per-effort caps. Floor of
@@ -141,13 +128,10 @@ const ConfigSchema = z
         // `stalled` signal (driver watchdog) and the dispatcher escalates nudge → abort+retry,
         // instead of burning a slot until the hard cap. 0 disables stall detection.
         worker_stall_s: nonNegInt.default(300),
-        tail_mode: z.enum(["stream", "disk", "stream+disk"]).default("stream+disk"),
       })
       .default({}),
     models: z
       .object({
-        front_door: z.string().min(1).default("claude-haiku-4-5"),
-        judgment: z.string().min(1).default("claude-opus-4-8"),
         // Default reviewer model (issue #27): Sonnet reads a diff against criteria extremely well
         // at a fraction of Opus cost/latency. Opus reviews remain one explicit cast away
         // (`review: {model: "claude-opus-4-8", effort: "xhigh"}`) for correctness-critical work.
@@ -246,45 +230,10 @@ const ConfigSchema = z
         socket: z.string().min(1).default("/home/beckett/.beckett/beckett.sock"),
       })
       .default({}),
-    discord: z
-      .object({
-        reply_channel_mode: z.literal("same").default("same"),
-        escalate_after_s: posInt.default(1800),
-        chattiness: z.enum(["sparse", "normal"]).default("sparse"),
-      })
-      .default({}),
     identity: z
       .object({
         github_user: z.string().default("0xbeckett"),
         gmail_address: z.string().default(""),
-        poll_inbox_s: nonNegInt.default(120),
-        auto_merge: z.boolean().default(false),
-      })
-      .default({}),
-    features: z
-      .object({
-        codex_failover: z.boolean().default(false),
-        // v0 seed: self-review only; the fresh adversarial reviewer is inert/unbuilt in v0
-        // (Spec 12 §1.7 — "turn on for v1 critical nodes").
-        fresh_reviewer: z.boolean().default(false),
-        learned_staffing: z.boolean().default(false),
-        multiplayer: z.boolean().default(false),
-        email_agency: z.boolean().default(false),
-        app_server_codex: z.boolean().default(false),
-      })
-      .default({}),
-    events: z
-      .object({
-        max_file_mb: posInt.default(256),
-        retain_days: posInt.default(90),
-        archive_retain_days: posInt.default(365),
-      })
-      .default({}),
-    retention: z
-      .object({
-        task_days: posInt.default(30),
-        db_backups: nonNegInt.default(3),
-        outcomes_max_rows: nonNegInt.default(0),
       })
       .default({}),
     // v3 — Plane ticket-queue (Spec v3). base_url/slugs locate the self-hosted Plane; the
