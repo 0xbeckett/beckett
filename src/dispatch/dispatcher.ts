@@ -2087,6 +2087,15 @@ export class Dispatcher {
     };
     try {
       await this.applyAdvance(op);
+      // A dispatcher-driven move INTO a running state must staff its own worker here (issue #33
+      // regression): applyAdvance's instant-milestone path (onAdvance → poller.observe) syncs the
+      // poll snapshot so the poller will NOT re-emit this transition, which means the
+      // `state_changed` echo that onStateChanged used to turn into a spawn never arrives. External
+      // / human / promoteDependents moves still flow client.setState → poller → onStateChanged, so
+      // those spawn as before; spawnGuarded's isStaffed dedup makes a double-trigger a no-op, and a
+      // still-held repo (finishing worker not yet reaped) just queues the spawn until pump().
+      if (state === "in_review") this.spawnGuarded(ticket, "review");
+      else if (state === "in_progress") this.spawnGuarded(ticket, "implement");
       return true;
     } catch (err) {
       if (this.advanceOutbox) {

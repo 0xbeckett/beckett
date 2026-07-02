@@ -461,6 +461,22 @@ describe("advance on finish", () => {
     expect(client.comments[0]!.body).toContain("one pass");
   });
 
+  test("issue #33 regression: a fresh-tier implement finish self-spawns the reviewer with no poll echo", async () => {
+    // The instant-milestone path (onAdvance → poller.observe) suppresses the state_changed echo the
+    // dispatcher once relied on to staff the reviewer. So a dispatcher-driven advance INTO in_review
+    // must self-spawn — here, with NO second stateChanged(in_review) event fired at all.
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket(); // default cast → fresh review tier
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "implemented");
+    await tick();
+    // The finish alone advanced the ticket to in_review AND launched the reviewer — no echo needed.
+    expect(client.setStateCalls).toContainEqual({ id: "tkt-1", state: "in_review" });
+    expect(spawnCalls).toHaveLength(2);
+    expect(spawnCalls.at(-1)).toMatchObject({ stage: "review" });
+  });
+
   test("done worker promotes unblocked dependents immediately, without waiting for a poller done event", async () => {
     const { d, client } = newDispatcher();
     const blocker = makeTicket({
@@ -925,11 +941,18 @@ describe("rework cap", () => {
   test("repeated review failures stop auto-rework after MAX_REWORK_CYCLES", async () => {
     const { d, client } = newDispatcher(5);
     const ticket = makeTicket({ state: "in_review" });
+    // One external kick into review; the dispatcher then drives the implement↔review rework cycle
+    // autonomously — each advance self-spawns the next stage (issue #33 regression fix), so we only
+    // finish workers here rather than re-firing in_review events.
+    await d.handle(stateChanged(ticket, "in_review"));
+    await tick();
     for (let i = 0; i < 3; i++) {
-      await d.handle(stateChanged(ticket, "in_review"));
+      created.at(-1)!.finish("success", "still broken", doneSignal("blocked"));
       await tick();
-      created[created.length - 1].finish("success", "still broken", doneSignal("blocked"));
-      await tick();
+      if (created.at(-1)!.stage === "implement") {
+        created.at(-1)!.finish("success", "reworked"); // rework worker lands → re-review self-spawns
+        await tick();
+      }
     }
     const backToProgress = client.setStateCalls.filter((c) => c.state === "in_progress");
     expect(backToProgress).toHaveLength(2); // cycles 1 & 2 rework; cycle 3 stops, awaiting a human
@@ -943,10 +966,14 @@ describe("rework cap", () => {
       const ticket = makeTicket({ state: "in_review" });
       const { d: before, client } = newDispatcher(5, { runtimeStatePath });
 
+      // Two full rework cycles on the first dispatcher; each advance self-spawns the next stage,
+      // so we alternate finishing the review (blocked) and the rework implement (success).
+      await before.handle(stateChanged(ticket, "in_review"));
+      await tick();
       for (let i = 0; i < 2; i++) {
-        await before.handle(stateChanged(ticket, "in_review"));
-        await tick();
         created.at(-1)!.finish("success", "still broken", doneSignal("blocked"));
+        await tick();
+        created.at(-1)!.finish("success", "reworked"); // implement rework lands → re-review spawns
         await tick();
       }
 
@@ -1003,7 +1030,10 @@ describe("crash recovery", () => {
     try {
       const runtimeStatePath = join(dir, "dispatcher-state.json");
       const { d } = newDispatcher(2, { runtimeStatePath });
-      const ticket = makeTicket();
+      // Self-review tier: a clean implement finish goes straight to done (no re-spawned reviewer),
+      // so the ledger returns to empty — the invariant this test guards. A fresh-tier ticket would
+      // instead self-spawn a reviewer on finish (issue #33 regression fix), leaving a live entry.
+      const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
       await d.handle(stateChanged(ticket, "in_progress"));
       await tick();
 
