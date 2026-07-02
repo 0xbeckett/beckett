@@ -1,5 +1,23 @@
 # Changelog
 
+## v3.6.2 — gh pr close + scaffolding can't leak into a PR (OPS-61, re-landed on current main) (2026-07-01)
+
+Two fixes to Beckett's own machinery.
+
+- **`beckett gh pr close <num> [--repo owner/name]`.** The `gh` wrapper gained a `pr close` verb
+  alongside create/merge/status/review, using the same authenticated `gh` path (`GH_TOKEN` per
+  invocation — no raw `gh` outside the wrapper). It checks the PR's state first so it errors
+  clearly on an already-merged/closed PR or a bad number, then closes it and prints the resulting
+  state. `--repo` is optional (defaults to the current repo, works on external repos when given).
+- **Internal scaffolding (`.beckett/`) can never reach a branch or PR.** The done-signal schema,
+  scope-guard settings, and worker state are guarded three independent ways so a worker's diff and
+  any PR it opens contain only real project work: (1) `info/exclude` in each worktree blocks
+  `git add -A`/`git add .`; (2) a shared `pre-commit` hook strips `.beckett/` from the index under
+  any committer — defeating even a forced `git add -f`; (3) an explicit strip in `commitWorktree`
+  and a strip-before-push in the publish path (`gitPush`), belt-and-suspenders behind the hook.
+  Beckett's own source checkout also `.gitignore`s it. This was the root cause of a junk PR (a
+  whole PR of bookkeeping that had to be redirected to a clean one).
+
 ## v3.6.1 — config & secrets contract (issue #34) (2026-07-01)
 
 - **`.env.example` is now the full inventory**: every key the code (or the Plane stack) consumes,
