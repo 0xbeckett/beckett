@@ -474,19 +474,32 @@
       var h=Math.round(n*.7+1.1);
       return h<0?0:(h>3?3:h);
     }
+    // foothills: the meadow climbs as it recedes (w=gx+gy, more negative =
+    // further back), so the valley gains vertical depth and the back rows
+    // read as foothills seated under the mountain range.
+    function rise(w){var r=Math.round((-w-10)*.45);return r<0?0:(r>5?5:r);}
     // ── the valley floor: hilly grass with a winding sand path + flowers ──
-    //  back/front widen the meadow far past the old gy:-5..5 strip so it reads
-    //  as a landscape; each column is filled solid to the floor (no gaps).
-    function ground(nx,back,front){var v=[];for(var gx=-nx;gx<=nx;gx++){
-      var py=Math.round(Math.sin(gx*.14)*2.2);
-      for(var gy=-back;gy<=front;gy++){
-        var isPath=(gy===py||gy===py+1);
+    //  generated in SCREEN-aligned coords (u=gx-gy runs across the screen,
+    //  w=gx+gy runs into the scene) so the meadow is a horizontal band that
+    //  spans the full viewport width — a gx/gy rectangle projects to a
+    //  diagonal strip in iso. Each column is filled solid to the floor.
+    function ground(nu,back,front){var v=[];
+      for(var w=-back;w<=front;w++)for(var u=-nu+((nu+w)&1);u<=nu;u+=2){
+        var gx=(u+w)/2,gy=(w-u)/2;
+        var pw=Math.round(Math.sin(u*.07)*2.5);
+        var isPath=(w===pw||w===pw+1);
         // trails ride a flatter grade so the path stays readable over the hills
-        var top=isPath?Math.round((gh(gx,py)+gh(gx,py+1))/2*.5):gh(gx,gy);
-        v.push({gx:gx,gy:gy,gz:top,c:isPath?((gx+gy)&1?C.pathA:C.pathB):((gx+gy)&1?C.grass:C.grassD)});
+        var top=isPath?Math.round(gh(Math.round((u+pw)/2),Math.round((pw-u)/2))*.5):gh(gx,gy)+rise(w);
+        // the highest foothill rows break through as clumped rocky scree
+        var rocky=!isPath&&rise(w)>=5&&rnd(gx>>1,gy>>1,13)>.85;
+        v.push({gx:gx,gy:gy,gz:top,c:isPath?(w&1?C.pathA:C.pathB):rocky?(w&1?C.stone:C.stoneD):(w&1?C.grass:C.grassD)});
         for(var dz=top-1;dz>=-2;dz--)v.push({gx:gx,gy:gy,gz:dz,c:dz===top-1?C.dirt:C.dirtD});
-        if(!isPath&&rnd(gx,gy,42)>.986)v.push({gx:gx,gy:gy,gz:top+1,c:C.flower[(gx*7+gy*13&1023)%C.flower.length]});
-      }}return v;}
+        if(!isPath&&!rocky&&rnd(gx,gy,42)>.986)v.push({gx:gx,gy:gy,gz:top+1,c:C.flower[(gx*7+gy*13&1023)%C.flower.length]});
+        // sparse pines climbing the upper slopes, baked into the ground list
+        // so the painter's sort occludes them correctly
+        if(!isPath&&!rocky&&rise(w)>=3&&rnd(gx,gy,99)>.99)
+          pine().forEach(function(p){v.push({gx:gx+p.gx,gy:gy+p.gy,gz:top+1+p.gz,c:p.c});});
+      }return v;}
 
     // ── snow-capped mountains with rougher, noise-eroded flanks ──
     function mountain(base,h,seed){var v=[];
@@ -498,11 +511,13 @@
         v.push({gx:gx,gy:gy,gz:0,c:(gx+gy)&1?C.grass:C.grassD});
         v.push({gx:gx,gy:gy,gz:-1,c:C.dirt});v.push({gx:gx,gy:gy,gz:-2,c:C.dirtD});
       }
-      for(var lvl=0;lvl<h;lvl++){var r=base-lvl;if(r<1)break;
+      // steep taper (~.6 radius/level) so peaks climb well past the base
+      // radius and reach their snow line instead of breaking off early
+      for(var lvl=0;lvl<h;lvl++){var r=Math.round(base-lvl*.6);if(r<1)break;
       for(var gx=-r;gx<=r;gx++)for(var gy=-r;gy<=r;gy++){
         var e=(rnd(gx+seed*31,gy-seed*17,lvl)*2.4-1.2)*r*.5;
         if(gx*gx+gy*gy<=r*r+r+e){
-          var snow=lvl>=h-2||(lvl===h-3&&rnd(gx,gy,seed)>.55);
+          var snow=lvl>=h-4||(lvl===h-5&&rnd(gx,gy,seed)>.55);
           v.push({gx:gx,gy:gy,gz:lvl+1,c:snow?C.snow:(lvl&1?C.stone:C.stoneD)});
         }}}return v;}
 
@@ -605,12 +620,16 @@
     function render(){
       var mob=(window.innerWidth<720);
       // ── BACKGROUND: snow-capped range on the horizon + a distant balloon ──
-      var cb=fit(bg),TWb=Math.max(6,W*0.0058);
-      cluster(cb,mountain(6,7,1),W*0.16,H*0.66,TWb);
-      cluster(cb,mountain(8,9,2),W*0.40,H*0.70,TWb);
-      cluster(cb,mountain(5,6,3),W*0.63,H*0.66,TWb);
-      cluster(cb,mountain(7,8,4),W*0.84,H*0.71,TWb);
-      cluster(cb,balloon(),W*0.14,H*0.22,TWb*1.5);
+      // sized off both W and H (with a cap) so peaks clear the foothill line
+      // and genuinely tower over the valley on any aspect ratio
+      var cb=fit(bg),TWb=Math.min(16,Math.max(7,W*0.0085,H*0.012));
+      cluster(cb,mountain(9,13,1),W*0.13,H*0.57,TWb*0.95);
+      cluster(cb,mountain(12,18,2),W*0.36,H*0.60,TWb);
+      cluster(cb,mountain(8,11,3),W*0.58,H*0.56,TWb*0.85);
+      cluster(cb,mountain(6,9,6),W*0.71,H*0.55,TWb*0.8);
+      cluster(cb,mountain(11,16,4),W*0.84,H*0.59,TWb*0.95);
+      cluster(cb,mountain(7,10,5),W*1.0,H*0.56,TWb*0.8);
+      cluster(cb,balloon(),W*0.14,H*0.20,TWb*1.05);
 
       // ── CLOUDS: drawn twice across a double-width canvas so the drift wraps ──
       var cc=fit(cloud,1,2,.55),TWc=Math.max(7,W*0.007);
@@ -621,11 +640,15 @@
       // ── MIDGROUND: the valley floor + everything that lives on it ──
       var cm=fit(mid),TWm=Math.max(9,Math.min(14,W*0.0105)),by=H*0.84;
       var gox=W*0.5,goy=H*0.88,THm=TWm/2;
-      cluster(cm,ground(Math.ceil(W/(2*TWm))+3,15,6),gox,goy,TWm);
+      // band depth from screen geometry: back reaches up to ~H*0.67 (just under
+      // the mountain feet), front runs past the bottom edge of the viewport
+      cluster(cm,ground(Math.ceil(W/(2*TWm))+3,
+        Math.ceil((goy-H*0.67)/THm),Math.ceil((H-goy)/THm)+3),gox,goy,TWm);
       // terrain height (in ground-voxel units) under a given screen point, so
       // props ride ON the hills instead of clipping into or floating over them.
-      function lift(px,py){var u=(px-gox)/TWm,w=(py-goy)/THm;
-        return gh(Math.round((u+w)/2),Math.round((w-u)/2))*TWm;}
+      function lift(px,py){var u=(px-gox)/TWm,w=(py-goy)/THm,
+        gx=Math.round((u+w)/2),gy=Math.round((w-u)/2);
+        return (gh(gx,gy)+rise(gx+gy))*TWm;}
       function place(vox,px,py,tw){cluster(cm,vox,px,py-lift(px,py),tw);}
       place(pine(),W*0.10,by-6,TWm*0.9);
       place(fence(5),W*0.155,by+2,TWm);
