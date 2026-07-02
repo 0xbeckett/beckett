@@ -260,6 +260,10 @@ async function main(): Promise<void> {
         await gh.mergePR(repo, n, strategy);
         out({ merged: true, repo, number: n, strategy });
       }
+      if (action === "close") {
+        if (!n) fail("usage: beckett gh pr close <num> [--repo <owner/name>]");
+        out(await gh.closePR(repo, n));
+      }
       if (action === "status") {
         if (!repo || !n) fail("usage: beckett gh pr status <num> --repo <owner/name>");
         out({ repo, number: n, green: await gh.isGreen(repo, n) });
@@ -269,7 +273,7 @@ async function main(): Promise<void> {
         await gh.reviewPR(repo, n, { event: String(flags.event ?? "COMMENT") as ReviewParams["event"], body: String(flags.body ?? "") });
         out({ reviewed: true, repo, number: n });
       }
-      fail("usage: beckett gh pr create|merge|status|review <num> --repo <owner/name> ...");
+      fail("usage: beckett gh pr create|merge|close|status|review <num> --repo <owner/name> ...");
     }
 
     if (sub === "push") {
@@ -278,7 +282,7 @@ async function main(): Promise<void> {
       out({ pushed: true, repo: String(flags.repo), branch: String(flags.branch) });
     }
 
-    fail("usage: beckett gh repo create | pr create|merge|status|review | push");
+    fail("usage: beckett gh repo create | pr create|merge|close|status|review | push");
   }
 
   // ── dns (in-process: zone-scoped Cloudflare DNS, token from env) ──────────────────────────
