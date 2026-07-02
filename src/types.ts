@@ -1483,6 +1483,8 @@ export interface Config {
     model: string;
     /** Summed-input-token ceiling at which the Concierge session auto-compacts (rotates). */
     rotate_at_tokens: number;
+    /** Reasoning effort for the chat seat ("" = the claude CLI default; issue #25). */
+    effort: "" | "low" | "medium" | "high" | "xhigh";
   };
 }
 

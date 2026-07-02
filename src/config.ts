@@ -316,6 +316,9 @@ const ConfigSchema = z
         // to a fresh session seeded with a handoff summary (issue #5). Configurable so it can be
         // driven low in tests/harnesses to exercise a real rotation without burning ~190k tokens.
         rotate_at_tokens: z.number().int().positive().default(190_000),
+        // Reasoning effort for the chat seat (issue #25): acks/triage rarely need max reasoning.
+        // Empty = the claude CLI's own default. A knob, not a hardcode — the voice is the product.
+        effort: z.enum(["", "low", "medium", "high", "xhigh"]).default(""),
       })
       .default({}),
   })

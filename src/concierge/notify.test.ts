@@ -60,7 +60,7 @@ test("relays a dispatcher milestone comment as one turn carrying the right --cha
     ticket: ticket(),
     comment: dispatcherComment("Review found issues → back to **in_progress** for re-work."),
   });
-  await Promise.resolve();
+  await new Promise((r) => setTimeout(r, 0)); // notify frames + batches on a microtask (issue #25)
   expect(asks.length).toBe(1);
   expect(asks[0]).toContain(`beckett discord reply --channel ${CHAN}`);
   expect(asks[0]).toContain("in_progress");
@@ -79,7 +79,7 @@ test("does NOT ping for the intermediate `→ in_review` advance (avoids the dou
   expect(asks.length).toBe(0);
 });
 
-test("still surfaces a human-handoff that mentions in_review (no `→` arrow — keep it)", () => {
+test("still surfaces a human-handoff that mentions in_review (no `→` arrow — keep it)", async () => {
   const { concierge, asks } = harness();
   concierge.notify({
     kind: "comment_added",
@@ -89,6 +89,7 @@ test("still surfaces a human-handoff that mentions in_review (no `→` arrow —
         "this in **in_review** for a human to take over.",
     ),
   });
+  await new Promise((r) => setTimeout(r, 0));
   expect(asks.length).toBe(1);
   expect(asks[0]).toContain("human");
 });
@@ -132,9 +133,10 @@ test("the done ping carries the artifact link from the dispatcher's done comment
   expect(asks[0]).toContain("https://github.com/0xbeckett/healthz");
 });
 
-test("boot recovery (from: null) tells the user the ticket is being re-staffed (issue #21)", () => {
+test("boot recovery (from: null) tells the user the ticket is being re-staffed (issue #21)", async () => {
   const { concierge, asks } = harness();
   concierge.notify({ kind: "state_changed", ticket: ticket(), from: null, to: "in_progress" });
+  await new Promise((r) => setTimeout(r, 0));
   expect(asks.length).toBe(1);
   expect(asks[0]).toContain("restarted");
 });
@@ -168,9 +170,29 @@ test("a full lifecycle batch yields exactly one ping per real milestone", async 
     { kind: "state_changed", ticket: ticket({ state: "done" }), from: "in_review", to: "done" },
   ];
   concierge.notify(events);
-  await Promise.resolve();
-  // rework milestone + done = 2 pings; created/in_progress/human AND the `→ in_review` advance are
-  // all skipped (the advance is intermediate — see the double-message fix).
-  expect(asks.length).toBe(2);
-  expect(asks.every((a) => a.includes(`--channel ${CHAN}`))).toBe(true);
+  await new Promise((r) => setTimeout(r, 0));
+  // ONE combined turn for the whole batch (issue #25): recovery + rework + done fold together;
+  // created/human chatter AND the `→ in_review` advance are all skipped.
+  expect(asks.length).toBe(1);
+  expect(asks[0]).toContain("Review found issues");
+  expect(asks[0]!.toLowerCase()).toContain("done");
+  expect(asks[0]).toContain(`--channel ${CHAN}`);
+});
+
+test("routine noise (blockers-cleared start, retry heartbeat) never costs a turn (issue #25)", async () => {
+  const { concierge, asks } = harness();
+  concierge.notify({
+    kind: "comment_added",
+    ticket: ticket(),
+    comment: dispatcherComment("All blockers done (OPS-7) → starting now."),
+  });
+  concierge.notify({
+    kind: "comment_added",
+    ticket: ticket(),
+    comment: dispatcherComment(
+      "The worker stopped without finishing. I committed its work-in-progress and am retrying (attempt 2/3), continuing from the committed work.",
+    ),
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(0);
 });

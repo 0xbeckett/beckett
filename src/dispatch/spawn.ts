@@ -292,15 +292,26 @@ function buildPrompt(ticket: Ticket, stage: string, baseRef?: string, steering?:
   return `${header}${body}${crit}${steer}`;
 }
 
-/** The businesslike worker persona + scope + criteria system append (stage-aware). */
+/**
+ * True when the ticket's text suggests it needs a public URL/deploy — gates the ~300-token
+ * deploy-durability recipe so pure-code tickets don't carry it in every brief (issue #25).
+ */
+function ticketMentionsDeploy(ticket: Ticket): boolean {
+  const text = `${ticket.title}\n${ticket.body}\n${ticket.criteria.join("\n")}`;
+  return /deploy|url|site|website|host|serve|public|page|frontend|dashboard|http|tunnel|dns/i.test(text);
+}
+
+/**
+ * The businesslike worker persona + scope system append (stage-aware). The acceptance criteria
+ * live ONCE, in the task brief (the prompt) — duplicating them here doubled every worker's
+ * criteria tokens for nothing (issue #25).
+ */
 function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): string {
-  const crit = criteriaBlock(ticket.criteria);
   if (stage === "review") {
     return (
       `You are an autonomous REVIEWER. The implementation under review is committed in the repo ` +
       `at your cwd. Inspect it with ${diffHint(baseRef)} and judge it against the acceptance ` +
-      `criteria — do NOT edit the implementation.\n` +
-      `Acceptance criteria:\n${crit}\n` +
+      `criteria listed in your task brief — do NOT edit the implementation.\n` +
       `When finished, emit the structured done-signal matching the provided schema:\n` +
       `  - status "complete"  → the work PASSES review (all criteria met).\n` +
       `  - status "blocked"   → the work FAILS review; put the specific reasons in summary + ` +
@@ -309,17 +320,18 @@ function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): str
     );
   }
   const slug = projectSlug(ticket.project || ticket.identifier);
+  const deployNote = ticketMentionsDeploy(ticket) ? `${deployDurabilityNote(slug)}\n` : "";
   return (
     `You are an autonomous worker implementing a ticket. Your cwd is THIS PROJECT'S OWN git repo ` +
     `(\`~/Projects/${slug}\`) — it is yours to build in. Edit freely and commit your work; treat ` +
     `anything outside it (especially Beckett's own source) as read-only.\n` +
-    `Acceptance criteria (you are done when ALL hold):\n${crit}\n` +
+    `You are done when ALL the acceptance criteria in your task brief hold.\n` +
     `SELF-REVIEW before you finish: re-read your own diff and CHECK each acceptance criterion ` +
     `holds — there may be no separate reviewer after you. Run the check commands; fix what fails.\n` +
     `GITHUB: don't push anything yourself. When this ticket is done, Beckett automatically ` +
     `publishes this repo to \`0xbeckett/${slug}\` (a standalone PUBLIC repo, NOT tied to ` +
     `0xbeckett/beckett). Just commit your work in this checkout — the push is handled for you.\n` +
-    `${deployDurabilityNote(slug)}\n` +
+    `${deployNote}` +
     `When finished, emit the structured done-signal matching the provided schema (status ` +
     `"complete" when all criteria hold AND your self-review passed, "blocked"/"partial" ` +
     `otherwise with a reason).`

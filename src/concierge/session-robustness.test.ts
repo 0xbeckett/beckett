@@ -238,3 +238,29 @@ test("an update turn (no mention meta) can never claim a pending mention", async
   expect(res.ok).toBe(true);
   expect(posts[0]!.replyTo).toBeUndefined(); // plain post, no claim, no suppression
 });
+
+// ── issue #25: mention priority in the turn queue ─────────────────────────────────────────
+
+test("mention turns jump ahead of queued update turns but never pre-empt a running one", async () => {
+  tempBeckettDir();
+  const s = new ConciergeSession({ config, logger: quietLog }) as unknown as {
+    ask(m: unknown, meta?: unknown, opts?: { priority?: boolean }): Promise<string>;
+    runTurn(m: string): Promise<string>;
+    maybeRotate(): Promise<void>;
+  };
+  const order: string[] = [];
+  s.runTurn = async (m: string) => {
+    order.push(m);
+    await new Promise((r) => setTimeout(r, 5));
+    return m;
+  };
+  s.maybeRotate = async () => {};
+
+  const turns = [
+    s.ask("update-1"), // starts running immediately
+    s.ask("update-2"),
+    s.ask("mention", null, { priority: true }),
+  ];
+  await Promise.all(turns);
+  expect(order).toEqual(["update-1", "mention", "update-2"]);
+});
