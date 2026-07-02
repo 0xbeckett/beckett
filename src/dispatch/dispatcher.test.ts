@@ -1362,3 +1362,118 @@ describe("dependency promotion (beckett plan DAG)", () => {
     expect(client.setStateCalls.some((s) => s.id === "z")).toBe(false);
   });
 });
+
+describe("pipeline latency (issue #33)", () => {
+  test("a DAG dependent is promoted BEFORE publish — even when publish fails", async () => {
+    const client = new FakeClient();
+    const blocker = makeTicket({
+      id: "a",
+      identifier: "OPS-A",
+      casting: { implement: { harness: "claude", effort: "low" } },
+    });
+    const dependent = makeTicket({ id: "b", identifier: "OPS-B", state: "backlog", blockedBy: ["OPS-A"] });
+    client.board = [blocker, dependent];
+    const d = new Dispatcher({
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/tmp/repo",
+      publishRepo: async () => {
+        throw new Error("gh down");
+      },
+    });
+    await d.handle(stateChanged(blocker, "in_progress"));
+    await tick();
+    created[0]!.finish("success", "shipped it");
+    await tick();
+
+    // The dependent builds from the LOCAL checkout, so it starts even though the blocker's
+    // publish failed and parked it for a courier — and the promotion write lands FIRST.
+    expect(client.setStateCalls).toEqual([
+      { id: "b", state: "in_progress" },
+      { id: "a", state: "todo" },
+    ]);
+    expect(client.setStateCalls.some((c) => c.id === "a" && c.state === "done")).toBe(false);
+  });
+
+  test("advances fire onAdvance with the exact poller event shape (instant milestone path)", async () => {
+    const client = new FakeClient();
+    const events: PollEvent[] = [];
+    const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+    client.board = [ticket];
+    const d = new Dispatcher({
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/tmp/repo",
+      onAdvance: (e) => events.push(e),
+    });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0]!.finish("success", "shipped it");
+    await tick();
+
+    const done = events.find((e) => e.kind === "state_changed" && e.to === "done");
+    expect(done).toBeTruthy();
+    expect(done!.ticket.state).toBe("done");
+    expect(done!.ticket.identifier).toBe("OPS-1");
+  });
+
+  test("a throwing onAdvance listener never fails the advance itself", async () => {
+    const client = new FakeClient();
+    const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+    client.board = [ticket];
+    const d = new Dispatcher({
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/tmp/repo",
+      onAdvance: () => {
+        throw new Error("listener exploded");
+      },
+    });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0]!.finish("success", "shipped it");
+    await tick();
+    expect(client.setStateCalls).toContainEqual({ id: "tkt-1", state: "done" });
+  });
+
+  test("a slow un-acked nudge no longer blocks the poll batch", async () => {
+    const { d } = newDispatcher();
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    // Worst case pre-fix: the driver waits ACK_TIMEOUT_MS (30s) for a stdin echo. Simulate a
+    // nudge that never resolves at all — handle() must still return immediately.
+    created[0]!.nudge = () => new Promise<never>(() => {});
+    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "steer", createdAt: "now" };
+    const start = Date.now();
+    await d.handle({ kind: "comment_added", ticket, comment });
+    expect(Date.now() - start).toBeLessThan(1_000);
+  });
+
+  test("one throwing event does not take down the rest of the batch", async () => {
+    const { d } = newDispatcher();
+    const broken = makeTicket({ id: "bad", identifier: "OPS-BAD" });
+    const fine = makeTicket({ id: "ok", identifier: "OPS-OK" });
+    await d.handle([stateChanged(broken, "in_progress"), stateChanged(fine, "in_progress")]);
+    await tick();
+    expect(created).toHaveLength(2);
+
+    // The first cancel's worker abort blows up mid-handling…
+    created[0]!.abort = async () => {
+      throw new Error("abort exploded");
+    };
+    let okAborted = false;
+    const okAbort = created[1]!.abort;
+    created[1]!.abort = async (reason?: string) => {
+      okAborted = true;
+      return okAbort(reason);
+    };
+    await d.handle([
+      { kind: "cancelled", ticket: { ...broken, state: "cancelled" } },
+      { kind: "cancelled", ticket: { ...fine, state: "cancelled" } },
+    ]);
+    // …but the SECOND cancel still lands — pre-fix, the batch died with the first throw.
+    expect(okAborted).toBe(true);
+  });
+});

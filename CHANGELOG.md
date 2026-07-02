@@ -1,5 +1,26 @@
 # Changelog
 
+## v3.6.0 — pipeline latency + polling diet (issue #33) (2026-07-01)
+
+- **Polling diet**: each tick now sweeps the board with a slim `fields=id,updated_at` request
+  (server-side narrowing, verified honored) and hydrates ONLY tickets whose `updated_at` moved —
+  an unchanged 500-ticket board costs the same tick as a 20-ticket one. Comments are fetched
+  newest-first (`order_by=-created_at`) with early-stop pagination once the cursor is reached; the
+  60s comment backstop runs off the cached ticket, zero hydrations.
+- **Instant tick on filing**: `beckett ticket create --channel …` → control-bus ping → `poller.poke()`
+  → the dispatcher staffs the fresh ticket in well under a second instead of the 0–5s poll gap.
+- **Instant done ping**: dispatcher advances now feed the same PollEvent shape straight into
+  `concierge.notify` (and sync the poller snapshot so nothing double-pings) — a finish reaches
+  Discord at write time, not ≤5s later.
+- **DAG promotion no longer waits for GitHub**: dependents (which build from the local checkout)
+  are promoted before the 2–8s publish — and even when publish fails and the ticket parks for a
+  courier. The `done` label stays publish-gated (the OPS-30 false-done fix holds).
+- **A stuck nudge can't freeze polling**: comment steers are delivered fire-and-forget; the
+  receipt narration (issue #22 semantics unchanged) runs async. Pre-fix, one un-echoed nudge
+  stalled ALL polling — including cancels — for up to 30s.
+- **Per-event isolation**: one throwing poll event no longer takes down the rest of its batch
+  (the poller's snapshot had already advanced, so those events were lost forever).
+
 ## v3.5.1 — doctrine coherence (issue #32) (2026-07-01)
 
 The loaded doctrine no longer contradicts itself, describes retired machinery, or promises

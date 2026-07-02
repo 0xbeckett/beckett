@@ -142,6 +142,9 @@ const PageSchema = z
   })
   .passthrough();
 
+/** The slim `fields=id,updated_at` row {@link PlaneClient.listIssueHeads} sweeps (issue #33). */
+const IssueHeadSchema = z.object({ id: z.string(), updated_at: z.string() }).passthrough();
+
 // =======================================================================================
 // HTML <-> text helpers (we own the round-trip for our own writes)
 // =======================================================================================
@@ -292,6 +295,21 @@ export class PlaneClient {
     return tickets;
   }
 
+  /**
+   * The polling diet's cheap sweep (issue #33): id + updated_at ONLY for every issue in the
+   * project, via Plane's server-side `fields=` narrowing (verified honored on this instance).
+   * No `description_html`, no zod ticket hydration, no cast parsing — the poller diffs these
+   * against its snapshot and pays {@link getIssue} only for tickets that actually changed.
+   */
+  async listIssueHeads(): Promise<Array<{ id: string; updatedAt: string }>> {
+    await this.bootstrap();
+    const raw = await this.fetchAllPages(this.issuesPath(), { fields: "id,updated_at" });
+    return raw.map((r) => {
+      const row = IssueHeadSchema.parse(r);
+      return { id: row.id, updatedAt: row.updated_at };
+    });
+  }
+
   /** One issue by Plane id, hydrated; `null` on 404. */
   async getIssue(id: string): Promise<Ticket | null> {
     await this.bootstrap();
@@ -343,6 +361,10 @@ export class PlaneClient {
   /**
    * Comments on an issue, oldest→newest. `since` (ISO) returns newer comments by default; pass
    * `{ inclusive: true }` when the caller tracks ids for comments sharing the cursor timestamp.
+   *
+   * Efficiency (issue #33): pages are requested NEWEST-first (`order_by=-created_at`, verified
+   * honored) and pagination stops as soon as a page reaches past `since` — a chatty 200-comment
+   * ticket costs one round trip for its one new comment, not the whole history every tick.
    */
   async listComments(
     ticketId: string,
@@ -352,6 +374,17 @@ export class PlaneClient {
     await this.bootstrap();
     const raw = await this.fetchAllPages(
       `${this.issuesPath()}${encodeURIComponent(ticketId)}/comments/`,
+      { order_by: "-created_at" },
+      since
+        ? (pageRows) =>
+            pageRows.some((r) => {
+              const createdAt = (r as { created_at?: unknown }).created_at;
+              // The page is newest-first: once any row is at/behind the cursor, older pages
+              // can't contain anything new. (`inclusive` callers dedupe ties by id, so rows AT
+              // the cursor must still be fetched — stop strictly BEHIND it.)
+              return typeof createdAt === "string" && createdAt < since;
+            })
+        : undefined,
     );
     let comments = raw
       .map((r) => this.hydrateComment(ticketId, r))
@@ -537,10 +570,15 @@ export class PlaneClient {
 
   // ── HTTP plumbing ──────────────────────────────────────────────────────────────────────
 
-  /** Walk Plane's cursor pagination, collecting every result row (bare-array tolerant). */
+  /**
+   * Walk Plane's cursor pagination, collecting every result row (bare-array tolerant). An
+   * optional `stopAfter` predicate, checked per collected page, ends the walk early — the
+   * listComments newest-first cursor stop (issue #33).
+   */
   private async fetchAllPages(
     path: string,
     query: Record<string, string> = {},
+    stopAfter?: (pageRows: unknown[]) => boolean,
   ): Promise<unknown[]> {
     const out: unknown[] = [];
     let cursor: string | undefined;
@@ -554,7 +592,10 @@ export class PlaneClient {
         break;
       }
       const page = PageSchema.parse(raw);
-      if (page.results) out.push(...page.results);
+      if (page.results) {
+        out.push(...page.results);
+        if (stopAfter?.(page.results)) break;
+      }
       cursor = page.next_page_results && page.next_cursor ? page.next_cursor : undefined;
       guard += 1;
     } while (cursor && guard < 50);

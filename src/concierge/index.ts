@@ -919,6 +919,12 @@ export class Concierge {
    */
   private statusProvider: (() => Record<string, unknown> | Promise<Record<string, unknown>>) | null = null;
   /**
+   * Fired on every `ticket.filed` bus ping (issue #33): v3-main wires this to `poller.poke()` so a
+   * freshly-filed `in_progress` ticket is staffed in well under a second instead of waiting out
+   * the 0–5s poll gap. Best-effort — filing never depends on it.
+   */
+  private ticketFiledListener: (() => void) | null = null;
+  /**
    * Plane read access for milestone enrichment (issue #21): the poller stops collecting comments
    * on terminal tickets, so the `done` ping fetches the dispatcher's done comment here to carry
    * the artifact/PR link. Optional — absent (tests), the ping falls back to the ticket URL only.
@@ -978,6 +984,11 @@ export class Concierge {
   /** Wire the daemon-wide status assembler (v3-main, issue #30). See {@link statusProvider}. */
   setStatusProvider(fn: NonNullable<Concierge["statusProvider"]>): void {
     this.statusProvider = fn;
+  }
+
+  /** Wire the instant-tick hook for freshly-filed tickets (v3-main, issue #33). See {@link ticketFiledListener}. */
+  setTicketFiledListener(fn: NonNullable<Concierge["ticketFiledListener"]>): void {
+    this.ticketFiledListener = fn;
   }
 
   /**
@@ -1128,6 +1139,12 @@ export class Concierge {
         return { ok: false, error: "ticket.filed needs both identifier and channelId" };
       }
       this.onTicketFiled(channelId, identifier, title);
+      // Instant tick (issue #33): the dispatcher staffs the fresh ticket now, not in ≤5s.
+      try {
+        this.ticketFiledListener?.();
+      } catch {
+        /* best-effort — filing never depends on the poke */
+      }
       return { ok: true, data: { tracked: true } };
     }
     if (req.cmd === "status") {

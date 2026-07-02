@@ -111,6 +111,13 @@ export interface DispatcherDeps {
    * in production (v3-main does); omitted in tests → every harness is presumed healthy.
    */
   preflight?: (harness: Harness) => Promise<{ ok: boolean; problems: string[] }>;
+  /**
+   * Fired the moment the dispatcher writes a state advance to Plane (issue #33), with the same
+   * {@link PollEvent} shape the poller would emit ≤5s later. v3-main routes it straight into
+   * `concierge.notify` (an instant done ping instead of a poll-gap-delayed one) AND into
+   * `poller.observe` (so the next tick doesn't re-emit the transition as a duplicate).
+   */
+  onAdvance?: (event: PollEvent) => void;
   logger?: Logger;
 }
 
@@ -337,6 +344,7 @@ export class Dispatcher {
     ticket?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   private readonly progress?: ProgressSink;
+  private readonly onAdvance?: (event: PollEvent) => void;
   private readonly logger: Logger;
   private readonly advanceOutbox?: AdvanceOutbox;
   private readonly runtimeStatePath?: string;
@@ -407,6 +415,7 @@ export class Dispatcher {
     this.resolveRepoRoot = deps.resolveRepoRoot;
     this.publishRepo = deps.publishRepo;
     this.progress = deps.progress;
+    this.onAdvance = deps.onAdvance;
     this.logger = deps.logger ?? log.child("dispatch.dispatcher");
     this.advanceOutbox = deps.advanceOutboxPath
       ? new AdvanceOutbox(deps.advanceOutboxPath, this.logger.child("advance-outbox"))
@@ -488,10 +497,20 @@ export class Dispatcher {
    */
   async handle(event: PollEvent | PollEvent[]): Promise<void> {
     await this.replayAdvances();
-    if (Array.isArray(event)) {
-      for (const e of event) await this.handleOne(e);
-    } else {
-      await this.handleOne(event);
+    const batch = Array.isArray(event) ? event : [event];
+    for (const e of batch) {
+      // Per-event isolation (issue #33): the poller's snapshot has already advanced past this
+      // batch, so an event that throws must not take the REST of the batch down with it — those
+      // events would never re-emit (a dropped cancel is the worst case).
+      try {
+        await this.handleOne(e);
+      } catch (err) {
+        this.logger.error("event handling failed — continuing with the rest of the batch", {
+          kind: e.kind,
+          ticket: e.ticket.identifier,
+          error: (err as Error).message,
+        });
+      }
     }
   }
 
@@ -735,28 +754,47 @@ export class Dispatcher {
       workerId: handle.id,
       author: comment.author,
     });
-    const accepted = await handle.nudge(comment.body);
-    if (accepted === "delivered") return; // acked live — nothing to narrate
+    // Fire-and-forget (issue #33): an un-echoed nudge waits up to 30s for its stdin ack, and the
+    // poll loop awaits handle() — awaiting here froze ALL polling (including cancels) for the
+    // duration. The receipt narration runs async; receipt semantics (issue #22) are unchanged.
+    void handle
+      .nudge(comment.body)
+      .then(async (accepted) => {
+        if (accepted === "delivered") return; // acked live — nothing to narrate
 
-    if (accepted === "dropped") {
-      // The worker finished between the poll and the nudge — carry the words to the next stage.
-      this.bufferSteer(ticket, comment.body);
-      await this.postComment(
-        ticket.id,
-        `The worker had already finished when this comment arrived, so I'm holding it and will ` +
-          `hand it to the next worker on this ticket.`,
-      );
-      return;
-    }
-    // `queued` (claude: inside the harness, unacked) / `will-restart` (one-shot: applies when
-    // the current run ends). Honest one-liner so the user's mental model stays true.
-    await this.postComment(
-      ticket.id,
-      accepted === "will-restart"
-        ? `Steering received. This worker's harness can't take mid-run input, so your note ` +
-          `applies when its current run ends (it restarts with your note as the next instruction).`
-        : `Steering received and queued — the worker picks it up at its next turn boundary.`,
-    );
+        if (accepted === "dropped") {
+          // The worker finished between the poll and the nudge — carry the words to the next stage.
+          this.bufferSteer(ticket, comment.body);
+          await this.postComment(
+            ticket.id,
+            `The worker had already finished when this comment arrived, so I'm holding it and will ` +
+              `hand it to the next worker on this ticket.`,
+          );
+          return;
+        }
+        // `queued` (claude: inside the harness, unacked) / `will-restart` (one-shot: applies when
+        // the current run ends). Honest one-liner so the user's mental model stays true.
+        await this.postComment(
+          ticket.id,
+          accepted === "will-restart"
+            ? `Steering received. This worker's harness can't take mid-run input, so your note ` +
+              `applies when its current run ends (it restarts with your note as the next instruction).`
+            : `Steering received and queued — the worker picks it up at its next turn boundary.`,
+        );
+      })
+      .catch(async (err) => {
+        // A nudge that ERRORS must still never vanish (issue #22): hold it for the next worker.
+        this.logger.warn("nudge failed — holding comment for the next worker", {
+          ticket: ticket.identifier,
+          error: (err as Error).message,
+        });
+        this.bufferSteer(ticket, comment.body);
+        await this.postComment(
+          ticket.id,
+          `Delivering this comment to the live worker failed, so I'm holding it and will hand it ` +
+            `to the next worker on this ticket.`,
+        ).catch(() => {});
+      });
   }
 
   /** Hold a steering comment for the next worker on this ticket (persisted, issue #22). */
@@ -1940,6 +1978,11 @@ export class Dispatcher {
     messagePrefix: string,
     summary: string,
   ): Promise<boolean> {
+    // DAG promotion does NOT wait for GitHub (issue #33): dependents build from the LOCAL
+    // checkout (documented invariant above), so a 2–8s publish — or a failed one — must not
+    // stall the wave. Only the `done` LABEL stays publish-gated (the OPS-30 false-done fix).
+    await this.promoteDependents(ticket, { assumeDone: true });
+
     const pub = await this.publishProject(ticket);
     if (pub.status === "failed") {
       await this.advanceTicket(
@@ -1951,7 +1994,7 @@ export class Dispatcher {
           `it so no worker keeps burning tokens.\n\n${summary}`,
       );
       this.logger.warn("publish failed — parked ticket for courier", { ticket: ticket.identifier });
-      return false; // no setState(done), no promote — the work isn't shipped
+      return false; // no setState(done) — the work isn't shipped (dependents build locally)
     }
 
     // Honest wording: a PR still needs the human's merge; a direct push is actually shipped.
@@ -1961,6 +2004,9 @@ export class Dispatcher {
           ? `\n\nPR opened (needs your merge): ${pub.prUrl ?? pub.url}`
           : `\n\nShipped: ${pub.url}`
         : "";
+    // promoteDependents stays on the durable op too: promotion already ran above (the latency
+    // win), but it's idempotent (promoted dependents are in_progress → skipped), and keeping it
+    // on the outbox op means a crash-replayed done still promotes if the early pass was cut short.
     const advanced = await this.advanceTicket(ticket, "done", `${messagePrefix}${link}\n\n${summary}`, {
       promoteDependents: true,
     });
@@ -1976,7 +2022,7 @@ export class Dispatcher {
    * the board and recompute readiness rather than track edges in memory. A dependent with a still
    * unresolved blocker (or a cancelled one) is left held and logged — never force-started.
    */
-  private async promoteDependents(doneTicket: Ticket): Promise<void> {
+  private async promoteDependents(doneTicket: Ticket, opts: { assumeDone?: boolean } = {}): Promise<void> {
     let all: Ticket[];
     try {
       all = await this.client.listIssues();
@@ -1988,6 +2034,9 @@ export class Dispatcher {
       return;
     }
     const stateByIdent = new Map(all.map((t) => [t.identifier, t.state]));
+    // Finish-path reordering (issue #33): promotion now runs BEFORE the publish + done write, so
+    // the finishing ticket still reads as in_review on the board — treat it as done for readiness.
+    if (opts.assumeDone) stateByIdent.set(doneTicket.identifier, "done");
 
     for (const t of all) {
       if (!t.blockedBy.includes(doneTicket.identifier)) continue; // not waiting on this ticket
@@ -2061,6 +2110,15 @@ export class Dispatcher {
     }
     await this.client.setState(op.ticketId, state);
     await this.addMarkedComment(op.ticketId, op.comment);
+    // Instant milestone path (issue #33): hand the transition to v3-main NOW, in the exact shape
+    // the poller would emit ≤5s later. Best-effort — a throwing listener must not fail the advance.
+    if (this.onAdvance && current) {
+      try {
+        this.onAdvance({ kind: "state_changed", ticket: { ...current, state }, from: current.state, to: state });
+      } catch (err) {
+        this.logger.warn("onAdvance listener failed (ignored)", { error: (err as Error).message });
+      }
+    }
     if (op.promoteDependents) {
       let doneTicket = (await this.client.getIssue?.(op.ticketId)) ?? current;
       if (!doneTicket) {
