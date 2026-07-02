@@ -49,7 +49,7 @@ import type {
 } from "../plane/types.ts";
 import type { ProgressSink } from "../discord/progress.ts";
 import { log } from "../log.ts";
-import { commitWorktree, headSha, hasDiffSince, ensureProjectRepo } from "../worker/worktree.ts";
+import { commitWorktree, headSha, hasDiffSince, ensureProjectRepo, readDiff } from "../worker/worktree.ts";
 import { projectSlug } from "../plane/cast.ts";
 import { hardCapSeconds, sweepLedgeredWorker } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
@@ -1055,6 +1055,20 @@ export class Dispatcher {
     // Held steering (issue #22): comments that arrived while no worker was live become part of
     // this worker's brief — the user's words provably reach the first model turn.
     const steering = this.takeSteers(ticket.id);
+    // Review economics (issue #27): hand the reviewer the diff instead of making it burn its
+    // first N tool round trips rediscovering it. Best-effort — a git failure just means the
+    // reviewer falls back to running the diff itself, exactly as before.
+    let reviewDiff: string | undefined;
+    if (stage === "review") {
+      try {
+        reviewDiff = await readDiff(repoRoot, baseRef);
+      } catch (err) {
+        this.logger.warn("review diff pre-read failed (reviewer will diff itself)", {
+          ticket: ticket.identifier,
+          error: (err as Error).message,
+        });
+      }
+    }
     const spawnArgs = {
       ticket,
       stage,
@@ -1064,6 +1078,7 @@ export class Dispatcher {
       baseRef,
       onProgress,
       steering,
+      reviewDiff,
       logger: this.logger,
     };
 
@@ -1417,11 +1432,16 @@ export class Dispatcher {
    */
   private castFor(ticket: Ticket, stage: string): HarnessSpec {
     const explicit = ticket.casting[stage];
-    const spec: HarnessSpec =
+    let spec: HarnessSpec =
       explicit ??
       (stage === "review"
-        ? { harness: "claude", model: this.config.models.reviewer }
+        ? { harness: "claude", model: this.config.models.reviewer, effort: this.reviewEffortFor(ticket) }
         : { harness: "claude" });
+    // An explicit review cast that names no effort still gets the SCALED default (issue #27) —
+    // otherwise it silently falls through to the harness default (xhigh), the priciest tier.
+    if (stage === "review" && explicit && !explicit.effort) {
+      spec = { ...explicit, effort: this.reviewEffortFor(ticket) };
+    }
     if (spec.harness !== "claude" && this.config.harness?.[spec.harness]?.enabled === false) {
       this.logger.warn("cast harness is disabled in config — falling back to claude", {
         ticket: ticket.identifier,
@@ -1431,6 +1451,22 @@ export class Dispatcher {
       return { harness: "claude", effort: spec.effort };
     }
     return spec;
+  }
+
+  /**
+   * Review effort scaled from the implement cast (issue #27): a `low`-effort implement doesn't
+   * need an `xhigh` review. Defaults to `high` — the review's job is judging a diff against
+   * criteria, not re-deriving the implementation.
+   */
+  private reviewEffortFor(ticket: Ticket): NonNullable<HarnessSpec["effort"]> {
+    switch (ticket.casting.implement?.effort) {
+      case "low":
+        return "medium";
+      case "xhigh":
+        return "xhigh";
+      default:
+        return "high";
+    }
   }
 
   /**

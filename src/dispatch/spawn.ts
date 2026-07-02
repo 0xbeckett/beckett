@@ -166,6 +166,12 @@ export interface SpawnWorkerArgs {
    * of the worker's prompt so the user's words provably reach the first model turn.
    */
   steering?: string[];
+  /**
+   * The ticket's contribution diff, pre-computed by the dispatcher (issue #27): inlined into the
+   * review prompt (≤ ~30KB) or summarized as a changed-file list, so the reviewer's first token
+   * judges code instead of running git. Absent → the reviewer diffs for itself (old behavior).
+   */
+  reviewDiff?: string;
   logger?: Logger;
 }
 
@@ -275,17 +281,53 @@ function steeringBlock(steering: string[] | undefined): string {
   return `\n\nSteering from the user since this ticket was filed (treat as part of the brief):\n${notes}`;
 }
 
+/** Above this size the review prompt carries a changed-file summary instead of the raw diff. */
+const REVIEW_DIFF_INLINE_MAX = 30_000;
+
+/**
+ * The diff section of a review prompt (issue #27): the whole diff inline when it fits, else a
+ * changed-file list + instructions to read selectively. Empty string when no diff was pre-read
+ * (the reviewer then diffs for itself, as before).
+ */
+function reviewDiffBlock(diff: string | undefined, baseRef?: string): string {
+  const trimmed = diff?.trim();
+  if (!trimmed) return "";
+  if (trimmed.length <= REVIEW_DIFF_INLINE_MAX) {
+    return (
+      `\n\nThe FULL diff of the contribution is inlined below — judge from it directly; only ` +
+      `open files when you need surrounding context.\n\n\`\`\`diff\n${trimmed}\n\`\`\``
+    );
+  }
+  const files = [...trimmed.matchAll(/^diff --git a\/(\S+) /gm)].map((m) => m[1]!);
+  const list = files.length ? files.map((f) => `- ${f}`).join("\n") : "(could not list files)";
+  return (
+    `\n\nThe contribution is large (~${Math.round(trimmed.length / 1024)}KB across ` +
+    `${files.length || "several"} files) — too big to inline. Changed files:\n${list}\n` +
+    `Inspect selectively with ${diffHint(baseRef)}.`
+  );
+}
+
 /** The initial task brief (first user turn) handed to the worker. */
-function buildPrompt(ticket: Ticket, stage: string, baseRef?: string, steering?: string[]): string {
+function buildPrompt(
+  ticket: Ticket,
+  stage: string,
+  baseRef?: string,
+  steering?: string[],
+  reviewDiff?: string,
+): string {
   const header = `[${ticket.identifier}] ${ticket.title}`;
   const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";
   const crit = `\n\nAcceptance criteria:\n${criteriaBlock(ticket.criteria)}`;
   const steer = steeringBlock(steering);
   if (stage === "review") {
+    const diffBlock = reviewDiffBlock(reviewDiff, baseRef);
+    const inspect = diffBlock
+      ? "" // the diff (or its file list) is already in hand
+      : `The implementation is committed in the repo you're in (your cwd). Inspect it with ` +
+        `${diffHint(baseRef)}, then `;
     return (
-      `Review the implementation for ticket ${header}.${body}${crit}${steer}\n\n` +
-      `The implementation is committed in the repo you're in (your cwd). Inspect it with ` +
-      `${diffHint(baseRef)}, then verify it against EVERY acceptance criterion above. Do not ` +
+      `Review the implementation for ticket ${header}.${body}${crit}${steer}${diffBlock}\n\n` +
+      `${inspect}verify it against EVERY acceptance criterion above. Do not ` +
       `modify the implementation — your job is to judge it.`
     );
   }
@@ -417,7 +459,8 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
  * Exported under both names: `spawnWorker` (task spec) and `spawnTicketWorker` (docs/V3.md §6).
  */
 export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHandle> {
-  const { ticket, stage, harness, config, repoRoot, baseRef, resumeSessionId, onProgress, steering } = args;
+  const { ticket, stage, harness, config, repoRoot, baseRef, resumeSessionId, onProgress, steering, reviewDiff } =
+    args;
   const logger = (args.logger ?? log.child("dispatch.spawn")).child(`ticket.${ticket.identifier}`);
 
   const id = mintWorkerId();
@@ -521,7 +564,7 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
       workerId: id,
       prompt: resumeSessionId
         ? buildResumePrompt(ticket, stage, steering)
-        : buildPrompt(ticket, stage, baseRef, steering),
+        : buildPrompt(ticket, stage, baseRef, steering, reviewDiff),
       systemAppend: buildSystemAppend(ticket, stage, baseRef),
       workspace,
       scope,
