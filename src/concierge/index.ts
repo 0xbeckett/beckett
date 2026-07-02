@@ -100,6 +100,15 @@ const DEFAULT_ROTATE_AT_TOKENS = 190_000;
 /** What a turn resolves to when it times out — must never be seeded as a handoff "summary". */
 const TURN_TIMEOUT_FALLBACK = "Still chewing on that one — give me a sec and ask again.";
 
+/** After a FAILED rotation, wait this long before re-paying the (expensive) handoff turn. */
+const ROTATE_RETRY_COOLDOWN_MS = 10 * 60_000;
+
+/** Consecutive child crashes before the ops channel is alerted (bad auth/config, issue #24). */
+const CRASH_LOOP_THRESHOLD = 3;
+
+/** The immediate "you're seen" reply when a mention lands behind a busy session (issue #24). */
+const FAST_ACK_TEXT = "On it — I'm mid-task right now, you're next in line.";
+
 /** Prompt that asks the dying session for a compact handoff before we drop its transcript. */
 const HANDOFF_PROMPT =
   "SYSTEM: Your conversation context is about to be compacted and this transcript dropped. " +
@@ -148,6 +157,8 @@ export interface ConciergeSessionOptions {
   cwd?: string;
   /** Override the system prompt (defaults to the sibling `concierge.md`). */
   systemPrompt?: string;
+  /** Fired when the child has crashed {@link CRASH_LOOP_THRESHOLD}+ times in a row (issue #24). */
+  onCrashLoop?: (info: { count: number; code: number }) => void;
 }
 
 /**
@@ -179,6 +190,28 @@ export class ConciergeSession {
   /** Set by {@link requestReload} when the persona file changed; applied at the next turn boundary. */
   private reloadPending = false;
 
+  // ── restart persistence + crash handling (issue #24) ────────────────────────────────────
+  /** Whether the most recent launch used `--resume` (feeds the unresumable-session fallback). */
+  private lastLaunchWasResume = false;
+  /** Force the next (re)launch to start a FRESH session (set when a resume proved unresumable). */
+  private freshNextLaunch = false;
+  /** A handoff note to fold into the head of the next turn (fresh-session re-grounding). */
+  private seedPending: string | null = null;
+  /** The most recent rotation handoff note — persisted so a failed resume can still re-ground. */
+  private lastHandoff = "";
+  /** Consecutive unexpected child exits with no successful turn in between (crash-loop alarm). */
+  private consecutiveCrashes = 0;
+  /** When the last rotation attempt failed — gates the retry so we don't re-pay the handoff turn. */
+  private rotateFailedAt = 0;
+  /** Alerted when the child crash-loops (wired by the Concierge to the ops channel). */
+  private readonly onCrashLoop?: (info: { count: number; code: number }) => void;
+
+  // ── turn bookkeeping (issue #24) ─────────────────────────────────────────────────────────
+  /** Turns queued or in flight — the Concierge's fast-ack signal. */
+  private inFlight = 0;
+  /** Caller-supplied metadata of the CURRENTLY EXECUTING turn (reply-claim correlation). */
+  private currentMeta: unknown = null;
+
   // launch plumbing. NOTE: `claude -p --input-format stream-json` emits `system/init` only AFTER
   // the first stdin line arrives, so start() must NOT block waiting for init (that deadlocks —
   // claude waits for input, we'd wait for init). We track initSeen for diagnostics only.
@@ -191,25 +224,60 @@ export class ConciergeSession {
     this.staticPrompt = opts.systemPrompt;
     this.model = opts.config.concierge.model;
     this.rotateAtTokens = opts.config.concierge.rotate_at_tokens ?? DEFAULT_ROTATE_AT_TOKENS;
+    this.onCrashLoop = opts.onCrashLoop;
     this.sessionId = crypto.randomUUID();
   }
 
-  /** Launch the claude process and resolve once the first `system/init` arrives. */
+  /**
+   * Launch the claude process. A deploy restart must NOT wipe the conversation (issue #24): when
+   * a persisted session exists, resume it; if that resume proves unresumable the exit handler
+   * falls back to a fresh session seeded with the last handoff note.
+   */
   async start(): Promise<void> {
-    await this.launch(/*resume*/ false);
+    const persisted = this.loadSessionState();
+    if (persisted) {
+      this.sessionId = persisted.sessionId;
+      this.lastHandoff = persisted.handoff;
+      this.log.info("resuming persisted concierge session across restart", {
+        sessionId: this.sessionId,
+      });
+      await this.launch(/*resume*/ true);
+    } else {
+      await this.launch(/*resume*/ false);
+    }
+    this.persistSessionState();
   }
 
   /**
    * Run one chat turn. Writes the message as a user line and resolves with the assistant's
    * reply text once claude emits the turn's `result`. Single-flight via the internal queue.
+   * `meta` identifies the caller's turn (e.g. the @mention being answered) — exposed via
+   * {@link getCurrentMeta} while THIS turn executes, so a CLI reply can be correlated to the
+   * turn that issued it (issue #24 reply-claim race).
    */
-  ask(message: TurnMessage): Promise<string> {
-    const run = this.queue.then(() => this.runTurn(message));
+  ask(message: TurnMessage, meta?: unknown): Promise<string> {
+    const run = this.queue.then(() => this.runTurn(message, meta));
+    this.inFlight += 1;
     // Keep the chain alive even if a turn rejects, so one bad turn never wedges the session.
     // Chain the rotation check AFTER the turn so any compaction lands at a turn boundary (never
     // mid-turn) and the next ask() waits for the fresh session to be live.
-    this.queue = run.catch(() => undefined).then(() => this.maybeRotate());
+    this.queue = run
+      .catch(() => undefined)
+      .then(() => {
+        this.inFlight -= 1;
+        return this.maybeRotate();
+      });
     return run;
+  }
+
+  /** Turns queued or in flight right now — the Concierge's fast-ack signal (issue #24). */
+  queueDepth(): number {
+    return this.inFlight;
+  }
+
+  /** The `meta` of the turn currently executing (null between turns). See {@link ask}. */
+  getCurrentMeta(): unknown {
+    return this.currentMeta;
   }
 
   /** Stop the session and reject any in-flight turn. */
@@ -233,36 +301,81 @@ export class ConciergeSession {
 
   // ── internals ────────────────────────────────────────────────────────────────────────
 
-  private async runTurn(message: TurnMessage): Promise<string> {
+  private async runTurn(message: TurnMessage, meta?: unknown): Promise<string> {
     if (this.stopped) throw new Error("concierge session stopped");
-    if (!this.child) await this.launch(/*resume*/ true);
+    if (!this.child) await this.relaunch();
     const child = this.child;
     if (!child) throw new Error("concierge session has no live process");
+    this.currentMeta = meta ?? null;
+    const outbound = this.consumeSeed(message);
 
-    return new Promise<string>((resolve, reject) => {
+    const turn = new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending && this.pending.timer === timer) {
           const acc = this.pending.parts.join("\n\n").trim();
           this.pending = null;
+          // The turn is dead but the child may still be streaming into it. Treat the child as
+          // compromised (issue #24): kill it so late output can never contaminate the NEXT turn,
+          // and so a genuinely hung child doesn't turn every future turn into a timeout. The next
+          // ask() resumes the same session — context intact.
+          this.recycleChild("turn timeout");
           // Don't hang the human forever — return whatever we have (or a soft nudge).
           resolve(acc || TURN_TIMEOUT_FALLBACK);
         }
       }, TURN_TIMEOUT_MS);
       this.pending = { parts: [], resolve, reject, timer };
       try {
-        this.writeUserLine(message);
+        this.writeUserLine(outbound);
       } catch (err) {
         clearTimeout(timer);
         this.pending = null;
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
+    return turn.finally(() => {
+      if (this.currentMeta === meta) this.currentMeta = null;
+    });
+  }
+
+  /**
+   * Bring a dead child back mid-life: resume the same session (context intact), unless a failed
+   * boot-resume demoted us to a fresh session (then the seed note re-grounds the first turn).
+   */
+  private async relaunch(): Promise<void> {
+    const fresh = this.freshNextLaunch;
+    this.freshNextLaunch = false;
+    await this.launch(/*resume*/ !fresh);
+    this.persistSessionState();
+  }
+
+  /** Fold a pending handoff seed into the head of the next outbound turn (fresh-session boot). */
+  private consumeSeed(message: TurnMessage): TurnMessage {
+    const seed = this.seedPending;
+    if (!seed) return message;
+    this.seedPending = null;
+    const framed = seedFromHandoff(seed);
+    if (typeof message === "string") return `${framed}\n\n---\n\n${message}`;
+    return [{ type: "text", text: framed }, ...message];
+  }
+
+  /** Kill the current child (its session lives on) so the next ask() relaunches with --resume. */
+  private recycleChild(reason: string): void {
+    const old = this.child;
+    this.child = null;
+    if (!old) return;
+    this.log.warn("recycling concierge child process", { reason, sessionId: this.sessionId });
+    try {
+      old.kill("SIGTERM");
+    } catch {
+      /* already gone */
+    }
   }
 
   private async launch(isResume: boolean): Promise<void> {
     const bin = this.config.harness.claude.bin;
     const args = this.buildArgs(isResume);
     this.initSeen = false;
+    this.lastLaunchWasResume = isResume;
 
     this.log.info("spawning concierge claude session", {
       bin,
@@ -290,7 +403,7 @@ export class ConciergeSession {
       this.log.error("concierge stdout loop crashed", { err: String(err) }),
     );
     void this.drainStderr(child);
-    void child.exited.then((code) => this.onExit(code));
+    void child.exited.then((code) => this.onExit(code, child));
 
     // Do NOT await `system/init` here — this claude build emits it only after the first stdin
     // line, so the session is "ready" once spawned. The first ask() writes a line which triggers
@@ -355,17 +468,45 @@ export class ConciergeSession {
     sink.flush?.();
   }
 
-  private async onExit(code: number): Promise<void> {
+  private async onExit(code: number, exited: Child): Promise<void> {
     // During a rotation we kill the old child on purpose and immediately relaunch under a fresh
     // session id; let rotate() own the child handle so this exit is not mistaken for a crash.
     if (this.rotating) {
       this.log.debug("concierge process exited during rotation (expected)", { code });
       return;
     }
+    // A superseded child (timeout recycle, stop, already replaced) — its exit is not ours, and
+    // clearing `this.child` here would tear down the CURRENT process (issue #24).
+    if (this.child !== exited) {
+      this.log.debug("superseded concierge child exited (ignored)", { code });
+      return;
+    }
     this.child = null;
     if (this.stopped) return;
     this.log.warn("concierge claude process exited", { code, sessionId: this.sessionId });
-    // The current process is gone; the next ask() relaunches with --resume (context intact). Any
+
+    // Crash-loop visibility (issue #24): a repeating crash (bad auth, broken config) must reach
+    // the ops channel instead of surfacing only as per-message generic failures.
+    this.consecutiveCrashes += 1;
+    if (this.consecutiveCrashes >= CRASH_LOOP_THRESHOLD) {
+      this.onCrashLoop?.({ count: this.consecutiveCrashes, code });
+    }
+
+    // A `--resume` launch that died before ever initializing means the persisted session is
+    // unresumable (deleted transcript, harness drift). Fall back to a FRESH session seeded with
+    // the last handoff note — the user re-explains nothing (issue #24).
+    if (this.lastLaunchWasResume && !this.initSeen) {
+      this.sessionId = crypto.randomUUID();
+      this.freshNextLaunch = true;
+      if (this.lastHandoff) this.seedPending = this.lastHandoff;
+      this.persistSessionState();
+      this.log.warn("session resume failed before init — next launch starts fresh, seeded with the last handoff note", {
+        newSessionId: this.sessionId,
+        hasHandoff: Boolean(this.lastHandoff),
+      });
+    }
+
+    // The current process is gone; the next ask() relaunches (resume or seeded-fresh). Any
     // turn that was in flight is failed so the human gets an error rather than a hang.
     if (this.pending) {
       clearTimeout(this.pending.timer);
@@ -389,11 +530,11 @@ export class ConciergeSession {
         while ((nl = buf.indexOf("\n")) >= 0) {
           const line = buf.slice(0, nl);
           buf = buf.slice(nl + 1);
-          if (line.trim()) this.handleLine(line);
+          if (line.trim()) this.handleLine(line, child);
         }
       }
       const tail = buf.trim();
-      if (tail) this.handleLine(tail);
+      if (tail) this.handleLine(tail, child);
     } finally {
       reader.releaseLock();
     }
@@ -425,7 +566,10 @@ export class ConciergeSession {
    *   - `assistant`    → accumulate the turn's text blocks (the human-facing reply).
    *   - `result`       → the turn is complete; resolve the pending `ask` with the text.
    */
-  private handleLine(line: string): void {
+  private handleLine(line: string, from: Child): void {
+    // Output from a superseded child (a timed-out turn's process still draining) must never
+    // touch the CURRENT turn — this was the cross-turn contamination bug (issue #24).
+    if (from !== this.child) return;
     let obj: Record<string, unknown>;
     try {
       obj = JSON.parse(line) as Record<string, unknown>;
@@ -473,6 +617,7 @@ export class ConciergeSession {
   }
 
   private onResult(): void {
+    this.consecutiveCrashes = 0; // a completed turn = the child is healthy again
     const p = this.pending;
     if (!p) return;
     clearTimeout(p.timer);
@@ -511,12 +656,19 @@ export class ConciergeSession {
   private async maybeRotate(): Promise<void> {
     if (this.stopped || this.rotating) return;
     const reload = this.reloadPending;
-    if (!reload && this.lastContextTokens < this.rotateAtTokens) return;
+    if (!reload) {
+      if (this.lastContextTokens < this.rotateAtTokens) return;
+      // A rotation just failed — don't re-pay the expensive handoff turn after EVERY subsequent
+      // turn while over the ceiling; retry after a cooldown (issue #24).
+      if (Date.now() - this.rotateFailedAt < ROTATE_RETRY_COOLDOWN_MS) return;
+    }
     this.reloadPending = false;
     try {
       await this.rotate(reload ? "persona reload" : "context ceiling");
+      this.rotateFailedAt = 0;
     } catch (err) {
       // A failed rotation must not wedge the session — keep serving on the old session.
+      this.rotateFailedAt = Date.now();
       this.log.error("concierge rotation failed; staying on current session", {
         err: String(err),
         sessionId: this.sessionId,
@@ -578,7 +730,47 @@ export class ConciergeSession {
         this.log.warn("concierge re-grounding turn failed (continuing)", { err: String(err) });
       }
     }
+    // Persist the new identity + handoff so a deploy right after this rotation still resumes —
+    // and if the resume fails, the fresh session re-grounds from this same note (issue #24).
+    if (summary) this.lastHandoff = summary;
+    this.persistSessionState();
     this.log.info("concierge re-grounding complete", { reason, from: oldSession, to: this.sessionId });
+  }
+
+  // ── restart persistence (issue #24) ─────────────────────────────────────────────────────
+
+  /** Where the session identity + last handoff live (`~/.beckett/concierge-session.json`). */
+  private sessionStateFile(): string {
+    return join(buildPaths(this.config).beckettDir, "concierge-session.json");
+  }
+
+  private loadSessionState(): { sessionId: string; handoff: string } | null {
+    try {
+      const raw = readFileSync(this.sessionStateFile(), "utf8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof parsed.sessionId === "string" && parsed.sessionId.trim()) {
+        return {
+          sessionId: parsed.sessionId.trim(),
+          handoff: typeof parsed.handoff === "string" ? parsed.handoff : "",
+        };
+      }
+    } catch {
+      /* first boot / unreadable — start fresh */
+    }
+    return null;
+  }
+
+  private persistSessionState(): void {
+    try {
+      const file = this.sessionStateFile();
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(
+        file,
+        JSON.stringify({ sessionId: this.sessionId, handoff: this.lastHandoff, savedAt: Date.now() }, null, 2),
+      );
+    } catch (err) {
+      this.log.warn("concierge session state write failed", { err: String(err) });
+    }
   }
 
   /**
@@ -672,7 +864,22 @@ export class Concierge {
     this.log = (opts.logger ?? rootLog).child("concierge");
     this.gateway = opts.gateway ?? createDiscordGateway({ config: this.config, logger: this.log });
     this.session =
-      opts.session ?? new ConciergeSession({ config: this.config, logger: this.log });
+      opts.session ??
+      new ConciergeSession({
+        config: this.config,
+        logger: this.log,
+        // Crash-loop alarm (issue #24): a repeating child crash (bad auth/config) pings the ops
+        // channel instead of surfacing only as per-message "something broke" replies.
+        onCrashLoop: (info) => {
+          void this.gateway
+            .post(
+              process.env.BECKETT_STARTUP_CHANNEL_ID?.trim() || STARTUP_CHANNEL_ID,
+              `⚠️ My chat session has crashed ${info.count}× in a row (last exit code ${info.code}). ` +
+                `Probably auth or config — check \`journalctl --user -u beckett-v3\`.`,
+            )
+            .catch(() => undefined);
+        },
+      });
     this.plane = opts.plane ?? null;
     this.progress = createProgressHub(this.gateway, this.log, {
       stateFile: progressStateFile(this.config, this.log),
@@ -745,7 +952,7 @@ export class Concierge {
    * human ran `beckett ticket create` by hand) → nothing to anchor to; we simply don't thread it.
    */
   private onTicketFiled(channelId: string, identifier: string, title: string): void {
-    const active = this.activeMention;
+    const active = this.currentMention();
     if (!active || active.channelId !== channelId) {
       this.log.debug("ticket.filed with no matching active mention — not threading", {
         identifier,
@@ -755,6 +962,21 @@ export class Concierge {
     }
     active.pendingTickets.push({ identifier, title });
     if (active.ackMessageId) this.openPendingThreads(active);
+  }
+
+  /**
+   * The mention whose session turn is EXECUTING RIGHT NOW (issue #24): CLI replies and
+   * `ticket.filed` signals are correlated to the turn that issued them, not to whichever mention
+   * most recently overwrote a shared slot. Sourced from the session's turn meta; falls back to
+   * {@link activeMention} for injected fake sessions that don't track meta.
+   */
+  private currentMention(): NonNullable<Concierge["activeMention"]> | null {
+    const meta = this.session.getCurrentMeta?.() as Concierge["activeMention"] | undefined;
+    if (meta && typeof meta.channelId === "string" && typeof meta.messageId === "string") {
+      return meta;
+    }
+    if (typeof this.session.getCurrentMeta === "function") return null; // real session, no mention turn running
+    return this.activeMention;
   }
 
   /**
@@ -849,10 +1071,11 @@ export class Concierge {
       return { ok: false, error: "discord.reply needs channelId and text or files" };
     }
     try {
-      // If this reply lands DURING the @mention turn it's answering, claim that turn: post it as a
+      // If this reply is issued BY the @mention turn it's answering, claim that turn: post it as a
       // native reply to the originating message and mark the turn handled so onMessage won't also
-      // auto-post the turn text (the duplicate-message bug). Any other channel posts normally.
-      const active = this.activeMention;
+      // auto-post the turn text (the duplicate-message bug). Correlated to the turn EXECUTING now
+      // (issue #24) — a queued second mention or a notify() update turn can never steal the claim.
+      const active = this.currentMention();
       const claimsActiveTurn = !!active && active.channelId === channelId;
       const opts = {
         ...(claimsActiveTurn ? { replyToMessageId: active!.messageId } : {}),
@@ -885,7 +1108,7 @@ export class Concierge {
       // issue #21) — everything else frames synchronously.
       if (event.kind === "state_changed" && event.to === "done") {
         void this.buildDoneUpdate(event.ticket)
-          .then((framed) => (framed ? this.session.ask(framed) : undefined))
+          .then((framed) => (framed ? this.askUpdate(framed, event.ticket.identifier) : undefined))
           .catch((err) =>
             this.log.warn("concierge done-update turn failed (ignored)", { err: String(err) }),
           );
@@ -893,11 +1116,23 @@ export class Concierge {
       }
       const framed = this.frameUpdate(event);
       if (!framed) continue; // not worth surfacing, or no channel to route back to
-      // Don't await: the turn serializes on the session's own queue; the poll loop moves on.
-      void this.session.ask(framed).catch((err) =>
-        this.log.warn("concierge update turn failed (ignored)", { err: String(err) }),
-      );
+      this.askUpdate(framed, event.ticket.identifier);
     }
+  }
+
+  /**
+   * Run one update turn without blocking the poll loop; retry ONCE on failure, then log loudly
+   * with the ticket id (issue #24 — a silently dropped milestone breaks the closed loop).
+   */
+  private askUpdate(framed: string, ticketIdent: string): void {
+    void this.session.ask(framed).catch(() =>
+      this.session.ask(framed).catch((err) =>
+        this.log.warn("concierge update turn dropped after retry", {
+          ticket: ticketIdent,
+          err: String(err),
+        }),
+      ),
+    );
   }
 
   /**
@@ -1032,9 +1267,19 @@ export class Concierge {
     }, TYPING_INTERVAL_MS);
     void this.gateway.sendTyping(m.channelId);
 
+    // Fast ack (issue #24): the session is single-flight, so a mention landing while a turn is
+    // running (or queued) would sit for minutes behind only a typing indicator. Acknowledge
+    // within seconds — code-level, no model turn.
+    if ((this.session.queueDepth?.() ?? 0) > 0) {
+      void this.gateway
+        .post(m.channelId, FAST_ACK_TEXT, { replyToMessageId: m.messageId })
+        .catch(() => undefined);
+    }
+
     try {
       const turn = await this.buildTurn(m, content);
-      const reply = await this.session.ask(turn);
+      // The mention rides as the turn's meta so CLI replies correlate to THIS turn (issue #24).
+      const reply = await this.session.ask(turn, mention);
       keepTyping = false;
       clearInterval(typing);
       const text = reply.trim();
