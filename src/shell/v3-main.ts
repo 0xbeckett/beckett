@@ -60,7 +60,11 @@ function resolveRepoRoot(ticket: Ticket): string {
  * per-stage worktrees), effort-scaled review (trivial work self-reviews in one pass), and
  * Sonnet 5 @ xhigh workers. See CHANGELOG.md.
  */
-export const BECKETT_VERSION = "3.3.0";
+// ONE version source (issue #29): package.json. The old hand-maintained constant drifted three
+// ways (package.json 3.1.1 / this file 3.3.0 / CHANGELOG 3.3). Read at module load; the file
+// sits at the repo root two levels up from src/shell/.
+import pkg from "../../package.json" with { type: "json" };
+export const BECKETT_VERSION: string = (pkg as { version: string }).version;
 
 /** The live v3 system — held so {@link shutdown} can tear every part down in order. */
 interface BootedSystem {
