@@ -52,6 +52,15 @@ import { setChannelModeOverride, setEnabledOverride } from "./proactivity-store.
 import { readPersistedOffers } from "./ambient.ts";
 import { classify, loadAccess, type AccessLevel } from "../discord/access.ts";
 import { childEnv as strippedChildEnv } from "../env.ts";
+import {
+  createAmbientCoordinator,
+  isAmbientPass,
+  type AmbientClock,
+  type AmbientCoordinator,
+  type AmbientTranscriptMessage,
+  type AmbientTurn,
+} from "./ambient.ts";
+import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
 
 /**
  * What one chat turn hands the model: either a plain string (text-only turns, and every internal
@@ -885,6 +894,10 @@ export interface ConciergeOptions {
   session?: ConciergeSession;
   /** Plane read access for milestone enrichment (issue #21) — the shared PlaneClient in prod. */
   plane?: { listComments(ticketId: string): Promise<PlaneComment[]> };
+  /** Inject the ambient triage classifier (tests); defaults to the real one-shot Haiku classifier. */
+  ambientTriage?: TriageFn;
+  /** Inject the ambient clock (tests); defaults to the coordinator's real-timer clock. */
+  ambientClock?: AmbientClock;
 }
 
 /**
@@ -949,9 +962,22 @@ export class Concierge {
     ackMessageId: string | null;
     /** Tickets filed during this turn (via `beckett ticket create`/`plan`), awaiting a thread anchor. */
     pendingTickets: { identifier: string; title: string }[];
+    /** True for an ambient (un-addressed) turn: a CLI reply posts plainly, never as a native reply. */
+    ambient?: boolean;
   } | null = null;
   /** Last static denial by channel+user, so denied DMs/mentions cannot spam Discord. */
   private readonly accessDenyAt = new Map<string, number>();
+  /**
+   * The ambient-interjection coordinator (proposal §4). Owns per-channel ring buffers, debounce,
+   * cooldowns, and the offer ledger; calls back into {@link runAmbientTurn} to run a session turn.
+   * Undefined when `config.proactivity` is absent (partial test configs) — every use is guarded.
+   */
+  private readonly ambient?: AmbientCoordinator;
+  /**
+   * Per-channel watermark: the id of the last ring-buffer message already surfaced to the session
+   * (via a mention-turn prepend or an ambient turn), so a later mention doesn't re-show it.
+   */
+  private readonly ambientSeen = new Map<string, string>();
 
   constructor(opts: ConciergeOptions = {}) {
     this.config = opts.config ?? loadConfig();
@@ -978,6 +1004,22 @@ export class Concierge {
     this.progress = createProgressHub(this.gateway, this.log, {
       stateFile: progressStateFile(this.config, this.log),
     });
+    // Ambient interjection (proposal §4). Only wired when the config carries a `[proactivity]`
+    // block; ships with `enabled=false`, so the coordinator records ring buffers but never triages.
+    if (this.config.proactivity) {
+      this.ambient = createAmbientCoordinator({
+        config: this.config,
+        logger: this.log.child("ambient"),
+        clock: opts.ambientClock,
+        triage:
+          opts.ambientTriage ??
+          createTriageClassifier({
+            model: this.config.proactivity.triage_model,
+            logger: this.log.child("triage"),
+          }),
+        engage: (turn) => this.runAmbientTurn(turn),
+      });
+    }
   }
 
   /** Wire the dispatcher levers (v3-main, after the dispatcher exists). See {@link dispatcherOps}. */
@@ -1042,6 +1084,7 @@ export class Concierge {
       /* best-effort */
     }
     this.busStop = null;
+    this.ambient?.stop();
     this.progress.dispose();
     await this.gateway.stop();
     await this.session.stop();
@@ -1251,7 +1294,9 @@ export class Concierge {
       const active = this.currentMention();
       const claimsActiveTurn = !!active && active.channelId === channelId;
       const opts = {
-        ...(claimsActiveTurn ? { replyToMessageId: active!.messageId } : {}),
+        // A native reply is right for an @mention (answering THAT message), but an ambient turn
+        // posts plainly — replying-to an un-addressed message reads as surveillance (§4.4).
+        ...(claimsActiveTurn && !active!.ambient ? { replyToMessageId: active!.messageId } : {}),
         ...(files.length > 0 ? { files } : {}),
       };
       // A long reply may land as several human-cadence messages (OPS-62); `post` returns the FIRST
@@ -1473,13 +1518,21 @@ export class Concierge {
   }
 
   /**
-   * Handle one inbound Discord message. We only engage when addressed (an @mention or a DM —
-   * the gateway folds both into `mentionsBot`); ambient chatter is left alone here. Failures
-   * are isolated so a bad turn can never take down the gateway. Public: it is an external
-   * entrypoint (the gateway calls it) and is exercised directly in tests.
+   * Handle one inbound Discord message. A message that addresses us (an @mention or a DM — the
+   * gateway folds both into `mentionsBot`) runs a session turn. Everything else is *ambient*: it
+   * flows to the {@link ambient} coordinator (ring buffer + debounce + triage), never awaited into
+   * the mention path and never able to throw out of it (`observe` swallows its own errors). A
+   * mention also cancels any pending burst flush for its channel so we can't double-respond — the
+   * mention turn already carries the transcript (§4.4). Failures are isolated so a bad turn can
+   * never take down the gateway. Public: it is an external entrypoint (the gateway calls it) and is
+   * exercised directly in tests.
    */
   async onMessage(m: IncomingMessage): Promise<void> {
-    if (!m.mentionsBot) return;
+    if (!m.mentionsBot) {
+      this.ambient?.observe(m, this.accessLevelFor(m.userId));
+      return;
+    }
+    this.ambient?.noteMention(m.channelId);
     const content = m.content.trim();
     // Engage when there's text OR files to look at. An image-only message (a screenshot with no
     // caption) used to die on this guard — now that we can see attachments it's a real turn.
@@ -1561,8 +1614,12 @@ export class Concierge {
    */
   private async buildTurn(m: IncomingMessage, content: string): Promise<TurnMessage> {
     const speaker = this.resolveSpeaker(m);
+    // Mention-path win (§4.4): a mention like "do that" after five un-mentioned messages is a riddle
+    // unless the session sees the lead-up. Prepend the channel's ring-buffer excerpt the session
+    // hasn't seen yet (a free UX win even in `off`-mode channels — the buffer fills regardless).
+    const prefix = this.ambientContextPrefix(m.channelId);
     if (m.attachments.length === 0)
-      return frameUserTurn(m.channelId, speaker, m.messageId, content);
+      return prefix + frameUserTurn(m.channelId, speaker, m.messageId, content);
     let images: TurnContentBlock[] = [];
     let manifest = "";
     try {
@@ -1583,11 +1640,138 @@ export class Concierge {
       });
     }
     const body = content && manifest ? `${content}\n${manifest}` : content || manifest;
-    const framed = frameUserTurn(m.channelId, speaker, m.messageId, body);
+    const framed = prefix + frameUserTurn(m.channelId, speaker, m.messageId, body);
     // No inlinable image → the turn is a plain string, byte-for-byte as text-only turns always were.
     if (images.length === 0) return framed;
     // Otherwise: a text block (framed message + any non-image manifest) followed by the image blocks.
     return [{ type: "text", text: framed }, ...images];
+  }
+
+  /**
+   * Run one ambient (un-addressed) session turn — the `engage` callback the {@link ambient}
+   * coordinator invokes for a candidate/consent/timeout (proposal §4.4). It differs from the
+   * mention path deliberately: NO typing indicator and NO fast-ack (Beckett doesn't telegraph that
+   * it's "considering" speaking), and the turn is queued NON-priority so real mentions and ticket
+   * updates jump ahead. The reply is auto-posted as a PLAIN message (no `replyToMessageId`) UNLESS
+   * the model returns the `PASS` sentinel — then nothing is posted and the cooldown is left
+   * unconsumed (the coordinator inspects the returned text). On a real post for a candidate we arm
+   * the offer ledger via {@link AmbientCoordinator.recordOffer} (TTL + cooldown); a consent turn
+   * that actually replies closes its offer window. The returned string is what the coordinator sees
+   * (so `PASS` must survive verbatim). If the model answered via `beckett discord reply` instead,
+   * the reply-claim below suppresses the auto-post exactly as it does for a mention.
+   */
+  private async runAmbientTurn(turn: AmbientTurn): Promise<string> {
+    const framed = this.frameAmbientTurn(turn);
+    // These messages are now in front of the session — don't re-prepend them on the next mention.
+    this.markAmbientSeen(turn.channelId, turn.transcript);
+    const claim = {
+      channelId: turn.channelId,
+      messageId: ambientAnchorId(turn),
+      repliedViaCli: false,
+      ackMessageId: null as string | null,
+      pendingTickets: [] as { identifier: string; title: string }[],
+      ambient: true,
+    };
+    this.activeMention = claim;
+    try {
+      const reply = (await this.session.ask(framed, claim, { priority: false })).trim();
+      // PASS (alone, first line) → post nothing, consume no cooldown. Return it verbatim so the
+      // coordinator sees the sentinel and skips its own cooldown stamp.
+      if (isAmbientPass(reply)) return reply;
+      // The model may have already posted via the CLI (consent turns are told to ack that way); the
+      // reply-claim marked `repliedViaCli` and captured the message id — don't post a second time.
+      const postedId = claim.repliedViaCli
+        ? claim.ackMessageId
+        : reply
+          ? await this.gateway.post(turn.channelId, reply)
+          : null;
+      if (turn.kind === "candidate") {
+        this.armAmbientOffer(turn, postedId, reply);
+      } else if (turn.kind === "consent" && !isAmbientPass(reply)) {
+        // A real answer to a consent prompt resolves the offer — close the window (accept or
+        // decline). An unrelated/ambiguous message would have been a PASS and kept it open.
+        this.ambient?.clearOffer(turn.channelId);
+      }
+      return reply;
+    } finally {
+      if (this.activeMention === claim) this.activeMention = null;
+    }
+  }
+
+  /** Arm the offer ledger for a candidate turn that actually posted (TTL + channel cooldown). */
+  private armAmbientOffer(
+    turn: Extract<AmbientTurn, { kind: "candidate" }>,
+    postedId: string | null,
+    reply: string,
+  ): void {
+    if (!this.ambient) return;
+    const source = turn.burst[turn.burst.length - 1] ?? turn.transcript[turn.transcript.length - 1];
+    const mode = this.ambient.effectiveMode(turn.channelId);
+    this.ambient.recordOffer(turn.channelId, {
+      offerMessageId: postedId ?? source?.messageId ?? "",
+      offerText: reply,
+      sourceUserId: source?.userId ?? "",
+      summary: turn.verdict.reason || reply.slice(0, 200),
+      mode: mode === "auto" ? "auto" : "suggest",
+    });
+  }
+
+  /** Build the SYSTEM frame for an ambient turn (candidate / consent follow-up / silence timeout). */
+  private frameAmbientTurn(turn: AmbientTurn): string {
+    const ttlSecs = this.config.proactivity?.offer_ttl_secs ?? 600;
+    switch (turn.kind) {
+      case "candidate":
+        return frameAmbientCandidate(turn.channelId, turn.transcript, turn.verdict);
+      case "consent": {
+        const speaker = this.resolveSpeaker(turn.message);
+        const userFrame = frameUserTurn(
+          turn.channelId,
+          speaker,
+          turn.message.messageId,
+          turn.message.content.trim(),
+        );
+        const elapsedSecs = Math.max(0, Math.round(ttlSecs - (turn.offer.expiresAt - Date.now()) / 1000));
+        return frameAmbientConsent(turn.offer.offerText, userFrame, elapsedSecs);
+      }
+      case "timeout":
+        return frameAmbientTimeout(turn.channelId, turn.offer.offerText, ttlSecs);
+    }
+  }
+
+  /**
+   * The ring-buffer excerpt to prepend to a mention turn: the messages in this channel the session
+   * hasn't seen yet (advancing the per-channel watermark). Empty string when there's nothing new
+   * (or no coordinator), so the mention turn is byte-for-byte unchanged.
+   */
+  private ambientContextPrefix(channelId: string): string {
+    const unseen = this.takeUnseenAmbient(channelId);
+    if (unseen.length === 0) return "";
+    return (
+      `SYSTEM (context — recent messages in this channel you haven't seen):\n` +
+      `[channel:${channelId}]\n${ambientTranscriptLines(unseen)}\n\n`
+    );
+  }
+
+  /** Ring-buffer entries after the seen-watermark; advances the watermark to the newest entry. */
+  private takeUnseenAmbient(channelId: string): AmbientTranscriptMessage[] {
+    if (!this.ambient) return [];
+    const transcript = this.ambient.getTranscript(channelId);
+    if (transcript.length === 0) return [];
+    const watermark = this.ambientSeen.get(channelId);
+    let start = 0;
+    if (watermark) {
+      const idx = transcript.findIndex((mm) => mm.messageId === watermark);
+      // Watermark aged out of the ring → everything is unseen; else start just past it.
+      start = idx >= 0 ? idx + 1 : 0;
+    }
+    this.ambientSeen.set(channelId, transcript[transcript.length - 1]!.messageId);
+    return transcript.slice(start);
+  }
+
+  /** Advance the seen-watermark to the newest entry that was just surfaced to the session. */
+  private markAmbientSeen(channelId: string, transcript: AmbientTranscriptMessage[]): void {
+    const last = transcript[transcript.length - 1];
+    if (last) this.ambientSeen.set(channelId, last.messageId);
   }
 
   /**
@@ -1805,6 +1989,74 @@ function frameUserTurn(
   // not just the channel (Jason's steer, OPS-42). The native reply already uses it; surfacing it
   // in the stamp lets the Concierge quote/`--reply-to` the precise message when it matters.
   return `[channel:${channelId}] [${parts.join(" ")} msg:${messageId}]\n${content}`;
+}
+
+/** `HH:MM` (UTC) for an ambient transcript stamp — matches the triage classifier's time format. */
+function hhmm(ts: number): string {
+  return new Date(ts).toISOString().slice(11, 16);
+}
+
+/** Render a ring-buffer excerpt as indented `[HH:MM] Name: text` lines for a SYSTEM frame. */
+function ambientTranscriptLines(transcript: AmbientTranscriptMessage[]): string {
+  if (transcript.length === 0) return "  (no recent messages)";
+  return transcript.map((m) => `  [${hhmm(m.ts)}] ${m.authorDisplayName}: ${m.content}`).join("\n");
+}
+
+/** Best-effort correlation anchor for an ambient turn's reply-claim (never a native reply target). */
+function ambientAnchorId(turn: AmbientTurn): string {
+  if (turn.kind === "consent") return turn.message.messageId;
+  if (turn.kind === "timeout") return turn.offer.offerMessageId;
+  return turn.burst[turn.burst.length - 1]?.messageId ?? turn.channelId;
+}
+
+/**
+ * The ambient-candidate frame (§4.5): overheard chatter Beckett is *choosing* whether to speak to.
+ * PASS-by-default; a reply is ONE line offering concrete work or a concrete answer, never a ticket.
+ */
+function frameAmbientCandidate(
+  channelId: string,
+  transcript: AmbientTranscriptMessage[],
+  verdict: TriageVerdict,
+): string {
+  return (
+    `SYSTEM (ambient — nobody addressed you; you are choosing whether to speak):\n` +
+    `[channel:${channelId}] recent conversation:\n${ambientTranscriptLines(transcript)}\n` +
+    `Triage says: ${verdict.kind} (confidence ${verdict.confidence.toFixed(2)}).\n` +
+    `If you have a CONCRETE offer or answer, reply with ONE short message in your voice.\n` +
+    `If not — and when in doubt — reply with exactly: PASS\n` +
+    `Do not file a ticket yet. An offer is a question, not a commitment.`
+  );
+}
+
+/**
+ * The consent follow-up frame (§4.5): a new message arrived in a channel with a live offer. The
+ * model judges whether it accepts (ack + file the ticket), declines/unrelated (PASS), or is a
+ * fresh ambient candidate on its own.
+ */
+function frameAmbientConsent(offerText: string, userFrame: string, elapsedSecs: number): string {
+  return (
+    `SYSTEM (ambient follow-up): you offered in this channel ${elapsedSecs}s ago:\n` +
+    `  "${offerText}"\n` +
+    `${userFrame}\n` +
+    `If this accepts your offer: ack via \`beckett discord reply\`, then file the ticket exactly as\n` +
+    `you would for a direct request (--channel stamped). If it declines or is unrelated to your\n` +
+    `offer: reply PASS. If it's unrelated but ambient-worthy on its own, treat it as a fresh\n` +
+    `candidate.`
+  );
+}
+
+/**
+ * The silence-consent frame (§4.5, `auto` mode only): an offer aged out with no reply in a
+ * proceed-on-silence channel. Post a one-line heads-up and file the ticket, or PASS if stale.
+ */
+function frameAmbientTimeout(channelId: string, offerText: string, ttlSecs: number): string {
+  const mins = Math.max(1, Math.round(ttlSecs / 60));
+  return (
+    `SYSTEM (ambient timeout): your offer "${offerText}" in [channel:${channelId}] got no reply in ${mins} minutes.\n` +
+    `This channel is set to proceed-on-silence. If the work is still sensible, post a one-line\n` +
+    `heads-up ("no objection, so I'm running with the CSV export thing") and file the ticket.\n` +
+    `If the moment has passed, PASS.`
+  );
 }
 
 /** The marker the dispatcher prepends to its own Plane comments (mirrors `BECKETT_COMMENT_MARKER`). */

@@ -77,7 +77,8 @@ const realClock: AmbientClock = {
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-function isPass(text: string): boolean {
+/** The sentinel that suppresses an ambient post: `PASS` alone on the first line. */
+export function isAmbientPass(text: string): boolean {
   return text.trim().split(/\r?\n/, 1)[0]?.trim() === "PASS";
 }
 
@@ -246,7 +247,10 @@ class Coordinator implements AmbientCoordinator {
       if (this.isCapped(channelId)) return;
 
       const reply = await this.engage({ kind: "candidate", channelId, burst, transcript, verdict });
-      if (!isPass(reply)) this.markInterjection(channelId);
+      // A real post consumes cooldown. If `engage` already armed an offer for this channel it has
+      // called `recordOffer` (which starts the cooldown), so don't double-count; a bare answer with
+      // no offer still needs its cooldown stamped here.
+      if (!isAmbientPass(reply) && !this.offers.has(channelId)) this.markInterjection(channelId);
     } catch (err) {
       this.logger.warn("ambient burst flush failed", { channel: channelId, error: (err as Error).message });
     }
@@ -289,7 +293,7 @@ class Coordinator implements AmbientCoordinator {
     if (offer.mode !== "auto" || !this.config.enabled) return;
     try {
       const reply = await this.engage({ kind: "timeout", channelId, offer, transcript: this.getTranscript(channelId) });
-      if (!isPass(reply)) this.markInterjection(channelId);
+      if (!isAmbientPass(reply)) this.markInterjection(channelId);
     } catch (err) {
       this.logger.warn("ambient timeout turn failed", { channel: channelId, error: (err as Error).message });
     }
