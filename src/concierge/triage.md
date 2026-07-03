@@ -8,3 +8,5 @@ Be conservative. When in doubt, interject=false.
 
 Classify the burst, using the recent transcript only for context. Return exactly one JSON object matching:
 {"interject":boolean,"kind":"feature-wish|bug-report|question|task-request|none","confidence":number,"reason":"short private reason"}
+
+Output the raw JSON object ONLY — no markdown code fences, no prose before or after it.

@@ -58,13 +58,28 @@ export function buildTriagePrompt(
   return `${staticPrompt.trim()}\n\nRecent transcript:\n${formatMessages(transcript)}\n\nBurst to classify:\n${formatMessages(burst)}\n`;
 }
 
-function parseVerdict(stdout: string): TriageVerdict {
+/**
+ * Pull the verdict JSON out of model text that may wrap it in a markdown code fence or stray
+ * prose. Haiku fences its output often enough that a strict parse failed closed on every call
+ * in prod — the classifier looked "enabled" but could never interject.
+ */
+export function extractVerdictJson(text: string): string {
+  const trimmed = text.trim();
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fence?.[1]) return fence[1].trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) return trimmed.slice(start, end + 1);
+  return trimmed;
+}
+
+export function parseVerdict(stdout: string): TriageVerdict {
   const parsed = JSON.parse(stdout.trim());
   const direct = TriageVerdictSchema.safeParse(parsed);
   if (direct.success) return direct.data;
 
   if (parsed && typeof parsed === "object" && typeof parsed.result === "string") {
-    const inner = JSON.parse(parsed.result.trim());
+    const inner = JSON.parse(extractVerdictJson(parsed.result));
     return TriageVerdictSchema.parse(inner);
   }
   return TriageVerdictSchema.parse(parsed);
