@@ -105,6 +105,7 @@ export function loadEnvFile(envFile: string): Record<string, string> {
 const int = z.number().int();
 const posInt = int.min(1);
 const nonNegInt = int.min(0);
+const ProactivityModeSchema = z.enum(["off", "suggest", "auto"]);
 
 const ConfigSchema = z
   .object({
@@ -260,6 +261,21 @@ const ConfigSchema = z
           .default({}),
       })
       .default({}),
+    proactivity: z
+      .object({
+        enabled: z.boolean().default(false),
+        default_mode: ProactivityModeSchema.default("off"),
+        triage_model: z.string().min(1).default("claude-haiku-4-5"),
+        triage_threshold: z.number().min(0).max(1).default(0.7),
+        burst_quiet_secs: posInt.default(20),
+        channel_cooldown_secs: nonNegInt.default(900),
+        max_interjections_per_hour: nonNegInt.default(4),
+        offer_ttl_secs: posInt.default(600),
+        transcript_window: posInt.default(15),
+        channels: z.record(ProactivityModeSchema).default({}),
+      })
+      .strict()
+      .default({}),
     // v3 — the Concierge (long-lived `claude -p` Opus agent that owns Discord, files tickets).
     concierge: z
       .object({
@@ -285,11 +301,55 @@ void _assertAssignable;
 // loadConfig
 // =======================================================================================
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function cloneRecord(v: unknown): Record<string, unknown> {
+  return isRecord(v) ? { ...v } : {};
+}
+
+/**
+ * Runtime proactivity controls live outside config.toml so the daemon can later honor
+ * "chill out in here" style commands without an edit+restart. The file is a partial
+ * `[proactivity]` object and is merged over TOML before the strict schema validates it.
+ */
+function mergeProactivityOverride(rawConfig: unknown, overridePath: string): unknown {
+  if (!existsSync(overridePath)) return rawConfig;
+
+  let override: unknown;
+  try {
+    override = JSON.parse(readFileSync(overridePath, "utf8"));
+  } catch (err) {
+    throw new Error(
+      `beckett: failed to parse ${overridePath} — ${(err as Error).message}`,
+    );
+  }
+  if (!isRecord(override)) {
+    throw new Error(`beckett: invalid ${overridePath} — expected a JSON object`);
+  }
+
+  const root = cloneRecord(rawConfig);
+  const current = cloneRecord(root.proactivity);
+  const merged: Record<string, unknown> = { ...current, ...override };
+  if (Object.prototype.hasOwnProperty.call(override, "channels")) {
+    merged.channels = isRecord(override.channels)
+      ? { ...cloneRecord(current.channels), ...override.channels }
+      : override.channels;
+  } else if (isRecord(current.channels)) {
+    merged.channels = { ...current.channels };
+  }
+  root.proactivity = merged;
+  return root;
+}
+
 export interface LoadConfigOptions {
   /** Override env source (for tests). Defaults to process.env. */
   env?: PathEnv;
   /** Explicit config.toml path (else derived from beckettDir). */
   configFile?: string;
+  /** Explicit proactivity runtime override path (else <beckettDir>/proactivity.json). */
+  proactivityOverrideFile?: string;
 }
 
 /**
@@ -318,7 +378,10 @@ export function loadConfig(opts: LoadConfigOptions = {}): Config {
     }
   }
 
-  // 3. validate + apply defaults (loud refuse-to-start on invalid).
+  // 3. runtime proactivity overrides (partial [proactivity]) → raw object.
+  raw = mergeProactivityOverride(raw, opts.proactivityOverrideFile ?? `${beckettDir}/proactivity.json`);
+
+  // 4. validate + apply defaults (loud refuse-to-start on invalid).
   const result = ConfigSchema.safeParse(raw);
   if (!result.success) {
     const issues = result.error.issues

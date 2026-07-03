@@ -42,6 +42,45 @@ test("per-harness default efforts land where they should", () => {
   expect(config.harness.claude.default_effort).toBe("xhigh"); // untouched default
 });
 
+test("proactivity defaults ship disabled and off", () => {
+  const config = validateConfig({});
+  expect(config.proactivity).toMatchObject({
+    enabled: false,
+    default_mode: "off",
+    triage_model: "claude-haiku-4-5",
+    triage_threshold: 0.7,
+    burst_quiet_secs: 20,
+    channel_cooldown_secs: 900,
+    max_interjections_per_hour: 4,
+    offer_ttl_secs: 600,
+    transcript_window: 15,
+    channels: {},
+  });
+});
+
+test("proactivity runtime override merges over TOML", () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-config-test-"));
+  try {
+    const configFile = join(dir, "config.toml");
+    writeFileSync(
+      configFile,
+      `[proactivity]\nenabled = true\ndefault_mode = "suggest"\n\n[proactivity.channels]\n"chan-a" = "suggest"\n`,
+      "utf8",
+    );
+    writeFileSync(
+      join(dir, "proactivity.json"),
+      JSON.stringify({ enabled: false, channels: { "chan-b": "auto" } }),
+      "utf8",
+    );
+    const config = loadConfig({ env: { BECKETT_DIR: dir }, configFile });
+    expect(config.proactivity.enabled).toBe(false);
+    expect(config.proactivity.default_mode).toBe("suggest");
+    expect(config.proactivity.channels).toEqual({ "chan-a": "suggest", "chan-b": "auto" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 describe("default-config example drift (issue #34)", () => {
   test("deploy/config.toml.example matches the live schema's defaults", () => {
     const committed = readFileSync(join(import.meta.dir, "..", "deploy", "config.toml.example"), "utf8");

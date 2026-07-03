@@ -67,6 +67,17 @@ in_review = "In Review"
 done = "Done"
 cancelled = "Cancelled"
 
+[proactivity]
+enabled = false
+default_mode = "off"
+triage_model = "claude-haiku-4-5"
+triage_threshold = 0.7
+burst_quiet_secs = 20
+channel_cooldown_secs = 900
+max_interjections_per_hour = 4
+offer_ttl_secs = 600
+transcript_window = 15
+
 [concierge]
 model = "claude-opus-4-8"
 rotate_at_tokens = 190000

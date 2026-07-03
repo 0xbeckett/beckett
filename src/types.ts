@@ -513,6 +513,8 @@ export interface Paths {
 }
 
 /** The full validated config (Spec 01 §4). Every key has a default so an empty config boots. */
+export type ProactivityMode = "off" | "suggest" | "auto";
+
 export interface Config {
   concurrency: {
     max_workers: number;
@@ -590,6 +592,19 @@ export interface Config {
       done: string;
       cancelled: string;
     };
+  };
+  /** Ambient interjection policy. Ships disabled; per-channel modes are opt-in. */
+  proactivity: {
+    enabled: boolean;
+    default_mode: ProactivityMode;
+    triage_model: string;
+    triage_threshold: number;
+    burst_quiet_secs: number;
+    channel_cooldown_secs: number;
+    max_interjections_per_hour: number;
+    offer_ttl_secs: number;
+    transcript_window: number;
+    channels: Record<string, ProactivityMode>;
   };
   /** v3 — the Concierge agent that owns Discord and files tickets. */
   concierge: {
