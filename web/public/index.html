@@ -221,7 +221,7 @@
   .tier.soon{opacity:.6}
   .tier.soon:hover{transform:none;box-shadow:var(--bevel),6px 6px 0 rgba(0,0,0,.38)}
   .tier .nm{font-family:var(--pix);font-size:13px;color:var(--accent);text-transform:uppercase;letter-spacing:.08em}
-  .tier .amt{font-family:var(--disp);font-weight:600;font-size:30px;margin:14px 0 4px}
+  .tier .amt{font-family:var(--pix);font-weight:400;font-size:30px;margin:14px 0 4px}
   .tier .amt span{font-size:14px;color:var(--faint);font-weight:400}
   .tier p{color:var(--dim);font-size:14px;line-height:1.5;margin-bottom:20px;flex:1}
   .tier .pill{margin-top:auto;text-align:center;justify-content:center;display:inline-flex;border:2px solid #000;padding:11px;
@@ -298,7 +298,6 @@
     <div class="nav-links">
       <a href="#how">How it works</a>
       <a href="#caps">Capabilities</a>
-      <a href="#tiers">Scale</a>
       <a href="/pricing">Pricing</a>
     </div>
     <div class="nav-r">
@@ -367,14 +366,17 @@
     </div>
   </section>
 
-  <!-- TIERS -->
-  <section id="tiers">
-    <h2 class="rv">Scales like software, not headcount.</h2>
-    <p class="sub rv">One coworker today. fleets and whole departments are loading… same interface, more throughput.</p>
+  <!-- PRICING WINDOW -->
+  <section id="pricing">
+    <h2 class="rv">Cheaper than a hire. Priced like a tool.</h2>
+    <p class="sub rv">Real numbers, prepaid only, and the math is published. the full ledger lives on the pricing page, down to the power bill.</p>
     <div class="tiers">
-      <div class="tier rv"><div class="nm">Solo</div><div class="amt">One coworker</div><p>A single Beckett, locking in on one task at a time. the teammate who actually delivers.</p><a class="pill" data-h href="https://discord.gg/DfJKFawURy">Get access</a></div>
-      <div class="tier soon rv"><div class="nm">Squad</div><div class="amt">A fleet</div><p>Beckett fans out across a parallel worker fleet, integrates the branches, gates the merges.</p><span class="pill disabled">Coming soon</span></div>
-      <div class="tier soon rv"><div class="nm">Department</div><div class="amt">Many, running functions<span></span></div><p>Becketts running whole workflows end-to-end. when the org chart starts including software.</p><span class="pill disabled">Coming soon</span></div>
+      <div class="tier hl rv"><div class="nm">Solo</div><div class="amt">$25<span> /mo</span></div><p>$15 of compute included at cost. the average ticket runs about $4, so that's a real month of shipping.</p><a class="pill" data-h href="/pricing">See pricing</a></div>
+      <div class="tier rv"><div class="nm">BYO key</div><div class="amt">$12<span> /mo</span></div><p>Your Anthropic key, your bill, zero service charge. for people who want to build hard.</p><a class="pill" data-h href="/pricing">See pricing</a></div>
+      <div class="tier soon rv"><div class="nm">Squad</div><div class="amt">$119<span> /mo</span></div><p>Up to 5 members, one pooled balance, per member caps. the intern can't drain you.</p><span class="pill disabled">Coming soon</span></div>
+    </div>
+    <div class="cta-row rv" style="margin-top:28px;display:flex;justify-content:center">
+      <a class="btn btn-ghost btn-lg" data-h href="/pricing">Read the whole ledger »</a>
     </div>
   </section>
 
