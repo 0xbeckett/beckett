@@ -21,7 +21,7 @@ import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { CfDns } from "../agency/cloudflare.ts";
 import { CodexImageGen } from "../agency/imagegen.ts";
 import { TunnelDeployer } from "../shell/deploy.ts";
-import { loadAccess, grantAccess, revokeAccess, ACCESS_CAP } from "../discord/access.ts";
+import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
 import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 import type { Ticket, TicketState } from "../plane/types.ts";
@@ -424,31 +424,41 @@ async function main(): Promise<void> {
     fail("usage: beckett site deploy [--dir <path>]");
   }
 
-  // ── access (in-process: whitelist manipulation, no control bus) ──────────────────────────
+  // ── access (in-process: whitelist inspection + REQUESTS, no control bus) ──────────────────
+  // Hardened bouncer: this CLI can no longer mint members. `grant` files a pending request
+  // with a one-time code; only the OWNER approving on Discord (author-id checked in the
+  // daemon, not here) applies it. There is deliberately NO approve/deny subcommand — if the
+  // CLI could approve, anything that can run the CLI (a prompt-injected concierge included)
+  // could bypass the owner. Emergency escape hatch: edit ~/.beckett/access.txt by hand.
   if (group === "access") {
     const ownerId = process.env.DISCORD_OWNER_ID;
     if (sub === "ls" || sub === "status") {
       const access = loadAccess(paths.accessFile);
+      const pending = loadPending(paths.accessPendingFile);
       out({
         ids: Array.from(access.ids),
         count: access.ids.size,
         locked: access.locked,
         cap: ACCESS_CAP,
         remaining: access.locked ? 0 : Math.max(0, ACCESS_CAP - access.ids.size),
+        // Codes are secrets shown only in the requesting turn — never re-printed here.
+        pending: pending.map((p) => ({ id: p.id, expiresAt: p.expiresAt })),
       });
     }
     if (sub === "grant") {
       const id = rest[0];
       if (!id) fail("usage: beckett access grant <discord-user-id>");
-      const r = grantAccess(paths.accessFile, id, ownerId);
+      const r = requestGrant(paths.accessPendingFile, paths.accessFile, id, ownerId);
       out({
         ok: r.ok,
-        status: r.status,
+        status: r.status === "pending" ? "pending-approval" : r.status,
         id,
-        count: r.count,
-        locked: r.locked,
-        cap: ACCESS_CAP,
-        remaining: r.locked ? 0 : Math.max(0, ACCESS_CAP - r.count),
+        code: r.code,
+        expiresInMin: Math.round(PENDING_GRANT_TTL_MS / 60_000),
+        how: r.code
+          ? `not granted yet — the owner must reply "@beckett approve ${r.code}" (or "deny ${r.code}") within ${Math.round(PENDING_GRANT_TTL_MS / 60_000)} minutes`
+          : undefined,
+        pendingCount: r.pendingCount,
       });
     }
     if (sub === "revoke") {

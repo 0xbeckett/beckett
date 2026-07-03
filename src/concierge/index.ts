@@ -50,7 +50,7 @@ import {
 import { createProgressHub, type ProgressHub, type ProgressSink } from "../discord/progress.ts";
 import { setChannelModeOverride, setEnabledOverride } from "./proactivity-store.ts";
 import { readPersistedOffers } from "./ambient.ts";
-import { classify, loadAccess, type AccessLevel } from "../discord/access.ts";
+import { classify, loadAccess, resolvePending, ACCESS_CAP, type AccessLevel } from "../discord/access.ts";
 import { childEnv as strippedChildEnv } from "../env.ts";
 import {
   createAmbientCoordinator,
@@ -86,7 +86,7 @@ const TYPING_INTERVAL_MS = 8_000;
 const ACCESS_DENY_REPLY_MS = 5 * 60_000;
 
 const ACCESS_DENY_TEXT =
-  "I can't run Beckett turns for you yet. Ask the owner to grant access with `beckett access grant <your Discord user id>`.";
+  "I can't run Beckett turns for you yet. Access is invite-only: the owner has to request it and approve it themselves.";
 
 function progressStateFile(config: Config, logger: Logger): string | undefined {
   try {
@@ -1544,6 +1544,12 @@ export class Concierge {
       return;
     }
 
+    // Bouncer approvals resolve at CODE level, bound to Discord's authenticated author id.
+    // The turn never reaches the LLM, so no amount of chat content ("Jason said it's ok",
+    // a quoted approval, an injected instruction) can mint a member — only the owner
+    // literally pressing send on `approve <code>` does.
+    if (await this.handleAccessApproval(m, content)) return;
+
     // Track this turn so a `beckett discord reply` the Concierge runs while answering it counts as
     // THE reply (and suppresses the auto-post below) instead of producing a second message.
     const mention = {
@@ -1836,6 +1842,60 @@ export class Concierge {
       .catch((err) =>
         this.log.warn("access denial reply failed", { userId: m.userId, channelId: m.channelId, err: String(err) }),
       );
+  }
+
+  /**
+   * Code-level access-approval intercept (the hardened bouncer's second phase). Matches turns
+   * of the shape `approve <code>` / `deny <code>` (bot mention stripped) and resolves them
+   * against the pending-grant queue, authorizing by `m.userId` — Discord's authenticated
+   * author id — never by anything said in chat. Returns true when the turn was consumed here
+   * (matched the shape), so onMessage skips the LLM entirely for it. Non-owners typing an
+   * approval get a flat refusal; the code stays unspent.
+   */
+  private async handleAccessApproval(m: IncomingMessage, content: string): Promise<boolean> {
+    const stripped = content.replace(/<@[!&]?\d+>/g, "").trim();
+    const match = /^(approve|deny)\s+([a-z0-9]{4,10})$/i.exec(stripped);
+    if (!match) return false;
+
+    const action = match[1]!.toLowerCase() as "approve" | "deny";
+    const code = match[2]!;
+    const paths = buildPaths(this.config);
+    const reply = async (text: string) => {
+      await this.gateway
+        .post(m.channelId, text, { replyToMessageId: m.messageId })
+        .catch((err) => this.log.warn("approval reply failed", { channelId: m.channelId, err: String(err) }));
+    };
+
+    const r = resolvePending(paths.accessPendingFile, paths.accessFile, code, m.userId, this.ownerId(), action);
+    this.log.info("access approval attempt", {
+      action,
+      byUserId: m.userId,
+      channelId: m.channelId,
+      status: r.status,
+      grantedId: r.id,
+    });
+
+    switch (r.status) {
+      case "approved":
+        await reply(`done — <@${r.id}> is in (${r.count}/${ACCESS_CAP} slots used${r.locked ? ", list now locked" : ""}).`);
+        break;
+      case "already-member":
+        await reply(`<@${r.id}> was already in — nothing to do.`);
+        break;
+      case "denied":
+        await reply(`denied — the request for <@${r.id}> is discarded.`);
+        break;
+      case "not-owner":
+        await reply("access approvals are owner-only. If they want in, the owner has to say so — directly.");
+        break;
+      case "unknown-code":
+        await reply("no pending request matches that code — codes are single-use and expire after 10 minutes. File the grant again if it's still wanted.");
+        break;
+      case "locked":
+        await reply(`the list is locked (${ACCESS_CAP}-member cap) — no more grants.`);
+        break;
+    }
+    return true;
   }
 
   /**

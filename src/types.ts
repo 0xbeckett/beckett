@@ -510,6 +510,7 @@ export interface Paths {
   accessFile: string; // <beckettDir>/access.txt — Discord user whitelist (invite-only beta)
   imagesDir: string; // <beckettDir>/images — generated images (beckett image)
   identitiesFile: string; // <beckettDir>/identities.json — per-user known/preferred names (OPS-42)
+  accessPendingFile: string; // <beckettDir>/access-pending.json — grant requests awaiting owner approval
 }
 
 /** The full validated config (Spec 01 §4). Every key has a default so an empty config boots. */

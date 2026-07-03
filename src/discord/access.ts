@@ -11,9 +11,17 @@
  *
  * Lock mechanism: when the 10th ID is added, a `.lock` sentinel file is created and the
  * access.txt file is chmoded to read-only. After locking, all grant/revoke calls refuse.
+ *
+ * Two-phase grants (hardened bouncer): `grantAccess` is no longer reachable from the CLI.
+ * A grant starts as a PENDING REQUEST (`requestGrant` → one-time approval code, short TTL)
+ * and only becomes membership when `resolvePending` is called with the owner's Discord user
+ * id — which the daemon takes from Discord's own authenticated message author, never from
+ * chat content. "An authorised person said it's ok" therefore cannot mint members: the LLM
+ * can at most file a request; the approval is code-checked against who actually pressed send.
  */
 
 import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, chmodSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 
 export type AccessLevel = "owner" | "member" | "outsider";
 
@@ -178,4 +186,165 @@ export function revokeAccess(accessFile: string, id: string): RevokeResult {
   access.ids.delete(id);
 
   return { ok: true, status: "revoked", count: access.ids.size, locked: false };
+}
+
+// =======================================================================================
+// Pending grants — two-phase membership. Request (LLM-reachable) ≠ approve (owner-only).
+// =======================================================================================
+
+/** How long a pending grant stays approvable. Short on purpose: a code is a live secret. */
+export const PENDING_GRANT_TTL_MS = 10 * 60_000;
+
+/** Code alphabet: uppercase, no 0/O/1/I/L so it survives being read aloud or retyped. */
+const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const CODE_LEN = 6;
+
+/** A parked grant request awaiting the owner's approval. */
+export interface PendingGrant {
+  id: string; // Discord snowflake to be granted
+  code: string; // one-time approval code the owner must echo back
+  requestedAt: number; // epoch ms
+  expiresAt: number; // epoch ms
+}
+
+function generateCode(): string {
+  const bytes = randomBytes(CODE_LEN);
+  let code = "";
+  for (let i = 0; i < CODE_LEN; i++) code += CODE_ALPHABET[bytes[i]! % CODE_ALPHABET.length];
+  return code;
+}
+
+/**
+ * Load pending grants, dropping expired/malformed entries. Never throws — a corrupt or
+ * missing file is an empty queue, and a hand-edited entry that fails validation is ignored
+ * (fail-safe: nothing malformed is ever approvable).
+ */
+export function loadPending(pendingFile: string, now: number = Date.now()): PendingGrant[] {
+  try {
+    if (!existsSync(pendingFile)) return [];
+    const raw = JSON.parse(readFileSync(pendingFile, "utf8"));
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (p: unknown): p is PendingGrant =>
+        typeof p === "object" &&
+        p !== null &&
+        /^\d{1,20}$/.test((p as PendingGrant).id ?? "") &&
+        typeof (p as PendingGrant).code === "string" &&
+        new RegExp(`^[${CODE_ALPHABET}]{${CODE_LEN}}$`).test((p as PendingGrant).code) &&
+        typeof (p as PendingGrant).expiresAt === "number" &&
+        (p as PendingGrant).expiresAt > now,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function savePending(pendingFile: string, pending: PendingGrant[]): void {
+  writeFileSync(pendingFile, JSON.stringify(pending, null, 2) + "\n", "utf8");
+}
+
+export type RequestStatus = "pending" | "invalid-id" | "is-owner" | "already-member" | "locked";
+
+/** Result of filing a grant request. */
+export interface RequestResult {
+  ok: boolean;
+  status: RequestStatus;
+  code?: string;
+  expiresAt?: number;
+  pendingCount: number;
+}
+
+/**
+ * File a grant REQUEST. Writes nothing to the access file — it parks {id, code, ttl} in the
+ * pending queue for the owner to approve. Re-requesting an id replaces its pending entry
+ * (fresh code, fresh TTL; the old code dies). All grantAccess preconditions are pre-checked
+ * here so the requester gets an honest answer, but they are re-checked at approval time —
+ * the queue is advisory, the access file is the truth.
+ */
+export function requestGrant(
+  pendingFile: string,
+  accessFile: string,
+  id: string,
+  ownerId: string | undefined,
+  now: number = Date.now(),
+): RequestResult {
+  const pending = loadPending(pendingFile, now);
+
+  if (!/^\d{1,20}$/.test(id)) return { ok: false, status: "invalid-id", pendingCount: pending.length };
+  if (ownerId && id === ownerId) return { ok: true, status: "is-owner", pendingCount: pending.length };
+
+  const access = loadAccess(accessFile);
+  if (access.ids.has(id)) return { ok: true, status: "already-member", pendingCount: pending.length };
+  if (access.locked) return { ok: false, status: "locked", pendingCount: pending.length };
+
+  const kept = pending.filter((p) => p.id !== id);
+  const entry: PendingGrant = {
+    id,
+    code: generateCode(),
+    requestedAt: now,
+    expiresAt: now + PENDING_GRANT_TTL_MS,
+  };
+  kept.push(entry);
+  savePending(pendingFile, kept);
+
+  return { ok: true, status: "pending", code: entry.code, expiresAt: entry.expiresAt, pendingCount: kept.length };
+}
+
+export type ResolveStatus =
+  | "approved"
+  | "denied"
+  | "not-owner"
+  | "unknown-code"
+  | "locked"
+  | "already-member";
+
+/** Result of an approve/deny attempt. */
+export interface ResolveResult {
+  ok: boolean;
+  status: ResolveStatus;
+  id?: string;
+  count?: number;
+  locked?: boolean;
+}
+
+/**
+ * Approve or deny a pending grant — THE code-enforced gate.
+ *
+ * The caller passes `approverId` taken from Discord's authenticated message author (the
+ * gateway's `IncomingMessage.userId`), never from message text. Anything short of an exact
+ * owner-id match refuses, including when the owner id is unconfigured (fail-safe deny —
+ * with no owner there is no approver). Codes are single-use: the pending entry is consumed
+ * on approve AND on deny, so a replayed code lands on 'unknown-code'.
+ */
+export function resolvePending(
+  pendingFile: string,
+  accessFile: string,
+  code: string,
+  approverId: string,
+  ownerId: string | undefined,
+  action: "approve" | "deny",
+  now: number = Date.now(),
+): ResolveResult {
+  if (!ownerId || approverId !== ownerId) return { ok: false, status: "not-owner" };
+
+  const pending = loadPending(pendingFile, now);
+  const normalized = code.trim().toUpperCase();
+  const entry = pending.find((p) => p.code === normalized);
+  if (!entry) return { ok: false, status: "unknown-code" };
+
+  // Consume the code first — approve or deny, it is spent (single-use, no replay).
+  savePending(
+    pendingFile,
+    pending.filter((p) => p.code !== normalized),
+  );
+
+  if (action === "deny") return { ok: true, status: "denied", id: entry.id };
+
+  const r = grantAccess(accessFile, entry.id, ownerId);
+  if (r.status === "granted") return { ok: true, status: "approved", id: entry.id, count: r.count, locked: r.locked };
+  if (r.status === "already-member" || r.status === "is-owner")
+    return { ok: true, status: "already-member", id: entry.id, count: r.count, locked: r.locked };
+  if (r.status === "locked") return { ok: false, status: "locked", id: entry.id, count: r.count, locked: true };
+  // invalid-id can't happen (validated at request time + loadPending), but fail safe anyway.
+  return { ok: false, status: "unknown-code" };
 }

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { Concierge, type ConciergeSession, type TurnMessage } from "./index.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
+import { loadAccess, requestGrant } from "../discord/access.ts";
 
 const CHAN = "1097283746520174592";
 const OUTSIDER = "222222222222222222";
@@ -90,7 +91,7 @@ test("outsider DM is denied before typing or session turn", async () => {
   expect(typings).toHaveLength(0);
   expect(posts).toHaveLength(1);
   expect(posts[0]!.replyTo).toBe("msg-1");
-  expect(posts[0]!.text).toContain("beckett access grant");
+  expect(posts[0]!.text).toContain("invite-only");
 });
 
 test("member in access.txt reaches the normal session path", async () => {
@@ -103,5 +104,72 @@ test("member in access.txt reaches the normal session path", async () => {
   expect(asks).toHaveLength(1);
   expect(typings.length).toBeGreaterThan(0);
   expect(posts).toEqual([{ channelId: CHAN, text: "ok", replyTo: "msg-1" }]);
+});
+
+// ── two-phase grant: the code-level approval intercept ────────────────────────────────────
+
+const OWNER = "444444444444444444";
+const CANDIDATE = "555555555555555555";
+
+function fileRequest(dir: string, ownerId: string): string {
+  process.env.DISCORD_OWNER_ID = ownerId;
+  const r = requestGrant(join(dir, "access-pending.json"), join(dir, "access.txt"), CANDIDATE, ownerId);
+  expect(r.status).toBe("pending");
+  return r.code!;
+}
+
+test("owner saying `approve <code>` grants at code level — no LLM turn involved", async () => {
+  const dir = tmpBeckettDir();
+  const code = fileRequest(dir, OWNER);
+  const { concierge, asks, posts } = harness();
+
+  await concierge.onMessage(message({ userId: OWNER, content: `<@1385001> approve ${code.toLowerCase()}` }));
+
+  expect(asks).toHaveLength(0); // never reached the session
+  expect(posts).toHaveLength(1);
+  expect(posts[0]!.text).toContain(CANDIDATE);
+  expect(posts[0]!.text).toContain("is in");
+  expect(loadAccess(join(dir, "access.txt")).ids.has(CANDIDATE)).toBe(true);
+});
+
+test("a MEMBER echoing the code is refused and the code survives for the owner", async () => {
+  const dir = tmpBeckettDir();
+  const code = fileRequest(dir, OWNER);
+  writeFileSync(join(dir, "access.txt"), `${MEMBER}\n`, "utf8");
+  const { concierge, asks, posts } = harness();
+
+  await concierge.onMessage(message({ userId: MEMBER, content: `approve ${code}` }));
+
+  expect(asks).toHaveLength(0);
+  expect(posts).toHaveLength(1);
+  expect(posts[0]!.text).toContain("owner-only");
+  expect(loadAccess(join(dir, "access.txt")).ids.has(CANDIDATE)).toBe(false);
+
+  // The impostor attempt must not have burned the code — the real owner can still approve.
+  await concierge.onMessage(message({ userId: OWNER, messageId: "msg-2", content: `deny ${code}` }));
+  expect(posts[1]!.text).toContain("discarded");
+});
+
+test("owner mentioning approve mid-sentence is a normal LLM turn, not an approval", async () => {
+  const dir = tmpBeckettDir();
+  fileRequest(dir, OWNER);
+  const { concierge, asks } = harness();
+
+  await concierge.onMessage(message({ userId: OWNER, content: "should I approve BQZ2XW or not, what do you think?" }));
+
+  expect(asks).toHaveLength(1); // fell through to the session — shape must match exactly
+  expect(loadAccess(join(dir, "access.txt")).ids.has(CANDIDATE)).toBe(false);
+});
+
+test("owner approving a bogus code gets 'no pending request' and nothing is granted", async () => {
+  const dir = tmpBeckettDir();
+  process.env.DISCORD_OWNER_ID = OWNER;
+  const { concierge, asks, posts } = harness();
+
+  await concierge.onMessage(message({ userId: OWNER, content: "approve ZZZZZZ" }));
+
+  expect(asks).toHaveLength(0);
+  expect(posts[0]!.text).toContain("no pending request");
+  expect(loadAccess(join(dir, "access.txt")).ids.size).toBe(0);
 });
 
