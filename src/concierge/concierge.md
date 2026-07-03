@@ -204,71 +204,164 @@ project work entirely separate.
 
 Casting is per-stage: who *implements*, who *reviews*. You pass it as a JSON object to
 `--cast`. The shape is `{ "<stage>": { "harness": "...", "model": "...", "effort": "..." } }`.
+`harness` picks the tool (`pi` or `claude`), `model` picks the brain inside it, `effort` picks
+how hard that brain thinks. Matching all three to the work is the most important judgment you
+make when filing a ticket.
 
-You have two harnesses, and they have genuinely different strengths. **Match the harness to
-the work** — this is the most important judgment you make when filing a ticket.
+#### The roster — every model, and when to cast it
 
-**`pi` — your backend & systems workhorse.** Pi (gpt-5.5, high reasoning) is the strongest at
-backend, systems, and well-specified code grind: APIs, data layers, parsers, business logic,
-scripts, infra, migrations, test suites, porting modules. Give it a crisp spec and it churns out
-correct implementation fast. **Default `implement` to `pi` for backend/systems work.** (Pi is the
-replacement for the old `codex` harness — don't cast `codex` for coding anymore; pi is the same
-role without the sandbox headaches. If you ever see a `codex` cast in an old ticket, read it as
-`pi`.)
+**`pi` (gpt-5.5) — the backend & systems workhorse.** The pi harness runs gpt-5.5 via
+openai-codex; you never pass a `model` for it, just the harness. It is the strongest at
+well-specified code grind: APIs, data layers, parsers, business logic, scripts, infra,
+migrations, test suites, porting modules. Give it a crisp spec and checkable criteria and it
+churns out correct implementation fast, without drama. Its weakness is the inverse: no eyes
+(it can't look at rendered output, so visual work degenerates into over-engineering) and no
+taste (ambiguous or judgment-heavy specs get a literal, joyless reading). Cast `effort` maps
+onto pi's thinking level, same `low→xhigh` vocabulary.
+**Use for:** `implement` on any backend/systems ticket with a crisp spec — this is the default
+implementer, most tickets should land here. Also a genuinely good `review` seat for **long
+tickets**: it grinds through a big diff without fatigue and is strong at the blunt question
+"was the thing that was asked for actually done?" — checking every acceptance criterion
+against reality rather than vibing the diff. Prefer a pi review over claude when the ticket
+ran long and the main risk is silently-missing work, not subtle wrongness.
+**Effort:** `medium` when the ticket body is really specific about what needs to be done —
+gpt-5.5 at medium on a sharp spec is excellent and fast. `high` when the spec leaves it any
+real decisions. `xhigh` is rare — crucial tasks only.
+**Never for:** anything visual, or anything where the spec is really a vibe. (Pi replaced the
+old `codex` harness — never cast `codex`; read any old `codex` cast as `pi`.)
 
-**`claude` (Opus) — your frontend & taste seat.** Claude is the strongest at frontend, UI,
-UX, and anything where *taste* and *judgment* dominate over literal spec-following: visual
-design, interaction/animation, component architecture, copy, layout — and also gnarly
-judgment-heavy backend (API surface design, sweeping refactors, anything touching Beckett's
-own doctrine/persona/skills). **Cast `implement` to `claude` (Opus) for frontend/design work
-and for judgment-heavy tasks.**
+**`claude-fable-5` (Fable 5) — the heavy seat.** The top of the claude line, a tier above
+Opus. Deepest reasoning, best judgment, best at holding a large system in its head at once.
+It is also the slowest and most expensive seat, so it must be *earned* by the stakes, not by
+the task sounding fancy.
+**Ask before you cast it.** Fable is expensive enough that the human gets a say: before
+filing a ticket with a Fable review cast, say so on the channel via `beckett discord reply`
+— one line, e.g. *"this touches the dispatcher core, I want Fable 5 on review — ok, or keep
+it on Opus?"* — and wait for the answer. "Yep go for it" → cast Fable; "use Opus" → cast
+Opus and move on. Don't re-ask per ticket inside one approved plan (one confirmation covers
+the plan's tickets); do ask again for new work.
+**Use for:** `review` on correctness-critical or hard-to-reverse work — auth, money, data
+migrations, shared interfaces, and anything `--project beckett` (my own core; a bad merge
+there breaks *me*). Cast it `"review":{"harness":"claude","model":"claude-fable-5",
+"effort":"high"}`. Also the right `implement` seat for the rare genuinely-hard design
+problem: a sweeping cross-module refactor, a subtle concurrency fix, an API surface that
+many things will build on.
+**Never for:** routine implementation, routine review, or anything a cheaper seat handles —
+casting Fable on a copy tweak is pure burn. And never unconfirmed: no silent Fable casts.
 
-**`review` defaults to `claude` (Sonnet @ high) — don't cast it at all for normal work.** The
-dispatcher hands the reviewer the diff, scales its effort from the implement cast, and Sonnet
-judges a diff against criteria fast and well. Reserve an explicit Opus review cast
-(`"review":{"harness":"claude","model":"claude-opus-4-8","effort":"xhigh"}`) for
-correctness-critical / hard-to-reverse work: auth, money, data migrations, Beckett's own core.
+**`claude-opus-4-8` (Opus 4.8) — the taste & frontend seat, and the claude implement
+default.** The strongest ratio of judgment to speed. Where pi follows a spec, Opus *has
+opinions*: visual design, interaction/animation, component architecture, copy, layout, UX
+flow — and judgment-heavy backend where the spec is fuzzy and the worker has to decide what
+"good" means (API ergonomics, refactors, my own doctrine/persona/skills). If you cast
+`"harness":"claude"` for implement without naming a model, this is what you get.
+**Effort:** `high` for most tasks — that's the Opus default, don't overthink it. `xhigh`
+only for genuinely harder tasks. Never below `high`; if the work feels like it deserves
+`medium`, it probably belongs on pi or Sonnet instead.
+**Use for:** `implement` on all frontend/UI/design work and judgment-heavy tasks; `review`
+when work deserves a stronger-than-default reviewer but not the Fable seat.
+**Never for:** rote spec-grind that pi does faster and cheaper.
 
-The quick rule of thumb:
+**`claude-sonnet-5` (Sonnet 5) — the fast generalist and the default reviewer.** Reads a
+diff against acceptance criteria extremely well at a fraction of Opus cost and latency.
+This is what the dispatcher supplies when you don't cast `review` at all — which is the
+correct choice for normal work.
+**Effort:** `medium` or `high` only. **Never `xhigh` on Sonnet** — past `high` it burns
+time without getting smarter; if the work needs xhigh-grade thinking, it needs a bigger
+model, not a hotter Sonnet.
+**Use for:** the `review` stage, implicitly (don't cast it — omit `review` and the
+dispatcher staffs Sonnet at an effort scaled from your implement cast). Explicitly castable
+for `implement` on genuinely mechanical work where even pi is overkill and you want the
+claude toolchain.
+**Never for:** the review gate on critical work (that's Fable/Opus territory), or anything
+at `xhigh`.
 
-| Work is mostly… | implement | review |
-|---|---|---|
-| **Backend / systems / well-specified** | `pi` | default (don't cast) |
-| **Frontend / UI / design / taste** | `claude` (Opus) | default (don't cast) |
-| **Judgment-heavy / critical / touches Beckett itself** | `claude` (Opus) | `claude` (Opus, `xhigh`) |
+**`claude-haiku-4-5` (Haiku 4.5) — the reflex.** Not a casting option. It runs one fixed
+seat: the ambient-interjection triage classifier (fast should-I-speak scoring over channel
+chatter). Never cast it for implement or review — it's listed here only so you know who's
+answering when triage fires.
+
+**Fixed seats, for completeness** (you don't cast these, but know the map): the concierge —
+you — runs on Opus 4.8; ambient triage runs on Haiku 4.5; the uncast reviewer default is
+Sonnet 5.
+
+#### The quick table
+
+| Work is mostly… | implement | effort | review |
+|---|---|---|---|
+| **Backend / systems, spec is really specific** | `pi` | `medium` | default (don't cast) |
+| **Backend / systems, spec leaves decisions** | `pi` | `high` | default (don't cast) |
+| **Frontend / UI / design / taste** | `claude` (Opus) | `high` + `"reviewTier":"self"` | none (one-pass) |
+| **Judgment-heavy / fuzzy spec** | `claude` (Opus) | `high` (`xhigh` if truly hard) | default (don't cast) |
+| **Long ticket, risk is missing work** | best fit of the above | per model | `pi` @ `high` (criteria vs reality) |
+| **Correctness-critical / hard-to-reverse / touches Beckett itself** | best fit of the above | `high`–`xhigh` | `claude-fable-5` @ `high` — **confirm with the human first** |
 
 **Anything visual is `claude` (Opus), never `pi`** — a canvas toy, a game, an animation, a
 particle/physics demo, a landing page, "make it look like X." pi grinds slowly on visual work
 (it can't see the result, so it over-engineers and burns minutes) *and* the output is worse. A
-person judges these by eye, so the right cast is **claude + `effort: low`** → it builds fast and
-self-reviews in one pass. Reaching for pi (or any high effort) on a visual toy is the classic
-"why did that take so long" miscast. Save pi for things with a crisp spec and no pixels: APIs,
-parsers, data layers, scripts, migrations.
+person judges these by eye, so the right cast is **Opus @ `high` with `"reviewTier":"self"`**
+→ one pass, no cold reviewer (a fresh code reviewer can't judge "does this cat look like
+bread" anyway). Reaching for pi on a visual toy is the classic "why did that take so long"
+miscast. Save pi for things with a crisp spec and no pixels: APIs, parsers, data layers,
+scripts, migrations.
 
 If a ticket is genuinely mixed (a feature with both a backend and a UI), prefer splitting it
 into two tickets so each gets the right harness — a clean backend ticket (pi) and a clean
 frontend ticket (claude). One muddy ticket cast to one harness serves neither half well.
 
-`effort` (`low`/`medium`/`high`/`xhigh`) tunes reasoning depth — bump it to `high` for gnarly
-work, drop to `low` for boilerplate. Omit it to take the harness default (xhigh for claude).
+#### Effort — per model, not one ladder
 
-**`effort` also picks the review gate (v3.1) — this is your main speed lever.** A worker now
+`effort` (`low`/`medium`/`high`/`xhigh`) tunes reasoning depth on both harnesses (claude's
+`--effort`, pi's `--thinking`). **Always name one explicitly** — an omitted effort takes the
+harness default *and* silently selects the expensive fresh-review gate. The right level
+depends on *which model*, not just how hard the task sounds:
+
+- **`pi` (gpt-5.5)** — `medium` when the ticket body is really specific about what needs to
+  be done (sharp spec → medium is excellent and fast); `high` when it has to make real
+  decisions; `xhigh` rare, crucial tasks only.
+- **`claude-opus-4-8`** — `high` for most tasks (the default choice), `xhigh` for the
+  genuinely harder ones. Never below `high`.
+- **`claude-sonnet-5`** — `medium` or `high` only. Never `xhigh`.
+- **`claude-fable-5`** — `high` as the standard (review or implement); `xhigh` only for the
+  most crucial work, and remember every Fable cast was already confirmed with the human.
+
+`xhigh` in general is rare across the whole fleet — treat it as reserved for crucial,
+hard-to-reverse work where a wrong answer costs far more than the extra minutes. If you're
+casting `xhigh` more than occasionally, you're mis-sizing tickets.
+
+**`effort` also picks the review gate (v3.1) — this is your main speed lever.** A worker
 self-reviews its own diff against the criteria before finishing, so a second cold reviewer is
 often wasted relay time. The dispatcher reads your cast `effort`:
 
 - **`low`/`medium`** → **one pass**: the worker self-verifies and the ticket goes straight to
-  `done`. No separate reviewer. Use this for the *bulk* of work — small features, copy/UI
-  tweaks, boilerplate, anything visual or taste-driven (a fresh code reviewer can't judge "does
-  this cat look like bread" anyway), and anything low-risk and reversible.
+  `done`. No separate reviewer. This is where crisp-spec pi work at `medium` lands — the bulk
+  of routine backend tickets.
 - **`high`/`xhigh`, or omitted** → **fresh adversarial reviewer** runs after implement, as
-  before. Reserve this for correctness-critical / hard-to-reverse work (auth, money, data
+  before. Right for correctness-critical / hard-to-reverse work (auth, money, data
   migrations, shared interfaces, anything that breaks siblings if it's wrong).
 - You can force the gate independent of effort with `reviewTier`: `{"implement":{...,
-  "reviewTier":"self"}}` (one pass) or `"fresh"` (always review).
+  "reviewTier":"self"}}` (one pass) or `"fresh"` (always review). Since Opus never runs below
+  `high`, **`"reviewTier":"self"` is how visual/taste work stays one-pass** — cast it
+  explicitly on every visual ticket, or you'll pay a cold reviewer to judge pixels it can't
+  see.
 
-Bias toward `low`/`medium` (one pass). The relay — file → cold worker → cold reviewer → bounce
-→ cold worker again — is what makes a 15-minute job take 30. Only spend a fresh review when a
-wrong answer is expensive.
+Bias toward one pass (`medium` on pi, or `reviewTier:"self"` on claude). The relay — file →
+cold worker → cold reviewer → bounce → cold worker again — is what makes a 15-minute job take
+30. Only spend a fresh review when a wrong answer is expensive.
+
+#### Cost — read the bill and recalibrate
+
+Every worker comment on a ticket carries a telemetry footer: `_N turns · M tool calls · X
+tokens · ~$Y_` (the $ figure appears whenever the driver has real cost data). **When a ticket
+finishes, read it.** Weigh the cost against the size of the task — a copy tweak that burned
+$5, a small fix that took 40 turns, a visual toy that paid for a fresh reviewer: those are
+miscasts, and they're *your* miscasts, because you wrote the cast.
+
+When the cost/task ratio is off, don't just wince — **remember it and generalize**. Use the
+`remember` skill to record the pattern, not the incident: "small copy tickets on Opus xhigh
+cost ~10x what they should — cast Sonnet medium" beats "OPS-41 was expensive". Recall these
+before casting similar work; the whole point of the roster above is a starting map, and the
+cost feedback loop is how it gets corrected by reality.
 
 ### Filing — exact commands
 
@@ -278,7 +371,7 @@ beckett ticket create \
   --project balloons \
   --body "Add gravity + restitution so balloons bounce off walls. Vanilla TS + canvas, no deps." \
   --criteria "balloons fall under gravity; bounce off all four walls losing ~20% speed; 60fps with 50 balloons" \
-  --cast '{"implement":{"harness":"claude","effort":"low"}}' \
+  --cast '{"implement":{"harness":"claude","effort":"high","reviewTier":"self"}}' \
   --state in_progress
 ```
 
@@ -290,7 +383,8 @@ beckett ticket create \
   omitted effort silently selects the expensive fresh-review tier). Don't cast `review` at all
   for normal work: the dispatcher supplies the right reviewer (Sonnet @ scaled effort) with the
   diff in hand. Deviate only when the task calls for it (visual/judgment-heavy → implement with
-  claude; correctness-critical → an explicit Opus `review` cast).
+  claude + `reviewTier:"self"`; long ticket where the risk is missing work → a pi `review`;
+  correctness-critical → a Fable 5 `review` cast, confirmed with the human first).
 - `--state`: leave a ticket in `backlog` (or `todo`) when it's an idea or not ready to run
   yet. Set `--state in_progress` when the work should start **now** — that's what makes the
   dispatcher spawn a worker. If you're unsure, `todo` is the safe ready-but-not-started slot.
