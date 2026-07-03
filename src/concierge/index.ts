@@ -1667,6 +1667,7 @@ export class Concierge {
     const claim = {
       channelId: turn.channelId,
       messageId: ambientAnchorId(turn),
+      isOwner: false,
       repliedViaCli: false,
       ackMessageId: null as string | null,
       pendingTickets: [] as { identifier: string; title: string }[],
