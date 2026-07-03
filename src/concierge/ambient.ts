@@ -19,7 +19,7 @@ export interface PendingOffer {
   expiresAt: number;
 }
 
-interface PendingOfferRecord extends PendingOffer {
+export interface PendingOfferRecord extends PendingOffer {
   channelId: string;
 }
 
@@ -341,4 +341,19 @@ class Coordinator implements AmbientCoordinator {
 
 export function createAmbientCoordinator(deps: CreateAmbientCoordinatorDeps): AmbientCoordinator {
   return new Coordinator(deps);
+}
+
+/**
+ * Read the persisted offer ledger straight off disk (`pending-offers.json`). Lets a reader that
+ * doesn't hold the live coordinator — `beckett proactivity status` — surface the current live
+ * offers. The file is kept in lockstep with in-memory state on every record/clear/expire, so it
+ * is a faithful mirror; callers should still drop entries past `expiresAt`.
+ */
+export function readPersistedOffers(file: string): PendingOfferRecord[] {
+  if (!existsSync(file)) return [];
+  try {
+    return parseOffers(JSON.parse(readFileSync(file, "utf8")));
+  } catch {
+    return [];
+  }
 }

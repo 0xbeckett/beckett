@@ -790,6 +790,28 @@ async function main(): Promise<void> {
     });
   }
 
+  // ── proactivity (control bus: ambient-interjection posture) ─────────────────────────────
+  // Beckett's own "chill out in here" / "you can jump in here" lever, routed to the running
+  // Concierge over the control bus (§4.6). `set … auto` is owner-gated in the bus handler.
+  if (group === "proactivity") {
+    if (sub === "status") {
+      await bus("proactivity.status", {});
+    }
+    if (sub === "set") {
+      const { _ } = parse(rest);
+      const channelId = _[0]?.trim();
+      const mode = _[1]?.trim();
+      if (!channelId || (mode !== "off" && mode !== "suggest" && mode !== "auto")) {
+        fail("usage: beckett proactivity set <channel-id> off|suggest|auto");
+      }
+      await bus("proactivity.set", { channelId, mode });
+    }
+    if (sub === "off") {
+      await bus("proactivity.off", {});
+    }
+    fail("usage: beckett proactivity status | set <channel-id> off|suggest|auto | off");
+  }
+
   // ── rpc (in-process: write status file for the RPC daemon) ──────────────────────────────
   if (group === "rpc") {
     const { _, flags } = parse([sub, ...rest].filter(Boolean) as string[]);
@@ -809,7 +831,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | identity set|show|list | discord reply | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | identity set|show|list | discord reply | proactivity status|set|off | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

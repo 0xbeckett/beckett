@@ -28,7 +28,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Config, IncomingMessage, Logger } from "../types.ts";
+import type { Config, IncomingMessage, Logger, ProactivityMode } from "../types.ts";
 import type { PollEvent, PlaneComment, Ticket } from "../plane/types.ts";
 import { log as rootLog } from "../log.ts";
 import { loadConfig } from "../config.ts";
@@ -48,6 +48,8 @@ import {
   type UserIdentity,
 } from "../discord/identity.ts";
 import { createProgressHub, type ProgressHub, type ProgressSink } from "../discord/progress.ts";
+import { setChannelModeOverride, setEnabledOverride } from "./proactivity-store.ts";
+import { readPersistedOffers } from "./ambient.ts";
 import { classify, loadAccess, type AccessLevel } from "../discord/access.ts";
 import { childEnv as strippedChildEnv } from "../env.ts";
 
@@ -940,6 +942,8 @@ export class Concierge {
   private activeMention: {
     channelId: string;
     messageId: string;
+    /** True iff the speaker on THIS turn is the owner — the code-side gate for `proactivity set … auto`. */
+    isOwner: boolean;
     repliedViaCli: boolean;
     /** Id of the ack message the Concierge posted this turn — the thread anchor (null until posted). */
     ackMessageId: string | null;
@@ -1186,6 +1190,48 @@ export class Concierge {
         return { ok: false, error: (err as Error).message };
       }
     }
+    if (req.cmd === "proactivity.status") {
+      // "What's my ambient-interjection posture right now?" — effective per-channel mode, the
+      // hard caps, and any live offers awaiting consent (§4.6). Pure read; never mutates.
+      return { ok: true, data: this.proactivityStatus() };
+    }
+    if (req.cmd === "proactivity.set") {
+      const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
+      const mode = typeof req.args.mode === "string" ? req.args.mode.trim() : "";
+      if (!channelId || (mode !== "off" && mode !== "suggest" && mode !== "auto")) {
+        return { ok: false, error: "usage: beckett proactivity set <channel-id> off|suggest|auto" };
+      }
+      // Owner gate on `auto` (proceed-on-silence) — enforced HERE in code, never left to the model
+      // (§4.6). It requires the speaker on the requesting turn to be the owner; a turn issued by
+      // anyone else (or a manual CLI call with no live turn) can flip a channel off/suggest but not auto.
+      if (mode === "auto" && !this.currentMention()?.isOwner) {
+        return {
+          ok: false,
+          error: "auto (proceed-on-silence) is owner-only — only the owner can arm it on a channel",
+        };
+      }
+      const overrideFile = join(buildPaths(this.config).beckettDir, "proactivity.json");
+      try {
+        setChannelModeOverride(overrideFile, channelId, mode as ProactivityMode);
+      } catch (err) {
+        return { ok: false, error: `failed to persist proactivity override: ${(err as Error).message}` };
+      }
+      // Mutate the in-memory config IN PLACE. The coordinator (once wired) holds a reference to this
+      // very `proactivity` object, so the change takes effect live — no reload, no restart.
+      this.config.proactivity.channels[channelId] = mode as ProactivityMode;
+      return { ok: true, data: { channelId, mode, effective: this.effectiveProactivityMode(channelId) } };
+    }
+    if (req.cmd === "proactivity.off") {
+      // The global kill switch: flip runtime `enabled` false, silencing every channel at once.
+      const overrideFile = join(buildPaths(this.config).beckettDir, "proactivity.json");
+      try {
+        setEnabledOverride(overrideFile, false);
+      } catch (err) {
+        return { ok: false, error: `failed to persist proactivity kill switch: ${(err as Error).message}` };
+      }
+      this.config.proactivity.enabled = false;
+      return { ok: true, data: { enabled: false, killed: true } };
+    }
     if (req.cmd !== "discord.reply") {
       return { ok: false, error: `concierge bus: unknown command "${req.cmd}"` };
     }
@@ -1221,6 +1267,50 @@ export class Concierge {
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
+  }
+
+  /** The effective ambient mode for a channel: `off` whenever proactivity is disabled globally,
+   *  else the per-channel override, else the default. Mirrors `AmbientCoordinator.effectiveMode`
+   *  but reads the Concierge's own config so `status` works whether or not the coordinator is wired. */
+  private effectiveProactivityMode(channelId: string): ProactivityMode {
+    const p = this.config.proactivity;
+    if (!p.enabled) return "off";
+    return p.channels[channelId] ?? p.default_mode;
+  }
+
+  /** Assemble the `beckett proactivity status` payload: master switch, per-channel effective modes,
+   *  the hard caps, and the live offers awaiting consent (read from the persisted ledger). */
+  private proactivityStatus(): Record<string, unknown> {
+    const p = this.config.proactivity;
+    const now = Date.now();
+    const offersFile = join(buildPaths(this.config).beckettDir, "pending-offers.json");
+    const liveOffers = readPersistedOffers(offersFile)
+      .filter((o) => o.expiresAt > now)
+      .map((o) => ({
+        channelId: o.channelId,
+        summary: o.summary,
+        mode: o.mode,
+        expiresInSecs: Math.max(0, Math.round((o.expiresAt - now) / 1000)),
+      }));
+    return {
+      enabled: p.enabled,
+      defaultMode: p.default_mode,
+      channels: Object.entries(p.channels).map(([channelId, mode]) => ({
+        channelId,
+        mode,
+        effective: this.effectiveProactivityMode(channelId),
+      })),
+      caps: {
+        triageModel: p.triage_model,
+        triageThreshold: p.triage_threshold,
+        burstQuietSecs: p.burst_quiet_secs,
+        channelCooldownSecs: p.channel_cooldown_secs,
+        maxInterjectionsPerHour: p.max_interjections_per_hour,
+        offerTtlSecs: p.offer_ttl_secs,
+        transcriptWindow: p.transcript_window,
+      },
+      liveOffers,
+    };
   }
 
   /**
@@ -1406,6 +1496,7 @@ export class Concierge {
     const mention = {
       channelId: m.channelId,
       messageId: m.messageId,
+      isOwner: this.ownerId() !== undefined && m.userId === this.ownerId(),
       repliedViaCli: false,
       ackMessageId: null as string | null,
       pendingTickets: [] as { identifier: string; title: string }[],
