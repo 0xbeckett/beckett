@@ -3,8 +3,8 @@
  * =======================================================================================
  * Beckett's replies should read like a person tapping out a few messages, not one wall of
  * text dropped in a single API call. This module owns the *natural* split (paragraph →
- * sentence boundaries, code fences kept whole) and the *typing cadence* (a short, jittered,
- * length-scaled delay between messages, with a hard latency cap). It is deliberately a set
+ * sentence boundaries, code fences kept whole) and the *typing cadence* (a flat, jittered 2–4s
+ * pause between messages, with a hard latency cap). It is deliberately a set
  * of PURE functions so the splitter + cadence can be unit-tested without a live gateway; the
  * gateway ({@link file://./gateway.ts} `sendNow`) wires them into the one shared send point so
  * BOTH the auto-posted turn text and the `beckett discord reply` CLI path benefit.
@@ -27,17 +27,21 @@ export const CHUNK_THRESHOLD = 300;
 /** Never fragment a reply into more than this many messages (over-fragmentation guard). */
 export const MAX_CHUNKS = 6;
 
-/** Inter-message delay floor / ceiling (~1–3s so it reads as human typing, not robotic). */
-export const MIN_GAP_MS = 900;
-export const MAX_GAP_MS = 2800;
+/**
+ * Inter-bubble pause band (OPS-84): the gap between two consecutive messages is a flat, uniform
+ * random value in this range — deliberately NOT scaled to message length. 2–4s reads like a person
+ * tapping out the next bubble, and the randomness keeps the cadence off a fixed metronome.
+ */
+export const MIN_GAP_MS = 2_000;
+export const MAX_GAP_MS = 4_000;
 
-/** Total added latency ceiling: a very long reply can never take longer than this to finish. */
-export const TOTAL_DELAY_BUDGET_MS = 9_000;
-
-/** Length that maps to the max gap — chunks longer than this all "take" MAX_GAP_MS to type. */
-const GAP_SCALE_CHARS = 400;
-/** Peak-to-peak jitter added to a gap (±half of this) so the cadence isn't a fixed metronome. */
-const GAP_JITTER_MS = 600;
+/**
+ * Total added latency ceiling: a pathological many-chunk reply can never take longer than this to
+ * finish. Sized well above a normal multi-bubble reply (4 bubbles ⇒ 3 gaps ⇒ ≤12s even when every
+ * gap hits the 4s ceiling) so the budget only ever bites a genuinely over-fragmented reply, never
+ * an ordinary chilled one.
+ */
+export const TOTAL_DELAY_BUDGET_MS = 16_000;
 
 export interface ChunkOptions {
   /** Below this length (and nothing to split) the whole reply is one message. */
@@ -181,15 +185,13 @@ function splitSentences(text: string): string[] {
 }
 
 /**
- * Delay (ms) to "type" a chunk of the given length before sending the NEXT message: a base gap
- * scaled toward the chunk's length plus small jitter, clamped to the human band. `rand` is
- * injectable for deterministic tests; it defaults to `Math.random`.
+ * The pause (ms) before sending the NEXT bubble: a flat, uniform random value in
+ * [{@link MIN_GAP_MS}, {@link MAX_GAP_MS}] (OPS-84). Deliberately independent of message length —
+ * SSH wants every inter-bubble pause to feel the same, not "longer message ⇒ longer wait". `rand`
+ * is injectable for deterministic tests; it defaults to `Math.random`.
  */
-export function chunkDelayMs(chunkLen: number, rand: () => number = Math.random): number {
-  const span = MAX_GAP_MS - MIN_GAP_MS;
-  const scaled = MIN_GAP_MS + (Math.min(chunkLen, GAP_SCALE_CHARS) / GAP_SCALE_CHARS) * span;
-  const jitter = (rand() - 0.5) * GAP_JITTER_MS;
-  return Math.round(clamp(scaled + jitter, MIN_GAP_MS, MAX_GAP_MS));
+export function bubbleGapMs(rand: () => number = Math.random): number {
+  return Math.round(MIN_GAP_MS + rand() * (MAX_GAP_MS - MIN_GAP_MS));
 }
 
 export interface ScheduleOptions {
@@ -200,29 +202,27 @@ export interface ScheduleOptions {
 }
 
 /**
- * Build the inter-message delay schedule for a sequence of message lengths. Returns one gap per
- * gap between consecutive messages (so `lengths.length - 1` entries); gap `i` precedes message
- * `i+1` and is scaled to message `i` (the one just "typed"). The sum is capped at `budget`: once
- * the budget is spent the remaining gaps are 0, so a huge reply can never take forever.
+ * Build the inter-message delay schedule for a reply that lands as `count` messages. Returns one
+ * gap per gap between consecutive messages (so `count - 1` entries); gap `i` precedes message
+ * `i+1`. The FIRST message has no leading gap — it always sends immediately. Each gap is a flat
+ * random 2–4s pause ({@link bubbleGapMs}), independent of message length. The sum is capped at
+ * `budget`: once the budget is spent the remaining gaps are 0, so a pathological many-chunk reply
+ * can never take forever.
  */
-export function delaySchedule(lengths: number[], opts: ScheduleOptions = {}): number[] {
+export function delaySchedule(count: number, opts: ScheduleOptions = {}): number[] {
   const budget = opts.budget ?? TOTAL_DELAY_BUDGET_MS;
   const rand = opts.rand ?? Math.random;
   const gaps: number[] = [];
   let spent = 0;
-  for (let i = 1; i < lengths.length; i++) {
+  for (let i = 1; i < count; i++) {
     if (spent >= budget) {
       gaps.push(0);
       continue;
     }
-    let gap = chunkDelayMs(lengths[i - 1]!, rand);
+    let gap = bubbleGapMs(rand);
     if (spent + gap > budget) gap = budget - spent; // trim the final gap to fit the budget
     spent += gap;
     gaps.push(gap);
   }
   return gaps;
-}
-
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
 }

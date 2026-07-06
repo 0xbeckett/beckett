@@ -495,9 +495,10 @@ export class DiscordJsGateway implements DiscordGateway {
     }
     if (chunks.length === 0) chunks.push("");
 
-    // Inter-message delays make several messages read as a person typing, not one API dump. Scaled
-    // to chunk length + jittered, with a total budget so a very long reply can't take forever.
-    const gaps = delaySchedule(chunks.map((c) => c.length));
+    // Inter-message delays make several messages read as a person typing, not one API dump. A flat
+    // random 2–4s pause between consecutive bubbles (OPS-84) — the first sends immediately — with a
+    // total budget so a pathological many-chunk reply can't take forever.
+    const gaps = delaySchedule(chunks.length);
     let capped = false;
 
     let firstId: string | null = null;

@@ -8,7 +8,7 @@
 import { expect, test, describe } from "bun:test";
 import {
   chunkReply,
-  chunkDelayMs,
+  bubbleGapMs,
   delaySchedule,
   CHUNK_THRESHOLD,
   MAX_CHUNKS,
@@ -148,34 +148,61 @@ describe("chunkReply — fragmentation cap", () => {
   });
 });
 
-describe("chunkDelayMs / delaySchedule — bounded human cadence", () => {
-  test("a single delay stays within the human band", () => {
-    for (const len of [0, 50, 300, 1000, 5000]) {
-      const d = chunkDelayMs(len, () => 0.5);
+describe("bubbleGapMs / delaySchedule — flat 2–4s inter-bubble jitter (OPS-84)", () => {
+  test("a single gap is a flat random value in [MIN_GAP_MS, MAX_GAP_MS]", () => {
+    for (const r of [0, 0.25, 0.5, 0.75, 0.999]) {
+      const d = bubbleGapMs(() => r);
       expect(d).toBeGreaterThanOrEqual(MIN_GAP_MS);
       expect(d).toBeLessThanOrEqual(MAX_GAP_MS);
     }
+    // The band is exactly [2000, 4000].
+    expect(MIN_GAP_MS).toBe(2000);
+    expect(MAX_GAP_MS).toBe(4000);
+    expect(bubbleGapMs(() => 0)).toBe(2000);
+    expect(bubbleGapMs(() => 1)).toBe(4000);
+    expect(bubbleGapMs(() => 0.5)).toBe(3000);
   });
 
-  test("longer chunks map to longer typing delays", () => {
-    const short = chunkDelayMs(20, () => 0.5);
-    const long = chunkDelayMs(1000, () => 0.5);
-    expect(long).toBeGreaterThan(short);
+  test("the gap is flat — it does NOT scale with message length", () => {
+    // bubbleGapMs takes no length at all: same RNG ⇒ same gap, however long the message. This is
+    // the OPS-84 behavior change away from the old length-scaled schedule.
+    expect(bubbleGapMs(() => 0.3)).toBe(bubbleGapMs(() => 0.3));
   });
 
   test("schedule has one gap between each pair of messages", () => {
-    const gaps = delaySchedule([100, 100, 100, 100], { rand: () => 0.5 });
+    const gaps = delaySchedule(4, { rand: () => 0.5 });
     expect(gaps).toHaveLength(3); // 4 messages ⇒ 3 gaps
   });
 
-  test("a single message has no delay at all", () => {
-    expect(delaySchedule([100], { rand: () => 0.5 })).toEqual([]);
+  test("the first message is immediate — the schedule is only the gaps BETWEEN messages", () => {
+    // gap[i-1] precedes message i, so message 0 has nothing before it: 3 messages ⇒ 2 gaps.
+    expect(delaySchedule(3, { rand: () => 0.5 })).toHaveLength(2);
   });
 
-  test("total added latency is capped by the budget", () => {
-    // 50 long messages would blow way past the budget without the cap.
-    const lengths = Array.from({ length: 50 }, () => 5000);
-    const gaps = delaySchedule(lengths, { rand: () => 0.9 });
+  test("a single message has no delay at all", () => {
+    expect(delaySchedule(1, { rand: () => 0.5 })).toEqual([]);
+  });
+
+  test("every gap in a normal multi-bubble reply lands in [2000, 4000]", () => {
+    for (const r of [0, 0.1, 0.5, 0.9, 0.999]) {
+      for (const g of delaySchedule(4, { rand: () => r })) {
+        expect(g).toBeGreaterThanOrEqual(MIN_GAP_MS);
+        expect(g).toBeLessThanOrEqual(MAX_GAP_MS);
+      }
+    }
+  });
+
+  test("a 4-bubble reply at max jitter is NOT truncated by the budget", () => {
+    // 4 bubbles ⇒ 3 gaps ⇒ 12s even at the 4s ceiling: comfortably under the budget, every gap
+    // survives at full 4s (no budget-reached path for a normal chilled reply).
+    const gaps = delaySchedule(4, { rand: () => 1 });
+    expect(gaps).toEqual([4000, 4000, 4000]);
+    expect(gaps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(TOTAL_DELAY_BUDGET_MS);
+  });
+
+  test("total added latency is capped by the budget for a pathological reply", () => {
+    // 50 messages at max jitter would blow way past the budget without the cap.
+    const gaps = delaySchedule(50, { rand: () => 1 });
     const total = gaps.reduce((a, b) => a + b, 0);
     expect(total).toBeLessThanOrEqual(TOTAL_DELAY_BUDGET_MS);
     // Once the budget is spent, the remaining gaps are zero (send promptly).
@@ -183,8 +210,7 @@ describe("chunkDelayMs / delaySchedule — bounded human cadence", () => {
   });
 
   test("respects a custom budget exactly", () => {
-    const lengths = Array.from({ length: 20 }, () => 4000);
-    const gaps = delaySchedule(lengths, { budget: 2500, rand: () => 0.5 });
+    const gaps = delaySchedule(20, { budget: 2500, rand: () => 0.5 });
     expect(gaps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(2500);
   });
 });
