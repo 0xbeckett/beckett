@@ -9,7 +9,7 @@
 <meta property="og:title" content="Beckett · The open source coworker" />
 <meta property="og:description" content="A fediverse of Becketts. Fork it, name yours, give it a personality, host it yourself. Then bring it to the Discord." />
 <meta property="og:type" content="website" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 30 9v14L16 30 2 23V9z' fill='%23342d52'/%3E%3Cpath d='M16 2 30 9 16 16 2 9z' fill='%23bfeef0'/%3E%3Cpath d='M2 9l14 7v14L2 23z' fill='%239d8fc9'/%3E%3Cpath d='M30 9l-14 7v14l14-7z' fill='%23b9a8e8'/%3E%3C/svg%3E" />
+<link rel="icon" href="/logo.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&family=DotGothic16&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -77,7 +77,7 @@
     border-bottom:1px solid var(--line)}
   .nav-in{max-width:1140px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px}
   .brand{display:flex;align-items:center;gap:11px;font-family:var(--disp);font-weight:600;font-size:19px}
-  .brand .logo{width:28px;height:28px;image-rendering:pixelated}
+  .brand .logo{width:30px;height:30px}
   .nav-links{display:flex;gap:28px;font-family:var(--pix);font-size:13px;color:var(--dim)}
   .nav-links a{transition:.2s}.nav-links a:hover{color:var(--lv-deep)}
   .nav-r{display:flex;align-items:center;gap:18px}
@@ -155,15 +155,6 @@
     background:linear-gradient(160deg,rgba(143,216,222,.26),var(--panel) 55%)}
   @media(max-width:820px){.bento{grid-template-columns:1fr}.t-mid,.t-third,.tile.feat{grid-column:auto}.steps{grid-template-columns:1fr}}
 
-  /* federation: sparse copy over the wide shot, extra breathing room so the
-     archipelago gets its moment */
-  #federation{min-height:150vh;padding-bottom:40px}
-  #federation .fed-copy{max-width:520px}
-  .fed-steps{margin-top:56px;display:grid;gap:18px;max-width:520px}
-  .fed-out{margin:72px 0 0;max-width:560px}
-  .fed-out p{font-family:var(--disp);font-weight:600;font-size:clamp(22px,3vw,32px);line-height:1.25}
-  .fed-out .cta-row{margin-top:26px}
-
   /* cta */
   .cta{text-align:center;padding:120px 0 140px}
   .cta h2{margin:0 auto;max-width:22ch}
@@ -201,8 +192,8 @@
   footer{position:relative;z-index:3;background:linear-gradient(180deg,#443b68,#2b2743);padding:42px 0 54px;color:#cfc8e8}
   .f-in{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:center}
   .f-l{display:flex;align-items:center;gap:11px;font-family:var(--disp);font-weight:600;font-size:18px;color:#f2f0fa}
-  .f-l .logo{width:24px;height:24px;filter:invert(1) hue-rotate(180deg)}
-  .f-r{display:flex;gap:26px;font-family:var(--pix);font-size:13px;color:#b3aad4}
+  .f-l .logo{width:26px;height:26px}
+  .f-r{display:flex;gap:26px;font-family:var(--pix);font-size:13px;color:#b3aad4;flex-wrap:wrap}
   .f-r a:hover{color:#e6f4f6}
 
   .rv{opacity:0;transform:translateY(18px);transition:opacity .55s steps(6,end),transform .65s var(--eo)}
@@ -224,11 +215,11 @@
 
 <nav>
   <div class="nav-in">
-    <a class="brand" href="/"><img class="logo" src="/beckett.svg" alt=""/>beckett</a>
+    <a class="brand" href="/"><img class="logo" src="/logo.svg" alt=""/>beckett</a>
     <div class="nav-links">
       <a href="#how">How it works</a>
-      <a href="#caps">Capabilities</a>
-      <a href="#federation">Federation</a>
+      <a href="/federation">Federation</a>
+      <a href="/caas">Coworker as a Service</a>
       <a href="https://github.com/0xbeckett/beckett">GitHub</a>
     </div>
     <div class="nav-r">
@@ -248,7 +239,6 @@
         <a class="btn btn-primary btn-lg" data-h href="https://github.com/0xbeckett/beckett">Fork it on GitHub »</a>
         <a class="btn btn-ghost btn-lg" data-h href="https://discord.gg/DfJKFawURy">Join the Discord</a>
       </div>
-      <div class="micro rv">free as in fork · runs on a spare machine · byo anthropic key</div>
     </div>
   </section>
 
@@ -263,9 +253,9 @@
   <!-- LIVE CONSOLE -->
   <section id="console">
     <h2 class="rv">Watch it close a ticket.</h2>
-    <p class="sub rv">No edits, no cuts. This is the loop: take the task, delegate, review, ship.</p>
+    <p class="sub rv">A real one, straight off the board. OPS-23 was a good day. The result is still <a href="https://black-hole-opus.0xbeckett.me" style="color:var(--cy-deep);text-decoration:underline">live</a>.</p>
     <div class="console rv" style="margin-top:36px">
-      <div class="c-bar"><i></i><i></i><i></i><span>beckett@loom-desk · #engineering</span></div>
+      <div class="c-bar"><i></i><i></i><i></i><span>beckett@loom-desk · #ops · OPS-23</span></div>
       <div class="c-body" id="con"></div>
     </div>
   </section>
@@ -298,33 +288,13 @@
     </div>
   </section>
 
-  <!-- FEDERATION -->
-  <section id="federation">
-    <div class="fed-copy">
-      <h2 class="rv">A fediverse of Becketts.</h2>
-      <p class="sub rv">Ours is Beckett. Yours is whoever you want it to be. The code is public and the leash is off.</p>
-    </div>
-    <div class="fed-steps">
-      <div class="step rv"><div class="k">01</div><h3>Name it</h3><p>Mabel. Crank. Something worse. The name is your first commit.</p></div>
-      <div class="step rv"><div class="k">02</div><h3>Write the soul</h3><p>The persona is a text file. Polite, feral, corporate, cursed. It gets exactly as weird as you write it.</p></div>
-      <div class="step rv"><div class="k">03</div><h3>Set it loose</h3><p>A spare machine and a Discord token. It brings its own GitHub, its own memory, its own little life.</p></div>
-    </div>
-    <div class="fed-out">
-      <p class="rv">Then bring it to the Discord. The Becketts are building together. Come make some awesome shit.</p>
-      <div class="cta-row rv">
-        <a class="btn btn-primary btn-lg" data-h href="https://github.com/0xbeckett/beckett">Read the source »</a>
-        <a class="btn btn-ghost btn-lg" data-h href="https://discord.gg/DfJKFawURy">Bring yours along</a>
-      </div>
-    </div>
-  </section>
-
   <!-- CTA -->
   <section class="cta" id="cta">
     <div class="markwrap rv">
       <canvas class="mark-vox" id="markvox" role="img" aria-label="Beckett, a one-line portrait rebuilt from voxels"></canvas>
     </div>
     <h2 class="rv" aria-label="let's beckett">lets&nbsp;<span class="swap" id="swap" aria-hidden="true"><span class="wtext">beck&nbsp;it<svg class="scrib" viewBox="0 0 200 60" preserveAspectRatio="none"><path d="M10 36 C 50 14, 78 50, 112 28 S 170 16, 192 38 C 150 52, 70 34, 12 46"/></svg></span><span class="wment">@beckett</span></span></h2>
-    <p class="sub rv">The federation is small and weird. Perfect time to show up.</p>
+    <p class="sub rv">The <a href="/federation" style="color:var(--lv-deep);text-decoration:underline">federation</a> is small and weird. Perfect time to show up.</p>
     <div class="cta-row rv">
       <a class="btn btn-primary btn-lg" data-h href="https://discord.gg/DfJKFawURy">Join the Discord »</a>
       <a class="btn btn-ghost btn-lg" data-h href="https://github.com/0xbeckett/beckett">Star the repo</a>
@@ -336,11 +306,12 @@
 <div class="terra" aria-hidden="true"></div>
 <footer>
   <div class="wrap f-in">
-    <div class="f-l"><img class="logo" src="/beckett.svg" alt=""/>beckett</div>
+    <div class="f-l"><img class="logo" src="/logo.svg" alt=""/>beckett</div>
     <div class="f-r">
       <a href="https://discord.gg/DfJKFawURy" data-h>Discord</a>
       <a href="https://github.com/0xbeckett/beckett" data-h>GitHub</a>
-      <span>Coworker as a Service · open source</span>
+      <a href="/federation" data-h>Federation</a>
+      <a href="/caas" data-h>Coworker as a Service</a>
     </div>
   </div>
 </footer>
@@ -430,21 +401,34 @@
     io.observe(swap);
   })();
 
-  /* console type-out */
+  /* console: re-enactment of OPS-23 (the black hole ticket), straight off the
+     Plane board. Types out with reading-speed pauses, holds on the punchline,
+     fades, and loops. Reduced motion prints it once and stops. */
   (function(){var el=document.getElementById('con');if(!el)return;
     var lines=[
-      {t:340,h:'<div><span class="u">jason →</span> <span class="b">@beckett the auth flow is flaky. fix + ship it.</span></div>'},
-      {t:560,h:'<div><span class="m">on it. one worker, scoped to /auth, isolated worktree.</span></div>'},
-      {t:470,h:'<div><span class="u">spawn</span> <span class="b">wk_3f9 · token refresh race</span></div>'},
-      {t:460,h:'<div><span class="m">supervising… 12 turns · +84 / −9 · 2 tests</span></div>'},
-      {t:520,h:'<div><span class="u">review</span> <span class="b">2nd model red-teams diff</span> <span class="ok">→ no bypass ✓</span></div>'},
-      {t:440,h:'<div><span class="m">integrate → main · signed · pushed</span></div>'},
-      {t:300,h:'<div><span class="ok">shipped ✓</span> <span class="m">root cause was a refresh race. want the cookie path too?</span></div>'}
-    ];var i=0;
-    function step(){if(i>=lines.length){var c=document.createElement('span');c.className='ic';el.appendChild(c);return;}
-      var d=document.createElement('div');d.innerHTML=lines[i].h;d.style.opacity=0;d.style.transform='translateY(6px)';d.style.transition='opacity .4s var(--eo),transform .4s var(--eo)';el.appendChild(d);
-      requestAnimationFrame(function(){d.style.opacity=1;d.style.transform='none';});i++;setTimeout(step,lines[i-1].t);}
-    if(RM){lines.forEach(function(l){el.insertAdjacentHTML('beforeend',l.h);});return;}
+      {t:2800,h:'<div><span class="u">jason →</span> <span class="b">@beckett build me a physically accurate black hole. from first principles. no stolen shaders.</span></div>'},
+      {t:2400,h:'<div><span class="m">bet. Schwarzschild geodesics, hand-written GLSL. one worker, xhigh effort.</span></div>'},
+      {t:2100,h:'<div><span class="u">spawn</span> <span class="b">wk_b1a · OPS-23 · black-hole-opus</span></div>'},
+      {t:3000,h:'<div><span class="m">supervising… geodesic marcher ✓ accretion disk ✓ doppler beaming ✓ photon ring ✓</span></div>'},
+      {t:2400,h:'<div><span class="u">worker</span> <span class="b">3 files, zero dependencies · 60fps, phone to ultrawide</span></div>'},
+      {t:2500,h:'<div><span class="u">review</span> <span class="b">2nd model red-teams the physics</span> <span class="ok">→ lensing holds ✓</span></div>'},
+      {t:2300,h:'<div><span class="m">deploy → <a href="https://black-hole-opus.0xbeckett.me" style="color:var(--cy-deep);text-decoration:underline">black-hole-opus.0xbeckett.me</a> · live</span></div>'},
+      {t:8000,h:'<div><span class="ok">shipped ✓</span> <span class="m">an actual black hole, from scratch, before lunch.</span></div>'}
+    ];var i=0,cur=null;
+    function put(l){var d=document.createElement('div');d.innerHTML=l.h;return d;}
+    function step(){
+      if(cur){cur.remove();cur=null;}
+      if(i>=lines.length){
+        el.style.transition='opacity .9s var(--eo)';el.style.opacity=0;
+        setTimeout(function(){el.innerHTML='';el.style.opacity=1;i=0;setTimeout(step,700);},1000);
+        return;
+      }
+      var d=put(lines[i]);d.style.opacity=0;d.style.transform='translateY(6px)';d.style.transition='opacity .4s var(--eo),transform .4s var(--eo)';el.appendChild(d);
+      cur=document.createElement('span');cur.className='ic';el.appendChild(cur);
+      requestAnimationFrame(function(){d.style.opacity=1;d.style.transform='none';});
+      i++;setTimeout(step,lines[i-1].t);
+    }
+    if(RM){lines.forEach(function(l){el.appendChild(put(l));});return;}
     var st=false,io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting&&!st){st=true;setTimeout(step,400);io.disconnect();}});},{threshold:.3});io.observe(el);
   })();
 </script>

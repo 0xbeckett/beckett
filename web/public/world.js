@@ -413,12 +413,11 @@ export function startWorld(canvas, opts = {}) {
 
   /* ── the camera script: one shot per page section ──────────────────── */
   const SHOTS = (opts.shots || [
-    { sel: '#hero',       pos: [44, 19, 58],   look: [-13, 1, -3] },
-    { sel: '#console',    pos: [24, 13, 38],   look: [0, 3, 3] },
-    { sel: '#how',        pos: [-6, 13, 40],   look: [-13, 2, -8] },
-    { sel: '#caps',       pos: [-28, 22, 44],  look: [-2, 3, -18] },
-    { sel: '#federation', pos: [-36, 52, 108], look: [6, 2, -34] },
-    { sel: '#cta',        pos: [-10, 34, 118], look: [4, 13, -22] },
+    { sel: '#hero',    pos: [44, 19, 58],   look: [-13, 1, -3] },
+    { sel: '#console', pos: [24, 13, 38],   look: [0, 3, 3] },
+    { sel: '#how',     pos: [-6, 13, 40],   look: [-13, 2, -8] },
+    { sel: '#caps',    pos: [-32, 26, 52],  look: [-2, 3, -20] },
+    { sel: '#cta',     pos: [-36, 52, 108], look: [6, 2, -32] },
   ]).map(s => ({ el: document.querySelector(s.sel), pos: new THREE.Vector3(...s.pos), look: new THREE.Vector3(...s.look) }))
     .filter(s => s.el);
 

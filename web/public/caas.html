@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Beckett · Coworker as a Service</title>
+<meta name="description" content="What The Commons means by Coworker as a Service: you delegate outcomes, not prompts. Initiative, accountability, memory, presence, taste." />
+<meta name="theme-color" content="#bfe6ee" />
+<meta property="og:title" content="Beckett · Coworker as a Service" />
+<meta property="og:description" content="Not a chatbot with a job title. The paradigm behind Beckett, as we mean it at The Commons." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="/logo.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&family=DotGothic16&family=Inter:wght@400;450;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/page.css">
+</head>
+<body>
+<canvas id="world" aria-hidden="true"></canvas>
+<div class="scrim" aria-hidden="true"></div>
+
+<nav>
+  <div class="nav-in">
+    <a class="brand" href="/"><img class="logo" src="/logo.svg" alt=""/>beckett</a>
+    <div class="nav-links">
+      <a href="/#how">How it works</a>
+      <a href="/federation">Federation</a>
+      <a href="https://github.com/0xbeckett/beckett">GitHub</a>
+    </div>
+    <a class="btn btn-primary btn-sm" href="https://discord.gg/DfJKFawURy">Join the Commons</a>
+  </div>
+</nav>
+
+<main class="page">
+  <header class="intro" id="top">
+    <h1 class="rv">Coworker,<br><span class="g">as a service.</span></h1>
+    <p class="lead rv">The paradigm behind Beckett, as we mean it at The Commons. Spoiler: it's not a chatbot with a job title.</p>
+  </header>
+
+  <section class="passage">
+    <div class="k rv">01 · the lineage</div>
+    <h2 class="rv">Software kept almost helping.</h2>
+    <p class="rv">SaaS gave you tools; you still did the work. Chatbots gave you answers; you still did the work. Copilots gave you suggestions; you were still the one driving. <b>CaaS is the next honest step: you hand over the outcome, not the keystrokes.</b></p>
+  </section>
+
+  <section class="passage">
+    <div class="k rv">02 · delegation</div>
+    <h2 class="rv">Delegation is the interface.</h2>
+    <p class="rv">You don't operate Beckett. You ask it. It takes the goal, owns the mess in the middle, and comes back with a shipped result it will stand behind. No dashboard, no prompt engineering, no babysitting.</p>
+    <p class="rv">You manage outcomes, the way you would with a colleague. If that sounds like less control, notice it's the exact amount of control you have over every human coworker you already trust.</p>
+  </section>
+
+  <section class="passage">
+    <div class="k rv">03 · the difference</div>
+    <h2 class="rv">What makes a coworker, not a tool.</h2>
+    <div class="traits">
+      <div class="trait rv"><div class="k">initiative</div><p>Files its own tickets. Speaks up when it smells trouble, without being asked.</p></div>
+      <div class="trait rv"><div class="k">accountability</div><p>Signed commits, adversarial review, a paper trail you can audit.</p></div>
+      <div class="trait rv"><div class="k">memory</div><p>Remembers you tomorrow. Your stack, your taste, your grudges.</p></div>
+      <div class="trait rv"><div class="k">presence</div><p>Lives where the team already talks. Not another tab you forget about.</p></div>
+      <div class="trait rv"><div class="k">taste</div><p>Has opinions and pushes back. Occasionally wrong, never beige.</p></div>
+    </div>
+  </section>
+
+  <section class="passage">
+    <div class="k rv">04 · the service</div>
+    <h2 class="rv">A service without the meter.</h2>
+    <p class="rv">The old version of this page ended in a pricing table. The new one ends in a git clone. Beckett is open source and self-hosted: the service in Coworker as a Service is what it does for you, not what you owe monthly.</p>
+    <p class="rv">A coworker you host is the only kind that's really yours. That thinking has its own page: <a href="/federation">why Beckett is federated</a>.</p>
+  </section>
+
+  <section class="outro" id="end">
+    <h2 class="rv">Meet one.</h2>
+    <p class="sub rv">Ours hangs out in the Commons. It will probably have opinions about your repo.</p>
+    <div class="cta-row rv">
+      <a class="btn btn-primary btn-lg" href="https://discord.gg/DfJKFawURy">Join the Discord »</a>
+      <a class="btn btn-ghost btn-lg" href="https://github.com/0xbeckett/beckett">Read the source</a>
+    </div>
+  </section>
+</main>
+
+<div class="terra" aria-hidden="true"></div>
+<footer>
+  <div class="f-in">
+    <div class="f-l"><img class="logo" src="/logo.svg" alt=""/>beckett</div>
+    <div class="f-r">
+      <a href="https://discord.gg/DfJKFawURy">Discord</a>
+      <a href="https://github.com/0xbeckett/beckett">GitHub</a>
+      <a href="/federation">Federation</a>
+      <a href="/caas">Coworker as a Service</a>
+    </div>
+  </div>
+</footer>
+
+<script type="module">
+  import { startWorld } from './world.js';
+  try {
+    startWorld(document.getElementById('world'), { shots: [
+      { sel: '#top', pos: [34, 17, 46], look: [-6, 3, 0] },
+      { sel: '#end', pos: [24, 13, 38], look: [0, 3, 3] },
+    ]});
+  } catch (e) { document.getElementById('world').remove(); }
+</script>
+<script>
+  (function(){var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.16,rootMargin:'0px 0px -6% 0px'});
+    document.querySelectorAll('.rv').forEach(function(n,i){n.style.transitionDelay=(i%3*55)+'ms';io.observe(n);})})();
+</script>
+</body>
+</html>
