@@ -122,10 +122,12 @@ const FAST_ACK_TEXT = "On it — I'm mid-task right now, you're next in line.";
 
 /** Prompt that asks the dying session for a compact handoff before we drop its transcript. */
 const HANDOFF_PROMPT =
-  "SYSTEM: Your conversation context is about to be compacted and this transcript dropped. " +
+  "SYSTEM: Your conversation context is about to be compacted and this transcript dropped.\n" +
+  "<task>\n" +
   "In <=200 words, write a handoff note for your fresh self: who you're mid-conversation with, " +
   "any open threads or promises, tickets you've filed and their channels, and anything you'd " +
-  "lose by forgetting. Prose only, no preamble — you are writing a note to yourself.";
+  "lose by forgetting. Prose only, no preamble — you are writing a note to yourself.\n" +
+  "</task>";
 
 /**
  * The live context size from a turn's `usage` block = the SUM of every input-side field. Exported
@@ -146,7 +148,7 @@ function seedFromHandoff(summary: string): string {
   return (
     "SYSTEM: Context was just compacted. This is your handoff note from the prior session — " +
     "treat it as memory, not as a message from the user, and do not reply to it:\n\n" +
-    summary
+    `<context>\n${summary}\n</context>`
   );
 }
 
@@ -872,7 +874,8 @@ export class ConciergeSession {
     if (this.staticPrompt !== undefined) return this.staticPrompt;
     const doctrine = readDoctrine();
     const persona = readOrSeedPersona(this.personaFilePath());
-    return persona.trim() ? `${doctrine}\n\n${persona}` : doctrine;
+    const doctrineBlock = `<doctrine>\n${doctrine}\n</doctrine>`;
+    return persona.trim() ? `${doctrineBlock}\n\n<persona>\n${persona}\n</persona>` : doctrineBlock;
   }
 
   /** Absolute path to the editable persona file (runtime dir; same dir as the control socket). */
@@ -2019,12 +2022,15 @@ export function buildReleaseNote(channelId: string, subjects: string[]): string 
   const list = subjects.map((s) => `- ${s}`).join("\n");
   return (
     `SYSTEM (release note — you just restarted with new code; NOT a message from a user, do not reply as if a person typed it):\n` +
-    `You're back online and the code changed since you last announced. Newest first:\n\n${list}\n\n` +
+    `You're back online and the code changed since you last announced. Newest first:\n\n` +
+    `<context>\n${list}\n</context>\n\n` +
+    `<task>\n` +
     `Tell the server what's new by running this from your Bash tool:\n` +
     `  beckett discord reply --channel ${channelId} "<your message>"\n` +
     `Keep it short and FUN, in your voice — a couple lines. Summarize what you can do now and call ` +
     `out the interesting stuff; skip boring chore/plumbing commits and don't just paste the list. ` +
-    `If genuinely nothing here is worth sharing, do nothing.`
+    `If genuinely nothing here is worth sharing, do nothing.\n` +
+    `</task>`
   );
 }
 
