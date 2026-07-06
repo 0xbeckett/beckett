@@ -3,9 +3,11 @@
  * =======================================================================================
  * OPS-73: compress Beckett's long outgoing Discord replies into ONE short casual message
  * via the chilltext collector API (https://chilltext.ssh.codes) before they hit Discord.
- * Wired into the gateway's single shared send point (`gateway.ts` `sendNow`), so BOTH the
- * auto-posted turn text and the `beckett discord reply` CLI path go through it — exactly
- * the pattern the OPS-62 chunker uses.
+ * Applied in the gateway's send point (`gateway.ts` `sendNow`) ONLY for posts that opt in
+ * with `ReplyOptions.chill` — the Concierge's conversational replies (the auto-posted turn
+ * text and its `beckett discord reply` CLI path). Mechanical output (worker logs relayed
+ * into progress threads, startup banners, fixed acks) never opts in and reaches Discord
+ * verbatim — chilling a log stream destroys it for the models reading it.
  *
  * This is a transform-in-the-middle with a HARD PASSTHROUGH on any failure: unreachable
  * host, non-2xx (incl. a service whose /health would fail), timeout (~35s), malformed

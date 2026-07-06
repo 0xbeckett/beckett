@@ -463,12 +463,15 @@ export class DiscordJsGateway implements DiscordGateway {
     }
 
     // Chilltext compression (OPS-73): collapse the outgoing text into one short casual bubble
-    // via the collector API. On ANY failure (unreachable, error, ~35s timeout, overlong text)
-    // `chillReply` returns null and the ORIGINAL text flows through the existing two-stage split
-    // unchanged — a transform-in-the-middle with a hard passthrough; no message is ever dropped.
-    // Only the text payload is touched: reply-to, files, and targeting are applied below as before.
-    const chilled = await chillReply(content);
-    if (chilled === null && content.trim().length > 0) {
+    // via the collector API — but ONLY when the caller opted in with `opts.chill` (the Concierge's
+    // own conversational replies). Everything else — worker logs relayed into progress threads,
+    // startup banners, fixed acks — must reach Discord verbatim, so the default is raw. On ANY
+    // failure (unreachable, error, ~35s timeout, overlong text) `chillReply` returns null and the
+    // ORIGINAL text flows through the existing two-stage split unchanged — a transform-in-the-middle
+    // with a hard passthrough; no message is ever dropped. Only the text payload is touched:
+    // reply-to, files, and targeting are applied below as before.
+    const chilled = opts?.chill ? await chillReply(content) : null;
+    if (opts?.chill && chilled === null && content.trim().length > 0) {
       this.logger.info("chilltext unavailable or skipped; sending original text", { channelId });
     }
     // Two-stage split: first into natural, human-cadence sections (OPS-62 — paragraph/sentence

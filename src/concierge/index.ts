@@ -1333,6 +1333,8 @@ export class Concierge {
         // posts plainly — replying-to an un-addressed message reads as surveillance (§4.4).
         ...(claimsActiveTurn && !active!.ambient ? { replyToMessageId: active!.messageId } : {}),
         ...(files.length > 0 ? { files } : {}),
+        // `beckett discord reply` is the Concierge speaking in a channel — chilltext applies.
+        chill: true,
       };
       // A long reply may land as several human-cadence messages (OPS-62); `post` returns the FIRST
       // message id (the reply-correlation anchor), so `data.messageId` keeps its single-id contract.
@@ -1624,7 +1626,11 @@ export class Concierge {
       // only if the Concierge already answered this turn itself via `beckett discord reply` (then
       // that bus post was the reply, and posting again would duplicate it).
       if (text && !mention.repliedViaCli) {
-        const ackId = await this.gateway.post(m.channelId, text, { replyToMessageId: m.messageId });
+        // The Concierge's conversational reply — the one send that opts INTO chilltext (OPS-73).
+        const ackId = await this.gateway.post(m.channelId, text, {
+          replyToMessageId: m.messageId,
+          chill: true,
+        });
         // The auto-posted turn text is the ack — anchor any progress threads filed this turn to it.
         mention.ackMessageId = ackId;
         this.openPendingThreads(mention);
@@ -1725,7 +1731,7 @@ export class Concierge {
       const postedId = claim.repliedViaCli
         ? claim.ackMessageId
         : reply
-          ? await this.gateway.post(turn.channelId, reply)
+          ? await this.gateway.post(turn.channelId, reply, { chill: true })
           : null;
       if (turn.kind === "candidate") {
         this.armAmbientOffer(turn, postedId, reply);

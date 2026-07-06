@@ -255,6 +255,12 @@ export interface IncomingMessage {
 export interface ReplyOptions {
   replyToMessageId?: string; // native reply-to for correlation
   files?: string[]; // local file paths to attach (image-only posts OK)
+  /**
+   * Opt IN to chilltext compression (OPS-73) for this post. Only the Concierge's own
+   * conversational replies set this — mechanical output (worker logs relayed into progress
+   * threads, startup banners, fixed acks) must reach Discord verbatim, so the default is raw.
+   */
+  chill?: boolean;
 }
 
 // =======================================================================================
