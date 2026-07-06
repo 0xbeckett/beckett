@@ -29,9 +29,11 @@ export const CHILL_TIMEOUT_MS = 35_000;
 const CHILL_MAX_CHARS = 6000;
 
 /**
- * Compress outgoing reply text into up to `CHILL_MAX_BUBBLES` chilltext bubbles.
- * Returns the `messages[]` to send in order, or `null` meaning "send the original text
- * unchanged". `fetchImpl` is injectable for tests only.
+ * Reformat outgoing reply text into chilltext bubbles — the MODEL decides where to split
+ * (up to {@link CHILL_MAX_BUBBLES}); each returned message is sent as its own Discord
+ * message, per the API's contract ("never join them back into one block"). Returns the
+ * `messages[]` to send in order, or `null` meaning "send the original text unchanged".
+ * `fetchImpl` is injectable for tests only.
  */
 export async function chillReply(
   text: string,

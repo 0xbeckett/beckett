@@ -471,8 +471,17 @@ export class DiscordJsGateway implements DiscordGateway {
     // with a hard passthrough; no message is ever dropped. Only the text payload is touched:
     // reply-to, files, and targeting are applied below as before.
     const chilled = opts?.chill ? await chillReply(content) : null;
-    if (opts?.chill && chilled === null && content.trim().length > 0) {
-      this.logger.info("chilltext unavailable or skipped; sending original text", { channelId });
+    if (opts?.chill && content.trim().length > 0) {
+      // Log BOTH outcomes: silent success made "is chilltext even on?" undiagnosable from prod.
+      if (chilled === null) {
+        this.logger.info("chilltext unavailable or skipped; sending original text", { channelId });
+      } else {
+        this.logger.info("chilltext reformatted reply", {
+          channelId,
+          bubbles: chilled.length,
+          rawChars: content.length,
+        });
+      }
     }
     // Two-stage split: first into natural, human-cadence sections (OPS-62 — paragraph/sentence
     // boundaries, code fences kept whole; a short reply stays ONE section, unchanged), then each
