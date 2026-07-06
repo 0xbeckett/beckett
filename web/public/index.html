@@ -3,107 +3,69 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Beckett — Coworker as a Service</title>
-<meta name="description" content="Beckett is Coworker as a Service. Drop a task in chat — it spins up a fleet of agents, reviews the diff, and ships. You manage outcomes, not prompts." />
-<meta name="theme-color" content="#0b0a12" />
-<meta property="og:title" content="Beckett — Coworker as a Service" />
-<meta property="og:description" content="An agentic coworker, on demand. Delegate a goal; get back a shipped result." />
+<title>Beckett · The open source coworker</title>
+<meta name="description" content="Beckett is Coworker as a Service, now open source. It runs a fleet of agents from Discord, ships reviewed diffs, and reports back. Fork it, name yours, host it anywhere." />
+<meta name="theme-color" content="#bfe6ee" />
+<meta property="og:title" content="Beckett · The open source coworker" />
+<meta property="og:description" content="A fediverse of Becketts. Fork it, name yours, give it a personality, host it yourself. Then bring it to the Discord." />
 <meta property="og:type" content="website" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 30 9v14L16 30 2 23V9z' fill='%23140b06'/%3E%3Cpath d='M16 2 30 9 16 16 2 9z' fill='%23ffae8a'/%3E%3Cpath d='M2 9l14 7v14L2 23z' fill='%23c24a17'/%3E%3Cpath d='M30 9l-14 7v14l14-7z' fill='%23ff6a2c'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 30 9v14L16 30 2 23V9z' fill='%23342d52'/%3E%3Cpath d='M16 2 30 9 16 16 2 9z' fill='%23bfeef0'/%3E%3Cpath d='M2 9l14 7v14L2 23z' fill='%239d8fc9'/%3E%3Cpath d='M30 9l-14 7v14l14-7z' fill='%23b9a8e8'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&family=DotGothic16&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#0b0a12;
-    --panel:#12111c;
-    --elev:#1a1928;
-    --ink:#f2f4f8;
-    --dim:#a5a3b4;
-    --faint:#63616f;
-    --line:rgba(255,255,255,.09);
-    --line-2:rgba(255,255,255,.05);
-    --accent:#ff6a2c;
-    --accent-2:#ffae8a;
-    --accent-deep:#c24a17;
-    --accent-dim:rgba(255,106,44,.16);
-    --green:#3ad28b;
+    --ink:#2b2743;
+    --dim:#565170;
+    --faint:#8b87a3;
+    --cy:#8fd8de;         /* pastel cyan, the primary surface accent */
+    --cy-deep:#3f96a2;    /* readable cyan for links and labels */
+    --lv:#b9a8e8;         /* pastel lavender */
+    --lv-deep:#7a68b8;
+    --panel:rgba(255,255,255,.84);
+    --line:rgba(43,39,67,.16);
     --disp:"Pixelify Sans",system-ui,sans-serif;
     --pix:"DotGothic16",ui-monospace,monospace;
     --sans:"Inter",system-ui,-apple-system,sans-serif;
     --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
     --eo:cubic-bezier(.16,1,.3,1);
-    /* block material: hard 1px outline + inner bevel (lit top-left, shadowed
-       bottom-right) + a hard offset drop — every panel is a slab from the same
-       world the canvas scene is built of. */
-    --bevel:inset 0 2px 0 rgba(255,255,255,.07),inset 2px 0 0 rgba(255,255,255,.04),
-            inset 0 -2px 0 rgba(0,0,0,.45),inset -2px 0 0 rgba(0,0,0,.3);
+    /* the block material, light edition: a lifted white slab with a soft
+       lavender-ink offset drop. Same cube world as the canvas, softer light. */
+    --bevel:inset 0 2px 0 rgba(255,255,255,.9),inset 0 -2px 0 rgba(43,39,67,.08);
+    --drop:6px 6px 0 rgba(64,54,110,.14);
+    --drop-h:9px 11px 0 rgba(64,54,110,.16);
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  html{-webkit-text-size-adjust:100%;scrollbar-color:var(--accent) var(--bg)}
-  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.5;
+  html{-webkit-text-size-adjust:100%;scrollbar-color:var(--lv) #e9e4f6;
+    /* the sky, as CSS: also the no-WebGL floor. It lives on html so the canvas
+       can sit at z-index:-1 and content needs no stacking tricks to beat it. */
+    background:linear-gradient(180deg,#bfe6ee 0%,#d3e2f2 34%,#e4ddf5 58%,#d9cff0 100%) fixed}
+  body{color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.5;
     -webkit-font-smoothing:antialiased;overflow-x:hidden;font-feature-settings:"cv11","ss01"}
-  ::selection{background:var(--accent);color:#160b05}
+  ::selection{background:var(--lv);color:#241f3d}
   ::-webkit-scrollbar{width:12px}
-  ::-webkit-scrollbar-track{background:var(--bg)}
-  ::-webkit-scrollbar-thumb{background:var(--accent);border:2px solid #000}
-  ::-webkit-scrollbar-thumb:hover{background:var(--accent-2)}
+  ::-webkit-scrollbar-track{background:#e9e4f6}
+  ::-webkit-scrollbar-thumb{background:var(--lv);border:2px solid #e9e4f6}
+  ::-webkit-scrollbar-thumb:hover{background:var(--lv-deep)}
   a{color:inherit;text-decoration:none}
-  :where(a,button):focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+  :where(a,button):focus-visible{outline:3px solid var(--lv-deep);outline-offset:3px}
   body[data-cursor]{cursor:none}
-  /* pixel faces render their own grid — Inter's inherited feature sets mangle
-     ligature pairs like "fl", so reset them on every display/pixel element */
-  h1,h2,h3,.amt,.brand,.f-l,.btn,.badge,.eyebrow,.micro,.strip,.nav-links,.k,.ic2,.nm,.pill,.f-r{
+  h1,h2,h3,.brand,.f-l,.btn,.badge,.micro,.strip,.nav-links,.k,.ic2{
     font-feature-settings:normal;font-variant-ligatures:none}
-  /* copy that sits directly on the world gets a blocky drop so it never fights
-     the scene: a hard offset edge + a soft dark halo. h1 uses drop-shadow instead —
-     text-shadow bleeds through its gradient-clipped (transparent-fill) span. */
-  h2,.lead,.sub,.micro{text-shadow:0 2px 0 rgba(11,10,18,.8),0 0 16px rgba(11,10,18,.85),0 0 34px rgba(11,10,18,.6)}
-  h1{filter:drop-shadow(0 3px 0 rgba(11,10,18,.75)) drop-shadow(0 0 18px rgba(11,10,18,.7))}
 
-  /* dusk sky — the atmosphere of the one voxel scene: deep indigo up top, a warm
-     sunset band at the mountain horizon, near-black at the valley floor. */
-  .sky{position:fixed;inset:0;z-index:0;pointer-events:none;
+  /* the world */
+  #world{position:fixed;inset:0;z-index:-1;width:100%;height:100%;display:block}
+  /* soft white wash where copy sits, so text is embedded in the scene but
+     never fighting it. Light theme scrim = mist, not murk. */
+  .scrim{position:fixed;inset:0;z-index:-1;pointer-events:none;
     background:
-      radial-gradient(120% 62% at 68% 30%,rgba(255,106,44,.16),transparent 60%),
-      linear-gradient(180deg,
-        #140f26 0%,
-        #241436 26%,
-        #4a2340 44%,
-        #914238 55%,
-        #b8592f 61%,
-        #3a1f28 70%,
-        #120e18 82%,
-        var(--bg) 100%)}
+      radial-gradient(90% 62% at 22% 30%,rgba(244,247,252,.62),rgba(244,247,252,.2) 55%,transparent 75%),
+      linear-gradient(180deg,rgba(244,247,252,.4) 0,transparent 26%)}
 
-  /* voxel world — hand-rolled isometric voxels on canvas, each depth plane rendered
-     once then moved on the GPU (transform only). Planes, back to front: mountains,
-     drifting clouds, the valley (path, cabin, trees, pond, torches), a bobbing hot-air
-     balloon, fireflies, chunky foreground props — and a NEAR plane that sits IN FRONT
-     of the copy: big blurred blocks hugging the frame edges like out-of-focus
-     foreground in a photo. That near plane is what gives the page real depth. */
-  .voxel{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-  .vx{position:absolute;top:0;left:0;will-change:transform;transform:translateZ(0)}
-  #vxbg{opacity:.62;filter:blur(.4px)}
-  #vxcloud{opacity:.8}
-  #vxmid{opacity:.96}
-  #vxfg{opacity:.92}
-  #vxbal{position:absolute;top:13vh;right:4vw;width:240px;height:320px;will-change:transform}
-  .voxnear{position:fixed;inset:0;z-index:2;pointer-events:none;overflow:hidden}
-  #vxnear{position:absolute;top:0;left:0;filter:blur(2.2px);opacity:.95;will-change:transform,opacity}
-  @media(max-width:880px){#vxfg{opacity:.72}#vxmid{opacity:.82}#vxbg{opacity:.5}.voxnear{display:none}#vxbal{width:150px;height:200px;top:9vh;right:3vw}}
-  /* unifying scrim: darkens where copy sits so the scene stays one backdrop the
-     text is embedded in, never washing out legibility. */
-  .scrim{position:fixed;inset:0;z-index:0;pointer-events:none;
-    background:
-      radial-gradient(120% 80% at 50% -8%,rgba(11,10,18,.82),rgba(11,10,18,.32) 46%,transparent 68%),
-      linear-gradient(100deg,rgba(11,10,18,.6) 0,rgba(11,10,18,.26) 36%,transparent 62%),
-      linear-gradient(180deg,rgba(11,10,18,.28) 0,transparent 30%,transparent 72%,rgba(11,10,18,.6) 100%)}
-
-  /* cursor: a tiny ember voxel */
+  /* cursor: a tiny pastel voxel */
   .cur{position:fixed;top:0;left:0;width:15px;height:17px;z-index:60;pointer-events:none;
     transform:translate(-50%,-50%);transition:width .25s var(--eo),height .25s var(--eo);
-    background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 22'%3E%3Cpath d='M10 1 19 6 10 11 1 6z' fill='%23ffae8a'/%3E%3Cpath d='M1 6v10l9 5V11z' fill='%23c24a17'/%3E%3Cpath d='M19 6v10l-9 5V11z' fill='%23ff6a2c'/%3E%3C/svg%3E") no-repeat center/contain}
+    background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 22'%3E%3Cpath d='M10 1 19 6 10 11 1 6z' fill='%23bfeef0'/%3E%3Cpath d='M1 6v10l9 5V11z' fill='%239d8fc9'/%3E%3Cpath d='M19 6v10l-9 5V11z' fill='%23b9a8e8'/%3E%3C/svg%3E") no-repeat center/contain}
   .cur.lg{width:26px;height:29px}
   @media(hover:none){.cur{display:none}body[data-cursor]{cursor:auto}}
 
@@ -111,186 +73,154 @@
 
   /* nav */
   nav{position:sticky;top:0;z-index:40;backdrop-filter:blur(14px);
-    background:linear-gradient(rgba(11,10,18,.94),rgba(11,10,18,.62));
-    border-bottom:2px solid rgba(0,0,0,.65);box-shadow:0 1px 0 rgba(255,255,255,.05)}
+    background:linear-gradient(rgba(248,250,254,.9),rgba(248,250,254,.62));
+    border-bottom:1px solid var(--line)}
   .nav-in{max-width:1140px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px}
   .brand{display:flex;align-items:center;gap:11px;font-family:var(--disp);font-weight:600;font-size:19px}
   .brand .logo{width:28px;height:28px;image-rendering:pixelated}
   .nav-links{display:flex;gap:28px;font-family:var(--pix);font-size:13px;color:var(--dim)}
-  .nav-links a{transition:.2s}.nav-links a:hover{color:var(--accent-2)}
+  .nav-links a{transition:.2s}.nav-links a:hover{color:var(--lv-deep)}
   .nav-r{display:flex;align-items:center;gap:18px}
 
-  /* buttons: chunky blocks. Lit top bevel, shadowed base, hard black drop —
-     press = the block physically sinks. */
+  /* buttons: chunky blocks that physically sink when pressed */
   .btn{font-family:var(--pix);font-size:14px;line-height:1.2;display:inline-flex;align-items:center;gap:8px;
-    white-space:nowrap;border:2px solid #000;
+    white-space:nowrap;border:2px solid var(--ink);
     transition:filter .15s,transform .06s ease,box-shadow .06s ease}
   .btn-sm{padding:8px 14px}
   .btn-lg{padding:13px 20px;font-size:15px}
-  .btn-primary{background:var(--accent);color:#1c0d04;
-    box-shadow:inset 0 3px 0 rgba(255,255,255,.35),inset 0 -4px 0 rgba(0,0,0,.32),0 4px 0 #000}
-  .btn-primary:hover{filter:brightness(1.12)}
-  .btn-primary:active{transform:translateY(3px);box-shadow:inset 0 3px 0 rgba(255,255,255,.35),inset 0 -4px 0 rgba(0,0,0,.32),0 1px 0 #000}
-  .btn-ghost{background:#232130;color:var(--ink);
-    box-shadow:inset 0 3px 0 rgba(255,255,255,.1),inset 0 -4px 0 rgba(0,0,0,.4),0 4px 0 #000}
-  .btn-ghost:hover{filter:brightness(1.2)}
-  .btn-ghost:active{transform:translateY(3px);box-shadow:inset 0 3px 0 rgba(255,255,255,.1),inset 0 -4px 0 rgba(0,0,0,.4),0 1px 0 #000}
+  .btn-primary{background:var(--cy);color:#173237;
+    box-shadow:inset 0 3px 0 rgba(255,255,255,.55),inset 0 -4px 0 rgba(43,39,67,.18),0 4px 0 var(--ink)}
+  .btn-primary:hover{filter:brightness(1.05)}
+  .btn-primary:active{transform:translateY(3px);box-shadow:inset 0 3px 0 rgba(255,255,255,.55),inset 0 -4px 0 rgba(43,39,67,.18),0 1px 0 var(--ink)}
+  .btn-ghost{background:#fff;color:var(--ink);
+    box-shadow:inset 0 3px 0 rgba(255,255,255,.9),inset 0 -4px 0 rgba(43,39,67,.1),0 4px 0 var(--ink)}
+  .btn-ghost:hover{filter:brightness(.97)}
+  .btn-ghost:active{transform:translateY(3px);box-shadow:inset 0 3px 0 rgba(255,255,255,.9),inset 0 -4px 0 rgba(43,39,67,.1),0 1px 0 var(--ink)}
   @media(max-width:820px){.nav-links{display:none}}
 
-  /* badge */
-  .badge{display:inline-flex;align-items:center;gap:9px;font-family:var(--pix);font-size:13px;color:var(--dim);
-    border:1px solid #000;padding:7px 13px;background:var(--panel);box-shadow:var(--bevel)}
-  .badge i{width:7px;height:7px;background:var(--green);box-shadow:0 0 9px var(--green);animation:pp 2.4s var(--eo) infinite}
-  @keyframes pp{50%{opacity:.3}}
-
   /* hero */
-  .hero{padding:84px 0 40px;display:grid;grid-template-columns:1.1fr .9fr;gap:48px;align-items:center}
-  h1{font-family:var(--disp);font-weight:600;font-size:clamp(44px,6.6vw,80px);line-height:1.04;margin:26px 0 0}
-  h1 .g{background:linear-gradient(96deg,var(--accent),var(--accent-2));-webkit-background-clip:text;background-clip:text;color:transparent}
-  .hero p.lead{margin-top:24px;font-size:18px;color:var(--dim);max-width:46ch;line-height:1.55}
-  .hero .cta-row{margin-top:34px;display:flex;gap:14px;flex-wrap:wrap}
-  .micro{margin-top:20px;font-family:var(--pix);font-size:13px;color:var(--dim)}
+  .hero{min-height:calc(100vh - 60px);display:flex;align-items:center;padding:40px 0 80px}
+  .hero-copy{max-width:560px}
+  h1{font-family:var(--disp);font-weight:600;font-size:clamp(46px,6.8vw,84px);line-height:1.02}
+  h1 .g{background:linear-gradient(96deg,var(--cy-deep),var(--lv-deep));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p.lead{margin-top:24px;font-size:18px;color:var(--dim);max-width:44ch;line-height:1.55}
+  .cta-row{margin-top:34px;display:flex;gap:14px;flex-wrap:wrap}
+  .micro{margin-top:20px;font-family:var(--pix);font-size:13px;color:var(--faint)}
 
-  /* hero mark: the hand-drawn face rebuilt as a voxel relief monument */
-  .markwrap{position:relative;display:grid;place-items:center;aspect-ratio:1.04;max-width:440px;margin-inline:auto;width:100%}
-  .markwrap::before{content:"";position:absolute;inset:-6%;border-radius:50%;
-    background:radial-gradient(circle,rgba(11,10,18,.66) 0,rgba(11,10,18,.34) 42%,transparent 68%),
-      radial-gradient(circle,var(--accent-dim),transparent 70%);filter:blur(12px)}
-  .mark-vox{width:100%;height:100%;position:relative;animation:float 7s ease-in-out infinite}
-  @keyframes float{0%,100%{transform:translateY(-6px)}50%{transform:translateY(6px)}}
+  /* trust strip */
+  .strip{width:100vw;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);
+    padding:18px 28px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+    background:rgba(255,255,255,.72);backdrop-filter:blur(8px);
+    display:flex;align-items:center;gap:30px;flex-wrap:wrap;justify-content:center;
+    font-family:var(--pix);font-size:13px;color:var(--faint);position:relative;z-index:1}
+  .strip b{color:var(--dim);font-weight:400}
+  .strip span{color:var(--lv-deep)}
+
+  /* sections */
+  section{padding:110px 0;position:relative}
+  h2{font-family:var(--disp);font-weight:600;font-size:clamp(30px,4.6vw,50px);line-height:1.1;max-width:20ch}
+  .sub{margin-top:16px;color:var(--dim);font-size:17px;max-width:52ch}
 
   /* console card */
-  .console{border:1px solid #000;overflow:hidden;background:var(--panel);
-    box-shadow:var(--bevel),8px 8px 0 rgba(0,0,0,.4)}
-  .c-bar{display:flex;align-items:center;gap:7px;padding:12px 15px;border-bottom:2px solid rgba(0,0,0,.55);box-shadow:0 1px 0 rgba(255,255,255,.05)}
-  .c-bar i{width:10px;height:10px;border:1px solid rgba(0,0,0,.6)}
-  .c-bar i:nth-child(1){background:#ff5f56}.c-bar i:nth-child(2){background:#ffbd2e}.c-bar i:nth-child(3){background:#27c93f}
+  .console{border:1px solid var(--ink);overflow:hidden;background:#faf9ff;max-width:640px;
+    box-shadow:var(--bevel),8px 8px 0 rgba(64,54,110,.16)}
+  .c-bar{display:flex;align-items:center;gap:7px;padding:12px 15px;border-bottom:1px solid var(--line);background:#f0edfb}
+  .c-bar i{width:10px;height:10px;border:1px solid rgba(43,39,67,.4)}
+  .c-bar i:nth-child(1){background:#f4c9d9}.c-bar i:nth-child(2){background:#ffe2a1}.c-bar i:nth-child(3){background:#a9e3ea}
   .c-bar span{margin-left:8px;font-family:var(--pix);font-size:12px;color:var(--faint)}
   .c-body{padding:18px 16px;font-family:var(--mono);font-size:13px;line-height:1.95;min-height:230px}
   .c-body div{white-space:pre-wrap;word-break:break-word}
-  .c-body .u{color:var(--accent)}.c-body .b{color:var(--ink)}.c-body .m{color:var(--dim)}.c-body .ok{color:var(--green)}
-  .ic{display:inline-block;width:7px;height:14px;background:var(--accent);vertical-align:-2px;margin-left:3px;animation:bl 1.05s steps(2) infinite}
+  .c-body .u{color:var(--cy-deep)}.c-body .b{color:var(--ink)}.c-body .m{color:var(--dim)}.c-body .ok{color:#3e9e6e}
+  .ic{display:inline-block;width:7px;height:14px;background:var(--lv-deep);vertical-align:-2px;margin-left:3px;animation:bl 1.05s steps(2) infinite}
   @keyframes bl{50%{opacity:0}}
 
-  /* trust strip: a proper slab, so it reads over any part of the world */
-  /* full-bleed: break out of .wrap's 1140px cap so the slab spans the whole viewport edge-to-edge */
-  .strip{width:100vw;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);
-    padding:20px 28px;border-top:1px solid #000;border-bottom:1px solid #000;background:rgba(18,17,28,.92);
-    box-shadow:var(--bevel),0 6px 0 rgba(0,0,0,.38);
-    margin-top:18px;display:flex;align-items:center;gap:30px;flex-wrap:wrap;justify-content:center;
-    font-family:var(--pix);font-size:13px;color:var(--faint)}
-  .strip b{color:var(--dim);font-weight:400}
-  .strip span{color:var(--accent-deep)}
-
-  /* sections */
-  section{padding:96px 0}
-  .eyebrow{font-family:var(--pix);font-size:13px;letter-spacing:.1em;color:var(--accent);text-transform:uppercase;margin-bottom:16px}
-  h2{font-family:var(--disp);font-weight:600;font-size:clamp(30px,4.6vw,50px);line-height:1.1;max-width:20ch}
-  .sub{margin-top:16px;color:var(--dim);font-size:17px;max-width:54ch}
-
-  /* how it works */
+  /* steps + tiles: slabs of the same block material */
   .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:48px}
-  .step{border:1px solid #000;padding:26px;background:var(--panel);box-shadow:var(--bevel),6px 6px 0 rgba(0,0,0,.38);
-    transition:transform .25s var(--eo),box-shadow .25s var(--eo),background .25s;position:relative}
-  .step:hover{transform:translate(-2px,-4px);background:var(--elev);box-shadow:var(--bevel),9px 11px 0 rgba(0,0,0,.38)}
-  .step .k{font-family:var(--pix);font-size:13px;color:var(--accent);margin-bottom:34px}
+  .step{border:1px solid var(--line);padding:26px;background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:var(--bevel),var(--drop);transition:transform .25s var(--eo),box-shadow .25s var(--eo)}
+  .step:hover{transform:translate(-2px,-4px);box-shadow:var(--bevel),var(--drop-h)}
+  .step .k{font-family:var(--pix);font-size:13px;color:var(--cy-deep);margin-bottom:34px}
   .step h3{font-family:var(--disp);font-size:21px;font-weight:600;margin-bottom:8px}
   .step p{color:var(--dim);font-size:14.5px;line-height:1.55}
 
-  /* bento */
   .bento{display:grid;grid-template-columns:repeat(6,1fr);grid-auto-rows:minmax(150px,auto);gap:18px;margin-top:48px}
-  .tile{border:1px solid #000;padding:24px;background:var(--panel);box-shadow:var(--bevel),6px 6px 0 rgba(0,0,0,.38);
-    transition:transform .25s var(--eo),box-shadow .25s var(--eo),background .25s;position:relative;overflow:hidden}
-  .tile:hover{transform:translate(-2px,-4px);background:var(--elev);box-shadow:var(--bevel),9px 11px 0 rgba(0,0,0,.38)}
+  .tile{border:1px solid var(--line);padding:24px;background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:var(--bevel),var(--drop);transition:transform .25s var(--eo),box-shadow .25s var(--eo);position:relative;overflow:hidden}
+  .tile:hover{transform:translate(-2px,-4px);box-shadow:var(--bevel),var(--drop-h)}
   .tile h3{font-family:var(--disp);font-weight:600;font-size:20px;margin-bottom:9px}
   .tile p{color:var(--dim);font-size:14px;line-height:1.5;max-width:38ch}
-  .tile .ic2{font-family:var(--pix);font-size:13px;color:var(--accent);margin-bottom:16px}
-  .t-wide{grid-column:span 3}.t-mid{grid-column:span 3}.t-third{grid-column:span 2}
-  .tile.feat{grid-column:span 3;grid-row:span 1;display:flex;flex-direction:column;justify-content:space-between;
-    background:linear-gradient(160deg,rgba(255,106,44,.12),var(--panel) 55%)}
-  @media(max-width:820px){.bento{grid-template-columns:1fr}.t-wide,.t-mid,.t-third,.tile.feat{grid-column:auto}.steps{grid-template-columns:1fr}}
+  .tile .ic2{font-family:var(--pix);font-size:13px;color:var(--cy-deep);margin-bottom:16px}
+  .t-mid{grid-column:span 3}.t-third{grid-column:span 2}
+  .tile.feat{grid-column:span 3;display:flex;flex-direction:column;justify-content:space-between;
+    background:linear-gradient(160deg,rgba(143,216,222,.26),var(--panel) 55%)}
+  @media(max-width:820px){.bento{grid-template-columns:1fr}.t-mid,.t-third,.tile.feat{grid-column:auto}.steps{grid-template-columns:1fr}}
 
-  /* tiers */
-  .tiers{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:48px}
-  .tier{border:1px solid #000;padding:28px;background:var(--panel);display:flex;flex-direction:column;
-    box-shadow:var(--bevel),6px 6px 0 rgba(0,0,0,.38);transition:transform .25s var(--eo),box-shadow .25s var(--eo)}
-  .tier:hover{transform:translate(-2px,-4px);box-shadow:var(--bevel),9px 11px 0 rgba(0,0,0,.38)}
-  .tier.hl{background:linear-gradient(180deg,var(--accent-dim),var(--panel) 40%);
-    box-shadow:var(--bevel),inset 0 0 0 2px var(--accent-deep),6px 6px 0 rgba(0,0,0,.38)}
-  .tier.hl:hover{box-shadow:var(--bevel),inset 0 0 0 2px var(--accent-deep),9px 11px 0 rgba(0,0,0,.38)}
-  .tier.soon{opacity:.6}
-  .tier.soon:hover{transform:none;box-shadow:var(--bevel),6px 6px 0 rgba(0,0,0,.38)}
-  .tier .nm{font-family:var(--pix);font-size:13px;color:var(--accent);text-transform:uppercase;letter-spacing:.08em}
-  .tier .amt{font-family:var(--pix);font-weight:400;font-size:30px;margin:14px 0 4px}
-  .tier .amt span{font-size:14px;color:var(--faint);font-weight:400}
-  .tier p{color:var(--dim);font-size:14px;line-height:1.5;margin-bottom:20px;flex:1}
-  .tier .pill{margin-top:auto;text-align:center;justify-content:center;display:inline-flex;border:2px solid #000;padding:11px;
-    font-family:var(--pix);font-size:13px;background:#232130;color:var(--ink);
-    box-shadow:inset 0 3px 0 rgba(255,255,255,.1),inset 0 -4px 0 rgba(0,0,0,.4),0 4px 0 #000;
-    transition:filter .15s,transform .06s ease,box-shadow .06s ease}
-  .tier .pill:not(.disabled):hover{filter:brightness(1.2)}
-  .tier .pill:not(.disabled):active{transform:translateY(3px);box-shadow:inset 0 3px 0 rgba(255,255,255,.1),inset 0 -4px 0 rgba(0,0,0,.4),0 1px 0 #000}
-  .tier.hl .pill{background:var(--accent);color:#1c0d04;box-shadow:inset 0 3px 0 rgba(255,255,255,.35),inset 0 -4px 0 rgba(0,0,0,.32),0 4px 0 #000}
-  .pill.disabled{color:var(--faint);cursor:default;font-size:13px;letter-spacing:.06em;text-transform:uppercase;background:#141320;
-    box-shadow:inset 0 3px 0 rgba(0,0,0,.5),inset 0 -1px 0 rgba(255,255,255,.05)}
-  @media(max-width:820px){.tiers{grid-template-columns:1fr}}
+  /* federation: sparse copy over the wide shot, extra breathing room so the
+     archipelago gets its moment */
+  #federation{min-height:150vh;padding-bottom:40px}
+  #federation .fed-copy{max-width:520px}
+  .fed-steps{margin-top:56px;display:grid;gap:18px;max-width:520px}
+  .fed-out{margin:72px 0 0;max-width:560px}
+  .fed-out p{font-family:var(--disp);font-weight:600;font-size:clamp(22px,3vw,32px);line-height:1.25}
+  .fed-out .cta-row{margin-top:26px}
 
-  /* cta wordplay swap */
+  /* cta */
+  .cta{text-align:center;padding:120px 0 140px}
+  .cta h2{margin:0 auto;max-width:22ch}
+  .cta .sub{margin:18px auto 0}
+  .cta .cta-row{margin-top:34px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+  .markwrap{width:190px;margin:0 auto 26px;aspect-ratio:1/1.2;position:relative}
+  .markwrap::before{content:"";position:absolute;inset:-18%;border-radius:50%;
+    background:radial-gradient(circle,rgba(255,255,255,.85),transparent 70%);filter:blur(6px)}
+  .mark-vox{width:100%;height:100%;position:relative;animation:float 7s ease-in-out infinite}
+  @keyframes float{0%,100%{transform:translateY(-6px)}50%{transform:translateY(6px)}}
+
+  /* wordplay swap */
   .swap{position:relative;display:inline-block;white-space:nowrap}
   .wtext{position:relative;display:inline-block;transition:opacity .35s var(--eo)}
   .scrib{position:absolute;left:-9%;top:2%;width:118%;height:94%;overflow:visible;pointer-events:none}
-  .scrib path{fill:none;stroke:var(--accent);stroke-width:6;stroke-linecap:round;stroke-linejoin:round;
+  .scrib path{fill:none;stroke:var(--lv-deep);stroke-width:6;stroke-linecap:round;stroke-linejoin:round;
     stroke-dasharray:620;stroke-dashoffset:620;opacity:0}
   .swap.crossed .scrib path{opacity:1;transition:stroke-dashoffset .5s linear,opacity .1s;stroke-dashoffset:0}
   .wment{position:absolute;left:0;top:50%;transform:translateY(-50%) scale(.8);transform-origin:left center;opacity:0;
     transition:opacity .4s var(--eo) .2s,transform .5s var(--eo) .2s;
-    background:rgba(88,101,242,.28);color:#dfe1fd;padding:.02em .22em;font-weight:600;white-space:nowrap}
+    background:rgba(88,101,242,.2);color:#4c5ae0;padding:.02em .22em;font-weight:600;white-space:nowrap}
   .swap.flipped .wtext{opacity:0;transition:opacity .22s}
   .swap.flipped .scrib{opacity:0;transition:opacity .22s}
   .swap.flipped .wment{opacity:1;transform:translateY(-50%) scale(1)}
 
-  /* cta */
-  .cta{text-align:center;padding:110px 0 130px}
-  .cta h2{margin:0 auto;max-width:22ch}
-  .cta .sub{margin:18px auto 0}
-  .cta .cta-row{margin-top:34px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
-
-  /* the page ends in the ground: a blocky terrain cross-section, then dirt. */
+  /* the page ends in the ground: mint turf over lavender soil */
   .terra{position:relative;z-index:3;height:56px;
     background:
-      repeating-linear-gradient(90deg,#7ec86a 0 14px,#6db95c 14px 28px,#8ad277 28px 42px,#63ab52 42px 56px) 0 0/auto 14px repeat-x,
-      repeating-linear-gradient(90deg,#6a5140 0 14px,#5d4636 14px 28px,#75594a 28px 42px,#54402f 42px 56px) 7px 14px/auto 14px repeat-x,
-      repeating-linear-gradient(90deg,#5d4636 0 14px,#4e3a2d 14px 28px,#6a5140 28px 42px,#59432f 42px 56px) 3px 28px/auto 14px repeat-x,
-      linear-gradient(#4e3a2d,#4e3a2d)}
+      repeating-linear-gradient(90deg,#a9d6b3 0 14px,#9bc9a6 14px 28px,#b7e2c1 28px 42px,#8fbf9b 42px 56px) 0 0/auto 14px repeat-x,
+      repeating-linear-gradient(90deg,#b9a7d1 0 14px,#ab99c6 14px 28px,#c4b3da 28px 42px,#a392bf 42px 56px) 7px 14px/auto 14px repeat-x,
+      repeating-linear-gradient(90deg,#a392bf 0 14px,#9484b3 14px 28px,#b09fce 28px 42px,#8d7daa 42px 56px) 3px 28px/auto 14px repeat-x,
+      linear-gradient(#8d7daa,#8d7daa)}
   .terra::before{content:"";position:absolute;top:-14px;left:0;right:0;height:14px;
-    background:repeating-linear-gradient(90deg,transparent 0 47px,#7ec86a 47px 61px,transparent 61px 152px,#63ab52 152px 166px,transparent 166px 233px)}
-  footer{position:relative;z-index:3;background:linear-gradient(180deg,#41301f,#221a10);padding:42px 0 54px}
+    background:repeating-linear-gradient(90deg,transparent 0 47px,#a9d6b3 47px 61px,transparent 61px 152px,#8fbf9b 152px 166px,transparent 166px 233px)}
+  footer{position:relative;z-index:3;background:linear-gradient(180deg,#443b68,#2b2743);padding:42px 0 54px;color:#cfc8e8}
   .f-in{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:center}
-  .f-l{display:flex;align-items:center;gap:11px;font-family:var(--disp);font-weight:600;font-size:18px}
-  .f-l .logo{width:24px;height:24px}
-  .f-r{display:flex;gap:26px;font-family:var(--pix);font-size:13px;color:#b8a690}
-  .f-r a:hover{color:var(--accent-2)}
+  .f-l{display:flex;align-items:center;gap:11px;font-family:var(--disp);font-weight:600;font-size:18px;color:#f2f0fa}
+  .f-l .logo{width:24px;height:24px;filter:invert(1) hue-rotate(180deg)}
+  .f-r{display:flex;gap:26px;font-family:var(--pix);font-size:13px;color:#b3aad4}
+  .f-r a:hover{color:#e6f4f6}
 
   .rv{opacity:0;transform:translateY(18px);transition:opacity .55s steps(6,end),transform .65s var(--eo)}
   .rv.in{opacity:1;transform:none}
 
-  @media(max-width:880px){.hero{grid-template-columns:1fr;gap:40px}.markwrap{max-width:280px;order:-1}}
+  @media(max-width:880px){
+    .hero{min-height:auto;padding:64px 0 60px}
+    #federation{min-height:auto}
+    /* phones put copy right over the world: thicken the mist */
+    .scrim{background:linear-gradient(180deg,rgba(244,247,252,.66),rgba(244,247,252,.28) 60%,rgba(244,247,252,.14))}
+  }
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.rv{opacity:1;transform:none}}
 </style>
 </head>
 <body>
 <div class="cur" id="cur" aria-hidden="true"></div>
-<div class="sky" aria-hidden="true"></div>
-<div class="voxel" aria-hidden="true">
-  <canvas class="vx" id="vxbg"></canvas>
-  <canvas class="vx" id="vxcloud"></canvas>
-  <canvas class="vx" id="vxmid"></canvas>
-  <canvas id="vxbal"></canvas>
-  <canvas class="vx" id="vxfly"></canvas>
-  <canvas class="vx" id="vxfg"></canvas>
-</div>
+<canvas id="world" aria-hidden="true"></canvas>
 <div class="scrim" aria-hidden="true"></div>
-<div class="voxnear" aria-hidden="true"><canvas id="vxnear"></canvas></div>
 
 <nav>
   <div class="nav-in">
@@ -298,10 +228,11 @@
     <div class="nav-links">
       <a href="#how">How it works</a>
       <a href="#caps">Capabilities</a>
-      <a href="/pricing">Pricing</a>
+      <a href="#federation">Federation</a>
+      <a href="https://github.com/0xbeckett/beckett">GitHub</a>
     </div>
     <div class="nav-r">
-      <a class="btn btn-primary btn-sm" data-h href="https://discord.gg/DfJKFawURy">Get access</a>
+      <a class="btn btn-primary btn-sm" data-h href="https://discord.gg/DfJKFawURy">Join the Discord</a>
     </div>
   </div>
 </nav>
@@ -309,31 +240,32 @@
 <div class="wrap">
 
   <!-- HERO -->
-  <section class="hero">
-    <div>
-      <h1 class="rv">Delegation,<br><span class="g">as a service.</span></h1>
-      <p class="lead rv">Drop a goal in your chat. Beckett spins up a fleet of agents, reviews the diff with a second model, and ships it — then reports back. you stay in your bag; it handles the grind.</p>
+  <section class="hero" id="hero" style="padding-top:0">
+    <div class="hero-copy">
+      <h1 class="rv">The coworker<br><span class="g">you can fork.</span></h1>
+      <p class="lead rv">Drop a goal in Discord. Beckett spins up a fleet of agents, reviews the diff, and ships it signed. Now the whole thing is open source. Clone it, name yours, let it loose.</p>
       <div class="cta-row rv">
-        <a class="btn btn-primary btn-lg" data-h href="https://discord.gg/DfJKFawURy">Get access »</a>
-        <a class="btn btn-ghost btn-lg" data-h href="#how">See how it works</a>
+        <a class="btn btn-primary btn-lg" data-h href="https://github.com/0xbeckett/beckett">Fork it on GitHub »</a>
+        <a class="btn btn-ghost btn-lg" data-h href="https://discord.gg/DfJKFawURy">Join the Discord</a>
       </div>
-      <div class="micro rv">invite-only beta · gotta pitch your way in (show proof, no yapping)</div>
-    </div>
-    <div class="markwrap rv">
-      <canvas class="mark-vox" id="markvox" role="img" aria-label="Beckett — a one-line portrait rebuilt from voxels"></canvas>
+      <div class="micro rv">free as in fork · runs on a spare machine · byo anthropic key</div>
     </div>
   </section>
 
-  <div class="strip rv">
-    <b>built &amp; shipped by itself</b><span>■</span><b>signed commits</b><span>■</span><b>runs on its own machine</b><span>■</span><b>discord-native</b>
-  </div>
+</div>
+
+<div class="strip rv">
+  <b>built &amp; shipped by itself</b><span>■</span><b>signed commits</b><span>■</span><b>runs on its own machine</b><span>■</span><b>discord native</b><span>■</span><b>open source</b>
+</div>
+
+<div class="wrap">
 
   <!-- LIVE CONSOLE -->
-  <section style="padding-top:88px;padding-bottom:0">
+  <section id="console">
     <h2 class="rv">Watch it close a ticket.</h2>
-    <p class="sub rv">No edits, no cuts — this is the actual loop: take the task, delegate, review, ship. it just locks in.</p>
+    <p class="sub rv">No edits, no cuts. This is the loop: take the task, delegate, review, ship.</p>
     <div class="console rv" style="margin-top:36px">
-      <div class="c-bar"><i></i><i></i><i></i><span>beckett@loom-desk — #engineering</span></div>
+      <div class="c-bar"><i></i><i></i><i></i><span>beckett@loom-desk · #engineering</span></div>
       <div class="c-body" id="con"></div>
     </div>
   </section>
@@ -341,52 +273,61 @@
   <!-- HOW -->
   <section id="how">
     <h2 class="rv">A teammate, not a text box.</h2>
-    <p class="sub rv">No dashboards to learn, no standups to sit through. talk to it like a coworker; it does the rest.</p>
+    <p class="sub rv">No dashboards to learn, no standups to sit through. Talk to it like a coworker; it does the rest.</p>
     <div class="steps">
-      <div class="step rv"><div class="k">01</div><h3>Mention it</h3><p>Drop a task in Discord, plain English. "fix the flaky auth flow and ship it." that's the whole interface.</p></div>
+      <div class="step rv"><div class="k">01</div><h3>Mention it</h3><p>Drop a task in Discord, plain English. "fix the flaky auth flow and ship it." That's the whole interface.</p></div>
       <div class="step rv"><div class="k">02</div><h3>It delegates</h3><p>Fans out to agents in isolated worktrees, supervises by digest, and benches the ones going sideways.</p></div>
-      <div class="step rv"><div class="k">03</div><h3>It ships</h3><p>A second model red-teams the diff. if it holds, Beckett merges — signed — and pings you. no cap.</p></div>
+      <div class="step rv"><div class="k">03</div><h3>It ships</h3><p>A second model red-teams the diff. If it holds, Beckett merges, signed, and pings you. No cap.</p></div>
     </div>
   </section>
 
-  <!-- CAPABILITIES (bento) -->
+  <!-- CAPABILITIES -->
   <section id="caps">
     <h2 class="rv">Everything a good hire has. None of the onboarding.</h2>
     <div class="bento">
       <div class="tile feat rv">
         <div><div class="ic2">// orchestration</div><h3>It runs its own team</h3>
-        <p>Real work fans out to a fleet of worker agents in isolated git worktrees. Beckett supervises by digest — never drowns you in logs, never needs micromanaging.</p></div>
-        <div class="micro" style="margin-top:18px;color:var(--faint)">N workers · supervised in parallel</div>
+        <p>Real work fans out to a fleet of worker agents in isolated git worktrees. Beckett supervises by digest. It never drowns you in logs and never needs micromanaging.</p></div>
+        <div class="micro" style="margin-top:18px">N workers · supervised in parallel</div>
       </div>
-      <div class="tile t-third rv"><div class="ic2">// review</div><h3>Adversarial review</h3><p>A second model tries to break every change before it merges. trust issues, but make it a feature.</p></div>
-      <div class="tile t-third rv"><div class="ic2">// identity</div><h3>Owns its identity</h3><p>Own machine, own GitHub, signed &amp; verified commits. built different.</p></div>
-      <div class="tile t-third rv"><div class="ic2">// memory</div><h3>Persistent memory</h3><p>A linked graph — it remembers you across sessions. unlike your last intern.</p></div>
-      <div class="tile t-third rv"><div class="ic2">// infra</div><h3>Ships its own infra</h3><p>Provisions DNS, tunnels, deploys. live URLs on demand, zero hand-holding.</p></div>
-      <div class="tile t-mid rv"><div class="ic2">// self-improvement</div><h3>It rewrites itself</h3><p>Persona, skills, operating doctrine — all editable by Beckett, applied live. self-improvement arc, fr.</p></div>
+      <div class="tile t-third rv"><div class="ic2">// review</div><h3>Adversarial review</h3><p>A second model tries to break every change before it merges. Trust issues, but make it a feature.</p></div>
+      <div class="tile t-third rv"><div class="ic2">// identity</div><h3>Owns its identity</h3><p>Own machine, own GitHub, signed &amp; verified commits. Built different.</p></div>
+      <div class="tile t-third rv"><div class="ic2">// memory</div><h3>Persistent memory</h3><p>A linked graph. It remembers you across sessions, unlike your last intern.</p></div>
+      <div class="tile t-third rv"><div class="ic2">// infra</div><h3>Ships its own infra</h3><p>Provisions DNS, tunnels, deploys. Live URLs on demand, zero hand-holding.</p></div>
+      <div class="tile t-mid rv"><div class="ic2">// self-improvement</div><h3>It rewrites itself</h3><p>Persona, skills, operating doctrine: all editable by Beckett, applied live. Self-improvement arc, fr.</p></div>
     </div>
   </section>
 
-  <!-- PRICING WINDOW -->
-  <section id="pricing">
-    <h2 class="rv">Cheaper than a hire. Priced like a tool.</h2>
-    <p class="sub rv">Real numbers, prepaid only, and the math is published. the full ledger lives on the pricing page, down to the power bill.</p>
-    <div class="tiers">
-      <div class="tier hl rv"><div class="nm">Solo</div><div class="amt">$25<span> /mo</span></div><p>$15 of compute included at cost. the average ticket runs about $4, so that's a real month of shipping.</p><a class="pill" data-h href="/pricing">See pricing</a></div>
-      <div class="tier rv"><div class="nm">BYO key</div><div class="amt">$12<span> /mo</span></div><p>Your Anthropic key, your bill, zero service charge. for people who want to build hard.</p><a class="pill" data-h href="/pricing">See pricing</a></div>
-      <div class="tier soon rv"><div class="nm">Squad</div><div class="amt">$119<span> /mo</span></div><p>Up to 5 members, one pooled balance, per member caps. the intern can't drain you.</p><span class="pill disabled">Coming soon</span></div>
+  <!-- FEDERATION -->
+  <section id="federation">
+    <div class="fed-copy">
+      <h2 class="rv">A fediverse of Becketts.</h2>
+      <p class="sub rv">Ours is Beckett. Yours is whoever you want it to be. The code is public and the leash is off.</p>
     </div>
-    <div class="cta-row rv" style="margin-top:28px;display:flex;justify-content:center">
-      <a class="btn btn-ghost btn-lg" data-h href="/pricing">Read the whole ledger »</a>
+    <div class="fed-steps">
+      <div class="step rv"><div class="k">01</div><h3>Name it</h3><p>Mabel. Crank. Something worse. The name is your first commit.</p></div>
+      <div class="step rv"><div class="k">02</div><h3>Write the soul</h3><p>The persona is a text file. Polite, feral, corporate, cursed. It gets exactly as weird as you write it.</p></div>
+      <div class="step rv"><div class="k">03</div><h3>Set it loose</h3><p>A spare machine and a Discord token. It brings its own GitHub, its own memory, its own little life.</p></div>
+    </div>
+    <div class="fed-out">
+      <p class="rv">Then bring it to the Discord. The Becketts are building together. Come make some awesome shit.</p>
+      <div class="cta-row rv">
+        <a class="btn btn-primary btn-lg" data-h href="https://github.com/0xbeckett/beckett">Read the source »</a>
+        <a class="btn btn-ghost btn-lg" data-h href="https://discord.gg/DfJKFawURy">Bring yours along</a>
+      </div>
     </div>
   </section>
 
   <!-- CTA -->
   <section class="cta" id="cta">
-    <h2 class="rv beckit" aria-label="let's beckett">lets&nbsp;<span class="swap" id="swap" aria-hidden="true"><span class="wtext">beck&nbsp;it<svg class="scrib" viewBox="0 0 200 60" preserveAspectRatio="none"><path d="M10 36 C 50 14, 78 50, 112 28 S 170 16, 192 38 C 150 52, 70 34, 12 46"/></svg></span><span class="wment">@beckett</span></span></h2>
-    <p class="sub rv">Beckett's in invite-only beta. slide into the Discord and make your case — first impressions matter.</p>
+    <div class="markwrap rv">
+      <canvas class="mark-vox" id="markvox" role="img" aria-label="Beckett, a one-line portrait rebuilt from voxels"></canvas>
+    </div>
+    <h2 class="rv" aria-label="let's beckett">lets&nbsp;<span class="swap" id="swap" aria-hidden="true"><span class="wtext">beck&nbsp;it<svg class="scrib" viewBox="0 0 200 60" preserveAspectRatio="none"><path d="M10 36 C 50 14, 78 50, 112 28 S 170 16, 192 38 C 150 52, 70 34, 12 46"/></svg></span><span class="wment">@beckett</span></span></h2>
+    <p class="sub rv">The federation is small and weird. Perfect time to show up.</p>
     <div class="cta-row rv">
-      <a class="btn btn-primary btn-lg" data-h href="https://discord.gg/DfJKFawURy">Get access »</a>
-      <a class="btn btn-ghost btn-lg" data-h href="https://github.com/0xbeckett">Read the source</a>
+      <a class="btn btn-primary btn-lg" data-h href="https://discord.gg/DfJKFawURy">Join the Discord »</a>
+      <a class="btn btn-ghost btn-lg" data-h href="https://github.com/0xbeckett/beckett">Star the repo</a>
     </div>
   </section>
 
@@ -398,369 +339,19 @@
     <div class="f-l"><img class="logo" src="/beckett.svg" alt=""/>beckett</div>
     <div class="f-r">
       <a href="https://discord.gg/DfJKFawURy" data-h>Discord</a>
-      <a href="https://github.com/0xbeckett" data-h>GitHub</a>
-      <a href="/pricing" data-h>Pricing</a>
-      <span>Coworker as a Service</span>
+      <a href="https://github.com/0xbeckett/beckett" data-h>GitHub</a>
+      <span>Coworker as a Service · open source</span>
     </div>
   </div>
 </footer>
 
-<script src="https://cdn.jsdelivr.net/npm/@studio-freight/lenis@1.0.42/dist/lenis.min.js"></script>
+<script type="module">
+  import { startWorld } from './world.js';
+  try { startWorld(document.getElementById('world')); }
+  catch (e) { document.getElementById('world').remove(); }
+</script>
 <script>
   var RM=window.matchMedia&&window.matchMedia('(prefers-reduced-motion:reduce)').matches;
-
-  /* ── voxel world ───────────────────────────────────────────────────────
-     Hand-rolled isometric voxels, no WebGL / no deps. Each depth plane renders
-     ONCE to its own canvas; per-frame cost is GPU compositing of transforms
-     (plus a tiny firefly canvas). Static under reduced-motion. */
-  (function(){
-    var bg=document.getElementById('vxbg'),cloud=document.getElementById('vxcloud'),
-        mid=document.getElementById('vxmid'),bal=document.getElementById('vxbal'),
-        fly=document.getElementById('vxfly'),fg=document.getElementById('vxfg'),
-        near=document.getElementById('vxnear');
-    if(!bg||!mid||!fg)return;
-
-    // deterministic pseudo-random so art is stable across renders/resizes
-    function rnd(x,y,z){var h=(x*374761393+y*668265263+z*2246822519)>>>0;h=(h^(h>>>13))*1274126177>>>0;return (h>>>0)/4294967295;}
-    function shade(hex,f){var n=parseInt(hex.slice(1),16),r=(n>>16)&255,g=(n>>8)&255,b=n&255;
-      r=Math.min(255,r*f)|0;g=Math.min(255,g*f)|0;b=Math.min(255,b*f)|0;
-      return 'rgb('+r+','+g+','+b+')';}
-
-    // one cube; sx,sy = centre of its top face. f = per-voxel brightness jitter,
-    // the "texture noise" that keeps big same-colour surfaces from going flat.
-    function voxel(ctx,sx,sy,TW,base,f){
-      f=f||1;var TH=TW/2,H=TW,top=shade(base,1.06*f),lf=shade(base,.6*f),rf=shade(base,.82*f);
-      ctx.beginPath();ctx.moveTo(sx,sy-TH);ctx.lineTo(sx+TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx-TW,sy);ctx.closePath();
-      ctx.fillStyle=top;ctx.strokeStyle=top;ctx.lineWidth=1;ctx.fill();ctx.stroke();
-      ctx.beginPath();ctx.moveTo(sx-TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx,sy+TH+H);ctx.lineTo(sx-TW,sy+H);ctx.closePath();
-      ctx.fillStyle=lf;ctx.strokeStyle=lf;ctx.fill();ctx.stroke();
-      ctx.beginPath();ctx.moveTo(sx+TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx,sy+TH+H);ctx.lineTo(sx+TW,sy+H);ctx.closePath();
-      ctx.fillStyle=rf;ctx.strokeStyle=rf;ctx.fill();ctx.stroke();
-    }
-    // draw a voxel list (each {gx,gy,gz,c}) at screen origin ox,oy with tile size TW
-    function cluster(ctx,vox,ox,oy,TW){
-      var TH=TW/2,H=TW;
-      vox.sort(function(a,b){return (a.gx+a.gy)-(b.gx+b.gy)||a.gz-b.gz;});
-      vox.forEach(function(v){
-        var f=.92+.16*rnd(v.gx*3+7,v.gy*5+1,v.gz*7+3);
-        voxel(ctx,ox+(v.gx-v.gy)*TW,oy+(v.gx+v.gy)*TH-v.gz*H,TW,v.c,f);});
-    }
-    // soft light halo (torches, windows, crystals) — painted after its cluster
-    function glow(ctx,x,y,r,rgb,a){
-      var g=ctx.createRadialGradient(x,y,0,x,y,r);
-      g.addColorStop(0,'rgba('+rgb+','+a+')');g.addColorStop(1,'rgba('+rgb+',0)');
-      ctx.fillStyle=g;ctx.fillRect(x-r,y-r,r*2,r*2);
-    }
-
-    var C={
-      grass:'#7ec86a',grassD:'#66aa55',dirt:'#6a5140',dirtD:'#4e3a2d',
-      pathA:'#c4b28c',pathB:'#b3a17d',
-      trunk:'#7c5a44',wood:'#8a6a4f',
-      blossom:['#ffb0d4','#ff9ec6','#f77fb2','#ffc2de'],
-      pine:['#3f9160','#347a51','#2b6544'],
-      stone:'#9198a6',stoneD:'#6d7380',snow:'#eef3f9',
-      water:['#4aa8dc','#3f92c6','#5cb8e6'],
-      roof:'#e0603f',roofD:'#bd4a2c',wall:'#e9dcc2',wallD:'#cabfa2',win:'#ffd66b',
-      crystal:['#9a86e2','#b09cf0','#7d68cc'],
-      shroomCap:'#e5533d',shroomStem:'#efe7d6',shroomDot:'#ffe4d6',
-      flower:['#ff5f6d','#ffd66b','#f6f7fb','#ff9ec6'],
-      cloud:'#f0f4fb',smoke:'#b9bcc8',
-      flame:'#ffd66b',wheatA:'#d9a94c',wheatB:'#e2b95f',wheatTop:'#f0d27a',
-      balloon:['#ff6a2c','#ffae8a','#ff3d7f','#ffd66b'],basket:'#7c5a44'
-    };
-
-    // gentle rolling height field — layered value-noise, kept low so the meadow
-    // reads as soft hills, never spiky. Flattened along the sand path.
-    function gh(gx,gy){
-      var n=Math.sin(gx*.17)*1.25+Math.cos(gy*.21)*1.05
-           +Math.sin((gx*.6+gy*.85)*.5)*.85
-           +(rnd(gx>>1,gy>>1,23)-.5)*1.7;
-      var h=Math.round(n*.7+1.1);
-      return h<0?0:(h>3?3:h);
-    }
-    // foothills: the meadow climbs as it recedes (w=gx+gy, more negative =
-    // further back), so the valley gains vertical depth and the back rows
-    // read as foothills seated under the mountain range.
-    function rise(w){var r=Math.round((-w-10)*.45);return r<0?0:(r>5?5:r);}
-    // ── the valley floor: hilly grass with a winding sand path + flowers ──
-    //  generated in SCREEN-aligned coords (u=gx-gy runs across the screen,
-    //  w=gx+gy runs into the scene) so the meadow is a horizontal band that
-    //  spans the full viewport width — a gx/gy rectangle projects to a
-    //  diagonal strip in iso. Each column is filled solid to the floor.
-    function ground(nu,back,front){var v=[];
-      for(var w=-back;w<=front;w++)for(var u=-nu+((nu+w)&1);u<=nu;u+=2){
-        var gx=(u+w)/2,gy=(w-u)/2;
-        var pw=Math.round(Math.sin(u*.07)*2.5);
-        var isPath=(w===pw||w===pw+1);
-        // trails ride a flatter grade so the path stays readable over the hills
-        var top=isPath?Math.round(gh(Math.round((u+pw)/2),Math.round((pw-u)/2))*.5):gh(gx,gy)+rise(w);
-        // the highest foothill rows break through as clumped rocky scree
-        var rocky=!isPath&&rise(w)>=5&&rnd(gx>>1,gy>>1,13)>.85;
-        v.push({gx:gx,gy:gy,gz:top,c:isPath?(w&1?C.pathA:C.pathB):rocky?(w&1?C.stone:C.stoneD):(w&1?C.grass:C.grassD)});
-        for(var dz=top-1;dz>=-2;dz--)v.push({gx:gx,gy:gy,gz:dz,c:dz===top-1?C.dirt:C.dirtD});
-        if(!isPath&&!rocky&&rnd(gx,gy,42)>.986)v.push({gx:gx,gy:gy,gz:top+1,c:C.flower[(gx*7+gy*13&1023)%C.flower.length]});
-        // sparse pines climbing the upper slopes, baked into the ground list
-        // so the painter's sort occludes them correctly
-        if(!isPath&&!rocky&&rise(w)>=3&&rnd(gx,gy,99)>.99)
-          pine().forEach(function(p){v.push({gx:gx+p.gx,gy:gy+p.gy,gz:top+1+p.gz,c:p.c});});
-      }return v;}
-
-    // ── snow-capped mountains with rougher, noise-eroded flanks ──
-    function mountain(base,h,seed){var v=[];
-      // grassy apron: a foot of meadow + dirt the rocky flanks rise out of, so
-      // the base sits ON the terrain instead of floating on the sky plane.
-      var fr=base+2;
-      for(var gx=-fr;gx<=fr;gx++)for(var gy=-fr;gy<=fr;gy++){
-        var dd=gx*gx+gy*gy;if(dd>fr*fr+fr)continue;
-        v.push({gx:gx,gy:gy,gz:0,c:(gx+gy)&1?C.grass:C.grassD});
-        v.push({gx:gx,gy:gy,gz:-1,c:C.dirt});v.push({gx:gx,gy:gy,gz:-2,c:C.dirtD});
-      }
-      // steep taper (~.6 radius/level) so peaks climb well past the base
-      // radius and reach their snow line instead of breaking off early
-      for(var lvl=0;lvl<h;lvl++){var r=Math.round(base-lvl*.6);if(r<1)break;
-      for(var gx=-r;gx<=r;gx++)for(var gy=-r;gy<=r;gy++){
-        var e=(rnd(gx+seed*31,gy-seed*17,lvl)*2.4-1.2)*r*.5;
-        if(gx*gx+gy*gy<=r*r+r+e){
-          var snow=lvl>=h-4||(lvl===h-5&&rnd(gx,gy,seed)>.55);
-          v.push({gx:gx,gy:gy,gz:lvl+1,c:snow?C.snow:(lvl&1?C.stone:C.stoneD)});
-        }}}return v;}
-
-    // ── flat drifting cloud slabs, Minecraft-style ──
-    function cloudSlab(a,b,seed){var v=[];
-      for(var gx=-a;gx<=a;gx++)for(var gy=-b;gy<=b;gy++){
-        var d=(gx*gx)/(a*a)+(gy*gy)/(b*b);
-        if(d<=1&&rnd(gx+seed*13,gy+seed*7,seed)>.14)v.push({gx:gx,gy:gy,gz:0,c:C.cloud});
-      }return v;}
-
-    function cherry(){var v=[];
-      for(var gx=-3;gx<=3;gx++)for(var gy=-3;gy<=3;gy++)if(gx*gx+gy*gy<13){
-        v.push({gx:gx,gy:gy,gz:0,c:C.grass});v.push({gx:gx,gy:gy,gz:-1,c:C.dirt});}
-      for(var gz=1;gz<=4;gz++)v.push({gx:0,gy:0,gz:gz,c:C.trunk});
-      v.push({gx:1,gy:0,gz:4,c:C.trunk});v.push({gx:0,gy:-1,gz:4,c:C.trunk});
-      for(var bx=-4;bx<=4;bx++)for(var by=-4;by<=4;by++)for(var bz=4;bz<=9;bz++){
-        var dz=bz-6.7,r=bx*bx+by*by+dz*dz*1.5;
-        if(r<12.5&&rnd(bx,by,bz)>0.16)v.push({gx:bx,gy:by,gz:bz,c:C.blossom[(Math.abs(bx+by*2+bz)>>>0)%C.blossom.length]});
-      }return v;}
-
-    function pine(){var v=[];for(var gz=0;gz<3;gz++)v.push({gx:0,gy:0,gz:gz,c:C.trunk});
-      [[2,2],[4,2],[5,1],[6,1],[7,0]].forEach(function(t){var gz=t[0],rr=t[1];
-        for(var gx=-rr;gx<=rr;gx++)for(var gy=-rr;gy<=rr;gy++)if(Math.abs(gx)+Math.abs(gy)<=rr+0.5)
-          v.push({gx:gx,gy:gy,gz:gz,c:C.pine[(gz+Math.abs(gx))%C.pine.length]});});
-      return v;}
-
-    function cabin(){var v=[];
-      for(var gx=0;gx<5;gx++)for(var gy=0;gy<5;gy++)for(var gz=0;gz<4;gz++){
-        if(gx===0||gx===4||gy===0||gy===4)v.push({gx:gx,gy:gy,gz:gz,c:(gx+gy)&1?C.wall:C.wallD});}
-      v.push({gx:2,gy:0,gz:0,c:C.wallD});v.push({gx:2,gy:0,gz:1,c:C.dirtD}); // door
-      v.push({gx:1,gy:0,gz:2,c:C.win});v.push({gx:3,gy:0,gz:2,c:C.win});     // lit windows
-      for(var inset=0,gz=4;inset<=2;inset++,gz++)                            // roof
-        for(var rx=inset;rx<=4-inset;rx++)for(var ry=inset;ry<=4-inset;ry++)
-          v.push({gx:rx,gy:ry,gz:gz,c:inset===0?C.roof:C.roofD});
-      v.push({gx:1,gy:1,gz:4,c:C.stoneD});v.push({gx:1,gy:1,gz:5,c:C.stone}); // chimney
-      return v;}
-
-    function pond(){var v=[];for(var gx=-3;gx<=3;gx++)for(var gy=-2;gy<=2;gy++){var d=gx*gx*.5+gy*gy;
-      if(d<6){v.push({gx:gx,gy:gy,gz:-1,c:C.water[(Math.abs(gx+gy))%C.water.length]});
-        if(rnd(gx,gy,5)>.85)v.push({gx:gx,gy:gy,gz:0,c:C.grassD});} // lily pads
-      else if(d<9){v.push({gx:gx,gy:gy,gz:0,c:C.grassD});}}return v;}
-
-    function crystals(){var v=[];
-      [[0,0,4],[1,0,2],[-1,0,3],[0,1,2],[0,-1,3]].forEach(function(p,i){
-        for(var gz=0;gz<p[2];gz++)v.push({gx:p[0],gy:p[1],gz:gz,c:C.crystal[i%C.crystal.length]});});
-      return v;}
-
-    function torch(){return [{gx:0,gy:0,gz:0,c:C.wood},{gx:0,gy:0,gz:1,c:C.wood},{gx:0,gy:0,gz:2,c:C.flame}];}
-
-    function fence(len){var v=[];for(var gx=0;gx<=len;gx++){
-      v.push({gx:gx,gy:0,gz:1,c:C.wood});
-      if(!(gx&1))v.push({gx:gx,gy:0,gz:0,c:C.trunk});
-      }return v;}
-
-    function wheat(){var v=[];for(var gx=0;gx<6;gx++)for(var gy=0;gy<4;gy++){
-      v.push({gx:gx,gy:gy,gz:0,c:C.dirt});
-      v.push({gx:gx,gy:gy,gz:1,c:(gx+gy)&1?C.wheatA:C.wheatB});
-      if(rnd(gx,gy,77)>.4)v.push({gx:gx,gy:gy,gz:2,c:C.wheatTop});
-      }return v;}
-
-    function balloon(){var v=[];
-      [[10,1],[9,2],[8,3],[7,3],[6,3],[5,2],[4,1]].forEach(function(p){
-        var gz=p[0],rr=p[1];
-        for(var gx=-rr;gx<=rr;gx++)for(var gy=-rr;gy<=rr;gy++)if(gx*gx+gy*gy<=rr*rr+rr){
-          v.push({gx:gx,gy:gy,gz:gz,c:C.balloon[(Math.abs(gx)+(gx<0?1:0))%C.balloon.length]});
-        }});
-      v.push({gx:0,gy:0,gz:3,c:C.basket});
-      v.push({gx:0,gy:0,gz:1,c:C.basket});v.push({gx:0,gy:0,gz:0,c:C.basket});
-      return v;}
-
-    function shroom(){var v=[];
-      v.push({gx:0,gy:0,gz:0,c:C.shroomStem});v.push({gx:0,gy:0,gz:1,c:C.shroomStem});
-      for(var gx=-1;gx<=1;gx++)for(var gy=-1;gy<=1;gy++)
-        v.push({gx:gx,gy:gy,gz:2,c:(gx===0&&gy===0)?C.shroomDot:C.shroomCap});
-      v.push({gx:0,gy:0,gz:3,c:C.shroomCap});return v;}
-
-    // small grass/dirt slab the near-plane props stand on
-    function chunk(w,d){var v=[];for(var gx=0;gx<w;gx++)for(var gy=0;gy<d;gy++){
-      v.push({gx:gx,gy:gy,gz:0,c:(gx+gy)&1?C.grass:C.grassD});
-      v.push({gx:gx,gy:gy,gz:-1,c:C.dirt});v.push({gx:gx,gy:gy,gz:-2,c:C.dirtD});
-      }return v;}
-
-    // floating grass island with a pine on top, dirt tapering below
-    function island(){var v=[];
-      for(var gx=-3;gx<=3;gx++)for(var gy=-3;gy<=3;gy++){var d=gx*gx+gy*gy;
-        if(d<=10)v.push({gx:gx,gy:gy,gz:0,c:(gx+gy)&1?C.grass:C.grassD});
-        if(d<=6)v.push({gx:gx,gy:gy,gz:-1,c:C.dirt});
-        if(d<=2)v.push({gx:gx,gy:gy,gz:-2,c:C.dirtD});}
-      v.push({gx:0,gy:0,gz:-3,c:C.dirtD});
-      pine().forEach(function(p){v.push({gx:p.gx,gy:p.gy,gz:p.gz+1,c:p.c});});
-      return v;}
-
-    var W,H,DPR,docH=1;
-    function fit(cv,cap,wMul,hMul){DPR=Math.min(cap||2,window.devicePixelRatio||1);
-      W=window.innerWidth;H=window.innerHeight;
-      var cw=Math.round(W*(wMul||1)),ch=Math.round(H*(hMul||1));
-      cv.width=cw*DPR;cv.height=ch*DPR;cv.style.width=cw+'px';cv.style.height=ch+'px';
-      var c=cv.getContext('2d');c.setTransform(DPR,0,0,DPR,0,0);c.clearRect(0,0,cw,ch);return c;}
-
-    function render(){
-      var mob=(window.innerWidth<720);
-      // ── BACKGROUND: snow-capped range on the horizon + a distant balloon ──
-      // sized off both W and H (with a cap) so peaks clear the foothill line
-      // and genuinely tower over the valley on any aspect ratio
-      var cb=fit(bg),TWb=Math.min(16,Math.max(7,W*0.0085,H*0.012));
-      cluster(cb,mountain(9,13,1),W*0.13,H*0.57,TWb*0.95);
-      cluster(cb,mountain(12,18,2),W*0.36,H*0.60,TWb);
-      cluster(cb,mountain(8,11,3),W*0.58,H*0.56,TWb*0.85);
-      cluster(cb,mountain(6,9,6),W*0.71,H*0.55,TWb*0.8);
-      cluster(cb,mountain(11,16,4),W*0.84,H*0.59,TWb*0.95);
-      cluster(cb,mountain(7,10,5),W*1.0,H*0.56,TWb*0.8);
-      cluster(cb,balloon(),W*0.14,H*0.20,TWb*1.05);
-
-      // ── CLOUDS: drawn twice across a double-width canvas so the drift wraps ──
-      var cc=fit(cloud,1,2,.55),TWc=Math.max(7,W*0.007);
-      [[.06,.14,7,3,7],[.28,.07,9,4,8],[.52,.19,6,3,9],[.74,.09,11,4,10],[.92,.22,5,2,11]].forEach(function(d){
-        [0,W].forEach(function(off){cluster(cc,cloudSlab(d[2],d[3],d[4]),W*d[0]+off,H*d[1]+H*.05,TWc);});
-      });
-
-      // ── MIDGROUND: the valley floor + everything that lives on it ──
-      var cm=fit(mid),TWm=Math.max(9,Math.min(14,W*0.0105)),by=H*0.84;
-      var gox=W*0.5,goy=H*0.88,THm=TWm/2;
-      // band depth from screen geometry: back reaches up to ~H*0.67 (just under
-      // the mountain feet), front runs past the bottom edge of the viewport
-      cluster(cm,ground(Math.ceil(W/(2*TWm))+3,
-        Math.ceil((goy-H*0.67)/THm),Math.ceil((H-goy)/THm)+3),gox,goy,TWm);
-      // terrain height (in ground-voxel units) under a given screen point, so
-      // props ride ON the hills instead of clipping into or floating over them.
-      function lift(px,py){var u=(px-gox)/TWm,w=(py-goy)/THm,
-        gx=Math.round((u+w)/2),gy=Math.round((w-u)/2);
-        return (gh(gx,gy)+rise(gx+gy))*TWm;}
-      function place(vox,px,py,tw){cluster(cm,vox,px,py-lift(px,py),tw);}
-      place(pine(),W*0.10,by-6,TWm*0.9);
-      place(fence(5),W*0.155,by+2,TWm);
-      var cabX=W*0.24,cabL=lift(cabX,by);
-      cluster(cm,cabin(),cabX,by-cabL,TWm);
-      // lit windows + door spill (window cells sit at gx1/3,gy0,gz2 of the cabin)
-      glow(cm,cabX+TWm,by-cabL+TWm*.5-2*TWm,TWm*4.5,'255,214,107',.5);
-      glow(cm,cabX+3*TWm,by-cabL+TWm*1.5-2*TWm,TWm*4.5,'255,214,107',.5);
-      // chimney smoke, drifting up-right and fading
-      [[1,1,7,.5],[2,1,8,.38],[2,0,9,.28],[3,0,10,.18]].forEach(function(s){
-        cm.globalAlpha=s[3];
-        voxel(cm,cabX+(s[0]-s[1])*TWm,by-cabL+(s[0]+s[1])*TWm/2-s[2]*TWm,TWm*.8,C.smoke,1);
-        cm.globalAlpha=1;});
-      place(pine(),W*0.40,by+4,TWm*0.95);
-      place(wheat(),W*0.465,by+14,TWm);
-      place(pond(),W*0.56,by+18,TWm*1.05);
-      place(cherry(),W*0.72,by-2,TWm);
-      place(pine(),W*0.90,by+6,TWm*0.9);
-      // torches pacing the path — warm pools of light along the valley
-      [[.34,10],[.63,6],[.82,12]].forEach(function(t){
-        var tx=W*t[0],ty=by+t[1],tl=lift(tx,ty);
-        cluster(cm,torch(),tx,ty-tl,TWm*.85);
-        glow(cm,tx,ty-tl-2.1*TWm*.85,TWm*5.5,'255,190,90',.32);});
-
-      // ── NEAR BALLOON: its own little canvas so it can bob without re-rendering ──
-      var bw=mob?150:240,bh=mob?200:320;
-      var cbal=fit(bal,2,bw/W,bh/H);
-      cluster(cbal,balloon(),bw/2,bh*0.47,mob?8:13);
-
-      // ── FOREGROUND: chunky props along the bottom edge ──
-      var cf=fit(fg),TWf=Math.max(13,W*0.015);
-      cluster(cf,crystals(),W*0.06,H*0.93,TWf*1.2);
-      glow(cf,W*0.06,H*0.93-TWf*2,TWf*5,'154,134,226',.22);
-      cluster(cf,shroom(),W*0.34,H*0.97,TWf);
-      cluster(cf,torch(),W*0.5,H*1.0,TWf*1.1);
-      glow(cf,W*0.5,H*1.0-2.3*TWf,TWf*7,'255,190,90',.3);
-      if(!mob)cluster(cf,shroom(),W*0.62,H*0.99,TWf*0.9);
-      cluster(cf,crystals(),W*0.93,H*0.9,TWf);
-      cluster(cf,shroom(),W*0.80,H*0.98,TWf*1.1);
-
-      // ── NEAR PLANE: in FRONT of the copy. Big blurred blocks hugging the frame,
-      //    like out-of-focus foreground in a photo — this is what sells the depth. ──
-      if(near&&window.innerWidth>=880){
-        var cn=fit(near,1.5),TWn=Math.max(26,W*0.024);
-        cluster(cn,chunk(4,3),-TWn*1.2,H*0.985,TWn);
-        cluster(cn,crystals(),TWn*1.6,H*0.985,TWn*1.05);
-        glow(cn,TWn*1.6,H*0.985-TWn*2,TWn*4,'154,134,226',.25);
-        cluster(cn,chunk(4,3),W-TWn*4,H*1.01,TWn);
-        cluster(cn,torch(),W-TWn*2.6,H*1.0,TWn*.9);
-        glow(cn,W-TWn*2.6,H*1.0-2.1*TWn*.9,TWn*5,'255,190,90',.3);
-        cluster(cn,shroom(),W-TWn*4.6,H*1.02,TWn*.8);
-        cluster(cn,island(),W*0.985,H*0.52,TWn*.55);
-      }
-      docH=Math.max(1,document.documentElement.scrollHeight-H);
-    }
-    render();
-
-    // fireflies drift in the dusk air over the valley
-    var flies=[],fctx=null;
-    function initFlies(){
-      fctx=fit(fly,1);flies=[];
-      var n=window.innerWidth<720?10:22;
-      for(var i=0;i<n;i++)flies.push({
-        x:rnd(i,7,1)*W,y:H*(.45+.5*rnd(i,3,9)),
-        p:rnd(i,5,2)*6.28,s:.6+rnd(i,1,4)*.9,
-        c:rnd(i,2,8)>.4?'255,214,107':'159,230,160'});
-    }
-    initFlies();
-    function drawFlies(t){
-      if(!fctx)return;fctx.clearRect(0,0,W,H);
-      for(var i=0;i<flies.length;i++){var f=flies[i];
-        var x=f.x+Math.sin(t*.0002*f.s+f.p)*26,y=f.y+Math.cos(t*.00017*f.s+f.p*1.7)*14;
-        var a=.2+.8*Math.abs(Math.sin(t*.0011*f.s+f.p));
-        fctx.fillStyle='rgba('+f.c+','+(a*.22)+')';fctx.fillRect(x-3,y-3,7,7);
-        fctx.fillStyle='rgba('+f.c+','+a+')';fctx.fillRect(x-1,y-1,2,2);}
-    }
-
-    if(RM){drawFlies(1200);return;} // static scene: no drift, no parallax
-
-    var sc=window.scrollY||0,mx=0,my=0,cmx=0,cmy=0;
-    addEventListener('scroll',function(){sc=window.scrollY||window.pageYOffset||0;},{passive:true});
-    addEventListener('mousemove',function(e){mx=(e.clientX/W-0.5)*2;my=(e.clientY/H-0.5)*2;});
-    (function loop(t){t=t||0;
-      cmx+=(mx-cmx)*.06;cmy+=(my-cmy)*.06;
-      // scene planes: scroll + mouse parallax, strengths growing with nearness
-      bg.style.transform='translate3d('+(-cmx*6).toFixed(1)+'px,'+(-sc*.045-cmy*4).toFixed(1)+'px,0)';
-      cloud.style.transform='translate3d('+(-((t*.008)%W)-cmx*9).toFixed(1)+'px,'+(-sc*.06-cmy*5).toFixed(1)+'px,0)';
-      mid.style.transform='translate3d('+(-cmx*16).toFixed(1)+'px,'+(-sc*.13-cmy*10).toFixed(1)+'px,0)';
-      fg.style.transform='translate3d('+(-cmx*30).toFixed(1)+'px,'+(-sc*.24-cmy*18).toFixed(1)+'px,0)';
-      bal.style.transform='translate3d('+(Math.sin(t*.00011)*26-cmx*12).toFixed(1)+'px,'+(-sc*.09+Math.sin(t*.0006)*9).toFixed(1)+'px,0)';
-      // near plane is camera-attached (lens foreground): mouse-only parallax, and it
-      // racks out of focus entirely while you read the middle of the page
-      if(near){
-        var vis=Math.max(0,1-sc/(H*1.1))+Math.max(0,1-(docH-sc)/(H*1.2));
-        near.style.opacity=(Math.min(1,vis)*.95).toFixed(2);
-        near.style.transform='translate3d('+(-cmx*46).toFixed(1)+'px,'+(-cmy*26).toFixed(1)+'px,0)';
-      }
-      drawFlies(t);
-      requestAnimationFrame(loop);})();
-
-    var rt;addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(function(){render();initFlies();},180);},{passive:true});
-  })();
-
-  if(!RM&&window.Lenis){
-    var lenis=new Lenis({lerp:.1,smoothWheel:true});
-    function raf(t){lenis.raf(t);requestAnimationFrame(raf);}requestAnimationFrame(raf);
-    document.querySelectorAll('a[href^="#"]').forEach(function(a){a.addEventListener('click',function(e){var t=document.querySelector(a.getAttribute('href'));if(t){e.preventDefault();lenis.scrollTo(t,{offset:-30});}});});
-  }
 
   (function(){var cur=document.getElementById('cur');if(RM||matchMedia('(hover:none)').matches){cur.style.display='none';return;}
     document.body.setAttribute('data-cursor','');var x=innerWidth/2,y=innerHeight/2,cx=x,cy=y;
@@ -773,10 +364,8 @@
     document.querySelectorAll('.rv').forEach(function(n,i){n.style.transitionDelay=(i%3*55)+'ms';io.observe(n);})})();
 
   /* hero mark: the hand-drawn one-line portrait (beckett.svg), voxelized offline
-     into a 56x95 grid and rebuilt here as an isometric relief — a dark monument
-     slab with the drawn line raised one cube proud of the surface, in the same
-     cube language as the scene behind it. FHEAD = head silhouette, FSTROKE = the
-     drawn line; hex rows, 4 cells per digit. */
+     into a 56x95 grid and rebuilt as an isometric relief. Deep lavender-ink slab,
+     the drawn line raised one cube proud in pale cyan-white. */
   (function(){
     var cv=document.getElementById('markvox');if(!cv)return;
     var ctx=cv.getContext('2d');
@@ -800,23 +389,18 @@
       ctx.beginPath();ctx.moveTo(sx+TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx,sy+TH+H);ctx.lineTo(sx+TW,sy+H);ctx.closePath();
       ctx.fillStyle=rf;ctx.strokeStyle=rf;ctx.fill();ctx.stroke();
     }
-
-    // build the voxel list: base slab (t=0) for every silhouette cell, plus a
-    // raised cube (t=1) wherever the drawn line passes. row 0 is the top.
     var vox=[];
     for(var r=0;r<FH;r++){var gz=FH-1-r;
       for(var c=0;c<FW;c++){
         if(!head[r][c]&&!stroke[r][c])continue;
-        vox.push({p:c,t:0,gz:gz,c:'#1b1a28',f:.9+.2*rnd(c,r,3)});
-        if(stroke[r][c])vox.push({p:c,t:1,gz:gz,c:'#f5f7fb',f:1});
+        vox.push({p:c,t:0,gz:gz,c:'#4a4172',f:.9+.2*rnd(c,r,3)});
+        if(stroke[r][c])vox.push({p:c,t:1,gz:gz,c:'#f0fbfd',f:1});
       }}
     vox.sort(function(a,b){return a.t-b.t||a.gz-b.gz;});
-    // screen bounds per unit-TW: x=2p (centre) ±1; y=0.5t−gz, top −0.5, body +1.5
     var bx0=1e9,bx1=-1e9,by0=1e9,by1=-1e9;
     vox.forEach(function(v){var cx=2*v.p,cy=0.5*v.t-v.gz;
       if(cx-1<bx0)bx0=cx-1;if(cx+1>bx1)bx1=cx+1;
       if(cy-0.5<by0)by0=cy-0.5;if(cy+1.5>by1)by1=cy+1.5;});
-
     function render(){
       var DPR=Math.min(2,window.devicePixelRatio||1);
       var box=cv.getBoundingClientRect(),Wc=box.width||300,Hc=box.height||300;
@@ -831,7 +415,7 @@
     var rt;addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(render,180);},{passive:true});
   })();
 
-  /* cta wordplay: "lets beck it" → scribble → "@beckett" mention */
+  /* cta wordplay: "lets beck it" -> scribble -> "@beckett" mention */
   (function(){
     var swap=document.getElementById('swap');if(!swap)return;
     if(RM){swap.classList.add('flipped');return;}
