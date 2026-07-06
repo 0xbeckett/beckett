@@ -1,13 +1,13 @@
 /**
  * Unit coverage for the chilltext collector wrapper (OPS-73): the success path (messages[]
- * returned, single:true requested), and every fallback branch — non-2xx, network error,
+ * returned, max_bubbles requested), and every fallback branch — non-2xx, network error,
  * timeout/abort, malformed response, empty messages, empty/overlong input. All mocked —
  * no live network. The invariant under test: `chillReply` returns `null` (⇒ the caller
  * sends the ORIGINAL text unchanged) on ANY failure, and never throws.
  */
 
 import { expect, test, describe } from "bun:test";
-import { chillReply } from "./chill.ts";
+import { chillReply, CHILL_MAX_BUBBLES } from "./chill.ts";
 
 /** A fetch stub returning a canned JSON body with the given status. */
 function fetchReturning(body: unknown, status = 200): typeof fetch {
@@ -27,7 +27,8 @@ describe("chillReply — success path", () => {
     expect(out).toEqual(["short casual version"]);
   });
 
-  test("POSTs {text, single:true} to /chill with a JSON content type", async () => {
+  test("POSTs {text, max_bubbles:4} to /chill with a JSON content type", async () => {
+    expect(CHILL_MAX_BUBBLES).toBe(4);
     let captured: { url: string; init: RequestInit } | null = null;
     const spy = (async (url: string | URL | Request, init?: RequestInit) => {
       captured = { url: String(url), init: init! };
@@ -43,10 +44,24 @@ describe("chillReply — success path", () => {
     );
     expect(JSON.parse(captured!.init.body as string)).toEqual({
       text: "hello there",
-      single: true,
+      max_bubbles: CHILL_MAX_BUBBLES,
     });
     // A timeout signal must be attached so an unreachable host can't hang the send path.
     expect(captured!.init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  test("returns multiple bubbles, capped at the configured maximum", async () => {
+    const out = await chillReply(
+      "A longer reply that the collector split into several casual bubbles.",
+      fetchReturning({ messages: ["one", "two", "three", "four", "five"] }),
+    );
+    expect(out).toEqual(["one", "two", "three", "four"]);
+    expect(out!.length).toBeLessThanOrEqual(CHILL_MAX_BUBBLES);
+  });
+
+  test("single-bubble collector output still returns one bubble", async () => {
+    const out = await chillReply("short reply", fetchReturning({ messages: ["one bubble"] }));
+    expect(out).toEqual(["one bubble"]);
   });
 
   test("drops non-string / blank entries but keeps real bubbles", async () => {
