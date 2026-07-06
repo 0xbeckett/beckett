@@ -1,0 +1,54 @@
+/**
+ * Beckett — chilltext collector (`src/discord/chill.ts`)
+ * =======================================================================================
+ * OPS-73: compress Beckett's long outgoing Discord replies into ONE short casual message
+ * via the chilltext collector API (https://chilltext.ssh.codes) before they hit Discord.
+ * Wired into the gateway's single shared send point (`gateway.ts` `sendNow`), so BOTH the
+ * auto-posted turn text and the `beckett discord reply` CLI path go through it — exactly
+ * the pattern the OPS-62 chunker uses.
+ *
+ * This is a transform-in-the-middle with a HARD PASSTHROUGH on any failure: unreachable
+ * host, non-2xx (incl. a service whose /health would fail), timeout (~35s), malformed
+ * response, or text the API can't take (>6000 chars) all return `null`, and the caller
+ * sends the ORIGINAL text unchanged through the existing path. No message is ever dropped
+ * or delayed beyond the timeout. `chillReply` never throws.
+ */
+
+/** The collector endpoint. POST {text, single:true} → {messages: string[]}. No auth. */
+const CHILL_URL = "https://chilltext.ssh.codes/chill";
+
+/** Hard passthrough deadline: if the collector hasn't answered by then, send the raw text. */
+export const CHILL_TIMEOUT_MS = 35_000;
+
+/** The API rejects text over this length — skip the call entirely and pass through. */
+const CHILL_MAX_CHARS = 6000;
+
+/**
+ * Compress outgoing reply text into chilltext bubbles (with `single:true` — one bubble).
+ * Returns the `messages[]` to send in order, or `null` meaning "send the original text
+ * unchanged". `fetchImpl` is injectable for tests only.
+ */
+export async function chillReply(
+  text: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[] | null> {
+  if (text.trim().length === 0 || text.length > CHILL_MAX_CHARS) return null;
+  try {
+    const res = await fetchImpl(CHILL_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, single: true }),
+      signal: AbortSignal.timeout(CHILL_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { messages?: unknown };
+    if (!Array.isArray(data.messages)) return null;
+    const messages = data.messages.filter(
+      (m): m is string => typeof m === "string" && m.trim().length > 0,
+    );
+    return messages.length > 0 ? messages : null;
+  } catch {
+    // Timeout, DNS failure, refused connection, bad JSON — all mean: use the original text.
+    return null;
+  }
+}

@@ -47,6 +47,7 @@ import { isFederatedPeer, PeerBurstLimiter } from "./federation.ts";
 import { loadPeers } from "./peers.ts";
 import { buildPaths } from "../paths.ts";
 import { chunkReply, delaySchedule, TOTAL_DELAY_BUDGET_MS } from "./chunk.ts";
+import { chillReply } from "./chill.ts";
 
 /** Discord's hard per-message ceiling (Spec 05 §9.1). */
 const DISCORD_MAX_CHARS = 2000;
