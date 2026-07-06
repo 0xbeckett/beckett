@@ -160,10 +160,10 @@
   .cta h2{margin:0 auto;max-width:22ch}
   .cta .sub{margin:18px auto 0}
   .cta .cta-row{margin-top:34px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
-  .markwrap{width:190px;margin:0 auto 26px;aspect-ratio:1/1.2;position:relative}
-  .markwrap::before{content:"";position:absolute;inset:-18%;border-radius:50%;
+  .markwrap{width:150px;margin:0 auto 26px;aspect-ratio:1;position:relative}
+  .markwrap::before{content:"";position:absolute;inset:-22%;border-radius:50%;
     background:radial-gradient(circle,rgba(255,255,255,.85),transparent 70%);filter:blur(6px)}
-  .mark-vox{width:100%;height:100%;position:relative;animation:float 7s ease-in-out infinite}
+  .mark-vox{width:100%;height:100%;position:relative;display:block;animation:float 7s ease-in-out infinite}
   @keyframes float{0%,100%{transform:translateY(-6px)}50%{transform:translateY(6px)}}
 
   /* wordplay swap */
@@ -291,7 +291,7 @@
   <!-- CTA -->
   <section class="cta" id="cta">
     <div class="markwrap rv">
-      <canvas class="mark-vox" id="markvox" role="img" aria-label="Beckett, a one-line portrait rebuilt from voxels"></canvas>
+      <img class="mark-vox" src="/logo.svg" alt="" width="150" height="150"/>
     </div>
     <h2 class="rv" aria-label="let's beckett">lets&nbsp;<span class="swap" id="swap" aria-hidden="true"><span class="wtext">beck&nbsp;it<svg class="scrib" viewBox="0 0 200 60" preserveAspectRatio="none"><path d="M10 36 C 50 14, 78 50, 112 28 S 170 16, 192 38 C 150 52, 70 34, 12 46"/></svg></span><span class="wment">@beckett</span></span></h2>
     <p class="sub rv">The <a href="/federation" style="color:var(--lv-deep);text-decoration:underline">federation</a> is small and weird. Perfect time to show up.</p>
@@ -333,58 +333,6 @@
 
   (function(){var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.16,rootMargin:'0px 0px -6% 0px'});
     document.querySelectorAll('.rv').forEach(function(n,i){n.style.transitionDelay=(i%3*55)+'ms';io.observe(n);})})();
-
-  /* hero mark: the hand-drawn one-line portrait (beckett.svg), voxelized offline
-     into a 56x95 grid and rebuilt as an isometric relief. Deep lavender-ink slab,
-     the drawn line raised one cube proud in pale cyan-white. */
-  (function(){
-    var cv=document.getElementById('markvox');if(!cv)return;
-    var ctx=cv.getContext('2d');
-    var FW=56,FH=95;
-    var FHEAD=["000ffffffff000","001ffffffff000","001ffffffff800","003ffffffffc00","003ffffffffc00","007ffffffffe00","007ffffffffe00","00ffffffffff00","00ffffffffff00","01ffffffffff80","01ffffffffff80","03ffffffffffc0","03ffffffffffc0","07ffffffffffe0","07ffffffffffe0","07ffffffffffe0","0ffffffffffff0","0ffffffffffff0","0ffffffffffff0","0ffffffffffff8","1ffffffffffff8","1ffffffffffff8","1ffffffffffff8","1ffffffffffffc","3ffffffffffffc","3ffffffffffffc","3ffffffffffffc","3ffffffffffffc","3ffffffffffffe","7ffffffffffffe","7ffffffffffffe","7ffffffffffffe","7ffffffffffffe","7ffffffffffffe","7ffffffffffffe","7ffffffffffffe","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","ffffffffffffff","7fffffffffffff","7ffffffffffffe","7ffffffffffffe","7ffffffffffffe","7ffffffffffffe","7ffffffffffffe","7ffffffffffffe","7ffffffffffffe","3ffffffffffffc","3ffffffffffffc","3ffffffffffffc","3ffffffffffffc","3ffffffffffffc","1ffffffffffff8","1ffffffffffff8","1ffffffffffff8","1ffffffffffff8","0ffffffffffff0","0ffffffffffff0","0ffffffffffff0","0ffffffffffff0","07ffffffffffe0","07ffffffffffe0","07ffffffffffe0","03ffffffffffc0","03ffffffffffc0","01ffffffffff80","01ffffffffff80","01ffffffffff80","00ffffffffff00","00ffffffffff00","007ffffffffe00","007ffffffffe00","003ffffffffc00","003ffffffff800","001ffffffff800","000ffffffff000","000fffffffe000","0007ffffffc000"];
-    var FSTROKE=["00000806000000","0000180f000000","00000c1f800000","00000e30800000","00000fe0c00000","00000ff0c00000","00000cf0c00000","000004f8400000","00000c3c600000","0000dc0c7c0000","0004f804fc0000","00047006e60000","000e7006c20000","000e3006c30000","000e7006f10000","0007e3c7fd8000","0007c3c7cf9800","0005066787f000","0007863783f000","0003843f80f000","0003841d80e000","0007043c80e000","000e04f0803000","001c07c0801800","00180780c01800","00100e00600800","00100e00700c00","003c1e00300c00","003e1c00181c00","00331c00181c00","0011b800181c00","0001b000180800","0001b01f880800","0003703fcc0800","0006707fcc0800","0007b07ff40800","0007b07ffc0800","0006bc387e1800","0004be305f9800","0000ffe04ff800","0000ffe047f800","00007fe045f800","0000f36047b800","0001e36047b800","0001f1e0473000","0001b1e0c72000","0001f1b0c72000","0000f3b3876000","0000f39f06e000","0000d39e00e000","0000530000e000","0000770001e000","00007f60014000","00003df003c000","000019f003c000","000019f0038000","000019e0030000","00001840030000","00000860030000","000008f8030000","00000ddc030000","00000dfc030000","000005f8030000","000005c0030000","00000780070000","000006e0070000","000002e00f0000","000003800f0000","000003c01a0000","000001c0320000","00000160620000","00000130e20000","000001b1c20000","00000193820000","00000097020000","000000fe020000","00000078020000","00000030020000","00000020020000","00000020030000","00000020030000","00000020010000","00000020000000","00000030000000","00000030000000","00000010000000","00000018000000","00000018000000","00000008000000","00000008000000","0000000c000000","0000000c000000","0000000c000000","0000000c000000","00000008000000"];
-    function dec(rows){return rows.map(function(h){var bits=[];
-      for(var i=0;i<h.length;i++){var n=parseInt(h[i],16);for(var b=3;b>=0;b--)bits.push((n>>b)&1);}
-      return bits.slice(0,FW);});}
-    var head=dec(FHEAD),stroke=dec(FSTROKE);
-
-    function rnd(x,y,z){var h=(x*374761393+y*668265263+z*2246822519)>>>0;h=(h^(h>>>13))*1274126177>>>0;return (h>>>0)/4294967295;}
-    function shade(hex,f){var n=parseInt(hex.slice(1),16),r=(n>>16)&255,g=(n>>8)&255,b=n&255;
-      r=Math.min(255,r*f)|0;g=Math.min(255,g*f)|0;b=Math.min(255,b*f)|0;return 'rgb('+r+','+g+','+b+')';}
-    function voxel(sx,sy,TW,base,f){
-      var TH=TW/2,H=TW,top=shade(base,1.06*f),lf=shade(base,.6*f),rf=shade(base,.82*f);
-      ctx.beginPath();ctx.moveTo(sx,sy-TH);ctx.lineTo(sx+TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx-TW,sy);ctx.closePath();
-      ctx.fillStyle=top;ctx.strokeStyle=top;ctx.lineWidth=1;ctx.fill();ctx.stroke();
-      ctx.beginPath();ctx.moveTo(sx-TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx,sy+TH+H);ctx.lineTo(sx-TW,sy+H);ctx.closePath();
-      ctx.fillStyle=lf;ctx.strokeStyle=lf;ctx.fill();ctx.stroke();
-      ctx.beginPath();ctx.moveTo(sx+TW,sy);ctx.lineTo(sx,sy+TH);ctx.lineTo(sx,sy+TH+H);ctx.lineTo(sx+TW,sy+H);ctx.closePath();
-      ctx.fillStyle=rf;ctx.strokeStyle=rf;ctx.fill();ctx.stroke();
-    }
-    var vox=[];
-    for(var r=0;r<FH;r++){var gz=FH-1-r;
-      for(var c=0;c<FW;c++){
-        if(!head[r][c]&&!stroke[r][c])continue;
-        vox.push({p:c,t:0,gz:gz,c:'#4a4172',f:.9+.2*rnd(c,r,3)});
-        if(stroke[r][c])vox.push({p:c,t:1,gz:gz,c:'#f0fbfd',f:1});
-      }}
-    vox.sort(function(a,b){return a.t-b.t||a.gz-b.gz;});
-    var bx0=1e9,bx1=-1e9,by0=1e9,by1=-1e9;
-    vox.forEach(function(v){var cx=2*v.p,cy=0.5*v.t-v.gz;
-      if(cx-1<bx0)bx0=cx-1;if(cx+1>bx1)bx1=cx+1;
-      if(cy-0.5<by0)by0=cy-0.5;if(cy+1.5>by1)by1=cy+1.5;});
-    function render(){
-      var DPR=Math.min(2,window.devicePixelRatio||1);
-      var box=cv.getBoundingClientRect(),Wc=box.width||300,Hc=box.height||300;
-      cv.width=Wc*DPR;cv.height=Hc*DPR;
-      ctx.setTransform(DPR,0,0,DPR,0,0);ctx.clearRect(0,0,Wc,Hc);
-      var TW=Math.min((Wc*0.98)/(bx1-bx0),(Hc*0.98)/(by1-by0));TW=Math.max(1.6,TW);
-      var TH=TW/2,H=TW;
-      var ox=(Wc-(bx0+bx1)*TW)/2,oy=(Hc-(by0+by1)*TW)/2;
-      vox.forEach(function(v){voxel(ox+2*v.p*TW,oy+(v.t*TH-v.gz*H),TW,v.c,v.f);});
-    }
-    render();
-    var rt;addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(render,180);},{passive:true});
-  })();
 
   /* cta wordplay: "lets beck it" -> scribble -> "@beckett" mention */
   (function(){
