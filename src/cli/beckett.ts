@@ -22,6 +22,7 @@ import { CfDns } from "../agency/cloudflare.ts";
 import { CodexImageGen } from "../agency/imagegen.ts";
 import { TunnelDeployer } from "../shell/deploy.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
+import { loadPeers, addPeer, removePeer } from "../discord/peers.ts";
 import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 import type { Ticket, TicketState } from "../plane/types.ts";
@@ -476,6 +477,35 @@ async function main(): Promise<void> {
     fail("usage: beckett access ls | grant <id> | revoke <id>");
   }
 
+  // ── federation (peer Becketts) ─────────────────────────────────────────────────────────────
+  // The living peer list (peers.txt), grown by the OWNER live from Discord ("@beckett add @ABot
+  // to my peers"). The Concierge shells these; owner-gating is the Concierge's job (doctrine) —
+  // this is a plain file editor, like `access grant`. Takes effect with no restart: the gateway
+  // reads the file fresh on the next peer-bot message. Accepts a raw bot id or a "<@id>" mention.
+  if (group === "federation") {
+    // Tolerate a pasted Discord mention: "<@123…>" / "<@!123…>" → the bare id.
+    const bareId = (s: string | undefined): string => (s ?? "").replace(/^<@!?/, "").replace(/>$/, "").trim();
+    if (sub === "ls" || sub === "list") {
+      const ids = [...loadPeers(paths.peersFile)];
+      const baseline = config.federation.peers;
+      out({ ids, count: ids.length, baseline, peersFile: paths.peersFile });
+    }
+    if (sub === "add") {
+      const id = bareId(rest[0]);
+      if (!id) fail('usage: beckett federation add <bot-id | @mention>');
+      const r = addPeer(paths.peersFile, id);
+      if (!r.ok) fail(`not a valid Discord bot id: "${id}" (expected 17–20 digits)`);
+      out({ ok: true, status: r.status, id: r.id, peers: r.ids });
+    }
+    if (sub === "remove" || sub === "rm") {
+      const id = bareId(rest[0]);
+      if (!id) fail('usage: beckett federation remove <bot-id | @mention>');
+      const r = removePeer(paths.peersFile, id);
+      out({ ok: true, status: r.status, id: r.id, peers: r.ids });
+    }
+    fail("usage: beckett federation ls | add <id> | remove <id>");
+  }
+
   // ── ticket (in-process: PlaneClient — the Concierge's door to Plane, v3 §8) ───────────────
   // The Concierge shells these from its Bash tool to file/inspect/steer tickets. Output is
   // JSON on stdout (the Concierge reads it). PlaneClient speaks HTTP to Plane; the secret
@@ -841,7 +871,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | identity set|show|list | discord reply | proactivity status|set|off | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | identity set|show|list | discord reply | proactivity status|set|off | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

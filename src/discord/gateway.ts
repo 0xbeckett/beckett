@@ -44,6 +44,8 @@ import type {
 } from "../types.ts";
 import { log as rootLog } from "../log.ts";
 import { isFederatedPeer, PeerBurstLimiter } from "./federation.ts";
+import { loadPeers } from "./peers.ts";
+import { buildPaths } from "../paths.ts";
 import { chunkReply, delaySchedule, TOTAL_DELAY_BUDGET_MS } from "./chunk.ts";
 
 /** Discord's hard per-message ceiling (Spec 05 §9.1). */
@@ -64,6 +66,8 @@ export interface GatewayOptions {
   token?: string;
   /** Full config (reserved for chattiness/reply-mode hooks; reply mode is always 'same'). */
   config?: Config;
+  /** Override the living peer-file path (tests). Defaults to `buildPaths(config).peersFile`. */
+  peersFile?: string;
   /** Logger to bind under the `discord` component. Defaults to the root logger child. */
   logger?: Logger;
 }
@@ -77,8 +81,12 @@ export class DiscordJsGateway implements DiscordGateway {
   private readonly logger: Logger;
   private readonly token: string | undefined;
 
-  /** Trusted peer-Beckett bot ids exempt from the bot-ignore guard (config `federation.peers`). */
-  private readonly peers: ReadonlySet<string>;
+  /** Baseline trusted peer-Beckett bot ids from config (`federation.peers`) — the deploy-managed
+   *  seed. The owner-added live list (`peers.txt`) is unioned on top at read time. */
+  private readonly baselinePeers: ReadonlySet<string>;
+  /** Path to the living peer file (`peers.txt`), read fresh per bot message so owner adds take
+   *  effect with NO restart. Undefined only when no config was supplied (tests). */
+  private readonly peersFile: string | undefined;
   /** Runaway backstop for peer-bot traffic — caps processed peer messages per channel per minute. */
   private readonly peerBurst: PeerBurstLimiter;
 
@@ -100,8 +108,22 @@ export class DiscordJsGateway implements DiscordGateway {
     this.token = opts.token;
     this.logger = opts.logger ?? rootLog.child("discord");
     const fed = opts.config?.federation;
-    this.peers = new Set(fed?.peers ?? []);
+    this.baselinePeers = new Set(fed?.peers ?? []);
+    this.peersFile = opts.peersFile ?? (opts.config ? buildPaths(opts.config).peersFile : undefined);
     this.peerBurst = new PeerBurstLimiter(fed?.peer_burst_per_min ?? 5);
+  }
+
+  /**
+   * The effective trusted-peer set for THIS message: the config baseline unioned with the live
+   * `peers.txt` (owner-added, no restart). Read fresh — but only ever on the rare `author.bot`
+   * path, so a normal human message never touches disk here.
+   */
+  private effectivePeers(): ReadonlySet<string> {
+    if (!this.peersFile) return this.baselinePeers;
+    const live = loadPeers(this.peersFile);
+    if (this.baselinePeers.size === 0) return live;
+    for (const id of this.baselinePeers) live.add(id);
+    return live;
   }
 
   // ── lifecycle ────────────────────────────────────────────────────────────────────────
@@ -279,7 +301,7 @@ export class DiscordJsGateway implements DiscordGateway {
       // `federation.peers`) is let through so sibling Becketts can address each other — but never
       // ourselves, and never past the per-channel burst backstop (federation.ts).
       if (msg.author.bot) {
-        if (!isFederatedPeer(msg.author.id, this.client?.user?.id, this.peers)) return;
+        if (!isFederatedPeer(msg.author.id, this.client?.user?.id, this.effectivePeers())) return;
         if (!this.peerBurst.allow(msg.channelId)) {
           this.logger.warn("discord peer message dropped — channel burst cap", {
             peerId: msg.author.id,

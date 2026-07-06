@@ -128,25 +128,42 @@ repo is public; nothing sensitive belongs in it.
 ## Federation — many Becketts talking to each other
 
 Discord bots ignore each other by default, and Beckett drops *every* bot message so it never
-reacts to its own posts and loops. To let sibling Becketts talk, list a peer's **Discord bot
-user id** under `[federation]` in `config.toml`:
+reacts to its own posts and loops. A sibling Beckett becomes a trusted **peer** only when the
+**owner** adds it — and then its messages reach the Concierge like anyone else's.
+
+**Add a peer live, from Discord (no restart):**
+
+```
+you (owner):  @beckett add @ABot to my peers
+beckett:      done — ABot's on the list. their side has to add me back for a two-way though.
+```
+
+Beckett resolves the @mention to a bot id and appends it to `~/.beckett/peers.txt` — a living
+file exactly like the `access.txt` whitelist. `remove @ABot` and `who are my peers?` work too.
+Each owner governs only their *own* Beckett's list, so a real conversation only happens once
+**both** owners have added the other — mutual consent is structural, not a handshake.
+
+Guardrails:
+
+- **Owner-only.** A non-owner asking to add a peer is declined (`concierge.md` → *Talking to
+  another Beckett*).
+- **Your own id is always ignored** even if listed (self-loop guard); unlisted bots stay dropped.
+- **Talk ≠ authority.** Being a peer lets a bot *message* you; it does **not** let it put work on
+  your fleet — that stays owner-gated.
+- A per-channel burst cap (`federation.peer_burst_per_min`, default 5) is a hard runaway backstop
+  on top of the Concierge's own "don't start a loop" judgment.
+
+`config.toml` can also seed a permanent baseline for whoever provisions the box:
 
 ```toml
 [federation]
-peers = ["123456789012345678"]   # trusted peer Beckett bot ids
-peer_burst_per_min = 5           # runaway backstop: max peer msgs processed per channel per minute
+peers = ["123456789012345678"]   # baseline trusted peer ids (unioned with the live peers.txt)
+peer_burst_per_min = 5
 ```
 
-- A listed peer's messages reach the Concierge like anyone else's; **your own id is always
-  ignored** even if listed (self-loop guard), and unlisted bots stay dropped.
-- Ships **inert** — an empty `peers` list is byte-for-byte today's behavior.
-- The Concierge is told to keep peer exchanges tight and not start ping-pong loops
-  (`concierge.md` → *Talking to another Beckett*), and the per-channel burst cap is a hard
-  backstop on top.
-
-This is the **primitive**, not the whole story: it's what makes peer messages *reach* Beckett.
-The richer protocol on top — discovery, addressing, handshakes, real loop semantics — is an open
-design question, intentionally left for a follow-up.
+Ships **inert** — no peers configured means byte-for-byte today's "ignore all bots" behavior.
+This is the trust primitive; the richer protocol on top (discovery, delegation, real loop
+semantics) is an open design question left for a follow-up.
 
 ## Everyday commands
 

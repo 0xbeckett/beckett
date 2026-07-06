@@ -511,6 +511,7 @@ export interface Paths {
   imagesDir: string; // <beckettDir>/images — generated images (beckett image)
   identitiesFile: string; // <beckettDir>/identities.json — per-user known/preferred names (OPS-42)
   accessPendingFile: string; // <beckettDir>/access-pending.json — grant requests awaiting owner approval
+  peersFile: string; // <beckettDir>/peers.txt — owner-added trusted peer Beckett bot ids (federation)
 }
 
 /** The full validated config (Spec 01 §4). Every key has a default so an empty config boots. */
