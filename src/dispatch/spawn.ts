@@ -287,7 +287,7 @@ function buildResumePrompt(ticket: Ticket, stage: string, steering?: string[]): 
 function steeringBlock(steering: string[] | undefined): string {
   if (!steering || steering.length === 0) return "";
   const notes = steering.map((s) => `- ${s.trim()}`).join("\n");
-  return `\n\nSteering from the user since this ticket was filed (treat as part of the brief):\n${notes}`;
+  return `\n\n<context>\nSteering from the user since this ticket was filed (treat as part of the brief):\n${notes}\n</context>`;
 }
 
 /** Above this size the review prompt carries a changed-file summary instead of the raw diff. */

@@ -55,7 +55,7 @@ export function buildTriagePrompt(
   burst: TriageMessage[],
   transcript: TriageMessage[],
 ): string {
-  return `${staticPrompt.trim()}\n\nRecent transcript:\n${formatMessages(transcript)}\n\nBurst to classify:\n${formatMessages(burst)}\n`;
+  return `${staticPrompt.trim()}\n\n<context>\nRecent transcript:\n${formatMessages(transcript)}\n</context>\n\n<context>\nBurst to classify:\n${formatMessages(burst)}\n</context>\n`;
 }
 
 /**
