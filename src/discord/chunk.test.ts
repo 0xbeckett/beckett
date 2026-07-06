@@ -32,10 +32,24 @@ describe("chunkReply — threshold / single-message behavior", () => {
     expect(chunkReply(atLimit)).toEqual([atLimit]);
   });
 
-  test("multi-paragraph but under threshold stays one message", () => {
+  test("multi-paragraph splits at the blank line even when short (a blank line = a new message)", () => {
     const twoShortParas = "first thought\n\nsecond thought";
     expect(twoShortParas.length).toBeLessThan(CHUNK_THRESHOLD);
-    expect(chunkReply(twoShortParas)).toEqual([twoShortParas]);
+    expect(chunkReply(twoShortParas)).toEqual(["first thought", "second thought"]);
+  });
+
+  test("a short ack + answer separated by a blank line become two messages (OPS regression)", () => {
+    const reply = `I'll check.\n\nno peers. your list's empty. add one with "add @TheBot to my peers" and i'll wire it up.`;
+    expect(reply.length).toBeLessThan(CHUNK_THRESHOLD);
+    expect(chunkReply(reply)).toEqual([
+      "I'll check.",
+      `no peers. your list's empty. add one with "add @TheBot to my peers" and i'll wire it up.`,
+    ]);
+  });
+
+  test("single newlines stay in ONE message — only blank lines split", () => {
+    const oneMessage = "line one\nline two\nline three";
+    expect(chunkReply(oneMessage)).toEqual([oneMessage]);
   });
 
   test("an unbreakable long run is returned unchanged rather than force-split", () => {

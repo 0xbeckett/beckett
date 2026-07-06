@@ -15,7 +15,13 @@
  * split per section, so a section that is still too long stays correct.
  */
 
-/** Under this many chars a reply is a single message — byte-for-byte identical to before. */
+/**
+ * Sentence-split threshold: a SINGLE paragraph longer than this is broken on sentence
+ * boundaries so no one message is a wall. It is NOT a "collapse everything shorter into one
+ * message" switch — a blank line between paragraphs always splits, however short (that's how
+ * an "I'll check." ack lands as its own message ahead of the answer). A lone short paragraph
+ * still comes back byte-for-byte.
+ */
 export const CHUNK_THRESHOLD = 300;
 
 /** Never fragment a reply into more than this many messages (over-fragmentation guard). */
@@ -43,10 +49,14 @@ export interface ChunkOptions {
 /**
  * Split a reply into natural, sequentially-sendable messages.
  *
- * Rules (Spec: OPS-62):
- *  - Short replies (≤ `threshold`) return `[content]` UNCHANGED — one message, byte-for-byte.
- *  - Splits prefer paragraph breaks (blank lines); a paragraph that is itself very long falls
- *    back to sentence boundaries. A split NEVER lands mid-sentence.
+ * Rules (Spec: OPS-62, revised):
+ *  - **A blank line between paragraphs is a message boundary.** Each paragraph becomes its own
+ *    message — even when the whole reply is short. This is how a "I'll check." ack is sent ahead
+ *    of the answer instead of glued to it. Paragraphs are NOT packed back together; the model
+ *    controls cadence by choosing where to put a blank line (single newlines keep one message).
+ *  - A LONE paragraph (no blank lines) is one message, byte-for-byte — unless it's longer than
+ *    `threshold`, in which case it falls back to sentence boundaries so no message is a wall. A
+ *    split NEVER lands mid-sentence.
  *  - A fenced code block (```…```) is always one contiguous message and is never split, even if
  *    the fence is never closed (safer to keep the tail whole than to guess a boundary).
  *  - `maxChunks` bounds fragmentation; excess chunks are merged back into the last one.
@@ -56,57 +66,60 @@ export function chunkReply(content: string, opts: ChunkOptions = {}): string[] {
   const threshold = opts.threshold ?? CHUNK_THRESHOLD;
   const maxChunks = Math.max(1, opts.maxChunks ?? MAX_CHUNKS);
   if (content.length === 0) return [];
-  // Short reply: exactly one message, identical to today. Also covers the common case cheaply.
-  if (content.length <= threshold) return [content];
 
   const blocks = toBlocks(content);
+
+  // A single block (one paragraph or one fence) is one message — byte-for-byte for the common
+  // short reply. The only reason to break it is a long single paragraph, which we split on
+  // sentence boundaries so it doesn't arrive as a wall.
+  if (blocks.length <= 1) {
+    const only = blocks[0];
+    if (!only || only.isFence || only.text.length <= threshold) return [content];
+    const sentences = packSentences(only.text, threshold);
+    return sentences.length <= 1 ? [content] : capChunks(sentences, maxChunks);
+  }
+
+  // Multiple blocks: honor every blank-line boundary as its own message (no packing). A fence
+  // stands alone; a paragraph over `threshold` breaks into sentence-sized messages.
   const chunks: string[] = [];
+  for (const block of blocks) {
+    if (block.isFence || block.text.length <= threshold) {
+      chunks.push(block.text);
+    } else {
+      chunks.push(...packSentences(block.text, threshold));
+    }
+  }
+
+  // Couldn't actually break it up → send the original, unchanged.
+  if (chunks.length <= 1) return [content];
+  return capChunks(chunks, maxChunks);
+}
+
+/**
+ * Break a long paragraph into sentence-sized messages: greedily pack whole sentences up to
+ * `limit`, never cutting inside a sentence. Returns `[text]` when there are no sentence
+ * boundaries to split on (an unbreakable run).
+ */
+function packSentences(text: string, limit: number): string[] {
+  const out: string[] = [];
   let cur = "";
-  const flush = () => {
-    if (cur) {
-      chunks.push(cur);
+  for (const sentence of splitSentences(text)) {
+    if (cur && cur.length + 1 + sentence.length > limit) {
+      out.push(cur);
       cur = "";
     }
-  };
-
-  for (const block of blocks) {
-    if (block.isFence) {
-      // A code fence stands alone as its own message — never merged, never split.
-      flush();
-      chunks.push(block.text);
-      continue;
-    }
-    if (block.text.length <= threshold) {
-      // A normal paragraph: pack with adjacent short paragraphs up to the soft target.
-      if (cur && cur.length + 2 + block.text.length > threshold) flush();
-      cur = cur ? `${cur}\n\n${block.text}` : block.text;
-      continue;
-    }
-    // A single very long paragraph: fall back to sentence boundaries so no message is a wall,
-    // and never cut inside a sentence.
-    flush();
-    let sc = "";
-    for (const sentence of splitSentences(block.text)) {
-      if (sc && sc.length + 1 + sentence.length > threshold) {
-        chunks.push(sc);
-        sc = "";
-      }
-      sc = sc ? `${sc} ${sentence}` : sentence;
-    }
-    if (sc) chunks.push(sc);
+    cur = cur ? `${cur} ${sentence}` : sentence;
   }
-  flush();
+  if (cur) out.push(cur);
+  return out;
+}
 
-  // Couldn't actually break it up (e.g. one unbroken run) → send the original, unchanged.
-  if (chunks.length <= 1) return [content];
-
-  // Over-fragmentation / latency guard: merge the tail so we never exceed maxChunks messages.
-  if (chunks.length > maxChunks) {
-    const head = chunks.slice(0, maxChunks - 1);
-    const tail = chunks.slice(maxChunks - 1).join("\n\n");
-    return [...head, tail];
-  }
-  return chunks;
+/** Over-fragmentation / latency guard: merge the tail so we never exceed `maxChunks` messages. */
+function capChunks(chunks: string[], maxChunks: number): string[] {
+  if (chunks.length <= maxChunks) return chunks;
+  const head = chunks.slice(0, maxChunks - 1);
+  const tail = chunks.slice(maxChunks - 1).join("\n\n");
+  return [...head, tail];
 }
 
 /** An ordered piece of the reply: either prose (`isFence:false`) or a whole code fence. */
