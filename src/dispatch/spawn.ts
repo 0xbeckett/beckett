@@ -303,16 +303,16 @@ function reviewDiffBlock(diff: string | undefined, baseRef?: string): string {
   if (!trimmed) return "";
   if (trimmed.length <= REVIEW_DIFF_INLINE_MAX) {
     return (
-      `\n\nThe FULL diff of the contribution is inlined below — judge from it directly; only ` +
-      `open files when you need surrounding context.\n\n\`\`\`diff\n${trimmed}\n\`\`\``
+      `\n\n<context>\nThe FULL diff of the contribution is inlined below — judge from it directly; only ` +
+      `open files when you need surrounding context.\n\n\`\`\`diff\n${trimmed}\n\`\`\`\n</context>`
     );
   }
   const files = [...trimmed.matchAll(/^diff --git a\/(\S+) /gm)].map((m) => m[1]!);
   const list = files.length ? files.map((f) => `- ${f}`).join("\n") : "(could not list files)";
   return (
-    `\n\nThe contribution is large (~${Math.round(trimmed.length / 1024)}KB across ` +
+    `\n\n<context>\nThe contribution is large (~${Math.round(trimmed.length / 1024)}KB across ` +
     `${files.length || "several"} files) — too big to inline. Changed files:\n${list}\n` +
-    `Inspect selectively with ${diffHint(baseRef)}.`
+    `Inspect selectively with ${diffHint(baseRef)}.\n</context>`
   );
 }
 
@@ -326,7 +326,7 @@ function buildPrompt(
 ): string {
   const header = `[${ticket.identifier}] ${ticket.title}`;
   const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";
-  const crit = `\n\nAcceptance criteria:\n${criteriaBlock(ticket.criteria)}`;
+  const crit = `\n\n<criteria>\nAcceptance criteria:\n${criteriaBlock(ticket.criteria)}\n</criteria>`;
   const steer = steeringBlock(steering);
   if (stage === "review") {
     const diffBlock = reviewDiffBlock(reviewDiff, baseRef);
@@ -340,7 +340,7 @@ function buildPrompt(
       `modify the implementation — your job is to judge it.`
     );
   }
-  return `${header}${body}${crit}${steer}`;
+  return `<task>\n${header}${body}\n</task>${crit}${steer}`;
 }
 
 /**
@@ -360,6 +360,7 @@ function ticketMentionsDeploy(ticket: Ticket): boolean {
 function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): string {
   if (stage === "review") {
     return (
+      `<persona>\n` +
       `You are an autonomous REVIEWER. The implementation under review is committed in the repo ` +
       `at your cwd. Inspect it with ${diffHint(baseRef)} and judge it against the acceptance ` +
       `criteria listed in your task brief — do NOT edit the implementation.\n` +
@@ -367,12 +368,14 @@ function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): str
       `  - status "complete"  → the work PASSES review (all criteria met).\n` +
       `  - status "blocked"   → the work FAILS review; put the specific reasons in summary + ` +
       `blockedReason so the next implement pass can fix them.\n` +
-      `Put your one-line verdict in summary.`
+      `Put your one-line verdict in summary.\n` +
+      `</persona>`
     );
   }
   const slug = projectSlug(ticket.project || ticket.identifier);
   const deployNote = ticketMentionsDeploy(ticket) ? `${deployDurabilityNote(slug)}\n` : "";
   return (
+    `<persona>\n` +
     `You are an autonomous worker implementing a ticket. Your cwd is THIS PROJECT'S OWN git repo ` +
     `(\`~/Projects/${slug}\`) — it is yours to build in. Edit freely and commit your work; treat ` +
     `anything outside it (especially Beckett's own source) as read-only.\n` +
@@ -385,7 +388,8 @@ function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): str
     `${deployNote}` +
     `When finished, emit the structured done-signal matching the provided schema (status ` +
     `"complete" when all criteria hold AND your self-review passed, "blocked"/"partial" ` +
-    `otherwise with a reason).`
+    `otherwise with a reason).\n` +
+    `</persona>`
   );
 }
 
