@@ -512,6 +512,7 @@ export interface Paths {
   identitiesFile: string; // <beckettDir>/identities.json — per-user known/preferred names (OPS-42)
   accessPendingFile: string; // <beckettDir>/access-pending.json — grant requests awaiting owner approval
   peersFile: string; // <beckettDir>/peers.txt — owner-added trusted peer Beckett bot ids (federation)
+  announcedFile: string; // <beckettDir>/announced.txt — last commit SHA announced on restart (changelog)
 }
 
 /** The full validated config (Spec 01 §4). Every key has a default so an empty config boots. */
@@ -615,6 +616,17 @@ export interface Config {
     rotate_at_tokens: number;
     /** Reasoning effort for the chat seat ("" = the claude CLI default; issue #25). */
     effort: "" | "low" | "medium" | "high" | "xhigh";
+  };
+  /**
+   * Restart "what's new" announcement — instance-specific, OFF by default (empty channel), so a
+   * fork inherits silence. When set, on boot with newer code than last announced the Concierge
+   * posts a short, in-voice changelog to the channel (derived from git commit subjects).
+   */
+  announce: {
+    /** Discord channel id to post the changelog to. Empty = feature off. */
+    changes_channel_id: string;
+    /** Cap on commits summarized in one announcement (a big deploy shouldn't dump 50 lines). */
+    max_commits: number;
   };
   /**
    * Federation — talking to OTHER Becketts (the fork ecosystem). Discord ignores bots by

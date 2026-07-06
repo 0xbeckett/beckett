@@ -1055,6 +1055,8 @@ export class Concierge {
     // Announce the boot (with the live commit) once the gateway is up. Best-effort + non-blocking:
     // a failed post must never hold up — or crash — the daemon coming online.
     void this.announceStartup();
+    // Instance-specific flourish: a fun, in-voice "what's new" when the code actually advanced.
+    void this.announceChanges();
     this.log.info("concierge online", { model: this.config.concierge.model });
   }
 
@@ -1074,6 +1076,36 @@ export class Concierge {
       this.log.info("posted startup banner", { channelId, commit: short });
     } catch (err) {
       this.log.warn("startup banner failed (continuing)", { channelId, err: String(err) });
+    }
+  }
+
+  /**
+   * Instance-specific "what's new" changelog. When {@link Config.announce}.changes_channel_id is set
+   * AND the running commit advanced since the last announcement, hand the Concierge a SYSTEM
+   * release-note turn so it posts a short, in-voice summary of the new commits to that channel.
+   * OFF by default (empty channel) so forks stay silent. Best-effort, non-blocking: it never holds
+   * up boot, and it stays quiet on a same-commit restart (a crash loop can't spam).
+   */
+  private async announceChanges(): Promise<void> {
+    const announce = this.config.announce;
+    const channelId = announce?.changes_channel_id?.trim();
+    if (!channelId) return; // feature off (fork default, or a partial config)
+    const repoRoot = defaultRepoRoot();
+    const announcedFile = buildPaths(this.config).announcedFile;
+    try {
+      const head = await currentGitSha(repoRoot);
+      if (!head) return; // not a git checkout / git missing — nothing to announce
+      if (readAnnouncedSha(announcedFile) === head) return; // no new code since last announce
+      const subjects = await commitSubjectsSince(repoRoot, readAnnouncedSha(announcedFile), announce.max_commits ?? 20);
+      // Persist BEFORE the async post so a restart mid-announce can't re-announce the same range.
+      writeAnnouncedSha(announcedFile, head);
+      if (subjects.length === 0) return;
+      void this.session
+        .ask(buildReleaseNote(channelId, subjects))
+        .catch((err) => this.log.warn("changes announcement turn failed (continuing)", { err: String(err) }));
+      this.log.info("queued changes announcement", { channelId, commits: subjects.length });
+    } catch (err) {
+      this.log.warn("changes announcement failed (continuing)", { err: String(err) });
     }
   }
 
@@ -1925,6 +1957,18 @@ function defaultRepoRoot(): string {
   return join(import.meta.dir, "..", "..");
 }
 
+/** Run a git command in `repoRoot`, returning trimmed stdout ("" on any failure). Best-effort. */
+async function runGit(repoRoot: string, args: string[]): Promise<string> {
+  try {
+    const proc = Bun.spawn({ cmd: ["git", "-C", repoRoot, ...args], stdout: "pipe", stderr: "ignore" });
+    const out = (await new Response(proc.stdout).text()).trim();
+    await proc.exited;
+    return out;
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Read the running code's git commit — short hash + subject line — from `repoRoot`. Used by the
  * startup banner so a restart shows exactly what's live. Best-effort: any failure (not a repo, no
@@ -1933,22 +1977,73 @@ function defaultRepoRoot(): string {
 export async function currentGitCommit(
   repoRoot: string,
 ): Promise<{ short: string; subject: string }> {
-  const run = async (args: string[]): Promise<string> => {
-    const proc = Bun.spawn({
-      cmd: ["git", "-C", repoRoot, ...args],
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const out = (await new Response(proc.stdout).text()).trim();
-    await proc.exited;
-    return out;
-  };
+  const short = (await runGit(repoRoot, ["rev-parse", "--short", "HEAD"])) || "unknown";
+  const subject = await runGit(repoRoot, ["log", "-1", "--pretty=%s"]);
+  return { short, subject };
+}
+
+/** The full HEAD sha (the changelog announce-state key). "" on any failure. */
+export async function currentGitSha(repoRoot: string): Promise<string> {
+  return runGit(repoRoot, ["rev-parse", "HEAD"]);
+}
+
+/**
+ * Commit subjects on HEAD since `sinceSha` (exclusive), newest first, capped at `max`. Used by the
+ * restart changelog to say what's new. When `sinceSha` is empty/unknown or no longer an ancestor
+ * (history rewrite, first ever announce), degrades to just the latest commit so there's always a
+ * sane, bounded answer instead of a dump or a throw.
+ */
+export async function commitSubjectsSince(
+  repoRoot: string,
+  sinceSha: string,
+  max: number,
+): Promise<string[]> {
+  const toList = (out: string): string[] => out.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (sinceSha) {
+    // A bad/unrelated `sinceSha` (force-push, unknown sha) makes `git log a..HEAD` error, and runGit
+    // returns "" → we fall through to the latest-commit fallback rather than throwing or dumping.
+    const ranged = await runGit(repoRoot, ["log", `${sinceSha}..HEAD`, "--pretty=%s", "-n", String(max)]);
+    const subjects = toList(ranged);
+    if (subjects.length > 0) return subjects;
+  }
+  // First run / bad range: just the latest commit.
+  return toList(await runGit(repoRoot, ["log", "-1", "--pretty=%s"]));
+}
+
+/**
+ * The SYSTEM turn that asks the Concierge to post a fun, in-voice "what's new" to `channelId`. It's
+ * framed exactly like an automated ticket update (not a user message) and routes the post through
+ * `beckett discord reply` — the same way every non-mention turn reaches a channel.
+ */
+export function buildReleaseNote(channelId: string, subjects: string[]): string {
+  const list = subjects.map((s) => `- ${s}`).join("\n");
+  return (
+    `SYSTEM (release note — you just restarted with new code; NOT a message from a user, do not reply as if a person typed it):\n` +
+    `You're back online and the code changed since you last announced. Newest first:\n\n${list}\n\n` +
+    `Tell the server what's new by running this from your Bash tool:\n` +
+    `  beckett discord reply --channel ${channelId} "<your message>"\n` +
+    `Keep it short and FUN, in your voice — a couple lines. Summarize what you can do now and call ` +
+    `out the interesting stuff; skip boring chore/plumbing commits and don't just paste the list. ` +
+    `If genuinely nothing here is worth sharing, do nothing.`
+  );
+}
+
+/** Read the last-announced sha from the state file ("" if none/unreadable). */
+export function readAnnouncedSha(file: string): string {
   try {
-    const short = (await run(["rev-parse", "--short", "HEAD"])) || "unknown";
-    const subject = await run(["log", "-1", "--pretty=%s"]);
-    return { short, subject };
+    return existsSync(file) ? readFileSync(file, "utf8").trim() : "";
   } catch {
-    return { short: "unknown", subject: "" };
+    return "";
+  }
+}
+
+/** Persist the last-announced sha (best-effort; a write failure just risks a re-announce). */
+export function writeAnnouncedSha(file: string, sha: string): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, sha + "\n", "utf8");
+  } catch {
+    /* best-effort */
   }
 }
 

@@ -289,6 +289,17 @@ const ConfigSchema = z
         effort: z.enum(["", "low", "medium", "high", "xhigh"]).default(""),
       })
       .default({}),
+    // Restart "what's new" changelog. Instance-specific and OFF by default (empty channel) so a
+    // fork stays silent until its owner opts in — this is a your-instance flourish, not a default.
+    announce: z
+      .object({
+        // Post the changelog here on boot when the running commit advanced since last announce.
+        // Empty = off. Set this in the BOX's config.toml, not in the repo (it's per-instance).
+        changes_channel_id: z.string().default(""),
+        // Bound the summarized commit count so a large deploy can't dump a wall.
+        max_commits: posInt.default(20),
+      })
+      .default({}),
     // Federation — the fork ecosystem. Discord ignores bots by default and Beckett drops every
     // bot message to kill self-loops; a peer bot id listed here is exempted so sibling Becketts
     // can address each other. Ships INERT (empty peers = today's exact behavior). The talk
