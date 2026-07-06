@@ -462,11 +462,22 @@ export class DiscordJsGateway implements DiscordGateway {
       }
     }
 
+    // Chilltext compression (OPS-73): collapse the outgoing text into one short casual bubble
+    // via the collector API. On ANY failure (unreachable, error, ~35s timeout, overlong text)
+    // `chillReply` returns null and the ORIGINAL text flows through the existing two-stage split
+    // unchanged — a transform-in-the-middle with a hard passthrough; no message is ever dropped.
+    // Only the text payload is touched: reply-to, files, and targeting are applied below as before.
+    const chilled = await chillReply(content);
+    if (chilled === null && content.trim().length > 0) {
+      this.logger.info("chilltext unavailable or skipped; sending original text", { channelId });
+    }
     // Two-stage split: first into natural, human-cadence sections (OPS-62 — paragraph/sentence
     // boundaries, code fences kept whole; a short reply stays ONE section, unchanged), then each
     // section into hard 2000-char pieces Discord will actually accept. Short text ⇒ one message,
-    // byte-for-byte as before.
-    const chunks = chunkReply(content).flatMap((section) => splitDiscordContent(section));
+    // byte-for-byte as before. Chilled bubbles are already message-sized sections; the hard
+    // 2000-char split still guards them.
+    const sections = chilled ?? chunkReply(content);
+    const chunks = sections.flatMap((section) => splitDiscordContent(section));
     if (chunks.length === 0 && (!opts?.files || opts.files.length === 0)) {
       throw new Error("discord post needs text or files");
     }
