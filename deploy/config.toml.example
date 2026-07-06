@@ -82,3 +82,7 @@ transcript_window = 15
 model = "claude-opus-4-8"
 rotate_at_tokens = 190000
 effort = ""
+
+[federation]
+peers = []
+peer_burst_per_min = 5

@@ -615,6 +615,22 @@ export interface Config {
     /** Reasoning effort for the chat seat ("" = the claude CLI default; issue #25). */
     effort: "" | "low" | "medium" | "high" | "xhigh";
   };
+  /**
+   * Federation — talking to OTHER Becketts (the fork ecosystem). Discord ignores bots by
+   * default (Beckett drops every `author.bot` message to kill self-loops); a peer whose bot
+   * user id is listed here is exempted, so sibling Becketts can address each other. Ships
+   * INERT: an empty `peers` list preserves today's "ignore all bots" behavior exactly. The
+   * conversation protocol on top (addressing, handshakes, loop semantics) is deliberately
+   * still open — this is only the primitive that makes peer messages *reach* the Concierge.
+   */
+  federation: {
+    /** Discord bot user ids of trusted peer Becketts. Your OWN id is always ignored even if
+     *  listed (self-loop guard); an unlisted bot is dropped as before. Default: none. */
+    peers: string[];
+    /** Runaway backstop: max peer-bot messages the gateway will process per channel per
+     *  rolling minute, so two auto-replying Becketts can never melt a channel. Default 5. */
+    peer_burst_per_min: number;
+  };
 }
 
 // =======================================================================================

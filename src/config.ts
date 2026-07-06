@@ -289,6 +289,24 @@ const ConfigSchema = z
         effort: z.enum(["", "low", "medium", "high", "xhigh"]).default(""),
       })
       .default({}),
+    // Federation — the fork ecosystem. Discord ignores bots by default and Beckett drops every
+    // bot message to kill self-loops; a peer bot id listed here is exempted so sibling Becketts
+    // can address each other. Ships INERT (empty peers = today's exact behavior). The talk
+    // protocol on top is still open by design — this is only the gateway primitive.
+    federation: z
+      .object({
+        // Discord bot user ids of trusted peer Becketts. The daemon's own id is always ignored
+        // even if listed (self-loop guard); unlisted bots stay dropped. Snowflake ids are digit
+        // strings — validate the shape so a fat-fingered entry is a loud boot failure, not a
+        // silently-never-matching peer.
+        peers: z
+          .array(z.string().regex(/^\d{17,20}$/, "must be a Discord user id (17–20 digits)"))
+          .default([]),
+        // Runaway backstop: max peer-bot messages processed per channel per rolling minute, so two
+        // auto-replying Becketts can't melt a channel before the protocol adds real loop control.
+        peer_burst_per_min: posInt.default(5),
+      })
+      .default({}),
   })
   .strict();
 

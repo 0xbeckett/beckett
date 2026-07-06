@@ -43,6 +43,7 @@ import type {
   Logger,
 } from "../types.ts";
 import { log as rootLog } from "../log.ts";
+import { isFederatedPeer, PeerBurstLimiter } from "./federation.ts";
 import { chunkReply, delaySchedule, TOTAL_DELAY_BUDGET_MS } from "./chunk.ts";
 
 /** Discord's hard per-message ceiling (Spec 05 §9.1). */
@@ -76,6 +77,11 @@ export class DiscordJsGateway implements DiscordGateway {
   private readonly logger: Logger;
   private readonly token: string | undefined;
 
+  /** Trusted peer-Beckett bot ids exempt from the bot-ignore guard (config `federation.peers`). */
+  private readonly peers: ReadonlySet<string>;
+  /** Runaway backstop for peer-bot traffic — caps processed peer messages per channel per minute. */
+  private readonly peerBurst: PeerBurstLimiter;
+
   /** The single inbound handler the Orchestrator registers via {@link onMessage}. */
   private handler: ((m: IncomingMessage) => void | Promise<void>) | undefined;
 
@@ -93,6 +99,9 @@ export class DiscordJsGateway implements DiscordGateway {
   constructor(opts: GatewayOptions = {}) {
     this.token = opts.token;
     this.logger = opts.logger ?? rootLog.child("discord");
+    const fed = opts.config?.federation;
+    this.peers = new Set(fed?.peers ?? []);
+    this.peerBurst = new PeerBurstLimiter(fed?.peer_burst_per_min ?? 5);
   }
 
   // ── lifecycle ────────────────────────────────────────────────────────────────────────
@@ -266,8 +275,24 @@ export class DiscordJsGateway implements DiscordGateway {
       this.lastEventTs = Date.now();
       // Loop guard: never react to bots, including ourselves (Spec 05 §2.2 / §9.2). This MUST come
       // before any logging — otherwise the Discord log-mirror's own posts get re-logged and amplify
-      // into a feedback loop.
-      if (msg.author.bot) return;
+      // into a feedback loop. Federation exemption: a *trusted peer* Beckett (config
+      // `federation.peers`) is let through so sibling Becketts can address each other — but never
+      // ourselves, and never past the per-channel burst backstop (federation.ts).
+      if (msg.author.bot) {
+        if (!isFederatedPeer(msg.author.id, this.client?.user?.id, this.peers)) return;
+        if (!this.peerBurst.allow(msg.channelId)) {
+          this.logger.warn("discord peer message dropped — channel burst cap", {
+            peerId: msg.author.id,
+            channelId: msg.channelId,
+          });
+          return;
+        }
+        this.logger.info("discord peer message accepted", {
+          peerId: msg.author.id,
+          peer: msg.author.username,
+          channelId: msg.channelId,
+        });
+      }
       // Observability: record every inbound (non-bot) message to confirm gateway receipt + intent.
       this.logger.info("discord message received", {
         author: msg.author.username,
