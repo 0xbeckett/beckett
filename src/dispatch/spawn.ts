@@ -335,7 +335,7 @@ function buildPrompt(
       : `The implementation is committed in the repo you're in (your cwd). Inspect it with ` +
         `${diffHint(baseRef)}, then `;
     return (
-      `Review the implementation for ticket ${header}.${body}${crit}${steer}${diffBlock}\n\n` +
+      `<task>\nReview the implementation for ticket ${header}.${body}\n</task>${crit}${steer}${diffBlock}\n\n` +
       `${inspect}verify it against EVERY acceptance criterion above. Do not ` +
       `modify the implementation — your job is to judge it.`
     );
