@@ -150,11 +150,26 @@ export class ProgressHub implements ProgressSink {
    * Anchor a ticket's progress thread to the ack message. Idempotent: called from both ack paths
    * (the Concierge's auto-posted turn text AND its `beckett discord reply`) and once per ticket in
    * a `plan` DAG, so the first call for an anchor creates the thread and the rest just map their
-   * ticket onto it. Draining any events that arrived before the anchor landed.
+   * ticket onto it. A ticket only ever gets ONE thread — the first anchor wins; a later call with
+   * a different anchor is ignored. Drains any events that arrived before the anchor landed.
    */
   openThread(req: OpenThreadRequest): void {
     const { channelId, anchorMessageId, ticketIdent, title } = req;
-    if (this.anchorByTicket.get(ticketIdent) === anchorMessageId) return; // already mapped
+    const existing = this.anchorByTicket.get(ticketIdent);
+    if (existing === anchorMessageId) return; // already mapped
+    if (existing) {
+      // FIRST anchor wins. The Concierge often replies more than once while a turn runs (an ack
+      // up front, a wrap-up after filing), and each reply re-anchors the turn's ack message —
+      // re-registering here would fork a SECOND Discord thread for the same ticket and split the
+      // worker's log stream across threads (the OPS-76 triple-thread bug). Later anchors are
+      // ignored; the ticket keeps streaming into the thread it already has.
+      this.log.info("ticket already anchored to a progress thread — ignoring re-anchor", {
+        ticket: ticketIdent,
+        keptAnchor: existing,
+        ignoredAnchor: anchorMessageId,
+      });
+      return;
+    }
     this.anchorByTicket.set(ticketIdent, anchorMessageId);
 
     let feed = this.feeds.get(anchorMessageId);

@@ -124,6 +124,55 @@ test("done-signal parses from a ```json fenced block (lenient)", () => {
   expect(fin.structuredOutput).toMatchObject({ status: "blocked" });
 });
 
+test("a run whose last turn died on a provider error finishes as ERROR, not empty success", () => {
+  const { events, feed } = harness();
+  feed({ type: "session", id: "s1" });
+  feed({ type: "turn_start" });
+  // The exact shape pi emits when auth is missing/expired: an empty assistant message carrying
+  // stopReason:"error", then a clean agent_end. Without the runError guard this finished as an
+  // instant empty "success" and the dispatcher advanced the ticket on nothing.
+  feed({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      stopReason: "error",
+      errorMessage: "No API key for provider: openai-codex",
+    },
+  });
+  feed({ type: "turn_end", message: { role: "assistant", content: [], stopReason: "error" }, toolResults: [] });
+  feed({ type: "agent_end", messages: [], willRetry: false });
+
+  const err = events.find((e) => e.kind === "error");
+  expect(err).toMatchObject({ message: "No API key for provider: openai-codex" });
+  const fin = events.find((e) => e.kind === "finished") as {
+    status: string;
+    subtype: string;
+    errorClass?: string;
+    structuredOutput: { status: string } | null;
+  };
+  expect(fin.status).toBe("error");
+  expect(fin.subtype).toBe("error_provider");
+  expect(fin.errorClass).toBe("auth"); // "no api key" classifies as auth → dispatcher holds, no blind retry
+  expect(fin.structuredOutput).toMatchObject({ status: "blocked" });
+});
+
+test("a transient errored turn followed by a successful one still finishes as success", () => {
+  const { events, feed } = harness();
+  feed({ type: "session", id: "s1" });
+  feed({
+    type: "message_end",
+    message: { role: "assistant", content: [], stopReason: "error", errorMessage: "overloaded" },
+  });
+  feed({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: "recovered and done" }] },
+  });
+  feed({ type: "agent_end", messages: [] });
+  const fin = events.find((e) => e.kind === "finished") as { status: string };
+  expect(fin.status).toBe("success");
+});
+
 test("a malformed line becomes kind:unknown, never throws", () => {
   const { events, feed, driver } = harness();
   expect(() => driver.handleLine("not json at all {{{")).not.toThrow();

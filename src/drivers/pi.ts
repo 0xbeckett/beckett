@@ -201,6 +201,14 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
   // ── pi-specific parse state ─────────────────────────────────────────────────
   /** The text of the most recent completed assistant message — the candidate done-signal. */
   private lastAgentMessage = "";
+  /**
+   * The provider error carried on the LAST assistant message (`stopReason:"error"`), or null if
+   * the run's most recent assistant turn completed normally. pi still emits a clean `agent_end`
+   * after a dead-on-arrival turn (e.g. "No API key for provider: openai-codex"), so without this
+   * an unauthenticated run would finish as an instant empty "success" and the dispatcher would
+   * happily advance the ticket on nothing.
+   */
+  private runError: string | null = null;
   /** tool call ids already counted (dedup) + their names (so an edit tool → file_change). */
   private readonly toolNames = new Map<string, string>();
   /** tool call id → its start `args` (pi carries args only on the start event, not the end). */
@@ -269,6 +277,7 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
 
   protected resetParseState(): void {
     this.lastAgentMessage = "";
+    this.runError = null;
   }
 
   // ===========================================================================
@@ -455,6 +464,15 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
   private handleMessageEnd(obj: Record<string, unknown>): void {
     const message = obj.message as Record<string, unknown> | undefined;
     if (!message || message.role !== "assistant") return;
+    // Track the run's error state off the LATEST assistant message: a turn that ends with
+    // `stopReason:"error"` (auth missing, provider down) arms it; any later successful turn
+    // clears it, so a transient mid-run error that pi recovered from doesn't fail the run.
+    if (message.stopReason === "error") {
+      this.runError = this.str(message.errorMessage) ?? "pi provider error";
+      this.emit({ kind: "error", message: this.runError, ts: Date.now() });
+    } else {
+      this.runError = null;
+    }
     const text = this.textOf(message.content);
     if (text) {
       this.lastAgentMessage = text;
@@ -503,6 +521,26 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
         this.stopWatchdog();
         if (!this.isTerminal()) this.setState("failed");
       });
+      return;
+    }
+
+    // pi emits a clean `agent_end` even when the run's last turn DIED on a provider error (no
+    // auth, provider down) — the run produced nothing, so surfacing it as success would advance
+    // the ticket on an empty result. Fail it with the provider's own message instead.
+    if (this.runError) {
+      this.emit({
+        kind: "finished",
+        status: "error",
+        subtype: "error_provider",
+        structuredOutput: this.exitFinishStructuredOutput(this.runError),
+        usage: { ...this.tokens },
+        errorClass: classifyHarnessFailure(this.runError) ?? "crash",
+        ts,
+      });
+      this.finished = true;
+      this.stopWatchdog();
+      if (!this.isTerminal()) this.setState("failed");
+      void this.killChild();
       return;
     }
 

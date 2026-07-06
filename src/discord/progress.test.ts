@@ -134,6 +134,25 @@ test("openThread is idempotent across both ack paths (no duplicate thread)", asy
   hub.dispose();
 });
 
+test("a re-anchor with a DIFFERENT ack keeps the first thread (OPS-76 triple-thread bug)", async () => {
+  const { gateway, rec } = fakeGateway();
+  const hub = new ProgressHub(gateway, quietLog, { flushIntervalMs: 5 });
+  // The Concierge acks ("filing it now"), the ticket files and anchors to that ack…
+  hub.openThread({ channelId: CHAN, anchorMessageId: ACK, ticketIdent: "OPS-76", title: "OPS-76 · x" });
+  // …then replies AGAIN in the same turn ("on it, i'll ping you") — a new ack message id.
+  hub.openThread({ channelId: CHAN, anchorMessageId: "ack-msg-2", ticketIdent: "OPS-76", title: "OPS-76 · x" });
+  hub.event("OPS-76", toolCall("Bash", { command: "bun test" }), IMPL);
+  hub.event("OPS-76", finished("success", "done"), IMPL);
+  await settle();
+
+  // ONE thread, anchored to the FIRST ack, receiving the whole log stream.
+  expect(rec.threads).toHaveLength(1);
+  expect(rec.threads[0]!.anchorMessageId).toBe(ACK);
+  expect(rec.posts.every((p) => p.channelId === rec.threads[0]!.id)).toBe(true);
+  expect(rec.posts.map((p) => p.content).join("\n")).toContain("bun test");
+  hub.dispose();
+});
+
 // ── coalescing + terminal flush ───────────────────────────────────────────────────────────────
 
 test("a chatty stream coalesces into few posts, not one-per-event", async () => {

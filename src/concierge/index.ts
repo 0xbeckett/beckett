@@ -1341,8 +1341,10 @@ export class Concierge {
       const messageId = await this.gateway.post(channelId, text, opts);
       if (claimsActiveTurn && active) {
         active.repliedViaCli = true;
-        // This CLI reply IS the turn's ack — anchor any pending progress threads to it.
-        active.ackMessageId = messageId;
+        // The FIRST CLI reply IS the turn's ack — anchor any pending progress threads to it. A
+        // later reply in the same turn (a wrap-up after filing) must NOT re-anchor: that forked a
+        // second progress thread per ticket (the OPS-76 triple-thread bug).
+        active.ackMessageId ??= messageId;
         this.openPendingThreads(active);
       }
       return { ok: true, data: { messageId } };

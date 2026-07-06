@@ -15,7 +15,7 @@ import type { ErrorClass } from "../types.ts";
 
 /** Auth failures: expired OAuth, missing login, 401s. The fix is a human running `<bin> login`. */
 const AUTH_PATTERNS =
-  /not logged in|please (run )?.{0,20}login|log in|credential|unauthorized|401|invalid.{0,10}(api key|token)|authentication|auth.{0,10}(fail|error|expired)|token.{0,10}expired|oauth/i;
+  /not logged in|please (run )?.{0,20}login|log in|credential|unauthorized|401|invalid.{0,10}(api key|token)|no api key|authentication|auth.{0,10}(fail|error|expired)|token.{0,10}expired|oauth/i;
 
 /** Rate limits / capacity: the fix is waiting (backoff) or moving load to another harness. */
 const RATE_LIMIT_PATTERNS =
