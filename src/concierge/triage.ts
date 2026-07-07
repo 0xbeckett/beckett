@@ -5,7 +5,7 @@ import type { Logger } from "../types.ts";
 
 export const TriageVerdictSchema = z.object({
   interject: z.boolean(),
-  kind: z.enum(["feature-wish", "bug-report", "question", "task-request", "none"]),
+  kind: z.enum(["feature-wish", "bug-report", "question", "task-request", "social", "none"]),
   confidence: z.number().min(0).max(1),
   reason: z.string(),
 });

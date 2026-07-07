@@ -2652,7 +2652,8 @@ function ambientAnchorId(turn: AmbientTurn): string {
 
 /**
  * The ambient-candidate frame (§4.5): overheard chatter Beckett is *choosing* whether to speak to.
- * PASS-by-default; a reply is ONE line offering concrete work or a concrete answer, never a ticket.
+ * PASS-by-default; a reply is ONE line that ADDS something — a concrete offer/answer OR a genuine
+ * social beat (a funny line, a useful pointer, a spicy-but-kind take). Never a ticket.
  */
 function frameAmbientCandidate(
   channelId: string,
@@ -2665,8 +2666,10 @@ function frameAmbientCandidate(
     `SYSTEM (ambient — nobody addressed you; you are choosing whether to speak):\n` +
     `[channel:${channelId}] recent conversation:\n${lines}\n` +
     `Triage says: ${verdict.kind} (confidence ${verdict.confidence.toFixed(2)}).\n` +
-    `If you have a CONCRETE offer or answer, reply with ONE short message in your voice.\n` +
-    `If not — and when in doubt — reply with exactly: PASS\n` +
+    `If you can ADD a beat — a concrete offer or answer, a genuinely funny line, a useful pointer,\n` +
+    `or a spicy-but-kind take that lands — reply with ONE short message in your voice.\n` +
+    `If you'd only be piling on, correcting for its own sake, or crowding the room — and when in\n` +
+    `doubt — reply with exactly: PASS. A needless interjection is worse than a missed one.\n` +
     `Do not file a ticket yet. An offer is a question, not a commitment.`
   );
 }
