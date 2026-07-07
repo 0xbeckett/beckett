@@ -221,7 +221,7 @@ async function boot(): Promise<BootedSystem> {
     concierge.notify(events);
     return dispatcher.handle(events);
   });
-  logger.info("beckett v3 online", { liveWorkers: dispatcher.live().length });
+  logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length });
 
   return { config, logger, client, poller, dispatcher, concierge, quick };
 }
