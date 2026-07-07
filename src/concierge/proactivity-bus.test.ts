@@ -67,7 +67,7 @@ test("status reports enabled=false by default, the default mode, caps, and confi
   const data = res.data as Record<string, any>;
   expect(data.enabled).toBeFalse(); // ships OFF
   expect(data.defaultMode).toBe("suggest");
-  expect(data.caps.triageThreshold).toBe(0.6);
+  expect(data.caps.triageThreshold).toBe(0.45);
   expect(data.caps.maxInterjectionsPerHour).toBe(4);
   // enabled=false → every channel resolves to "off" regardless of its override.
   expect(data.channels).toEqual([{ channelId: "111", mode: "auto", effective: "off" }]);

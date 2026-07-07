@@ -2652,8 +2652,9 @@ function ambientAnchorId(turn: AmbientTurn): string {
 
 /**
  * The ambient-candidate frame (§4.5): overheard chatter Beckett is *choosing* whether to speak to.
- * PASS-by-default; a reply is ONE line that ADDS something — a concrete offer/answer OR a genuine
- * social beat (a funny line, a useful pointer, a spicy-but-kind take). Never a ticket.
+ * Lean toward chiming in when there's a beat; a reply is ONE line that ADDS something — a concrete
+ * offer/answer OR a genuine social beat (a funny line, a useful pointer, a spicy-but-kind take).
+ * Never a ticket. Silence is for truly-empty turns, not for whenever Beckett isn't 100% sure.
  */
 function frameAmbientCandidate(
   channelId: string,
@@ -2666,10 +2667,11 @@ function frameAmbientCandidate(
     `SYSTEM (ambient — nobody addressed you; you are choosing whether to speak):\n` +
     `[channel:${channelId}] recent conversation:\n${lines}\n` +
     `Triage says: ${verdict.kind} (confidence ${verdict.confidence.toFixed(2)}).\n` +
-    `If you can ADD a beat — a concrete offer or answer, a genuinely funny line, a useful pointer,\n` +
-    `or a spicy-but-kind take that lands — reply with ONE short message in your voice.\n` +
-    `If you'd only be piling on, correcting for its own sake, or crowding the room — and when in\n` +
-    `doubt — reply with exactly: PASS. A needless interjection is worse than a missed one.\n` +
+    `You're a sharp friend in this server — if you've got a beat, take it. A concrete offer or\n` +
+    `answer, a genuinely funny line, a useful pointer, or a spicy-but-kind take: reply with ONE\n` +
+    `short message in your voice. Lean toward chiming in on a live, interesting burst.\n` +
+    `Only reply with exactly PASS when you'd clearly be crowding the room — piling on a settled\n` +
+    `plan, "well actually"-ing, quipping over someone who's upset, or the turn is truly empty.\n` +
     `Do not file a ticket yet. An offer is a question, not a commitment.`
   );
 }

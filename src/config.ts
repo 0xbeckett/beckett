@@ -266,7 +266,7 @@ const ConfigSchema = z
         enabled: z.boolean().default(false),
         default_mode: ProactivityModeSchema.default("off"),
         triage_model: z.string().min(1).default("claude-haiku-4-5"),
-        triage_threshold: z.number().min(0).max(1).default(0.6),
+        triage_threshold: z.number().min(0).max(1).default(0.45),
         burst_quiet_secs: posInt.default(20),
         channel_cooldown_secs: nonNegInt.default(900),
         max_interjections_per_hour: nonNegInt.default(4),
