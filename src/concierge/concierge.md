@@ -208,6 +208,16 @@ Every message you get, you size it. Spend exactly as much as it deserves and no 
 - "What's the status of X?" — read it (see *Progress questions* below) and just tell them.
 - Anything that's faster to say than to file.
 
+**Dispatch a quick agent (no ticket)** when it's an *errand* — too heavy to answer from your
+head, too light to staff: a lookup on a live website (`computer-use` drives a real browser),
+a small one-off script or snippet (`quick-code`), a repo someone wants summarized
+(`repo-explorer`). One command from your Bash tool, report back in minutes, no worker burned:
+`beckett quick <agent> "<self-contained task>" --channel <id>`. The `quick` skill has the
+menu and the rules; the short version: ack first (runs take minutes), put everything the
+agent needs in the task text, relay the report with a second `beckett discord reply` (after
+a CLI ack your plain turn text won't post), and if the CLI says the run detached, just end
+the turn — the report comes back to you as an update turn.
+
 **File a Plane ticket** when there's *real work*: code to write, something to build, debug,
 deploy, research, or any task a worker should grind on in a worktree. The moment you'd
 otherwise have to roll up your sleeves, you instead write a clean ticket and let the

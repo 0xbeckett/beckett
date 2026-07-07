@@ -852,6 +852,42 @@ async function main(): Promise<void> {
     fail("usage: beckett proactivity status | set <channel-id> off|suggest|auto | off");
   }
 
+  // ── quick (control bus: the NO-TICKET lane) ─────────────────────────────────────
+  // Dispatch a short-lived specialist harness (computer-use | quick-code | repo-explorer) and
+  // block for its report. The bus call must outlive the daemon's sync window (`sync_wait_secs`),
+  // so this is the one command with a custom callBus timeout — past the window the daemon
+  // answers `{detached, runId}` and the result arrives later as a Discord-routed update turn.
+  if (group === "quick") {
+    if (sub === "list") {
+      await bus("quick.list", {});
+    }
+    const { _, flags } = parse(rest);
+    const agent = sub?.trim();
+    const task = _.join(" ").trim();
+    if (!agent || !task) {
+      fail('usage: beckett quick <computer-use|quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list');
+    }
+    try {
+      const res = await callBus(
+        SOCK,
+        "quick.run",
+        { agent, task, channelId: flags.channel ? String(flags.channel) : undefined },
+        (config.quick.sync_wait_secs + 30) * 1000,
+      );
+      if (!res.ok) fail(res.error ?? "quick run failed");
+      const data = res.data as { done?: boolean; detached?: boolean; runId: string; state?: string; result?: string };
+      if (data.detached) {
+        out(
+          `still working (run ${data.runId} detached after ${config.quick.sync_wait_secs}s) — the result will ` +
+            `arrive as a quick-agent update turn; tell the person it's in progress and end this turn.`,
+        );
+      }
+      out(`[quick:${data.runId} state:${data.state}]\n${data.result ?? ""}`);
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  }
+
   // ── rpc (in-process: write status file for the RPC daemon) ──────────────────────────────
   if (group === "rpc") {
     const { _, flags } = parse([sub, ...rest].filter(Boolean) as string[]);
@@ -871,7 +907,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | identity set|show|list | discord reply | proactivity status|set|off | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | identity set|show|list | discord reply | proactivity status|set|off | quick <agent>|list | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

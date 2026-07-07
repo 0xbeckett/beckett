@@ -36,6 +36,7 @@ import { createPlanePoller, type PlanePoller } from "../plane/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
 import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
+import { createQuickRunner, type QuickRunner } from "../quick/index.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 
 /**
@@ -74,6 +75,7 @@ interface BootedSystem {
   poller: PlanePoller;
   dispatcher: Dispatcher;
   concierge: Concierge;
+  quick: QuickRunner;
 }
 
 /**
@@ -178,6 +180,16 @@ async function boot(): Promise<BootedSystem> {
   // poking the poller staffs the fresh ticket in well under a second instead of the 0–5s poll gap.
   concierge.setTicketFiledListener(() => poller.poke());
 
+  // Quick agents — the no-ticket lane. The runner owns the short-lived specialist
+  // harnesses; a run that outlives its sync window reports back through the Concierge as an
+  // update turn, exactly like a ticket milestone.
+  const quick = createQuickRunner({
+    config,
+    logger: logger.child("quick"),
+    onDetachedResult: (run) => concierge.notifyQuickResult(run),
+  });
+  concierge.setQuickRunner(quick);
+
   // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
   // the daemon-wide halves the Concierge can't see itself. The Concierge merges in its own
   // (Discord gateway, session) when serving the command.
@@ -188,6 +200,7 @@ async function boot(): Promise<BootedSystem> {
     pid: process.pid,
     uptimeSecs: Math.round((Date.now() - bootedAt) / 1000),
     workers: dispatcher.statusWorkers(),
+    quick: quick.stats(),
     poller: poller.stats(),
     plane: { baseUrl: config.plane.base_url, ...client.stats() },
   }));
@@ -210,7 +223,7 @@ async function boot(): Promise<BootedSystem> {
   });
   logger.info("beckett v3 online", { liveWorkers: dispatcher.live().length });
 
-  return { config, logger, client, poller, dispatcher, concierge };
+  return { config, logger, client, poller, dispatcher, concierge, quick };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -224,6 +237,13 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
     }
   } catch (err) {
     sys.logger.warn("dispatcher shutdown drain failed", { error: (err as Error).message });
+  }
+  // Quick agents are ephemeral by contract — kill any stragglers before the Concierge goes down
+  // so their "daemon shut down" results can still route through it.
+  try {
+    sys.quick.stopAll();
+  } catch (err) {
+    sys.logger.warn("quick-runner shutdown failed", { error: (err as Error).message });
   }
   try {
     await sys.concierge.stop();

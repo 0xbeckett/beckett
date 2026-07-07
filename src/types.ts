@@ -624,6 +624,26 @@ export interface Config {
     effort: "" | "low" | "medium" | "high" | "xhigh";
   };
   /**
+   * Quick agents — the NO-TICKET lane: short-lived specialist `claude -p` harnesses
+   * (`computer-use`, `quick-code`, `repo-explorer`) the Concierge dispatches via
+   * `beckett quick` for errands between "answer inline" and "file a ticket".
+   */
+  quick: {
+    enabled: boolean;
+    /** Model for quick harnesses (speed matters more than depth here). */
+    model: string;
+    /** Reasoning effort for quick harnesses ("" = the claude CLI default). */
+    effort: "" | "low" | "medium" | "high" | "xhigh";
+    /** How long the dispatching bus call blocks before detaching (result then arrives as an update turn). */
+    sync_wait_secs: number;
+    /** Backstop wall-clock cap — past this the child is killed and that IS the result. */
+    hard_timeout_secs: number;
+    /** Reject new runs past this many live ones ("quick lane is full — retry or file a ticket"). */
+    max_concurrent: number;
+    /** Command line for the Playwright MCP server attached to `computer-use` harnesses. */
+    browser_mcp_command: string[];
+  };
+  /**
    * Restart "what's new" announcement — instance-specific, OFF by default (empty channel), so a
    * fork inherits silence. When set, on boot with newer code than last announced the Concierge
    * posts a short, in-voice changelog to the channel (derived from git commit subjects).

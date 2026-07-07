@@ -83,6 +83,15 @@ model = "claude-opus-4-8"
 rotate_at_tokens = 190000
 effort = ""
 
+[quick]
+enabled = true
+model = "claude-sonnet-5"
+effort = "medium"
+sync_wait_secs = 240
+hard_timeout_secs = 900
+max_concurrent = 3
+browser_mcp_command = ["npx", "-y", "@playwright/mcp@latest", "--browser", "chromium", "--headless"]
+
 [announce]
 changes_channel_id = ""
 max_commits = 20

@@ -52,6 +52,7 @@ import { setChannelModeOverride, setEnabledOverride } from "./proactivity-store.
 import { readPersistedOffers } from "./ambient.ts";
 import { classify, loadAccess, resolvePending, ACCESS_CAP, type AccessLevel } from "../discord/access.ts";
 import { childEnv as strippedChildEnv } from "../env.ts";
+import type { QuickRun, QuickRunner } from "../quick/index.ts";
 import {
   createAmbientCoordinator,
   isAmbientPass,
@@ -943,6 +944,12 @@ export class Concierge {
    */
   private ticketFiledListener: (() => void) | null = null;
   /**
+   * The quick-agent runner wired in by v3-main — serves `beckett quick …` from the
+   * control bus (the NO-TICKET lane). Null until wired: the bus op then answers with a clear
+   * "not available" error instead of half-working.
+   */
+  private quickRunner: QuickRunner | null = null;
+  /**
    * Plane read access for milestone enrichment (issue #21): the poller stops collecting comments
    * on terminal tickets, so the `done` ping fetches the dispatcher's done comment here to carry
    * the artifact/PR link. Optional — absent (tests), the ping falls back to the ticket URL only.
@@ -1038,6 +1045,30 @@ export class Concierge {
   /** Wire the instant-tick hook for freshly-filed tickets (v3-main, issue #33). See {@link ticketFiledListener}. */
   setTicketFiledListener(fn: NonNullable<Concierge["ticketFiledListener"]>): void {
     this.ticketFiledListener = fn;
+  }
+
+  /** Wire the quick-agent runner (v3-main). See {@link quickRunner}. */
+  setQuickRunner(runner: QuickRunner): void {
+    this.quickRunner = runner;
+  }
+
+  /**
+   * Deliver a DETACHED quick run's result: the dispatching `beckett quick` call already
+   * returned `{detached}`, so the report arrives as an update turn — the same shape as ticket
+   * milestones — instructing the Concierge to relay it to the originating channel in voice.
+   * Public: v3-main wires it as the runner's `onDetachedResult`.
+   */
+  notifyQuickResult(run: QuickRun): void {
+    const where = run.channelId
+      ? `Relay the outcome to the person who asked — send a short note IN YOUR VOICE by running this from your Bash tool:\n` +
+        `  beckett discord reply --channel ${run.channelId} "<your message>"\n` +
+        `Paraphrase the report — don't dump it raw. If it failed or timed out, say so plainly.`
+      : `No channel was stamped on this run, so there is nowhere to route it — fold anything worth keeping into your own context and do nothing else.`;
+    const framed =
+      `SYSTEM (quick-agent result — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
+      `The ${run.agent} quick agent you dispatched earlier (run ${run.runId}) finished with state "${run.state}".\n` +
+      `Its report:\n\n${run.result ?? "(no report)"}\n\n${where}`;
+    this.askUpdate(framed, `quick:${run.runId}`);
   }
 
   /**
@@ -1267,6 +1298,33 @@ export class Concierge {
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
+    }
+    if (req.cmd === "quick.run") {
+      // The NO-TICKET lane: spawn a short-lived specialist harness and block up to
+      // `quick.sync_wait_secs` for its report. serveBus handles each connection independently,
+      // so this long-running handler never blocks other bus traffic. A detached run's result
+      // comes back later through {@link notifyQuickResult}.
+      if (!this.quickRunner) {
+        return { ok: false, error: "quick agents unavailable — the runner is not wired (v3 daemon only)" };
+      }
+      const agent = typeof req.args.agent === "string" ? req.args.agent.trim() : "";
+      const task = typeof req.args.task === "string" ? req.args.task.trim() : "";
+      const channelId =
+        typeof req.args.channelId === "string" && req.args.channelId.trim() ? req.args.channelId.trim() : null;
+      if (!agent || !task) {
+        return { ok: false, error: 'usage: beckett quick <agent> "<task>" [--channel <id>]' };
+      }
+      try {
+        return { ok: true, data: await this.quickRunner.run(agent, task, channelId) };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    }
+    if (req.cmd === "quick.list") {
+      if (!this.quickRunner) {
+        return { ok: false, error: "quick agents unavailable — the runner is not wired (v3 daemon only)" };
+      }
+      return { ok: true, data: { agents: this.quickRunner.agents() } };
     }
     if (req.cmd === "proactivity.status") {
       // "What's my ambient-interjection posture right now?" — effective per-channel mode, the

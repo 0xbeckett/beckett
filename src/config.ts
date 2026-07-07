@@ -289,6 +289,25 @@ const ConfigSchema = z
         effort: z.enum(["", "low", "medium", "high", "xhigh"]).default(""),
       })
       .default({}),
+    // Quick agents — the no-ticket lane. Sonnet at medium: these are errands where
+    // wall-clock beats depth; the ticket pipeline keeps xhigh for real work.
+    quick: z
+      .object({
+        enabled: z.boolean().default(true),
+        model: z.string().min(1).default("claude-sonnet-5"),
+        effort: z.enum(["", "low", "medium", "high", "xhigh"]).default("medium"),
+        sync_wait_secs: posInt.default(240),
+        hard_timeout_secs: posInt.default(900),
+        max_concurrent: posInt.default(3),
+        // Playwright MCP for `computer-use` (a11y-tree browsing, no vision loop). npx resolves
+        // it per-run; pin/replace via the box's config.toml if PATH or version needs differ.
+        browser_mcp_command: z
+          .array(z.string().min(1))
+          .nonempty()
+          .default(["npx", "-y", "@playwright/mcp@latest", "--browser", "chromium", "--headless"]),
+      })
+      .strict()
+      .default({}),
     // Restart "what's new" changelog. Instance-specific and OFF by default (empty channel) so a
     // fork stays silent until its owner opts in — this is a your-instance flourish, not a default.
     announce: z
