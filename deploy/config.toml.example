@@ -84,6 +84,9 @@ max_entries_per_channel = 200
 max_age_hours = 72
 inject_budget_tokens = 3000
 roster_max = 12
+profile_model = "claude-haiku-4-5"
+profile_update_messages = 20
+awareness_max_channels = 5
 
 [concierge]
 model = "claude-opus-4-8"

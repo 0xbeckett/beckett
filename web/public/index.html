@@ -56,11 +56,58 @@
   /* the world */
   #world{position:fixed;inset:0;z-index:-1;width:100%;height:100%;display:block}
   /* soft white wash where copy sits, so text is embedded in the scene but
-     never fighting it. Light theme scrim = mist, not murk. */
+     never fighting it. Light theme scrim = mist, not murk. It thins as the
+     sun goes down (world.js drives the opacity). */
   .scrim{position:fixed;inset:0;z-index:-1;pointer-events:none;
     background:
       radial-gradient(90% 62% at 22% 30%,rgba(244,247,252,.62),rgba(244,247,252,.2) 55%,transparent 75%),
       linear-gradient(180deg,rgba(244,247,252,.4) 0,transparent 26%)}
+  /* the night breathing in over the page as you scroll toward the CTA */
+  #scrimNight{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:0;
+    background:linear-gradient(180deg,rgba(21,18,42,.5),rgba(30,25,58,.6) 55%,rgba(19,16,38,.68))}
+
+  /* island nameplate: follows the hovered island around the screen */
+  #tip{position:fixed;left:0;top:0;z-index:35;pointer-events:none;opacity:0;
+    transform:translate(-50%,-120%);transition:opacity .18s;white-space:nowrap;
+    font-family:var(--pix);font-size:13px;color:var(--ink);
+    background:rgba(255,255,255,.94);border:2px solid var(--ink);padding:7px 11px 8px;
+    box-shadow:4px 4px 0 rgba(64,54,110,.2)}
+  #tip b{display:block;font-weight:400;font-size:11.5px;color:var(--lv-deep);margin-top:2px}
+
+  /* the tether: cabin beacon -> live console card. Content, plugged in. */
+  #tether{position:fixed;inset:0;z-index:0;width:100%;height:100%;
+    pointer-events:none;opacity:0;transition:opacity .5s var(--eo)}
+  #tether path{fill:none;stroke:var(--lv-deep);stroke-width:2;stroke-dasharray:5 7;opacity:.5}
+  #tether circle{fill:var(--cy-deep)}
+
+  /* location tags: where in the world (and the day) each section lives */
+  .loc{display:inline-flex;align-items:center;gap:9px;font-family:var(--pix);
+    font-size:12.5px;color:var(--lv-deep);margin-bottom:14px;transition:color .6s}
+  .loc::before{content:"";width:10px;height:11px;flex:none;
+    background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 22'%3E%3Cpath d='M10 1 19 6 10 11 1 6z' fill='%238fd8de'/%3E%3Cpath d='M1 6v10l9 5V11z' fill='%237a68b8'/%3E%3Cpath d='M19 6v10l-9 5V11z' fill='%23b9a8e8'/%3E%3C/svg%3E") no-repeat center/contain}
+
+  /* scroll hint under the hero CTAs */
+  .hint{margin-top:46px;font-family:var(--pix);font-size:12.5px;color:var(--faint);
+    display:flex;align-items:center;gap:9px;transition:opacity .6s}
+  .hint i{font-style:normal;animation:hintbob 1.6s ease-in-out infinite;display:inline-block}
+  @keyframes hintbob{0%,100%{transform:translateY(-2px)}50%{transform:translateY(3px)}}
+  .hint.gone{opacity:0}
+
+  /* after dusk: the chrome and copy follow the sky */
+  nav,.nav-links a,.brand{transition:background .6s,color .6s,border-color .6s}
+  body[data-night] nav{background:linear-gradient(rgba(32,27,56,.9),rgba(32,27,56,.6));
+    border-bottom-color:rgba(233,228,246,.14);color:#efeafd}
+  body[data-night] .nav-links a{color:#a99fd0}
+  body[data-night] .nav-links a:hover{color:#cfe9ee}
+  #cta h2,#cta .sub,#cta .micro,#cta .loc{transition:color .7s}
+  body[data-night] #cta h2{color:#f2f0fa}
+  body[data-night] #cta .sub{color:#b6add8}
+  body[data-night] #cta .sub a{color:#cabdf2!important}
+  body[data-night] #cta .loc{color:#9f92d8}
+  body[data-night] .swap .scrib path{stroke:#9f8ad8}
+  body[data-night] .wment{color:#a5b0ff;background:rgba(88,101,242,.34)}
+  .markwrap::before{transition:opacity .7s}
+  body[data-night] .markwrap::before{opacity:.45}
 
   /* cursor: a tiny pastel voxel */
   .cur{position:fixed;top:0;left:0;width:15px;height:17px;z-index:60;pointer-events:none;
@@ -212,6 +259,9 @@
 <div class="cur" id="cur" aria-hidden="true"></div>
 <canvas id="world" aria-hidden="true"></canvas>
 <div class="scrim" aria-hidden="true"></div>
+<div id="scrimNight" aria-hidden="true"></div>
+<svg id="tether" aria-hidden="true"><path d=""/><circle r="3.4"/></svg>
+<div id="tip" aria-hidden="true"></div>
 
 <nav>
   <div class="nav-in">
@@ -233,12 +283,14 @@
   <!-- HERO -->
   <section class="hero" id="hero" style="padding-top:0">
     <div class="hero-copy">
+      <div class="loc rv">home island · morning</div>
       <h1 class="rv">The coworker<br><span class="g">you can fork.</span></h1>
       <p class="lead rv">Drop a goal in Discord. Beckett spins up a fleet of agents, reviews the diff, and ships it signed. Now the whole thing is open source. Clone it, name yours, let it loose.</p>
       <div class="cta-row rv">
         <a class="btn btn-primary btn-lg" data-h href="https://github.com/0xbeckett/beckett">Fork it on GitHub »</a>
         <a class="btn btn-ghost btn-lg" data-h href="https://discord.gg/DfJKFawURy">Join the Discord</a>
       </div>
+      <div class="hint rv" id="hint" aria-hidden="true">scroll — the sun follows <i>▾</i></div>
     </div>
   </section>
 
@@ -252,6 +304,7 @@
 
   <!-- LIVE CONSOLE -->
   <section id="console">
+    <div class="loc rv">the cabin · ops channel</div>
     <h2 class="rv">Watch it close a ticket.</h2>
     <p class="sub rv">A real one, straight off the board. OPS-23 was a good day. The result is still <a href="https://black-hole-opus.0xbeckett.me" style="color:var(--cy-deep);text-decoration:underline">live</a>.</p>
     <div class="console rv" style="margin-top:36px">
@@ -262,6 +315,7 @@
 
   <!-- HOW -->
   <section id="how">
+    <div class="loc rv">the grove · midday</div>
     <h2 class="rv">A teammate, not a text box.</h2>
     <p class="sub rv">No dashboards to learn, no standups to sit through. Talk to it like a coworker; it does the rest.</p>
     <div class="steps">
@@ -273,6 +327,7 @@
 
   <!-- CAPABILITIES -->
   <section id="caps">
+    <div class="loc rv">the archipelago · golden hour</div>
     <h2 class="rv">Everything a good hire has. None of the onboarding.</h2>
     <div class="bento">
       <div class="tile feat rv">
@@ -290,6 +345,7 @@
 
   <!-- CTA -->
   <section class="cta" id="cta">
+    <div class="loc rv" style="justify-content:center;display:flex">the federation · nightfall</div>
     <div class="markwrap rv">
       <img class="mark-vox" src="/logo.svg" alt="" width="150" height="150"/>
     </div>
@@ -333,6 +389,10 @@
 
   (function(){var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.16,rootMargin:'0px 0px -6% 0px'});
     document.querySelectorAll('.rv').forEach(function(n,i){n.style.transitionDelay=(i%3*55)+'ms';io.observe(n);})})();
+
+  /* the scroll hint bows out once you take its advice */
+  (function(){var h=document.getElementById('hint');if(!h)return;
+    addEventListener('scroll',function f(){if(scrollY>60){h.classList.add('gone');removeEventListener('scroll',f);}},{passive:true});})();
 
   /* cta wordplay: "lets beck it" -> scribble -> "@beckett" mention */
   (function(){

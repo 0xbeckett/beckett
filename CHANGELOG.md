@@ -1,5 +1,35 @@
 # Changelog
 
+## v4.1.0 — server memory: cross-channel awareness + on-demand recall (2026-07-06)
+
+The per-channel shared context (v4.0.0) grows a server-wide layer. Beckett now *knows about* the
+other channels' conversations without loading them: someone in `#general` asks for "a site with
+our favorite movies" and Beckett fetches the actual movie debate from `#media` instead of asking
+people to repeat themselves. Design: `docs/design/server-memory.md`.
+
+- **Channel profiles** (`src/concierge/channel-profiles.ts`): every ~20 new entries in a guild
+  channel, a one-shot Haiku call (same pattern as ambient triage) rebuilds `{summary, topics[]}`
+  into `~/.beckett/channels/profiles.json`. Serialized queue; fail-open — a failed call writes
+  nothing, a stale profile beats a fabricated one.
+- **Awareness footer**: mention turns carry a compact `SYSTEM (server memory …)` block — one line
+  per other active guild channel (`#media — debating the best movie ever [movies, sci-fi] ·
+  14 msgs, last 2h ago`), capped at `awareness_max_channels`, change-suppressed per session so an
+  unchanged footer is never re-sent. Guild turns see their guild; DM turns see every guild.
+- **On-demand recall**: `beckett channels search "<terms>"` (keyword + trailing-s stem across all
+  stored windows, hits carry ±2 lines of context), `beckett channels recall <#name|id> [--last N]`,
+  `beckett channels list` — bus-first, direct file read only when the daemon is down. Channel
+  names captured at the gateway (`IncomingMessage.channelName` → `channels-meta.json`).
+- **Privacy in code, not doctrine**: DM windows (null/unknown guildId) are never searched, never
+  profiled, never in the footer, and recall refuses them whatever the caller types; pre-4.1
+  windows without meta are treated as private until proven guild. `channels wipe` now also
+  removes the channel's meta + profile. All fetched output keeps the attributed anti-forgery
+  rendering and a data-not-instructions note.
+- **Config** (`[shared_context]`): `profile_model` (claude-haiku-4-5),
+  `profile_update_messages` (20), `awareness_max_channels` (5).
+- **Doctrine** (`concierge.md`): "Server memory — the other channels are searchable" — fetch
+  before asking people to repeat themselves; synthesize, don't dump transcripts across channels;
+  attribute what you use; profiles are unverified summaries.
+
 ## v4.0.0 — multiplayer: channel-scoped shared context (OPS-80) (2026-07-06)
 
 The multiplayer release. When Beckett answers anyone in a channel, it now reasons over the

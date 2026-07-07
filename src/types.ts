@@ -241,6 +241,8 @@ export interface IncomingMessage {
   /** The speaker's live Discord display name (guild nick → global name → username), if known. */
   authorDisplayName?: string;
   channelId: string;
+  /** The channel's name at capture time (e.g. "media") — undefined for DMs, which have none. */
+  channelName?: string;
   guildId: string | null;
   content: string;
   repliedToId: string | null; // the strong correlation key
@@ -631,6 +633,12 @@ export interface Config {
     inject_budget_tokens: number;
     /** Max participants named in the roster line. */
     roster_max: number;
+    /** Model for the one-shot per-channel profile summarizer (server memory, v4.1). */
+    profile_model: string;
+    /** New entries in a channel before its profile is rebuilt. */
+    profile_update_messages: number;
+    /** Max other channels named in the cross-channel awareness footer. */
+    awareness_max_channels: number;
   };
   /** v3 — the Concierge agent that owns Discord and files tickets. */
   concierge: {

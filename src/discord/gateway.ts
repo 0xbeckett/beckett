@@ -386,6 +386,9 @@ export class DiscordJsGateway implements DiscordGateway {
       userId: msg.author.id,
       authorDisplayName: displayName,
       channelId: msg.channelId,
+      // Guild channels carry a name ("media"); DM channels don't have one — the shared-context
+      // store keys server-wide awareness/search off exactly this distinction.
+      channelName: (msg.channel as { name?: string | null } | null)?.name ?? undefined,
       guildId: msg.guildId ?? null,
       content: msg.content,
       repliedToId: msg.reference?.messageId ?? null,

@@ -286,6 +286,11 @@ const ConfigSchema = z
         max_age_hours: posInt.default(72),
         inject_budget_tokens: posInt.default(3000),
         roster_max: posInt.default(12),
+        // Server memory (v4.1): rolling per-channel profiles built by a one-shot small-model
+        // call every N new entries, surfaced as the cross-channel awareness footer + search.
+        profile_model: z.string().min(1).default("claude-haiku-4-5"),
+        profile_update_messages: posInt.default(20),
+        awareness_max_channels: posInt.default(5),
       })
       .strict()
       .default({}),

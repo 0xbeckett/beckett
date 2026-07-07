@@ -44,6 +44,59 @@ export interface ChannelEntry {
   kind: "user" | "beckett";
 }
 
+/**
+ * Channel-level metadata captured alongside entries (server memory, v4.1): the name lets
+ * awareness/search speak in `#channel` terms; guildId scopes server-wide features. A null
+ * guildId marks a DM channel — server-wide search/awareness MUST exclude those in code.
+ */
+export interface ChannelMeta {
+  name: string | null;
+  guildId: string | null;
+}
+
+/** The rolling LLM-built profile of a channel: what's being talked about there. */
+export interface ChannelProfile {
+  summary: string;
+  topics: string[];
+  updatedAt: number;
+  /** Newest entry id at profile time — staleness is measured from here. */
+  lastMessageId: string;
+  entryCount: number;
+}
+
+/** One channel's stats for listing/awareness: bounded-window counts + latest names. */
+export interface ChannelInfo {
+  channelId: string;
+  name: string | null;
+  guildId: string | null;
+  entryCount: number;
+  lastTs: number;
+  /** Distinct recent speaker display names (latest capture wins), capped. */
+  participants: string[];
+  profile: ChannelProfile | null;
+}
+
+export interface ChannelSearchHit {
+  channelId: string;
+  channelName: string | null;
+  entry: ChannelEntry;
+  /** Neighbouring entries (±radius) so a hit carries its conversation, not one orphan line. */
+  context: ChannelEntry[];
+  /** Distinct query terms matched — the ranking key before recency. */
+  score: number;
+}
+
+export interface ChannelSearchOptions {
+  /** Max hits returned across all channels (default 8). */
+  limit?: number;
+  /** Restrict to one channel (still guild-gated — a DM id yields nothing). */
+  channelId?: string;
+  /** Restrict to channels of this guild. */
+  guildId?: string;
+  /** Entries either side of a hit included as context (default 2). */
+  contextRadius?: number;
+}
+
 export interface ChannelContextStoreOptions {
   /** `<beckettDir>/channels` — created lazily (mkdirSync recursive before first write). */
   channelsDir: string;
@@ -66,8 +119,22 @@ export interface ChannelContextStore {
   takeUnseen(channelId: string, sessionId: string): ChannelEntry[];
   /** Advance the watermark without reading (an ambient turn already surfaced the window itself). */
   markSeen(channelId: string, sessionId: string, lastMessageId: string): void;
-  /** Delete one channel's stored window (or ALL channels when omitted) + their watermarks. Returns the wiped channel ids. */
+  /** Delete one channel's stored window (or ALL channels when omitted) + their watermarks, meta and profiles. Returns the wiped channel ids. */
   wipe(channelId?: string): string[];
+  /** Record channel name/guild seen on a message; persists only when something changed. */
+  noteMeta(channelId: string, meta: ChannelMeta): void;
+  getMeta(channelId: string): ChannelMeta | null;
+  /** Every channel with a non-empty bounded window, newest activity first. */
+  listChannels(): ChannelInfo[];
+  /**
+   * Keyword search across stored windows. HARD-scoped to guild channels: a channel with no
+   * recorded meta or a null guildId (DMs, pre-meta data) is never searched — privacy is
+   * enforced here, not in doctrine.
+   */
+  search(query: string, opts?: ChannelSearchOptions): ChannelSearchHit[];
+  getProfile(channelId: string): ChannelProfile | null;
+  /** Write a channel's rolling profile; the store stamps `updatedAt`. */
+  setProfile(channelId: string, profile: Omit<ChannelProfile, "updatedAt">): void;
 }
 
 // channelId doubles as a filename component; only word chars, dots, dashes — no separators.
@@ -75,6 +142,12 @@ const CHANNEL_ID_RE = /^[\w.-]{1,64}$/;
 const DEFAULT_COMPACT_EVERY = 25;
 const JSONL_EXT = ".jsonl";
 const WATERMARKS_FILE = "watermarks.json";
+const META_FILE = "channels-meta.json";
+const PROFILES_FILE = "profiles.json";
+const DEFAULT_SEARCH_LIMIT = 8;
+const DEFAULT_CONTEXT_RADIUS = 2;
+const PARTICIPANTS_CAP = 8;
+const NAME_MAX = 100;
 
 interface WatermarkRecord {
   lastMessageId: string;
@@ -267,6 +340,108 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
     }
   }
 
+  // ── channel meta + profiles (server memory, v4.1) — same tolerant-load/atomic-persist
+  // shape as the watermarks: corrupt files degrade to empty, persist failures keep the
+  // in-memory copy authoritative.
+  let metas: Record<string, ChannelMeta> | null = null;
+  let profiles: Record<string, ChannelProfile> | null = null;
+
+  function loadJsonMap<T>(fileName: string, parseVal: (v: Record<string, unknown>) => T | null): Record<string, T> {
+    try {
+      const file = join(channelsDir, fileName);
+      if (!existsSync(file)) return {};
+      const parsed = JSON.parse(readFileSync(file, "utf8")) as { channels?: Record<string, unknown> };
+      const channels = parsed?.channels;
+      if (!channels || typeof channels !== "object" || Array.isArray(channels)) return {};
+      const out: Record<string, T> = {};
+      for (const [id, val] of Object.entries(channels)) {
+        if (!val || typeof val !== "object" || Array.isArray(val)) continue;
+        const v = parseVal(val as Record<string, unknown>);
+        if (v !== null) out[id] = v;
+      }
+      return out;
+    } catch (err) {
+      logger.warn("channel context sidecar unreadable, starting empty", {
+        file: fileName,
+        error: (err as Error).message,
+      });
+      return {};
+    }
+  }
+
+  function persistJsonMap(fileName: string, map: Record<string, unknown>): void {
+    try {
+      mkdirSync(channelsDir, { recursive: true });
+      const file = join(channelsDir, fileName);
+      const tmp = `${file}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ channels: map }, null, 2) + "\n", "utf8");
+      renameSync(tmp, file);
+    } catch (err) {
+      logger.warn("channel context sidecar persist failed", {
+        file: fileName,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  function getMetas(): Record<string, ChannelMeta> {
+    if (metas === null) {
+      metas = loadJsonMap<ChannelMeta>(META_FILE, (v) =>
+        (typeof v.name === "string" || v.name === null) && (typeof v.guildId === "string" || v.guildId === null)
+          ? { name: v.name, guildId: v.guildId }
+          : null,
+      );
+    }
+    return metas;
+  }
+
+  function getProfiles(): Record<string, ChannelProfile> {
+    if (profiles === null) {
+      profiles = loadJsonMap<ChannelProfile>(PROFILES_FILE, (v) =>
+        typeof v.summary === "string" &&
+        Array.isArray(v.topics) &&
+        v.topics.every((t) => typeof t === "string") &&
+        typeof v.updatedAt === "number" &&
+        Number.isFinite(v.updatedAt) &&
+        typeof v.lastMessageId === "string" &&
+        typeof v.entryCount === "number"
+          ? {
+              summary: v.summary,
+              topics: v.topics as string[],
+              updatedAt: v.updatedAt,
+              lastMessageId: v.lastMessageId,
+              entryCount: v.entryCount,
+            }
+          : null,
+      );
+    }
+    return profiles;
+  }
+
+  /** Every channel this store knows about: cached, on disk, or named in a sidecar. */
+  function knownChannelIds(): Set<string> {
+    const known = new Set<string>([...cache.keys(), ...Object.keys(getMetas()), ...Object.keys(getProfiles())]);
+    try {
+      for (const name of readdirSync(channelsDir)) {
+        if (name.endsWith(JSONL_EXT)) known.add(name.slice(0, -JSONL_EXT.length));
+      }
+    } catch {
+      // Missing/unreadable dir — nothing more on disk.
+    }
+    for (const id of known) if (!CHANNEL_ID_RE.test(id)) known.delete(id);
+    return known;
+  }
+
+  /** Channels eligible for server-wide features: known guild, matching the requested scope. DMs never. */
+  function guildChannelIds(guildId?: string): string[] {
+    const ms = getMetas();
+    return [...knownChannelIds()].filter((id) => {
+      const m = ms[id];
+      if (!m || m.guildId === null) return false;
+      return guildId === undefined || m.guildId === guildId;
+    });
+  }
+
   return {
     append(channelId: string, entry: ChannelEntry): void {
       if (!validChannelId(channelId)) return;
@@ -322,28 +497,128 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
       persistWatermarks();
     },
 
+    noteMeta(channelId: string, meta: ChannelMeta): void {
+      if (!validChannelId(channelId)) return;
+      // Names are render labels for `#channel` speak — single line, bounded, never trusted.
+      const name =
+        meta.name === null ? null : meta.name.replace(/\s+/g, " ").trim().slice(0, NAME_MAX) || null;
+      const ms = getMetas();
+      const cur = ms[channelId];
+      if (cur && cur.name === name && cur.guildId === meta.guildId) return;
+      ms[channelId] = { name, guildId: meta.guildId };
+      persistJsonMap(META_FILE, ms);
+    },
+
+    getMeta(channelId: string): ChannelMeta | null {
+      if (!validChannelId(channelId)) return null;
+      const m = getMetas()[channelId];
+      return m ? { ...m } : null;
+    },
+
+    listChannels(): ChannelInfo[] {
+      const ms = getMetas();
+      const ps = getProfiles();
+      const out: ChannelInfo[] = [];
+      for (const id of knownChannelIds()) {
+        const window = bounded(ensureLoaded(id));
+        if (window.length === 0) continue;
+        const names = new Map<string, string>();
+        for (const e of window) if (e.kind === "user") names.set(e.authorId, e.authorName);
+        const profile = ps[id];
+        out.push({
+          channelId: id,
+          name: ms[id]?.name ?? null,
+          guildId: ms[id]?.guildId ?? null,
+          entryCount: window.length,
+          lastTs: window[window.length - 1]!.ts,
+          participants: [...names.values()].slice(0, PARTICIPANTS_CAP),
+          profile: profile ? { ...profile, topics: [...profile.topics] } : null,
+        });
+      }
+      return out.sort((a, b) => b.lastTs - a.lastTs);
+    },
+
+    search(query: string, opts: ChannelSearchOptions = {}): ChannelSearchHit[] {
+      const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];
+      if (terms.length === 0) return [];
+      const limit = Math.max(1, opts.limit ?? DEFAULT_SEARCH_LIMIT);
+      const radius = Math.max(0, opts.contextRadius ?? DEFAULT_CONTEXT_RADIUS);
+      const ms = getMetas();
+      let ids = guildChannelIds(opts.guildId);
+      if (opts.channelId !== undefined) ids = ids.filter((id) => id === opts.channelId);
+
+      // Score = distinct terms matched (a crude trailing-s stem catches movie/movies), then
+      // recency. Windows are hard-capped per channel, so a full scan stays cheap.
+      const raw: Array<{ channelId: string; index: number; window: ChannelEntry[]; score: number }> = [];
+      for (const id of ids) {
+        const window = bounded(ensureLoaded(id));
+        for (let i = 0; i < window.length; i++) {
+          const hay = `${window[i]!.content}\n${window[i]!.authorName}`.toLowerCase();
+          let score = 0;
+          for (const t of terms) {
+            const stem = t.replace(/s$/, "");
+            if (hay.includes(t) || (stem.length >= 3 && hay.includes(stem))) score += 1;
+          }
+          if (score > 0) raw.push({ channelId: id, index: i, window, score });
+        }
+      }
+      raw.sort((a, b) => b.score - a.score || b.window[b.index]!.ts - a.window[a.index]!.ts);
+
+      const hits: ChannelSearchHit[] = [];
+      const accepted = new Map<string, number[]>();
+      for (const r of raw) {
+        if (hits.length >= limit) break;
+        // A hit inside an accepted hit's context radius adds no new conversation — skip it.
+        const near = accepted.get(r.channelId) ?? [];
+        if (near.some((j) => Math.abs(j - r.index) <= radius)) continue;
+        near.push(r.index);
+        accepted.set(r.channelId, near);
+        const lo = Math.max(0, r.index - radius);
+        const hi = Math.min(r.window.length, r.index + radius + 1);
+        hits.push({
+          channelId: r.channelId,
+          channelName: ms[r.channelId]?.name ?? null,
+          entry: { ...r.window[r.index]! },
+          context: r.window.slice(lo, hi).map((e) => ({ ...e })),
+          score: r.score,
+        });
+      }
+      return hits;
+    },
+
+    getProfile(channelId: string): ChannelProfile | null {
+      if (!validChannelId(channelId)) return null;
+      const p = getProfiles()[channelId];
+      return p ? { ...p, topics: [...p.topics] } : null;
+    },
+
+    setProfile(channelId: string, profile: Omit<ChannelProfile, "updatedAt">): void {
+      if (!validChannelId(channelId)) return;
+      const ps = getProfiles();
+      ps[channelId] = { ...profile, topics: [...profile.topics], updatedAt: now() };
+      persistJsonMap(PROFILES_FILE, ps);
+    },
+
     wipe(channelId?: string): string[] {
       const marks = getWatermarks();
+      const ms = getMetas();
+      const ps = getProfiles();
       let targets: string[];
       if (channelId !== undefined) {
         if (!validChannelId(channelId)) return [];
         targets = [channelId];
       } else {
-        // Sweep everything we know about: files on disk plus any cache/watermark
-        // entries whose files never made it to disk.
-        const known = new Set<string>([...cache.keys(), ...Object.keys(marks)]);
-        try {
-          for (const name of readdirSync(channelsDir)) {
-            if (name.endsWith(JSONL_EXT)) known.add(name.slice(0, -JSONL_EXT.length));
-          }
-        } catch {
-          // Missing/unreadable dir — nothing more on disk to sweep.
-        }
-        targets = [...known].filter((id) => CHANNEL_ID_RE.test(id));
+        // Sweep everything we know about: files on disk plus any cache/sidecar entries
+        // whose files never made it to disk.
+        const known = knownChannelIds();
+        for (const id of Object.keys(marks)) if (CHANNEL_ID_RE.test(id)) known.add(id);
+        targets = [...known];
       }
 
       const wiped: string[] = [];
       let marksChanged = false;
+      let metasChanged = false;
+      let profilesChanged = false;
       for (const id of targets) {
         let removed = false;
         try {
@@ -367,10 +642,38 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
           marksChanged = true;
           removed = true;
         }
+        if (ms[id]) {
+          delete ms[id];
+          metasChanged = true;
+          removed = true;
+        }
+        // The profile is derived FROM message content — wiping the messages must take the
+        // summary of them along (this is still the privacy path).
+        if (ps[id]) {
+          delete ps[id];
+          profilesChanged = true;
+          removed = true;
+        }
         if (removed) wiped.push(id);
       }
       if (marksChanged) persistWatermarks();
+      if (metasChanged) persistJsonMap(META_FILE, ms);
+      if (profilesChanged) persistJsonMap(PROFILES_FILE, ps);
       return wiped;
     },
   };
+}
+
+/**
+ * Render one entry as an attributed transcript line, matching the Concierge's in-turn frame
+ * format exactly: ids on user lines so attribution is mechanical, bare `beckett` sentinel for
+ * our own posts, and multi-line bodies nested 4 deep so content can never forge frame structure
+ * (a fake stamp or SYSTEM header at column 0). `withDate` adds the day for cross-channel
+ * recall/search output, where a bare "14:03" could be days old.
+ */
+export function renderEntryLine(e: ChannelEntry, opts?: { withDate?: boolean }): string {
+  const iso = new Date(e.ts).toISOString();
+  const stamp = opts?.withDate ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}` : iso.slice(11, 16);
+  const who = e.kind === "beckett" ? "beckett" : `${e.authorName} (user:${e.authorId})`;
+  return `  [${stamp}] ${who}: ${e.content.replace(/\r?\n/g, "\n    ")}`;
 }
