@@ -26,7 +26,7 @@ WEBHOOK="${DISCORD_ALERT_WEBHOOK_URL:-}"
 # Rate limit per unit so a crash loop is one alert a minute, not one per RestartSec. The rpc
 # daemon is cosmetic (it flaps when no Discord desktop is around) — throttle it much harder.
 WINDOW=60
-[ "${UNIT}" != "beckett-v3" ] && WINDOW=3600
+[ "${UNIT}" != "beckett-v4" ] && WINDOW=3600
 STAMP="${HOME}/.beckett/alert-${UNIT}.stamp"
 NOW="$(date +%s)"
 LAST="$(cat "${STAMP}" 2>/dev/null || echo 0)"

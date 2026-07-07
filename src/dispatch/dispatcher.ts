@@ -123,7 +123,7 @@ export interface DispatcherDeps {
   /**
    * Optional progress feed: the dispatcher forwards each worker's granular {@link WorkerEvent}
    * stream here, keyed by ticket identifier, so it lands in the ticket's Discord thread (see
-   * `src/discord/progress.ts`). Injected from the Concierge's hub in `v3-main.ts`; omitted in
+   * `src/discord/progress.ts`). Injected from the Concierge's hub in `v4-main.ts`; omitted in
    * tests / when Discord isn't wired.
    */
   progress?: ProgressSink;
@@ -136,12 +136,12 @@ export interface DispatcherDeps {
   /**
    * Harness health probe (issue #17): consulted before casting so a dead harness produces one
    * clear substitution instead of a wedged ticket. Wire `preflightFor` from `drivers/index.ts`
-   * in production (v3-main does); omitted in tests → every harness is presumed healthy.
+   * in production (v4-main does); omitted in tests → every harness is presumed healthy.
    */
   preflight?: (harness: Harness) => Promise<{ ok: boolean; problems: string[] }>;
   /**
    * Fired the moment the dispatcher writes a state advance to Plane (issue #33), with the same
-   * {@link PollEvent} shape the poller would emit ≤5s later. v3-main routes it straight into
+   * {@link PollEvent} shape the poller would emit ≤5s later. v4-main routes it straight into
    * `concierge.notify` (an instant done ping instead of a poll-gap-delayed one) AND into
    * `poller.observe` (so the next tick doesn't re-emit the transition as a duplicate).
    */
@@ -2242,7 +2242,7 @@ export class Dispatcher {
     }
     await this.client.setState(op.ticketId, state);
     await this.addMarkedComment(op.ticketId, op.comment);
-    // Instant milestone path (issue #33): hand the transition to v3-main NOW, in the exact shape
+    // Instant milestone path (issue #33): hand the transition to v4-main NOW, in the exact shape
     // the poller would emit ≤5s later. Best-effort — a throwing listener must not fail the advance.
     if (this.onAdvance && current) {
       try {

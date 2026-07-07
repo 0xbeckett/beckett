@@ -26,10 +26,13 @@ bun x tsc --noEmit                      # never restart onto broken code
 # Two patterns because for-each-ref globs are pathname-aware: `*` stops at `/`, so nested
 # branches like beckett/wk_0012f678/OPS-11 need the `/**` form.
 git for-each-ref --format='%(refname:short)' 'refs/heads/beckett/wk_*' 'refs/heads/beckett/wk_*/**' | xargs -r git branch -D
-systemctl --user restart beckett-v3.service
+# Self-healing unit install (v3→v4 cutover): if the beckett-v4 unit isn't linked yet, this box
+# still has the old unit — run install.sh (idempotent) to link v4 and retire the stale ones.
+systemctl --user cat beckett-v4.service >/dev/null 2>&1 || ~/beckett/deploy/install.sh
+systemctl --user restart beckett-v4.service
 sleep 5
-systemctl --user is-active beckett-v3.service
-journalctl --user -u beckett-v3.service -n 12 --no-pager -o cat
+systemctl --user is-active beckett-v4.service
+journalctl --user -u beckett-v4.service -n 12 --no-pager -o cat
 REMOTE
 
 # Tag the deployed version (one source: package.json) — skip if the tag already exists.

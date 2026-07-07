@@ -55,7 +55,7 @@ DEPLOY / PROD REALITY (important)
 - Prod is `~/beckett` on a Linux box, running as systemd user services. It ONLY ever runs
   origin/main and is NEVER hand-edited.
 - The deploy path is: change → PR → merge to main → `./deploy/deploy-prod.sh` from the dev machine
-  (fetch, ff-only pull, install, typecheck, restart beckett-v3.service, health read-back).
+  (fetch, ff-only pull, install, typecheck, restart beckett-v4.service, health read-back).
 - Don't invent a deploy; use deploy-prod.sh. Don't leave prod behind origin/main after a change.
 
 WORKING STYLE

@@ -37,7 +37,7 @@ export interface DoctorReport {
 
 /**
  * The PATH the daemon actually runs under — MUST mirror `Environment=PATH=` in
- * `deploy/systemd/beckett-v3.service`. Probing binaries with the login shell's PATH instead is
+ * `deploy/systemd/beckett-v4.service`. Probing binaries with the login shell's PATH instead is
  * how "pi works when I ssh in" and "pi crashes under systemd" coexisted for days.
  */
 export function daemonPath(home: string): string {
@@ -383,7 +383,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       checks.push({
         name: "daemon: control.sock",
         level: "fail",
-        detail: "not answering — is beckett-v3.service running?",
+        detail: "not answering — is beckett-v4.service running?",
       });
     }
   } catch (err) {

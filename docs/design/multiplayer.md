@@ -1,6 +1,6 @@
 # Multiplayer: channel-scoped shared context (Claude-in-Slack model)
 
-**Ticket:** OPS-80 · **Status:** design, scoped to a single PR
+**Ticket:** OPS-80 · **Status:** shipped in v4.0.0 (2026-07-06)
 **Requested by:** zoomx64 · **Scope:** beckett-core (Concierge turn/context path)
 
 Goal: when Beckett answers anyone in a channel, it reasons over the recent

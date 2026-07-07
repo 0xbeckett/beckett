@@ -276,6 +276,19 @@ const ConfigSchema = z
       })
       .strict()
       .default({}),
+    // OPS-80 — channel-scoped shared context (multiplayer): the per-channel attributed
+    // transcript (JSONL under paths.channelsDir) injected into Concierge turns. Ships enabled;
+    // `enabled = false` is the kill switch back to the old per-channel ring-buffer prefix path.
+    shared_context: z
+      .object({
+        enabled: z.boolean().default(true),
+        max_entries_per_channel: posInt.default(200),
+        max_age_hours: posInt.default(72),
+        inject_budget_tokens: posInt.default(3000),
+        roster_max: posInt.default(12),
+      })
+      .strict()
+      .default({}),
     // v3 — the Concierge (long-lived `claude -p` Opus agent that owns Discord, files tickets).
     concierge: z
       .object({

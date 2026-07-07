@@ -58,6 +58,14 @@ export interface CreateAmbientCoordinatorDeps {
   triage: TriageFn;
   engage: (turn: AmbientTurn) => Promise<string>;
   storageFile?: string;
+  /**
+   * OPS-80: when set, the coordinator stops keeping its own per-channel ring buffers and reads
+   * transcripts from here (the Concierge maps its shared channel-context store into this shape).
+   * Absent (shared_context disabled, or older tests), the legacy in-memory ring buffer is used —
+   * byte-identical to the pre-OPS-80 behavior. `proactivity.transcript_window` bounds what this
+   * returns in BOTH modes: it is the burst-assembly context window, not the store's bound.
+   */
+  transcriptSource?: (channelId: string) => AmbientTranscriptMessage[];
 }
 
 export interface AmbientCoordinator {
@@ -124,6 +132,8 @@ class Coordinator implements AmbientCoordinator {
   private readonly triage: TriageFn;
   private readonly engage: (turn: AmbientTurn) => Promise<string>;
   private readonly storageFile: string;
+  private readonly transcriptSource?: (channelId: string) => AmbientTranscriptMessage[];
+  /** Legacy ring buffer — used only when no {@link transcriptSource} is injected (OPS-80). */
   private readonly transcripts = new Map<string, AmbientTranscriptMessage[]>();
   private readonly bursts = new Map<string, AmbientTranscriptMessage[]>();
   private readonly debounceTimers = new Map<string, unknown>();
@@ -138,6 +148,7 @@ class Coordinator implements AmbientCoordinator {
     this.clock = deps.clock ?? realClock;
     this.triage = deps.triage;
     this.engage = deps.engage;
+    this.transcriptSource = deps.transcriptSource;
     this.storageFile = deps.storageFile ?? join(buildPaths(deps.config).beckettDir, "pending-offers.json");
     this.loadOffers();
   }
@@ -146,7 +157,9 @@ class Coordinator implements AmbientCoordinator {
     try {
       if (accessLevel === "outsider") return;
       const tm = asTranscriptMessage(message);
-      this.appendTranscript(message.channelId, tm);
+      // OPS-80: with a shared store injected, capture happens in Concierge.onMessage — appending
+      // here too would double-record. The legacy ring buffer fills only when no store exists.
+      if (!this.transcriptSource) this.appendTranscript(message.channelId, tm);
 
       if (!this.config.enabled) return;
 
@@ -195,6 +208,11 @@ class Coordinator implements AmbientCoordinator {
   }
 
   getTranscript(channelId: string): AmbientTranscriptMessage[] {
+    // Store-backed (OPS-80): the shared record is bounded by the store's own count/TTL caps;
+    // transcript_window keeps bounding what BURST ASSEMBLY sees, exactly as it bounded the ring.
+    if (this.transcriptSource) {
+      return this.transcriptSource(channelId).slice(-this.config.transcript_window);
+    }
     return [...(this.transcripts.get(channelId) ?? [])];
   }
 

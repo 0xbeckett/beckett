@@ -59,7 +59,7 @@ key (`~/.config/age/beckett-backup.key`) exists ONLY there. Backups are delibera
 ```bash
 git clone https://github.com/0xbeckett/beckett.git ~/beckett
 cd ~/beckett && bun install --frozen-lockfile
-./deploy/install.sh        # links deploy/systemd/* (units + timers), enables beckett-v3 + heartbeat
+./deploy/install.sh        # links deploy/systemd/* (units + timers), enables beckett-v4 + heartbeat
 ```
 
 ## Ops visibility (issue #30)
@@ -82,6 +82,14 @@ From the Mac, after a PR merges to main:
 
 That is the entire deploy story: ff-only pull of origin/main → `bun install` → typecheck gate →
 restart → health read-back → version tag. It refuses a dirty checkout by design.
+
+**Rolling back across the v4 rename** (v4.0.0 renamed the unit `beckett-v3` → `beckett-v4`; the
+unit symlinks point INTO the repo, so a checkout of an older release dangles the v4 unit): on the
+box, `systemctl --user stop beckett-v4.service` **first** — the old release's `install.sh`
+predates beckett-v4 and will not stop it, so skipping this step leaves two daemons on one Discord
+token — then `git checkout v<previous>` in `~/beckett`, `bun install --frozen-lockfile`, and run
+that checkout's `./deploy/install.sh` (re-links and starts the old unit). Rolling forward again is
+just `./deploy/deploy-prod.sh` (its install-guard heals the unit rename cutover automatically).
 
 ## Clone roles (the anti-drift contract)
 

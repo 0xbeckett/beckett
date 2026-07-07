@@ -506,6 +506,41 @@ async function main(): Promise<void> {
     fail("usage: beckett federation ls | add <id> | remove <id>");
   }
 
+  // ── channels (OPS-80: the shared channel-context store, ~/.beckett/channels/) ─────────────
+  if (group === "channels") {
+    if (sub === "wipe") {
+      const { _ } = parse(rest);
+      const channelId = _[0]?.trim() || undefined;
+      // Prefer the live daemon (its in-memory cache must drop with the files). Fall back to a
+      // direct file wipe ONLY when the daemon is provably down (connect refused) — on a timeout
+      // or mid-stream error the daemon may be alive with the window cached, and deleting the
+      // files under it would let a later compaction resurrect the "wiped" content. This is the
+      // privacy nuclear option; a false "wiped" is worse than an error.
+      try {
+        const res = await callBus(SOCK, "channels.wipe", channelId ? { channelId } : {}, 5_000);
+        if (!res.ok) fail(res.error ?? "wipe failed");
+        out({ ...(res.data as Record<string, unknown>), via: "daemon" });
+      } catch (err) {
+        if (!String((err as Error).message).startsWith("shell not running")) {
+          fail(
+            `daemon reachable but not answering (${(err as Error).message}) — NOT wiping files ` +
+              `underneath its live cache; retry, or stop the daemon and re-run`,
+          );
+        }
+        const { createChannelContextStore } = await import("../concierge/channel-context.ts");
+        const sc = config.shared_context;
+        const store = createChannelContextStore({
+          channelsDir: paths.channelsDir,
+          maxEntriesPerChannel: sc?.max_entries_per_channel ?? 200,
+          maxAgeHours: sc?.max_age_hours ?? 72,
+          logger: quietLogger,
+        });
+        out({ wiped: store.wipe(channelId), via: "files (daemon not running)" });
+      }
+    }
+    fail("usage: beckett channels wipe [<channelId>]");
+  }
+
   // ── ticket (in-process: PlaneClient — the Concierge's door to Plane, v3 §8) ───────────────
   // The Concierge shells these from its Bash tool to file/inspect/steer tickets. Output is
   // JSON on stdout (the Concierge reads it). PlaneClient speaks HTTP to Plane; the secret
@@ -762,7 +797,7 @@ async function main(): Promise<void> {
     try {
       res = await callBus(SOCK, "status", {}, 5_000);
     } catch (err) {
-      fail(`daemon not answering on control.sock (${(err as Error).message}) — is beckett-v3.service running?`);
+      fail(`daemon not answering on control.sock (${(err as Error).message}) — is beckett-v4.service running?`);
     }
     if (!res.ok) fail(res.error ?? "status failed");
     const data = (res.data ?? {}) as Record<string, any>;
@@ -907,7 +942,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | identity set|show|list | discord reply | proactivity status|set|off | quick <agent>|list | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels wipe | identity set|show|list | discord reply | proactivity status|set|off | quick <agent>|list | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

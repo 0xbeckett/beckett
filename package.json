@@ -1,12 +1,12 @@
 {
   "name": "beckett",
-  "version": "3.6.2",
+  "version": "4.0.0",
   "description": "Beckett \u2014 an agentic coworker reached in Discord. A harness over harnesses.",
   "type": "module",
   "private": true,
-  "module": "src/shell/v3-main.ts",
+  "module": "src/shell/v4-main.ts",
   "scripts": {
-    "v3": "bun src/shell/v3-main.ts",
+    "v4": "bun src/shell/v4-main.ts",
     "beckett": "bun src/cli/beckett.ts",
     "typecheck": "bun x tsc --noEmit",
     "test": "bun test"

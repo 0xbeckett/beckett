@@ -326,11 +326,15 @@ test("an @mention cancels a pending burst flush and prepends the unseen ring buf
 
   expect(h.triageCalls).toBe(0); // flush cancelled — never double-respond
   const mentionTurn = h.asks[0] as string;
-  expect(mentionTurn).toContain("recent messages in this channel you haven't seen");
+  expect(mentionTurn).toContain("SYSTEM (shared channel context");
   expect(mentionTurn).toContain("the export flow is painful");
   expect(mentionTurn).toContain("wish it gave me a csv");
-  // The mention itself is framed as a normal user turn below the prepended context.
+  // OPS-80: attributed lines — the speaker's id rides every transcript line.
+  expect(mentionTurn).toContain(`(user:${MEMBER})`);
+  // The mention itself is framed as a normal user turn below the prepended context…
   expect(mentionTurn).toContain("do that");
+  // …and must NOT also appear as a transcript line above itself (it was captured pre-assembly).
+  expect(mentionTurn.indexOf("do that")).toBe(mentionTurn.lastIndexOf("do that"));
 });
 
 test("the ring-buffer prepend isn't repeated on a later mention (watermark advances)", async () => {
@@ -340,9 +344,21 @@ test("the ring-buffer prepend isn't repeated on a later mention (watermark advan
   await h.concierge.onMessage(msg("m2", "@beckett handle it", 100, { mentionsBot: true, content: "handle it" }));
   expect(h.asks[0] as string).toContain("some earlier context");
 
-  // A second mention with nothing new in between gets no prepend.
+  // A second mention does not re-send lines the session already saw (the persisted watermark
+  // advanced — OPS-80 §3.3). Beckett's OWN intervening reply is legitimately new record content
+  // (the frame's "you may already have replied to some of it" exists for exactly this), so the
+  // assertion pins the user line, not the header.
   await h.concierge.onMessage(msg("m3", "@beckett again", 200, { mentionsBot: true, content: "again" }));
-  expect(h.asks[1] as string).not.toContain("recent messages in this channel you haven't seen");
+  const second = h.asks[1] as string;
+  expect(second).not.toContain("some earlier context");
+  expect(second).toContain("beckett: answer");
+
+  // A third mention right after: Beckett's reply to the second was itself recorded, but the
+  // first reply (already surfaced above) is not re-sent.
+  await h.concierge.onMessage(msg("m4", "@beckett once more", 300, { mentionsBot: true, content: "once more" }));
+  const third = h.asks[2] as string;
+  expect(third).not.toContain("some earlier context");
+  expect(third.split("beckett: answer").length - 1).toBe(1);
 });
 
 test("outsider messages update nothing — no ring buffer, so no mention prepend", async () => {
@@ -353,6 +369,6 @@ test("outsider messages update nothing — no ring buffer, so no mention prepend
   await h.concierge.onMessage(msg("m2", "@beckett status", 100, { mentionsBot: true, content: "status" }));
 
   const mentionTurn = h.asks[0] as string;
-  expect(mentionTurn).not.toContain("recent messages in this channel you haven't seen");
+  expect(mentionTurn).not.toContain("SYSTEM (shared channel context");
   expect(mentionTurn).not.toContain("secret outsider chatter");
 });

@@ -348,7 +348,7 @@ export class PlanePoller {
 
   /**
    * Run one tick NOW (issue #33): `beckett ticket create --state in_progress` already pings the
-   * control bus, so v3-main routes that ping here and the dispatcher staffs the ticket in well
+   * control bus, so v4-main routes that ping here and the dispatcher staffs the ticket in well
    * under a second instead of waiting out the 0–5s poll gap. A poke during an in-flight tick is
    * remembered and runs one follow-up tick (the freshly-filed ticket must not slip through).
    * No-op before {@link start}.

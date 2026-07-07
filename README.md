@@ -99,11 +99,11 @@ the short version:
    ```bash
    git clone https://github.com/<you>/beckett.git ~/beckett
    cd ~/beckett && bun install --frozen-lockfile
-   ./deploy/install.sh    # links deploy/systemd/* and enables beckett-v3 + heartbeat
+   ./deploy/install.sh    # links deploy/systemd/* and enables beckett-v4 + heartbeat
    ```
 
 `deploy/install.sh` is idempotent — it symlinks every unit in `deploy/systemd/`, retires stale
-units, and does `systemctl --user enable --now beckett-v3.service`. Re-run it any time the unit
+units, and does `systemctl --user enable --now beckett-v4.service`. Re-run it any time the unit
 files change.
 
 **Auth is subscription-only by design.** Beckett drives `claude` / `codex` / `pi` through their
@@ -191,7 +191,7 @@ your dev machine, after a PR merges to main:
 ```
 
 It fetches, fast-forward-pulls, `bun install`, typechecks (never restarts onto broken code),
-restarts `beckett-v3.service`, reads back health, and tags the deployed version. Crash alerts and
+restarts `beckett-v4.service`, reads back health, and tags the deployed version. Crash alerts and
 a weekly heartbeat post to the Discord alert channel.
 
 ## Repo layout

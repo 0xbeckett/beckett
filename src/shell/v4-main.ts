@@ -1,5 +1,5 @@
 /**
- * Beckett v3 — the shell entrypoint (`src/shell/v3-main.ts`)
+ * Beckett v4 — the shell entrypoint (`src/shell/v4-main.ts`)
  * =======================================================================================
  * Boots the v3 Plane ticket-queue system and wires the four moving parts together:
  *
@@ -18,7 +18,7 @@
  * Plane is the shared queue. This mirrors the architecture in `docs/V3.md` §0.
  *
  * This is a NEW entrypoint; the v2 `src/shell/main.ts` is left untouched. Run it with
- * `bun run v3` (see package.json) or `bun src/shell/v3-main.ts`.
+ * `bun run v4` (see package.json) or `bun src/shell/v4-main.ts`.
  *
  * Import style (whole repo, bun-native): explicit `.ts` extensions, ESM.
  */
@@ -57,9 +57,9 @@ function resolveRepoRoot(ticket: Ticket): string {
 }
 
 /**
- * Beckett version. v3.1 — the "go faster" release: workers run in the project checkout (no
- * per-stage worktrees), effort-scaled review (trivial work self-reviews in one pass), and
- * Sonnet 5 @ xhigh workers. See CHANGELOG.md.
+ * Beckett version. v4.0 — the multiplayer release (OPS-80): channel-scoped shared context, so
+ * everyone in a Discord channel collaborates with the same Beckett instead of getting isolated
+ * per-user sessions. See CHANGELOG.md.
  */
 // ONE version source (issue #29): package.json. The old hand-maintained constant drifted three
 // ways (package.json 3.1.1 / this file 3.3.0 / CHANGELOG 3.3). Read at module load; the file
@@ -67,7 +67,7 @@ function resolveRepoRoot(ticket: Ticket): string {
 import pkg from "../../package.json" with { type: "json" };
 export const BECKETT_VERSION: string = (pkg as { version: string }).version;
 
-/** The live v3 system — held so {@link shutdown} can tear every part down in order. */
+/** The live v4 system — held so {@link shutdown} can tear every part down in order. */
 interface BootedSystem {
   config: Config;
   logger: Logger;
@@ -85,9 +85,9 @@ interface BootedSystem {
  */
 async function boot(): Promise<BootedSystem> {
   const config = loadConfig();
-  const logger = rootLog.child("shell.v3");
+  const logger = rootLog.child("shell.v4");
 
-  logger.info("booting beckett v3", {
+  logger.info("booting beckett v4", {
     version: BECKETT_VERSION,
     plane: config.plane.base_url,
     workspace: config.plane.workspace_slug,
@@ -268,7 +268,7 @@ async function main(): Promise<void> {
 
 if (import.meta.main) {
   main().catch((err) => {
-    rootLog.child("shell.v3").error("beckett v3 failed to start", { err: String(err) });
+    rootLog.child("shell.v4").error("beckett v4 failed to start", { err: String(err) });
     process.exit(1);
   });
 }

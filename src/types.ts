@@ -513,6 +513,7 @@ export interface Paths {
   envFile: string; // <beckettDir>/.env
   personaFile: string; // <beckettDir>/persona.md
   attachmentsDir: string; // <beckettDir>/attachments — downloaded Discord attachments
+  channelsDir: string; // <beckettDir>/channels — per-channel shared-context JSONL (OPS-80)
   accessFile: string; // <beckettDir>/access.txt — Discord user whitelist (invite-only beta)
   imagesDir: string; // <beckettDir>/images — generated images (beckett image)
   identitiesFile: string; // <beckettDir>/identities.json — per-user known/preferred names (OPS-42)
@@ -614,6 +615,22 @@ export interface Config {
     offer_ttl_secs: number;
     transcript_window: number;
     channels: Record<string, ProactivityMode>;
+  };
+  /**
+   * OPS-80 — channel-scoped shared context (multiplayer): the per-channel attributed
+   * transcript injected into Concierge turns. `enabled = false` restores the old
+   * per-channel ring-buffer prefix path exactly.
+   */
+  shared_context: {
+    enabled: boolean;
+    /** Hard count cap per channel in the store. */
+    max_entries_per_channel: number;
+    /** Entries older than this are expired at read/compaction. */
+    max_age_hours: number;
+    /** Per-turn injection ceiling (chars/4 token heuristic). */
+    inject_budget_tokens: number;
+    /** Max participants named in the roster line. */
+    roster_max: number;
   };
   /** v3 — the Concierge agent that owns Discord and files tickets. */
   concierge: {

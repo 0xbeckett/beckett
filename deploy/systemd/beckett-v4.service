@@ -1,5 +1,5 @@
 [Unit]
-Description=Beckett v3 — Plane ticket-queue (Opus concierge + poller + dispatcher)
+Description=Beckett v4 — multiplayer Plane ticket-queue (channel-scoped shared context; Opus concierge + poller + dispatcher)
 After=network-online.target
 Wants=network-online.target
 # Crash-loop alerting (issue #30): 30 starts inside 10 minutes means something is wrong at boot —
@@ -13,7 +13,7 @@ OnFailure=beckett-alert@%N.service
 [Service]
 Type=simple
 WorkingDirectory=%h/beckett
-ExecStart=/usr/local/bin/bun src/shell/v3-main.ts
+ExecStart=/usr/local/bin/bun src/shell/v4-main.ts
 # Always come back — a crash, an OOM kill, or a clean-looking exit all mean the coworker is
 # offline until something restarts it. Crash recovery (issue #20) makes restarts safe.
 Restart=always

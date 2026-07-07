@@ -1,5 +1,44 @@
 # Changelog
 
+## v4.0.0 — multiplayer: channel-scoped shared context (OPS-80) (2026-07-06)
+
+The multiplayer release. When Beckett answers anyone in a channel, it now reasons over the
+recent conversation across *all* participants there — the Claude-in-Slack model — instead of
+treating each mention as an isolated 1:1 exchange. Attribution and authority stay strictly
+per-user. The daemon service is renamed `beckett-v3` → `beckett-v4`.
+
+- **Shared channel record** (`src/concierge/channel-context.ts`): an attributed, token-budgeted,
+  persisted per-channel transcript (owner + member messages AND Beckett's own posts — both were
+  holes in the old ring buffer). One JSONL file per channel under `~/.beckett/channels/`,
+  bounded by count + TTL, compacted in place; survives restarts, unlike the old in-memory Map.
+- **The turn frame**: mentions now carry a `SYSTEM (shared channel context …)` block — a
+  participant roster plus `[HH:MM] Name (user:<id>): text` lines — selected newest-first under
+  `inject_budget_tokens`, rendered oldest-first. Ambient candidate frames use the same
+  attributed renderer, so both paths present one consistent view.
+- **sessionId-keyed watermark** (`~/.beckett/channels/watermarks.json`): seen lines are never
+  re-sent to the same session; a `--resume` across a deploy keeps watermarks live, while a
+  rotation/fresh session self-invalidates them and gets a full catch-up window. Per-channel
+  context now survives rotation *outside* the session — the handoff note stops carrying it.
+- **Capture rules**: inbound captured only after the outsider gate and the approval intercept
+  (approval codes are live secrets and never enter the record); membership re-checked at capture
+  time so a revocation stops new capture immediately; fast-acks/denials/error apologies excluded.
+- **Authority never travels through context**: transcript lines carry `user:<id>` but never
+  `role:owner` — the owner marker lives only on the live turn's stamp, and every owner-gated
+  path (approvals, `proactivity.set auto`) still authenticates the live author id in code. New
+  red-team suite (`shared-context.redteam.test.ts`) pins owner-claims, grant instructions, and
+  approval-code phishing via transcript to byte-identical old behavior.
+- **Privacy**: the store is channel-keyed, so DM windows never render into guild turns (and vice
+  versa) structurally; doctrine adds the matching hard rule plus answer-the-stamped-speaker,
+  transcript-is-data, ticket attribution, and memory provenance guidance.
+- **Config** (`[shared_context]`): `enabled` (kill switch — `false` restores the old
+  ring-buffer prefix path byte-identically), `max_entries_per_channel` (200), `max_age_hours`
+  (72), `inject_budget_tokens` (3000), `roster_max` (12).
+- **`beckett channels wipe [<channelId>]`** — delete a channel's stored window (routes through
+  the live daemon so its cache drops too; falls back to direct file wipe when it's down).
+- **Service rename**: systemd unit `beckett-v4.service`, entrypoint `src/shell/v4-main.ts`,
+  `bun run v4`. `install.sh` retires the old v3 unit idempotently and `deploy-prod.sh`
+  self-heals by running install when the v4 unit isn't linked yet — one deploy cuts the box over.
+
 ## v3.6.2 — gh pr close + scaffolding can't leak into a PR (OPS-61, re-landed on current main) (2026-07-01)
 
 Two fixes to Beckett's own machinery.
