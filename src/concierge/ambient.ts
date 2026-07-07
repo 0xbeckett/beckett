@@ -266,10 +266,16 @@ class Coordinator implements AmbientCoordinator {
   private armDebounce(channelId: string): void {
     const prior = this.debounceTimers.get(channelId);
     if (prior) this.clock.clearTimeout(prior);
+    // Mid-conversation a short lull IS the turn boundary — holding an engaged reply hostage to
+    // the full cold debounce (which every new message resets) is how Beckett "wandered off" at
+    // the end of its own conversations (v4.1.2).
+    const quietSecs = this.isEngaged(channelId)
+      ? (this.config.engaged_quiet_secs ?? 4)
+      : this.config.burst_quiet_secs;
     const timer = this.clock.setTimeout(() => {
       this.debounceTimers.delete(channelId);
       void this.flushBurst(channelId);
-    }, this.config.burst_quiet_secs * 1000);
+    }, quietSecs * 1000);
     this.debounceTimers.set(channelId, timer);
   }
 

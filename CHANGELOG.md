@@ -1,5 +1,20 @@
 # Changelog
 
+## v4.1.2 — ambient: conversational cadence (2026-07-06)
+
+Live testing of v4.1.1: the conversation flowed, then Beckett "dropped out at the end" and
+replies took a minute with no signal it had seen anything. All cadence, not classification.
+
+- **Engaged lull ≠ cold silence** (`engaged_quiet_secs`, default 4): mid-conversation the flush
+  now fires on a 4s lull instead of the cold 20s `burst_quiet_secs` — which every new message
+  reset, so with three people bantering Beckett literally couldn't get a word in until the room
+  went quiet, then looked like it wandered off.
+- **Typing indicator on engaged + consent turns**: people talking WITH Beckett see "beckett is
+  typing…" the moment the turn starts. Cold candidates stay untelegraphed — no typing over a
+  conversation it may still PASS on from eavesdrop distance.
+- **Caps are backstops, not rations**: the classifier is the thing that stops reply-to-everything
+  — `channel_cooldown_secs` 300 → 60, `max_interjections_per_hour` 10 → 0 (disabled).
+
 ## v4.1.1 — ambient: stop ghosting people mid-conversation; Cerebras classifier (2026-07-06)
 
 OPS-86/87 retuned the classifier prompt but Beckett still went silent the moment people engaged

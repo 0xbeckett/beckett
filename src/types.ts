@@ -614,6 +614,8 @@ export interface Config {
     triage_model: string;
     triage_threshold: number;
     burst_quiet_secs: number;
+    /** Quiet needed to flush a burst DURING an engaged conversation (a lull, not silence). */
+    engaged_quiet_secs: number;
     channel_cooldown_secs: number;
     max_interjections_per_hour: number;
     /** Post-speech window in which a channel's chatter is an engaged continuation (no triage/caps). */

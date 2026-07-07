@@ -169,7 +169,7 @@ test("candidate PASS posts nothing, sends no typing, and leaves cooldown unconsu
   expect(h.triageCalls).toBe(1);
   expect(h.asks).toHaveLength(1); // the ambient candidate turn ran…
   expect(h.posts).toHaveLength(0); // …but PASS suppressed the post
-  expect(h.typings).toHaveLength(0); // ambient turns never telegraph typing
+  expect(h.typings).toHaveLength(0); // COLD ambient turns never telegraph typing
 
   // PASS consumed no cooldown → the next burst triages again.
   await h.concierge.onMessage(msg("m2", "and pdf too", 3_000));
@@ -219,9 +219,10 @@ test("a live offer routes the next message as a consent turn that bypasses triag
   expect(h.posts[1]).toEqual({ channelId: CHAN, text: "on it — filing that now", replyTo: undefined });
 
   // The real consent reply closed the offer AND opened the engaged window — the follow-up is a
-  // continuation of the conversation Beckett is in (no triage), not a fresh cold burst.
+  // continuation of the conversation Beckett is in (no triage), not a fresh cold burst. It
+  // flushes on the ENGAGED lull (4s), not the cold debounce.
   await h.concierge.onMessage(msg("m3", "also would love dark mode", 6_000));
-  clock.advance(2_000);
+  clock.advance(4_000);
   await drain();
   expect(h.triageCalls).toBe(1);
   expect(h.asks).toHaveLength(3);
@@ -381,4 +382,26 @@ test("outsider messages update nothing — no ring buffer, so no mention prepend
   const mentionTurn = h.asks[0] as string;
   expect(mentionTurn).not.toContain("SYSTEM (shared channel context");
   expect(mentionTurn).not.toContain("secret outsider chatter");
+});
+
+test("engaged continuation sends typing (the 'seen you' signal) and flushes on the short engaged lull", async () => {
+  const h = harness({ reply: "ha, fair" });
+  const clock = clockOf(h);
+
+  // A mention reply opens the engaged window without arming any offer.
+  await h.concierge.onMessage(msg("m1", "hey beckett you alive?", 0, { mentionsBot: true }));
+  await drain();
+  expect(h.posts).toHaveLength(1);
+  const typingsAfterMention = h.typings.length;
+
+  // Someone answers WITHOUT a mention → engaged continuation: typing fires before the reply
+  // posts, the frame is the continuation frame, and the flush needed only the 4s engaged lull.
+  await h.concierge.onMessage(msg("m2", "lmao ok that's fair", 3_000));
+  clock.advance(4_000);
+  await drain();
+  expect(h.asks[1] as string).toContain("SYSTEM (ambient continuation");
+  expect(h.typings.length).toBe(typingsAfterMention + 1);
+  expect(h.typings[h.typings.length - 1]).toBe(CHAN);
+  expect(h.posts).toHaveLength(2);
+  expect(h.triageCalls).toBe(0); // never classified — it's Beckett's own conversation
 });

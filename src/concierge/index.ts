@@ -1616,6 +1616,7 @@ export class Concierge {
         triageModel: p.triage_model,
         triageThreshold: p.triage_threshold,
         burstQuietSecs: p.burst_quiet_secs,
+        engagedQuietSecs: p.engaged_quiet_secs,
         channelCooldownSecs: p.channel_cooldown_secs,
         maxInterjectionsPerHour: p.max_interjections_per_hour,
         engagedWindowSecs: p.engaged_window_secs,
@@ -1958,6 +1959,13 @@ export class Concierge {
     const framed = this.frameAmbientTurn(turn);
     // These messages are now in front of the session — don't re-prepend them on the next mention.
     this.markAmbientSeen(turn.channelId, turn.transcript);
+    // People talking WITH Beckett (engaged continuations, offer follow-ups) get the human signal
+    // that it saw them and is answering — the turn takes seconds and dead air reads as ignored
+    // (v4.1.2). COLD candidates stay untelegraphed: no "beckett is typing…" over a conversation
+    // it may yet decide to PASS on from eavesdrop distance.
+    if (turn.kind === "consent" || (turn.kind === "candidate" && turn.engaged)) {
+      this.gateway.sendTyping(turn.channelId).catch(() => undefined);
+    }
     const claim = {
       channelId: turn.channelId,
       messageId: ambientAnchorId(turn),

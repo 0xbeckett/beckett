@@ -273,11 +273,14 @@ const ConfigSchema = z
         triage_model: z.string().min(1).default("claude-haiku-4-5"),
         triage_threshold: z.number().min(0).max(1).default(0.45),
         burst_quiet_secs: posInt.default(20),
-        // OPS-87 follow-up: 900s/4-per-hour were wallflower-era caps that gated bursts BEFORE
-        // triage ever ran — the retuned classifier never got asked. These bound COLD interjections
-        // only; engaged continuations (below) bypass them.
-        channel_cooldown_secs: nonNegInt.default(300),
-        max_interjections_per_hour: nonNegInt.default(10),
+        // Mid-conversation, waiting out the full cold debounce reads as wandering off — a short
+        // lull IS a turn boundary when people are talking WITH Beckett (v4.1.2).
+        engaged_quiet_secs: posInt.default(4),
+        // Soft backstops only (v4.1.2): the CLASSIFIER is the gate that stops reply-to-everything;
+        // these exist to break pathological loops, not to ration speech. They bound COLD
+        // interjections only; engaged continuations bypass them. 0 = disabled.
+        channel_cooldown_secs: nonNegInt.default(60),
+        max_interjections_per_hour: nonNegInt.default(0),
         // How long after Beckett speaks in a channel its ambient messages count as CONTINUING
         // that conversation: no triage, no cooldown — the session itself decides (it can PASS).
         // Someone answering Beckett is not an interjection opportunity. 0 disables the lane.
