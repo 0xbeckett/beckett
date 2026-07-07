@@ -218,8 +218,18 @@ test("a live offer routes the next message as a consent turn that bypasses triag
   expect(h.posts).toHaveLength(2); // the consent reply posted plainly
   expect(h.posts[1]).toEqual({ channelId: CHAN, text: "on it — filing that now", replyTo: undefined });
 
-  // The real consent reply closed the offer → the following message triages fresh again.
+  // The real consent reply closed the offer AND opened the engaged window — the follow-up is a
+  // continuation of the conversation Beckett is in (no triage), not a fresh cold burst.
   await h.concierge.onMessage(msg("m3", "also would love dark mode", 6_000));
+  clock.advance(2_000);
+  await drain();
+  expect(h.triageCalls).toBe(1);
+  expect(h.asks).toHaveLength(3);
+  expect(h.asks[2] as string).toContain("SYSTEM (ambient continuation");
+
+  // Past the engaged window, the cold path (triage) is back in charge.
+  clock.advance(200_000);
+  await h.concierge.onMessage(msg("m4", "unrelated new topic", 210_000), );
   clock.advance(2_000);
   await drain();
   expect(h.triageCalls).toBe(2);

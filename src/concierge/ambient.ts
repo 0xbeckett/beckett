@@ -30,6 +30,12 @@ export type AmbientTurn =
       burst: AmbientTranscriptMessage[];
       transcript: AmbientTranscriptMessage[];
       verdict: TriageVerdict;
+      /**
+       * True when the burst arrived inside the engaged window (Beckett spoke here moments ago):
+       * this is people responding to Beckett, not chatter it's eavesdropping on — no triage ran,
+       * no caps applied, and the frame tells the session it's mid-conversation.
+       */
+      engaged?: boolean;
     }
   | {
       kind: "consent";
@@ -71,6 +77,8 @@ export interface CreateAmbientCoordinatorDeps {
 export interface AmbientCoordinator {
   observe(message: IncomingMessage, accessLevel: AccessLevel): void;
   noteMention(channelId: string): void;
+  /** Beckett just posted in this channel (any path) — opens/refreshes the engaged window. */
+  noteBeckettPost(channelId: string): void;
   recordOffer(channelId: string, offer: Omit<PendingOffer, "expiresAt"> & { expiresAt?: number }): PendingOffer;
   clearOffer(channelId: string): void;
   getPendingOffer(channelId: string): PendingOffer | undefined;
@@ -140,6 +148,8 @@ class Coordinator implements AmbientCoordinator {
   private readonly offers = new Map<string, PendingOffer>();
   private readonly offerTimers = new Map<string, unknown>();
   private readonly lastInterjectionAt = new Map<string, number>();
+  /** When Beckett last SPOKE per channel (any path) — anchors the engaged window. */
+  private readonly lastBeckettPostAt = new Map<string, number>();
   private interjectionTimes: number[] = [];
 
   constructor(deps: CreateAmbientCoordinatorDeps) {
@@ -183,6 +193,18 @@ class Coordinator implements AmbientCoordinator {
     if (timer) this.clock.clearTimeout(timer);
     this.debounceTimers.delete(channelId);
     this.bursts.delete(channelId);
+  }
+
+  noteBeckettPost(channelId: string): void {
+    this.lastBeckettPostAt.set(channelId, this.clock.now());
+  }
+
+  /** Inside the window after Beckett spoke here, chatter is a continuation, not an interjection. */
+  private isEngaged(channelId: string): boolean {
+    const windowSecs = this.config.engaged_window_secs ?? 180;
+    if (windowSecs <= 0) return false;
+    const last = this.lastBeckettPostAt.get(channelId);
+    return last !== undefined && this.clock.now() - last < windowSecs * 1000;
   }
 
   recordOffer(channelId: string, offer: Omit<PendingOffer, "expiresAt"> & { expiresAt?: number }): PendingOffer {
@@ -257,18 +279,40 @@ class Coordinator implements AmbientCoordinator {
       this.bursts.delete(channelId);
       if (burst.length === 0) return;
       if (this.effectiveMode(channelId) === "off") return;
-      if (this.isCapped(channelId)) return;
 
+      // Engaged continuation (OPS-87 follow-up): Beckett spoke here moments ago, so this burst
+      // is people responding to it. Gating that behind the classifier + cooldown is what made
+      // Beckett go silent mid-conversation ("adding another voice just crowds the room" — on its
+      // OWN thread). Skip both; the session turn still decides (it can PASS a conversation-ender).
+      const engaged = this.isEngaged(channelId);
       const transcript = this.getTranscript(channelId);
-      const verdict = await this.triage(burst, transcript, { channelId });
-      if (!verdict.interject || verdict.confidence < this.config.triage_threshold) return;
-      if (this.isCapped(channelId)) return;
+      let verdict: TriageVerdict;
+      if (engaged) {
+        verdict = {
+          interject: true,
+          kind: "none",
+          confidence: 1,
+          reason: "engaged conversation — the burst responds to something Beckett just said",
+        };
+        this.logger.info("ambient engaged continuation", { channel: channelId, burst: burst.length });
+      } else {
+        if (this.isCapped(channelId)) return;
+        verdict = await this.triage(burst, transcript, { channelId });
+        if (!verdict.interject || verdict.confidence < this.config.triage_threshold) return;
+        if (this.isCapped(channelId)) return;
+      }
 
-      const reply = await this.engage({ kind: "candidate", channelId, burst, transcript, verdict });
-      // A real post consumes cooldown. If `engage` already armed an offer for this channel it has
-      // called `recordOffer` (which starts the cooldown), so don't double-count; a bare answer with
-      // no offer still needs its cooldown stamped here.
-      if (!isAmbientPass(reply) && !this.offers.has(channelId)) this.markInterjection(channelId);
+      const reply = await this.engage({ kind: "candidate", channelId, burst, transcript, verdict, engaged });
+      if (!isAmbientPass(reply)) {
+        // Any real post opens/refreshes the engaged window (belt to the Concierge's suspenders —
+        // legacy no-store configs never route through recordBeckettPost).
+        this.noteBeckettPost(channelId);
+        // A real COLD post consumes cooldown. If `engage` already armed an offer for this channel
+        // it has called `recordOffer` (which starts the cooldown), so don't double-count; and an
+        // engaged continuation never spends the interjection budget — it's one conversation, not
+        // N interjections.
+        if (!engaged && !this.offers.has(channelId)) this.markInterjection(channelId);
+      }
     } catch (err) {
       this.logger.warn("ambient burst flush failed", { channel: channelId, error: (err as Error).message });
     }
@@ -276,13 +320,14 @@ class Coordinator implements AmbientCoordinator {
 
   private async runConsentTurn(channelId: string, offer: PendingOffer, message: IncomingMessage): Promise<void> {
     try {
-      await this.engage({
+      const reply = await this.engage({
         kind: "consent",
         channelId,
         offer,
         message,
         transcript: this.getTranscript(channelId),
       });
+      if (!isAmbientPass(reply)) this.noteBeckettPost(channelId);
     } catch (err) {
       this.logger.warn("ambient consent turn failed", { channel: channelId, error: (err as Error).message });
     }
@@ -311,7 +356,10 @@ class Coordinator implements AmbientCoordinator {
     if (offer.mode !== "auto" || !this.config.enabled) return;
     try {
       const reply = await this.engage({ kind: "timeout", channelId, offer, transcript: this.getTranscript(channelId) });
-      if (!isAmbientPass(reply)) this.markInterjection(channelId);
+      if (!isAmbientPass(reply)) {
+        this.noteBeckettPost(channelId);
+        this.markInterjection(channelId);
+      }
     } catch (err) {
       this.logger.warn("ambient timeout turn failed", { channel: channelId, error: (err as Error).message });
     }

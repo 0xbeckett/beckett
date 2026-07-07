@@ -1,5 +1,28 @@
 # Changelog
 
+## v4.1.1 — ambient: stop ghosting people mid-conversation; Cerebras classifier (2026-07-06)
+
+OPS-86/87 retuned the classifier prompt but Beckett still went silent the moment people engaged
+with it. Two structural gates were doing that, both fixed, plus the classifier moves off Haiku.
+
+- **Engaged-conversation lane**: after Beckett speaks in a channel, its chatter for the next
+  `engaged_window_secs` (default 180) is a *continuation* — no triage, no cooldown, no hourly
+  budget. The turn arrives as `SYSTEM (ambient continuation …)` where the default flips to
+  "reply unless it's clearly over" (the session can still PASS a bare "k"). Haiku was scoring
+  replies-to-Beckett as "piling on"/"crowding the room" and refusing them.
+- **Offers only on cold interjections**: every ambient post used to arm the offer/consent
+  machinery, which then swallowed ALL channel messages for 10 minutes with "unrelated → PASS"
+  instructions — the other half of the silence. Engaged replies no longer arm offers; the
+  consent frame now answers declines and banter like a person; a consent reply only resolves an
+  offer when it comes from the person the offer was made to.
+- **Cold caps retuned**: `channel_cooldown_secs` 900 → 300, `max_interjections_per_hour` 4 → 10
+  (they gated bursts BEFORE triage, so the retuned prompt never got asked); triage.md gains the
+  rule that a burst responding to Beckett is never "crowding the room".
+- **Cerebras classifier** (`[proactivity] triage_provider = "cerebras"`): the burst scorer can
+  now run on Cerebras' OpenAI-compatible API (e.g. `gemma-4-31b`, ~1850 tok/s) instead of
+  spawning the claude CLI — wire-speed and off the subscription. Key = `CEREBRAS_API_KEY` in
+  `~/.beckett/.env` (inventoried in `.env.example`); fails closed like the claude path.
+
 ## v4.1.0 — server memory: cross-channel awareness + on-demand recall (2026-07-06)
 
 The per-channel shared context (v4.0.0) grows a server-wide layer. Beckett now *knows about* the

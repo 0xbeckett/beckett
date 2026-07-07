@@ -265,11 +265,23 @@ const ConfigSchema = z
       .object({
         enabled: z.boolean().default(false),
         default_mode: ProactivityModeSchema.default("off"),
+        // Where the burst classifier runs. `claude` spawns the subscription CLI; `cerebras`
+        // hits their OpenAI-compatible API (key = CEREBRAS_API_KEY in ~/.beckett/.env) — a
+        // ~100-token scorer wants wire speed, not Haiku pricing. triage_model must name a model
+        // the chosen provider actually serves.
+        triage_provider: z.enum(["claude", "cerebras"]).default("claude"),
         triage_model: z.string().min(1).default("claude-haiku-4-5"),
         triage_threshold: z.number().min(0).max(1).default(0.45),
         burst_quiet_secs: posInt.default(20),
-        channel_cooldown_secs: nonNegInt.default(900),
-        max_interjections_per_hour: nonNegInt.default(4),
+        // OPS-87 follow-up: 900s/4-per-hour were wallflower-era caps that gated bursts BEFORE
+        // triage ever ran — the retuned classifier never got asked. These bound COLD interjections
+        // only; engaged continuations (below) bypass them.
+        channel_cooldown_secs: nonNegInt.default(300),
+        max_interjections_per_hour: nonNegInt.default(10),
+        // How long after Beckett speaks in a channel its ambient messages count as CONTINUING
+        // that conversation: no triage, no cooldown — the session itself decides (it can PASS).
+        // Someone answering Beckett is not an interjection opportunity. 0 disables the lane.
+        engaged_window_secs: nonNegInt.default(180),
         offer_ttl_secs: posInt.default(600),
         transcript_window: posInt.default(15),
         channels: z.record(ProactivityModeSchema).default({}),

@@ -168,7 +168,7 @@ describe("AmbientCoordinator", () => {
     expect(triageCalls).toBe(0);
   });
 
-  test("cooldown and hourly cap are enforced before triage", async () => {
+  test("cooldown and hourly cap are enforced before triage (cold path — engaged lane disabled)", async () => {
     const clock = new FakeClock();
     let triageCalls = 0;
     const coordinator = createAmbientCoordinator({
@@ -179,6 +179,7 @@ describe("AmbientCoordinator", () => {
           burst_quiet_secs: 1,
           channel_cooldown_secs: 10,
           max_interjections_per_hour: 1,
+          engaged_window_secs: 0,
         },
       }),
       logger: quietLogger,
@@ -205,6 +206,106 @@ describe("AmbientCoordinator", () => {
     clock.advance(1_000);
     await tick();
     expect(triageCalls).toBe(1);
+  });
+
+  test("engaged continuation: after Beckett speaks, the next burst bypasses triage AND caps, spends no budget, and window expiry restores the cold path", async () => {
+    const clock = new FakeClock();
+    let triageCalls = 0;
+    const turns: AmbientTurn[] = [];
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({
+        proactivity: {
+          enabled: true,
+          default_mode: "suggest",
+          burst_quiet_secs: 1,
+          channel_cooldown_secs: 10,
+          max_interjections_per_hour: 1,
+          engaged_window_secs: 60,
+        },
+      }),
+      logger: quietLogger,
+      clock,
+      triage: async () => {
+        triageCalls++;
+        return yes;
+      },
+      engage: async (turn) => {
+        turns.push(turn);
+        return "riffing back";
+      },
+    });
+
+    // Beckett just replied to a mention in c1 (the Concierge stamps this on every post).
+    coordinator.noteBeckettPost("c1");
+
+    // Someone responds without @mentioning — mid-cooldown-from-nothing, this must engage anyway:
+    // no triage call, engaged flag on the turn.
+    coordinator.observe(msg("m1", "c1", "haha nice, what changed?", 1_000), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(triageCalls).toBe(0);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ kind: "candidate", channelId: "c1", engaged: true });
+
+    // The continuation reply refreshed the window and spent NO interjection budget: a back-and-forth
+    // keeps flowing (hourly cap is 1 here and would have starved this immediately).
+    coordinator.observe(msg("m2", "c1", "ok but does it survive restarts?", 3_000), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(triageCalls).toBe(0);
+    expect(turns).toHaveLength(2);
+    expect(turns[1]).toMatchObject({ engaged: true });
+
+    // Past the window with no Beckett post in between, the channel is cold again: triage gates.
+    clock.advance(61_000);
+    coordinator.observe(msg("m3", "c1", "anyway, unrelated chatter", 66_000), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(triageCalls).toBe(1);
+    expect(turns).toHaveLength(3);
+    expect(turns[2]).toMatchObject({ engaged: false });
+  });
+
+  test("a PASS on an engaged turn does not refresh the window — a dead conversation goes cold", async () => {
+    const clock = new FakeClock();
+    let triageCalls = 0;
+    let engageCalls = 0;
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({
+        proactivity: {
+          enabled: true,
+          default_mode: "suggest",
+          burst_quiet_secs: 1,
+          engaged_window_secs: 10,
+        },
+      }),
+      logger: quietLogger,
+      clock,
+      triage: async () => {
+        triageCalls++;
+        return { ...yes, interject: false };
+      },
+      engage: async () => {
+        engageCalls++;
+        return "PASS";
+      },
+    });
+
+    coordinator.noteBeckettPost("c1");
+    coordinator.observe(msg("m1", "c1", "k", 1_000), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(engageCalls).toBe(1); // engaged: the session got to decide...
+    expect(triageCalls).toBe(0);
+
+    // ...and PASSed, so the window was NOT refreshed: 10s later the channel is cold and the
+    // (declining) triage gate is back in charge.
+    clock.advance(10_000);
+    coordinator.observe(msg("m2", "c1", "random chatter", 12_000), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(triageCalls).toBe(1);
+    expect(engageCalls).toBe(1);
   });
 
   test("offer ledger persists and auto expiry emits timeout turn", async () => {

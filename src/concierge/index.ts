@@ -1096,6 +1096,7 @@ export class Concierge {
         triage:
           opts.ambientTriage ??
           createTriageClassifier({
+            provider: this.config.proactivity.triage_provider ?? "claude",
             model: this.config.proactivity.triage_model,
             logger: this.log.child("triage"),
           }),
@@ -1611,11 +1612,13 @@ export class Concierge {
         effective: this.effectiveProactivityMode(channelId),
       })),
       caps: {
+        triageProvider: p.triage_provider,
         triageModel: p.triage_model,
         triageThreshold: p.triage_threshold,
         burstQuietSecs: p.burst_quiet_secs,
         channelCooldownSecs: p.channel_cooldown_secs,
         maxInterjectionsPerHour: p.max_interjections_per_hour,
+        engagedWindowSecs: p.engaged_window_secs,
         offerTtlSecs: p.offer_ttl_secs,
         transcriptWindow: p.transcript_window,
       },
@@ -1982,11 +1985,15 @@ export class Concierge {
       } else {
         postedId = null;
       }
-      if (turn.kind === "candidate") {
+      if (turn.kind === "candidate" && !turn.engaged) {
+        // Only a COLD interjection arms the offer/consent machinery. An engaged continuation is
+        // conversation — arming an offer on every riff put the channel behind a consent router
+        // that PASSed all non-consent chatter for offer_ttl_secs (the "we interact and it goes
+        // silent" bug, OPS-87 follow-up).
         this.armAmbientOffer(turn, postedId, reply);
-      } else if (turn.kind === "consent" && !isAmbientPass(reply)) {
-        // A real answer to a consent prompt resolves the offer — close the window (accept or
-        // decline). An unrelated/ambiguous message would have been a PASS and kept it open.
+      } else if (turn.kind === "consent" && !isAmbientPass(reply) && turn.message.userId === turn.offer.sourceUserId) {
+        // A real answer FROM THE PERSON THE OFFER WAS MADE TO resolves it — close the window
+        // (accept or decline). Conversational replies to bystanders must not kill a live offer.
         this.ambient?.clearOffer(turn.channelId);
       }
       return reply;
@@ -2019,7 +2026,13 @@ export class Concierge {
     switch (turn.kind) {
       case "candidate":
         // OPS-80: with the store live, render the same attributed view mentions get (ids on lines).
-        return frameAmbientCandidate(turn.channelId, turn.transcript, turn.verdict, Boolean(this.channelStore));
+        return frameAmbientCandidate(
+          turn.channelId,
+          turn.transcript,
+          turn.verdict,
+          Boolean(this.channelStore),
+          turn.engaged ?? false,
+        );
       case "consent": {
         const speaker = this.resolveSpeaker(turn.message);
         const userFrame = frameUserTurn(
@@ -2076,9 +2089,14 @@ export class Concierge {
    * full text — it is a model-facing record, not a Discord mirror (§8).
    */
   private recordBeckettPost(channelId: string, text: string, messageId: string | null): void {
-    if (!this.channelStore) return;
     const content = text.trim();
     if (!content) return;
+    // Anything Beckett says opens the engaged window: the channel's next chatter is people
+    // responding to it, and the coordinator must treat that as a continuation, not an
+    // interjection to triage. Deliberately BEFORE the store guard — legacy flag-off configs
+    // still hold conversations.
+    this.ambient?.noteBeckettPost(channelId);
+    if (!this.channelStore) return;
     this.channelStore.append(channelId, {
       messageId: messageId ?? `beckett-${this.nowMs().toString(36)}`,
       ts: this.nowMs(),
@@ -2661,8 +2679,23 @@ function frameAmbientCandidate(
   transcript: AmbientTranscriptMessage[],
   verdict: TriageVerdict,
   attributed = false,
+  engaged = false,
 ): string {
   const lines = attributed ? attributedTranscriptLines(transcript) : ambientTranscriptLines(transcript);
+  if (engaged) {
+    // The continuation frame (OPS-87 follow-up): Beckett spoke here moments ago and this burst
+    // is the response. No triage ran — going silent mid-conversation is the failure mode here,
+    // so the default flips from "PASS unless there's a beat" to "reply unless it's clearly over".
+    return (
+      `SYSTEM (ambient continuation — you're mid-conversation here; the newest lines respond to YOU):\n` +
+      `[channel:${channelId}] recent conversation:\n${lines}\n` +
+      `Someone is engaging with what you said. Keep the conversation going the way a person would —\n` +
+      `answer them, riff back, or close it out warmly. ONE short message in your voice.\n` +
+      `Reply with exactly PASS only when the exchange is clearly finished (a bare "lol"/"k"/"thanks"\n` +
+      `that needs nothing back) — ghosting someone mid-conversation reads as rude.\n` +
+      `Do not file a ticket yet. An offer is a question, not a commitment.`
+    );
+  }
   return (
     `SYSTEM (ambient — nobody addressed you; you are choosing whether to speak):\n` +
     `[channel:${channelId}] recent conversation:\n${lines}\n` +
@@ -2687,9 +2720,10 @@ function frameAmbientConsent(offerText: string, userFrame: string, elapsedSecs: 
     `  "${offerText}"\n` +
     `${userFrame}\n` +
     `If this accepts your offer: ack via \`beckett discord reply\`, then file the ticket exactly as\n` +
-    `you would for a direct request (--channel stamped). If it declines or is unrelated to your\n` +
-    `offer: reply PASS. If it's unrelated but ambient-worthy on its own, treat it as a fresh\n` +
-    `candidate.`
+    `you would for a direct request (--channel stamped). If it declines: acknowledge in ONE gracious\n` +
+    `line — don't go silent on a person talking to you. If it's unrelated chatter or banter: you're\n` +
+    `still in the room — reply with ONE short line if you have a beat, or PASS if a reply would just\n` +
+    `be noise (PASS leaves your offer quietly waiting; it expires on its own).`
   );
 }
 

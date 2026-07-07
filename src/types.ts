@@ -609,11 +609,15 @@ export interface Config {
   proactivity: {
     enabled: boolean;
     default_mode: ProactivityMode;
+    /** Classifier backend: subscription `claude` CLI, or Cerebras' API (CEREBRAS_API_KEY). */
+    triage_provider: "claude" | "cerebras";
     triage_model: string;
     triage_threshold: number;
     burst_quiet_secs: number;
     channel_cooldown_secs: number;
     max_interjections_per_hour: number;
+    /** Post-speech window in which a channel's chatter is an engaged continuation (no triage/caps). */
+    engaged_window_secs: number;
     offer_ttl_secs: number;
     transcript_window: number;
     channels: Record<string, ProactivityMode>;

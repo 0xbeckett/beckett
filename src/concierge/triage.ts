@@ -30,7 +30,20 @@ export interface CreateTriageClassifierOptions {
   claudeBin?: string;
   promptPath?: string;
   timeoutMs?: number;
+  /**
+   * Where the classification runs: `claude` spawns the subscription CLI (the original path);
+   * `cerebras` POSTs to Cerebras' OpenAI-compatible API (~1850 tok/s — a scorer this small
+   * shouldn't cost Haiku money or Haiku latency). Key rides `CEREBRAS_API_KEY` in
+   * `~/.beckett/.env` (read at call time, never config/logs).
+   */
+  provider?: "claude" | "cerebras";
+  /** Test seam / override; defaults to `process.env.CEREBRAS_API_KEY` at call time. */
+  apiKey?: string;
+  endpoint?: string;
+  fetchFn?: typeof fetch;
 }
+
+const CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions";
 
 const CLOSED: TriageVerdict = {
   interject: false,
@@ -85,40 +98,85 @@ export function parseVerdict(stdout: string): TriageVerdict {
   return TriageVerdictSchema.parse(parsed);
 }
 
-export function createTriageClassifier(opts: CreateTriageClassifierOptions): TriageFn {
+/** The `claude -p` path: spawn the subscription CLI, read the verdict off stdout. */
+async function classifyViaClaude(
+  opts: CreateTriageClassifierOptions,
+  prompt: string,
+  timeoutMs: number,
+): Promise<TriageVerdict> {
   const bin = opts.claudeBin ?? "claude";
-  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const proc = Bun.spawn([bin, "-p", prompt, "--model", opts.model, "--output-format", "json"], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try {
+      proc.kill();
+    } catch {
+      /* ignore */
+    }
+  }, timeoutMs);
+
+  try {
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const code = await proc.exited;
+    if (timedOut) throw new Error(`claude triage timed out after ${Math.round(timeoutMs / 1000)}s`);
+    if (code !== 0) throw new Error(`claude triage exited ${code}: ${stderr.trim()}`);
+    return parseVerdict(stdout);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The Cerebras path: OpenAI-compatible chat completion; verdict is the message content. */
+async function classifyViaCerebras(
+  opts: CreateTriageClassifierOptions,
+  prompt: string,
+  timeoutMs: number,
+): Promise<TriageVerdict> {
+  const apiKey = opts.apiKey ?? process.env.CEREBRAS_API_KEY;
+  if (!apiKey) throw new Error("CEREBRAS_API_KEY missing from the environment (~/.beckett/.env)");
+  const doFetch = opts.fetchFn ?? fetch;
+  const res = await doFetch(opts.endpoint ?? CEREBRAS_ENDPOINT, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: opts.model,
+      temperature: 0,
+      max_tokens: 300,
+      messages: [{ role: "user", content: prompt }],
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`cerebras triage HTTP ${res.status}: ${body.slice(0, 200)}`);
+  }
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  const content = data.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || !content.trim()) throw new Error("cerebras triage returned no content");
+  return TriageVerdictSchema.parse(JSON.parse(extractVerdictJson(content)));
+}
+
+export function createTriageClassifier(opts: CreateTriageClassifierOptions): TriageFn {
+  const timeoutMs = opts.timeoutMs ?? (opts.provider === "cerebras" ? 15_000 : 30_000);
   const promptPath = opts.promptPath ?? join(import.meta.dir, "triage.md");
 
   return async (burst, transcript, meta = {}) => {
     const staticPrompt = readFileSync(promptPath, "utf8");
     const prompt = buildTriagePrompt(staticPrompt, burst, transcript);
-    const proc = Bun.spawn([bin, "-p", prompt, "--model", opts.model, "--output-format", "json"], {
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        proc.kill();
-      } catch {
-        /* ignore */
-      }
-    }, timeoutMs);
-
     try {
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-      const code = await proc.exited;
-      if (timedOut) throw new Error(`claude triage timed out after ${Math.round(timeoutMs / 1000)}s`);
-      if (code !== 0) throw new Error(`claude triage exited ${code}: ${stderr.trim()}`);
-
-      const verdict = parseVerdict(stdout);
+      const verdict =
+        opts.provider === "cerebras"
+          ? await classifyViaCerebras(opts, prompt, timeoutMs)
+          : await classifyViaClaude(opts, prompt, timeoutMs);
       opts.logger.info("ambient triage verdict", {
         channel: meta.channelId ?? null,
         kind: verdict.kind,
@@ -141,8 +199,6 @@ export function createTriageClassifier(opts: CreateTriageClassifierOptions): Tri
         interject: verdict.interject,
       });
       return verdict;
-    } finally {
-      clearTimeout(timer);
     }
   };
 }
