@@ -1,0 +1,66 @@
+[
+  {
+    "id": "ui-small-site",
+    "category": "ui",
+    "title": "Spin up a tiny product landing page",
+    "short": true,
+    "maxTokens": 1800,
+    "prompt": "You are dropped into an empty Vite + React repo. Spin up a polished one-page site for a fictional developer tool called PatchPilot. Include the file tree and the contents of the key files you would create (at minimum package.json, src/App.tsx, src/App.css or equivalent). Prioritize responsive layout, accessible markup, and tasteful visual hierarchy."
+  },
+  {
+    "id": "ui-component-state",
+    "category": "ui",
+    "title": "Stateful UI component with async states",
+    "short": false,
+    "maxTokens": 1600,
+    "prompt": "Design a React component for a settings page section that lets a user connect or disconnect a GitHub account. Show the component code, including loading/error/success states, disabled buttons while a request is in flight, and accessible labels/status text. Assume connectGitHub() and disconnectGitHub() are async functions passed as props."
+  },
+  {
+    "id": "planning-feature-rollout",
+    "category": "planning",
+    "title": "Plan a small feature rollout",
+    "short": true,
+    "maxTokens": 1600,
+    "prompt": "Show us the implementation plan for adding per-project notification preferences to an existing SaaS app. The app has a React frontend, a Node/Express API, Postgres, and background workers that send email/slack notifications. Include phases, data model/API changes, migration/backfill notes, tests, rollout/rollback, and likely risks."
+  },
+  {
+    "id": "planning-legacy-migration",
+    "category": "planning",
+    "title": "Plan a risky legacy migration",
+    "short": false,
+    "maxTokens": 1600,
+    "prompt": "A monolith stores uploaded files on local disk. Plan a migration to object storage without downtime. Cover data migration, dual-write/read strategy, integrity checks, observability, failure modes, and rollback. Keep the plan concrete enough that a senior engineer could start executing it."
+  },
+  {
+    "id": "backend-rate-limiter",
+    "category": "backend",
+    "title": "Implement backend logic",
+    "short": true,
+    "maxTokens": 1700,
+    "prompt": "Implement a small TypeScript in-memory token-bucket rate limiter. Requirements: configurable capacity and refill rate per second, supports multiple keys, exposes allow(key, cost = 1): boolean, handles elapsed time correctly, and includes a few focused tests or examples. Explain important edge cases briefly."
+  },
+  {
+    "id": "backend-idempotency",
+    "category": "backend",
+    "title": "Design idempotent API behavior",
+    "short": false,
+    "maxTokens": 1700,
+    "prompt": "Design and sketch code for idempotency-key support on a POST /charges endpoint in a Node/Express + Postgres API. Include table schema, transaction boundaries, how concurrent duplicate requests are handled, what response is replayed, and tests for the tricky cases."
+  },
+  {
+    "id": "debug-typescript-regression",
+    "category": "debug",
+    "title": "Debug and fix a TypeScript bug",
+    "short": true,
+    "maxTokens": 1700,
+    "prompt": "Find the bug and propose a corrected implementation. The function should return only active, non-expired sessions for a user, newest first.\n\n```ts\ntype Session = { userId: string; active: boolean; expiresAt: number; createdAt: number };\n\nexport function sessionsForUser(sessions: Session[], userId: string, now = Date.now()): Session[] {\n  return sessions\n    .filter((s) => s.userId = userId && s.active && s.expiresAt > now)\n    .sort((a, b) => a.createdAt - b.createdAt);\n}\n```\n\nExplain what went wrong, show the fixed code, and list at least three tests that would have caught it."
+  },
+  {
+    "id": "debug-sql-query",
+    "category": "debug",
+    "title": "Diagnose a slow endpoint",
+    "short": false,
+    "maxTokens": 1600,
+    "prompt": "An endpoint GET /teams/:id/dashboard became slow after launch. It loads a team, then for each project loads counts of open tasks and the latest deployment. There are 80 projects on some teams. Logs show many repeated SQL queries and p95 is 4s. Explain the likely problem, propose an efficient query/data-loading approach, add indexes if needed, and describe how you would verify the fix."
+  }
+]

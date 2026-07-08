@@ -94,6 +94,31 @@ function parse(argv: string[]): { _: string[]; flags: Record<string, string | bo
   return { _, flags };
 }
 
+function parseEvalArgs(args: string[]): { model: string; mode: "short" | "full" } {
+  let mode: "short" | "full" = "short";
+  let seenMode: "short" | "full" | null = null;
+  const positional: string[] = [];
+  for (const arg of args) {
+    if (arg === "--short" || arg === "-short" || arg === "-s") {
+      if (seenMode && seenMode !== "short") fail("beckett eval: choose only one of --short or --full");
+      mode = "short";
+      seenMode = "short";
+    } else if (arg === "--full" || arg === "-full" || arg === "-f") {
+      if (seenMode && seenMode !== "full") fail("beckett eval: choose only one of --short or --full");
+      mode = "full";
+      seenMode = "full";
+    } else if (arg.startsWith("-")) {
+      fail(`unknown eval flag: ${arg} (use --short or --full)`);
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (positional.length !== 1 || !positional[0]?.trim()) {
+    fail('usage: beckett eval "author/model" [--short|--full]');
+  }
+  return { model: positional[0].trim(), mode };
+}
+
 /** A no-op logger: CLI invocations are short-lived and emit JSON, not log lines. */
 const quietLogger = (() => {
   const q = { info() {}, warn() {}, debug() {}, error() {}, child() { return q; } };
@@ -394,6 +419,20 @@ async function main(): Promise<void> {
         model: flags.model ? String(flags.model) : undefined,
       }),
     );
+  }
+
+  // ── eval (in-process: provider-agnostic model evals through OpenRouter; no daemon path) ───
+  if (group === "eval") {
+    const { model, mode } = parseEvalArgs([sub, ...rest].filter((x): x is string => typeof x === "string"));
+    const { runModelEval, renderEvalReport } = await import("../eval/run.ts");
+    const run = await runModelEval({
+      model,
+      mode,
+      outputDir: join(paths.beckettDir, "eval-runs"),
+      continueOnError: false,
+    });
+    process.stdout.write(renderEvalReport(run) + "\n");
+    process.exit(run.prompts.some((p) => p.error) ? 1 : 0);
   }
 
   // ── site (in-process: deploy Beckett's own edge site via wrangler, token from env) ────────
@@ -1042,7 +1081,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

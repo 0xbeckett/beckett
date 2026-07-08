@@ -13,7 +13,7 @@ test("isForbiddenEnvKey strips by PREFIX, not just the two exact keys", () => {
 });
 
 test("isForbiddenEnvKey keeps ordinary vars", () => {
-  for (const k of ["PATH", "HOME", "GITHUB_PAT", "DISCORD_TOKEN", "LANG"]) {
+  for (const k of ["PATH", "HOME", "GITHUB_PAT", "DISCORD_TOKEN", "LANG", "OPENROUTER_API_KEY"]) {
     expect(isForbiddenEnvKey(k)).toBe(false);
   }
 });
