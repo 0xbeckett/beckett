@@ -21,6 +21,7 @@ import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { CfDns } from "../agency/cloudflare.ts";
 import { CodexImageGen } from "../agency/imagegen.ts";
 import { TunnelDeployer } from "../shell/deploy.ts";
+import { mintSecretRequest, parseSecretTtlMinutes, serveSecretIntake, validateSecretEnvName } from "../secret/intake.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
 import { loadPeers, addPeer, removePeer } from "../discord/peers.ts";
 import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
@@ -94,6 +95,9 @@ function parse(argv: string[]): { _: string[]; flags: Record<string, string | bo
   return { _, flags };
 }
 
+const SECRET_TUNNEL_NAME = "secret";
+const DEFAULT_SECRET_PORT = 8799;
+
 function parseEvalArgs(args: string[]): { model: string; mode: "short" | "full" } {
   let mode: "short" | "full" = "short";
   let seenMode: "short" | "full" | null = null;
@@ -148,6 +152,47 @@ async function notifyBus(cmd: string, args: Record<string, unknown>): Promise<vo
   } catch {
     /* best-effort: no daemon / busy bus — the ticket is already filed, so just move on */
   }
+}
+
+function parsePort(raw: string | boolean | undefined, fallback: number): number {
+  if (raw === undefined || raw === false) return fallback;
+  if (raw === true) fail("port flag needs a value");
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65_535) fail("port must be an integer from 1 to 65535");
+  return n;
+}
+
+function systemdQuote(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+async function runQuiet(cmd: string[]): Promise<void> {
+  const proc = Bun.spawn(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  const code = await proc.exited;
+  if (code !== 0) {
+    const tail = `${stdout}\n${stderr}`.trim().split("\n").slice(-8).join("\n");
+    fail(`${cmd.join(" ")} failed (${code})${tail ? `:\n${tail}` : ""}`);
+  }
+}
+
+async function ensureSecretService(port: number): Promise<void> {
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const home = process.env.HOME ?? paths.home;
+  const unitDir = join(home, ".config", "systemd", "user");
+  const unitPath = join(unitDir, "beckett-secret.service");
+  const cliPath = join(import.meta.dir, "beckett.ts");
+  const repoRoot = join(import.meta.dir, "..", "..");
+  const envLines = [
+    `Environment=${systemdQuote(`BECKETT_SECRET_PORT=${String(port)}`)}`,
+    ...(process.env.BECKETT_DIR ? [`Environment=${systemdQuote(`BECKETT_DIR=${process.env.BECKETT_DIR}`)}`] : []),
+    ...(process.env.BECKETT_HOME ? [`Environment=${systemdQuote(`BECKETT_HOME=${process.env.BECKETT_HOME}`)}`] : []),
+  ];
+  const unit = `[Unit]\nDescription=Beckett one-time secret intake\n\n[Service]\nType=simple\nWorkingDirectory=${repoRoot}\nExecStart=${process.execPath} ${cliPath} secret serve --port ${port}\nRestart=on-failure\nRestartSec=2\n${envLines.join("\n")}\n\n[Install]\nWantedBy=default.target\n`;
+  mkdirSync(unitDir, { recursive: true });
+  writeFileSync(unitPath, unit, { mode: 0o600 });
+  await runQuiet(["systemctl", "--user", "daemon-reload"]);
+  await runQuiet(["systemctl", "--user", "enable", "--now", "beckett-secret.service"]);
 }
 
 async function main(): Promise<void> {
@@ -358,6 +403,41 @@ async function main(): Promise<void> {
       out(await dns.remove(name, flags.type ? String(flags.type) : undefined));
     }
     fail("usage: beckett dns ls [--name N] [--type T] | add <name> --content <c> [...] | rm <name> [--type T]");
+  }
+
+  // ── secret (in-process token mint + tiny HTTP endpoint behind the existing tunnel) ──────────
+  if (group === "secret") {
+    const { flags } = parse(rest);
+    if (sub === "serve") {
+      const port = parsePort(flags.port ?? process.env.BECKETT_SECRET_PORT, DEFAULT_SECRET_PORT);
+      serveSecretIntake({ paths, port, hostname: "127.0.0.1" });
+      process.stderr.write(`beckett secret intake listening on 127.0.0.1:${port}\n`);
+      await new Promise(() => {});
+      return;
+    }
+    if (sub === "request") {
+      if (typeof flags.name !== "string" || !flags.name.trim()) fail("usage: beckett secret request --name <ENV_KEY> [--ttl <minutes>]");
+      const name = validateSecretEnvName(flags.name);
+      const ttlMinutes = parseSecretTtlMinutes(flags.ttl);
+      const port = parsePort(flags.port ?? process.env.BECKETT_SECRET_PORT, DEFAULT_SECRET_PORT);
+      const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
+      const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
+      if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare is unavailable");
+      if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to the 0xbeckett.me zone id");
+      if (!process.env.CLOUDFLARE_TUNNEL_ID) fail("no CLOUDFLARE_TUNNEL_ID in ~/.beckett/.env — the existing named tunnel is unavailable");
+
+      await ensureSecretService(port);
+      const dns = new CfDns({ token, zoneId, logger: quietLogger });
+      const deployer = new TunnelDeployer({
+        tunnelId: process.env.CLOUDFLARE_TUNNEL_ID,
+        dns,
+        logger: quietLogger,
+      });
+      const deployed = await deployer.deploy({ name: SECRET_TUNNEL_NAME, service: `http://localhost:${port}` });
+      const minted = mintSecretRequest({ paths, name, ttlMinutes, baseUrl: deployed.url });
+      out(minted.url);
+    }
+    fail("usage: beckett secret request --name <ENV_KEY> [--ttl <minutes>] | secret serve --port <port>");
   }
 
   // ── deploy (in-process: cloudflared named-tunnel ingress + a CNAME via CfDns) ──────────────
@@ -1083,7 +1163,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | memory recall|remember");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */
