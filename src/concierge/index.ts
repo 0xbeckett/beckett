@@ -1576,6 +1576,14 @@ export class Concierge {
       // (issue #24) — a queued second mention or a notify() update turn can never steal the claim.
       const active = this.currentMention();
       const claimsActiveTurn = !!active && active.channelId === channelId;
+      if (claimsActiveTurn && active!.declined) {
+        // OPS-101 hold-and-cancel backstop (OPS-99 §5.3): decline is TERMINAL. If the concierge
+        // already ran `beckett discord decline` this turn, it aborted before any user-facing output —
+        // a later `discord reply` must NOT sneak a message out (that would be the "abort leaks a
+        // partial message" bug). runAmbientTurn returns a synthetic PASS regardless, so the only way
+        // to keep that a true no-post is to refuse the reply here.
+        return { ok: false, error: "you declined this turn — it posts nothing; a reply is not allowed" };
+      }
       const opts = {
         // A native reply is right for an @mention (answering THAT message), but an ambient turn
         // posts plainly — replying-to an un-addressed message reads as surveillance (§4.4).

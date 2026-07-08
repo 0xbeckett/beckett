@@ -19,6 +19,8 @@ reading the same addressee signal.
   can run `beckett discord decline` BEFORE writing anything to abort the turn and post nothing
   (the hold-and-cancel backstop, OPS-99 §5.3). Cancellation degrades to a synthetic `PASS`: no
   message, no cooldown, engaged window untouched — no partial/half-posted state can exist.
+  Decline is *terminal*: a `discord reply` issued after declining is refused, so the abort can
+  never leak a partial message out the side door.
 - **Directed messages are untouched**: a real @mention/DM never enters the ambient path, and
   the bus hard-rejects `discord.decline` off the mention path — a directed message is answered
   exactly as before, never gated, held, or dropped.

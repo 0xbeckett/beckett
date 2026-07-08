@@ -243,6 +243,33 @@ test("a candidate that runs `discord decline` mid-turn posts nothing and consume
   expect(h.triageCalls).toBe(2);
 });
 
+test("decline is terminal — a `discord reply` after declining is refused so nothing leaks out", async () => {
+  // The abort must not leak a partial message (OPS-99 §5.3): if the concierge declines and THEN
+  // (self-contradictorily) tries to post via `discord reply`, the bus rejects the reply. Decline
+  // means the turn posts nothing, period — the classifier-false-positive backstop can't be bypassed.
+  let replyResult: { ok: boolean; error?: string } | null = null;
+  const h = harness({
+    reply: "PASS",
+    onAsk: async (concierge) => {
+      const declined = await concierge.onBusRequest({ cmd: "discord.decline", args: {} });
+      expect(declined.ok).toBe(true);
+      replyResult = await concierge.onBusRequest({
+        cmd: "discord.reply",
+        args: { channelId: CHAN, text: "sneaking a reply out anyway" },
+      });
+    },
+  });
+  const clock = clockOf(h);
+
+  await h.concierge.onMessage(msg("m1", "ro, can you check the deploy?", 0));
+  clock.advance(2_000);
+  await drain();
+
+  expect(replyResult).not.toBeNull();
+  expect(replyResult!.ok).toBe(false); // the reply was refused after decline
+  expect(h.posts).toHaveLength(0); // …so nothing posted to the channel
+});
+
 test("decline is a no-op on a direct @mention — a directed message is answered, never dropped", async () => {
   // The §6 invariant Fable is reviewing for: a real @mention/DM can NEVER be declined. If the model
   // fires `discord decline` on a mention turn, the bus rejects it and the reply posts as normal.
