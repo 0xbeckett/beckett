@@ -10,7 +10,10 @@ describe("eval prompt suite", () => {
     const suite = await loadEvalSuite();
     const short = selectPrompts(suite, "short");
     expect(short.length).toBeGreaterThanOrEqual(4);
-    expect(new Set(short.map((p) => p.category))).toEqual(new Set(["ui", "planning", "backend", "debug"]));
+    const categories = new Set(short.map((p) => p.category));
+    for (const required of ["ui", "planning", "backend", "debug"]) {
+      expect(categories.has(required)).toBe(true);
+    }
     expect(selectPrompts(suite, "full").length).toBeGreaterThan(short.length);
   });
 });

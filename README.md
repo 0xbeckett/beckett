@@ -176,6 +176,7 @@ Run on the box as the beckett user (`bun src/cli/beckett.ts <...>`, usually alia
 | `beckett discord reply --channel <id> "…"` | Post a message as Beckett into a channel. |
 | `beckett reload` | Re-read `persona.md` and re-ground on a fresh session (live voice retune). |
 | `beckett ticket …` / `beckett plan …` | File a ticket / a multi-ticket plan into Plane. |
+| `beckett eval "author/model" [--short|--full]` | Run the curated coding prompt suite against any OpenRouter model and save a readable report. |
 | `beckett memory recall "…"` / `remember …` | Query / write Beckett's cross-conversation knowledge. |
 | `beckett identity set --user <id> …` | Teach Beckett who someone is and how to address them. |
 
