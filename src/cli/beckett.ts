@@ -958,6 +958,13 @@ async function main(): Promise<void> {
     });
   }
 
+  // Hold-and-cancel backstop (OPS-101 / OPS-99 §5.3): abort the ambient turn you're running and
+  // post NOTHING — "on reflection this wasn't for me." Only valid mid-ambient-turn; the bus rejects
+  // it on a direct @mention/DM (those are never declined) or once you've already replied.
+  if (group === "discord" && sub === "decline") {
+    await bus("discord.decline", {});
+  }
+
   // ── proactivity (control bus: ambient-interjection posture) ─────────────────────────────
   // Beckett's own "chill out in here" / "you can jump in here" lever, routed to the running
   // Concierge over the control bus (§4.6). `set … auto` is owner-gated in the bus handler.
@@ -1035,7 +1042,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply | proactivity status|set|off | quick <agent>|list | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | memory recall|remember");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

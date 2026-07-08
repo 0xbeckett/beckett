@@ -73,6 +73,7 @@ const stubTriage: TriageFn = async () => ({
   kind: "none",
   confidence: 0,
   reason: "redteam stub",
+  addressee: "unclear",
 });
 
 /**

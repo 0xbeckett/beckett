@@ -201,6 +201,7 @@ async function main(): Promise<void> {
       kind: "feature-wish",
       confidence: 0.91,
       reason: "concrete CSV export wish",
+      addressee: "group",
     };
 
     const triage: TriageFn = async (burst, transcript, meta) => {

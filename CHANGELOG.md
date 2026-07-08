@@ -1,5 +1,28 @@
 # Changelog
 
+## v4.1.3 — ambient: addressee gate + concierge decline backstop (2026-07-07)
+
+First slice of the OPS-99 addressee gate (OPS-101): interjections that were aimed at another
+person ("ro, can you look at the deploy?") shouldn't pull Beckett in. Two coupled layers, both
+reading the same addressee signal.
+
+- **Classifier reads the addressee** (`triage.md` / `triage.ts`): the Gemma triage prompt now
+  gets a `<participants>` block (who's in the room + who spoke the latest message), a short
+  "who Beckett is" grounding (concierge / front-of-house / files tickets), and an explicit
+  first-step decision — is the latest message aimed at Beckett, another person, the room, or
+  unclear? A message aimed at *another person* is told to score hard toward NOT interjecting.
+  The verdict carries a new `addressee` field (`beckett|other|group|unclear`); it defaults to
+  `unclear` when omitted so a missing field is a soft downrank, never fail-closed silence that
+  would ghost a real beat.
+- **Concierge gets the signal + a decline backstop** (`index.ts`): the cold ambient frame now
+  surfaces triage's addressee read, and — because the classifier can be wrong — the concierge
+  can run `beckett discord decline` BEFORE writing anything to abort the turn and post nothing
+  (the hold-and-cancel backstop, OPS-99 §5.3). Cancellation degrades to a synthetic `PASS`: no
+  message, no cooldown, engaged window untouched — no partial/half-posted state can exist.
+- **Directed messages are untouched**: a real @mention/DM never enters the ambient path, and
+  the bus hard-rejects `discord.decline` off the mention path — a directed message is answered
+  exactly as before, never gated, held, or dropped.
+
 ## v4.1.2 — ambient: conversational cadence (2026-07-06)
 
 Live testing of v4.1.1: the conversation flowed, then Beckett "dropped out at the end" and

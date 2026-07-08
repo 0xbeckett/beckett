@@ -8,6 +8,16 @@ export const TriageVerdictSchema = z.object({
   kind: z.enum(["feature-wish", "bug-report", "question", "task-request", "social", "none"]),
   confidence: z.number().min(0).max(1),
   reason: z.string(),
+  /**
+   * OPS-101 (addressee gate, OPS-99 §3.1): who the latest message is aimed at — the signal both
+   * the classifier's own scoring and the concierge's frame read. `beckett` = aimed at Beckett;
+   * `other` = aimed at a specific other human ("ro, can you…"); `group` = addressed to the room;
+   * `unclear` = genuinely ambiguous. Defaulted (not required) on purpose: a model that omits it
+   * must NOT collapse the whole verdict to fail-closed silence, because that would ghost a real
+   * beat gemma DID want to land. `unclear` is the safe neutral — it neither forces nor blocks a
+   * post; the concierge frame surfaces it and leans toward PASS on `other`.
+   */
+  addressee: z.enum(["beckett", "other", "group", "unclear"]).default("unclear"),
 });
 
 export type TriageVerdict = z.infer<typeof TriageVerdictSchema>;
@@ -50,6 +60,7 @@ const CLOSED: TriageVerdict = {
   kind: "none",
   confidence: 0,
   reason: "classifier unavailable",
+  addressee: "unclear",
 };
 
 function fmtTime(ts: number): string {
@@ -63,12 +74,38 @@ function formatMessages(messages: TriageMessage[]): string {
     .join("\n");
 }
 
+/** Distinct speaker display names across the recent window, in first-seen order. */
+function participants(transcript: TriageMessage[], burst: TriageMessage[]): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const m of [...transcript, ...burst]) {
+    const name = m.authorDisplayName?.trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
 export function buildTriagePrompt(
   staticPrompt: string,
   burst: TriageMessage[],
   transcript: TriageMessage[],
 ): string {
-  return `${staticPrompt.trim()}\n\n<context>\nRecent transcript:\n${formatMessages(transcript)}\n</context>\n\n<context>\nBurst to classify:\n${formatMessages(burst)}\n</context>\n`;
+  // OPS-101: name the room and the current speaker explicitly so the classifier can reason about
+  // WHO the latest message is directed at — not just what it says. Beckett is never in this list
+  // (it's overhearing), so a burst that names one of these people is aimed at a human, not Beckett.
+  const people = participants(transcript, burst);
+  const peopleLine = people.length ? people.join(", ") : "(unknown)";
+  const latest = burst[burst.length - 1] ?? transcript[transcript.length - 1];
+  const latestSpeaker = latest?.authorDisplayName?.trim() || "(unknown)";
+  return (
+    `${staticPrompt.trim()}\n\n` +
+    `<participants>\nPeople talking in this channel (Beckett is NOT one of them — it is overhearing): ${peopleLine}\n` +
+    `Speaker of the latest message to classify: ${latestSpeaker}\n</participants>\n\n` +
+    `<context>\nRecent transcript:\n${formatMessages(transcript)}\n</context>\n\n` +
+    `<context>\nBurst to classify (the latest message is the LAST line):\n${formatMessages(burst)}\n</context>\n`
+  );
 }
 
 /**

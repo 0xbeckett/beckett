@@ -82,7 +82,7 @@ function msg(id: string, content: string, createdAt: number, over: Partial<Incom
   };
 }
 
-const yes: TriageVerdict = { interject: true, kind: "feature-wish", confidence: 0.9, reason: "concrete wish" };
+const yes: TriageVerdict = { interject: true, kind: "feature-wish", confidence: 0.9, reason: "concrete wish", addressee: "group" };
 
 interface Harness {
   concierge: Concierge;
@@ -93,7 +93,7 @@ interface Harness {
   setReply: (r: string) => void;
 }
 
-function harness(opts: { reply?: string } = {}): Harness {
+function harness(opts: { reply?: string; onAsk?: (concierge: Concierge) => Promise<void> | void } = {}): Harness {
   const dir = mkdtempSync(join(tmpdir(), "beckett-ambient-turn-"));
   tmpDirs.push(dir);
   process.env.BECKETT_DIR = dir;
@@ -110,6 +110,9 @@ function harness(opts: { reply?: string } = {}): Harness {
     stop: async () => {},
     ask: async (m: TurnMessage) => {
       asks.push(m);
+      // Let a test act AS the concierge mid-turn (e.g. run `beckett discord decline`) before the
+      // reply is returned — exactly the window the hold-and-cancel backstop lives in.
+      if (opts.onAsk) await opts.onAsk(concierge);
       return state.reply;
     },
     queueDepth: () => 0,
@@ -194,6 +197,80 @@ test("candidate reply auto-posts plainly (no native reply) and frames the transc
   expect(frame).toContain("SYSTEM (ambient — nobody addressed you");
   expect(frame).toContain("wish it just gave me a csv");
   expect(frame).toContain("Triage says: feature-wish (confidence 0.90)");
+});
+
+test("the cold candidate frame carries the classifier's addressee read + the decline backstop", async () => {
+  // The `yes` fixture reads addressee:"group"; the frame must surface that signal AND tell the
+  // concierge it can `beckett discord decline` before writing anything (OPS-101 / OPS-99 §3.1,§5.3).
+  const h = harness({ reply: "PASS" });
+  const clock = clockOf(h);
+
+  await h.concierge.onMessage(msg("m1", "anyone know the port?", 0));
+  clock.advance(2_000);
+  await drain();
+
+  const frame = h.asks[0] as string;
+  expect(frame).toContain("Addressee (triage's read):");
+  expect(frame).toContain("addressed to the room broadly");
+  expect(frame).toContain("beckett discord decline");
+});
+
+test("a candidate that runs `discord decline` mid-turn posts nothing and consumes no cooldown", async () => {
+  // The hold-and-cancel backstop (OPS-99 §5.3): the concierge decides the burst wasn't for it and
+  // aborts BEFORE any user-facing output. Even though the model went on to draft a reply, nothing
+  // posts — decline degrades the turn to a synthetic PASS.
+  const h = harness({
+    reply: "here's a reply that must NOT post",
+    onAsk: async (concierge) => {
+      const res = await concierge.onBusRequest({ cmd: "discord.decline", args: {} });
+      expect(res.ok).toBe(true);
+    },
+  });
+  const clock = clockOf(h);
+
+  await h.concierge.onMessage(msg("m1", "ro, can you check the deploy?", 0));
+  clock.advance(2_000);
+  await drain();
+
+  expect(h.asks).toHaveLength(1); // the turn ran…
+  expect(h.posts).toHaveLength(0); // …but decline suppressed the post entirely
+
+  // Decline consumed no cooldown → the next burst triages again exactly like a PASS would.
+  h.setReply("PASS");
+  await h.concierge.onMessage(msg("m2", "another line", 3_000));
+  clock.advance(2_000);
+  await drain();
+  expect(h.triageCalls).toBe(2);
+});
+
+test("decline is a no-op on a direct @mention — a directed message is answered, never dropped", async () => {
+  // The §6 invariant Fable is reviewing for: a real @mention/DM can NEVER be declined. If the model
+  // fires `discord decline` on a mention turn, the bus rejects it and the reply posts as normal.
+  let declineResult: { ok: boolean; error?: string } | null = null;
+  const h = harness({
+    reply: "on it",
+    onAsk: async (concierge) => {
+      declineResult = await concierge.onBusRequest({ cmd: "discord.decline", args: {} });
+    },
+  });
+  const clock = clockOf(h);
+
+  await h.concierge.onMessage(msg("m1", "hey beckett do the thing", 0, { mentionsBot: true }));
+  await drain();
+  clock.advance(2_000);
+  await drain();
+
+  expect(declineResult).not.toBeNull();
+  expect(declineResult!.ok).toBe(false); // decline refused on the mention path
+  // The mention was answered normally — a native reply to the originating message, no ghosting.
+  expect(h.posts).toEqual([{ channelId: CHAN, text: "on it", replyTo: "m1" }]);
+});
+
+test("decline off-turn (no ambient turn running) is rejected", async () => {
+  const h = harness();
+  const res = await h.concierge.onBusRequest({ cmd: "discord.decline", args: {} });
+  expect(res.ok).toBe(false);
+  expect(res.error).toContain("ambient turn");
 });
 
 test("a live offer routes the next message as a consent turn that bypasses triage", async () => {

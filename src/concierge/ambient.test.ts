@@ -70,6 +70,7 @@ const yes: TriageVerdict = {
   kind: "feature-wish",
   confidence: 0.91,
   reason: "concrete wish",
+  addressee: "group",
 };
 
 async function tick(): Promise<void> {

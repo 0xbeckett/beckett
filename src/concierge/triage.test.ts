@@ -1,11 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { createTriageClassifier, extractVerdictJson, parseVerdict } from "./triage.ts";
+import { buildTriagePrompt, createTriageClassifier, extractVerdictJson, parseVerdict } from "./triage.ts";
 
 const VERDICT = '{"interject":true,"kind":"feature-wish","confidence":0.85,"reason":"concrete wish"}';
 
 describe("parseVerdict", () => {
   test("parses a bare verdict object on stdout", () => {
     expect(parseVerdict(VERDICT).kind).toBe("feature-wish");
+  });
+
+  test("defaults addressee to unclear when the model omits it (no fail-closed on the whole verdict)", () => {
+    // A verdict without the OPS-101 addressee field must still parse — an omission is a soft
+    // downrank ("unclear"), never total silence that would ghost a beat gemma DID want to land.
+    expect(parseVerdict(VERDICT).addressee).toBe("unclear");
+  });
+
+  test("carries the addressee read through when present", () => {
+    const withAddr = '{"interject":false,"kind":"none","confidence":0.2,"reason":"aimed at ro","addressee":"other"}';
+    expect(parseVerdict(withAddr).addressee).toBe("other");
   });
 
   test("parses a clean verdict inside the claude --output-format json envelope", () => {
@@ -27,6 +38,29 @@ describe("parseVerdict", () => {
 
   test("still throws (fails closed upstream) on garbage", () => {
     expect(() => parseVerdict(JSON.stringify({ type: "result", result: "no json here" }))).toThrow();
+  });
+});
+
+describe("buildTriagePrompt", () => {
+  const staticPrompt = "SCORER PROMPT";
+  const transcript = [
+    { authorDisplayName: "ro", content: "hey ssh", ts: 0 },
+    { authorDisplayName: "ssh", content: "yo", ts: 1 },
+  ];
+  const burst = [{ authorDisplayName: "ro", content: "ssh, can you check the deploy?", ts: 2 }];
+
+  test("names the participants and the speaker of the latest message", () => {
+    const prompt = buildTriagePrompt(staticPrompt, burst, transcript);
+    expect(prompt).toContain("People talking in this channel");
+    expect(prompt).toContain("ro, ssh");
+    expect(prompt).toContain("Speaker of the latest message to classify: ro");
+    expect(prompt).toContain("Beckett is NOT one of them");
+  });
+
+  test("still renders the burst and transcript content", () => {
+    const prompt = buildTriagePrompt(staticPrompt, burst, transcript);
+    expect(prompt).toContain("ssh, can you check the deploy?");
+    expect(prompt).toContain("hey ssh");
   });
 });
 

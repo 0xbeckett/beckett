@@ -994,6 +994,13 @@ export class Concierge {
     pendingTickets: { identifier: string; title: string }[];
     /** True for an ambient (un-addressed) turn: a CLI reply posts plainly, never as a native reply. */
     ambient?: boolean;
+    /**
+     * OPS-101 hold-and-cancel backstop (OPS-99 §5.3): set when the concierge runs
+     * `beckett discord decline` on an AMBIENT turn — "on reflection this wasn't for me." The turn
+     * then posts nothing (degrades to a synthetic PASS). Only ever honoured for ambient turns; a
+     * real @mention/DM can never be declined (§6), so this stays a no-op on the mention path.
+     */
+    declined?: boolean;
   } | null = null;
   /** Last static denial by channel+user, so denied DMs/mentions cannot spam Discord. */
   private readonly accessDenyAt = new Map<string, number>();
@@ -1534,6 +1541,23 @@ export class Concierge {
       this.config.proactivity.enabled = false;
       return { ok: true, data: { enabled: false, killed: true } };
     }
+    if (req.cmd === "discord.decline") {
+      // OPS-101 hold-and-cancel backstop (OPS-99 §5.3): the concierge, mid-ambient-turn, decides the
+      // burst wasn't for it after all (a classifier addressee false-positive) and aborts BEFORE any
+      // user-facing output. This posts nothing — it just flags the active turn so `runAmbientTurn`
+      // degrades it to a synthetic PASS (no message, no cooldown consumed, engaged window untouched).
+      const active = this.currentMention();
+      if (!active || !active.ambient) {
+        // Hard-exempt the mention/DM path (§6): a directed message is NEVER declined — that would be
+        // the exact ghosting bug this feature is meant to prevent. Nothing to decline off-turn either.
+        return { ok: false, error: "decline only applies to an ambient turn you are currently running" };
+      }
+      if (active.repliedViaCli) {
+        return { ok: false, error: "you already replied this turn — too late to decline" };
+      }
+      active.declined = true;
+      return { ok: true, data: { declined: true } };
+    }
     if (req.cmd !== "discord.reply") {
       return { ok: false, error: `concierge bus: unknown command "${req.cmd}"` };
     }
@@ -1974,10 +1998,16 @@ export class Concierge {
       ackMessageId: null as string | null,
       pendingTickets: [] as { identifier: string; title: string }[],
       ambient: true,
+      declined: false,
     };
     this.activeMention = claim;
     try {
       const reply = (await this.session.ask(framed, claim, { priority: false })).trim();
+      // OPS-101 hold-and-cancel backstop (OPS-99 §5.3): if the concierge ran `beckett discord
+      // decline` this turn, it judged the burst wasn't for it (a classifier false-positive). Abort
+      // exactly like a PASS: post nothing, consume no cooldown. This wins over any drafted reply
+      // text — cancellation degrades to a synthetic PASS so no partial/half-posted state can exist.
+      if (claim.declined) return "PASS";
       // PASS (alone, first line) → post nothing, consume no cooldown. Return it verbatim so the
       // coordinator sees the sentinel and skips its own cooldown stamp.
       if (isAmbientPass(reply)) return reply;
@@ -2708,13 +2738,38 @@ function frameAmbientCandidate(
     `SYSTEM (ambient — nobody addressed you; you are choosing whether to speak):\n` +
     `[channel:${channelId}] recent conversation:\n${lines}\n` +
     `Triage says: ${verdict.kind} (confidence ${verdict.confidence.toFixed(2)}).\n` +
+    `${addresseeFrameLine(verdict.addressee)}\n` +
     `You're a sharp friend in this server — if you've got a beat, take it. A concrete offer or\n` +
     `answer, a genuinely funny line, a useful pointer, or a spicy-but-kind take: reply with ONE\n` +
     `short message in your voice. Lean toward chiming in on a live, interesting burst.\n` +
     `Only reply with exactly PASS when you'd clearly be crowding the room — piling on a settled\n` +
     `plan, "well actually"-ing, quipping over someone who's upset, or the turn is truly empty.\n` +
+    `If on reflection this wasn't aimed at you at all (triage can misread the addressee), run\n` +
+    `\`beckett discord decline\` BEFORE you write anything — that quietly drops the turn, posting\n` +
+    `nothing. Prefer it over posting a reply into a conversation that wasn't yours.\n` +
     `Do not file a ticket yet. An offer is a question, not a commitment.`
   );
+}
+
+/**
+ * The explicit addressee signal (OPS-101 / OPS-99 §3.1): tell the concierge who triage read the
+ * latest message as being aimed at, so the seat that actually drafts the reply has the same signal
+ * the classifier scored on — and can `beckett discord decline` on a suspected false-positive.
+ */
+function addresseeFrameLine(addressee: TriageVerdict["addressee"]): string {
+  switch (addressee) {
+    case "beckett":
+      return `Addressee (triage's read): this looks aimed at YOU — answering is fair game.`;
+    case "other":
+      return (
+        `Addressee (triage's read): this looks aimed at ANOTHER person, not you. Lean hard toward\n` +
+        `staying out of it — decline unless you have a genuinely high-value beat only you can add.`
+      );
+    case "group":
+      return `Addressee (triage's read): addressed to the room broadly — chime in if you've got a beat.`;
+    default:
+      return `Addressee (triage's read): unclear who this was aimed at — only speak up if the beat is real.`;
+  }
 }
 
 /**
