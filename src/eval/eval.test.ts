@@ -75,4 +75,31 @@ describe("eval runner", () => {
     expect(rendered).toContain("RAW OUTPUT for author/model");
     expect(await Bun.file(run.savePath!).text()).toContain("RAW OUTPUT for author/model");
   });
+
+  test("continueOnError records a prompt error and keeps the rest of the suite", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "beckett-eval-test-"));
+    const suitePath = join(tmp, "suite.json");
+    const suite: EvalPrompt[] = [
+      { id: "first", category: "backend", title: "First", short: true, prompt: "one" },
+      { id: "second", category: "debug", title: "Second", short: true, prompt: "two" },
+    ];
+    await Bun.write(suitePath, JSON.stringify(suite));
+    const run = await runModelEval({
+      model: "author/model",
+      mode: "short",
+      suitePath,
+      continueOnError: true,
+      provider: {
+        async complete(req) {
+          if (req.prompt === "one") throw new Error("provider exploded");
+          return { output: "second output", raw: {} };
+        },
+      },
+    });
+
+    expect(run.prompts).toHaveLength(2);
+    expect(run.prompts[0]?.error).toBe("provider exploded");
+    expect(run.prompts[1]?.output).toBe("second output");
+    expect(renderEvalReport(run)).toContain("ERROR: provider exploded");
+  });
 });

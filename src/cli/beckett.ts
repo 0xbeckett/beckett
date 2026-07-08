@@ -429,7 +429,9 @@ async function main(): Promise<void> {
       model,
       mode,
       outputDir: join(paths.beckettDir, "eval-runs"),
-      continueOnError: false,
+      // Eval reports are for human eyeballing; one per-prompt failure should be shown inline,
+      // not hide the rest of the suite.
+      continueOnError: true,
     });
     process.stdout.write(renderEvalReport(run) + "\n");
     process.exit(run.prompts.some((p) => p.error) ? 1 : 0);
