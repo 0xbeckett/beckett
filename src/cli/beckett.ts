@@ -13,7 +13,7 @@
 
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { loadConfig } from "../config.ts";
+import { loadConfig, resolvePlaneBoardName } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus } from "../shell/control-bus.ts";
 import { createMemory } from "../memory/index.ts";
@@ -65,6 +65,14 @@ function guardRestrictedProject(project: string | undefined, confirmed: boolean)
       `once more that this genuinely belongs in the beckett codebase; if they say yes, re-file the exact ` +
       `same command with --confirm-beckett.`,
   );
+}
+
+function cliBoardName(board: unknown): string {
+  try {
+    return resolvePlaneBoardName(config, typeof board === "string" ? board : undefined);
+  } catch (err) {
+    fail((err as Error).message);
+  }
 }
 
 /** Minimal flag parser: returns { _: positional[], flags: {k:v|true} }. */
@@ -624,7 +632,8 @@ async function main(): Promise<void> {
     const { createPlaneClient } = await import("../plane/client.ts");
     const { parseCastJson } = await import("../plane/cast.ts");
     const { _, flags } = parse(rest);
-    const client = createPlaneClient({ config, logger: quietLogger });
+    const board = cliBoardName(flags.board);
+    const client = createPlaneClient({ config, board, logger: quietLogger });
 
     /** Read --body, or --body-stdin (piped). */
     const readBody = async (): Promise<string> => {
@@ -657,7 +666,7 @@ async function main(): Promise<void> {
     if (sub === "create") {
       if (!flags.title) {
         fail(
-          'usage: beckett ticket create --title <t> [--body <b>|--body-stdin] [--project <slug>] [--state backlog|todo|in_progress|in_review|done|cancelled] [--cast <json>] [--criteria "a;b;c"] [--channel <discord-channel-id>]',
+          'usage: beckett ticket create --title <t> [--board <name>] [--body <b>|--body-stdin] [--project <slug>] [--state backlog|todo|in_progress|in_review|done|cancelled] [--cast <json>] [--criteria "a;b;c"] [--channel <discord-channel-id>]',
         );
       }
       const casting = flags.cast ? parseCastJson(String(flags.cast)) : {};
@@ -753,7 +762,7 @@ async function main(): Promise<void> {
     if (tickets.length === 0) {
       fail(
         'usage: beckett plan [--file <f>] < dag.json\n' +
-          '  dag.json = { "channel"?: "<id>", "tickets": [ { "key", "title", "body"?, ' +
+          '  dag.json = { "channel"?: "<id>", "board"?: "ops|vid|vidpip", "tickets": [ { "key", "title", "board"?, "body"?, ' +
           '"criteria"?: string[], "cast"?: {...}, "needs"?: ["key", ...] }, ... ] }',
       );
     }
@@ -774,10 +783,12 @@ async function main(): Promise<void> {
       }
     }
 
-    // Restricted self-repo gate — fail the WHOLE plan (before filing any node) if a node targets the
-    // beckett source repo without --confirm-beckett, so a mis-routed node can't slip in mid-DAG.
+    const planDefaultBoard = spec.board ? String(spec.board) : undefined;
+    const boardForKey = new Map<string, string>();
+    // Restricted self-repo gate and board validation — fail the WHOLE plan before filing any node.
     for (const t of tickets) {
       guardRestrictedProject(t.project ? String(t.project) : undefined, !!flags["confirm-beckett"]);
+      boardForKey.set(t.key, cliBoardName(t.board ? String(t.board) : planDefaultBoard));
     }
 
     // 2. topological order (Kahn) — also the cycle detector
@@ -812,7 +823,15 @@ async function main(): Promise<void> {
 
     // 3. file in order, mapping each key → its created identifier so dependents can reference it
     const { createPlaneClient } = await import("../plane/client.ts");
-    const client = createPlaneClient({ config, logger: quietLogger });
+    const clientsByBoard = new Map<string, ReturnType<typeof createPlaneClient>>();
+    const clientForBoard = (board: string) => {
+      let client = clientsByBoard.get(board);
+      if (!client) {
+        client = createPlaneClient({ config, board, logger: quietLogger });
+        clientsByBoard.set(board, client);
+      }
+      return client;
+    };
     const channel = spec.channel ? String(spec.channel) : undefined;
     const identForKey = new Map<string, string>();
     const filed: any[] = [];
@@ -824,7 +843,7 @@ async function main(): Promise<void> {
           const blockedBy = needs.map((n) => identForKey.get(n)!).filter(Boolean);
           // roots start immediately; anything with a blocker waits in backlog until promoted.
           const state = blockedBy.length === 0 ? "in_progress" : "backlog";
-          const created = await client.createIssue({
+          const created = await clientForBoard(boardForKey.get(key)!).createIssue({
             title: String(t.title),
             body: t.body ? String(t.body) : "",
             casting: t.cast ?? {},
@@ -839,7 +858,7 @@ async function main(): Promise<void> {
           return {
             key,
             identifier: created.identifier,
-            filed: { key, id: created.id, identifier: created.identifier, state, blockedBy, url: created.url },
+            filed: { key, board: boardForKey.get(key)!, id: created.id, identifier: created.identifier, state, blockedBy, url: created.url },
           };
         }),
       );

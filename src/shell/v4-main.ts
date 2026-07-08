@@ -72,7 +72,9 @@ interface BootedSystem {
   config: Config;
   logger: Logger;
   client: PlaneClient;
+  clients: Map<string, PlaneClient>;
   poller: PlanePoller;
+  pollers: Map<string, PlanePoller>;
   dispatcher: Dispatcher;
   concierge: Concierge;
   quick: QuickRunner;
@@ -91,7 +93,8 @@ async function boot(): Promise<BootedSystem> {
     version: BECKETT_VERSION,
     plane: config.plane.base_url,
     workspace: config.plane.workspace_slug,
-    project: config.plane.project_slug,
+    defaultBoard: config.plane.default_board,
+    boards: Object.keys(config.plane.boards),
     pollSecs: config.plane.poll_secs,
     conciergeModel: config.concierge.model,
     projectsRoot: PROJECTS_ROOT,
@@ -101,8 +104,14 @@ async function boot(): Promise<BootedSystem> {
     logger.warn("PLANE_API_TOKEN is not set — Plane API calls will fail until it is provided");
   }
 
-  // 2. PlaneClient — the sole HTTP boundary to Plane (token from env).
-  const client = createPlaneClient({ config, logger: logger.child("plane.client") });
+  // 2. PlaneClient — one board-scoped HTTP boundary per configured Plane board.
+  const clients = new Map<string, PlaneClient>();
+  for (const board of Object.keys(config.plane.boards)) {
+    clients.set(board, createPlaneClient({ config, board, logger: logger.child(`plane.client.${board}`) }));
+  }
+  const client = clients.get(config.plane.default_board) ?? clients.values().next().value!;
+  const clientByProjectId = new Map<string, PlaneClient>();
+  const pollerByProjectId = new Map<string, PlanePoller>();
 
   // Deterministic GitHub publishing: when a ticket reaches done, its project repo is pushed to
   // `0xbeckett/<slug>` (public) so the links Beckett hands out actually resolve — instead of
@@ -136,27 +145,63 @@ async function boot(): Promise<BootedSystem> {
   //    further down (FIRST of the live parts) so a bad claude launch fails the whole boot early.
   const concierge = createConcierge({ config, logger: logger.child("concierge"), plane: client });
 
-  // 3. Poller — feeds each batch of events straight to the dispatcher. `start()` primes the
+  // 3. Pollers — one per board, all feeding the same dispatcher. `start()` primes the
   //    snapshot first (so we don't replay history) then self-schedules every poll_secs.
   //    Constructed BEFORE the dispatcher so the dispatcher's instant-advance path (issue #33)
-  //    can reference it.
-  const poller = createPlanePoller({
-    client,
-    logger: logger.child("plane.poll"),
-    pollSecs: config.plane.poll_secs,
-    commentCursorPath: join(buildPaths(config).beckettDir, "comment-cursors.json"),
-  });
+  //    can reference the correct board poller.
+  const beckettDir = buildPaths(config).beckettDir;
+  const pollers = new Map<string, PlanePoller>();
+  for (const [board, boardClient] of clients) {
+    pollers.set(
+      board,
+      createPlanePoller({
+        client: boardClient,
+        logger: logger.child(`plane.poll.${board}`),
+        pollSecs: config.plane.poll_secs,
+        commentCursorPath: join(
+          beckettDir,
+          board === config.plane.default_board ? "comment-cursors.json" : `comment-cursors-${board}.json`,
+        ),
+      }),
+    );
+  }
+  const poller = pollers.get(config.plane.default_board) ?? pollers.values().next().value!;
+  // Pre-resolve board project ids so durable outbox replay can route VID/VIDPIP write-backs even
+  // before the first poll event from that board arrives. Failures are non-fatal: pollers will log
+  // and retry as before when Plane/token access is restored.
+  await Promise.all(
+    [...clients].map(async ([board, boardClient]) => {
+      try {
+        const info = await boardClient.projectInfo();
+        clientByProjectId.set(info.projectId, boardClient);
+        const boardPoller = pollers.get(board);
+        if (boardPoller) pollerByProjectId.set(info.projectId, boardPoller);
+      } catch (err) {
+        logger.warn("Plane board project pre-resolution failed", { board, error: (err as Error).message });
+      }
+    }),
+  );
+  const rememberRouting = (events: Ticket | Ticket[], board: string) => {
+    const boardClient = clients.get(board);
+    const boardPoller = pollers.get(board);
+    for (const ticket of Array.isArray(events) ? events : [events]) {
+      if (ticket.projectId && boardClient) clientByProjectId.set(ticket.projectId, boardClient);
+      if (ticket.projectId && boardPoller) pollerByProjectId.set(ticket.projectId, boardPoller);
+    }
+  };
 
   // 4. Dispatcher — consumes PollEvents, owns the worker lifecycle. Its workers' granular event
   //    streams are mirrored into each ticket's Discord thread via the Concierge's progress hub.
   const dispatcher = createDispatcher({
     client,
+    clients: [...clients.values()],
+    clientForProjectId: (projectId) => clientByProjectId.get(projectId),
     config,
     resolveRepoRoot,
     publishRepo,
     progress: concierge.progressSink(),
-    advanceOutboxPath: join(buildPaths(config).beckettDir, "advance-outbox.jsonl"),
-    runtimeStatePath: join(buildPaths(config).beckettDir, "dispatcher-state.json"),
+    advanceOutboxPath: join(beckettDir, "advance-outbox.jsonl"),
+    runtimeStatePath: join(beckettDir, "dispatcher-state.json"),
     // Harness health probe (issue #17): a dead harness (binary gone, login expired) becomes one
     // clear substitution comment instead of a wedged ticket. ~5-min cached per harness.
     preflight: (harness) => preflightFor(harness, config),
@@ -164,7 +209,7 @@ async function boot(): Promise<BootedSystem> {
     // (concierge.notify) instead of after the next poll, and the poller's snapshot is synced so
     // the same transition isn't re-emitted as a duplicate ping ≤5s later.
     onAdvance: (event) => {
-      poller.observe(event);
+      (pollerByProjectId.get(event.ticket.projectId) ?? poller).observe(event);
       concierge.notify(event);
     },
     logger: logger.child("dispatch"),
@@ -178,7 +223,9 @@ async function boot(): Promise<BootedSystem> {
 
   // Instant tick on filing (issue #33): `beckett ticket create --channel …` pings the control bus;
   // poking the poller staffs the fresh ticket in well under a second instead of the 0–5s poll gap.
-  concierge.setTicketFiledListener(() => poller.poke());
+  concierge.setTicketFiledListener(() => {
+    for (const p of pollers.values()) p.poke();
+  });
 
   // Quick agents — the no-ticket lane. The runner owns the short-lived specialist
   // harnesses; a run that outlives its sync window reports back through the Concierge as an
@@ -201,8 +248,16 @@ async function boot(): Promise<BootedSystem> {
     uptimeSecs: Math.round((Date.now() - bootedAt) / 1000),
     workers: dispatcher.statusWorkers(),
     quick: quick.stats(),
-    poller: poller.stats(),
-    plane: { baseUrl: config.plane.base_url, ...client.stats() },
+    poller: {
+      boards: Object.fromEntries([...pollers].map(([board, p]) => [board, p.stats()])),
+      ...poller.stats(),
+    },
+    plane: {
+      baseUrl: config.plane.base_url,
+      defaultBoard: config.plane.default_board,
+      boards: Object.fromEntries([...clients].map(([board, c]) => [board, c.stats()])),
+      ...client.stats(),
+    },
   }));
 
   // Start the Concierge FIRST (of the live parts) so a bad claude launch fails the whole boot
@@ -215,21 +270,26 @@ async function boot(): Promise<BootedSystem> {
   // tickets continue their interrupted sessions instead of re-running from scratch.
   await dispatcher.recoverFromCrash();
 
-  // Fan each poll batch to BOTH the dispatcher (acts on the work) and the Concierge (surfaces
-  // milestones/errors back to the Discord conversation that filed the ticket — the closed loop).
-  await poller.start((events) => {
-    concierge.notify(events);
-    return dispatcher.handle(events);
-  });
-  logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length });
+  // Fan each board's poll batch to BOTH the dispatcher (acts on the work) and the Concierge
+  // (surfaces milestones/errors back to the Discord conversation that filed the ticket).
+  await Promise.all(
+    [...pollers].map(([board, p]) =>
+      p.start((events) => {
+        rememberRouting(events.map((event) => event.ticket), board);
+        concierge.notify(events);
+        return dispatcher.handle(events);
+      }),
+    ),
+  );
+  logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, poller, dispatcher, concierge, quick };
+  return { config, logger, client, clients, poller, pollers, dispatcher, concierge, quick };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
 async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   sys.logger.info("shutting down beckett v3", { signal });
-  sys.poller.stop();
+  for (const p of sys.pollers.values()) p.stop();
   try {
     const drain = await sys.dispatcher.drainForShutdown(signal, 20_000);
     if (drain.timedOut) {

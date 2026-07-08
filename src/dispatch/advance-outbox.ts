@@ -13,6 +13,8 @@ import type { Logger } from "../types.ts";
 export interface AdvanceOperation {
   id: string;
   ticketId: string;
+  /** Plane project id for board-scoped replay/routing. Missing on pre-OPS-97 outbox rows. */
+  projectId?: string;
   state: string;
   comment: string;
   promoteDependents?: boolean;
@@ -75,6 +77,7 @@ export class AdvanceOutbox {
           ops.push({
             id: raw.id,
             ticketId: raw.ticketId,
+            ...(typeof raw.projectId === "string" ? { projectId: raw.projectId } : {}),
             state: raw.state,
             comment: raw.comment,
             ...(raw.promoteDependents ? { promoteDependents: true } : {}),

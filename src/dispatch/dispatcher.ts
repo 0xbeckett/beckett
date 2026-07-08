@@ -103,7 +103,12 @@ export interface GitOps {
 }
 
 export interface DispatcherDeps {
+  /** Default Plane client (normally config.plane.default_board). */
   client: PlaneClientLike;
+  /** All board-scoped clients the daemon polls; used for identifier lookup and cross-board deps. */
+  clients?: PlaneClientLike[];
+  /** Resolve the board-scoped client for a Plane project id. Falls back to client. */
+  clientForProjectId?: (projectId: string) => PlaneClientLike | undefined;
   config: Config;
   /** Override any git op (tests inject fakes here); unset ops use the real worktree.ts impl. */
   gitOps?: Partial<GitOps>;
@@ -363,6 +368,9 @@ function parseRuntimeState(value: unknown): DispatcherRuntimeState {
 
 export class Dispatcher {
   private readonly client: PlaneClientLike;
+  private readonly clients: PlaneClientLike[];
+  private readonly clientForProjectIdDep?: (projectId: string) => PlaneClientLike | undefined;
+  private readonly projectIdByTicketId = new Map<string, string>();
   private readonly config: Config;
   private readonly git: GitOps;
   private readonly resolveRepoRoot: (ticket: Ticket) => string;
@@ -453,6 +461,8 @@ export class Dispatcher {
 
   constructor(deps: DispatcherDeps) {
     this.client = deps.client;
+    this.clients = deps.clients && deps.clients.length > 0 ? deps.clients : [deps.client];
+    this.clientForProjectIdDep = deps.clientForProjectId;
     this.config = deps.config;
     this.git = {
       commitWorktree,
@@ -540,6 +550,37 @@ export class Dispatcher {
   private harnessBin(harness: string): string {
     const h = this.config.harness as unknown as Record<string, { bin?: string } | undefined>;
     return h?.[harness]?.bin || harness;
+  }
+
+  private rememberTicket(ticket: Ticket | null | undefined): void {
+    if (ticket?.id && ticket.projectId) this.projectIdByTicketId.set(ticket.id, ticket.projectId);
+  }
+
+  private clientForProjectId(projectId?: string): PlaneClientLike {
+    if (!projectId) return this.client;
+    return this.clientForProjectIdDep?.(projectId) ?? this.client;
+  }
+
+  private clientForTicket(ticket: Ticket): PlaneClientLike {
+    this.rememberTicket(ticket);
+    return this.clientForProjectId(ticket.projectId);
+  }
+
+  private clientForTicketId(ticketId: string, projectId?: string): PlaneClientLike {
+    return this.clientForProjectId(projectId ?? this.projectIdByTicketId.get(ticketId));
+  }
+
+  private async listAllIssues(): Promise<Ticket[]> {
+    const boards = await Promise.all(this.clients.map((client) => client.listIssues()));
+    const seen = new Set<string>();
+    const out: Ticket[] = [];
+    for (const ticket of boards.flat()) {
+      if (seen.has(ticket.id)) continue;
+      seen.add(ticket.id);
+      this.rememberTicket(ticket);
+      out.push(ticket);
+    }
+    return out;
   }
 
   // ── public surface ─────────────────────────────────────────────────────────────────────
@@ -710,6 +751,7 @@ export class Dispatcher {
   // ── event routing ────────────────────────────────────────────────────────────────────
 
   private async handleOne(event: PollEvent): Promise<void> {
+    this.rememberTicket(event.ticket);
     switch (event.kind) {
       case "created":
         this.logger.info("ticket created", {
@@ -983,18 +1025,22 @@ export class Dispatcher {
     const key = idOrIdentifier.trim();
     if (!key) return null;
     // Identifiers look like "OPS-42"; uuids don't contain an unprefixed short slug-dash-number.
-    if (/^[0-9a-f-]{32,}$/i.test(key) && this.client.getIssue) {
-      try {
-        const t = await this.client.getIssue(key);
-        if (t) return t;
-      } catch {
-        /* fall through to the identifier scan */
+    if (/^[0-9a-f-]{32,}$/i.test(key)) {
+      for (const client of this.clients) {
+        if (!client.getIssue) continue;
+        try {
+          const t = await client.getIssue(key);
+          if (t) {
+            this.rememberTicket(t);
+            return t;
+          }
+        } catch {
+          /* fall through to the identifier scan */
+        }
       }
     }
-    const all = await this.client.listIssues();
-    return (
-      all.find((t) => t.id === key || t.identifier.toLowerCase() === key.toLowerCase()) ?? null
-    );
+    const all = await this.listAllIssues();
+    return all.find((t) => t.id === key || t.identifier.toLowerCase() === key.toLowerCase()) ?? null;
   }
 
   /** True if a worker is live, OR a spawn is mid-flight, for this ticket (airtight dedup). */
@@ -2148,7 +2194,7 @@ export class Dispatcher {
   private async promoteDependents(doneTicket: Ticket, opts: { assumeDone?: boolean } = {}): Promise<void> {
     let all: Ticket[];
     try {
-      all = await this.client.listIssues();
+      all = await this.listAllIssues();
     } catch (err) {
       this.logger.warn("promote: listIssues failed — dependents not advanced", {
         ticket: doneTicket.identifier,
@@ -2177,7 +2223,7 @@ export class Dispatcher {
         after: doneTicket.identifier,
       });
       try {
-        await this.client.setState(t.id, "in_progress");
+        await this.clientForTicket(t).setState(t.id, "in_progress");
         await this.postComment(
           t.id,
           `All blockers done (${t.blockedBy.join(", ")}) → starting now.`,
@@ -2203,6 +2249,7 @@ export class Dispatcher {
     const op: AdvanceOperation = {
       id: randomUUID(),
       ticketId: ticket.id,
+      projectId: ticket.projectId,
       state,
       comment,
       ...(opts.promoteDependents ? { promoteDependents: true } : {}),
@@ -2231,7 +2278,9 @@ export class Dispatcher {
 
   private async applyAdvance(op: AdvanceOperation): Promise<void> {
     const state = op.state as TicketState;
-    const current = await this.client.getIssue?.(op.ticketId);
+    const client = this.clientForTicketId(op.ticketId, op.projectId);
+    const current = await client.getIssue?.(op.ticketId);
+    this.rememberTicket(current);
     if (current && this.humanTerminalMoveWins(current, state)) {
       this.logger.warn("skipping queued Plane advance because ticket is terminal", {
         ticket: current.identifier,
@@ -2240,8 +2289,8 @@ export class Dispatcher {
       });
       return;
     }
-    await this.client.setState(op.ticketId, state);
-    await this.addMarkedComment(op.ticketId, op.comment);
+    await client.setState(op.ticketId, state);
+    await this.addMarkedComment(op.ticketId, op.comment, op.projectId ?? current?.projectId);
     // Instant milestone path (issue #33): hand the transition to v4-main NOW, in the exact shape
     // the poller would emit ≤5s later. Best-effort — a throwing listener must not fail the advance.
     if (this.onAdvance && current) {
@@ -2252,11 +2301,12 @@ export class Dispatcher {
       }
     }
     if (op.promoteDependents) {
-      let doneTicket = (await this.client.getIssue?.(op.ticketId)) ?? current;
+      let doneTicket = (await client.getIssue?.(op.ticketId)) ?? current;
       if (!doneTicket) {
-        const all = await this.client.listIssues();
+        const all = await this.listAllIssues();
         doneTicket = all.find((t) => t.id === op.ticketId);
       }
+      this.rememberTicket(doneTicket);
       if (doneTicket) await this.promoteDependents(doneTicket);
     }
     if (state === "done") this.clearTicketMemory(op.ticketId);
@@ -2326,8 +2376,8 @@ export class Dispatcher {
     }
   }
 
-  private async addMarkedComment(ticketId: string, body: string): Promise<void> {
-    const posted = await this.client.addComment(ticketId, `${BECKETT_COMMENT_MARKER}\n${body}`);
+  private async addMarkedComment(ticketId: string, body: string, projectId?: string): Promise<void> {
+    const posted = await this.clientForTicketId(ticketId, projectId).addComment(ticketId, `${BECKETT_COMMENT_MARKER}\n${body}`);
     // Record the id so we recognise our own comment even if Plane mangles the HTML marker.
     if (posted?.id) this.ownCommentIds.add(posted.id);
   }

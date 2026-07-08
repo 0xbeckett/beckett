@@ -207,7 +207,7 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
     criteria: over.criteria ?? ["it works"],
     blockedBy: over.blockedBy ?? [],
     ...(over.project ? { project: over.project } : {}),
-    projectId: "proj-1",
+    projectId: over.projectId ?? "proj-1",
     url: "http://x",
     updatedAt: "now",
   };
@@ -625,6 +625,32 @@ describe("advance on finish", () => {
     created[0].finish("success", "looks good", doneSignal("complete"));
     await tick();
     expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
+  });
+
+  test("state/comment write-backs use the ticket's board client", async () => {
+    const ops = new FakeClient();
+    const vid = new FakeClient();
+    const ticket = makeTicket({ id: "vid-tkt-1", identifier: "VID-1", state: "in_review", projectId: "vid-project" });
+    vid.board = [ticket];
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client: ops,
+      clients: [ops, vid],
+      clientForProjectId: (projectId) => (projectId === "vid-project" ? vid : ops),
+      config: cfg(),
+      resolveRepoRoot: (t) => `/tmp/repo/${t.identifier}`,
+    });
+
+    await d.handle(stateChanged(ticket, "in_review"));
+    await tick();
+    created[0].finish("success", "looks good", doneSignal("complete"));
+    await tick();
+
+    expect(ops.setStateCalls).toEqual([]);
+    expect(ops.comments).toEqual([]);
+    expect(vid.setStateCalls).toEqual([{ id: "vid-tkt-1", state: "done" }]);
+    expect(vid.comments).toHaveLength(1);
+    expect(vid.comments[0]!.ticketId).toBe("vid-tkt-1");
   });
 
   test("review verdict blocked → back to in_progress for re-work", async () => {

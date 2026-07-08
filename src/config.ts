@@ -107,6 +107,119 @@ const posInt = int.min(1);
 const nonNegInt = int.min(0);
 const ProactivityModeSchema = z.enum(["off", "suggest", "auto"]);
 
+const DEV_STATE_MAP = {
+  backlog: "Backlog",
+  todo: "Todo",
+  in_progress: "In Progress",
+  in_review: "In Review",
+  done: "Done",
+  cancelled: "Cancelled",
+} as const;
+
+const VIDEO_STATE_MAP = {
+  backlog: "Ideas",
+  todo: "Scripting",
+  in_progress: "Production",
+  in_review: "Review",
+  done: "Published",
+  cancelled: "Shelved",
+} as const;
+
+const DEFAULT_PLANE_BOARDS = {
+  ops: { project_slug: "beckett", state_map: DEV_STATE_MAP },
+  vid: { project_slug: "VID", state_map: VIDEO_STATE_MAP },
+  vidpip: { project_slug: "VIDPIP", state_map: DEV_STATE_MAP },
+} as const;
+
+const StateMapSchema = z
+  .object({
+    backlog: z.string().min(1).default("Backlog"),
+    todo: z.string().min(1).default("Todo"),
+    in_progress: z.string().min(1).default("In Progress"),
+    in_review: z.string().min(1).default("In Review"),
+    done: z.string().min(1).default("Done"),
+    cancelled: z.string().min(1).default("Cancelled"),
+  })
+  .default({});
+
+const PlaneBoardSchema = z
+  .object({
+    project_slug: z.string().min(1),
+    state_map: StateMapSchema,
+  })
+  .strict();
+
+function mergeBoardDefaults(
+  base: { project_slug: string; state_map: Record<string, string> },
+  raw: unknown,
+): Record<string, unknown> {
+  const override = cloneRecord(raw);
+  return {
+    project_slug:
+      typeof override.project_slug === "string" ? override.project_slug : base.project_slug,
+    state_map: { ...base.state_map, ...cloneRecord(override.state_map) },
+  };
+}
+
+function normalizePlaneConfig(rawPlane: unknown): unknown {
+  const raw = cloneRecord(rawPlane);
+  const incomingBoards = isRecord(raw.boards) ? raw.boards : {};
+  const boards: Record<string, unknown> = {
+    ops: mergeBoardDefaults(DEFAULT_PLANE_BOARDS.ops, incomingBoards.ops),
+    vid: mergeBoardDefaults(DEFAULT_PLANE_BOARDS.vid, incomingBoards.vid),
+    vidpip: mergeBoardDefaults(DEFAULT_PLANE_BOARDS.vidpip, incomingBoards.vidpip),
+  };
+  for (const [name, value] of Object.entries(incomingBoards)) {
+    if (name in boards) continue;
+    boards[name] = value;
+  }
+
+  // Backward compatibility: accept the old flat [plane] shape, but normalize it into the ops
+  // board before the strict schema sees the object. Existing boxes keep booting untouched.
+  if (Object.prototype.hasOwnProperty.call(raw, "project_slug")) {
+    boards.ops = { ...cloneRecord(boards.ops), project_slug: raw.project_slug };
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, "state_map")) {
+    boards.ops = {
+      ...cloneRecord(boards.ops),
+      state_map: { ...DEV_STATE_MAP, ...cloneRecord(raw.state_map) },
+    };
+  }
+
+  const out: Record<string, unknown> = { ...raw, boards };
+  delete out.project_slug;
+  delete out.state_map;
+  if (!Object.prototype.hasOwnProperty.call(out, "default_board")) out.default_board = "ops";
+  return out;
+}
+
+const PlaneConfigSchema = z
+  .preprocess(
+    normalizePlaneConfig,
+    z
+      .object({
+        base_url: z.string().min(1).default("https://plane.0xbeckett.me"),
+        workspace_slug: z.string().min(1).default("beckett"),
+        // Perf: pickup/review/relay latency is bounded by this poll. The poller now avoids
+        // unchanged-ticket comment reads, so a 5s default cuts average wait without increasing the
+        // old hot-path Plane load. Poll cost scales linearly with board count (3 boards is fine).
+        poll_secs: posInt.default(5),
+        default_board: z.string().min(1).default("ops"),
+        boards: z.record(PlaneBoardSchema).default(DEFAULT_PLANE_BOARDS as unknown as Record<string, z.infer<typeof PlaneBoardSchema>>),
+      })
+      .strict()
+      .superRefine((plane, ctx) => {
+        if (!Object.prototype.hasOwnProperty.call(plane.boards, plane.default_board)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["default_board"],
+            message: `unknown default_board "${plane.default_board}" (have: ${Object.keys(plane.boards).join(", ") || "none"})`,
+          });
+        }
+      }),
+  )
+  .default({});
+
 const ConfigSchema = z
   .object({
     concurrency: z
@@ -237,30 +350,10 @@ const ConfigSchema = z
         gmail_address: z.string().default(""),
       })
       .default({}),
-    // v3 — Plane ticket-queue (Spec v3). base_url/slugs locate the self-hosted Plane; the
-    // PLANE_API_TOKEN secret comes from .env, NOT here. `state_map` maps each Beckett
-    // TicketState to the project's Plane workflow state NAME (the client resolves name→UUID).
-    plane: z
-      .object({
-        base_url: z.string().min(1).default("https://plane.0xbeckett.me"),
-        workspace_slug: z.string().min(1).default("beckett"),
-        project_slug: z.string().min(1).default("beckett"),
-        // Perf: pickup/review/relay latency is bounded by this poll. The poller now avoids
-        // unchanged-ticket comment reads, so a 5s default cuts average wait without increasing the
-        // old hot-path Plane load.
-        poll_secs: posInt.default(5),
-        state_map: z
-          .object({
-            backlog: z.string().min(1).default("Backlog"),
-            todo: z.string().min(1).default("Todo"),
-            in_progress: z.string().min(1).default("In Progress"),
-            in_review: z.string().min(1).default("In Review"),
-            done: z.string().min(1).default("Done"),
-            cancelled: z.string().min(1).default("Cancelled"),
-          })
-          .default({}),
-      })
-      .default({}),
+    // v3 — Plane ticket-queue (Spec v3). base_url/workspace locate the self-hosted Plane; the
+    // PLANE_API_TOKEN secret comes from .env, NOT here. Named boards select a Plane project plus
+    // the project's workflow-state NAME map; Beckett keeps the six canonical TicketStates.
+    plane: PlaneConfigSchema,
     proactivity: z
       .object({
         enabled: z.boolean().default(false),
@@ -485,6 +578,22 @@ export function validateConfig(raw: unknown): Config {
     throw new Error(`beckett: invalid config — refusing to start:\n${issues}`);
   }
   return result.data;
+}
+
+/** Resolve a user-supplied board name (case-insensitive), defaulting to config.plane.default_board. */
+export function resolvePlaneBoardName(config: Config, board?: string): string {
+  const names = Object.keys(config.plane.boards);
+  const wanted = (board && board.trim() ? board.trim() : config.plane.default_board).toLowerCase();
+  const match = names.find((name) => name.toLowerCase() === wanted);
+  if (!match) {
+    throw new Error(`unknown Plane board "${board ?? config.plane.default_board}" (have: ${names.join(", ") || "none"})`);
+  }
+  return match;
+}
+
+/** Return the selected board's Plane project/state-map config. */
+export function resolvePlaneBoard(config: Config, board?: string): Config["plane"]["boards"][string] {
+  return config.plane.boards[resolvePlaneBoardName(config, board)]!;
 }
 
 /** The fully-defaulted config (an empty TOML). Handy for tests + the v0 seed boot. */

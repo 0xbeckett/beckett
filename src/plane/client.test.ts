@@ -16,17 +16,52 @@ const config = {
   plane: {
     base_url: "https://plane.test",
     workspace_slug: "beckett",
-    project_slug: "ops",
-    state_map: {
-      backlog: "Backlog",
-      todo: "Todo",
-      in_progress: "In Progress",
-      in_review: "In Review",
-      done: "Done",
-      cancelled: "Cancelled",
+    poll_secs: 5,
+    default_board: "ops",
+    boards: {
+      ops: {
+        project_slug: "ops",
+        state_map: {
+          backlog: "Backlog",
+          todo: "Todo",
+          in_progress: "In Progress",
+          in_review: "In Review",
+          done: "Done",
+          cancelled: "Cancelled",
+        },
+      },
     },
   },
 } as unknown as Config;
+
+function configWithBoards(): Config {
+  return {
+    plane: {
+      base_url: "https://plane.test",
+      workspace_slug: "beckett",
+      poll_secs: 5,
+      default_board: "ops",
+      boards: {
+        ops: config.plane.boards.ops!,
+        vid: {
+          project_slug: "VID",
+          state_map: {
+            backlog: "Ideas",
+            todo: "Scripting",
+            in_progress: "Production",
+            in_review: "Review",
+            done: "Published",
+            cancelled: "Shelved",
+          },
+        },
+        vidpip: {
+          project_slug: "VIDPIP",
+          state_map: config.plane.boards.ops!.state_map,
+        },
+      },
+    },
+  } as unknown as Config;
+}
 
 function privateReq(client: PlaneClient, method: string, path: string): Promise<unknown> {
   return (client as unknown as { req(method: string, path: string): Promise<unknown> }).req(method, path);
@@ -97,6 +132,95 @@ test("listIssueHeads sweeps with fields=id,updated_at only", async () => {
   expect(heads).toEqual([{ id: "t1", updatedAt: "2026-01-01T00:00:00Z" }]);
   const sweep = calls.find((u) => u.includes("/issues/?") || u.includes("fields="));
   expect(sweep).toContain("fields=id%2Cupdated_at");
+});
+
+test("VID client files into the VID project and maps video states back to canonical", async () => {
+  const calls: string[] = [];
+  let createPayload: any = null;
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.includes("/projects/") && !u.includes("/issues/") && !u.includes("/states/")) {
+      return Response.json({
+        results: [
+          { id: "pops", identifier: "OPS", name: "beckett" },
+          { id: "pvid", identifier: "VID", name: "Video" },
+          { id: "pvidpip", identifier: "VIDPIP", name: "Video Pipeline" },
+        ],
+      });
+    }
+    if (u.includes("/projects/pvid/states/")) {
+      return Response.json({
+        results: [
+          { id: "sv-ideas", name: "Ideas", group: "backlog" },
+          { id: "sv-script", name: "Scripting", group: "unstarted" },
+          { id: "sv-prod", name: "Production", group: "started" },
+          { id: "sv-voice", name: "Voiceover", group: "started" },
+          { id: "sv-render", name: "Render", group: "started" },
+          { id: "sv-review", name: "Review", group: "started" },
+          { id: "sv-pub", name: "Published", group: "completed" },
+          { id: "sv-shelf", name: "Shelved", group: "cancelled" },
+        ],
+      });
+    }
+    if (u.endsWith("/projects/pvid/issues/") && init?.method === "POST") {
+      createPayload = JSON.parse(String(init.body));
+      return Response.json({
+        id: "vid-issue-1",
+        name: "Video task",
+        state: createPayload.state,
+        sequence_id: 7,
+        project: "pvid",
+        description_html: createPayload.description_html,
+        updated_at: "2026-01-01T00:00:00Z",
+      });
+    }
+    if (u.endsWith("/projects/pvid/issues/vid-issue-voice/")) {
+      return Response.json({
+        id: "vid-issue-voice",
+        name: "Voiceover task",
+        state: "sv-voice",
+        sequence_id: 8,
+        project: "pvid",
+        updated_at: "2026-01-01T00:00:00Z",
+      });
+    }
+    return Response.json({ results: [] });
+  }) as unknown as typeof fetch;
+
+  const client = new PlaneClient({ config: configWithBoards(), board: "vid", token: "tok", logger: quiet, fetch: fetchImpl });
+  const created = await client.createIssue({ title: "Video task", state: "in_progress" });
+  expect(createPayload.state).toBe("sv-prod");
+  expect(created.identifier).toBe("VID-7");
+  expect(created.state).toBe("in_progress");
+
+  const voice = await client.getIssue("vid-issue-voice");
+  expect(voice?.identifier).toBe("VID-8");
+  expect(voice?.state).toBe("in_progress");
+});
+
+test("VIDPIP client files with the VIDPIP identifier", async () => {
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    if (u.includes("/projects/") && !u.includes("/issues/") && !u.includes("/states/")) {
+      return Response.json({ results: [{ id: "pvidpip", identifier: "VIDPIP", name: "Video Pipeline" }] });
+    }
+    if (u.includes("/projects/pvidpip/states/")) {
+      return Response.json({
+        results: ["Backlog", "Todo", "In Progress", "In Review", "Done", "Cancelled"].map((name, i) => ({ id: `sp-${i}`, name })),
+      });
+    }
+    if (u.endsWith("/projects/pvidpip/issues/") && init?.method === "POST") {
+      const payload = JSON.parse(String(init.body));
+      return Response.json({ id: "pip-1", name: "Pipeline task", state: payload.state, sequence_id: 3, project: "pvidpip", updated_at: "now" });
+    }
+    return Response.json({ results: [] });
+  }) as unknown as typeof fetch;
+
+  const client = new PlaneClient({ config: configWithBoards(), board: "vidpip", token: "tok", logger: quiet, fetch: fetchImpl });
+  const created = await client.createIssue({ title: "Pipeline task", state: "todo" });
+  expect(created.identifier).toBe("VIDPIP-3");
+  expect(created.state).toBe("todo");
 });
 
 test("listComments stops paginating once a newest-first page reaches past `since`", async () => {

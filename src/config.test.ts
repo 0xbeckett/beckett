@@ -42,6 +42,47 @@ test("per-harness default efforts land where they should", () => {
   expect(config.harness.claude.default_effort).toBe("xhigh"); // untouched default
 });
 
+test("plane nested board config parses with default board and registered VID boards", () => {
+  const config = loadToml(`
+[plane]
+default_board = "vid"
+
+[plane.boards.vid]
+project_slug = "VID"
+[plane.boards.vid.state_map]
+backlog = "Ideas"
+todo = "Scripting"
+in_progress = "Production"
+in_review = "Review"
+done = "Published"
+cancelled = "Shelved"
+`);
+  expect(config.plane.default_board).toBe("vid");
+  expect(config.plane.boards.ops!.project_slug).toBe("beckett");
+  expect(config.plane.boards.vid!.project_slug).toBe("VID");
+  expect(config.plane.boards.vid!.state_map.in_progress).toBe("Production");
+  expect(config.plane.boards.vidpip!.project_slug).toBe("VIDPIP");
+});
+
+test("legacy flat plane config normalizes into the ops board", () => {
+  const config = loadToml(`
+[plane]
+project_slug = "legacy-ops"
+
+[plane.state_map]
+in_progress = "Doing"
+`);
+  expect(config.plane.default_board).toBe("ops");
+  expect(config.plane.boards.ops!.project_slug).toBe("legacy-ops");
+  expect(config.plane.boards.ops!.state_map.in_progress).toBe("Doing");
+  expect(config.plane.boards.vid!.project_slug).toBe("VID");
+  expect(config.plane).not.toHaveProperty("project_slug");
+});
+
+test("unknown default Plane board is a loud config error listing valid boards", () => {
+  expect(() => loadToml(`[plane]\ndefault_board = "missing"\n`)).toThrow(/unknown default_board "missing" \(have: ops, vid, vidpip\)/);
+});
+
 test("proactivity defaults ship disabled and off", () => {
   const config = validateConfig({});
   expect(config.proactivity).toMatchObject({

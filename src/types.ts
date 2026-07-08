@@ -593,17 +593,25 @@ export interface Config {
   plane: {
     base_url: string;
     workspace_slug: string;
-    project_slug: string;
     poll_secs: number;
-    /** Each Beckett TicketState → its Plane workflow state NAME (client resolves name→UUID). */
-    state_map: {
-      backlog: string;
-      todo: string;
-      in_progress: string;
-      in_review: string;
-      done: string;
-      cancelled: string;
-    };
+    /** Named Plane boards; each scopes one Plane project + its workflow-state name map. */
+    boards: Record<
+      string,
+      {
+        project_slug: string;
+        /** Each Beckett TicketState → its Plane workflow state NAME (client resolves name→UUID). */
+        state_map: {
+          backlog: string;
+          todo: string;
+          in_progress: string;
+          in_review: string;
+          done: string;
+          cancelled: string;
+        };
+      }
+    >;
+    /** Board name used when a caller omits --board. */
+    default_board: string;
   };
   /** Ambient interjection policy. Ships disabled; per-channel modes are opt-in. */
   proactivity: {

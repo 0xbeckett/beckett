@@ -56,10 +56,35 @@ gmail_address = ""
 [plane]
 base_url = "https://plane.0xbeckett.me"
 workspace_slug = "beckett"
-project_slug = "beckett"
 poll_secs = 5
+default_board = "ops"
 
-[plane.state_map]
+[plane.boards.ops]
+project_slug = "beckett"
+
+[plane.boards.ops.state_map]
+backlog = "Backlog"
+todo = "Todo"
+in_progress = "In Progress"
+in_review = "In Review"
+done = "Done"
+cancelled = "Cancelled"
+
+[plane.boards.vid]
+project_slug = "VID"
+
+[plane.boards.vid.state_map]
+backlog = "Ideas"
+todo = "Scripting"
+in_progress = "Production"
+in_review = "Review"
+done = "Published"
+cancelled = "Shelved"
+
+[plane.boards.vidpip]
+project_slug = "VIDPIP"
+
+[plane.boards.vidpip.state_map]
 backlog = "Backlog"
 todo = "Todo"
 in_progress = "In Progress"

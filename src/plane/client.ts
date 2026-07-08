@@ -15,6 +15,7 @@
 
 import { z } from "zod";
 import { log } from "../log.ts";
+import { resolvePlaneBoard, resolvePlaneBoardName } from "../config.ts";
 import type { Config, Logger } from "../types.ts";
 import { parseCast, serializeCast } from "./cast.ts";
 import type { Casting, PlaneComment, Ticket, TicketState } from "./types.ts";
@@ -59,6 +60,8 @@ export interface PlaneClientDeps {
   /** API token; defaults to `process.env.PLANE_API_TOKEN`. */
   token?: string;
   logger?: Logger;
+  /** Named Plane board to scope this client to; defaults to config.plane.default_board. */
+  board?: string;
   /** Injectable fetch (tests). Defaults to the global `fetch`. */
   fetch?: typeof fetch;
 }
@@ -242,6 +245,8 @@ export class PlaneClient {
   private readonly logger: Logger;
   private readonly fetchImpl: typeof fetch;
   private readonly apiBase: string;
+  private readonly boardName: string;
+  private readonly boardConfig: Config["plane"]["boards"][string];
 
   // Rolling health counters for the `beckett status` surface (issue #30).
   private lastHttpStatus: number | null = null;
@@ -262,6 +267,8 @@ export class PlaneClient {
     this.token = deps.token;
     this.logger = deps.logger ?? log.child("plane.client");
     this.fetchImpl = deps.fetch ?? globalThis.fetch.bind(globalThis);
+    this.boardName = resolvePlaneBoardName(this.config, deps.board);
+    this.boardConfig = resolvePlaneBoard(this.config, this.boardName);
     // API calls use the internal URL when set (bypasses the public auth gate / TLS);
     // base_url stays public for human-facing ticket links.
     const apiRoot = (process.env.PLANE_INTERNAL_URL ?? this.config.plane.base_url).replace(/\/+$/, "");
@@ -406,6 +413,17 @@ export class PlaneClient {
     return this.hydrateComment(ticketId, raw);
   }
 
+  /** The selected board name this client is scoped to. */
+  board(): string {
+    return this.boardName;
+  }
+
+  /** Resolved Plane project info for routing write-backs by Ticket.projectId. */
+  async projectInfo(): Promise<{ board: string; projectId: string; identifier: string | null }> {
+    await this.bootstrap();
+    return { board: this.boardName, projectId: this.projectId!, identifier: this.projectIdentifier };
+  }
+
   /** The project's Plane workflow states (cached after the first call). */
   async listStates(): Promise<PlaneState[]> {
     await this.bootstrap();
@@ -462,7 +480,7 @@ export class PlaneClient {
 
   /** Plane state UUID for a Beckett {@link TicketState}; throws if Plane lacks that state. */
   private resolveStateId(state: TicketState): string {
-    const name = this.config.plane.state_map[state];
+    const name = this.boardConfig.state_map[state];
     const found = this.statesByName?.get(name.toLowerCase());
     if (!found) {
       throw new PlaneApiError(
@@ -501,7 +519,7 @@ export class PlaneClient {
   private async resolveProject(): Promise<void> {
     if (this.projectId) return;
     const raw = await this.fetchAllPages(`${this.apiBase}/projects/`);
-    const slug = this.config.plane.project_slug.toLowerCase();
+    const slug = this.boardConfig.project_slug.toLowerCase();
     const projects = raw.map((r) => ProjectSchema.parse(r));
     const match =
       projects.find((p) => (p.identifier ?? "").toLowerCase() === slug) ??
@@ -510,14 +528,15 @@ export class PlaneClient {
     if (!match) {
       throw new PlaneApiError(
         0,
-        `no Plane project matching slug "${this.config.plane.project_slug}" in workspace ` +
+        `no Plane project matching slug "${this.boardConfig.project_slug}" for board "${this.boardName}" in workspace ` +
           `"${this.config.plane.workspace_slug}" (have: ${projects.map((p) => p.identifier ?? p.name).join(", ") || "none"})`,
       );
     }
     this.projectId = match.id;
     this.projectIdentifier = match.identifier ?? match.name ?? null;
     this.logger.info("resolved Plane project", {
-      slug: this.config.plane.project_slug,
+      board: this.boardName,
+      slug: this.boardConfig.project_slug,
       projectId: this.projectId,
       identifier: this.projectIdentifier,
     });
@@ -543,7 +562,7 @@ export class PlaneClient {
       "cancelled",
     ];
     for (const ts of ticketStates) {
-      const name = this.config.plane.state_map[ts];
+      const name = this.boardConfig.state_map[ts];
       const st = byName.get(name.toLowerCase());
       if (st) reverse.set(st.id, ts);
       else
@@ -551,6 +570,12 @@ export class PlaneClient {
           ticketState: ts,
           name,
         });
+    }
+    // Option A video boards may include extra human-move states (e.g. Voiceover/Render) in
+    // Plane's "started" group. Beckett does not set them, but reading them back should keep the
+    // coarse engine in in_progress instead of falling to backlog.
+    for (const st of states) {
+      if (!reverse.has(st.id) && (st.group ?? "").toLowerCase() === "started") reverse.set(st.id, "in_progress");
     }
 
     this.cachedStates = states;
