@@ -13,9 +13,10 @@
  * absolute path it asked for, or a hard error. No half-success, no stray projects.
  */
 
-import { existsSync, mkdirSync, readdirSync, statSync, copyFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, copyFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, isAbsolute, dirname } from "node:path";
 import { homedir } from "node:os";
+import { loadEnvFile } from "../config.ts";
 import type { Logger } from "../types.ts";
 
 export class ImageGenError extends Error {}
@@ -35,9 +36,11 @@ export interface ImageGenOptions {
   refs?: string[];
   /** Ask for a transparent (alpha) background — uses Codex's built-in chroma-key flow. */
   transparent?: boolean;
-  /** Optional Codex model override (the driver model, not the image model). */
+  /** Optional model override. `fal-ai/...` slugs route to fal.ai; anything else stays Codex. */
   model?: string;
-  /** Hard timeout. Default 5 min — generation is one Codex turn, usually <60s. */
+  /** Requested media kind. Defaults to image, except obvious fal video models (e.g. seedance). */
+  media?: "image" | "video";
+  /** Hard timeout. Default 5 min for Codex; fal uses this as the queue poll deadline. */
   timeoutMs?: number;
 }
 
@@ -49,6 +52,13 @@ export interface ImageGenResult {
   edited: boolean;
   /** True if we had to move the artifact from Codex's default dir to `path`. */
   relocated: boolean;
+  /** Backend/provider metadata (omitted for the legacy Codex path). */
+  provider?: "fal";
+  model?: string;
+  media?: "image" | "video";
+  url?: string;
+  requestId?: string;
+  raw?: unknown;
 }
 
 export interface ImageGenDeps {
@@ -81,6 +91,259 @@ function resolveCodexBin(home: string, override?: string): string {
   return "codex"; // fall back to PATH
 }
 
+function isFalModel(model: string | undefined): boolean {
+  return !!model?.trim().toLowerCase().startsWith("fal-ai/");
+}
+
+function inferFalMedia(model: string, requested?: "image" | "video"): "image" | "video" {
+  if (requested) return requested;
+  const m = model.toLowerCase();
+  return m.includes("video") || m.includes("seedance") ? "video" : "image";
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseSize(size: string | undefined): { width: number; height: number } | undefined {
+  if (!size || size === "auto") return undefined;
+  const m = /^(\d+)x(\d+)$/.exec(size);
+  if (!m) return undefined;
+  return { width: Number(m[1]), height: Number(m[2]) };
+}
+
+function extractFalError(json: any, fallback = "unknown fal error"): string {
+  if (typeof json?.error === "string") return json.error;
+  if (typeof json?.error?.message === "string") return json.error.message;
+  if (typeof json?.message === "string") return json.message;
+  if (typeof json?.detail === "string") return json.detail;
+  if (Array.isArray(json?.detail)) {
+    const msg = json.detail
+      .map((d: any) => d?.msg ?? d?.message ?? (typeof d === "string" ? d : ""))
+      .filter(Boolean)
+      .join("; ");
+    if (msg) return msg;
+  }
+  if (Array.isArray(json?.logs)) {
+    const last = [...json.logs].reverse().find((l: any) => typeof l?.message === "string" || typeof l === "string");
+    if (typeof last === "string") return last;
+    if (typeof last?.message === "string") return last.message;
+  }
+  try {
+    const s = JSON.stringify(json);
+    if (s && s !== "{}") return s.slice(0, 800);
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+
+function findAssetUrl(json: any, media: "image" | "video"): string | undefined {
+  if (!json || typeof json !== "object") return undefined;
+  if (media === "image") {
+    if (typeof json?.images?.[0]?.url === "string") return json.images[0].url;
+    if (typeof json?.image?.url === "string") return json.image.url;
+  } else {
+    if (typeof json?.video?.url === "string") return json.video.url;
+    if (typeof json?.videos?.[0]?.url === "string") return json.videos[0].url;
+  }
+  if (typeof json?.url === "string") return json.url;
+  return undefined;
+}
+
+export interface FalProviderOptions {
+  apiKey?: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  fetchImpl?: typeof fetch;
+  beckettDir?: string;
+}
+
+/** fal.ai async queue backend: submit → poll status → fetch result → download asset. */
+export class FalMediaGen {
+  private readonly home = homedir();
+  private readonly imagesDir: string;
+  private readonly logger: Logger;
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+  private readonly timeoutMs: number;
+  private readonly pollIntervalMs: number;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(deps: ImageGenDeps & FalProviderOptions) {
+    this.imagesDir = deps.imagesDir;
+    this.logger = deps.logger;
+    this.baseUrl = (deps.baseUrl ?? "https://queue.fal.run").replace(/\/+$/, "");
+    this.timeoutMs = deps.timeoutMs ?? 900_000;
+    this.pollIntervalMs = deps.pollIntervalMs ?? 2_000;
+    this.fetchImpl = deps.fetchImpl ?? fetch;
+
+    if (!deps.apiKey) {
+      const beckettDir = deps.beckettDir ?? process.env.BECKETT_DIR ?? join(this.home, ".beckett");
+      try {
+        loadEnvFile(join(beckettDir, ".env"));
+      } catch {
+        /* missing/unreadable env becomes the clean missing-key error below */
+      }
+    }
+    const key = [deps.apiKey, process.env.FAL_KEY, process.env.FAL_API_KEY].find((v) => v?.trim()) ?? "";
+    if (!key.trim()) {
+      throw new ImageGenError(
+        "FAL key not on box: no FAL_KEY or FAL_API_KEY in ~/.beckett/.env — fal image/video generation is unavailable",
+      );
+    }
+    this.apiKey = key.trim();
+  }
+
+  async generate(opts: ImageGenOptions & { model: string }): Promise<ImageGenResult> {
+    const prompt = opts.prompt?.trim();
+    if (!prompt) throw new ImageGenError("empty prompt");
+    const model = opts.model.trim();
+    if (!model) throw new ImageGenError("fal model slug is required");
+    if (opts.refs?.length) throw new ImageGenError("fal image/video generation does not support --ref yet");
+    if (opts.transparent) throw new ImageGenError("fal image/video generation does not support --transparent yet");
+
+    const size = opts.size ?? (inferFalMedia(model, opts.media) === "image" ? DEFAULT_SIZE : "auto");
+    if (size !== "auto" && !ALLOWED_SIZES.has(size)) {
+      throw new ImageGenError(`bad --size "${size}"; allowed: ${[...ALLOWED_SIZES].join(", ")}`);
+    }
+    const media = inferFalMedia(model, opts.media);
+    const ext = media === "video" ? "mp4" : "png";
+    const outPath = opts.out
+      ? isAbsolute(opts.out)
+        ? opts.out
+        : resolve(opts.out)
+      : join(this.imagesDir, `${Date.now()}-${slugify(prompt)}.${ext}`);
+    mkdirSync(dirname(outPath), { recursive: true });
+
+    const payload: Record<string, unknown> = { prompt };
+    const parsedSize = media === "image" ? parseSize(size) : undefined;
+    if (parsedSize) payload.image_size = parsedSize;
+
+    this.logger.info("fal gen submit", { model, media, outPath, size });
+    const submit = await this.requestJson(`${this.baseUrl}/${model.replace(/^\/+/, "")}`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    let requestId = String(submit?.request_id ?? submit?.requestId ?? "");
+    let statusUrl = typeof submit?.status_url === "string" ? submit.status_url : "";
+    let resultUrl = typeof submit?.response_url === "string" ? submit.response_url : "";
+
+    // Some fal-compatible endpoints may return the result synchronously; handle that too.
+    let result = findAssetUrl(submit, media) ? submit : undefined;
+    const deadline = Date.now() + (opts.timeoutMs ?? this.timeoutMs);
+
+    while (!result) {
+      if (!requestId && !statusUrl && !resultUrl) {
+        throw new ImageGenError(`fal ${model} response did not include a request id or result URL`);
+      }
+      if (!statusUrl && requestId) statusUrl = `${this.baseUrl}/${model.replace(/^\/+/, "")}/requests/${requestId}/status`;
+      if (!resultUrl && requestId) resultUrl = `${this.baseUrl}/${model.replace(/^\/+/, "")}/requests/${requestId}`;
+
+      if (Date.now() > deadline) {
+        throw new ImageGenError(`fal ${model} timed out after ${Math.round((opts.timeoutMs ?? this.timeoutMs) / 1000)}s`);
+      }
+      if (!statusUrl) {
+        if (!resultUrl) throw new ImageGenError(`fal ${model} response did not include a status URL`);
+        result = await this.requestJson(resultUrl, { method: "GET" });
+        break;
+      }
+
+      const sep = statusUrl.includes("?") ? "&" : "?";
+      const status = await this.requestJson(`${statusUrl}${sep}logs=1`, { method: "GET" });
+      const state = String(status?.status ?? status?.state ?? "").toUpperCase();
+      if (state === "FAILED" || state === "ERROR" || state === "CANCELLED") {
+        throw new ImageGenError(`fal ${model} failed: ${extractFalError(status)}`);
+      }
+      if (typeof status?.response_url === "string") resultUrl = status.response_url;
+      if (typeof status?.request_id === "string") requestId = status.request_id;
+      if (state === "COMPLETED" || state === "SUCCESS" || state === "SUCCEEDED") {
+        if (findAssetUrl(status, media)) result = status;
+        else {
+          if (!resultUrl) throw new ImageGenError(`fal ${model} completed but did not include a result URL`);
+          result = await this.requestJson(resultUrl, { method: "GET" });
+        }
+        break;
+      }
+      await sleep(this.pollIntervalMs);
+    }
+
+    const assetUrl = findAssetUrl(result, media);
+    if (!assetUrl) throw new ImageGenError(`fal ${model} result did not include a ${media} URL`);
+    await this.downloadAsset(assetUrl, outPath);
+
+    const bytes = statSync(outPath).size;
+    if (bytes === 0) {
+      rmSync(outPath, { force: true });
+      throw new ImageGenError(`fal wrote an empty file at ${outPath}`);
+    }
+    return {
+      path: outPath,
+      bytes,
+      size,
+      prompt,
+      edited: false,
+      relocated: false,
+      provider: "fal",
+      model,
+      media,
+      url: assetUrl,
+      requestId: requestId || undefined,
+      raw: result,
+    };
+  }
+
+  private async requestJson(url: string, init: RequestInit): Promise<any> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 60_000);
+    try {
+      const res = await this.fetchImpl(url, {
+        ...init,
+        headers: {
+          Authorization: `Key ${this.apiKey}`,
+          "Content-Type": "application/json",
+          ...(init.headers ?? {}),
+        },
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      let json: any;
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        json = { rawText: text };
+      }
+      if (!res.ok) throw new ImageGenError(`fal ${res.status} ${res.statusText}: ${extractFalError(json, text.slice(0, 500))}`.trim());
+      return json;
+    } catch (err) {
+      if ((err as Error).name === "AbortError") throw new ImageGenError("fal request timed out after 60s");
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async downloadAsset(url: string, outPath: string): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120_000);
+    try {
+      const res = await this.fetchImpl(url, { method: "GET", signal: controller.signal });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new ImageGenError(`fal asset download ${res.status} ${res.statusText}: ${text.slice(0, 500)}`.trim());
+      }
+      writeFileSync(outPath, new Uint8Array(await res.arrayBuffer()));
+    } catch (err) {
+      if ((err as Error).name === "AbortError") throw new ImageGenError("fal asset download timed out after 120s");
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export class CodexImageGen {
   private readonly home = homedir();
   private readonly imagesDir: string;
@@ -98,6 +361,14 @@ export class CodexImageGen {
   async generate(opts: ImageGenOptions): Promise<ImageGenResult> {
     const prompt = opts.prompt?.trim();
     if (!prompt) throw new ImageGenError("empty prompt");
+
+    if (isFalModel(opts.model)) {
+      return new FalMediaGen({ imagesDir: this.imagesDir, logger: this.logger }).generate({
+        ...opts,
+        prompt,
+        model: opts.model!.trim(),
+      });
+    }
 
     const size = opts.size ?? DEFAULT_SIZE;
     if (!ALLOWED_SIZES.has(size)) {

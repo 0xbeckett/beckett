@@ -479,14 +479,18 @@ async function main(): Promise<void> {
     fail("usage: beckett deploy <name> --port <p> | deploy ls | deploy rm <name>");
   }
 
-  // ── image (in-process: wraps the Codex image_gen tool into one deterministic command) ─────
+  // ── image (in-process: Codex by default; `--model fal-ai/...` routes to fal.ai queue) ─────
   if (group === "image") {
-    const { _, flags } = parse([sub, ...rest].filter(Boolean) as string[]);
+    const video = sub === "video";
+    const { _, flags } = parse((video ? rest : [sub, ...rest]).filter(Boolean) as string[]);
     const prompt = _.join(" ").trim();
     if (!prompt)
       fail(
-        'usage: beckett image "<prompt>" [--out <path>] [--size 1024x1024|1536x1024|1024x1536|auto] [--ref <file[,file]>] [--transparent] [--model <m>]',
+        'usage: beckett image [video] "<prompt>" [--out <path>] [--size 1024x1024|1536x1024|1024x1536|auto] [--ref <file[,file]>] [--transparent] [--model <codex-model|fal-ai/...>]',
       );
+    if (video && !String(flags.model ?? "").startsWith("fal-ai/")) {
+      fail('beckett image video requires a fal video model, e.g. --model "fal-ai/bytedance/seedance/..."');
+    }
     const refs = flags.ref ? String(flags.ref).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
     const gen = new CodexImageGen({ imagesDir: paths.imagesDir, logger: quietLogger });
     out(
@@ -497,6 +501,7 @@ async function main(): Promise<void> {
         refs,
         transparent: flags.transparent === true || flags.transparent === "true",
         model: flags.model ? String(flags.model) : undefined,
+        media: video ? "video" : undefined,
       }),
     );
   }
