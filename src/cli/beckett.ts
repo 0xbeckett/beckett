@@ -26,7 +26,7 @@ import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDIN
 import { loadPeers, addPeer, removePeer } from "../discord/peers.ts";
 import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
-import type { Ticket, TicketState } from "../plane/types.ts";
+import type { Casting, Ticket, TicketState } from "../plane/types.ts";
 import { projectSlug } from "../plane/cast.ts";
 
 const config = loadConfig();
@@ -756,7 +756,8 @@ async function main(): Promise<void> {
   // CLI keeps working while `src/plane/client.ts` is built in parallel.
   if (group === "ticket") {
     const { createPlaneClient } = await import("../plane/client.ts");
-    const { parseCastJson } = await import("../plane/cast.ts");
+    const { parseCastJson, validateCasting } = await import("../plane/cast.ts");
+    const { loadPresets, requirePreset, resolveCasting } = await import("../plane/presets.ts");
     const { _, flags } = parse(rest);
     const board = cliBoardName(flags.board);
     const client = createPlaneClient({ config, board, logger: quietLogger });
@@ -792,10 +793,27 @@ async function main(): Promise<void> {
     if (sub === "create") {
       if (!flags.title) {
         fail(
-          'usage: beckett ticket create --title <t> [--board <name>] [--body <b>|--body-stdin] [--project <slug>] [--state backlog|todo|in_progress|in_review|done|cancelled] [--cast <json>] [--criteria "a;b;c"] [--channel <discord-channel-id>]',
+          'usage: beckett ticket create --title <t> [--board <name>] [--body <b>|--body-stdin] [--project <slug>] [--state backlog|todo|in_progress|in_review|done|cancelled] [--preset <name>] [--cast <json>] [--criteria "a;b;c"] [--channel <discord-channel-id>]',
         );
       }
-      const casting = flags.cast ? parseCastJson(String(flags.cast)) : {};
+      // Cast resolution: start from --preset (read FRESH from ~/.beckett/presets.json every call, so
+      // a just-edited preset applies with no restart), then let an explicit --cast override PER STAGE
+      // — an explicit stage replaces the preset's, the preset fills the rest. Validate the result
+      // against the roster before filing so a broken cast (blocked model / bad harness) never ships.
+      const explicitCast = flags.cast ? parseCastJson(String(flags.cast)) : {};
+      let presetCast: Casting | undefined;
+      if (flags.preset) {
+        try {
+          presetCast = requirePreset(loadPresets(paths.presetsFile), String(flags.preset));
+        } catch (err) {
+          fail((err as Error).message);
+        }
+      }
+      const casting = resolveCasting(presetCast, explicitCast);
+      const castErrors = validateCasting(casting);
+      if (castErrors.length > 0) {
+        fail(`refusing to file a broken cast:\n  - ${castErrors.join("\n  - ")}`);
+      }
       const criteria = flags.criteria
         ? String(flags.criteria).split(";").map((s) => s.trim()).filter(Boolean)
         : [];
@@ -867,6 +885,33 @@ async function main(): Promise<void> {
     fail("usage: beckett ticket create|comment|state|list|show|restaff <...>");
   }
 
+  // ── preset (in-process: inspect the user-defined cast presets in ~/.beckett/presets.json) ──
+  // Presets are named cast "flows" edited directly in ~/.beckett/presets.json (no rebuild/restart
+  // to add or change one). `ls` lists every name + its expanded cast; `show <name>` prints one.
+  // Both read the file FRESH and validate it, so a malformed presets.json fails here loudly too.
+  if (group === "preset") {
+    const { loadPresets, requirePreset } = await import("../plane/presets.ts");
+    let presets;
+    try {
+      presets = loadPresets(paths.presetsFile);
+    } catch (err) {
+      fail((err as Error).message);
+    }
+    if (sub === "ls" || sub === "list" || sub === undefined) {
+      out({ file: paths.presetsFile, presets });
+    }
+    if (sub === "show" || sub === "get") {
+      const name = rest[0];
+      if (!name) fail("usage: beckett preset show <name>");
+      try {
+        out({ name, cast: requirePreset(presets, String(name)) });
+      } catch (err) {
+        fail((err as Error).message);
+      }
+    }
+    fail("usage: beckett preset ls | show <name>");
+  }
+
   // ── plan (in-process: file a whole dependency DAG at once) ───────────────────────────────
   // For BIG, multi-part work only. Reads a JSON DAG on stdin (or --file), validates it (unique
   // keys, known edges, no cycles), then files the tickets in dependency order: roots (no `needs`)
@@ -889,7 +934,7 @@ async function main(): Promise<void> {
       fail(
         'usage: beckett plan [--file <f>] < dag.json\n' +
           '  dag.json = { "channel"?: "<id>", "board"?: "ops|vid|vidpip", "tickets": [ { "key", "title", "board"?, "body"?, ' +
-          '"criteria"?: string[], "cast"?: {...}, "needs"?: ["key", ...] }, ... ] }',
+          '"criteria"?: string[], "preset"?: "<name>", "cast"?: {...}, "needs"?: ["key", ...] }, ... ] }',
       );
     }
 
@@ -911,10 +956,37 @@ async function main(): Promise<void> {
 
     const planDefaultBoard = spec.board ? String(spec.board) : undefined;
     const boardForKey = new Map<string, string>();
-    // Restricted self-repo gate and board validation — fail the WHOLE plan before filing any node.
+    // Presets read FRESH here (once per plan) so a just-edited flow applies with no restart. A node
+    // may name a "preset" (expanded into its cast, explicit "cast" overriding per stage) exactly like
+    // `ticket create --preset`. A malformed presets.json fails the whole plan before any node is filed.
+    const { loadPresets, requirePreset, resolveCasting } = await import("../plane/presets.ts");
+    const { validateCasting } = await import("../plane/cast.ts");
+    let planPresets;
+    try {
+      planPresets = loadPresets(paths.presetsFile);
+    } catch (err) {
+      fail((err as Error).message);
+    }
+    const castForKey = new Map<string, Casting>();
+    // Restricted self-repo gate, board validation, and cast resolution — fail the WHOLE plan before
+    // filing any node.
     for (const t of tickets) {
       guardRestrictedProject(t.project ? String(t.project) : undefined, !!flags["confirm-beckett"]);
       boardForKey.set(t.key, cliBoardName(t.board ? String(t.board) : planDefaultBoard));
+      let presetCast: Casting | undefined;
+      if (t.preset) {
+        try {
+          presetCast = requirePreset(planPresets, String(t.preset));
+        } catch (err) {
+          fail(`plan: ticket "${t.key}": ${(err as Error).message}`);
+        }
+      }
+      const casting = resolveCasting(presetCast, (t.cast ?? {}) as Casting);
+      const castErrors = validateCasting(casting);
+      if (castErrors.length > 0) {
+        fail(`plan: ticket "${t.key}" has a broken cast:\n  - ${castErrors.join("\n  - ")}`);
+      }
+      castForKey.set(t.key, casting);
     }
 
     // 2. topological order (Kahn) — also the cycle detector
@@ -972,7 +1044,7 @@ async function main(): Promise<void> {
           const created = await clientForBoard(boardForKey.get(key)!).createIssue({
             title: String(t.title),
             body: t.body ? String(t.body) : "",
-            casting: t.cast ?? {},
+            casting: castForKey.get(key) ?? {},
             criteria: Array.isArray(t.criteria) ? t.criteria.map(String) : [],
             blockedBy,
             // Per-node code project (its own repo). Sibling nodes may share one project or each get
@@ -1168,7 +1240,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | ticket create|comment|state|list|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | memory recall|remember");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | ticket create|comment|state|list|show | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | memory recall|remember");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

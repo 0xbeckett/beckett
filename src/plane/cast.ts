@@ -67,6 +67,45 @@ export function parseCastJson(raw: string): Casting {
   return result.success ? (result.data as Casting) : {};
 }
 
+/**
+ * pi-tier models hard-blocked on our ChatGPT-account tier ("not supported with a ChatGPT
+ * account") — doctrine in `concierge.md` ("Not on our tier"). Only `gpt-5.6-terra` (default) and
+ * `gpt-5.6-luna` are castable on `pi`; SOL and bare `gpt-5.6` must never reach a worker. Matched
+ * case-insensitively against a stage's `model`.
+ */
+export const BLOCKED_MODELS: ReadonlySet<string> = new Set(["sol", "gpt-5.6"]);
+
+/**
+ * Validate a {@link Casting} against the roster rules, returning a list of human-readable errors
+ * (`[]` ⇒ valid, fileable). The SINGLE SOURCE OF TRUTH for "is this cast fileable": it reuses the
+ * same {@link CastingSchema} the reader trusts for SHAPE (harness ∈ claude|codex|pi, effort ∈
+ * low|medium|high|xhigh, `model` a non-empty string) and layers on the doctrine BLOCKLIST (SOL /
+ * bare `gpt-5.6` are not on our tier). Callers that must not silently file a broken cast (the
+ * preset loader, the CLI create/plan paths) run this and refuse when it returns errors — unlike
+ * {@link parseCastJson}, which is deliberately tolerant and degrades a bad block to `{}`.
+ */
+export function validateCasting(casting: unknown): string[] {
+  const parsed = CastingSchema.safeParse(casting);
+  if (!parsed.success) {
+    return parsed.error.issues.map((issue) => {
+      const where = issue.path.length ? issue.path.join(".") : "(root)";
+      return `${where}: ${issue.message}`;
+    });
+  }
+  const errors: string[] = [];
+  for (const [stage, spec] of Object.entries(parsed.data)) {
+    if (!spec) continue;
+    const model = spec.model?.trim().toLowerCase();
+    if (model && BLOCKED_MODELS.has(model)) {
+      errors.push(
+        `${stage}: model "${spec.model}" is hard-blocked on our tier (not supported with a ` +
+          `ChatGPT account) — cast gpt-5.6-terra or gpt-5.6-luna instead`,
+      );
+    }
+  }
+  return errors;
+}
+
 // =======================================================================================
 // parseCast — READER
 // =======================================================================================

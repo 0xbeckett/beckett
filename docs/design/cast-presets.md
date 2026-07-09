@@ -1,10 +1,12 @@
 # Design doc: model cast presets + cost/intelligence routing
 
-**Ticket:** OPS-109
+**Ticket:** OPS-109 (design) → **OPS-110 (build, shipped)**
 **Author:** Beckett (worker)
 **Date:** 2026-07-09
-**Status:** Proposal — for Jason to react to. **No code in this ticket.** The build is a follow-up
-after greenlight.
+**Status:** **Shipped** in OPS-110. §§1–4 (the roster + the vocabulary of presets) still stand.
+The invocation actually built differs from the §5 proposal in a few deliberate ways — see the
+**Shipped** section at the very bottom for the authoritative usage. Where the two disagree, the
+Shipped section wins.
 
 ---
 
@@ -358,6 +360,69 @@ every ticket gives us the cost/quality data to move the line later.
 Net: presets convert the casting doctrine from "in my head each time" into a small reviewable
 vocabulary, make the cost-right cast the default, and make the expensive cast something you have to
 name (and, for Fable, confirm). That's the whole win. Greenlight and I'll file the build ticket.
+
+---
+
+## 8. Shipped (OPS-110) — authoritative usage
+
+The build landed with **one deliberate refinement over §5**, per Jason: presets are **user-defined
+flows in an external, hot-reloaded config file**, not a checked-in versioned table. You pick, say,
+Fable as the reviewer and Sonnet 5 as the implementer, name it whatever you want, and reuse it by
+name. These live *outside* the daemon so iterating on them needs **no rebuild and no restart**.
+
+### 8.1 Where presets live
+`~/.beckett/presets.json` — plain JSON, one object:
+```json
+{
+  "<preset-name>": { "implement": {"harness":"…","model":"…","effort":"…"}, "review": {…} },
+  "jason-review": {
+    "implement": {"harness":"claude","model":"claude-sonnet-5","effort":"high"},
+    "review":    {"harness":"claude","model":"claude-fable-5","effort":"high"}
+  }
+}
+```
+- **Arbitrary names**, **any stage combo** — a preset may be partial (e.g. only a `review` stage).
+- The file is **read fresh on every `beckett ticket create` and `beckett plan`** — there is no cache,
+  so a preset you just edited applies to the very next ticket. Editing/adding a preset = editing this
+  file; nothing is compiled into the binary.
+- **Missing file → auto-created**, seeded with four presets from §4: `cheap-lane`, `taste-lane`,
+  `fable-review+terra-work`, `critical`. Delete the file to re-seed.
+- **Validated on load** against the roster (the same cast validation the queue uses): a blocked
+  model (**SOL**, bare **gpt-5.6**) or a malformed `harness`/`model`/`effort` throws a clear error
+  naming the offending preset. A broken cast is never silently filed.
+
+### 8.2 Invocation
+```
+beckett ticket create --title "…" --preset jason-review [--cast '{…}'] …
+```
+- `--preset <name>` expands that preset into the cast. An **unknown name fails loudly** and lists the
+  available names.
+- **Precedence — explicit `--cast` overrides the preset per stage:** for every stage the explicit
+  `--cast` names, the explicit spec **replaces** the preset's for that stage; stages the `--cast`
+  omits keep the preset's. So `--preset fable-review+terra-work --cast '{"implement":{"harness":"pi","effort":"xhigh"}}'`
+  keeps the preset's Fable `review` and swaps in the explicit `implement`. (This supersedes §5.1's
+  "mutually exclusive" — the refinement makes them compose instead.)
+- The **resolved** cast is validated before filing (§8.1 rules), so an override can't sneak a blocked
+  model or bad effort through.
+
+### 8.3 Inspection
+- `beckett preset ls` — every preset name + its expanded cast, plus the file path.
+- `beckett preset show <name>` — one preset's expanded cast (unknown name fails loudly).
+
+### 8.4 In `beckett plan`
+A plan node may carry `"preset": "<name>"` (expanded exactly like `--preset`, with the node's `"cast"`
+overriding per stage). Presets are read fresh once per plan; a malformed `presets.json` or an unknown
+preset fails the **whole** plan before any node is filed.
+
+### 8.5 Not in this build (unchanged from §5's proposal)
+- No `--cast-override` deep-merge and no scalar `--implement-effort`-style flags — a per-stage `--cast`
+  covers the override need. (§5.2's deeper merge can be added later if the per-stage swap proves too
+  coarse.)
+- **No `--fable-confirmed` guardrail flag** (§5.4). Fable-in-a-seat confirmation stays a
+  human/doctrine step: the `fable-review+terra-work` and `critical` seeds carry a ⚠ note, and the
+  Concierge still confirms on channel before casting Fable. Scope here was CLI + config-loading only;
+  **the running daemon's behavior is unchanged** — presets are pure sugar over the existing `--cast`
+  block, resolved at file time.
 
 ---
 

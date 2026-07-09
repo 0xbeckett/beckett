@@ -522,6 +522,7 @@ export interface Paths {
   accessPendingFile: string; // <beckettDir>/access-pending.json — grant requests awaiting owner approval
   peersFile: string; // <beckettDir>/peers.txt — owner-added trusted peer Beckett bot ids (federation)
   announcedFile: string; // <beckettDir>/announced.txt — last commit SHA announced on restart (changelog)
+  presetsFile: string; // <beckettDir>/presets.json — user-defined named cast presets (OPS-110)
 }
 
 /** The full validated config (Spec 01 §4). Every key has a default so an empty config boots. */
