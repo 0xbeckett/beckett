@@ -35,6 +35,10 @@ set_env "CORS_ALLOWED_ORIGINS" "https://plane.0xbeckett.me"
 set_env "LISTEN_HTTP_PORT" "8750"
 set_env "LISTEN_HTTPS_PORT" "8751"
 set_env "CERT_EMAIL" ""
+# Plane's DRF API-key throttle defaults to 60/minute, which is too low for Beckett's
+# concurrent poller/bootstrap calls. Keep this well above a normal boot burst; client-side
+# 429 backoff remains the safety net for exceptional load.
+set_env "API_KEY_RATE_LIMIT" "600/minute"
 
 # Source: Plane self-hosted Docker Compose release artifacts above.
 docker compose --env-file variables.env -p plane up -d

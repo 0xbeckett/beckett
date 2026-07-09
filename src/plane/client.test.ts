@@ -92,6 +92,107 @@ test("req does not retry non-transient 4xx responses", async () => {
   expect(calls).toBe(1);
 });
 
+/** Avoid real backoff waits while preserving the retry path and recording its delays. */
+function captureRetryDelays(client: PlaneClient): number[] {
+  const delays: number[] = [];
+  (client as unknown as { sleep(ms: number): Promise<void> }).sleep = async (ms) => {
+    delays.push(ms);
+  };
+  return delays;
+}
+
+test("req absorbs a 429 burst with capped exponential backoff and jitter", async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls++;
+    if (calls <= 6) return new Response("rate limited", { status: 429 });
+    return Response.json({ ok: true });
+  }) as unknown as typeof fetch;
+  const client = new PlaneClient({ config, token: "tok", logger: quiet, fetch: fetchImpl });
+  const delays = captureRetryDelays(client);
+
+  await expect(privateReq(client, "GET", "https://plane.test/x")).resolves.toEqual({ ok: true });
+  expect(calls).toBe(7);
+  expect(delays).toHaveLength(6);
+  // Each window is exponential with up to 25% jitter; the last is capped at 30 seconds.
+  expect(delays[0]).toBeGreaterThanOrEqual(1_000);
+  expect(delays[0]).toBeLessThanOrEqual(1_250);
+  expect(delays[1]).toBeGreaterThanOrEqual(2_000);
+  expect(delays[1]).toBeLessThanOrEqual(2_500);
+  expect(delays[4]).toBeGreaterThanOrEqual(16_000);
+  expect(delays[4]).toBeLessThanOrEqual(20_000);
+  expect(delays[5]).toBe(30_000);
+});
+
+test("list, show, create, comment, and state calls retry their first 429", async () => {
+  const attempts = new Map<string, number>();
+  const issue = {
+    id: "t1",
+    name: "Ticket",
+    description_html: "",
+    state: "s1",
+    project: "p1",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    const method = init?.method ?? "GET";
+    const key = `${method} ${u}`;
+    const count = (attempts.get(key) ?? 0) + 1;
+    attempts.set(key, count);
+    if (count === 1) return new Response("rate limited", { status: 429 });
+
+    const path = new URL(u).pathname;
+    if (path.endsWith("/projects/")) {
+      return Response.json({ results: [{ id: "p1", identifier: "OPS", name: "ops" }] });
+    }
+    if (path.endsWith("/states/")) {
+      return Response.json({
+        results: [
+          { id: "s1", name: "Backlog" },
+          { id: "s2", name: "Todo" },
+          { id: "s3", name: "In Progress" },
+          { id: "s4", name: "In Review" },
+          { id: "s5", name: "Done" },
+          { id: "s6", name: "Cancelled" },
+        ],
+      });
+    }
+    if (path.endsWith("/issues/t1/comments/")) {
+      return method === "POST"
+        ? Response.json({ id: "c1", comment_html: "<p>hello</p>", issue: "t1", created_at: "2026-01-01T00:00:00Z" })
+        : Response.json({ results: [] });
+    }
+    if (path.endsWith("/issues/t1/") && method === "PATCH") return new Response(null, { status: 204 });
+    if (path.endsWith("/issues/t1/")) return Response.json(issue);
+    if (path.endsWith("/issues/")) return method === "POST" ? Response.json(issue) : Response.json({ results: [issue] });
+    throw new Error(`unexpected Plane route: ${key}`);
+  }) as unknown as typeof fetch;
+  const client = new PlaneClient({ config, token: "tok", logger: quiet, fetch: fetchImpl });
+  captureRetryDelays(client);
+
+  await expect(client.listIssues()).resolves.toHaveLength(1);
+  await expect(client.getIssue("t1")).resolves.toMatchObject({ id: "t1" });
+  await expect(client.createIssue({ title: "Ticket" })).resolves.toMatchObject({ id: "t1" });
+  await expect(client.listComments("t1")).resolves.toEqual([]);
+  await expect(client.addComment("t1", "hello")).resolves.toMatchObject({ id: "c1" });
+  await expect(client.setState("t1", "done")).resolves.toBeUndefined();
+
+  for (const route of [
+    { method: "GET", path: "/projects/p1/issues/" },
+    { method: "GET", path: "/projects/p1/issues/t1/" },
+    { method: "POST", path: "/projects/p1/issues/" },
+    { method: "GET", path: "/projects/p1/issues/t1/comments/" },
+    { method: "POST", path: "/projects/p1/issues/t1/comments/" },
+    { method: "PATCH", path: "/projects/p1/issues/t1/" },
+  ]) {
+    const calls = [...attempts.entries()].find(
+      ([key]) => key.startsWith(`${route.method} `) && key.includes(route.path),
+    );
+    expect(calls?.[1]).toBe(2);
+  }
+});
+
 // ── issue #33: the polling diet's client half ───────────────────────────────────────────────
 
 /** Routing fetch fake: bootstrap (projects + states) plus caller-supplied routes, logging URLs. */

@@ -21,9 +21,12 @@ import { parseCast, serializeCast } from "./cast.ts";
 import type { Casting, PlaneComment, Ticket, TicketState } from "./types.ts";
 
 const REQUEST_TIMEOUT_MS = 15_000;
-const REQUEST_MAX_ATTEMPTS = 3;
-const RETRY_BASE_MS = 250;
-const RETRY_MAX_MS = 5_000;
+// Six retry windows cover a one-minute DRF rate-limit window (1 + 2 + 4 + 8 + 16 + 30s).
+// This keeps a boot-time burst invisible to callers while remaining bounded when Plane is down.
+const REQUEST_MAX_ATTEMPTS = 7;
+const RETRY_BASE_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
+const RETRY_JITTER_RATIO = 0.25;
 
 // =======================================================================================
 // Public input/dependency shapes (the contract in docs/V3.md §3)
@@ -718,10 +721,12 @@ function shouldRetryStatus(status: number): boolean {
 }
 
 function retryDelayMs(attempt: number, retryAfter: string | null): number {
+  // Honor Plane/DRF's Retry-After when present; otherwise use truncated exponential backoff.
+  // Add jitter so simultaneous poller/bootstrap requests do not all retry in lockstep.
   const hinted = parseRetryAfterMs(retryAfter);
-  if (hinted !== null) return Math.min(hinted, RETRY_MAX_MS);
-  const exp = RETRY_BASE_MS * 2 ** (attempt - 1);
-  return Math.min(RETRY_MAX_MS, exp + Math.floor(Math.random() * 100));
+  const backoff = Math.min(RETRY_MAX_MS, hinted ?? RETRY_BASE_MS * 2 ** (attempt - 1));
+  const jitter = Math.floor(Math.random() * (Math.floor(backoff * RETRY_JITTER_RATIO) + 1));
+  return Math.min(RETRY_MAX_MS, backoff + jitter);
 }
 
 function parseRetryAfterMs(raw: string | null): number | null {
