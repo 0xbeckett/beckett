@@ -45,6 +45,20 @@ The workers aren't all the same model. Each ticket is **cast** per stage — imp
 model/effort, review with another — so cheap work stays cheap and hard work gets the firepower.
 Claude is the backbone; codex and pi can be enabled as alternates.
 
+### INT intensive tickets
+
+Normal **OPS** tickets keep the short implementation flow. **INT** is a separate Plane board for
+multi-stage work: **Backlog → Design → Review (Design) → In Progress → Review → Done**. `Design`,
+`In Progress`, and `Review` are live worker states. **Review (Design) is parked**: the design worker
+commits `docs/design/int-N.md`, an independent lightweight model checks it against the ticket, and
+Beckett sends an automated update to the filing channel asking the owner to greenlight it. Approval
+is just `beckett ticket state INT-N in_progress --board int`; implementation and review resume on
+the same ticket with its `design` / `implement` / `review` casts intact — no re-filing.
+
+File one with `beckett ticket create --intensive --channel <discord-channel-id> --title "…"` (or
+`--board int`); INT defaults to the live `Design` state. Use the seeded `--preset intensive` to
+select the default three-stage cast.
+
 Beckett also has hands beyond code: it can generate images, deploy throwaway mockups to
 `<name>.your-domain`, manage its own public site, remember people and projects across
 conversations, and self-provision tools it doesn't have yet.

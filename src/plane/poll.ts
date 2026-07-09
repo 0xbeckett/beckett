@@ -177,7 +177,7 @@ export class PlanePoller {
         // ticket's whole comment history. If it appears already in an active state, also emit a
         // state_changed{from:null} so the Dispatcher can pick up in-flight work.
         slots.push({ kind: "created", ticket });
-        if (ticket.state === "in_progress" || ticket.state === "in_review") {
+        if (ticket.state === "design" || ticket.state === "in_progress" || ticket.state === "in_review") {
           slots.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
         }
         this.snapshot.set(ticket.id, {
@@ -255,6 +255,7 @@ export class PlanePoller {
     const nowIso = new Date(this.now()).toISOString();
     const recovery: PollEvent[] = [];
     const commentRecovery: Promise<PollEvent[]>[] = [];
+    let inDesign = 0;
     let recoverInProgress = 0;
     let inReview = 0;
     for (const ticket of tickets) {
@@ -266,7 +267,12 @@ export class PlanePoller {
         lastCommentSweepAt: this.now(),
       };
       this.snapshot.set(ticket.id, snapshot);
-      if (ticket.state === "in_progress") {
+      if (ticket.state === "design") {
+        // INT's Review (Design) deliberately does NOT appear here: it is a human-only parked gate.
+        recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
+        inDesign++;
+        commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
+      } else if (ticket.state === "in_progress") {
         recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
         recoverInProgress++;
         commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
@@ -279,6 +285,7 @@ export class PlanePoller {
     for (const events of await Promise.all(commentRecovery)) recovery.push(...events);
     this.logger.info("primed snapshot", {
       tickets: this.snapshot.size,
+      recover_design: inDesign,
       recover_in_progress: recoverInProgress,
       recover_in_review: inReview,
     });

@@ -70,6 +70,19 @@ in_review = "In Review"
 done = "Done"
 cancelled = "Cancelled"
 
+[plane.boards.int]
+project_slug = "INT"
+
+[plane.boards.int.state_map]
+backlog = "Backlog"
+todo = "Todo"
+design = "Design"
+design_review = "Review (Design)"
+in_progress = "In Progress"
+in_review = "Review"
+done = "Done"
+cancelled = "Cancelled"
+
 [plane.boards.vid]
 project_slug = "VID"
 

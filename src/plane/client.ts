@@ -481,11 +481,11 @@ export class PlaneClient {
   /** Plane state UUID for a Beckett {@link TicketState}; throws if Plane lacks that state. */
   private resolveStateId(state: TicketState): string {
     const name = this.boardConfig.state_map[state];
-    const found = this.statesByName?.get(name.toLowerCase());
+    const found = name ? this.statesByName?.get(name.toLowerCase()) : undefined;
     if (!found) {
       throw new PlaneApiError(
         0,
-        `no Plane workflow state named "${name}" (for TicketState "${state}") in project ${this.projectIdentifier ?? this.projectId}; ` +
+        `no Plane workflow state mapped for TicketState "${state}" in project ${this.projectIdentifier ?? this.projectId}; ` +
           `available: ${(this.cachedStates ?? []).map((s) => s.name).join(", ") || "none"}`,
       );
     }
@@ -556,6 +556,8 @@ export class PlaneClient {
     const ticketStates: TicketState[] = [
       "backlog",
       "todo",
+      "design",
+      "design_review",
       "in_progress",
       "in_review",
       "done",
@@ -563,6 +565,8 @@ export class PlaneClient {
     ];
     for (const ts of ticketStates) {
       const name = this.boardConfig.state_map[ts];
+      // design/design_review intentionally have no mapping on OPS/VID boards.
+      if (!name) continue;
       const st = byName.get(name.toLowerCase());
       if (st) reverse.set(st.id, ts);
       else

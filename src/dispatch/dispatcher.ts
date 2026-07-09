@@ -164,6 +164,9 @@ export const BECKETT_COMMENT_MARKER = "<!-- beckett:dispatcher -->";
 /** Max implement↔review round-trips before the dispatcher stops auto-reworking and waits for a human. */
 const MAX_REWORK_CYCLES = 3;
 
+/** The completeness checker may send an incomplete design back once before escalating to its owner. */
+const MAX_DESIGN_CYCLES = 2;
+
 /**
  * Max times an implement worker that ended WITHOUT a clean finish (hit the backstop wall-clock cap,
  * crashed, or errored) is auto-respawned to continue from its committed WIP before the dispatcher
@@ -242,6 +245,8 @@ interface DispatcherRuntimeState {
   reworkCount: Record<string, number>;
   implementRetries: Record<string, number>;
   reviewInfraRetries: Record<string, number>;
+  /** Incomplete design-check passes; bounded so an owner is always eventually paged. */
+  designCycles?: Record<string, number>;
   /** Crash-recovery worker ledger, keyed by ticket id (absent in pre-ledger state files). */
   liveWorkers?: Record<string, LedgeredWorker>;
   /** Steering comments awaiting the next worker, keyed by ticket id (issue #22 — restart-proof). */
@@ -357,6 +362,7 @@ function parseRuntimeState(value: unknown): DispatcherRuntimeState {
     reworkCount: parseNumberRecord(raw.reworkCount, "reworkCount"),
     implementRetries: parseNumberRecord(raw.implementRetries, "implementRetries"),
     reviewInfraRetries: parseNumberRecord(raw.reviewInfraRetries, "reviewInfraRetries"),
+    designCycles: raw.designCycles === undefined ? {} : parseNumberRecord(raw.designCycles, "designCycles"),
     liveWorkers: parseLedger(raw.liveWorkers),
     pendingSteers: parseSteers(raw.pendingSteers),
   };
@@ -434,6 +440,8 @@ export class Dispatcher {
   private readonly implementRetries = new Map<string, number>();
   /** Per-ticket count of review crashes or malformed verdicts; separate from real rework cycles. */
   private readonly reviewInfraRetries = new Map<string, number>();
+  /** Per-ticket incomplete design-check count, bounded by MAX_DESIGN_CYCLES. */
+  private readonly designCycles = new Map<string, number>();
   /** Crash-recovery ledger for CURRENTLY live workers (persisted; see {@link LedgeredWorker}). */
   private readonly liveLedger = new Map<string, LedgeredWorker>();
   /** Epoch ms of each live worker's last driver event — the "is it moving?" status signal (#30). */
@@ -778,6 +786,13 @@ export class Dispatcher {
   ): Promise<void> {
     this.logger.info("ticket state changed", { ticket: ticket.identifier, from, to });
     switch (to) {
+      case "design":
+        // `design` is INT-only. The identifier guard keeps a malformed non-INT board state
+        // from accidentally spending a design worker.
+        if (!this.isIntTicket(ticket)) return;
+        if (this.workers.has(ticket.id)) return;
+        this.spawnGuarded(ticket, "design");
+        return;
       case "in_progress":
         if (this.workers.has(ticket.id)) return; // already staffed
         this.spawnGuarded(ticket, "implement");
@@ -807,6 +822,7 @@ export class Dispatcher {
         return;
       case "todo":
       case "backlog":
+      case "design_review":
         await this.onParked(ticket, to);
         return;
     }
@@ -939,7 +955,7 @@ export class Dispatcher {
     this.pump();
   }
 
-  private async onParked(ticket: Ticket, state: "todo" | "backlog"): Promise<void> {
+  private async onParked(ticket: Ticket, state: "todo" | "backlog" | "design_review"): Promise<void> {
     const handle = this.workers.get(ticket.id);
     this.clearTicketMemory(ticket.id);
     this.staffing.delete(ticket.id);
@@ -983,11 +999,11 @@ export class Dispatcher {
   ): Promise<{ ticket: string; stage: string; harness?: Harness }> {
     const ticket = await this.findTicket(idOrIdentifier);
     if (!ticket) throw new Error(`no such ticket: ${idOrIdentifier}`);
-    const stage = ticket.state === "in_review" ? "review" : "implement";
-    if (ticket.state !== "in_progress" && ticket.state !== "in_review") {
+    const stage = ticket.state === "design" ? "design" : ticket.state === "in_review" ? "review" : "implement";
+    if (ticket.state !== "design" && ticket.state !== "in_progress" && ticket.state !== "in_review") {
       throw new Error(
         `ticket ${ticket.identifier} is in "${ticket.state}" — move it to in_progress/in_review ` +
-          `to (re)staff it`,
+          `(or INT Design) to (re)staff it`,
       );
     }
 
@@ -1041,6 +1057,11 @@ export class Dispatcher {
     }
     const all = await this.listAllIssues();
     return all.find((t) => t.id === key || t.identifier.toLowerCase() === key.toLowerCase()) ?? null;
+  }
+
+  /** INT is a separate Plane board; its identifiers are minted as INT-N. */
+  private isIntTicket(ticket: Ticket): boolean {
+    return ticket.identifier.toUpperCase().startsWith("INT-") || ticket.projectId.toUpperCase() === "INT";
   }
 
   /** True if a worker is live, OR a spawn is mid-flight, for this ticket (airtight dedup). */
@@ -1672,9 +1693,14 @@ export class Dispatcher {
     const explicit = ticket.casting[stage];
     let spec: HarnessSpec =
       explicit ??
-      (stage === "review"
-        ? { harness: "claude", model: this.config.models.reviewer, effort: this.reviewEffortFor(ticket) }
-        : { harness: "claude" });
+      (stage === "design"
+        ? { harness: "claude", model: "claude-opus-4-8", effort: "high" }
+        : stage === "design_check"
+          // Separate, inexpensive model: it must not mark the design author's own homework.
+          ? { harness: "claude", model: "claude-haiku-4-5", effort: "low" }
+          : stage === "review"
+            ? { harness: "claude", model: this.config.models.reviewer, effort: this.reviewEffortFor(ticket) }
+            : { harness: "claude" });
     // An explicit review cast that names no effort still gets the SCALED default (issue #27) —
     // otherwise it silently falls through to the harness default (xhigh), the priciest tier.
     if (stage === "review" && explicit && !explicit.effort) {
@@ -1760,7 +1786,11 @@ export class Dispatcher {
     if (spend) summary = summary ? `${summary}\n\n${spend}` : spend;
 
     try {
-      if (stage === "implement") {
+      if (stage === "design") {
+        await this.onDesignDone(ticket, handle, status, summary);
+      } else if (stage === "design_check") {
+        await this.onDesignCheckDone(ticket, handle, status, summary);
+      } else if (stage === "implement") {
         await this.onImplementDone(ticket, handle, status, summary);
       } else if (stage === "review") {
         await this.onReviewDone(ticket, handle, status, summary);
@@ -1778,6 +1808,72 @@ export class Dispatcher {
       this.releaseRepo(ticket.id);
       this.pump();
     }
+  }
+
+  /**
+   * Design is a real worker stage, followed by an independent cheap completeness pass. The
+   * checker gets its own model/session so the author cannot approve its own document.
+   */
+  private async onDesignDone(
+    ticket: Ticket,
+    handle: TicketWorkerHandle,
+    status: "success" | "error",
+    summary: string,
+  ): Promise<void> {
+    const sha = await this.commitWip(ticket, handle);
+    const at = sha ? ` (committed as \`${sha.slice(0, 9)}\`)` : "";
+    await this.postComment(
+      ticket.id,
+      status === "success"
+        ? `Design draft complete${at}; running an independent completeness check.`
+        : `Design worker ended early${at}; running the completeness check on the saved draft.`,
+    );
+    this.spawnGuarded(ticket, "design_check");
+  }
+
+  private async onDesignCheckDone(
+    ticket: Ticket,
+    handle: TicketWorkerHandle,
+    status: "success" | "error",
+    summary: string,
+  ): Promise<void> {
+    const signal = status === "success" ? parseDoneSignal(handle.result?.structured) : null;
+    if (signal?.status === "complete") {
+      this.designCycles.delete(ticket.id);
+      this.persistRuntimeState();
+      await this.advanceTicket(
+        ticket,
+        "design_review",
+        `Design completeness check passed. Design document: \`docs/design/${ticket.identifier.toLowerCase()}.md\`\n\n` +
+          `**Here's the design — good to build?** Reply with approval to start implementation, or ` +
+          `send changes and move this ticket back to **Design**.\n\n${summary}`,
+      );
+      return;
+    }
+
+    const gaps = signal ? doneSignalSummary(signal, summary) : summary || "The completeness checker did not return a valid verdict.";
+    const cycle = (this.designCycles.get(ticket.id) ?? 0) + 1;
+    this.designCycles.set(ticket.id, cycle);
+    this.persistRuntimeState();
+    if (cycle < MAX_DESIGN_CYCLES) {
+      await this.advanceTicket(
+        ticket,
+        "design",
+        `Design completeness check found gaps; returning to **Design** (pass ${cycle}/${MAX_DESIGN_CYCLES}). ` +
+          `Please address these before the human review:\n\n${gaps}`,
+      );
+      return;
+    }
+
+    this.designCycles.delete(ticket.id);
+    this.persistRuntimeState();
+    await this.advanceTicket(
+      ticket,
+      "design_review",
+      `⚠ Design completeness check still flagged gaps after ${MAX_DESIGN_CYCLES} passes:\n\n${gaps}\n\n` +
+        `Design document: \`docs/design/${ticket.identifier.toLowerCase()}.md\`\n\n` +
+        `**Here's the design — good to build?** Please approve it, or send changes and move this ticket back to **Design**.`,
+    );
   }
 
   private async onImplementDone(
@@ -2245,7 +2341,7 @@ export class Dispatcher {
   ): Promise<boolean> {
     // Any dispatcher-driven move out of a running state invalidates a scheduled backed-off
     // respawn — a timer firing on a parked/done ticket would staff work nobody asked for.
-    if (state !== "in_progress" && state !== "in_review") this.cancelSpawnRetry(ticket.id);
+    if (state !== "design" && state !== "in_progress" && state !== "in_review") this.cancelSpawnRetry(ticket.id);
     const op: AdvanceOperation = {
       id: randomUUID(),
       ticketId: ticket.id,
@@ -2264,7 +2360,8 @@ export class Dispatcher {
       // / human / promoteDependents moves still flow client.setState → poller → onStateChanged, so
       // those spawn as before; spawnGuarded's isStaffed dedup makes a double-trigger a no-op, and a
       // still-held repo (finishing worker not yet reaped) just queues the spawn until pump().
-      if (state === "in_review") this.spawnGuarded(ticket, "review");
+      if (state === "design" && this.isIntTicket(ticket)) this.spawnGuarded(ticket, "design");
+      else if (state === "in_review") this.spawnGuarded(ticket, "review");
       else if (state === "in_progress") this.spawnGuarded(ticket, "implement");
       return true;
     } catch (err) {
@@ -2324,6 +2421,7 @@ export class Dispatcher {
     this.reworkCount.delete(ticketId);
     this.implementRetries.delete(ticketId);
     this.reviewInfraRetries.delete(ticketId);
+    this.designCycles.delete(ticketId);
     this.liveTickets.delete(ticketId);
     this.liveLedger.delete(ticketId);
     this.resumables.delete(ticketId);
@@ -2414,6 +2512,7 @@ export class Dispatcher {
       this.replaceMap(this.reworkCount, parsed.reworkCount);
       this.replaceMap(this.implementRetries, parsed.implementRetries);
       this.replaceMap(this.reviewInfraRetries, parsed.reviewInfraRetries);
+      this.replaceMap(this.designCycles, parsed.designCycles ?? {});
       // Workers the previous daemon left behind — consumed by recoverFromCrash() at boot.
       if (parsed.liveWorkers && Object.keys(parsed.liveWorkers).length > 0) {
         this.recoveredWorkers = parsed.liveWorkers;
@@ -2432,6 +2531,7 @@ export class Dispatcher {
           ...Object.keys(parsed.reworkCount),
           ...Object.keys(parsed.implementRetries),
           ...Object.keys(parsed.reviewInfraRetries),
+          ...Object.keys(parsed.designCycles ?? {}),
         ]).size,
       });
     } catch (err) {
@@ -2450,6 +2550,7 @@ export class Dispatcher {
       reworkCount: Object.fromEntries(this.reworkCount),
       implementRetries: Object.fromEntries(this.implementRetries),
       reviewInfraRetries: Object.fromEntries(this.reviewInfraRetries),
+      designCycles: Object.fromEntries(this.designCycles),
       liveWorkers: Object.fromEntries(this.liveLedger),
       pendingSteers: Object.fromEntries(this.pendingSteers),
     };

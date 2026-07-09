@@ -328,6 +328,28 @@ function buildPrompt(
   const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";
   const crit = `\n\n<criteria>\nAcceptance criteria:\n${criteriaBlock(ticket.criteria)}\n</criteria>`;
   const steer = steeringBlock(steering);
+  if (stage === "design") {
+    const path = `docs/design/${ticket.identifier.toLowerCase()}.md`;
+    return (
+      `<task>\nWrite the implementation design document for ticket ${header}.${body}\n</task>${crit}${steer}\n\n` +
+      `This is the INT **Design** stage: do not implement the ticket yet. Read the repository, make ` +
+      `the chosen approach concrete, and write the artifact at \`${path}\`. It must state the problem ` +
+      `and chosen approach, cover every acceptance criterion, identify file-level touch-points/interfaces ` +
+      `or data shapes, and end with a recommendation plus open questions. Commit the document before ` +
+      `finishing; an independent model and then the owner will review it.`
+    );
+  }
+  if (stage === "design_check") {
+    const path = `docs/design/${ticket.identifier.toLowerCase()}.md`;
+    return (
+      `<task>\nSanity-check the INT design document for ticket ${header}.\n</task>${crit}${steer}\n\n` +
+      `Read \`${path}\` (and relevant repository context). Do not edit implementation or author the ` +
+      `design yourself. Decide whether it is complete: it must state the problem and a chosen approach, ` +
+      `cover every acceptance criterion, give concrete file-level touch-points/interfaces or data shapes, ` +
+      `and end with a recommendation and open questions. Emit status \`complete\` only if all hold. ` +
+      `Otherwise emit \`blocked\` and list every specific gap in summary/blockedReason.`
+    );
+  }
   if (stage === "review") {
     const diffBlock = reviewDiffBlock(reviewDiff, baseRef);
     const inspect = diffBlock
@@ -372,8 +394,19 @@ function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): str
       `</persona>`
     );
   }
+  if (stage === "design_check") {
+    return (
+      `<persona>\n` +
+      `You are an independent design-document completeness checker. Do not edit files. Apply the ` +
+      `rubric in the task exactly and finish with the structured done-signal: \"complete\" only for a ` +
+      `complete design; otherwise \"blocked\" with actionable gaps.\n</persona>`
+    );
+  }
   const slug = projectSlug(ticket.project || ticket.identifier);
   const deployNote = ticketMentionsDeploy(ticket) ? `${deployDurabilityNote(slug)}\n` : "";
+  const designOnly = stage === "design"
+    ? `This is a DESIGN stage: write and commit the design document only; do not implement the requested change.\n`
+    : "";
   return (
     `<persona>\n` +
     `You are an autonomous worker implementing a ticket. Your cwd is THIS PROJECT'S OWN git repo ` +
@@ -385,7 +418,7 @@ function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): str
     `GITHUB: don't push anything yourself. When this ticket is done, Beckett automatically ` +
     `publishes this repo to \`0xbeckett/${slug}\` (a standalone PUBLIC repo, NOT tied to ` +
     `0xbeckett/beckett). Just commit your work in this checkout — the push is handled for you.\n` +
-    `${deployNote}` +
+    `${designOnly}${deployNote}` +
     `When finished, emit the structured done-signal matching the provided schema (status ` +
     `"complete" when all criteria hold AND your self-review passed, "blocked"/"partial" ` +
     `otherwise with a reason).\n` +

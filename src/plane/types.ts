@@ -26,6 +26,10 @@
 export type TicketState =
   | "backlog"
   | "todo"
+  /** INT only: live design-document authoring stage. */
+  | "design"
+  /** INT only: parked human approval gate for the design document. */
+  | "design_review"
   | "in_progress"
   | "in_review"
   | "done"
@@ -59,9 +63,10 @@ export interface HarnessSpec {
 }
 
 /**
- * Per-stage casting for a ticket. `implement` staffs the `in_progress` worker; `review`
- * staffs the `in_review` reviewer. Open-ended: future stages (e.g. `integrate`) key in by
- * name. Stored inside the Plane issue description as a ```beckett-cast``` fenced block.
+ * Per-stage casting for a ticket. `design` staffs an INT ticket's design worker, `implement`
+ * staffs the `in_progress` worker, and `review` staffs the `in_review` reviewer. Open-ended:
+ * future stages (e.g. `integrate`) key in by name. Stored inside the Plane issue description as
+ * a ```beckett-cast``` fenced block.
  */
 export interface Casting {
   implement?: HarnessSpec;

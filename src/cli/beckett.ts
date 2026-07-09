@@ -799,7 +799,11 @@ async function main(): Promise<void> {
     const { parseCastJson, validateCasting } = await import("../plane/cast.ts");
     const { loadPresets, requirePreset, resolveCasting } = await import("../plane/presets.ts");
     const { _, flags } = parse(rest);
-    const board = cliBoardName(flags.board);
+    if (flags.intensive && flags.board && String(flags.board).toLowerCase() !== "int") {
+      fail("--intensive selects the INT board; do not combine it with a different --board");
+    }
+    const board = cliBoardName(flags.intensive ? "int" : flags.board);
+    const isIntBoard = board.toLowerCase() === "int";
     const client = createPlaneClient({ config, board, logger: quietLogger });
 
     /** Read --body, or --body-stdin (piped). */
@@ -833,7 +837,7 @@ async function main(): Promise<void> {
     if (sub === "create") {
       if (!flags.title) {
         fail(
-          'usage: beckett ticket create --title <t> [--board <name>] [--body <b>|--body-stdin] [--project <slug>] [--state backlog|todo|in_progress|in_review|done|cancelled] [--preset <name>] [--cast <json>] [--criteria "a;b;c"] [--channel <discord-channel-id>]',
+          'usage: beckett ticket create --title <t> [--board <name>|--intensive] [--body <b>|--body-stdin] [--project <slug>] [--state backlog|todo|design|design_review|in_progress|in_review|done|cancelled] [--preset <name>] [--cast <json>] [--criteria "a;b;c"] [--channel <discord-channel-id>]',
         );
       }
       // Cast resolution: start from --preset (read FRESH from ~/.beckett/presets.json every call, so
@@ -857,6 +861,9 @@ async function main(): Promise<void> {
       const criteria = flags.criteria
         ? String(flags.criteria).split(";").map((s) => s.trim()).filter(Boolean)
         : [];
+      if (isIntBoard && !flags.channel) {
+        fail("INT tickets require --channel: Review (Design) needs a filing channel to ask the owner for approval");
+      }
       // Restricted self-repo gate — bounce back to the Concierge to re-confirm with the user before
       // any ticket can build against 0xbeckett/beckett (mis-routing polluted the codebase).
       guardRestrictedProject(flags.project ? String(flags.project) : undefined, !!flags["confirm-beckett"]);
@@ -868,7 +875,8 @@ async function main(): Promise<void> {
         // The code project this ticket builds → its own repo at ~/Projects/<slug>, pushed to
         // 0xbeckett/<slug>. Decoupled from Beckett's own source repo.
         project: flags.project ? String(flags.project) : undefined,
-        state: flags.state ? (String(flags.state) as TicketState) : undefined,
+        // INT starts in its live Design stage by default; OPS keeps PlaneClient's backlog default.
+        state: flags.state ? (String(flags.state) as TicketState) : isIntBoard ? "design" : undefined,
         // Stamp the originating Discord channel so updates route back to the conversation (closed loop).
         originChannel: flags.channel ? String(flags.channel) : undefined,
       });
@@ -896,7 +904,7 @@ async function main(): Promise<void> {
       const id = _[0];
       const state = _[1];
       if (!id || !state) {
-        fail("usage: beckett ticket state <id> <backlog|todo|in_progress|in_review|done|cancelled>");
+        fail("usage: beckett ticket state <id> <backlog|todo|design|design_review|in_progress|in_review|done|cancelled> [--board int]");
       }
       await client.setState(await resolveTicketId(id), state as TicketState);
       out({ id, state });
@@ -922,7 +930,7 @@ async function main(): Promise<void> {
       if (!ticket) fail(`no such ticket: ${id}`);
       out(ticket);
     }
-    fail("usage: beckett ticket create|comment|state|list|show|restaff <...>");
+    fail("usage: beckett ticket create|comment|state|list|show|restaff <...> (use --board int or --intensive for intensive tickets)");
   }
 
   // ── preset (in-process: inspect the user-defined cast presets in ~/.beckett/presets.json) ──
@@ -1029,6 +1037,10 @@ async function main(): Promise<void> {
       castForKey.set(t.key, casting);
     }
 
+    if ([...boardForKey.values()].some((board) => board.toLowerCase() === "int") && !spec.channel) {
+      fail("plan: INT tickets require a top-level \"channel\" so Review (Design) can ask the owner for approval");
+    }
+
     // 2. topological order (Kahn) — also the cycle detector
     const indeg = new Map<string, number>(tickets.map((t) => [t.key, (t.needs ?? []).length]));
     const dependents = new Map<string, string[]>(); // need → [keys that need it]
@@ -1079,8 +1091,10 @@ async function main(): Promise<void> {
           const t = byKey.get(key)!;
           const needs: string[] = t.needs ?? [];
           const blockedBy = needs.map((n) => identForKey.get(n)!).filter(Boolean);
-          // roots start immediately; anything with a blocker waits in backlog until promoted.
-          const state = blockedBy.length === 0 ? "in_progress" : "backlog";
+          // INT roots start at Design; OPS roots start at In Progress. Blocked nodes stay parked.
+          const state = blockedBy.length === 0
+            ? boardForKey.get(key)!.toLowerCase() === "int" ? "design" : "in_progress"
+            : "backlog";
           const created = await clientForBoard(boardForKey.get(key)!).createIssue({
             title: String(t.title),
             body: t.body ? String(t.body) : "",

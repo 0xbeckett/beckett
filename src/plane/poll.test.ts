@@ -171,6 +171,19 @@ describe("PlanePoller comment hot path", () => {
     }
   });
 
+  test("prime re-staffs live INT Design but leaves Review (Design) parked", async () => {
+    const client = new FakePlaneClient();
+    const design = ticket({ id: "int-design", identifier: "INT-1", state: "design" });
+    const gate = ticket({ id: "int-gate", identifier: "INT-2", state: "design_review" });
+    client.tickets = [design, gate];
+    const poller = new PlanePoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+
+    const events = await poller.prime();
+    expect(events.filter((e) => e.kind === "state_changed")).toEqual([
+      { kind: "state_changed", ticket: design, from: null, to: "design" },
+    ]);
+  });
+
   test("prime re-staffs tickets already in review", async () => {
     const client = new FakePlaneClient();
     const reviewing = ticket({ state: "in_review" });

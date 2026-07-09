@@ -1839,6 +1839,18 @@ export class Concierge {
           `restart (or it was a routine redeploy), skip the ping.`,
       );
     }
+    if (event.kind === "state_changed" && event.to === "design_review") {
+      // The INT human gate must always create an update turn immediately on entry. The following
+      // dispatcher comment carries the document path and detail, but this state event is the
+      // durable trigger that tells the concierge to ask the filing channel's owner for approval.
+      return this.updateTurn(
+        event.ticket,
+        `The design is ready for your approval and is parked at **Review (Design)**. Read ` +
+          `\`docs/design/${event.ticket.identifier.toLowerCase()}.md\`, then ask the owner: ` +
+          `"Here's the design — good to build?" On approval move it to **In Progress**; on ` +
+          `changes, add their feedback and move it back to **Design**.`,
+      );
+    }
     if (event.kind === "state_changed" && event.to === "done") {
       // `done` is the one milestone the comment feed misses: the poller stops collecting comments
       // once a ticket is terminal (poll.ts), so the dispatcher's "Review passed → done" comment

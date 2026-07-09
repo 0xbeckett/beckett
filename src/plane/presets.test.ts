@@ -29,12 +29,12 @@ afterEach(() => {
 });
 
 describe("loadPresets — seed + fresh read", () => {
-  test("missing file → created, seeded with the four design-doc presets", () => {
+  test("missing file → created, seeded with the design-doc presets plus intensive", () => {
     expect(existsSync(file)).toBe(false);
     const presets = loadPresets(file);
     expect(existsSync(file)).toBe(true);
     expect(Object.keys(presets).sort()).toEqual(
-      ["cheap-lane", "critical", "fable-review+terra-work", "taste-lane"],
+      ["cheap-lane", "critical", "fable-review+terra-work", "intensive", "taste-lane"],
     );
     expect(presets).toEqual(SEED_PRESETS);
     // the written file round-trips back to the same map

@@ -125,8 +125,22 @@ const VIDEO_STATE_MAP = {
   cancelled: "Shelved",
 } as const;
 
+/** INT's own Plane workflow: design is live; design_review is the human-only gate. */
+const INT_STATE_MAP = {
+  backlog: "Backlog",
+  todo: "Todo",
+  design: "Design",
+  design_review: "Review (Design)",
+  in_progress: "In Progress",
+  in_review: "Review",
+  done: "Done",
+  cancelled: "Cancelled",
+} as const;
+
 const DEFAULT_PLANE_BOARDS = {
   ops: { project_slug: "beckett", state_map: DEV_STATE_MAP },
+  /** Separate intensive-task board — never add its design columns to OPS. */
+  int: { project_slug: "INT", state_map: INT_STATE_MAP },
   vid: { project_slug: "VID", state_map: VIDEO_STATE_MAP },
   vidpip: { project_slug: "VIDPIP", state_map: DEV_STATE_MAP },
 } as const;
@@ -135,6 +149,10 @@ const StateMapSchema = z
   .object({
     backlog: z.string().min(1).default("Backlog"),
     todo: z.string().min(1).default("Todo"),
+    // These columns exist only on INT. Keeping them optional prevents ordinary boards from
+    // advertising (or requiring) design columns they do not have.
+    design: z.string().min(1).optional(),
+    design_review: z.string().min(1).optional(),
     in_progress: z.string().min(1).default("In Progress"),
     in_review: z.string().min(1).default("In Review"),
     done: z.string().min(1).default("Done"),
@@ -166,6 +184,7 @@ function normalizePlaneConfig(rawPlane: unknown): unknown {
   const incomingBoards = isRecord(raw.boards) ? raw.boards : {};
   const boards: Record<string, unknown> = {
     ops: mergeBoardDefaults(DEFAULT_PLANE_BOARDS.ops, incomingBoards.ops),
+    int: mergeBoardDefaults(DEFAULT_PLANE_BOARDS.int, incomingBoards.int),
     vid: mergeBoardDefaults(DEFAULT_PLANE_BOARDS.vid, incomingBoards.vid),
     vidpip: mergeBoardDefaults(DEFAULT_PLANE_BOARDS.vidpip, incomingBoards.vidpip),
   };

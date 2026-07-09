@@ -604,6 +604,10 @@ export interface Config {
         state_map: {
           backlog: string;
           todo: string;
+          /** INT-only live design stage; mapped only on the INT board. */
+          design?: string;
+          /** INT-only parked human design-approval gate; mapped only on the INT board. */
+          design_review?: string;
           in_progress: string;
           in_review: string;
           done: string;

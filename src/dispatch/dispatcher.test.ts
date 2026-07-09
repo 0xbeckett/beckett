@@ -276,6 +276,64 @@ beforeEach(() => {
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────────────────
+describe("INT intensive flow", () => {
+  test("Design spawns its cast, checks the document, then parks at Review (Design)", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({
+      identifier: "INT-7",
+      projectId: "INT",
+      state: "design",
+      casting: {
+        design: { harness: "claude", model: "claude-opus-4-8", effort: "high" },
+        implement: { harness: "pi", effort: "medium" },
+        review: { harness: "claude", model: "claude-sonnet-5", effort: "high" },
+      },
+    });
+    client.board.push(ticket);
+
+    await d.handle(stateChanged(ticket, "design"));
+    await tick();
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]).toMatchObject({ stage: "design", harness: ticket.casting.design });
+
+    created[0].finish("success", "wrote docs/design/int-7.md", doneSignal("complete"));
+    await tick();
+    await tick();
+    expect(spawnCalls[1]).toMatchObject({
+      stage: "design_check",
+      harness: { harness: "claude", model: "claude-haiku-4-5", effort: "low" },
+    });
+
+    created[1].finish("success", "all required sections are present", doneSignal("complete"));
+    await tick();
+    await tick();
+    expect(client.setStateCalls).toContainEqual({ id: ticket.id, state: "design_review" });
+    expect(client.comments.some((c) => c.body.includes("Here's the design — good to build?"))).toBe(true);
+    // The human gate has no worker — it must stay token-inert while parked.
+    expect(spawnCalls).toHaveLength(2);
+
+    await d.handle(stateChanged({ ...ticket, state: "in_progress" }, "in_progress", "design_review"));
+    await tick();
+    expect(spawnCalls[2]).toMatchObject({ stage: "implement", harness: ticket.casting.implement });
+  });
+
+  test("Review (Design) is parked and never staffs a worker", async () => {
+    const { d } = newDispatcher();
+    const ticket = makeTicket({ identifier: "INT-8", projectId: "INT", state: "design_review" });
+    await d.handle(stateChanged(ticket, "design_review", "design"));
+    await tick();
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  test("design states on an OPS ticket cannot spawn an INT worker", async () => {
+    const { d } = newDispatcher();
+    const ticket = makeTicket({ identifier: "OPS-8", state: "design" });
+    await d.handle(stateChanged(ticket, "design"));
+    await tick();
+    expect(spawnCalls).toHaveLength(0);
+  });
+});
+
 describe("spawn on state change", () => {
   test("in_progress spawns an implement worker with the cast harness", async () => {
     const { d } = newDispatcher();

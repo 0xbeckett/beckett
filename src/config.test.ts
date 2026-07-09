@@ -59,6 +59,8 @@ cancelled = "Shelved"
 `);
   expect(config.plane.default_board).toBe("vid");
   expect(config.plane.boards.ops!.project_slug).toBe("beckett");
+  expect(config.plane.boards.int!.project_slug).toBe("INT");
+  expect(config.plane.boards.int!.state_map.design_review).toBe("Review (Design)");
   expect(config.plane.boards.vid!.project_slug).toBe("VID");
   expect(config.plane.boards.vid!.state_map.in_progress).toBe("Production");
   expect(config.plane.boards.vidpip!.project_slug).toBe("VIDPIP");
@@ -75,12 +77,13 @@ in_progress = "Doing"
   expect(config.plane.default_board).toBe("ops");
   expect(config.plane.boards.ops!.project_slug).toBe("legacy-ops");
   expect(config.plane.boards.ops!.state_map.in_progress).toBe("Doing");
+  expect(config.plane.boards.int!.project_slug).toBe("INT");
   expect(config.plane.boards.vid!.project_slug).toBe("VID");
   expect(config.plane).not.toHaveProperty("project_slug");
 });
 
 test("unknown default Plane board is a loud config error listing valid boards", () => {
-  expect(() => loadToml(`[plane]\ndefault_board = "missing"\n`)).toThrow(/unknown default_board "missing" \(have: ops, vid, vidpip\)/);
+  expect(() => loadToml(`[plane]\ndefault_board = "missing"\n`)).toThrow(/unknown default_board "missing" \(have: ops, int, vid, vidpip\)/);
 });
 
 test("proactivity defaults ship disabled and off", () => {
