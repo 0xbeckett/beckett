@@ -20,6 +20,11 @@
  *   # resume — pin the captured id so pi reloads the persisted transcript in the same cwd:
  *   pi -p --mode json --provider <p> --model <m> --thinking <lvl> --session <id> "<prompt>"
  *
+ * The `<m>` model runs through codex (0.144) on the ChatGPT-account OAuth (`openai-codex`
+ * provider). The default is `gpt-5.6-terra` (config.harness.pi.default_model); a cast may pin an
+ * explicit model — `gpt-5.6-luna` is the cheap/mechanical lane. SOL and bare `gpt-5.6` are NOT
+ * usable on this tier ("not supported with a ChatGPT account"), so don't cast them.
+ *
  * - cwd = the project repo (pi is rooted to the process cwd — there is no `-C`), set on spawn.
  * - `--mode json` emits a JSON Lines stream. The events we normalize (Spec 02 §7):
  *     `session`               → the session id (first line)   → session_started + resolves spawn

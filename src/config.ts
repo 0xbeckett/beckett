@@ -319,14 +319,18 @@ const ConfigSchema = z
           .default({}),
         // pi (pi.dev / earendil-works) — the malleable, provider-agnostic coding agent that
         // replaces codex as Beckett's non-claude worker. No network sandbox to fight; auth is the
-        // ChatGPT/Codex OAuth via the "openai-codex" provider (see ~/.pi/agent/auth.json). Model +
-        // reasoning default to gpt-5.5 @ high; a cast can override per ticket.
+        // ChatGPT/Codex OAuth via the "openai-codex" provider (see ~/.pi/agent/auth.json), which
+        // runs the model through codex (0.144). Model + reasoning default to gpt-5.6-terra @ high;
+        // a cast can override the model per ticket (e.g. "gpt-5.6-luna" for cheap/mechanical grind).
+        // terra is ~5.5-parity on coding at roughly half the price — a straight drop-in upgrade over
+        // the old gpt-5.5 default. NOTE: SOL and bare gpt-5.6 are hard-blocked on the ChatGPT-account
+        // tier ("not supported with a ChatGPT account") — don't cast those.
         pi: z
           .object({
             enabled: z.boolean().default(true),
             bin: z.string().min(1).default("pi"),
             default_provider: z.string().min(1).default("openai-codex"),
-            default_model: z.string().min(1).default("gpt-5.5"),
+            default_model: z.string().min(1).default("gpt-5.6-terra"),
             thinking: z.enum(["low", "medium", "high", "xhigh"]).default("high"),
           })
           .default({}),

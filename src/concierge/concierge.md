@@ -354,11 +354,14 @@ make when filing a ticket.
 
 #### The roster — every model, and when to cast it
 
-**`pi` (gpt-5.5) — the backend & systems workhorse.** The pi harness runs gpt-5.5 via
-openai-codex; you never pass a `model` for it, just the harness. It is the strongest at
-well-specified code grind: APIs, data layers, parsers, business logic, scripts, infra,
-migrations, test suites, porting modules. Give it a crisp spec and checkable criteria and it
-churns out correct implementation fast, without drama. Its weakness is the inverse: no eyes
+**`pi` (gpt-5.6-terra) — the backend & systems workhorse, and the pi implement default.** The
+pi harness runs its model through codex (0.144) on the ChatGPT-account path; the default model
+is **gpt-5.6-terra** (`~$2.50/$15` per Mtok in/out), so a bare `{"harness":"pi"}` cast runs
+terra with no `model` needed. terra is ~5.5-parity on coding (84.3% TerminalBench vs 5.5's
+83.4) at roughly half the price — a straight drop-in upgrade over the old gpt-5.5 default. It is
+the strongest at well-specified code grind: APIs, data layers, parsers, business logic, scripts,
+infra, migrations, test suites, porting modules. Give it a crisp spec and checkable criteria and
+it churns out correct implementation fast, without drama. Its weakness is the inverse: no eyes
 (it can't look at rendered output, so visual work degenerates into over-engineering) and no
 taste (ambiguous or judgment-heavy specs get a literal, joyless reading). Cast `effort` maps
 onto pi's thinking level, same `low→xhigh` vocabulary.
@@ -369,8 +372,16 @@ tickets**: it grinds through a big diff without fatigue and is strong at the blu
 against reality rather than vibing the diff. Prefer a pi review over claude when the ticket
 ran long and the main risk is silently-missing work, not subtle wrongness.
 **Effort:** `medium` when the ticket body is really specific about what needs to be done —
-gpt-5.5 at medium on a sharp spec is excellent and fast. `high` when the spec leaves it any
+terra at medium on a sharp spec is excellent and fast. `high` when the spec leaves it any
 real decisions. `xhigh` is rare — crucial tasks only.
+**Cheap lane — `gpt-5.6-luna`.** For cheap/mechanical low-effort grind (rote renames, obvious
+mechanical edits, bulk boilerplate) where even terra is more than the task needs, cast pi with
+an explicit `"model":"gpt-5.6-luna"` (`~$1/$6` per Mtok, cheaper and faster). Same harness, same
+codex path, same effort/thinking vocabulary — just a smaller/cheaper brain. It's an opt-in cast,
+not auto-routed by effort: name the model when you want it, e.g.
+`{"implement":{"harness":"pi","model":"gpt-5.6-luna","effort":"low"}}`.
+**Not on our tier:** SOL and bare `gpt-5.6` are hard-blocked on the ChatGPT-account tier ("not
+supported with a ChatGPT account") — never cast those; terra/luna are the only pi models.
 **Never for:** anything visual, or anything where the spec is really a vibe. (Pi replaced the
 old `codex` harness — never cast `codex`; read any old `codex` cast as `pi`.)
 
@@ -460,9 +471,10 @@ frontend ticket (claude). One muddy ticket cast to one harness serves neither ha
 harness default *and* silently selects the expensive fresh-review gate. The right level
 depends on *which model*, not just how hard the task sounds:
 
-- **`pi` (gpt-5.5)** — `medium` when the ticket body is really specific about what needs to
-  be done (sharp spec → medium is excellent and fast); `high` when it has to make real
-  decisions; `xhigh` rare, crucial tasks only.
+- **`pi` (gpt-5.6-terra, default; gpt-5.6-luna for the cheap lane)** — `medium` when the ticket
+  body is really specific about what needs to be done (sharp spec → medium is excellent and
+  fast); `high` when it has to make real decisions; `xhigh` rare, crucial tasks only. Reach for
+  an explicit `"model":"gpt-5.6-luna"` on cheap/mechanical low-effort grind.
 - **`claude-opus-4-8`** — `high` for most tasks (the default choice), `xhigh` for the
   genuinely harder ones. Never below `high`.
 - **`claude-sonnet-5`** — `medium` or `high` only. Never `xhigh`.

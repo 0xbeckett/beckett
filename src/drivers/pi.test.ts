@@ -19,7 +19,7 @@ import type { Config, WorkerEvent } from "../types.ts";
 /** Minimal config exposing just what the parser reads. */
 const config = {
   harness: {
-    pi: { enabled: true, bin: "pi", default_provider: "openai-codex", default_model: "gpt-5.5", thinking: "high" },
+    pi: { enabled: true, bin: "pi", default_provider: "openai-codex", default_model: "gpt-5.6-terra", thinking: "high" },
   },
 } as unknown as Config;
 
@@ -68,7 +68,8 @@ test("normalizes a full pi run: session → tool → assistant → agent_end", (
   expect(kinds).toContain("finished");
 
   const session = events.find((e) => e.kind === "session_started");
-  expect(session).toMatchObject({ sessionId: "019f1c8b-0f77-7a29-b896-6a00ec141c14", model: "gpt-5.5" });
+  // Un-cast run resolves the config default — now gpt-5.6-terra (was gpt-5.5).
+  expect(session).toMatchObject({ sessionId: "019f1c8b-0f77-7a29-b896-6a00ec141c14", model: "gpt-5.6-terra" });
 
   const call = events.find((e) => e.kind === "tool_call");
   expect(call).toMatchObject({ tool: "bash", toolId: CALL });
@@ -89,6 +90,66 @@ test("normalizes a full pi run: session → tool → assistant → agent_end", (
   expect(fin.status).toBe("success");
   expect(fin.structuredOutput).toMatchObject({ status: "complete", summary: "did the thing" });
 });
+
+// ── OPS-108: explicit gpt-5.6-terra / gpt-5.6-luna casts run end-to-end. ──
+// A cast may pin an explicit model; pi carries it via `--model` on the openai-codex (codex 0.144)
+// path. These prove a terra cast AND a luna cast each: emit the right argv, echo the model on the
+// session line, and drive a full session→tool→assistant→agent_end run to a clean success finish.
+function castRun(model: string) {
+  const events: WorkerEvent[] = [];
+  const driver = new PiDriver(config, quietLog);
+  driver.onEvent((e) => events.push(e));
+  const priv = driver as unknown as {
+    spec: unknown;
+    sessionId: string | null;
+    buildArgs(prompt: string, isResume: boolean): string[];
+  };
+  // The cast supplies an explicit model; the envelope effort maps onto pi's --thinking.
+  priv.spec = { model, envelope: { effort: "medium" } };
+  priv.sessionId = "cafe1234-0000-0000-0000-000000000000";
+  const args = priv.buildArgs("do the thing", /*isResume*/ false);
+  const feed = (obj: unknown) => driver.handleLine(JSON.stringify(obj));
+  feed({ type: "session", id: "sess-1", cwd: "/x" });
+  feed({ type: "turn_start" });
+  feed({ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { command: "true" } });
+  feed({ type: "tool_execution_end", toolCallId: "c1", toolName: "bash", result: {}, isError: false });
+  feed({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: '{"status":"complete","summary":"done","filesChanged":[],"checksRun":null,"blockedReason":null}' }],
+      usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+  feed({ type: "turn_end", message: { role: "assistant", content: [], usage: { input: 100, output: 10, cost: { total: 0.01 } } }, toolResults: [] });
+  feed({ type: "agent_end", messages: [] });
+  return { args, events };
+}
+
+for (const model of ["gpt-5.6-terra", "gpt-5.6-luna"]) {
+  test(`an explicit ${model} pi cast runs end to end via codex (openai-codex)`, () => {
+    const { args, events } = castRun(model);
+
+    // argv: the explicit cast model is passed via --model on the openai-codex (codex 0.144) path.
+    const mi = args.indexOf("--model");
+    expect(mi).toBeGreaterThanOrEqual(0);
+    expect(args[mi + 1]).toBe(model);
+    const pi = args.indexOf("--provider");
+    expect(args[pi + 1]).toBe("openai-codex");
+    const th = args.indexOf("--thinking");
+    expect(args[th + 1]).toBe("medium"); // cast effort maps onto --thinking, unchanged
+
+    // the session line echoes the cast model, and the run finishes as a clean success.
+    const session = events.find((e) => e.kind === "session_started");
+    expect(session).toMatchObject({ model });
+    const fin = events.find((e) => e.kind === "finished") as {
+      status: string;
+      structuredOutput: { status: string } | null;
+    };
+    expect(fin.status).toBe("success");
+    expect(fin.structuredOutput).toMatchObject({ status: "complete" });
+  });
+}
 
 test("a failed tool is surfaced as an errored tool_result", () => {
   const { events, feed } = harness();

@@ -569,7 +569,7 @@ export interface Config {
       bin: string;
       /** Provider id (pi `--provider`). "openai-codex" = ChatGPT/Codex OAuth backend. */
       default_provider: string;
-      /** Model id (pi `--model`). e.g. "gpt-5.5". */
+      /** Model id (pi `--model`). e.g. "gpt-5.6-terra" (default) or "gpt-5.6-luna" (cheap lane). */
       default_model: string;
       /** Reasoning depth (pi `--thinking`). */
       thinking: Effort;
