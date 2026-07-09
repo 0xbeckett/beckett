@@ -27,6 +27,19 @@ export interface BusResponse {
   error?: string;
 }
 
+/**
+ * The caller did not receive a response before its deadline, so the outcome is unknown: the daemon
+ * may still be working on it (and, for a Discord reply, may already have posted it). Callers must not turn this
+ * into an automatic retry of a side-effecting command.
+ */
+export class ControlBusTimeoutError extends Error {
+  readonly code = "CONTROL_BUS_TIMEOUT";
+  constructor(readonly timeoutMs: number) {
+    super(`control bus timeout after ${timeoutMs}ms`);
+    this.name = "ControlBusTimeoutError";
+  }
+}
+
 function frame(value: unknown): Uint8Array {
   const body = enc.encode(JSON.stringify(value));
   const out = new Uint8Array(HEADER + body.length);
@@ -114,7 +127,7 @@ export function callBus(
       fn();
     };
     const timer = setTimeout(
-      () => done(() => reject(new Error(`control bus timeout after ${timeoutMs}ms`))),
+      () => done(() => reject(new ControlBusTimeoutError(timeoutMs))),
       timeoutMs,
     );
     Bun.connect({

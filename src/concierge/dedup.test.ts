@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Concierge, type ConciergeSession } from "./index.ts";
+import { callBus, ControlBusTimeoutError, serveBus } from "../shell/control-bus.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
 
@@ -76,7 +77,7 @@ function harness(opts: { replyViaCli: boolean; turnText: string; cliText?: strin
   } as unknown as ConciergeSession;
 
   concierge = new Concierge({ config, session, gateway });
-  return { concierge, posts };
+  return { concierge, posts, dir };
 }
 
 function mention(): IncomingMessage {
@@ -120,4 +121,40 @@ test("discord.reply forwards files and permits image-only posts", async () => {
     args: { channelId: CHAN, text: "", files: ["/tmp/logo.png"] },
   });
   expect(posts).toEqual([{ channelId: CHAN, text: "", replyTo: undefined, files: ["/tmp/logo.png"] }]);
+});
+
+test("a send that succeeds before its bus ack times out is not posted again on retry", async () => {
+  const { concierge, posts, dir } = harness({ replyViaCli: false, turnText: "" });
+  const socket = join(dir, "control.sock");
+  let first = true;
+  let releaseFirstAck!: () => void;
+  let ackIsWaiting!: () => void;
+  const waitingForAck = new Promise<void>((resolve) => { ackIsWaiting = resolve; });
+  const stop = serveBus(socket, async (req) => {
+    const response = await concierge.onBusRequest(req);
+    if (first) {
+      first = false;
+      await new Promise<void>((resolve) => {
+        releaseFirstAck = resolve;
+        ackIsWaiting();
+      });
+    }
+    return response;
+  });
+
+  try {
+    // The fake Discord gateway resolves immediately (the post exists), while the control-bus
+    // response is deliberately held past the caller's deadline.
+    const firstAttempt = callBus(socket, "discord.reply", { channelId: CHAN, text: "sent once" }, 10);
+    await waitingForAck;
+    await expect(firstAttempt).rejects.toBeInstanceOf(ControlBusTimeoutError);
+    expect(posts).toHaveLength(1);
+
+    releaseFirstAck();
+    const retry = await callBus(socket, "discord.reply", { channelId: CHAN, text: "sent once" }, 100);
+    expect(retry.ok).toBeTrue();
+    expect(posts).toHaveLength(1);
+  } finally {
+    stop();
+  }
 });

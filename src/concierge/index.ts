@@ -93,6 +93,12 @@ const TYPING_INTERVAL_MS = 8_000;
 /** Do not let an outsider spam the static denial reply into a channel/DM. */
 const ACCESS_DENY_REPLY_MS = 5 * 60_000;
 
+/**
+ * Keep a completed CLI send long enough to cover its acknowledgement timeout and an immediate
+ * retry. This is intentionally short: a later, deliberate repeat remains possible.
+ */
+const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
+
 const ACCESS_DENY_TEXT =
   "I can't run Beckett turns for you yet. Access is invite-only: the owner has to request it and approve it themselves.";
 
@@ -944,6 +950,15 @@ export class Concierge {
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
   private busStop: (() => void) | null = null;
   /**
+   * Side-effect idempotency for `beckett discord reply`. A response can be lost after Discord
+   * accepts the post; retain both in-flight and recent successful sends so a retry gets the first
+   * result rather than creating another message.
+   */
+  private readonly recentDiscordReplies = new Map<
+    string,
+    { promise: Promise<BusResponse>; completedAt?: number }
+  >();
+  /**
    * Dispatcher levers wired in AFTER construction (v4-main creates the Concierge first so its
    * progress sink can feed the dispatcher). Serves `beckett ticket restaff` from the control bus
    * (issue #21). Null until wired — the bus op then answers with a clear "not available" error.
@@ -1342,6 +1357,42 @@ export class Concierge {
     this.log.info("concierge control bus listening", { socket: sock });
   }
 
+  /**
+   * Run one Discord reply at most once per payload during the retry window. In-flight work never
+   * expires: while a gateway reconnect or the optional chill formatter is pending, every retry
+   * waits for the original send. Failed sends are deliberately not retained, so a real failure can
+   * be retried normally.
+   */
+  private dedupeDiscordReply(key: string, send: () => Promise<BusResponse>): Promise<BusResponse> {
+    const now = Date.now();
+    for (const [oldKey, entry] of this.recentDiscordReplies) {
+      if (entry.completedAt !== undefined && now - entry.completedAt >= DISCORD_REPLY_DEDUPE_MS) {
+        this.recentDiscordReplies.delete(oldKey);
+      }
+    }
+    const previous = this.recentDiscordReplies.get(key);
+    if (previous) {
+      this.log.info("coalesced duplicate discord.reply after an ambiguous acknowledgement", {});
+      return previous.promise;
+    }
+
+    const entry = {} as { promise: Promise<BusResponse>; completedAt?: number };
+    entry.promise = Promise.resolve()
+      .then(send)
+      .catch((err): BusResponse => ({ ok: false, error: (err as Error).message }));
+    this.recentDiscordReplies.set(key, entry);
+    void entry.promise.then((response) => {
+      // A rejected send is definitely safe to retry. A success remains a replayable result until
+      // the acknowledgement/retry window is over.
+      if (!response.ok) {
+        if (this.recentDiscordReplies.get(key) === entry) this.recentDiscordReplies.delete(key);
+      } else {
+        entry.completedAt = Date.now();
+      }
+    });
+    return entry.promise;
+  }
+
   /** Handle one control-bus request (the Concierge's own `beckett ...` CLI dials this). Public: it
    *  is an external entrypoint (the bus calls it) and is exercised directly in tests. */
   async onBusRequest(req: BusRequest): Promise<BusResponse> {
@@ -1569,47 +1620,52 @@ export class Concierge {
     if (!channelId || (!text && files.length === 0)) {
       return { ok: false, error: "discord.reply needs channelId and text or files" };
     }
-    try {
-      // If this reply is issued BY the @mention turn it's answering, claim that turn: post it as a
-      // native reply to the originating message and mark the turn handled so onMessage won't also
-      // auto-post the turn text (the duplicate-message bug). Correlated to the turn EXECUTING now
-      // (issue #24) — a queued second mention or a notify() update turn can never steal the claim.
-      const active = this.currentMention();
-      const claimsActiveTurn = !!active && active.channelId === channelId;
-      if (claimsActiveTurn && active!.declined) {
-        // OPS-101 hold-and-cancel backstop (OPS-99 §5.3): decline is TERMINAL. If the concierge
-        // already ran `beckett discord decline` this turn, it aborted before any user-facing output —
-        // a later `discord reply` must NOT sneak a message out (that would be the "abort leaks a
-        // partial message" bug). runAmbientTurn returns a synthetic PASS regardless, so the only way
-        // to keep that a true no-post is to refuse the reply here.
-        return { ok: false, error: "you declined this turn — it posts nothing; a reply is not allowed" };
+    // The ack rides a separate socket response and can be lost after Discord accepted the post.
+    // Coalesce a retry by the canonical delivery payload; attachments are included so a later,
+    // genuinely different payload is never suppressed.
+    return this.dedupeDiscordReply(JSON.stringify([channelId, text, files]), async () => {
+      try {
+        // If this reply is issued BY the @mention turn it's answering, claim that turn: post it as a
+        // native reply to the originating message and mark the turn handled so onMessage won't also
+        // auto-post the turn text (the duplicate-message bug). Correlated to the turn EXECUTING now
+        // (issue #24) — a queued second mention or a notify() update turn can never steal the claim.
+        const active = this.currentMention();
+        const claimsActiveTurn = !!active && active.channelId === channelId;
+        if (claimsActiveTurn && active!.declined) {
+          // OPS-101 hold-and-cancel backstop (OPS-99 §5.3): decline is TERMINAL. If the concierge
+          // already ran `beckett discord decline` this turn, it aborted before any user-facing output —
+          // a later `discord reply` must NOT sneak a message out (that would be the "abort leaks a
+          // partial message" bug). runAmbientTurn returns a synthetic PASS regardless, so the only way
+          // to keep that a true no-post is to refuse the reply here.
+          return { ok: false, error: "you declined this turn — it posts nothing; a reply is not allowed" };
+        }
+        const opts = {
+          // A native reply is right for an @mention (answering THAT message), but an ambient turn
+          // posts plainly — replying-to an un-addressed message reads as surveillance (§4.4).
+          ...(claimsActiveTurn && !active!.ambient ? { replyToMessageId: active!.messageId } : {}),
+          ...(files.length > 0 ? { files } : {}),
+          // `beckett discord reply` is the Concierge speaking in a channel — chilltext applies.
+          chill: true,
+        };
+        // A long reply may land as several human-cadence messages (OPS-62); `post` returns the FIRST
+        // message id (the reply-correlation anchor), so `data.messageId` keeps its single-id contract.
+        const messageId = await this.gateway.post(channelId, text, opts);
+        // OPS-80: a CLI reply is Beckett speaking in a channel — into the shared record it goes
+        // (one entry with the full text, whatever chilltext split it into).
+        this.recordBeckettPost(channelId, text, messageId);
+        if (claimsActiveTurn && active) {
+          active.repliedViaCli = true;
+          // The FIRST CLI reply IS the turn's ack — anchor any pending progress threads to it. A
+          // later reply in the same turn (a wrap-up after filing) must NOT re-anchor: that forked a
+          // second progress thread per ticket (the OPS-76 triple-thread bug).
+          active.ackMessageId ??= messageId;
+          this.openPendingThreads(active);
+        }
+        return { ok: true, data: { messageId } };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
       }
-      const opts = {
-        // A native reply is right for an @mention (answering THAT message), but an ambient turn
-        // posts plainly — replying-to an un-addressed message reads as surveillance (§4.4).
-        ...(claimsActiveTurn && !active!.ambient ? { replyToMessageId: active!.messageId } : {}),
-        ...(files.length > 0 ? { files } : {}),
-        // `beckett discord reply` is the Concierge speaking in a channel — chilltext applies.
-        chill: true,
-      };
-      // A long reply may land as several human-cadence messages (OPS-62); `post` returns the FIRST
-      // message id (the reply-correlation anchor), so `data.messageId` keeps its single-id contract.
-      const messageId = await this.gateway.post(channelId, text, opts);
-      // OPS-80: a CLI reply is Beckett speaking in a channel — into the shared record it goes
-      // (one entry with the full text, whatever chilltext split it into).
-      this.recordBeckettPost(channelId, text, messageId);
-      if (claimsActiveTurn && active) {
-        active.repliedViaCli = true;
-        // The FIRST CLI reply IS the turn's ack — anchor any pending progress threads to it. A
-        // later reply in the same turn (a wrap-up after filing) must NOT re-anchor: that forked a
-        // second progress thread per ticket (the OPS-76 triple-thread bug).
-        active.ackMessageId ??= messageId;
-        this.openPendingThreads(active);
-      }
-      return { ok: true, data: { messageId } };
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
+    });
   }
 
   /** The effective ambient mode for a channel: `off` whenever proactivity is disabled globally,

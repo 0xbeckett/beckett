@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### OPS-112 — idempotent Discord CLI replies
+
+- **Root cause:** `beckett discord reply` is a control-bus request, not a direct Discord API call.
+  The CLI previously gave its daemon acknowledgement a fixed 30-second budget. That was shorter
+  than the optional chilltext formatter's 35-second fallback deadline: when the formatter was slow
+  or unavailable, Discord could receive the raw message just after the CLI had printed a hard
+  `control bus timeout` error. The control-bus server awaits asynchronous work per socket, so this
+  is not an event-loop-blocking startup task; it is an acknowledgement budget that was too short
+  for normal reply work (and a reconnect can extend it further). `src/rpc/daemon.ts` is only the
+  desktop rich-presence client; the relevant control server is the Concierge's
+  `src/shell/control-bus.ts` socket.
+- **Safer outcome:** reply acknowledgements now wait 75 seconds by default (override with
+  `BECKETT_DISCORD_REPLY_ACK_TIMEOUT_MS`). A timeout exits successfully with an explicit
+  `{"status":"unknown","mayHaveSent":true}` result and a do-not-retry warning, rather than
+  pretending the post definitely failed.
+- **Idempotent retry window:** the Concierge coalesces in-flight and recently successful identical
+  `(channel, content, attachments)` reply requests for two minutes, returning the original result
+  instead of sending another Discord message. Failed sends are not cached, so genuine failures can
+  still be retried. This is the second line of defense if an acknowledgement is lost.
+
 ## v4.1.3 — ambient: addressee gate + concierge decline backstop (2026-07-07)
 
 First slice of the OPS-99 addressee gate (OPS-101): interjections that were aimed at another

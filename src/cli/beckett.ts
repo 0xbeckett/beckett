@@ -15,7 +15,7 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { loadConfig, resolvePlaneBoardName } from "../config.ts";
 import { buildPaths } from "../paths.ts";
-import { callBus } from "../shell/control-bus.ts";
+import { callBus, ControlBusTimeoutError } from "../shell/control-bus.ts";
 import { createMemory } from "../memory/index.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { CfDns } from "../agency/cloudflare.ts";
@@ -32,6 +32,21 @@ import { projectSlug } from "../plane/cast.ts";
 const config = loadConfig();
 const paths = buildPaths(config);
 const SOCK = join(paths.beckettDir, "control.sock");
+
+// A chilled reply deliberately waits up to 35s for the optional formatter before falling back to
+// raw Discord text. Keep the acknowledgement budget comfortably beyond that fallback + a gateway
+// reconnect. Operators can tune it for a slow host without changing the generic bus timeout.
+const DEFAULT_DISCORD_REPLY_ACK_TIMEOUT_MS = 75_000;
+
+function discordReplyAckTimeoutMs(): number {
+  const raw = process.env.BECKETT_DISCORD_REPLY_ACK_TIMEOUT_MS;
+  if (!raw?.trim()) return DEFAULT_DISCORD_REPLY_ACK_TIMEOUT_MS;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1_000) {
+    fail("BECKETT_DISCORD_REPLY_ACK_TIMEOUT_MS must be an integer of at least 1000ms");
+  }
+  return value;
+}
 
 function out(data: unknown): never {
   process.stdout.write(typeof data === "string" ? data + "\n" : JSON.stringify(data, null, 2) + "\n");
@@ -135,6 +150,31 @@ async function bus(cmd: string, args: Record<string, unknown>): Promise<never> {
     if (!res.ok) fail(res.error ?? "command failed");
     out(res.data ?? { ok: true });
   } catch (err) {
+    fail((err as Error).message);
+  }
+}
+
+/**
+ * A Discord post is side-effecting: a lost acknowledgement is ambiguous, never evidence that the
+ * send failed. Exit successfully with an explicit machine-readable warning so an agent will not
+ * retry and create a duplicate. The daemon also coalesces retry payloads as a second line of
+ * defense (see Concierge.onBusRequest).
+ */
+async function discordReplyBus(args: Record<string, unknown>): Promise<never> {
+  try {
+    const res = await callBus(SOCK, "discord.reply", args, discordReplyAckTimeoutMs());
+    if (!res.ok) fail(res.error ?? "command failed");
+    out(res.data ?? { ok: true });
+  } catch (err) {
+    if (err instanceof ControlBusTimeoutError) {
+      out({
+        status: "unknown",
+        mayHaveSent: true,
+        message:
+          `Discord reply acknowledgement timed out after ${err.timeoutMs}ms; do not retry automatically ` +
+          "because the daemon may already have posted it.",
+      });
+    }
     fail((err as Error).message);
   }
 }
@@ -1149,7 +1189,7 @@ async function main(): Promise<void> {
     const files = flags.file
       ? (Array.isArray(flags.file) ? flags.file.map(String) : [String(flags.file)])
       : undefined;
-    await bus("discord.reply", {
+    await discordReplyBus({
       channelId: flags.channel ? String(flags.channel) : undefined,
       text: _.join(" "),
       files,

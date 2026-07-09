@@ -173,7 +173,7 @@ Run on the box as the beckett user (`bun src/cli/beckett.ts <...>`, usually alia
 |---|---|
 | `beckett status --pretty` | What the live daemon is doing right now (workers, poller, Discord, concierge). |
 | `beckett doctor` | Would Beckett work right now? Binaries, live token probes, env drift, leaked workers. Non-zero exit on any failure. |
-| `beckett discord reply --channel <id> "…"` | Post a message as Beckett into a channel. |
+| `beckett discord reply --channel <id> "…"` | Post a message as Beckett into a channel. A reply-ack timeout reports `mayHaveSent`, not a retryable failure; do not resend it automatically. Set `BECKETT_DISCORD_REPLY_ACK_TIMEOUT_MS` to tune the 75s acknowledgement budget. |
 | `beckett reload` | Re-read `persona.md` and re-ground on a fresh session (live voice retune). |
 | `beckett ticket …` / `beckett plan …` | File a ticket / a multi-ticket plan into Plane. |
 | `beckett eval "author/model" [--short|--full]` | Run the curated coding prompt suite against any OpenRouter model and save a readable report. |
