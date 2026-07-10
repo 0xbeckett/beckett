@@ -21,8 +21,18 @@ The CLI handles dedup, atomic write, backlink + index regen, and the git commit.
 
 - An exact name/alias match, a phantom (referenced-but-undocumented) name, or a high-similarity
   description of the **same type** → it becomes an **update**, not a duplicate. Don't create
-  `the-marketing-team` next to `marketing-team`.
+  `the-marketing-team` next to `marketing-team`. Similarity is stemmed, so a rewording of the
+  same fact still collides.
 - Borderline? Flag it / ask rather than auto-merging — a wrong merge is hard to undo.
+
+## Maintenance (routine — the store self-heals)
+
+The daemon runs `beckett memory maintain` daily: expired-`ttl` and superseded nodes are moved
+to `archive/` (never deleted), near-identical same-type nodes are merged into the older one
+(full body preserved, old name kept as an alias), and borderline pairs are flagged in the
+report for a human call. Run it by hand with `--dry-run` to see what it would do. Set a `ttl`
+metadata date on facts you know will expire; link a replacing decision with
+`--link old-decision:supersedes` so the old one retires itself.
 
 ## What to store (and not)
 

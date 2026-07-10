@@ -478,6 +478,9 @@ export interface ScoredNode {
 export interface RecallQuery {
   text: string;
   hint?: { names?: string[]; types?: NodeType[] };
+  /** Hard narrowing (OPS-121): only these types/names are candidates at all — a hint boosts,
+   *  a filter excludes. Powers targeted `beckett recall --type person --name jason`. */
+  filter?: { types?: NodeType[]; names?: string[] };
   k?: number; // seeds before expansion (default 6)
   hops?: number; // link expansion depth (default 1)
 }

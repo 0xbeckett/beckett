@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### OPS-121 — better memory: sharper recall, global context, routine staleness pruning
+
+- **Sharper recall (still keyword/relevance — deliberately no semantic/embedding layer).**
+  Retrieval scoring moved to `src/memory/search.ts`: light stemming ("deploying" finds
+  "deploy"), IDF weighting (rare terms outrank ubiquitous ones), full-node scanning (bodies
+  and metadata values are searched, not just the one-line description), prefix credit, and
+  coverage scaling so multi-word queries rank whole-fact matches first.
+- **First-class `beckett recall`.** A top-level, targeted retrieval command:
+  `beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N]
+  [--json]`. `--type`/`--name` are hard filters (an explicitly named node is never ranked
+  out), hits print with file paths, and `beckett memory recall` keeps working as the same
+  command under its original spelling.
+- **Global/cross-session context.** The graph is rebuilt from disk on every call and recall
+  now sees a fact wherever it lives in a note, so memories written in one session are reliably
+  retrieved in later ones; the always-loaded `MEMORY.md` index rides along with every result.
+- **Routine maintenance (`beckett memory maintain`, `src/memory/maintain.ts`).** The daemon
+  runs a self-healing pass shortly after boot and daily: nodes whose `ttl` expired past a
+  7-day grace are archived, `supersedes` links retire the superseded node, and near-identical
+  same-type nodes are merged (canonical keeps both bodies, the duplicate's name becomes an
+  alias, inbound wikilinks are rewritten). Borderline pairs are only flagged — auto-merge
+  stays conservative. `--dry-run` plans without writing.
+- **No data loss, ever.** Nothing is deleted: retired files move to `<memoryDir>/archive/`
+  with `archived`/`archived_reason` stamped, excluded from the graph but on disk and
+  git-versioned. Existing per-fact markdown files and the `MEMORY.md` index format are
+  unchanged; the live store parses as-is (verified read-only against production memory).
+
 ### Coworker-as-a-Service threads: user-opened workspaces + a private worker journal
 
 - **People open threads, Beckett moves in.** A thread a USER creates registers as a ticket

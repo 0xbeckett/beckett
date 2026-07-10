@@ -12,6 +12,16 @@
  *                        regenerate `## Backlinks`, rewrite the always-loaded `MEMORY.md`
  *                        index, mirror to SQLite, log an event, and git-commit the memory repo.
  *   - `reindex()`      → rebuild the SQLite mirror from the markdown tree (Spec 09 §2.12).
+ *   - `maintain(opts)` → the OPS-121 self-healing pass: archive expired/superseded nodes,
+ *                        merge near-duplicates, flag borderline pairs. Planning is pure in
+ *                        `./maintain.ts`; execution (file moves, link rewrites) lives here.
+ *                        Nothing is ever deleted — archived files move to `archive/`
+ *                        (excluded from the graph) and the dir is git-versioned.
+ *
+ * Retrieval scoring lives in `./search.ts` (OPS-121): stemmed, IDF-weighted, full-node
+ * (body + metadata) keyword relevance — deliberately lexical and deterministic, not
+ * embeddings. Recall rebuilds the graph from disk on every call, so facts written by any
+ * session (or an out-of-band `git pull`) are always visible to the next query.
  *
  * Design choices honoring Spec 08:
  *   - **Files are canonical** (Spec 08 §2.4). The in-memory graph is rebuilt from disk on every
@@ -37,11 +47,12 @@ import {
   readFileSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type {
   IndexLine,
   Logger,
@@ -56,6 +67,8 @@ import type {
   ScoredNode,
 } from "../types.ts";
 import { log as rootLog } from "../log.ts";
+import { corpusStats, DEDUP_THRESHOLD, nodeSimilarity, scoreNode } from "./search.ts";
+import { planMaintenance, type MaintainReport } from "./maintain.ts";
 
 // =======================================================================================
 // Tunables (Spec 08 §3, §4.2 — start conservative; favor flagging over auto-merge)
@@ -67,8 +80,8 @@ const DEFAULT_K = 6;
 const DEFAULT_HOPS = 1;
 /** A seed must beat this lexical score to qualify (Spec 08 §3.2 `RELEVANCE_FLOOR`). */
 const RELEVANCE_FLOOR = 0;
-/** Description+name similarity (0..1) above which a `create` is coerced to `update` (Spec 08 §4.2). */
-const DEDUP_THRESHOLD = 0.82;
+/** Nodes updated within this window get a mild recall boost (fresh facts first on a tie). */
+const RECENT_DAYS = 30;
 /** Frontmatter fields whose `[[wikilinks]]` are structural edges (higher weight than prose). */
 const STRUCTURAL_FIELDS = new Set(["members", "owners", "applies_to", "supersedes"]);
 /** Reverse edges worth following on expansion; incidental prose backlinks are dropped (§3.2). */
@@ -77,12 +90,8 @@ const HIGH_VALUE_BACKLINK_FIELDS = new Set(["members", "owners", "applies_to", "
 /** `[[kebab-name]]` or `[[kebab-name|alias]]` — a directed graph edge (Spec 08 §2.2). */
 const WIKILINK = /\[\[([a-z0-9-]+)(?:\|([^\]]+))?\]\]/g;
 
-/** Tiny English stopword set for lexical scoring (Spec 08 §3.1 — lexical, not embeddings). */
-const STOPWORDS = new Set([
-  "the", "a", "an", "of", "to", "and", "for", "in", "on", "is", "are", "we", "that",
-  "this", "it", "with", "as", "be", "or", "at", "by", "from", "our", "you", "your",
-  "i", "me", "my", "was", "were", "has", "have", "had", "but", "not", "if", "so",
-]);
+/** Subdirectory (top-level) that holds archived nodes — on disk, out of the graph. */
+const ARCHIVE_DIR = "archive";
 
 /** Maps a node `type` to its conventional subdirectory (Spec 08 §1.1 — folders are cosmetic). */
 const TYPE_FOLDER: Record<string, string> = {
@@ -114,7 +123,7 @@ const META_ORDER = [
   "decided", "supersedes",
 ];
 /** Provenance fields rendered last (Spec 08 §1.2). */
-const META_TAIL = ["created", "updated", "source", "confidence", "ttl"];
+const META_TAIL = ["created", "updated", "source", "confidence", "ttl", "archived", "archived_reason"];
 
 // =======================================================================================
 // Construction
@@ -240,6 +249,129 @@ export class MemoryStore implements Memory {
     return result;
   }
 
+  // ── maintain (OPS-121 — routine staleness pruning + dedup) ───────────────────────────
+
+  /**
+   * One self-healing pass: archive expired/superseded nodes, merge near-duplicates,
+   * report borderline pairs and phantoms. `dryRun` plans without touching disk.
+   * Serialized behind the same write lock as remember.
+   */
+  async maintain(opts: { dryRun?: boolean } = {}): Promise<MaintainReport> {
+    return this.withLock(() => this.maintainLocked(opts));
+  }
+
+  private maintainLocked(opts: { dryRun?: boolean }): MaintainReport {
+    this.ensureDir();
+    let g = this.buildGraph();
+    const scanned = [...g.nodes.values()].filter((n) => !n.phantom).length;
+    const plan = planMaintenance(g, Date.now());
+    const report: MaintainReport = { scanned, ...plan, dryRun: Boolean(opts.dryRun) };
+    if (report.dryRun || (plan.archives.length === 0 && plan.merges.length === 0)) return report;
+
+    // Merges first: they rewrite inbound links, which archiving must not race.
+    for (const m of plan.merges) {
+      const canonical = g.nodes.get(m.canonical);
+      const dup = g.nodes.get(m.duplicate);
+      if (!canonical || !dup || canonical.phantom || dup.phantom) continue;
+      this.mergeNodes(canonical, dup, g);
+      g = this.buildGraph(); // later actions must see the rewritten tree
+    }
+    for (const a of plan.archives) {
+      const node = g.nodes.get(a.name);
+      if (!node || node.phantom || !node.path) continue;
+      this.archiveFile(node, a.reason + (a.by ? ` by ${a.by}` : ""), g);
+    }
+
+    // Everything moved/rewritten — settle derived state: backlinks, index, git.
+    g = this.buildGraph();
+    for (const n of g.nodes.values()) {
+      if (!n.phantom && n.path) this.refreshBacklinksOnDisk(n, g);
+    }
+    this.atomicWrite(join(this.dir, "MEMORY.md"), renderIndex(g));
+    this.commit(
+      `memory: maintenance (${plan.archives.length} archived, ${plan.merges.length} merged)`,
+    );
+    this.logger.info("memory: maintenance executed", {
+      archived: plan.archives.map((a) => a.name).join(",") || "-",
+      merged: plan.merges.map((m) => `${m.duplicate}→${m.canonical}`).join(",") || "-",
+      flagged: plan.flagged.length,
+    });
+    return report;
+  }
+
+  /**
+   * Fold `dup` into `canonical`: rewrite inbound `[[dup]]` wikilinks to the canonical name,
+   * append the duplicate's full description+body under a dated "Merged from" heading (no
+   * content is lost), union the aliases (including the duplicate's name, so future
+   * remember/recall by the old name resolves here), then archive the duplicate's file.
+   * Note: bare (non-wikilink) structural-field references to the old name are NOT rewritten —
+   * they degrade to a phantom, which the maintenance report surfaces.
+   */
+  private mergeNodes(canonical: MemoryNode, dup: MemoryNode, g: MemoryGraph): void {
+    const now = nowIso();
+    for (const e of g.in.get(dup.name) ?? []) {
+      const from = g.nodes.get(e.from);
+      if (!from || from.phantom || !from.path || from.name === dup.name) continue;
+      this.rewriteWikilinks(from.path, dup.name, canonical.name);
+    }
+
+    const metadata: Record<string, unknown> = { ...dup.metadata, ...canonical.metadata };
+    const aliases = new Set<string>([
+      ...asStringArray(canonical.metadata.aliases),
+      ...asStringArray(dup.metadata.aliases),
+      dup.name,
+    ]);
+    aliases.delete(canonical.name);
+    metadata.aliases = [...aliases];
+    metadata.updated = now;
+
+    const dupPart = [dup.description, dup.body].filter(Boolean).join("\n\n");
+    const body = `${canonical.body.trim()}\n\n## Merged from ${dup.name} (${now.slice(0, 10)})\n\n${dupPart}`
+      .replaceAll(`[[${dup.name}]]`, `[[${canonical.name}]]`)
+      .replaceAll(`[[${dup.name}|`, `[[${canonical.name}|`)
+      .trim();
+
+    this.atomicWrite(
+      canonical.path,
+      renderNode({ ...canonical, metadata, body, updated: now, mtime: Date.now() }, g),
+    );
+    this.archiveFile(dup, `merged into ${canonical.name}`, g);
+  }
+
+  /** Move a node's file into `archive/` with `archived`/`archived_reason` stamped — never a
+   *  delete. Archived files are invisible to the graph (listMarkdownFiles skips the folder). */
+  private archiveFile(node: MemoryNode, reason: string, g: MemoryGraph): void {
+    const metadata = { ...node.metadata, archived: nowIso(), archived_reason: reason };
+    let dest = join(this.dir, ARCHIVE_DIR, basename(node.path));
+    for (let i = 2; existsSync(dest); i++) {
+      dest = join(this.dir, ARCHIVE_DIR, basename(node.path).replace(/\.md$/, `-${i}.md`));
+    }
+    this.atomicWrite(dest, renderNode({ ...node, metadata }, g));
+    try {
+      unlinkSync(node.path);
+    } catch (err) {
+      this.logger.warn("memory: could not remove archived original", {
+        path: node.path,
+        err: String(err),
+      });
+    }
+  }
+
+  /** Retarget `[[from]]` / `[[from|alias]]` wikilinks in one file (body AND frontmatter). */
+  private rewriteWikilinks(path: string, from: string, to: string): void {
+    let raw: string;
+    try {
+      raw = this.rawCache.get(path) ?? readFileSync(path, "utf8");
+    } catch {
+      return;
+    }
+    const next = raw.replaceAll(`[[${from}]]`, `[[${to}]]`).replaceAll(`[[${from}|`, `[[${to}|`);
+    if (next !== raw) {
+      this.atomicWrite(path, next);
+      this.rawCache.set(path, next);
+    }
+  }
+
   // ── reindex ──────────────────────────────────────────────────────────────────────────
 
   /** Rebuild + validate the in-memory graph from the markdown tree (the files ARE the store —
@@ -316,12 +448,12 @@ export class MemoryStore implements Memory {
       return [];
     }
     return rels
-      .filter(
-        (r) =>
-          r.endsWith(".md") &&
-          r !== "MEMORY.md" &&
-          !r.split(/[\\/]/).includes(".git"),
-      )
+      .filter((r) => {
+        if (!r.endsWith(".md") || r === "MEMORY.md") return false;
+        const segments = r.split(/[\\/]/);
+        // Archived nodes stay on disk but out of the graph (OPS-121 maintenance).
+        return !segments.includes(".git") && segments[0] !== ARCHIVE_DIR;
+      })
       .map((r) => join(this.dir, r));
   }
 
@@ -415,19 +547,41 @@ export class MemoryStore implements Memory {
 export function recallOver(q: RecallQuery, g: MemoryGraph): RecallResult {
   const k = q.k ?? DEFAULT_K;
   const hops = q.hops ?? DEFAULT_HOPS;
+  const now = Date.now();
 
-  // Tier 2 — score every real index line against the task; honor explicit hints.
-  const seeds: ScoredNode[] = g.index
+  // Targeted retrieval (OPS-121): --type / --name narrow the candidate set BEFORE scoring,
+  // so `beckett recall --type person` is a precise fetch, not a fuzzy ranking.
+  const typeFilter = q.filter?.types?.length ? new Set(q.filter.types) : null;
+  const nameFilter = q.filter?.names?.length ? new Set(q.filter.names) : null;
+  const candidates = g.index.filter(
+    (line) =>
+      (!typeFilter || typeFilter.has(line.type)) && (!nameFilter || nameFilter.has(line.name)),
+  );
+
+  // Tier 2 — score every candidate against the task; honor explicit hints. The scorer
+  // (search.ts) stems and IDF-weights over name/aliases/description/metadata/BODY, so a fact
+  // buried mid-note or worded differently ("deploying" vs "deploy") still surfaces. With no
+  // query text but a filter, the filter IS the query: return the filtered set, freshest first.
+  const stats = corpusStats(g.nodes.values());
+  const hasText = q.text.trim() !== "";
+  const seeds: ScoredNode[] = candidates
     .map((line): ScoredNode | null => {
       const node = g.nodes.get(line.name);
       if (!node) return null;
-      let s = scoreRelevance(q.text, node);
+      if (!hasText) {
+        if (!typeFilter && !nameFilter) return null;
+        return { node, score: recency(node, now), via: "match", reason: "filter match" };
+      }
+      let s = scoreNode(q.text, node, stats);
       if (q.hint?.names?.includes(node.name)) s += 100;
       if (q.hint?.types?.includes(node.type)) s += 5;
+      if (nameFilter?.has(node.name)) s += 100; // an explicitly named node is never ranked out
+      if (s <= RELEVANCE_FLOOR) return null;
+      s *= recency(node, now);
       if (node.stale) s *= 0.5; // deprioritize, don't drop (Spec 08 §1.5)
-      return { node, score: s, via: "match", reason: "description match" };
+      return { node, score: s, via: "match", reason: "relevance match" };
     })
-    .filter((x): x is ScoredNode => x !== null && x.score > RELEVANCE_FLOOR)
+    .filter((x): x is ScoredNode => x !== null)
     .sort((a, b) => b.score - a.score)
     .slice(0, k);
 
@@ -477,28 +631,12 @@ export function recallOver(q: RecallQuery, g: MemoryGraph): RecallResult {
   };
 }
 
-function scoreRelevance(text: string, node: MemoryNode): number {
-  const qTokens = new Set(tokenize(text));
-  if (qTokens.size === 0) return 0;
-  const nameTokens = new Set(tokenize(node.name));
-  const aliasStrs = asStringArray(node.metadata.aliases);
-  const aliasTokens = new Set(aliasStrs.flatMap((a) => tokenize(a)));
-  const descTokens = new Set(tokenize(`${node.description} ${node.type}`));
-
-  let s = 0;
-  for (const t of qTokens) {
-    if (nameTokens.has(t)) s += 3;
-    if (aliasTokens.has(t)) s += 3;
-    if (descTokens.has(t)) s += 1;
-  }
-  // Phrase boosts: an alias or the spaced node name appearing verbatim is a strong signal.
-  const low = text.toLowerCase();
-  for (const a of aliasStrs) {
-    if (a.length >= 3 && low.includes(a.toLowerCase())) s += 8;
-  }
-  const spacedName = node.name.replace(/-/g, " ");
-  if (spacedName.length >= 3 && low.includes(spacedName)) s += 6;
-  return s;
+/** Mild freshness multiplier: recently touched facts win ties, old ones aren't dropped. */
+function recency(node: MemoryNode, now: number): number {
+  const t = Date.parse(node.updated || node.created);
+  if (!Number.isFinite(t)) return 1;
+  const days = (now - t) / 86_400_000;
+  return days <= RECENT_DAYS ? 1.15 : days <= 180 ? 1.05 : 1;
 }
 
 function edgeWeight(e: MemoryEdge): number {
@@ -532,14 +670,13 @@ function findExisting(intent: RememberIntent, g: MemoryGraph): MemoryNode | null
   if (byName?.phantom) return byName;
 
   // 4. High-similarity description/name match of the SAME type → likely the same fact.
+  //    Stemmed similarity (search.ts), so "deploying the docs" collides with "deploy docs".
   if (!intent.description) return null;
   let best: { node: MemoryNode; sim: number } | null = null;
   for (const n of g.nodes.values()) {
     if (n.phantom) continue;
     if (intent.type && n.type !== intent.type) continue;
-    const sim =
-      0.7 * dice(tokenize(intent.description), tokenize(n.description)) +
-      0.3 * dice(tokenize(intent.name), tokenize(n.name));
+    const sim = nodeSimilarity({ name: intent.name, description: intent.description }, n);
     if (!best || sim > best.sim) best = { node: n, sim };
   }
   return best && best.sim >= DEDUP_THRESHOLD ? best.node : null;
@@ -1125,22 +1262,6 @@ function pushEdge(map: Map<string, MemoryEdge[]>, key: string, e: MemoryEdge): v
   const arr = map.get(key);
   if (arr) arr.push(e);
   else map.set(key, [e]);
-}
-
-function tokenize(s: string): string[] {
-  return s
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length >= 2 && !STOPWORDS.has(t));
-}
-
-function dice(a: string[], b: string[]): number {
-  const sa = new Set(a);
-  const sb = new Set(b);
-  if (sa.size === 0 || sb.size === 0) return 0;
-  let inter = 0;
-  for (const x of sa) if (sb.has(x)) inter++;
-  return (2 * inter) / (sa.size + sb.size);
 }
 
 function slug(s: string): string {

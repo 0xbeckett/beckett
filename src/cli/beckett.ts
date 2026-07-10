@@ -236,29 +236,88 @@ async function ensureSecretService(port: number): Promise<void> {
   await runQuiet(["systemctl", "--user", "enable", "--now", "beckett-secret.service"]);
 }
 
+/**
+ * The shared recall handler behind BOTH `beckett recall …` (the first-class targeted tool,
+ * OPS-121) and `beckett memory recall …` (the original spelling — kept working). Accepts a
+ * free-text query, hard `--type`/`--name` filters, or any combination; prints the ranked
+ * hits (with file paths, so an entry can be read/edited directly) before the always-loaded
+ * global index.
+ */
+async function runRecall(argv: string[]): Promise<never> {
+  const usage =
+    'usage: beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] [--json]';
+  const { _, flags } = parse(argv);
+  const text = _.join(" ");
+  const csv = (v: string | boolean | undefined) =>
+    v ? String(v).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  const types = csv(flags.type);
+  const names = csv(flags.name);
+  if (!text && !types && !names) fail(usage);
+
+  const memory = createMemory({ memoryDir: paths.memoryDir, logger: undefined, git: false });
+  const r = await memory.recall({
+    text,
+    filter: types || names ? { types, names } : undefined,
+    k: flags.k ? Number(flags.k) : undefined,
+    hops: flags.hops ? Number(flags.hops) : undefined,
+  });
+
+  if (flags.json) {
+    out({
+      hits: r.hits.map((h) => ({
+        name: h.node.name,
+        type: h.node.type,
+        score: Number(h.score.toFixed(2)),
+        path: h.node.path,
+        description: h.node.description,
+        body: h.node.body,
+      })),
+      related: r.expanded.map((e) => ({ name: e.node.name, type: e.node.type, description: e.node.description, reason: e.reason })),
+      phantoms: r.phantoms,
+      notes: r.notes,
+    });
+  }
+
+  const lines: string[] = ["# hits"];
+  if (r.hits.length === 0) lines.push("(none — see the index below for everything on file)");
+  for (const h of r.hits) {
+    lines.push(
+      `\n## ${h.node.name} (${h.node.type}, score ${h.score.toFixed(2)})`,
+      `path: ${h.node.path}`,
+      h.node.description,
+      ...(h.node.body ? ["", h.node.body] : []),
+    );
+  }
+  if (r.expanded.length) lines.push("\n# related (linked)\n" + r.expanded.map((e) => `- ${e.node.name}: ${e.node.description} [${e.reason}]`).join("\n"));
+  if (r.phantoms.length) lines.push("\n# phantoms: " + r.phantoms.join(", "));
+  if (r.notes.length) lines.push("\n# notes: " + r.notes.join("; "));
+  lines.push("\n# index");
+  for (const il of r.index) lines.push(`- ${il.name} (${il.type}): ${il.description}`);
+  out(lines.join("\n"));
+}
+
 async function main(): Promise<void> {
   const [group, sub, ...rest] = process.argv.slice(2);
 
+  // ── recall (in-process: first-class targeted memory retrieval — OPS-121) ────────────────
+  if (group === "recall") {
+    await runRecall(sub === undefined ? rest : [sub, ...rest]);
+  }
+
   // ── memory (in-process) ────────────────────────────────────────────────────────────────
   if (group === "memory") {
-    const memory = createMemory({ memoryDir: paths.memoryDir, logger: undefined, git: sub === "remember" });
-    if (sub === "recall") {
-      const { _, flags } = parse(rest);
-      const text = _.join(" ");
-      if (!text) fail("usage: beckett memory recall \"<query>\" [--k N] [--hops N]");
-      const r = await memory.recall({
-        text,
-        k: flags.k ? Number(flags.k) : undefined,
-        hops: flags.hops ? Number(flags.hops) : undefined,
-      });
-      const lines: string[] = ["# index"];
-      for (const il of r.index) lines.push(`- ${il.name}: ${il.description}`);
-      lines.push("\n# hits");
-      for (const h of r.hits) lines.push(`\n## ${h.node.name} (${h.node.type}, score ${h.score.toFixed(2)})\n${h.node.body}`);
-      if (r.expanded.length) lines.push("\n# related (1-hop)\n" + r.expanded.map((e) => `- ${e.node.name}: ${e.node.description}`).join("\n"));
-      if (r.phantoms.length) lines.push("\n# phantoms: " + r.phantoms.join(", "));
-      if (r.notes.length) lines.push("\n# notes: " + r.notes.join("; "));
-      out(lines.join("\n"));
+    const memory = createMemory({
+      memoryDir: paths.memoryDir,
+      logger: undefined,
+      git: sub === "remember" || sub === "maintain",
+    });
+    if (sub === "recall") await runRecall(rest);
+    if (sub === "maintain") {
+      // The routine staleness/dedup pass (OPS-121). The daemon runs this daily on its own;
+      // the command is for on-demand runs and inspection. `--dry-run` plans without writing.
+      const { flags } = parse(rest);
+      const report = await memory.maintain({ dryRun: Boolean(flags["dry-run"]) });
+      out(report);
     }
     if (sub === "remember") {
       const { flags } = parse(rest);
@@ -285,7 +344,7 @@ async function main(): Promise<void> {
       });
       out({ remembered: node.name, type: node.type });
     }
-    fail(`unknown: beckett memory ${sub ?? ""}`);
+    fail(`unknown: beckett memory ${sub ?? ""} (recall | remember | maintain)`);
   }
 
   // ── journal (in-process: the private per-ticket worker progress log) ────────────────────────
@@ -1309,7 +1368,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | ticket create|comment|state|list|show | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | memory recall|remember");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | ticket create|comment|state|list|show | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] | memory recall|remember|maintain");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

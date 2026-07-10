@@ -38,6 +38,8 @@ import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
 import { createQuickRunner, type QuickRunner } from "../quick/index.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
+import { createMemory } from "../memory/index.ts";
+import { startRoutineMaintenance } from "../memory/maintain.ts";
 
 /**
  * Root under which every ticket builds its OWN project repo — one directory per code project,
@@ -78,6 +80,7 @@ interface BootedSystem {
   dispatcher: Dispatcher;
   concierge: Concierge;
   quick: QuickRunner;
+  memoryMaintenance: { stop(): void };
 }
 
 /**
@@ -283,14 +286,28 @@ async function boot(): Promise<BootedSystem> {
       }),
     ),
   );
+  // Memory self-healing (OPS-121): one maintenance pass shortly after boot, then daily —
+  // archives expired/superseded facts and merges near-duplicates so the knowledge graph
+  // doesn't rot between deploys. Failures log and never affect the rest of the daemon.
+  const memory = createMemory({
+    memoryDir: buildPaths(config).memoryDir,
+    logger: logger.child("memory"),
+    git: true,
+  });
+  const memoryMaintenance = startRoutineMaintenance({
+    maintain: (opts) => memory.maintain(opts),
+    logger: logger.child("memory.maintain"),
+  });
+
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, dispatcher, concierge, quick };
+  return { config, logger, client, clients, poller, pollers, dispatcher, concierge, quick, memoryMaintenance };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
 async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   sys.logger.info("shutting down beckett v3", { signal });
+  sys.memoryMaintenance.stop();
   for (const p of sys.pollers.values()) p.stop();
   try {
     const drain = await sys.dispatcher.drainForShutdown(signal, 20_000);
