@@ -529,6 +529,8 @@ export interface Paths {
   logsDir: string;
   memoryDir: string;
   socket: string;
+  /** Resolved append-only per-stage telemetry ledger path. */
+  spend: string;
   configFile: string; // <beckettDir>/config.toml
   envFile: string; // <beckettDir>/.env
   personaFile: string; // <beckettDir>/persona.md
@@ -605,6 +607,8 @@ export interface Config {
     logs_dir: string;
     memory_dir: string;
     socket: string;
+    /** Append-only per-stage telemetry JSONL ledger. */
+    spend: string;
   };
   identity: {
     github_user: string;

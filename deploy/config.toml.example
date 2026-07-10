@@ -48,6 +48,7 @@ events_dir = "/home/beckett/.beckett/events"
 logs_dir = "/home/beckett/.beckett/logs"
 memory_dir = "/home/beckett/.beckett/memory"
 socket = "/home/beckett/.beckett/beckett.sock"
+spend = "/home/beckett/.beckett/spend.jsonl"
 
 [identity]
 github_user = "0xbeckett"

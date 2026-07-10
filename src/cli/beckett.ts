@@ -29,6 +29,7 @@ import { readJournal, DEFAULT_TAIL_LINES } from "../progress/journal.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 import type { Casting, Ticket, TicketState } from "../plane/types.ts";
 import { projectSlug } from "../plane/cast.ts";
+import { parseSince, readSpendLedger, summarizeSpend } from "../spend.ts";
 
 const config = loadConfig();
 const paths = buildPaths(config);
@@ -305,6 +306,18 @@ async function main(): Promise<void> {
   }
 
   // ── memory (in-process) ────────────────────────────────────────────────────────────────
+  if (group === "spend") {
+    const { flags } = parse([sub, ...rest].filter((v): v is string => v !== undefined));
+    let since: number | undefined;
+    if (flags.since) {
+      const parsed = parseSince(String(flags.since));
+      if (parsed === null) fail("--since must be an ISO timestamp or relative window such as 24h or 7d");
+      since = parsed;
+    }
+    const rows = readSpendLedger(paths.spend).filter((row) => since === undefined || Date.parse(row.ts) >= since);
+    out({ path: paths.spend, since: since === undefined ? null : new Date(since).toISOString(), ...summarizeSpend(rows) });
+  }
+
   if (group === "memory") {
     const memory = createMemory({
       memoryDir: paths.memoryDir,

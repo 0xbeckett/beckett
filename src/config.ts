@@ -365,6 +365,8 @@ const ConfigSchema = z
         logs_dir: z.string().min(1).default("/home/beckett/.beckett/logs"),
         memory_dir: z.string().min(1).default("/home/beckett/.beckett/memory"),
         socket: z.string().min(1).default("/home/beckett/.beckett/beckett.sock"),
+        /** Append-only worker/review telemetry ledger (OPS-123). */
+        spend: z.string().min(1).default("/home/beckett/.beckett/spend.jsonl"),
       })
       .default({}),
     identity: z

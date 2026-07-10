@@ -64,6 +64,7 @@ import { projectSlug } from "../plane/cast.ts";
 import { hardCapSeconds, sweepLedgeredWorker } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
 import { AdvanceOutbox, type AdvanceOperation } from "./advance-outbox.ts";
+import { appendSpendRecord, type SpendOutcome } from "../spend.ts";
 
 // =======================================================================================
 // Collaborators
@@ -135,6 +136,8 @@ export interface DispatcherDeps {
   advanceOutboxPath?: string;
   /** JSON path for restart-surviving dispatcher ticket memory (base SHA + retry/rework counters). */
   runtimeStatePath?: string;
+  /** Append-only per-stage telemetry JSONL path; defaults to config `[paths].spend`. */
+  spendLedgerPath?: string;
   /** Test seam for {@link Dispatcher.recoverFromCrash}'s orphan sweep; default ps-verifies + kills. */
   sweepOrphan?: (pid: number, expectedBin: string) => boolean;
   /**
@@ -201,6 +204,13 @@ interface PendingSpawn {
 interface RepoOwner {
   ticketId: string;
   identifier: string;
+}
+
+interface SpendStageMeta {
+  harness: string;
+  model: string;
+  effort: string;
+  startedAt: number;
 }
 
 type DispatcherLiveEntry =
@@ -390,6 +400,7 @@ export class Dispatcher {
   private readonly logger: Logger;
   private readonly advanceOutbox?: AdvanceOutbox;
   private readonly runtimeStatePath?: string;
+  private readonly spendLedgerPath: string;
 
   /** At most one live worker per ticket (implement OR review). */
   private readonly workers = new Map<string, TicketWorkerHandle>();
@@ -465,6 +476,8 @@ export class Dispatcher {
   private readonly spawnRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** One-shot cast substitutions from classed-failure recovery (issue #17), by ticket id. */
   private readonly castOverrides = new Map<string, { stage: string; spec: HarnessSpec }>();
+  /** Spawn-time cast facts retained until the run is ledgered (including cancellation). */
+  private readonly spendMetaByWorker = new Map<string, SpendStageMeta>();
 
   constructor(deps: DispatcherDeps) {
     this.client = deps.client;
@@ -491,6 +504,8 @@ export class Dispatcher {
       ? new AdvanceOutbox(deps.advanceOutboxPath, this.logger.child("advance-outbox"))
       : undefined;
     this.runtimeStatePath = deps.runtimeStatePath;
+    // Minimal test/embedded configs predate `[paths]`; production config always supplies it.
+    this.spendLedgerPath = deps.spendLedgerPath ?? this.config.paths?.spend ?? join(process.env.HOME ?? "/home/beckett", ".beckett", "spend.jsonl");
     this.sweepOrphan =
       deps.sweepOrphan ?? ((pid, expectedBin) => sweepLedgeredWorker(pid, expectedBin, this.logger));
     this.preflight = deps.preflight;
@@ -947,6 +962,8 @@ export class Dispatcher {
       workerId: handle.id,
     });
     this.workers.delete(ticket.id);
+    this.recordSpend(ticket, handle.stage, handle, "error", this.spendMetaByWorker.get(handle.id), "cancelled");
+    this.spendMetaByWorker.delete(handle.id);
     await handle.abort("ticket cancelled");
     await handle.reap();
     // Aborted + reaped → nothing holds the tree; remove it (the work is unwanted).
@@ -972,6 +989,9 @@ export class Dispatcher {
       state,
     });
     this.workers.delete(ticket.id);
+    // A human park is a cancellation of this stage, not a harness failure.
+    this.recordSpend(ticket, handle.stage, handle, "error", this.spendMetaByWorker.get(handle.id), "cancelled");
+    this.spendMetaByWorker.delete(handle.id);
     await handle.abort(`ticket moved to ${state}`);
     await handle.reap();
     const sha = await this.commitWip(ticket, handle);
@@ -1197,6 +1217,7 @@ export class Dispatcher {
 
   /** The real spawn path (cap already checked). Registers the finish handler. */
   private async doSpawn(ticket: Ticket, stage: string, repoRoot: string): Promise<void> {
+    const stageStartedAt = Date.now();
     let spec = this.castFor(ticket, stage);
 
     // A classed-failure recovery (auth/rate-limit substitution) pinned a one-shot cast override
@@ -1393,8 +1414,15 @@ export class Dispatcher {
       spawnedAt: Date.now(),
     });
     this.persistRuntimeState();
+    const spendMeta: SpendStageMeta = {
+      harness: spec.harness,
+      model: this.modelFor(spec),
+      effort: spec.effort ?? this.defaultEffortFor(spec.harness),
+      startedAt: stageStartedAt,
+    };
+    this.spendMetaByWorker.set(handle.id, spendMeta);
     handle.onDone((status, summary) => {
-      void this.onWorkerDone(ticket, stage, handle, status, summary);
+      void this.onWorkerDone(ticket, stage, handle, status, summary, spendMeta);
     });
     handle.onStalled((idleMs, strikes) => {
       void this.onWorkerStalled(ticket, stage, handle, idleMs, strikes).catch((err) =>
@@ -1732,6 +1760,64 @@ export class Dispatcher {
     }
   }
 
+  private defaultEffortFor(harness: HarnessSpec["harness"]): string {
+    switch (harness) {
+      case "claude": return this.config.harness.claude.default_effort;
+      case "codex": return this.config.harness.codex.default_effort;
+      case "pi": return this.config.harness.pi.thinking;
+    }
+  }
+
+  private modelFor(spec: HarnessSpec): string {
+    if (spec.model) return spec.model;
+    switch (spec.harness) {
+      case "claude": return this.config.harness.claude.default_model;
+      case "codex": return this.config.harness.codex.default_model;
+      case "pi": return this.config.harness.pi.default_model;
+    }
+  }
+
+  /** Persist a stage's telemetry without allowing observability to affect dispatch. */
+  private recordSpend(
+    ticket: Ticket,
+    stage: string,
+    handle: TicketWorkerHandle,
+    status: "success" | "error",
+    meta: SpendStageMeta | undefined,
+    forcedOutcome?: SpendOutcome,
+  ): void {
+    if ((stage !== "implement" && stage !== "review") || !meta || typeof handle.telemetry !== "function") return;
+    try {
+      const t = handle.telemetry();
+      const signal = status === "success" ? parseDoneSignal(handle.result?.structured) : null;
+      const outcome: SpendOutcome = forcedOutcome ?? (status !== "success"
+        ? "failed"
+        : stage === "review" && signal?.status !== "complete" ? "rework"
+        : stage === "implement" && (signal?.status === "blocked" || signal?.status === "partial") ? "rework"
+        : "done");
+      appendSpendRecord(this.spendLedgerPath, {
+        ticketId: ticket.identifier,
+        project: ticket.project ?? null,
+        stage,
+        harness: meta.harness,
+        model: meta.model,
+        effort: meta.effort,
+        turns: t.turns,
+        toolCalls: t.toolCalls,
+        tokensIn: t.tokens.input + t.tokens.cacheRead + t.tokens.cacheCreate,
+        tokensOut: t.tokens.output,
+        costUsd: t.usdEstimate ?? null,
+        durationMs: Math.max(0, Date.now() - meta.startedAt),
+        outcome,
+        reviewTier: this.reviewTierFor(ticket),
+        ts: new Date().toISOString(),
+      });
+    } catch (err) {
+      // The ledger is telemetry only: permission/disk/driver issues never alter casting or routing.
+      this.logger.warn("spend ledger append failed", { ticket: ticket.identifier, stage, error: String(err) });
+    }
+  }
+
   /**
    * One-line spend telemetry for a finished worker, e.g. `12 turns · 34 tool calls · 1.2M tokens
    * · ~$1.87`. The $ figure appears only when the driver has real/estimable cost data (claude's
@@ -1760,7 +1846,10 @@ export class Dispatcher {
     handle: TicketWorkerHandle,
     status: "success" | "error",
     summary: string,
+    spendMeta?: SpendStageMeta,
   ): Promise<void> {
+    this.recordSpend(ticket, stage, handle, status, spendMeta ?? this.spendMetaByWorker.get(handle.id));
+    this.spendMetaByWorker.delete(handle.id);
     // Free the slot first so a queued spawn can take it.
     if (this.workers.get(ticket.id) === handle) this.workers.delete(ticket.id);
     this.liveTickets.delete(ticket.id);

@@ -62,6 +62,7 @@ export function buildPaths(config: Config, env: PathEnv = process.env): Paths {
   const logsDir = overridden ? join(beckettDir, "logs") : under(beckettDir, p.logs_dir);
   const memoryDir = overridden ? join(beckettDir, "memory") : under(beckettDir, p.memory_dir);
   const socket = overridden ? join(beckettDir, "beckett.sock") : under(beckettDir, p.socket);
+  const spend = overridden ? join(beckettDir, "spend.jsonl") : under(beckettDir, p.spend);
   const projects = overridden ? join(home, "projects") : under(home, p.projects);
 
   return {
@@ -73,6 +74,7 @@ export function buildPaths(config: Config, env: PathEnv = process.env): Paths {
     logsDir,
     memoryDir,
     socket,
+    spend,
     configFile: join(beckettDir, "config.toml"),
     envFile: join(beckettDir, ".env"),
     personaFile: join(beckettDir, "persona.md"),

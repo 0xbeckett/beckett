@@ -152,7 +152,8 @@ async function boot(): Promise<BootedSystem> {
   //    snapshot first (so we don't replay history) then self-schedules every poll_secs.
   //    Constructed BEFORE the dispatcher so the dispatcher's instant-advance path (issue #33)
   //    can reference the correct board poller.
-  const beckettDir = buildPaths(config).beckettDir;
+  const paths = buildPaths(config);
+  const beckettDir = paths.beckettDir;
   const pollers = new Map<string, PlanePoller>();
   for (const [board, boardClient] of clients) {
     pollers.set(
@@ -207,6 +208,7 @@ async function boot(): Promise<BootedSystem> {
     progress: concierge.progressSink(),
     advanceOutboxPath: join(beckettDir, "advance-outbox.jsonl"),
     runtimeStatePath: join(beckettDir, "dispatcher-state.json"),
+    spendLedgerPath: paths.spend,
     // Harness health probe (issue #17): a dead harness (binary gone, login expired) becomes one
     // clear substitution comment instead of a wedged ticket. ~5-min cached per harness.
     preflight: (harness) => preflightFor(harness, config),
