@@ -124,6 +124,74 @@ test("req absorbs a 429 burst with capped exponential backoff and jitter", async
   expect(delays[5]).toBe(30_000);
 });
 
+test("provisioning creates a missing board/project workflow once and backs off on 429", async () => {
+  const provisioningConfig = {
+    plane: {
+      base_url: "https://plane.test",
+      workspace_slug: "beckett",
+      poll_secs: 5,
+      default_board: "int",
+      boards: {
+        int: {
+          project_slug: "INT",
+          state_map: {
+            backlog: "Backlog", todo: "Todo", design: "Design", design_review: "Design Review",
+            in_progress: "In Progress", in_review: "Review", done: "Done", cancelled: "Cancelled",
+          },
+        },
+      },
+    },
+  } as unknown as Config;
+  let project: { id: string; name: string; identifier: string } | null = null;
+  const states: Array<{ id: string; name: string; group: string }> = [];
+  const writes: Array<{ path: string; body: Record<string, unknown> }> = [];
+  let projectLists = 0;
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(String(url));
+    const method = init?.method ?? "GET";
+    if (u.pathname.endsWith("/projects/") && method === "GET") {
+      projectLists++;
+      if (projectLists === 1) return new Response("slow down", { status: 429 });
+      return Response.json({ results: project ? [project] : [] });
+    }
+    if (u.pathname.endsWith("/projects/") && method === "POST") {
+      writes.push({ path: u.pathname, body: JSON.parse(String(init?.body)) });
+      project = { id: "int-project", name: "INT", identifier: "INT" };
+      return Response.json(project);
+    }
+    if (u.pathname.endsWith("/projects/int-project/states/") && method === "GET") return Response.json({ results: states });
+    if (u.pathname.endsWith("/projects/int-project/states/") && method === "POST") {
+      const body = JSON.parse(String(init?.body));
+      writes.push({ path: u.pathname, body });
+      const state = { id: `s${states.length + 1}`, name: body.name, group: body.group };
+      states.push(state);
+      return Response.json(state);
+    }
+    throw new Error(`unexpected Plane route: ${method} ${u}`);
+  }) as unknown as typeof fetch;
+
+  const client = new PlaneClient({ config: provisioningConfig, token: "tok", logger: quiet, fetch: fetchImpl });
+  const delays = captureRetryDelays(client);
+  await expect(client.ensureProvisioned()).resolves.toEqual({
+    projectCreated: true,
+    statesCreated: ["Backlog", "Todo", "Design", "Design Review", "In Progress", "Review", "Done", "Cancelled"],
+  });
+  expect(delays[0]).toBeGreaterThanOrEqual(1_000);
+  expect(writes[0]).toMatchObject({ body: { name: "INT", identifier: "INT" } });
+  expect(writes.slice(1).map((w) => w.body)).toEqual([
+    { name: "Backlog", group: "backlog" }, { name: "Todo", group: "unstarted" },
+    { name: "Design", group: "started" }, { name: "Design Review", group: "unstarted" },
+    { name: "In Progress", group: "started" }, { name: "Review", group: "started" },
+    { name: "Done", group: "completed" }, { name: "Cancelled", group: "cancelled" },
+  ]);
+
+  // A fresh client represents the next deploy: it observes the same resources and sends no POSTs.
+  const writesBeforeRerun = writes.length;
+  const rerun = new PlaneClient({ config: provisioningConfig, token: "tok", logger: quiet, fetch: fetchImpl });
+  await expect(rerun.ensureProvisioned()).resolves.toEqual({ projectCreated: false, statesCreated: [] });
+  expect(writes).toHaveLength(writesBeforeRerun);
+});
+
 test("list, show, create, comment, and state calls retry their first 429", async () => {
   const attempts = new Map<string, number>();
   const issue = {
@@ -200,9 +268,6 @@ function dietFetch(route: (url: string) => Response | null, calls: string[]): ty
   return (async (url: string | URL | Request) => {
     const u = String(url);
     calls.push(u);
-    if (u.includes("/projects/") && !u.includes("/issues/")) {
-      return Response.json({ results: [{ id: "p1", identifier: "OPS", name: "ops" }] });
-    }
     if (u.includes("/states/")) {
       return Response.json({
         results: [
@@ -214,6 +279,9 @@ function dietFetch(route: (url: string) => Response | null, calls: string[]): ty
           { id: "s6", name: "Cancelled" },
         ],
       });
+    }
+    if (u.includes("/projects/") && !u.includes("/issues/")) {
+      return Response.json({ results: [{ id: "p1", identifier: "OPS", name: "ops" }] });
     }
     return route(u) ?? Response.json({ results: [] });
   }) as unknown as typeof fetch;

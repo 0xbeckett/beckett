@@ -166,21 +166,23 @@ async function boot(): Promise<BootedSystem> {
     );
   }
   const poller = pollers.get(config.plane.default_board) ?? pollers.values().next().value!;
-  // Pre-resolve board project ids so durable outbox replay can route VID/VIDPIP write-backs even
-  // before the first poll event from that board arrives. Failures are non-fatal: pollers will log
-  // and retry as before when Plane/token access is restored.
-  await Promise.all(
-    [...clients].map(async ([board, boardClient]) => {
-      try {
-        const info = await boardClient.projectInfo();
-        clientByProjectId.set(info.projectId, boardClient);
-        const boardPoller = pollers.get(board);
-        if (boardPoller) pollerByProjectId.set(info.projectId, boardPoller);
-      } catch (err) {
-        logger.warn("Plane board project pre-resolution failed", { board, error: (err as Error).message });
-      }
-    }),
-  );
+  // Provision and then resolve boards SERIALly before polling. This is the deploy-time repair
+  // path for a newly configured board (notably INT): each client lists first and creates only
+  // missing project/states. Serializing avoids a four-board boot burst; each individual request
+  // also uses PlaneClient's 429 Retry-After/exponential-backoff wrapper.
+  // Failures remain non-fatal so a temporary Plane outage does not take Discord down; the poller
+  // retries provisioning through its normal client bootstrap on later ticks.
+  for (const [board, boardClient] of clients) {
+    try {
+      await boardClient.ensureProvisioned();
+      const info = await boardClient.projectInfo();
+      clientByProjectId.set(info.projectId, boardClient);
+      const boardPoller = pollers.get(board);
+      if (boardPoller) pollerByProjectId.set(info.projectId, boardPoller);
+    } catch (err) {
+      logger.warn("Plane board provisioning/pre-resolution failed", { board, error: (err as Error).message });
+    }
+  }
   const rememberRouting = (events: Ticket | Ticket[], board: string) => {
     const boardClient = clients.get(board);
     const boardPoller = pollers.get(board);

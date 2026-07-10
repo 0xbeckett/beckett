@@ -76,6 +76,12 @@ export interface PlaneState {
   group?: string;
 }
 
+/** What a call to {@link PlaneClient.ensureProvisioned} had to create. */
+export interface PlaneProvisioningResult {
+  projectCreated: boolean;
+  statesCreated: string[];
+}
+
 /** An HTTP error from the Plane API, carrying the status code for callers to branch on. */
 export class PlaneApiError extends Error {
   constructor(
@@ -264,6 +270,9 @@ export class PlaneClient {
   private idToTicketState: Map<string, TicketState> | null = null;
   private cachedStates: PlaneState[] | null = null;
   private bootstrapPromise: Promise<void> | null = null;
+  /** Deduplicates concurrent startup callers while this board is being provisioned. */
+  private provisionPromise: Promise<PlaneProvisioningResult> | null = null;
+  private provisioned = false;
 
   constructor(deps: PlaneClientDeps) {
     this.config = deps.config;
@@ -433,6 +442,24 @@ export class PlaneClient {
     return this.cachedStates ? [...this.cachedStates] : [];
   }
 
+  /**
+   * Ensure this configured board has a Plane project and every workflow state in its state map.
+   *
+   * This is deliberately safe to call at every daemon start: it lists before writing and only
+   * POSTs missing resources (case-insensitive by name). Requests all pass through `req`, so
+   * Plane 429s honor Retry-After and use the shared bounded exponential backoff. The shell calls
+   * this serially for boards at boot, rather than fanning a boot burst across Plane.
+   */
+  async ensureProvisioned(): Promise<PlaneProvisioningResult> {
+    if (this.provisioned) return { projectCreated: false, statesCreated: [] };
+    if (!this.provisionPromise) {
+      this.provisionPromise = this.provision().finally(() => {
+        this.provisionPromise = null;
+      });
+    }
+    return this.provisionPromise;
+  }
+
   // ── hydration ────────────────────────────────────────────────────────────────────────
 
   private hydrate(raw: unknown): Ticket {
@@ -509,34 +536,28 @@ export class PlaneClient {
   private async bootstrap(): Promise<void> {
     if (this.projectId && this.statesByName && this.idToTicketState) return;
     if (!this.bootstrapPromise) {
-      this.bootstrapPromise = (async () => {
-        await this.resolveProject();
-        await this.loadStates();
-      })().finally(() => {
+      this.bootstrapPromise = this.ensureProvisioned().then(() => undefined).finally(() => {
         this.bootstrapPromise = null;
       });
     }
     await this.bootstrapPromise;
   }
 
-  private async resolveProject(): Promise<void> {
-    if (this.projectId) return;
+  /** List a matching project using the same forgiving lookup used by legacy installations. */
+  private async findProject(): Promise<z.infer<typeof ProjectSchema> | undefined> {
     const raw = await this.fetchAllPages(`${this.apiBase}/projects/`);
     const slug = this.boardConfig.project_slug.toLowerCase();
     const projects = raw.map((r) => ProjectSchema.parse(r));
-    const match =
+    return (
       projects.find((p) => (p.identifier ?? "").toLowerCase() === slug) ??
       projects.find((p) => p.name.toLowerCase() === slug) ??
-      projects.find((p) => p.id.toLowerCase() === slug);
-    if (!match) {
-      throw new PlaneApiError(
-        0,
-        `no Plane project matching slug "${this.boardConfig.project_slug}" for board "${this.boardName}" in workspace ` +
-          `"${this.config.plane.workspace_slug}" (have: ${projects.map((p) => p.identifier ?? p.name).join(", ") || "none"})`,
-      );
-    }
-    this.projectId = match.id;
-    this.projectIdentifier = match.identifier ?? match.name ?? null;
+      projects.find((p) => p.id.toLowerCase() === slug)
+    );
+  }
+
+  private installProject(project: z.infer<typeof ProjectSchema>): void {
+    this.projectId = project.id;
+    this.projectIdentifier = project.identifier ?? project.name ?? null;
     this.logger.info("resolved Plane project", {
       board: this.boardName,
       slug: this.boardConfig.project_slug,
@@ -545,38 +566,77 @@ export class PlaneClient {
     });
   }
 
-  private async loadStates(): Promise<void> {
-    if (this.statesByName && this.idToTicketState) return;
-    const raw = await this.fetchAllPages(`${this.issuesProjectPath()}states/`);
-    const states: PlaneState[] = raw.map((r) => {
+  /** Create the project if it was not returned by Plane's project list. */
+  private async ensureProject(): Promise<boolean> {
+    const existing = await this.findProject();
+    if (existing) {
+      this.installProject(existing);
+      return false;
+    }
+
+    // Plane uses a short uppercase project identifier. The board name is stable and makes the
+    // stock boards OPS/INT/VID/VIDPIP match their existing hand-created identifiers; the project
+    // slug remains the display name and is always a valid lookup key if Plane normalizes it.
+    const identifier = this.boardName.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5) || "BOARD";
+    try {
+      const created = ProjectSchema.parse(
+        await this.req("POST", `${this.apiBase}/projects/`, {
+          name: this.boardConfig.project_slug,
+          identifier,
+        }),
+      );
+      this.installProject(created);
+      this.logger.info("provisioned Plane project", { board: this.boardName, projectId: created.id, identifier });
+      return true;
+    } catch (err) {
+      // A second daemon may have won the create race. Re-list once: if it is now visible this is
+      // still an idempotent success; otherwise preserve the useful original API error.
+      if (!(err instanceof PlaneApiError) || err.status !== 409) throw err;
+      const raced = await this.findProject();
+      if (!raced) throw err;
+      this.installProject(raced);
+      return false;
+    }
+  }
+
+  private desiredWorkflowStates(): Array<{ ticketState: TicketState; name: string; group: string }> {
+    const groups: Record<TicketState, string> = {
+      backlog: "backlog",
+      todo: "unstarted",
+      design: "started",
+      design_review: "unstarted",
+      in_progress: "started",
+      in_review: "started",
+      done: "completed",
+      cancelled: "cancelled",
+    };
+    const ticketStates: TicketState[] = [
+      "backlog", "todo", "design", "design_review", "in_progress", "in_review", "done", "cancelled",
+    ];
+    const seen = new Set<string>();
+    return ticketStates.flatMap((ticketState) => {
+      const name = this.boardConfig.state_map[ticketState];
+      if (!name || seen.has(name.toLowerCase())) return [];
+      seen.add(name.toLowerCase());
+      return [{ ticketState, name, group: groups[ticketState] }];
+    });
+  }
+
+  private parseStates(raw: unknown[]): PlaneState[] {
+    return raw.map((r) => {
       const s = StateSchema.parse(r);
       return { id: s.id, name: s.name, group: s.group ?? undefined };
     });
+  }
+
+  private installStates(states: PlaneState[]): void {
     const byName = new Map<string, PlaneState>();
     for (const s of states) byName.set(s.name.toLowerCase(), s);
-
     const reverse = new Map<string, TicketState>();
-    const ticketStates: TicketState[] = [
-      "backlog",
-      "todo",
-      "design",
-      "design_review",
-      "in_progress",
-      "in_review",
-      "done",
-      "cancelled",
-    ];
-    for (const ts of ticketStates) {
-      const name = this.boardConfig.state_map[ts];
-      // design/design_review intentionally have no mapping on OPS/VID boards.
-      if (!name) continue;
+    for (const { ticketState, name } of this.desiredWorkflowStates()) {
       const st = byName.get(name.toLowerCase());
-      if (st) reverse.set(st.id, ts);
-      else
-        this.logger.warn("state_map name has no matching Plane state", {
-          ticketState: ts,
-          name,
-        });
+      if (st) reverse.set(st.id, ticketState);
+      else this.logger.warn("state_map name has no matching Plane state", { ticketState, name });
     }
     // Option A video boards may include extra human-move states (e.g. Voiceover/Render) in
     // Plane's "started" group. Beckett does not set them, but reading them back should keep the
@@ -584,10 +644,34 @@ export class PlaneClient {
     for (const st of states) {
       if (!reverse.has(st.id) && (st.group ?? "").toLowerCase() === "started") reverse.set(st.id, "in_progress");
     }
-
     this.cachedStates = states;
     this.statesByName = byName;
     this.idToTicketState = reverse;
+  }
+
+  private async provision(): Promise<PlaneProvisioningResult> {
+    const projectCreated = await this.ensureProject();
+    let states = this.parseStates(await this.fetchAllPages(`${this.issuesProjectPath()}states/`));
+    const statesCreated: string[] = [];
+    for (const wanted of this.desiredWorkflowStates()) {
+      if (states.some((state) => state.name.toLowerCase() === wanted.name.toLowerCase())) continue;
+      try {
+        const created = StateSchema.parse(
+          await this.req("POST", `${this.issuesProjectPath()}states/`, { name: wanted.name, group: wanted.group }),
+        );
+        states.push({ id: created.id, name: created.name, group: created.group ?? undefined });
+        statesCreated.push(created.name);
+      } catch (err) {
+        // As above, treat a concurrent creator as success only after verifying the state exists.
+        if (!(err instanceof PlaneApiError) || err.status !== 409) throw err;
+        states = this.parseStates(await this.fetchAllPages(`${this.issuesProjectPath()}states/`));
+        if (!states.some((state) => state.name.toLowerCase() === wanted.name.toLowerCase())) throw err;
+      }
+    }
+    this.installStates(states);
+    this.provisioned = true;
+    this.logger.info("Plane board provisioned", { board: this.boardName, projectCreated, statesCreated });
+    return { projectCreated, statesCreated };
   }
 
   // ── path helpers ───────────────────────────────────────────────────────────────────────
