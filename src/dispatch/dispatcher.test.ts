@@ -711,6 +711,87 @@ describe("advance on finish", () => {
     }
   });
 
+  test("boot replay repairs an interrupted publish hold before its retry is due", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-publish-hold-recovery-"));
+    try {
+      const outbox = join(dir, "publish.jsonl");
+      const client = new FakeClient();
+      let publishCalls = 0;
+      const d = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(),
+        resolveRepoRoot: () => "/tmp/repo",
+        publishOutboxPath: outbox,
+        publishRepo: async () => {
+          publishCalls++;
+          throw new Error("ETIMEDOUT github");
+        },
+      });
+      const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+      client.board = [ticket];
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      // The row is written before this Plane hold. Simulate a crash/failure in that tiny window.
+      client.failSetState = 1;
+      created[0].finish("success", "shipped it");
+      await tick();
+      expect(ticket.state).toBe("in_progress");
+      expect(readFileSync(outbox, "utf8")).toContain(ticket.id);
+
+      await d.replayPublishes();
+      expect(ticket.state).toBe("in_review");
+      expect(publishCalls).toBe(1); // reconciliation must not spend the scheduled retry early
+      expect(readFileSync(outbox, "utf8")).toContain(ticket.id);
+      expect(spawnCalls).toHaveLength(1);
+      expect(worktreeRemoves).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("transient publish retries back off 1m, then 5m, then 30m", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-publish-backoff-"));
+    try {
+      const outbox = join(dir, "publish.jsonl");
+      const client = new FakeClient();
+      const d = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(),
+        resolveRepoRoot: () => "/tmp/repo",
+        publishOutboxPath: outbox,
+        publishRepo: async () => { throw new Error("GitHub returned 503"); },
+      });
+      const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+      client.board = [ticket];
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      created[0].finish("success", "shipped it");
+      await tick();
+
+      const first = JSON.parse(readFileSync(outbox, "utf8"));
+      expect(first.attempt).toBe(1);
+      // Make the first scheduled retry due. Its second transport failure must schedule 5m,
+      // rather than accidentally repeating the first 1m delay.
+      writeFileSync(outbox, JSON.stringify({ ...first, nextAttemptAt: 0 }) + "\n");
+      const before = Date.now();
+      await d.replayPublishes();
+      const second = JSON.parse(readFileSync(outbox, "utf8"));
+      expect(second.attempt).toBe(2);
+      expect(second.nextAttemptAt).toBeGreaterThanOrEqual(before + 5 * 60_000 - 50);
+      expect(second.nextAttemptAt).toBeLessThanOrEqual(Date.now() + 5 * 60_000 + 50);
+
+      writeFileSync(outbox, JSON.stringify({ ...second, nextAttemptAt: 0 }) + "\n");
+      await d.replayPublishes();
+      const third = JSON.parse(readFileSync(outbox, "utf8"));
+      expect(third.attempt).toBe(3);
+      expect(third.nextAttemptAt).toBeGreaterThanOrEqual(Date.now() + 30 * 60_000 - 50);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("permanent publish failures immediately park in_review with a compare fallback", async () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-publish-permanent-"));
     try {
