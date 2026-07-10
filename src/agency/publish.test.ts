@@ -155,4 +155,7 @@ test("idempotent (upstream PR) — an already-open PR is reused, gh pr create is
   const r = await gh.ensurePublished({ slug: "probabilities", sourceDir: "/src", ticket: "OPS-28" });
   expect(r.prUrl).toContain("/pull/99");
   expect(calls.some((c) => c.startsWith("gh pr create"))).toBe(false);
+  // The check happens before fork/push/create, so an outbox replay does not race into another PR.
+  expect(calls.some((c) => c.startsWith("git push"))).toBe(false);
+  expect(calls.some((c) => c.startsWith("gh repo fork"))).toBe(false);
 });

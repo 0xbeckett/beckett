@@ -230,6 +230,7 @@ async function boot(): Promise<BootedSystem> {
     publishRepo,
     progress: concierge.progressSink(),
     advanceOutboxPath: join(beckettDir, "advance-outbox.jsonl"),
+    publishOutboxPath: join(beckettDir, "publish-outbox.jsonl"),
     runtimeStatePath: join(beckettDir, "dispatcher-state.json"),
     spendLedgerPath: paths.spend,
     // Harness health probe (issue #17): a dead harness (binary gone, login expired) becomes one
@@ -266,6 +267,7 @@ async function boot(): Promise<BootedSystem> {
   // bus routes here. Done post-construction because the Concierge is built first (progress sink).
   concierge.setDispatcherOps({
     restaff: (id, harness) => dispatcher.restaff(id, harness as Harness | undefined),
+    courier: (id) => dispatcher.courier(id),
   });
 
   // Instant tick on filing (issue #33): `beckett ticket create --channel …` pings the control bus;
@@ -312,6 +314,7 @@ async function boot(): Promise<BootedSystem> {
   //    before we begin polling. (Constructed above so its progress sink could be wired in.)
   await concierge.start();
   await dispatcher.replayAdvances();
+  await dispatcher.replayPublishes();
 
   // Crash recovery (issue #20): BEFORE the poller re-staffs anything, sweep worker processes a
   // crashed daemon orphaned, commit their ghost WIP, and arm session-resume hints so re-staffed

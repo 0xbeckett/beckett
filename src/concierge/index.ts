@@ -988,6 +988,7 @@ export class Concierge {
    */
   private dispatcherOps: {
     restaff(id: string, harness?: string): Promise<{ ticket: string; stage: string; harness?: string }>;
+    courier(id: string): Promise<{ ticket: string; cancelled: boolean }>;
   } | null = null;
   /**
    * Daemon-wide status assembler wired in by v4-main (issue #30): answers the `status` bus command
@@ -1509,6 +1510,18 @@ export class Concierge {
       try {
         const r = await this.dispatcherOps.restaff(id, harness);
         return { ok: true, data: r };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    }
+    if (req.cmd === "ticket.courier") {
+      // A concierge courier explicitly takes exclusive ownership from the durable publish retry;
+      // this prevents a background retry racing the human into a duplicate PR.
+      if (!this.dispatcherOps) return { ok: false, error: "courier unavailable — the dispatcher is not wired" };
+      const id = typeof req.args.id === "string" ? req.args.id.trim() : "";
+      if (!id) return { ok: false, error: "usage: beckett ticket courier <id>" };
+      try {
+        return { ok: true, data: await this.dispatcherOps.courier(id) };
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
