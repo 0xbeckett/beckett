@@ -55,6 +55,35 @@ test("native reply to a bot-authored message counts as addressed", async () => {
   expect(normalized.mentionsBot).toBe(true);
 });
 
+test("startStandaloneThread creates a public sibling under the parent channel", async () => {
+  const gateway = new DiscordJsGateway();
+  const creates: Array<Record<string, unknown>> = [];
+  const channel = {
+    isTextBased: () => true,
+    isDMBased: () => false,
+    threads: {
+      create: async (opts: Record<string, unknown>) => {
+        creates.push(opts);
+        return { id: "workspace-1" };
+      },
+    },
+  };
+  (gateway as unknown as { connected: boolean }).connected = true;
+  (gateway as unknown as { client: unknown }).client = {
+    channels: { fetch: async () => channel },
+  };
+
+  const id = await gateway.startStandaloneThread("parent-1", "OPS-7 · with Beckett");
+
+  expect(id).toBe("workspace-1");
+  expect(creates).toHaveLength(1);
+  expect(creates[0]).toMatchObject({
+    name: "OPS-7 · with Beckett",
+    autoArchiveDuration: 10080,
+    type: 11,
+  });
+});
+
 /**
  * Chilltext (OPS-73) is strictly OPT-IN per post. The regression this guards: wiring it
  * unconditionally into sendNow chilled the worker logs relayed into progress threads, so the

@@ -78,6 +78,7 @@ class FakeGateway implements DiscordGateway {
   readonly posts: PostRecord[] = [];
   readonly typings: string[] = [];
   readonly threads: { channelId: string; anchorMessageId: string; name: string; threadId: string }[] = [];
+  readonly workspaceThreads: { channelId: string; name: string; threadId: string }[] = [];
   private handler: ((m: IncomingMessage) => void | Promise<void>) | null = null;
 
   async start(): Promise<void> {}
@@ -92,6 +93,12 @@ class FakeGateway implements DiscordGateway {
   async startThread(channelId: string, anchorMessageId: string, name: string): Promise<string> {
     const threadId = `thread-${this.threads.length + 1}`;
     this.threads.push({ channelId, anchorMessageId, name, threadId });
+    return threadId;
+  }
+
+  async startStandaloneThread(channelId: string, name: string): Promise<string> {
+    const threadId = `workspace-${this.workspaceThreads.length + 1}`;
+    this.workspaceThreads.push({ channelId, name, threadId });
     return threadId;
   }
 
@@ -251,6 +258,9 @@ async function main(): Promise<void> {
         burst_quiet_secs: 2,
         channel_cooldown_secs: 0,
         offer_ttl_secs: 60,
+        // This harness asserts a fresh post-consent candidate re-enters triage; disable the
+        // production engaged-conversation grace window so that assertion is deterministic.
+        engaged_window_secs: 0,
       },
     });
 
@@ -295,14 +305,20 @@ async function main(): Promise<void> {
     assertEqual(triageCalls, 1, "consent follow-up should bypass triage");
     assertEqual(frames.length, 2, "consent should run one follow-up session turn");
     assertIncludes(frames[1] as string, "SYSTEM (ambient follow-up)", "second frame should be consent follow-up");
-    assertEqual(gateway.posts.length, 2, "consent should post exactly one ack via the CLI path");
-    assertEqual(gateway.posts[1]?.text, "On it — filing CSV export now.", "consent ack mismatch");
+    const parentPosts = gateway.posts.filter((p) => p.channelId === CHAN);
+    assertEqual(parentPosts.length, 2, "consent should post exactly one parent-channel ack via the CLI path");
+    assertEqual(parentPosts[1]?.text, "On it — filing CSV export now.", "consent ack mismatch");
     assertEqual(filedTickets.length, 1, "consent should signal one filed ticket");
     assertEqual(filedTickets[0]?.identifier, "E2E-CSV-1", "filed ticket identifier mismatch");
     assertEqual(ticketFiledPokes, 1, "ticket.filed should poke the dispatcher once");
     await drain();
-    assertEqual(gateway.threads.length, 1, "ticket lifecycle should anchor a progress thread to the ack");
-    assertEqual(gateway.threads[0]?.anchorMessageId, gateway.posts[1]?.id, "progress thread should hang off the consent ack");
+    assertEqual(gateway.threads.length, 1, "ticket lifecycle should anchor an activity thread to the ack");
+    assertEqual(gateway.threads[0]?.anchorMessageId, parentPosts[1]?.id, "activity thread should hang off the consent ack");
+    assertEqual(gateway.workspaceThreads.length, 1, "ticket lifecycle should create a sibling human workspace");
+    assert(
+      gateway.posts.some((p) => p.channelId === gateway.workspaceThreads[0]?.threadId),
+      "the human workspace should receive its orientation message",
+    );
     assertEqual(readLedger(dir).offers?.length ?? 0, 0, "offer ledger should clear after accepted consent");
 
     console.log("→ PASS/no-post path");
@@ -314,7 +330,7 @@ async function main(): Promise<void> {
     assertEqual(triageCalls, 2, "fresh ambient candidate should triage after accepted offer clears");
     assertEqual(frames.length, 3, "PASS candidate should still run the ambient turn");
     assertIncludes(frames[2] as string, "SYSTEM (ambient — nobody addressed you", "PASS path should be an ambient candidate");
-    assertEqual(gateway.posts.length, 2, "PASS should suppress posting");
+    assertEqual(gateway.posts.length, 3, "PASS should suppress posting beyond the ticket workspace orientation");
     assertEqual(readLedger(dir).offers?.length ?? 0, 0, "PASS should not create a pending offer");
 
     console.log("\n✅ AMBIENT INTERJECTION E2E PASSED (offline; no live model/Discord/Plane)");

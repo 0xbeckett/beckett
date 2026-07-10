@@ -31,6 +31,7 @@ import {
   GatewayIntentBits,
   Partials,
   Events,
+  ChannelType,
   type Message,
   type MessageCreateOptions,
   AttachmentBuilder,
@@ -273,6 +274,40 @@ export class DiscordJsGateway implements DiscordGateway {
     }).startThread({ name: this.threadName(name), autoArchiveDuration: 10080 /* 1 week, the max */ });
     this.lastEventTs = Date.now();
     this.logger.info("discord progress thread opened", { channelId, anchorMessageId, threadId: started.id });
+    return started.id;
+  }
+
+  /**
+   * Open the ticket's human workspace as a standalone public thread in the same parent channel as
+   * the anchored activity feed. Discord gives a message at most one attached thread, so trying to
+   * call `startThread` twice on the acknowledgement would fail instead of producing two siblings.
+   */
+  async startStandaloneThread(channelId: string, name: string): Promise<string> {
+    const client = this.client;
+    if (!this.connected || !client) {
+      throw new Error("discord gateway not connected — cannot open thread yet");
+    }
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased() || channel.isDMBased()) {
+      throw new Error(`discord channel ${channelId} cannot host a thread`);
+    }
+    const manager = (channel as unknown as {
+      threads?: {
+        create: (o: {
+          name: string;
+          autoArchiveDuration: number;
+          type: ChannelType.PublicThread;
+        }) => Promise<{ id: string }>;
+      };
+    }).threads;
+    if (!manager) throw new Error(`discord channel ${channelId} cannot host a thread`);
+    const started = await manager.create({
+      name: this.threadName(name),
+      autoArchiveDuration: 10080,
+      type: ChannelType.PublicThread,
+    });
+    this.lastEventTs = Date.now();
+    this.logger.info("discord ticket workspace opened", { channelId, threadId: started.id });
     return started.id;
   }
 

@@ -8,7 +8,7 @@
  */
 
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProgressHub, formatEvent, type ThreadCapableGateway, type ProgressContext } from "./progress.ts";
@@ -26,6 +26,7 @@ const quietLog = (() => {
 
 interface Recorded {
   threads: { channelId: string; anchorMessageId: string; name: string; id: string }[];
+  standaloneThreads: { channelId: string; name: string; id: string }[];
   posts: { channelId: string; content: string }[];
 }
 
@@ -34,7 +35,7 @@ function fakeGateway(opts: { failOpens?: number } = {}): {
   gateway: ThreadCapableGateway;
   rec: Recorded;
 } {
-  const rec: Recorded = { threads: [], posts: [] };
+  const rec: Recorded = { threads: [], standaloneThreads: [], posts: [] };
   let opens = 0;
   let toFail = opts.failOpens ?? 0;
   const gateway: ThreadCapableGateway = {
@@ -45,6 +46,11 @@ function fakeGateway(opts: { failOpens?: number } = {}): {
       }
       const id = `thread-${++opens}`;
       rec.threads.push({ channelId, anchorMessageId, name, id });
+      return id;
+    },
+    async startStandaloneThread(channelId, name) {
+      const id = `workspace-${rec.standaloneThreads.length + 1}`;
+      rec.standaloneThreads.push({ channelId, name, id });
       return id;
     },
     async post(channelId, content) {
@@ -108,17 +114,21 @@ test("events that arrive before the thread is open are buffered, then flushed on
   hub.event("OPS-1", toolCall("Read", { file_path: "/etc/nginx/nginx.conf" }), IMPL);
   expect(rec.threads).toHaveLength(0); // nothing opened yet
 
-  // The ack lands → open the thread; buffered lines drain into it.
+  // The ack lands → open the activity + workspace pair; buffered lines drain into activity.
   hub.openThread({ channelId: CHAN, anchorMessageId: ACK, ticketIdent: "OPS-1", title: "OPS-1 · scan" });
   await settle();
 
   expect(rec.threads).toHaveLength(1);
+  expect(rec.standaloneThreads).toHaveLength(1);
   expect(rec.threads[0]!.anchorMessageId).toBe(ACK);
   const body = rec.posts.map((p) => p.content).join("\n");
   expect(body).toContain("nmap -sV target");
   expect(body).toContain("/etc/nginx/nginx.conf");
   // Posts go to the THREAD id, never the parent channel.
-  expect(rec.posts.every((p) => p.channelId === rec.threads[0]!.id)).toBe(true);
+  const activityPosts = rec.posts.filter((p) => p.content.includes("nmap") || p.content.includes("nginx"));
+  expect(activityPosts.every((p) => p.channelId === rec.threads[0]!.id)).toBe(true);
+  expect(rec.threads[0]!.name).toBe("OPS-1 · activity");
+  expect(rec.standaloneThreads[0]!.name).toBe("OPS-1 · with Beckett");
   hub.dispose();
 });
 
@@ -131,6 +141,7 @@ test("openThread is idempotent across both ack paths (no duplicate thread)", asy
   hub.event("OPS-1", finished("success", "done"), IMPL);
   await settle();
   expect(rec.threads).toHaveLength(1);
+  expect(rec.standaloneThreads).toHaveLength(1);
   hub.dispose();
 });
 
@@ -147,8 +158,9 @@ test("a re-anchor with a DIFFERENT ack keeps the first thread (OPS-76 triple-thr
 
   // ONE thread, anchored to the FIRST ack, receiving the whole log stream.
   expect(rec.threads).toHaveLength(1);
+  expect(rec.standaloneThreads).toHaveLength(1);
   expect(rec.threads[0]!.anchorMessageId).toBe(ACK);
-  expect(rec.posts.every((p) => p.channelId === rec.threads[0]!.id)).toBe(true);
+  expect(rec.posts.filter((p) => p.content.includes("bun test")).every((p) => p.channelId === rec.threads[0]!.id)).toBe(true);
   expect(rec.posts.map((p) => p.content).join("\n")).toContain("bun test");
   hub.dispose();
 });
@@ -185,7 +197,7 @@ test("a terminal event flushes immediately without waiting for the coalesce wind
 
 // ── plan DAG: many tickets, one thread ────────────────────────────────────────────────────────
 
-test("a plan DAG maps N tickets onto ONE thread, tagged by identifier", async () => {
+test("a plan DAG maps N tickets onto ONE activity/workspace pair, tagged by identifier", async () => {
   const { gateway, rec } = fakeGateway();
   const hub = new ProgressHub(gateway, quietLog, { flushIntervalMs: 5 });
   // Both tickets filed under the SAME ack (the plan's single reply).
@@ -196,9 +208,32 @@ test("a plan DAG maps N tickets onto ONE thread, tagged by identifier", async ()
   await settle();
 
   expect(rec.threads).toHaveLength(1); // one shared thread
+  expect(rec.standaloneThreads).toHaveLength(1); // one shared human workspace
+  expect(hub.workspaceContext(rec.standaloneThreads[0]!.id)).toEqual({
+    parentChannelId: CHAN,
+    ticketIdents: ["OPS-1", "OPS-2"],
+  });
   const body = rec.posts.map((p) => p.content).join("\n");
   expect(body).toContain("[OPS-1]");
   expect(body).toContain("[OPS-2]");
+  hub.dispose();
+});
+
+test("a plan ticket filed after the workspace opened is added to its routing and conversation", async () => {
+  const { gateway, rec } = fakeGateway();
+  const hub = new ProgressHub(gateway, quietLog, { flushIntervalMs: 5 });
+  hub.openThread({ channelId: CHAN, anchorMessageId: ACK, ticketIdent: "OPS-1", title: "first" });
+  await settle();
+
+  hub.openThread({ channelId: CHAN, anchorMessageId: ACK, ticketIdent: "OPS-2", title: "second" });
+  await settle();
+
+  expect(rec.threads).toHaveLength(1);
+  expect(rec.standaloneThreads).toHaveLength(1);
+  expect(hub.workspaceContext("workspace-1")?.ticketIdents).toEqual(["OPS-1", "OPS-2"]);
+  expect(
+    rec.posts.some((p) => p.channelId === "workspace-1" && p.content.includes("Also tracking OPS-2")),
+  ).toBe(true);
   hub.dispose();
 });
 
@@ -229,9 +264,34 @@ test("a failed thread-open retries and eventually posts", async () => {
   hub.dispose();
 });
 
+test("a failed human workspace does not disturb the activity feed", async () => {
+  const { gateway, rec } = fakeGateway();
+  gateway.startStandaloneThread = async () => {
+    throw new Error("missing CREATE_PUBLIC_THREADS permission");
+  };
+  const hub = new ProgressHub(gateway, quietLog, {
+    flushIntervalMs: 5,
+    openRetryMs: 5,
+    openMaxAttempts: 1,
+  });
+  hub.openThread({ channelId: CHAN, anchorMessageId: ACK, ticketIdent: "OPS-1", title: "t" });
+  hub.event("OPS-1", finished("success", "activity survived"), IMPL);
+  await settle(30);
+
+  expect(rec.threads).toHaveLength(1);
+  expect(rec.standaloneThreads).toHaveLength(0);
+  const activity = rec.posts.filter((p) => p.channelId === rec.threads[0]!.id).map((p) => p.content).join("\n");
+  expect(activity).toContain("activity survived");
+  expect(activity).toContain("Human workspace unavailable");
+  hub.dispose();
+});
+
 test("a permanently unthreadable channel degrades to parent-channel digests", async () => {
   const { gateway, rec } = fakeGateway();
   gateway.startThread = async () => {
+    throw new Error("discord channel dm-1 cannot host a thread");
+  };
+  gateway.startStandaloneThread = async () => {
     throw new Error("discord channel dm-1 cannot host a thread");
   };
   const hub = new ProgressHub(gateway, quietLog, { flushIntervalMs: 5, openRetryMs: 10 });
@@ -254,16 +314,52 @@ test("thread mapping persists across a hub restart", async () => {
     hub1.openThread({ channelId: CHAN, anchorMessageId: ACK, ticketIdent: "OPS-1", title: "OPS-1 · scan" });
     await settle();
     expect(first.rec.threads).toHaveLength(1);
+    expect(first.rec.standaloneThreads).toHaveLength(1);
     hub1.dispose();
 
     const second = fakeGateway();
     const hub2 = new ProgressHub(second.gateway, quietLog, { flushIntervalMs: 5, stateFile });
+    expect(hub2.workspaceContext("workspace-1")).toEqual({
+      parentChannelId: CHAN,
+      ticketIdents: ["OPS-1"],
+    });
     hub2.event("OPS-1", finished("success", "after restart"), IMPL);
     await settle();
 
     expect(second.rec.threads).toHaveLength(0);
+    expect(second.rec.standaloneThreads).toHaveLength(0);
     expect(second.rec.posts).toEqual([{ channelId: "thread-1", content: "✓ implement success: after restart" }]);
     hub2.dispose();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy one-thread state is upgraded by creating the missing human workspace", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-progress-legacy-"));
+  try {
+    const stateFile = join(dir, "progress-threads.json");
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        "OPS-9": { channelId: CHAN, threadId: "legacy-activity", name: "OPS-9 · old title" },
+      }),
+    );
+    const { gateway, rec } = fakeGateway();
+    const hub = new ProgressHub(gateway, quietLog, { flushIntervalMs: 5, stateFile });
+
+    hub.event("OPS-9", finished("success", "migrated"), IMPL);
+    await settle();
+
+    expect(rec.threads).toHaveLength(0); // the existing activity thread is reused
+    expect(rec.standaloneThreads).toHaveLength(1);
+    expect(hub.workspaceContext("workspace-1")).toEqual({
+      parentChannelId: CHAN,
+      ticketIdents: ["OPS-9"],
+    });
+    expect(rec.posts.some((p) => p.channelId === "legacy-activity" && p.content.includes("migrated"))).toBe(true);
+    expect(rec.posts.some((p) => p.channelId === "workspace-1" && p.content.includes("without an @mention"))).toBe(true);
+    hub.dispose();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

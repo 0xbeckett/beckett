@@ -816,6 +816,12 @@ export interface DiscordGateway {
    * the client is offline (the caller keeps buffering and retries on a later event).
    */
   startThread(channelId: string, anchorMessageId: string, name: string): Promise<string>;
+  /**
+   * Open a standalone public thread beside an anchored progress thread. Used for the ticket's
+   * human workspace: Discord only permits one thread to hang from a given message, so the second
+   * thread must be created directly under the same parent channel.
+   */
+  startStandaloneThread(channelId: string, name: string): Promise<string>;
   /** Trigger the typing indicator in a channel (~10s; re-call to keep it alive). */
   sendTyping(channelId: string): Promise<void>;
   /** Register the inbound message handler (intake + awaiting-reply resolution). */

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Two Discord threads per ticket
+
+- **Activity stays mechanical:** the acknowledgement's anchored thread is now named
+  `<ticket> · activity` and keeps the existing worker/tool/file-change feed.
+- **A separate human workspace:** Beckett also creates `<ticket> · with Beckett` as a standalone
+  sibling thread in the same parent channel. Authorized messages there are directed Concierge
+  turns without requiring an @mention, grounded in the associated Plane ticket or plan.
+- **Durable routing:** both thread ids and the workspace-to-ticket mapping survive daemon restarts.
+  Multi-ticket plans share one activity/workspace pair; if the target is ambiguous Beckett asks
+  rather than guessing. A workspace creation failure leaves the activity feed untouched.
+
 ### OPS-112 — idempotent Discord CLI replies
 
 - **Root cause:** `beckett discord reply` is a control-bus request, not a direct Discord API call.

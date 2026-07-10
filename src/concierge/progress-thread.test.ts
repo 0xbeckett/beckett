@@ -39,6 +39,7 @@ function authorize(): void {
 interface Recorded {
   posts: { channelId: string; content: string; replyTo?: string }[];
   threads: { channelId: string; anchorMessageId: string; name: string }[];
+  standaloneThreads: { channelId: string; name: string; id: string }[];
 }
 
 /** Fake gateway recording posts + thread opens; posts return sequential message ids. */
@@ -58,7 +59,16 @@ function fakeGateway(rec: Recorded) {
       rec.threads.push({ channelId, anchorMessageId, name });
       return `thread-${rec.threads.length}`;
     },
+    async startStandaloneThread(channelId: string, name: string) {
+      const id = `workspace-${rec.standaloneThreads.length + 1}`;
+      rec.standaloneThreads.push({ channelId, name, id });
+      return id;
+    },
   } as never;
+}
+
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function mention(content: string): IncomingMessage {
@@ -78,7 +88,7 @@ function mention(content: string): IncomingMessage {
 
 test("a ticket filed mid-turn anchors its thread to the auto-posted ack", async () => {
   authorize();
-  const rec: Recorded = { posts: [], threads: [] };
+  const rec: Recorded = { posts: [], threads: [], standaloneThreads: [] };
   const gateway = fakeGateway(rec);
   // The fake turn: claude files a ticket mid-turn (bus), then the concierge auto-posts the ack text.
   const session = {
@@ -94,18 +104,21 @@ test("a ticket filed mid-turn anchors its thread to the auto-posted ack", async 
 
   await concierge.onMessage(mention("@beckett scan my site for vulns"));
 
-  // Exactly one ack post (the turn text), and one thread hung off that ack message.
-  expect(rec.posts).toHaveLength(1);
+  await settle();
+  // Exactly one parent-channel ack, plus an activity/workspace pair.
+  expect(rec.posts.filter((p) => p.channelId === CHAN)).toHaveLength(1);
   const ackId = "mid-1";
   expect(rec.threads).toHaveLength(1);
+  expect(rec.standaloneThreads).toHaveLength(1);
   expect(rec.threads[0]!.anchorMessageId).toBe(ackId);
   expect(rec.threads[0]!.channelId).toBe(CHAN);
-  expect(rec.threads[0]!.name).toContain("OPS-35");
+  expect(rec.threads[0]!.name).toBe("OPS-35 · activity");
+  expect(rec.standaloneThreads[0]!.name).toBe("OPS-35 · with Beckett");
 });
 
 test("a ticket filed mid-turn anchors its thread to the CLI-reply ack (no double post)", async () => {
   authorize();
-  const rec: Recorded = { posts: [], threads: [] };
+  const rec: Recorded = { posts: [], threads: [], standaloneThreads: [] };
   const gateway = fakeGateway(rec);
   // The fake turn: claude files a ticket, THEN replies itself via `beckett discord reply` (which
   // claims the turn), so onMessage must NOT auto-post a second time.
@@ -121,17 +134,20 @@ test("a ticket filed mid-turn anchors its thread to the CLI-reply ack (no double
 
   await concierge.onMessage(mention("@beckett recon pass"));
 
-  // Only the CLI reply posted (no duplicate auto-post), and the thread anchors to THAT message.
-  expect(rec.posts).toHaveLength(1);
-  expect(rec.posts[0]!.replyTo).toBe("user-msg-1"); // native reply to the asker
+  await settle();
+  // Only one parent-channel reply (no duplicate auto-post), and the pair anchors to THAT message.
+  const parentPosts = rec.posts.filter((p) => p.channelId === CHAN);
+  expect(parentPosts).toHaveLength(1);
+  expect(parentPosts[0]!.replyTo).toBe("user-msg-1"); // native reply to the asker
   expect(rec.threads).toHaveLength(1);
+  expect(rec.standaloneThreads).toHaveLength(1);
   expect(rec.threads[0]!.anchorMessageId).toBe("mid-1");
   expect(rec.threads[0]!.name).toContain("OPS-36");
 });
 
 test("a plain chat turn (no ticket filed) opens no thread", async () => {
   authorize();
-  const rec: Recorded = { posts: [], threads: [] };
+  const rec: Recorded = { posts: [], threads: [], standaloneThreads: [] };
   const gateway = fakeGateway(rec);
   const session = { ask: async () => "yeah that's just vite's default, you're good" } as unknown as ConciergeSession;
   const concierge = new Concierge({ config, session, gateway });
@@ -140,4 +156,57 @@ test("a plain chat turn (no ticket filed) opens no thread", async () => {
 
   expect(rec.posts).toHaveLength(1); // the ack
   expect(rec.threads).toHaveLength(0); // but no work → no thread
+  expect(rec.standaloneThreads).toHaveLength(0);
+});
+
+test("an unmentioned message in the human workspace is a ticket-grounded directed turn", async () => {
+  authorize();
+  const rec: Recorded = { posts: [], threads: [], standaloneThreads: [] };
+  const gateway = fakeGateway(rec);
+  const turns: string[] = [];
+  let calls = 0;
+  const session = {
+    ask: async (turn: string) => {
+      turns.push(turn);
+      calls++;
+      if (calls === 1) {
+        await (concierge as unknown as { onBusRequest: Function }).onBusRequest({
+          cmd: "ticket.filed",
+          args: { identifier: "OPS-40", channelId: CHAN, title: "auth refresh" },
+        });
+        return "on it. OPS-40 is moving.";
+      }
+      return "yeah, i'll pass that constraint to the worker.";
+    },
+  } as unknown as ConciergeSession;
+  const concierge = new Concierge({ config, session, gateway });
+
+  await concierge.onMessage(mention("@beckett fix auth refresh"));
+  await settle();
+  await concierge.onMessage({
+    ...mention("also preserve the old refresh tokens"),
+    messageId: "workspace-msg-1",
+    channelId: "workspace-1",
+    channelName: "OPS-40 · with Beckett",
+    content: "also preserve the old refresh tokens",
+    mentionsBot: false,
+  });
+
+  expect(turns).toHaveLength(2);
+  expect(turns[1]).toContain("SYSTEM (ticket workspace");
+  expect(turns[1]).toContain('Plane ticket(s): "OPS-40"');
+  expect(turns[1]).toContain("directed to you even without an @mention");
+  const reply = rec.posts.find((p) => p.content.includes("pass that constraint"));
+  expect(reply).toMatchObject({ channelId: "workspace-1", replyTo: "workspace-msg-1" });
+
+  await concierge.onMessage({
+    ...mention("let me steer this too"),
+    messageId: "outsider-workspace-msg",
+    userId: "222222222222222222",
+    channelId: "workspace-1",
+    content: "let me steer this too",
+    mentionsBot: false,
+  });
+  expect(turns).toHaveLength(2); // workspace routing does not bypass the code-level access gate
+  expect(rec.posts.some((p) => p.replyTo === "outsider-workspace-msg")).toBe(true);
 });

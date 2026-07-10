@@ -2,13 +2,11 @@
  * Beckett v3 — the progress feed (`src/discord/progress.ts`)
  * =======================================================================================
  * The bridge that turns a ticket's raw {@link WorkerEvent} firehose into a readable Discord
- * THREAD hanging off the ack Beckett posted when it filed the work. The main channel stays
- * sparse (Spec 05): the person gets one line ("bet, filing it now… OPS-35, it's cooking") and,
- * collapsed underneath it, a thread that streams the granular play-by-play of every agent
- * working the ticket — tool calls, file edits, scope-guard blocks, plan ticks, and the final
- * verdict. The two feeds are complementary: {@link Concierge.notify}'s milestone paraphrases
- * still land on the parent channel (the "i'll ping the highlights here when it wraps" promise);
- * this hub owns the thread.
+ * THREAD hanging off the ack Beckett posted when it filed the work, plus a quiet sibling workspace
+ * where humans can talk to Beckett about that ticket without an @mention. The main channel stays
+ * sparse: the person gets one ack, the anchored activity thread gets the granular worker
+ * play-by-play, and the standalone workspace thread gets the human conversation. Discord permits
+ * only one thread per message, which is why the workspace is a sibling under the same parent.
  *
  * Why a hub and not "just post each event":
  *  - **Correlation is racy.** The thread is anchored to the ack message, which is posted at the
@@ -26,9 +24,9 @@
  *    ticket runs implement→review→rework workers over time; all post to its thread, tagged by
  *    stage.
  *
- * The `ticketIdent → thread` map is persisted in the runtime dir after a thread opens, so a daemon
- * restart can keep posting worker events into the same progress thread. It is best-effort: if the
- * state file is corrupt or missing, new ticket.filed acks still create fresh mappings.
+ * Both ticket → activity-thread and workspace-thread → tickets are persisted, so worker events and
+ * unmentioned human workspace messages keep routing after a daemon restart. The state is
+ * best-effort: if it is corrupt or missing, new ticket.filed acks still create fresh mappings.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -39,6 +37,7 @@ import { log as rootLog } from "../log.ts";
 /** The slice of the Discord gateway the hub needs: open a thread, post into it. */
 export interface ThreadCapableGateway {
   startThread(channelId: string, anchorMessageId: string, name: string): Promise<string>;
+  startStandaloneThread(channelId: string, name: string): Promise<string>;
   post(channelId: string, content: string): Promise<string>;
 }
 
@@ -62,6 +61,12 @@ export interface OpenThreadRequest {
   title: string;
 }
 
+/** Ticket context attached to an inbound message from a human workspace thread. */
+export interface TicketWorkspaceContext {
+  parentChannelId: string;
+  ticketIdents: string[];
+}
+
 /** Timing knobs (defaults are production values; tests shrink them to drive the timer fast). */
 export interface ProgressHubOptions {
   flushIntervalMs?: number;
@@ -82,7 +87,7 @@ const OPEN_RETRY_MS = 5_000;
 /** Bounded retries before degrading to parent-channel digests. */
 const OPEN_MAX_ATTEMPTS = 3;
 
-/** One live thread's state (one per anchor message = one per {@link ThreadFeed}). */
+/** One live activity/workspace pair (one per acknowledgement anchor). */
 interface ThreadFeed {
   channelId: string;
   anchorMessageId: string;
@@ -106,16 +111,31 @@ interface ThreadFeed {
   flushTimer: ReturnType<typeof setTimeout> | null;
   /** toolId → tool name, so a later `tool_result` error can name the tool that failed. */
   toolNames: Map<string, string>;
+  /** Human-facing sibling thread; its inbound messages route to the Concierge. */
+  workspaceName: string;
+  workspaceThreadId: string | null;
+  workspaceOpening: boolean;
+  workspaceOpenAttempts: number;
+  workspaceFailed: boolean;
+  workspaceRetryTimer: ReturnType<typeof setTimeout> | null;
+  workspaceIntroPosted: boolean;
 }
 
 interface StoredThread {
   channelId: string;
-  threadId: string;
-  name: string;
+  activityThreadId: string;
+  activityName: string;
+  workspaceThreadId: string | null;
+  workspaceName: string;
+}
+
+interface WorkspaceRoute {
+  parentChannelId: string;
+  ticketIdents: Set<string>;
 }
 
 /**
- * Owns every ticket's progress thread. Constructed with the live gateway (which the Concierge
+ * Owns every ticket's Discord thread pair. Constructed with the live gateway (which the Concierge
  * also owns) and injected into the dispatcher as a {@link ProgressSink}. Fire-and-forget by
  * design: a failure to open or post a thread must never disturb the work itself, so every gateway
  * call here is best-effort and logged, never thrown to the caller.
@@ -133,6 +153,8 @@ export class ProgressHub implements ProgressSink {
   private readonly anchorByTicket = new Map<string, string>();
   /** ticketIdent → persisted thread mapping, loaded at boot and updated when threads open. */
   private readonly savedByTicket = new Map<string, StoredThread>();
+  /** workspace thread id → its ticket(s), used to make unmentioned messages directed turns. */
+  private readonly workspaceByThread = new Map<string, WorkspaceRoute>();
   /** Events for a ticket whose thread isn't registered yet (openThread not called), drained on open. */
   private readonly pendingByTicket = new Map<string, string[]>();
 
@@ -150,7 +172,7 @@ export class ProgressHub implements ProgressSink {
    * Anchor a ticket's progress thread to the ack message. Idempotent: called from both ack paths
    * (the Concierge's auto-posted turn text AND its `beckett discord reply`) and once per ticket in
    * a `plan` DAG, so the first call for an anchor creates the thread and the rest just map their
-   * ticket onto it. A ticket only ever gets ONE thread — the first anchor wins; a later call with
+   * ticket onto it. A ticket only ever gets ONE pair: the first anchor wins and a later call with
    * a different anchor is ignored. Drains any events that arrived before the anchor landed.
    */
   openThread(req: OpenThreadRequest): void {
@@ -177,7 +199,7 @@ export class ProgressHub implements ProgressSink {
       feed = {
         channelId,
         anchorMessageId,
-        name: title,
+        name: `${ticketIdent} · activity`,
         ticketIdents: new Set([ticketIdent]),
         threadId: null,
         opening: false,
@@ -188,6 +210,13 @@ export class ProgressHub implements ProgressSink {
         elided: 0,
         flushTimer: null,
         toolNames: new Map(),
+        workspaceName: `${ticketIdent} · with Beckett`,
+        workspaceThreadId: null,
+        workspaceOpening: false,
+        workspaceOpenAttempts: 0,
+        workspaceFailed: false,
+        workspaceRetryTimer: null,
+        workspaceIntroPosted: false,
       };
       this.feeds.set(anchorMessageId, feed);
       this.log.info("progress thread registered", { ticket: ticketIdent, channelId, anchorMessageId });
@@ -197,6 +226,21 @@ export class ProgressHub implements ProgressSink {
       feed.multiTicket = true;
       if (feed.threadId) this.remember(feed, feed.threadId);
       this.pushLine(feed, `▸ also tracking ${ticketIdent}: ${title}`);
+      if (feed.workspaceThreadId) {
+        const workspaceThreadId = feed.workspaceThreadId;
+        this.mapWorkspace(workspaceThreadId, feed.channelId, ticketIdent);
+        if (feed.workspaceIntroPosted) {
+          void this.gateway
+            .post(workspaceThreadId, `Also tracking ${ticketIdent}: ${title}`)
+            .catch((err) => {
+              this.log.warn("ticket workspace addition post failed", {
+                threadId: workspaceThreadId,
+                ticket: ticketIdent,
+                error: String(err),
+              });
+            });
+        }
+      }
     }
 
     // Drain any pre-registration events for this ticket into the feed (tagged if multi-ticket).
@@ -208,7 +252,18 @@ export class ProgressHub implements ProgressSink {
     }
 
     this.ensureOpen(feed);
+    this.ensureWorkspaceOpen(feed);
     this.scheduleFlush(feed);
+  }
+
+  /** Resolve an inbound Discord channel to its persisted ticket workspace, if it is one. */
+  workspaceContext(channelId: string): TicketWorkspaceContext | null {
+    const route = this.workspaceByThread.get(channelId);
+    if (!route) return null;
+    return {
+      parentChannelId: route.parentChannelId,
+      ticketIdents: [...route.ticketIdents].sort(),
+    };
   }
 
   /**
@@ -220,6 +275,7 @@ export class ProgressHub implements ProgressSink {
     const anchor = this.anchorByTicket.get(ticketIdent);
     let feed = anchor ? this.feeds.get(anchor) : undefined;
     if (!feed) feed = this.restoreFeed(ticketIdent);
+    if (feed) this.ensureWorkspaceOpen(feed);
     const line = formatEvent(ev, ctx, feed?.toolNames);
     if (line === null) return; // event not worth surfacing (noise: partial text, turn ticks, echoes)
 
@@ -242,6 +298,8 @@ export class ProgressHub implements ProgressSink {
     for (const feed of this.feeds.values()) {
       if (feed.flushTimer) clearTimeout(feed.flushTimer);
       feed.flushTimer = null;
+      if (feed.workspaceRetryTimer) clearTimeout(feed.workspaceRetryTimer);
+      feed.workspaceRetryTimer = null;
     }
   }
 
@@ -328,6 +386,7 @@ export class ProgressHub implements ProgressSink {
         feed.openAttempts = 0;
         feed.threadId = threadId;
         this.remember(feed, threadId);
+        this.postWorkspaceIntro(feed);
         void this.flush(feed);
       })
       .catch((err) => {
@@ -347,6 +406,7 @@ export class ProgressHub implements ProgressSink {
             attempts: feed.openAttempts,
             error,
           });
+          this.postWorkspaceIntro(feed);
           void this.flush(feed);
           return;
         }
@@ -365,39 +425,133 @@ export class ProgressHub implements ProgressSink {
       });
   }
 
+  /** Open the quiet sibling thread used for human-to-Beckett collaboration. */
+  private ensureWorkspaceOpen(feed: ThreadFeed): void {
+    if (feed.workspaceThreadId || feed.workspaceOpening || feed.workspaceFailed) return;
+    feed.workspaceOpening = true;
+    feed.workspaceOpenAttempts++;
+    void this.gateway
+      .startStandaloneThread(feed.channelId, feed.workspaceName)
+      .then((threadId) => {
+        feed.workspaceOpening = false;
+        feed.workspaceOpenAttempts = 0;
+        feed.workspaceThreadId = threadId;
+        for (const ticketIdent of feed.ticketIdents) {
+          this.mapWorkspace(threadId, feed.channelId, ticketIdent);
+        }
+        if (feed.threadId) this.remember(feed, feed.threadId);
+        this.postWorkspaceIntro(feed);
+      })
+      .catch((err) => {
+        feed.workspaceOpening = false;
+        const error = String(err);
+        const permanent = /cannot host a thread|dm|direct message/i.test(error);
+        if (permanent || feed.workspaceOpenAttempts >= this.openMaxAttempts) {
+          feed.workspaceFailed = true;
+          this.pushLine(
+            feed,
+            "Human workspace unavailable; talk to Beckett from the parent channel instead.",
+          );
+          this.log.warn("ticket workspace open failed — leaving the parent channel as fallback", {
+            anchorMessageId: feed.anchorMessageId,
+            attempts: feed.workspaceOpenAttempts,
+            error,
+          });
+          void this.flush(feed);
+          return;
+        }
+        this.log.warn("ticket workspace open failed — will retry", {
+          anchorMessageId: feed.anchorMessageId,
+          attempts: feed.workspaceOpenAttempts,
+          error,
+        });
+        if (!feed.workspaceRetryTimer) {
+          feed.workspaceRetryTimer = setTimeout(() => {
+            feed.workspaceRetryTimer = null;
+            this.ensureWorkspaceOpen(feed);
+          }, this.openRetryMs);
+        }
+      });
+  }
+
+  /** Post one fixed orientation line once both sibling destinations are known. */
+  private postWorkspaceIntro(feed: ThreadFeed): void {
+    if (feed.workspaceIntroPosted || !feed.workspaceThreadId || !feed.threadId) return;
+    feed.workspaceIntroPosted = true;
+    const tickets = [...feed.ticketIdents].sort().join(", ");
+    void this.gateway
+      .post(
+        feed.workspaceThreadId,
+        `This is the human workspace for ${tickets}. Talk to me here without an @mention. ` +
+          `Worker activity stays in <#${feed.threadId}>.`,
+      )
+      .catch((err) => {
+        this.log.warn("ticket workspace intro failed", {
+          threadId: feed.workspaceThreadId,
+          error: String(err),
+        });
+      });
+  }
+
+  private mapWorkspace(threadId: string, parentChannelId: string, ticketIdent: string): void {
+    const route = this.workspaceByThread.get(threadId) ?? {
+      parentChannelId,
+      ticketIdents: new Set<string>(),
+    };
+    route.ticketIdents.add(ticketIdent);
+    this.workspaceByThread.set(threadId, route);
+  }
+
   private restoreFeed(ticketIdent: string): ThreadFeed | undefined {
     const saved = this.savedByTicket.get(ticketIdent);
     if (!saved) return undefined;
-    const anchor = saved.threadId;
+    const anchor = saved.activityThreadId;
     this.anchorByTicket.set(ticketIdent, anchor);
     let feed = this.feeds.get(anchor);
     if (!feed) {
       feed = {
         channelId: saved.channelId,
         anchorMessageId: anchor,
-        name: saved.name,
+        name: saved.activityName,
         ticketIdents: new Set([ticketIdent]),
-        threadId: saved.threadId,
+        threadId: saved.activityThreadId,
         opening: false,
         openAttempts: 0,
-        degradedToChannel: saved.threadId === saved.channelId,
+        degradedToChannel: saved.activityThreadId === saved.channelId,
         multiTicket: false,
         buffer: [],
         elided: 0,
         flushTimer: null,
         toolNames: new Map(),
+        workspaceName: saved.workspaceName,
+        workspaceThreadId: saved.workspaceThreadId,
+        workspaceOpening: false,
+        workspaceOpenAttempts: 0,
+        workspaceFailed: false,
+        workspaceRetryTimer: null,
+        workspaceIntroPosted: saved.workspaceThreadId !== null,
       };
       this.feeds.set(anchor, feed);
     } else {
       feed.ticketIdents.add(ticketIdent);
       if (feed.ticketIdents.size > 1) feed.multiTicket = true;
     }
+    if (feed.workspaceThreadId) this.mapWorkspace(feed.workspaceThreadId, feed.channelId, ticketIdent);
     return feed;
   }
 
   private remember(feed: ThreadFeed, threadId: string): void {
     for (const ticketIdent of feed.ticketIdents) {
-      this.savedByTicket.set(ticketIdent, { channelId: feed.channelId, threadId, name: feed.name });
+      this.savedByTicket.set(ticketIdent, {
+        channelId: feed.channelId,
+        activityThreadId: threadId,
+        activityName: feed.name,
+        workspaceThreadId: feed.workspaceThreadId,
+        workspaceName: feed.workspaceName,
+      });
+      if (feed.workspaceThreadId) {
+        this.mapWorkspace(feed.workspaceThreadId, feed.channelId, ticketIdent);
+      }
     }
     this.saveState();
   }
@@ -405,14 +559,35 @@ export class ProgressHub implements ProgressSink {
   private loadState(): void {
     if (!this.stateFile || !existsSync(this.stateFile)) return;
     try {
-      const raw = JSON.parse(readFileSync(this.stateFile, "utf8")) as Record<string, StoredThread>;
+      const raw = JSON.parse(readFileSync(this.stateFile, "utf8")) as Record<string, Record<string, unknown>>;
       for (const [ticketIdent, rec] of Object.entries(raw)) {
-        if (
-          typeof rec?.channelId === "string" &&
-          typeof rec.threadId === "string" &&
-          typeof rec.name === "string"
-        ) {
-          this.savedByTicket.set(ticketIdent, rec);
+        const channelId = typeof rec?.channelId === "string" ? rec.channelId : null;
+        // Backward compatible with the original `{ threadId, name }` state shape.
+        const activityThreadId =
+          typeof rec?.activityThreadId === "string"
+            ? rec.activityThreadId
+            : typeof rec?.threadId === "string"
+              ? rec.threadId
+              : null;
+        const activityName =
+          typeof rec?.activityName === "string"
+            ? rec.activityName
+            : typeof rec?.name === "string"
+              ? rec.name
+              : `${ticketIdent} · activity`;
+        if (!channelId || !activityThreadId) continue;
+        const stored: StoredThread = {
+          channelId,
+          activityThreadId,
+          activityName,
+          workspaceThreadId: typeof rec.workspaceThreadId === "string" ? rec.workspaceThreadId : null,
+          workspaceName:
+            typeof rec.workspaceName === "string" ? rec.workspaceName : `${ticketIdent} · with Beckett`,
+        };
+        this.savedByTicket.set(ticketIdent, stored);
+        this.anchorByTicket.set(ticketIdent, activityThreadId);
+        if (stored.workspaceThreadId) {
+          this.mapWorkspace(stored.workspaceThreadId, channelId, ticketIdent);
         }
       }
     } catch (err) {

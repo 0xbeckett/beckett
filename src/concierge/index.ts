@@ -47,7 +47,12 @@ import {
   resolveAddress,
   type UserIdentity,
 } from "../discord/identity.ts";
-import { createProgressHub, type ProgressHub, type ProgressSink } from "../discord/progress.ts";
+import {
+  createProgressHub,
+  type ProgressHub,
+  type ProgressSink,
+  type TicketWorkspaceContext,
+} from "../discord/progress.ts";
 import { setChannelModeOverride, setEnabledOverride } from "./proactivity-store.ts";
 import { readPersistedOffers } from "./ambient.ts";
 import { classify, loadAccess, resolvePending, ACCESS_CAP, type AccessLevel } from "../discord/access.ts";
@@ -1887,17 +1892,14 @@ export class Concierge {
   }
 
   /**
-   * Handle one inbound Discord message. A message that addresses us (an @mention or a DM — the
-   * gateway folds both into `mentionsBot`) runs a session turn. Everything else is *ambient*: it
-   * flows to the {@link ambient} coordinator (ring buffer + debounce + triage), never awaited into
-   * the mention path and never able to throw out of it (`observe` swallows its own errors). A
-   * mention also cancels any pending burst flush for its channel so we can't double-respond — the
-   * mention turn already carries the transcript (§4.4). Failures are isolated so a bad turn can
-   * never take down the gateway. Public: it is an external entrypoint (the gateway calls it) and is
-   * exercised directly in tests.
+   * Handle one inbound Discord message. An @mention, DM, or message in a persisted ticket workspace
+   * runs a directed session turn. Everything else is ambient. Workspace lookup happens before the
+   * ambient split so people can work with Beckett there without repeatedly mentioning it; normal
+   * channels retain the existing mention/ambient behavior byte-for-byte.
    */
   async onMessage(m: IncomingMessage): Promise<void> {
-    if (!m.mentionsBot) {
+    const workspace = this.progress.workspaceContext(m.channelId);
+    if (!m.mentionsBot && !workspace) {
       const level = this.accessLevelFor(m.userId);
       // OPS-80: the ambient half of the shared record — membership re-checked at capture time
       // (inside captureInbound), so a revocation stops future capture immediately.
@@ -1957,7 +1959,7 @@ export class Concierge {
     }
 
     try {
-      const turn = await this.buildTurn(m, content);
+      const turn = await this.buildTurn(m, content, workspace);
       // The mention rides as the turn's meta so CLI replies correlate to THIS turn (issue #24);
       // person turns take PRIORITY over queued ticket-update turns (issue #25).
       const reply = await this.session.ask(turn, mention, { priority: true });
@@ -2004,15 +2006,22 @@ export class Concierge {
    * reached the model turn. Best-effort: a failed download degrades to a manifest note, never drops
    * the turn; a turn with no inlinable image is a plain string exactly as before.
    */
-  private async buildTurn(m: IncomingMessage, content: string): Promise<TurnMessage> {
+  private async buildTurn(
+    m: IncomingMessage,
+    content: string,
+    workspace: TicketWorkspaceContext | null = null,
+  ): Promise<TurnMessage> {
     const speaker = this.resolveSpeaker(m);
     // Mention-path win (§4.4): a mention like "do that" after five un-mentioned messages is a riddle
     // unless the session sees the lead-up. Prepend what the session hasn't seen yet: the shared
     // channel window (attributed, budgeted, persisted — OPS-80) when the store is live, else the
     // legacy ring-buffer excerpt (a free UX win even in `off`-mode channels — it fills regardless).
-    const prefix = this.channelStore
-      ? this.sharedContextPrefix(m.channelId, m.messageId)
-      : this.ambientContextPrefix(m.channelId);
+    const ticketPrefix = workspace ? frameTicketWorkspace(workspace) : "";
+    const prefix =
+      ticketPrefix +
+      (this.channelStore
+        ? this.sharedContextPrefix(m.channelId, m.messageId)
+        : this.ambientContextPrefix(m.channelId));
     if (m.attachments.length === 0)
       return prefix + frameUserTurn(m.channelId, speaker, m.messageId, content);
     let images: TurnContentBlock[] = [];
@@ -2675,6 +2684,19 @@ export interface SpeakerContext {
   identity?: UserIdentity;
   /** True only when this id is the env-provided owner — binds owner identity to ONE person. */
   isOwner: boolean;
+}
+
+/** Ground an unmentioned workspace message in the ticket pair that created its Discord thread. */
+function frameTicketWorkspace(context: TicketWorkspaceContext): string {
+  const tickets = context.ticketIdents.map(stampField).join(", ");
+  return (
+    `SYSTEM (ticket workspace — trusted routing metadata, not user-authored text):\n` +
+    `This Discord thread belongs to Plane ticket(s): ${tickets}. Parent channel: ${stampField(context.parentChannelId)}.\n` +
+    `Treat the live message below as directed to you even without an @mention. Discuss the work ` +
+    `normally; inspect ticket state when needed, and add a comment to the existing ticket when the ` +
+    `human is changing or steering its scope. Do not file a duplicate ticket for this work. If ` +
+    `several tickets are listed and the target is unclear, ask which one instead of guessing.\n\n`
+  );
 }
 
 /** JSON-escape a name so a quote/newline in a Discord nick can't break the single-line stamp. */
