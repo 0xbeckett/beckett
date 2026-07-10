@@ -300,8 +300,10 @@ class Coordinator implements AmbientCoordinator {
           confidence: 1,
           reason: "engaged conversation — the burst responds to something Beckett just said",
           // Engaged by construction means people are talking WITH Beckett (it spoke moments ago),
-          // so the addressee is Beckett — no classifier ran to read it (OPS-101 / OPS-99 §3.2).
-          addressee: "beckett",
+          // so this is a continuation of a Beckett thread — `beckett-thread`, the addressee read
+          // that captures exactly this (OPS-101 / OPS-99 §3.2, sharpened OPS-116). No classifier
+          // ran to read it; the engaged frame short-circuits addresseeFrameLine anyway.
+          addressee: "beckett-thread",
         };
         this.logger.info("ambient engaged continuation", { channel: channelId, burst: burst.length });
       } else {

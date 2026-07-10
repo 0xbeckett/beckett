@@ -11,7 +11,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Concierge, type ConciergeSession, type TurnMessage } from "./index.ts";
+import { addresseeFrameLine, Concierge, type ConciergeSession, type TurnMessage } from "./index.ts";
 import { validateConfig } from "../config.ts";
 import type { AmbientClock } from "./ambient.ts";
 import type { TriageFn, TriageVerdict } from "./triage.ts";
@@ -93,7 +93,9 @@ interface Harness {
   setReply: (r: string) => void;
 }
 
-function harness(opts: { reply?: string; onAsk?: (concierge: Concierge) => Promise<void> | void } = {}): Harness {
+function harness(
+  opts: { reply?: string; onAsk?: (concierge: Concierge) => Promise<void> | void; verdict?: TriageVerdict } = {},
+): Harness {
   const dir = mkdtempSync(join(tmpdir(), "beckett-ambient-turn-"));
   tmpDirs.push(dir);
   process.env.BECKETT_DIR = dir;
@@ -135,7 +137,7 @@ function harness(opts: { reply?: string; onAsk?: (concierge: Concierge) => Promi
 
   const triage: TriageFn = async () => {
     state.triageCalls++;
-    return yes;
+    return opts.verdict ?? yes;
   };
 
   const config = validateConfig({
@@ -213,6 +215,39 @@ test("the cold candidate frame carries the classifier's addressee read + the dec
   expect(frame).toContain("Addressee (triage's read):");
   expect(frame).toContain("addressed to the room broadly");
   expect(frame).toContain("beckett discord decline");
+});
+
+test("addresseeFrameLine surfaces each of the four addressee reads distinctly (OPS-116)", () => {
+  // The frame line is the seat's copy of triage's addressee read. All four substantive reads must
+  // be told apart on the ambient turn — the OPS-116 fix hinges on `beckett-thread` and `other`
+  // reading differently so a pivoted continuation doesn't inherit the "aimed at YOU" lean.
+  expect(addresseeFrameLine("beckett")).toContain("aimed at YOU");
+
+  const thread = addresseeFrameLine("beckett-thread");
+  expect(thread).toContain("continues a thread you're in");
+  expect(thread).not.toContain("aimed at ANOTHER person");
+
+  const other = addresseeFrameLine("other");
+  expect(other).toContain("aimed at ANOTHER person");
+  expect(other).toContain("staying out of it");
+
+  expect(addresseeFrameLine("group")).toContain("room broadly");
+  expect(addresseeFrameLine("unclear")).toContain("unclear who this was aimed at");
+});
+
+test("a beckett-thread verdict frames as a continuation aimed your way, not at another person", async () => {
+  // Regression for the concrete OPS-116 failure: a continuation-of-a-beckett-thread read must
+  // surface the keep-it-going lean, and must NOT carry the `other` "stay out of it" copy.
+  const h = harness({ reply: "PASS", verdict: { ...yes, addressee: "beckett-thread" } });
+  const clock = clockOf(h);
+
+  await h.concierge.onMessage(msg("m1", "oh nice, do it then", 0));
+  clock.advance(2_000);
+  await drain();
+
+  const frame = h.asks[0] as string;
+  expect(frame).toContain("continues a thread you're in");
+  expect(frame).not.toContain("aimed at ANOTHER person");
 });
 
 test("a candidate that runs `discord decline` mid-turn posts nothing and consumes no cooldown", async () => {

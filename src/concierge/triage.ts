@@ -9,15 +9,27 @@ export const TriageVerdictSchema = z.object({
   confidence: z.number().min(0).max(1),
   reason: z.string(),
   /**
-   * OPS-101 (addressee gate, OPS-99 §3.1): who the latest message is aimed at — the signal both
-   * the classifier's own scoring and the concierge's frame read. `beckett` = aimed at Beckett;
-   * `other` = aimed at a specific other human ("ro, can you…"); `group` = addressed to the room;
-   * `unclear` = genuinely ambiguous. Defaulted (not required) on purpose: a model that omits it
-   * must NOT collapse the whole verdict to fail-closed silence, because that would ghost a real
-   * beat gemma DID want to land. `unclear` is the safe neutral — it neither forces nor blocks a
-   * post; the concierge frame surfaces it and leans toward PASS on `other`.
+   * OPS-101 (addressee gate, OPS-99 §3.1) — sharpened in OPS-116: who the latest message is aimed
+   * at, the signal both the classifier's own scoring and the concierge's frame read on. The four
+   * substantive reads the ticket requires the classifier to tell apart:
+   *   `beckett`        = directly aimed at Beckett — it names/@-styles Beckett, or asks something
+   *                      only Beckett could do/answer.
+   *   `beckett-thread` = a CONTINUATION of a thread Beckett is in and still pointed Beckett's way,
+   *                      but not a fresh direct address. Distinct from `beckett` on purpose: the
+   *                      OPS-116 failure was a continuation being read as aimed-at-Beckett after
+   *                      the latest lines had pivoted to someone else. A continuation whose newest
+   *                      lines turn to another named party is NOT this — it is `other`.
+   *   `other`          = aimed at a specific OTHER named party ("ro, can you…", a reply to another
+   *                      person, or a pivot away from Beckett). A message that @mentions/names a
+   *                      different user is `other` unless it ALSO addresses Beckett.
+   *   `group`          = broadcast to the whole room (an open question, thinking out loud).
+   *   `unclear`        = genuinely ambiguous who it's for.
+   * Defaulted (not required) on purpose: a model that omits it must NOT collapse the whole verdict
+   * to fail-closed silence, because that would ghost a real beat gemma DID want to land. `unclear`
+   * is the safe neutral — it neither forces nor blocks a post; the concierge frame surfaces it and
+   * leans toward PASS on `other`.
    */
-  addressee: z.enum(["beckett", "other", "group", "unclear"]).default("unclear"),
+  addressee: z.enum(["beckett", "beckett-thread", "other", "group", "unclear"]).default("unclear"),
 });
 
 export type TriageVerdict = z.infer<typeof TriageVerdictSchema>;

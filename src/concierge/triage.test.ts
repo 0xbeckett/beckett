@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { buildTriagePrompt, createTriageClassifier, extractVerdictJson, parseVerdict } from "./triage.ts";
 
 const VERDICT = '{"interject":true,"kind":"feature-wish","confidence":0.85,"reason":"concrete wish"}';
@@ -17,6 +19,13 @@ describe("parseVerdict", () => {
   test("carries the addressee read through when present", () => {
     const withAddr = '{"interject":false,"kind":"none","confidence":0.2,"reason":"aimed at ro","addressee":"other"}';
     expect(parseVerdict(withAddr).addressee).toBe("other");
+  });
+
+  test("accepts the OPS-116 beckett-thread addressee read (continuation of a Beckett thread)", () => {
+    // The new granular read: a continuation still pointed Beckett's way is distinct from a fresh
+    // direct address AND from an `other` pivot. It must round-trip so the frame can lean on it.
+    const cont = '{"interject":true,"kind":"social","confidence":0.7,"reason":"they answered me","addressee":"beckett-thread"}';
+    expect(parseVerdict(cont).addressee).toBe("beckett-thread");
   });
 
   test("parses a clean verdict inside the claude --output-format json envelope", () => {
@@ -61,6 +70,54 @@ describe("buildTriagePrompt", () => {
     const prompt = buildTriagePrompt(staticPrompt, burst, transcript);
     expect(prompt).toContain("ssh, can you check the deploy?");
     expect(prompt).toContain("hey ssh");
+  });
+});
+
+describe("OPS-116 addressee granularity — real-transcript regression cases", () => {
+  // The static rubric is what teaches the fast scorer to tell the four addressee reads apart. We
+  // can't run Haiku deterministically in a unit test, so these pin the two things we CAN pin: the
+  // rubric carries the sharpened logic, and the runtime prompt renders the real failing transcript
+  // with the participants/speaker context the model needs to detect the pivot.
+  const rubric = readFileSync(join(import.meta.dir, "triage.md"), "utf8");
+
+  test("the rubric distinguishes all four substantive addressee reads", () => {
+    expect(rubric).toContain("**beckett**");
+    expect(rubric).toContain("**beckett-thread**");
+    expect(rubric).toContain("**other**");
+    expect(rubric).toContain("**group**");
+    // The output contract must advertise the new enum member so the model can emit it.
+    expect(rubric).toContain('"addressee":"beckett|beckett-thread|other|group|unclear"');
+  });
+
+  test("the rubric teaches the named-party rule and pivot detection (the two OPS-116 failures)", () => {
+    expect(rubric).toMatch(/@mentions or names a DIFFERENT person/i);
+    expect(rubric).toMatch(/PIVOT/);
+    // The concrete real-transcript example — Beckett waved off mid-thread — is present as few-shot.
+    expect(rubric).toContain("why are you responding, that wasn't directed to you");
+  });
+
+  test("a Beckett thread that has pivoted to another named party renders with the pivot context", () => {
+    // Real shape of the failure: Beckett was in the thread, then ssh's newest line pivots to ro.
+    // The classifier must see WHO spoke last and who is named — buildTriagePrompt supplies both.
+    const transcript = [
+      { authorDisplayName: "ro", content: "how would we even ship that?", ts: 0 },
+      { authorDisplayName: "Beckett", content: "i can spin it up as a ticket", ts: 1 },
+      { authorDisplayName: "ssh", content: "hm", ts: 2 },
+    ];
+    const burst = [{ authorDisplayName: "ssh", content: "ro, what do you actually want it to do?", ts: 3 }];
+    const prompt = buildTriagePrompt(rubric, burst, transcript);
+
+    expect(prompt).toContain("Speaker of the latest message to classify: ssh");
+    expect(prompt).toContain("ro, what do you actually want it to do?");
+    // Beckett is named in the transcript but must never appear as a "participant" to address.
+    expect(prompt).toContain("Beckett is NOT one of them");
+  });
+
+  test("a message naming another user renders that user as the addressed party", () => {
+    const burst = [{ authorDisplayName: "ro", content: "@ssh what's the staging port?", ts: 1 }];
+    const prompt = buildTriagePrompt(rubric, burst, []);
+    expect(prompt).toContain("Speaker of the latest message to classify: ro");
+    expect(prompt).toContain("@ssh what's the staging port?");
   });
 });
 

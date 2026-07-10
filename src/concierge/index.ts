@@ -2832,10 +2832,15 @@ function frameAmbientCandidate(
  * latest message as being aimed at, so the seat that actually drafts the reply has the same signal
  * the classifier scored on — and can `beckett discord decline` on a suspected false-positive.
  */
-function addresseeFrameLine(addressee: TriageVerdict["addressee"]): string {
+export function addresseeFrameLine(addressee: TriageVerdict["addressee"]): string {
   switch (addressee) {
     case "beckett":
       return `Addressee (triage's read): this looks aimed at YOU — answering is fair game.`;
+    case "beckett-thread":
+      return (
+        `Addressee (triage's read): this continues a thread you're in and still points your way —\n` +
+        `keep it going. (If the newest lines actually pivoted to someone else, decline instead.)`
+      );
     case "other":
       return (
         `Addressee (triage's read): this looks aimed at ANOTHER person, not you. Lean hard toward\n` +
