@@ -3,7 +3,7 @@
  * =======================================================================================
  * The durable side of the `beckett proactivity …` CLI (§4.6). Runtime ambient-interjection
  * controls live OUTSIDE `config.toml` in `~/.beckett/proactivity.json` — the same pattern as
- * `access.txt` / `progress-threads.json` — so the daemon can obey "chill out in here" (and the
+ * `access.txt` / `workspaces.json` — so the daemon can obey "chill out in here" (and the
  * global kill switch) without a config edit + restart. `config.ts::mergeProactivityOverride`
  * merges this partial `[proactivity]` object over the TOML at read time; here we WRITE it.
  *

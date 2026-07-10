@@ -165,9 +165,9 @@ export interface SpawnWorkerArgs {
   resumeSessionId?: string;
   /**
    * Optional progress sink: every {@link WorkerEvent} off the driver stream is forwarded here so the
-   * dispatcher can mirror the granular play-by-play into the ticket's Discord thread (see
-   * `src/discord/progress.ts`). Best-effort by contract — a throwing sink is swallowed and never
-   * disturbs the worker. Omitted in tests / when no thread is wired.
+   * dispatcher can record the granular play-by-play in the ticket's private journal (see
+   * `src/progress/journal.ts`). Best-effort by contract — a throwing sink is swallowed and never
+   * disturbs the worker. Omitted in tests / when no sink is wired.
    */
   onProgress?: (ev: WorkerEvent, ctx: { stage: string; workerId: string }) => void;
   /**
@@ -550,7 +550,7 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   };
 
   const unsubscribe = driver.onEvent((e: WorkerEvent) => {
-    // Mirror the granular event to the ticket's Discord progress thread (best-effort — a broken
+    // Record the granular event in the ticket's private journal (best-effort — a broken
     // sink must never derail the worker's own lifecycle bookkeeping below).
     if (onProgress) {
       try {

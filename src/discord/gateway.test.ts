@@ -55,33 +55,37 @@ test("native reply to a bot-authored message counts as addressed", async () => {
   expect(normalized.mentionsBot).toBe(true);
 });
 
-test("startStandaloneThread creates a public sibling under the parent channel", async () => {
+test("a user-created thread is normalized to the onThreadCreate handler; bot/replayed ones are not", async () => {
   const gateway = new DiscordJsGateway();
-  const creates: Array<Record<string, unknown>> = [];
-  const channel = {
-    isTextBased: () => true,
-    isDMBased: () => false,
-    threads: {
-      create: async (opts: Record<string, unknown>) => {
-        creates.push(opts);
-        return { id: "workspace-1" };
-      },
+  const listeners = new Map<string, (...args: unknown[]) => void>();
+  const fakeClient = {
+    user: { id: "bot-1" },
+    on: (event: string, cb: (...args: unknown[]) => void) => {
+      listeners.set(String(event), cb);
     },
+    rest: { on: () => undefined },
   };
-  (gateway as unknown as { connected: boolean }).connected = true;
-  (gateway as unknown as { client: unknown }).client = {
-    channels: { fetch: async () => channel },
-  };
+  (gateway as unknown as { client: unknown }).client = fakeClient;
+  (gateway as unknown as { wireListeners: (c: unknown) => void }).wireListeners(fakeClient);
 
-  const id = await gateway.startStandaloneThread("parent-1", "OPS-7 · with Beckett");
-
-  expect(id).toBe("workspace-1");
-  expect(creates).toHaveLength(1);
-  expect(creates[0]).toMatchObject({
-    name: "OPS-7 · with Beckett",
-    autoArchiveDuration: 10080,
-    type: 11,
+  const seen: unknown[] = [];
+  gateway.onThreadCreate((t) => {
+    seen.push(t);
   });
+  const emit = listeners.get("threadCreate")!;
+  expect(emit).toBeDefined();
+
+  // A person opened a thread → normalized and delivered.
+  emit({ id: "thread-1", parentId: "parent-1", name: "OPS-7 auth rework", ownerId: "user-1" }, true);
+  // The bot's own thread (belt and braces — it should never create one) → filtered.
+  emit({ id: "thread-2", parentId: "parent-1", name: "bot thread", ownerId: "bot-1" }, true);
+  // A replayed create (bot merely ADDED to an existing thread) → filtered.
+  emit({ id: "thread-3", parentId: "parent-1", name: "old thread", ownerId: "user-1" }, false);
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(seen).toEqual([
+    { threadId: "thread-1", parentChannelId: "parent-1", name: "OPS-7 auth rework", creatorId: "user-1" },
+  ]);
 });
 
 /**

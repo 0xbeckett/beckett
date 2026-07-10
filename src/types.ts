@@ -253,6 +253,21 @@ export interface IncomingMessage {
 }
 
 
+/**
+ * A thread a PERSON just opened, normalized off the gateway's thread-create event. Under the
+ * Coworker-as-a-Service model these become ticket workspaces (`src/discord/workspaces.ts`) —
+ * Beckett never creates threads itself, so every registration originates here.
+ */
+export interface ThreadCreated {
+  threadId: string;
+  parentChannelId: string;
+  /** The thread name the creator chose (may carry ticket identifiers, e.g. "OPS-120 auth"). */
+  name: string;
+  /** Discord user id of the thread creator. */
+  creatorId: string;
+}
+
+
 /** Options for posting a reply (ambient model — always the origin channel, Spec 05 §3). */
 export interface ReplyOptions {
   replyToMessageId?: string; // native reply-to for correlation
@@ -523,6 +538,8 @@ export interface Paths {
   peersFile: string; // <beckettDir>/peers.txt — owner-added trusted peer Beckett bot ids (federation)
   announcedFile: string; // <beckettDir>/announced.txt — last commit SHA announced on restart (changelog)
   presetsFile: string; // <beckettDir>/presets.json — user-defined named cast presets (OPS-110)
+  journalDir: string; // <beckettDir>/journal — private per-ticket worker progress journals
+  workspacesFile: string; // <beckettDir>/workspaces.json — user-opened thread → ticket routing
 }
 
 /** The full validated config (Spec 01 §4). Every key has a default so an empty config boots. */
@@ -808,24 +825,17 @@ export interface DiscordGateway {
   stop(): Promise<void>;
   /** Post to a channel; returns the bot message id (for reply correlation). */
   post(channelId: string, content: string, opts?: ReplyOptions): Promise<string>;
-  /**
-   * Open a public thread hanging off an existing message and return the thread id. The thread id
-   * is itself a sendable channel id, so {@link post} delivers into the thread. Used by the progress
-   * feed (`src/discord/progress.ts`): the main channel stays sparse (the ack), while the thread
-   * carries the granular per-worker play-by-play. Throws if the anchor message can't be resolved or
-   * the client is offline (the caller keeps buffering and retries on a later event).
-   */
-  startThread(channelId: string, anchorMessageId: string, name: string): Promise<string>;
-  /**
-   * Open a standalone public thread beside an anchored progress thread. Used for the ticket's
-   * human workspace: Discord only permits one thread to hang from a given message, so the second
-   * thread must be created directly under the same parent channel.
-   */
-  startStandaloneThread(channelId: string, name: string): Promise<string>;
   /** Trigger the typing indicator in a channel (~10s; re-call to keep it alive). */
   sendTyping(channelId: string): Promise<void>;
   /** Register the inbound message handler (intake + awaiting-reply resolution). */
   onMessage(cb: (m: IncomingMessage) => void | Promise<void>): void;
+  /**
+   * Register the handler for threads PEOPLE create (bot-created threads are filtered out at the
+   * gateway). The Concierge registers each as a ticket workspace so messages inside it are
+   * directed turns without an @mention. Beckett itself never opens threads — the old bot-spawned
+   * activity/progress threads are gone; the worker firehose goes to the private ticket journal.
+   */
+  onThreadCreate(cb: (t: ThreadCreated) => void | Promise<void>): void;
   isConnected(): boolean;
   lastEventAgeMs(): number | null;
 }

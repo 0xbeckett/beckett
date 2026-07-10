@@ -85,6 +85,8 @@ export function buildPaths(config: Config, env: PathEnv = process.env): Paths {
     peersFile: join(beckettDir, "peers.txt"),
     announcedFile: join(beckettDir, "announced.txt"),
     presetsFile: join(beckettDir, "presets.json"),
+    journalDir: join(beckettDir, "journal"),
+    workspacesFile: join(beckettDir, "workspaces.json"),
   };
 }
 

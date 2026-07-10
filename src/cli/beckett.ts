@@ -25,6 +25,7 @@ import { mintSecretRequest, parseSecretTtlMinutes, serveSecretIntake, validateSe
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
 import { loadPeers, addPeer, removePeer } from "../discord/peers.ts";
 import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
+import { readJournal, DEFAULT_TAIL_LINES } from "../progress/journal.ts";
 import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 import type { Casting, Ticket, TicketState } from "../plane/types.ts";
 import { projectSlug } from "../plane/cast.ts";
@@ -182,7 +183,7 @@ async function discordReplyBus(args: Record<string, unknown>): Promise<never> {
 /**
  * Fire a NON-fatal notification at the control bus and return regardless of outcome. Unlike
  * {@link bus}, this never exits or fails the command: it exists so `ticket create`/`plan` can tell
- * the running Concierge "I just filed OPS-N for channel X" (so it opens a progress thread) WITHOUT
+ * the running Concierge "I just filed OPS-N for channel X" (so a workspace can claim it) WITHOUT
  * that being load-bearing — the same commands run by a human or in tests have no daemon socket, and
  * the ticket must still be created and printed. A short timeout keeps a dead socket from stalling.
  */
@@ -285,6 +286,20 @@ async function main(): Promise<void> {
       out({ remembered: node.name, type: node.type });
     }
     fail(`unknown: beckett memory ${sub ?? ""}`);
+  }
+
+  // ── journal (in-process: the private per-ticket worker progress log) ────────────────────────
+  // The verbose worker play-by-play that used to stream into a user-facing Discord thread now
+  // lives in `<beckettDir>/journal/<ticket>.log`. This is the Concierge's on-demand context pull:
+  // read it privately when someone asks how a ticket is going, answer with a clean summary.
+  if (group === "journal") {
+    if (!sub) fail("usage: beckett journal <ticket> [--tail N]");
+    const { flags } = parse(rest);
+    const tail = flags.tail ? Number(flags.tail) : DEFAULT_TAIL_LINES;
+    if (!Number.isInteger(tail) || tail < 0) fail("--tail must be a non-negative integer");
+    const body = readJournal(paths.journalDir, sub, tail);
+    if (body === null) out(`(no journal for ${sub} — no worker has run for it on this host)`);
+    out(body);
   }
 
   // ── identity (in-process: per-user Discord name map, ~/.beckett/identities.json) ───────────
@@ -880,8 +895,8 @@ async function main(): Promise<void> {
         // Stamp the originating Discord channel so updates route back to the conversation (closed loop).
         originChannel: flags.channel ? String(flags.channel) : undefined,
       });
-      // Tell the Concierge (if running) so it anchors a progress thread to this turn's ack. Gated on
-      // --channel: only the Concierge path stamps a channel, and it's the only place a thread can go.
+      // Tell the Concierge (if running) so a ticket filed from inside a user workspace thread
+      // grounds that workspace. Gated on --channel: only the Concierge path stamps a channel.
       if (flags.channel) {
         await notifyBus("ticket.filed", {
           identifier: ticket.identifier,
@@ -1119,8 +1134,8 @@ async function main(): Promise<void> {
         filed.push(row.filed);
       }
     }
-    // A plan files N tickets under ONE ack — notify the Concierge for each so they all map onto the
-    // single progress thread (the hub keys threads by anchor, tickets by identifier). Best-effort.
+    // A plan files N tickets in one turn — notify the Concierge for each so a plan drafted from
+    // inside a user workspace thread grounds that workspace with every ticket. Best-effort.
     if (channel) {
       for (const row of filed) {
         await notifyBus("ticket.filed", {

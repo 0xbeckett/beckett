@@ -140,7 +140,7 @@ async function boot(): Promise<BootedSystem> {
     logger.warn("no GITHUB_PAT — project repos will stay local-only (not pushed to GitHub)");
   }
 
-  // 5. Concierge — owns Discord (and the progress-thread hub the dispatcher feeds). Constructed
+  // 5. Concierge — owns Discord (and the private ticket journal the dispatcher feeds). Constructed
   //    here (cheap, no I/O) so its progress sink can be wired into the dispatcher below; started
   //    further down (FIRST of the live parts) so a bad claude launch fails the whole boot early.
   const concierge = createConcierge({ config, logger: logger.child("concierge"), plane: client });

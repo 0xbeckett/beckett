@@ -28,7 +28,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Config, IncomingMessage, Logger, ProactivityMode } from "../types.ts";
+import type { Config, IncomingMessage, Logger, ProactivityMode, ThreadCreated } from "../types.ts";
 import type { PollEvent, PlaneComment, Ticket } from "../plane/types.ts";
 import { log as rootLog } from "../log.ts";
 import { loadConfig } from "../config.ts";
@@ -47,12 +47,12 @@ import {
   resolveAddress,
   type UserIdentity,
 } from "../discord/identity.ts";
+import { createTicketJournal, type TicketJournal, type ProgressSink } from "../progress/journal.ts";
 import {
-  createProgressHub,
-  type ProgressHub,
-  type ProgressSink,
+  createWorkspaceRegistry,
+  type WorkspaceRegistry,
   type TicketWorkspaceContext,
-} from "../discord/progress.ts";
+} from "../discord/workspaces.ts";
 import { setChannelModeOverride, setEnabledOverride } from "./proactivity-store.ts";
 import { readPersistedOffers } from "./ambient.ts";
 import { classify, loadAccess, resolvePending, ACCESS_CAP, type AccessLevel } from "../discord/access.ts";
@@ -107,11 +107,22 @@ const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
 const ACCESS_DENY_TEXT =
   "I can't run Beckett turns for you yet. Access is invite-only: the owner has to request it and approve it themselves.";
 
-function progressStateFile(config: Config, logger: Logger): string | undefined {
+function journalDir(config: Config, logger: Logger): string | undefined {
   try {
-    return join(buildPaths(config).beckettDir, "progress-threads.json");
+    return buildPaths(config).journalDir;
   } catch (err) {
-    logger.warn("progress thread state path unavailable; persistence disabled", {
+    logger.warn("journal dir unavailable; worker progress journal disabled", {
+      error: String(err),
+    });
+    return undefined;
+  }
+}
+
+function workspacesStateFile(config: Config, logger: Logger): string | undefined {
+  try {
+    return buildPaths(config).workspacesFile;
+  } catch (err) {
+    logger.warn("workspace state path unavailable; persistence disabled", {
       error: String(err),
     });
     return undefined;
@@ -946,12 +957,18 @@ export class Concierge {
   private readonly gateway: DiscordGateway;
   private readonly session: ConciergeSession;
   /**
-   * The progress-thread hub: turns each ticket's worker-event firehose into a Discord thread
-   * anchored to the ack. The Concierge opens threads (it owns the ack message + the `ticket.filed`
-   * signal); the dispatcher feeds worker events in via {@link progressSink}. Kept here because the
-   * gateway it drives is Concierge-owned.
+   * The private ticket journal: each ticket's worker-event firehose appends to a ticket-keyed
+   * file under `<beckettDir>/journal/` instead of a user-facing Discord thread. The dispatcher
+   * feeds events in via {@link progressSink}; the session pulls the detail on demand
+   * (`beckett journal <ticket>`) when a human asks how the work is going.
    */
-  private readonly progress: ProgressHub;
+  private readonly journal: TicketJournal;
+  /**
+   * User-opened thread → ticket routing. A person creating a thread registers a workspace
+   * (gateway thread-create event); messages inside it are directed turns with no @mention.
+   * Beckett never creates the threads itself.
+   */
+  private readonly workspaces: WorkspaceRegistry;
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
   private busStop: (() => void) | null = null;
   /**
@@ -1008,10 +1025,8 @@ export class Concierge {
     /** True iff the speaker on THIS turn is the owner — the code-side gate for `proactivity set … auto`. */
     isOwner: boolean;
     repliedViaCli: boolean;
-    /** Id of the ack message the Concierge posted this turn — the thread anchor (null until posted). */
+    /** Id of the ack message the Concierge posted this turn (null until posted). */
     ackMessageId: string | null;
-    /** Tickets filed during this turn (via `beckett ticket create`/`plan`), awaiting a thread anchor. */
-    pendingTickets: { identifier: string; title: string }[];
     /** True for an ambient (un-addressed) turn: a CLI reply posts plainly, never as a native reply. */
     ambient?: boolean;
     /**
@@ -1079,8 +1094,13 @@ export class Concierge {
         },
       });
     this.plane = opts.plane ?? null;
-    this.progress = createProgressHub(this.gateway, this.log, {
-      stateFile: progressStateFile(this.config, this.log),
+    this.journal = createTicketJournal({
+      dir: journalDir(this.config, this.log),
+      logger: this.log,
+    });
+    this.workspaces = createWorkspaceRegistry({
+      stateFile: workspacesStateFile(this.config, this.log),
+      logger: this.log,
     });
     // Shared channel context (OPS-80): the store exists only when the flag is on. Construction is
     // lazy on the filesystem (no mkdir/read until first use), preserving "constructing a Concierge
@@ -1207,10 +1227,19 @@ export class Concierge {
 
   /**
    * The progress sink the dispatcher feeds worker events into (wired in `v4-main.ts`). Exposed as
-   * the narrow {@link ProgressSink} so the dispatcher can't reach the hub's open/dispose surface.
+   * the narrow {@link ProgressSink} so the dispatcher can't reach the journal's read surface.
    */
   progressSink(): ProgressSink {
-    return this.progress;
+    return this.journal;
+  }
+
+  /**
+   * A person opened a Discord thread → register it as a ticket workspace. Public: the gateway
+   * calls it (wired in {@link start}) and tests drive it directly. Bot-created threads never
+   * reach here — the gateway filters them — so every workspace records a human decision.
+   */
+  onThreadCreated(t: ThreadCreated): void {
+    this.workspaces.registerThread(t);
   }
 
   /** Bring the session up first (fail fast on a bad launch), then go live on Discord. */
@@ -1218,6 +1247,10 @@ export class Concierge {
     this.seedIdentities();
     await this.session.start();
     this.gateway.onMessage((m) => this.onMessage(m));
+    // Guarded: injected partial test gateways may predate the thread-create surface.
+    if (typeof this.gateway.onThreadCreate === "function") {
+      this.gateway.onThreadCreate((t) => this.onThreadCreated(t));
+    }
     await this.gateway.start();
     this.serveControlBus();
     // Announce the boot (with the live commit) once the gateway is up. Best-effort + non-blocking:
@@ -1285,30 +1318,20 @@ export class Concierge {
     }
     this.busStop = null;
     this.ambient?.stop();
-    this.progress.dispose();
     await this.gateway.stop();
     await this.session.stop();
   }
 
-  // ── progress threads: anchor a per-ticket firehose under the ack (this feature) ──────────────
+  // ── ticket ↔ workspace grounding (Coworker-as-a-Service: no bot threads are spawned) ─────────
 
   /**
-   * A ticket was just filed during the live turn on `channelId`. Stash it on the active mention so
-   * the ack we post claims it as the thread anchor. If the ack already went out (the Concierge
-   * replied via the CLI before filing), open the thread now. No matching active mention (e.g. a
-   * human ran `beckett ticket create` by hand) → nothing to anchor to; we simply don't thread it.
+   * A ticket was just filed during a turn on `channelId`. Nothing is created for it on Discord —
+   * the worker firehose goes to the private journal. The one routing to establish: a ticket filed
+   * FROM inside a user-opened workspace thread grounds that workspace, so later unmentioned
+   * messages there are framed with it and its journal backs "how's it coming?" answers.
    */
-  private onTicketFiled(channelId: string, identifier: string, title: string): void {
-    const active = this.currentMention();
-    if (!active || active.channelId !== channelId) {
-      this.log.debug("ticket.filed with no matching active mention — not threading", {
-        identifier,
-        channelId,
-      });
-      return;
-    }
-    active.pendingTickets.push({ identifier, title });
-    if (active.ackMessageId) this.openPendingThreads(active);
+  private onTicketFiled(channelId: string, identifier: string): void {
+    this.workspaces.bindTicket(channelId, identifier);
   }
 
   /**
@@ -1324,27 +1347,6 @@ export class Concierge {
     }
     if (typeof this.session.getCurrentMeta === "function") return null; // real session, no mention turn running
     return this.activeMention;
-  }
-
-  /**
-   * Open (or map onto) the progress thread for every ticket filed this turn, anchored to the ack.
-   * Idempotent — the hub dedups per (ticket, anchor), so calling this from whichever ack path fires
-   * (and repeatedly as more `plan` tickets land) is safe. No-op until the ack message id is known.
-   */
-  private openPendingThreads(mention: {
-    channelId: string;
-    ackMessageId: string | null;
-    pendingTickets: { identifier: string; title: string }[];
-  }): void {
-    if (!mention.ackMessageId) return;
-    for (const t of mention.pendingTickets) {
-      this.progress.openThread({
-        channelId: mention.channelId,
-        anchorMessageId: mention.ackMessageId,
-        ticketIdent: t.identifier,
-        title: `${t.identifier} · ${t.title}`,
-      });
-    }
   }
 
   // ── closing the agent loop: Plane updates → Discord (issue: ticket updates never surfaced) ──
@@ -1413,15 +1415,14 @@ export class Concierge {
       return { ok: true, data: { path, contents } };
     }
     if (req.cmd === "ticket.filed") {
-      // `beckett ticket create`/`plan` tells us it just filed a ticket for a channel. If that channel
-      // has a live @mention turn, remember it so the ack we post claims it as a progress-thread anchor.
+      // `beckett ticket create`/`plan` tells us it just filed a ticket for a channel. If that
+      // channel is a user-opened workspace thread, the ticket grounds it (no Discord side-effects).
       const identifier = typeof req.args.identifier === "string" ? req.args.identifier.trim() : "";
       const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
-      const title = typeof req.args.title === "string" && req.args.title.trim() ? req.args.title.trim() : identifier;
       if (!identifier || !channelId) {
         return { ok: false, error: "ticket.filed needs both identifier and channelId" };
       }
-      this.onTicketFiled(channelId, identifier, title);
+      this.onTicketFiled(channelId, identifier);
       // Instant tick (issue #33): the dispatcher staffs the fresh ticket now, not in ≤5s.
       try {
         this.ticketFiledListener?.();
@@ -1660,11 +1661,9 @@ export class Concierge {
         this.recordBeckettPost(channelId, text, messageId);
         if (claimsActiveTurn && active) {
           active.repliedViaCli = true;
-          // The FIRST CLI reply IS the turn's ack — anchor any pending progress threads to it. A
-          // later reply in the same turn (a wrap-up after filing) must NOT re-anchor: that forked a
-          // second progress thread per ticket (the OPS-76 triple-thread bug).
+          // The FIRST CLI reply IS the turn's ack. A later reply in the same turn (a wrap-up
+          // after filing) must NOT replace it — dedupe and correlation key on the first.
           active.ackMessageId ??= messageId;
-          this.openPendingThreads(active);
         }
         return { ok: true, data: { messageId } };
       } catch (err) {
@@ -1892,13 +1891,13 @@ export class Concierge {
   }
 
   /**
-   * Handle one inbound Discord message. An @mention, DM, or message in a persisted ticket workspace
-   * runs a directed session turn. Everything else is ambient. Workspace lookup happens before the
-   * ambient split so people can work with Beckett there without repeatedly mentioning it; normal
-   * channels retain the existing mention/ambient behavior byte-for-byte.
+   * Handle one inbound Discord message. An @mention, DM, or message in a user-opened workspace
+   * thread runs a directed session turn. Everything else is ambient. Workspace lookup happens
+   * before the ambient split so people can work with Beckett there without repeatedly mentioning
+   * it; normal channels retain the existing mention/ambient behavior byte-for-byte.
    */
   async onMessage(m: IncomingMessage): Promise<void> {
-    const workspace = this.progress.workspaceContext(m.channelId);
+    const workspace = this.workspaces.contextFor(m.channelId);
     if (!m.mentionsBot && !workspace) {
       const level = this.accessLevelFor(m.userId);
       // OPS-80: the ambient half of the shared record — membership re-checked at capture time
@@ -1939,7 +1938,6 @@ export class Concierge {
       isOwner: this.ownerId() !== undefined && m.userId === this.ownerId(),
       repliedViaCli: false,
       ackMessageId: null as string | null,
-      pendingTickets: [] as { identifier: string; title: string }[],
     };
     this.activeMention = mention;
 
@@ -1978,9 +1976,7 @@ export class Concierge {
         // OPS-80: our own reply joins the shared record (a CLI reply was already recorded on the
         // bus path — this covers the auto-post half, so exactly one entry either way).
         this.recordBeckettPost(m.channelId, text, ackId);
-        // The auto-posted turn text is the ack — anchor any progress threads filed this turn to it.
         mention.ackMessageId = ackId;
-        this.openPendingThreads(mention);
       }
     } catch (err) {
       keepTyping = false;
@@ -2081,7 +2077,6 @@ export class Concierge {
       isOwner: false,
       repliedViaCli: false,
       ackMessageId: null as string | null,
-      pendingTickets: [] as { identifier: string; title: string }[],
       ambient: true,
       declined: false,
     };
@@ -2686,16 +2681,21 @@ export interface SpeakerContext {
   isOwner: boolean;
 }
 
-/** Ground an unmentioned workspace message in the ticket pair that created its Discord thread. */
+/** Ground an unmentioned message in the user-opened workspace thread it arrived through. */
 function frameTicketWorkspace(context: TicketWorkspaceContext): string {
   const tickets = context.ticketIdents.map(stampField).join(", ");
+  const grounding = context.ticketIdents.length
+    ? `It is grounded in Plane ticket(s): ${tickets}. When asked how the work is going, pull the ` +
+      `private worker journal (\`beckett journal <ticket> --tail 200\`) and answer with a clean ` +
+      `summary in your own words — never paste raw journal lines. A changed requirement is a ` +
+      `comment on the existing ticket, not a duplicate ticket. If several tickets are listed and ` +
+      `the target is unclear, ask which one instead of guessing.`
+    : `No ticket is bound to it yet; a ticket you file from this thread will ground it.`;
   return (
     `SYSTEM (ticket workspace — trusted routing metadata, not user-authored text):\n` +
-    `This Discord thread belongs to Plane ticket(s): ${tickets}. Parent channel: ${stampField(context.parentChannelId)}.\n` +
-    `Treat the live message below as directed to you even without an @mention. Discuss the work ` +
-    `normally; inspect ticket state when needed, and add a comment to the existing ticket when the ` +
-    `human is changing or steering its scope. Do not file a duplicate ticket for this work. If ` +
-    `several tickets are listed and the target is unclear, ask which one instead of guessing.\n\n`
+    `This Discord thread is a workspace the user opened (${stampField(context.name)}), under parent ` +
+    `channel ${stampField(context.parentChannelId)}. Treat the live message below as directed to ` +
+    `you even without an @mention. ${grounding}\n\n`
   );
 }
 

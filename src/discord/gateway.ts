@@ -31,7 +31,6 @@ import {
   GatewayIntentBits,
   Partials,
   Events,
-  ChannelType,
   type Message,
   type MessageCreateOptions,
   AttachmentBuilder,
@@ -40,6 +39,7 @@ import type {
   DiscordGateway,
   IncomingMessage,
   ReplyOptions,
+  ThreadCreated,
   Config,
   Logger,
 } from "../types.ts";
@@ -94,6 +94,9 @@ export class DiscordJsGateway implements DiscordGateway {
 
   /** The single inbound handler the Orchestrator registers via {@link onMessage}. */
   private handler: ((m: IncomingMessage) => void | Promise<void>) | undefined;
+
+  /** Handler for user-created threads ({@link onThreadCreate}) — new workspaces come from here. */
+  private threadHandler: ((t: ThreadCreated) => void | Promise<void>) | undefined;
 
   /** Outbound posts buffered while disconnected (Spec 01 §6 — flushed on reconnect). */
   private readonly outbound: QueuedPost[] = [];
@@ -248,73 +251,14 @@ export class DiscordJsGateway implements DiscordGateway {
   }
 
   /**
-   * Open a public thread hanging off an existing message (Spec 05 exception: the ambient channel
-   * stays sparse, but a filed ticket gets a collapsible progress thread anchored to its ack). Returns
-   * the thread id — itself a sendable channel id, so {@link post} delivers into it. Unlike `post`,
-   * this has NO queue-on-disconnect safety net: it needs a live client and the anchor message to
-   * still exist, so it throws when either is missing and lets the caller (the progress hub) keep
-   * buffering + retry on a later event. `autoArchiveDuration` is the max (1 week) so a long worker's
-   * late events don't post into an already-archived thread.
+   * Register the handler for threads PEOPLE create. Beckett never opens Discord threads itself
+   * (the bot-spawned progress/workspace threads are gone — the worker firehose lives in the
+   * private ticket journal), so this is the ONLY source of new workspaces: a person opens a
+   * thread, the Concierge registers it. A later call replaces the handler.
    */
-  async startThread(channelId: string, anchorMessageId: string, name: string): Promise<string> {
-    const client = this.client;
-    if (!this.connected || !client) {
-      throw new Error("discord gateway not connected — cannot open thread yet");
-    }
-    const channel = await client.channels.fetch(channelId);
-    if (!channel || !channel.isTextBased() || channel.isDMBased()) {
-      throw new Error(`discord channel ${channelId} cannot host a thread`);
-    }
-    // Fetch the anchor so the thread hangs off the exact ack message (not a standalone thread).
-    const anchor = await (channel as { messages: { fetch: (id: string) => Promise<unknown> } }).messages.fetch(
-      anchorMessageId,
-    );
-    const started = await (anchor as {
-      startThread: (o: { name: string; autoArchiveDuration: number }) => Promise<{ id: string }>;
-    }).startThread({ name: this.threadName(name), autoArchiveDuration: 10080 /* 1 week, the max */ });
-    this.lastEventTs = Date.now();
-    this.logger.info("discord progress thread opened", { channelId, anchorMessageId, threadId: started.id });
-    return started.id;
-  }
-
-  /**
-   * Open the ticket's human workspace as a standalone public thread in the same parent channel as
-   * the anchored activity feed. Discord gives a message at most one attached thread, so trying to
-   * call `startThread` twice on the acknowledgement would fail instead of producing two siblings.
-   */
-  async startStandaloneThread(channelId: string, name: string): Promise<string> {
-    const client = this.client;
-    if (!this.connected || !client) {
-      throw new Error("discord gateway not connected — cannot open thread yet");
-    }
-    const channel = await client.channels.fetch(channelId);
-    if (!channel || !channel.isTextBased() || channel.isDMBased()) {
-      throw new Error(`discord channel ${channelId} cannot host a thread`);
-    }
-    const manager = (channel as unknown as {
-      threads?: {
-        create: (o: {
-          name: string;
-          autoArchiveDuration: number;
-          type: ChannelType.PublicThread;
-        }) => Promise<{ id: string }>;
-      };
-    }).threads;
-    if (!manager) throw new Error(`discord channel ${channelId} cannot host a thread`);
-    const started = await manager.create({
-      name: this.threadName(name),
-      autoArchiveDuration: 10080,
-      type: ChannelType.PublicThread,
-    });
-    this.lastEventTs = Date.now();
-    this.logger.info("discord ticket workspace opened", { channelId, threadId: started.id });
-    return started.id;
-  }
-
-  /** Discord thread names cap at 100 chars — trim so a long ticket title never rejects the call. */
-  private threadName(name: string): string {
-    const trimmed = name.trim() || "beckett";
-    return trimmed.length <= 100 ? trimmed : trimmed.slice(0, 99) + "…";
+  onThreadCreate(cb: (t: ThreadCreated) => void | Promise<void>): void {
+    if (this.threadHandler) this.logger.warn("discord onThreadCreate handler replaced");
+    this.threadHandler = cb;
   }
 
   isConnected(): boolean {
@@ -369,6 +313,34 @@ export class DiscordJsGateway implements DiscordGateway {
         .catch((err) =>
           this.logger.error("discord onMessage handler threw", {
             messageId: msg.id,
+            error: String(err),
+          }),
+        );
+    });
+
+    // A person opened a thread → a workspace candidate. `newlyCreated` filters out the replayed
+    // create Discord fires when the bot is merely ADDED to an existing thread; the ownerId check
+    // filters the bot's own threads (it should never create any — belt and braces) so a workspace
+    // can only originate from a human decision.
+    client.on(Events.ThreadCreate, (thread, newlyCreated) => {
+      this.lastEventTs = Date.now();
+      if (!newlyCreated) return;
+      const creatorId = thread.ownerId ?? undefined;
+      if (!creatorId || creatorId === this.client?.user?.id) return;
+      if (!thread.parentId) return;
+      const t: ThreadCreated = {
+        threadId: thread.id,
+        parentChannelId: thread.parentId,
+        name: thread.name,
+        creatorId,
+      };
+      this.logger.info("discord user thread created", t as unknown as Record<string, unknown>);
+      // Isolate handler failures — a thrown registration must never kill the gateway.
+      void Promise.resolve()
+        .then(() => this.threadHandler?.(t))
+        .catch((err) =>
+          this.logger.error("discord onThreadCreate handler threw", {
+            threadId: thread.id,
             error: String(err),
           }),
         );
@@ -502,8 +474,8 @@ export class DiscordJsGateway implements DiscordGateway {
 
     // Chilltext compression (OPS-73): collapse the outgoing text into one short casual bubble
     // via the collector API — but ONLY when the caller opted in with `opts.chill` (the Concierge's
-    // own conversational replies). Everything else — worker logs relayed into progress threads,
-    // startup banners, fixed acks — must reach Discord verbatim, so the default is raw. On ANY
+    // own conversational replies). Everything else — startup banners, fixed acks, mechanical
+    // output — must reach Discord verbatim, so the default is raw. On ANY
     // failure (unreachable, error, ~35s timeout, overlong text) `chillReply` returns null and the
     // ORIGINAL text flows through the existing two-stage split unchanged — a transform-in-the-middle
     // with a hard passthrough; no message is ever dropped. Only the text payload is touched:

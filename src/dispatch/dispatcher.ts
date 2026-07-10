@@ -47,7 +47,7 @@ import type {
   PollEvent,
   HarnessSpec,
 } from "../plane/types.ts";
-import type { ProgressSink } from "../discord/progress.ts";
+import type { ProgressSink } from "../progress/journal.ts";
 import { log } from "../log.ts";
 import {
   commitWorktree,
@@ -127,9 +127,8 @@ export interface DispatcherDeps {
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   /**
    * Optional progress feed: the dispatcher forwards each worker's granular {@link WorkerEvent}
-   * stream here, keyed by ticket identifier, so it lands in the ticket's Discord thread (see
-   * `src/discord/progress.ts`). Injected from the Concierge's hub in `v4-main.ts`; omitted in
-   * tests / when Discord isn't wired.
+   * stream here, keyed by ticket identifier, so it lands in the ticket's PRIVATE journal (see
+   * `src/progress/journal.ts`). Injected from the Concierge in `v4-main.ts`; omitted in tests.
    */
   progress?: ProgressSink;
   /** JSONL path for durable post-finish Plane advances. Omitted in tests unless needed. */

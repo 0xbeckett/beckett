@@ -27,7 +27,7 @@ import { Concierge, type ConciergeSession, type TurnMessage } from "../../src/co
 import { validateConfig } from "../../src/config.ts";
 import type { AmbientClock } from "../../src/concierge/ambient.ts";
 import type { TriageFn, TriageVerdict } from "../../src/concierge/triage.ts";
-import type { DiscordGateway, IncomingMessage, ReplyOptions } from "../../src/types.ts";
+import type { DiscordGateway, IncomingMessage, ReplyOptions, ThreadCreated } from "../../src/types.ts";
 
 const repoRoot = join(import.meta.dir, "../..");
 const CHAN = "1520658476974735490";
@@ -77,9 +77,8 @@ interface PostRecord {
 class FakeGateway implements DiscordGateway {
   readonly posts: PostRecord[] = [];
   readonly typings: string[] = [];
-  readonly threads: { channelId: string; anchorMessageId: string; name: string; threadId: string }[] = [];
-  readonly workspaceThreads: { channelId: string; name: string; threadId: string }[] = [];
   private handler: ((m: IncomingMessage) => void | Promise<void>) | null = null;
+  private threadHandler: ((t: ThreadCreated) => void | Promise<void>) | null = null;
 
   async start(): Promise<void> {}
   async stop(): Promise<void> {}
@@ -90,24 +89,16 @@ class FakeGateway implements DiscordGateway {
     return id;
   }
 
-  async startThread(channelId: string, anchorMessageId: string, name: string): Promise<string> {
-    const threadId = `thread-${this.threads.length + 1}`;
-    this.threads.push({ channelId, anchorMessageId, name, threadId });
-    return threadId;
-  }
-
-  async startStandaloneThread(channelId: string, name: string): Promise<string> {
-    const threadId = `workspace-${this.workspaceThreads.length + 1}`;
-    this.workspaceThreads.push({ channelId, name, threadId });
-    return threadId;
-  }
-
   async sendTyping(channelId: string): Promise<void> {
     this.typings.push(channelId);
   }
 
   onMessage(cb: (m: IncomingMessage) => void | Promise<void>): void {
     this.handler = cb;
+  }
+
+  onThreadCreate(cb: (t: ThreadCreated) => void | Promise<void>): void {
+    this.threadHandler = cb;
   }
 
   isConnected(): boolean {
@@ -312,13 +303,9 @@ async function main(): Promise<void> {
     assertEqual(filedTickets[0]?.identifier, "E2E-CSV-1", "filed ticket identifier mismatch");
     assertEqual(ticketFiledPokes, 1, "ticket.filed should poke the dispatcher once");
     await drain();
-    assertEqual(gateway.threads.length, 1, "ticket lifecycle should anchor an activity thread to the ack");
-    assertEqual(gateway.threads[0]?.anchorMessageId, parentPosts[1]?.id, "activity thread should hang off the consent ack");
-    assertEqual(gateway.workspaceThreads.length, 1, "ticket lifecycle should create a sibling human workspace");
-    assert(
-      gateway.posts.some((p) => p.channelId === gateway.workspaceThreads[0]?.threadId),
-      "the human workspace should receive its orientation message",
-    );
+    // Coworker-as-a-Service: filing a ticket spawns NO bot threads and posts nothing beyond the
+    // ack — the worker firehose goes to the private journal, not a user-facing Discord thread.
+    assertEqual(gateway.posts.length, parentPosts.length, "ticket lifecycle should post nothing outside the parent channel");
     assertEqual(readLedger(dir).offers?.length ?? 0, 0, "offer ledger should clear after accepted consent");
 
     console.log("→ PASS/no-post path");
@@ -330,7 +317,7 @@ async function main(): Promise<void> {
     assertEqual(triageCalls, 2, "fresh ambient candidate should triage after accepted offer clears");
     assertEqual(frames.length, 3, "PASS candidate should still run the ambient turn");
     assertIncludes(frames[2] as string, "SYSTEM (ambient — nobody addressed you", "PASS path should be an ambient candidate");
-    assertEqual(gateway.posts.length, 3, "PASS should suppress posting beyond the ticket workspace orientation");
+    assertEqual(gateway.posts.length, 2, "PASS should suppress posting");
     assertEqual(readLedger(dir).offers?.length ?? 0, 0, "PASS should not create a pending offer");
 
     console.log("\n✅ AMBIENT INTERJECTION E2E PASSED (offline; no live model/Discord/Plane)");

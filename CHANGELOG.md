@@ -2,16 +2,22 @@
 
 ## Unreleased
 
-### Two Discord threads per ticket
+### Coworker-as-a-Service threads: user-opened workspaces + a private worker journal
 
-- **Activity stays mechanical:** the acknowledgement's anchored thread is now named
-  `<ticket> · activity` and keeps the existing worker/tool/file-change feed.
-- **A separate human workspace:** Beckett also creates `<ticket> · with Beckett` as a standalone
-  sibling thread in the same parent channel. Authorized messages there are directed Concierge
-  turns without requiring an @mention, grounded in the associated Plane ticket or plan.
-- **Durable routing:** both thread ids and the workspace-to-ticket mapping survive daemon restarts.
-  Multi-ticket plans share one activity/workspace pair; if the target is ambiguous Beckett asks
-  rather than guessing. A workspace creation failure leaves the activity feed untouched.
+- **People open threads, Beckett moves in.** A thread a USER creates registers as a ticket
+  workspace (`src/discord/workspaces.ts`, fed by the gateway's thread-create event). Authorized
+  messages there are directed Concierge turns without an @mention, grounded in the Plane tickets
+  named in the thread title and any ticket filed from inside the workspace. Routing persists in
+  `workspaces.json` across daemon restarts, and the code-level access gate still bounces
+  unauthorized users inside a workspace.
+- **Beckett stops spawning threads.** The bot-created per-ticket progress/activity threads (and
+  the planned `· with Beckett` siblings) are gone, along with the legacy migration that fabricated
+  threads for old tickets. `startThread`/`startStandaloneThread` left the gateway contract.
+- **The verbose log is kept — privately.** The worker event firehose (tool calls, file edits,
+  hook blocks, verdicts) now appends to a private ticket-keyed journal
+  (`<beckettDir>/journal/<ticket>.log`, `src/progress/journal.ts`). The Concierge pulls it on
+  demand — `beckett journal <ticket> --tail N` — as separate context when someone asks how the
+  work is going, and answers with a clean human summary instead of dumping raw output.
 
 ### OPS-112 — idempotent Discord CLI replies
 
