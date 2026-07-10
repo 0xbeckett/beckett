@@ -5,7 +5,7 @@
  * pass/fail, and the concurrency cap — is exercised deterministically with no real workers.
  */
 import { describe, expect, test, beforeEach, mock } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../types.ts";
@@ -246,6 +246,7 @@ function newDispatcher(
   max_workers = 2,
   opts: {
     advanceOutboxPath?: string;
+    publishOutboxPath?: string;
     runtimeStatePath?: string;
     preflight?: (harness: string) => Promise<{ ok: boolean; problems: string[] }>;
   } = {},
@@ -662,6 +663,85 @@ describe("advance on finish", () => {
     expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "todo" }]);
     expect(client.comments.some((c) => c.body.includes("couldn't publish it to GitHub"))).toBe(true);
     expect(client.comments.some((c) => c.body.includes("no worker keeps burning tokens"))).toBe(true);
+  });
+
+  test("publish failure persists an in_review retry, then publishes and disposes on replay", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-publish-outbox-"));
+    try {
+      const outbox = join(dir, "publish.jsonl");
+      const client = new FakeClient();
+      let calls = 0;
+      const d = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(),
+        resolveRepoRoot: () => "/tmp/repo",
+        publishOutboxPath: outbox,
+        publishRepo: async () => {
+          calls++;
+          if (calls === 1) throw new Error("ETIMEDOUT github");
+          return { url: "https://github.com/0xbeckett/ops-1", kind: "pushed" as const };
+        },
+      });
+      const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+      client.board = [ticket];
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      created[0].finish("success", "shipped it");
+      await tick();
+
+      expect(client.setStateCalls).toEqual([{ id: ticket.id, state: "in_review" }]);
+      expect(readFileSync(outbox, "utf8")).toContain("\"attempt\":1");
+      expect(client.comments.some((c) => c.body.includes("beckett:publish-pending"))).toBe(true);
+      expect(spawnCalls).toHaveLength(1); // publish hold must not start a reviewer
+      expect(worktreeRemoves).toHaveLength(0);
+
+      const op = JSON.parse(readFileSync(outbox, "utf8"));
+      writeFileSync(outbox, JSON.stringify({ ...op, nextAttemptAt: 0 }) + "\n");
+      await d.replayPublishes();
+      expect(calls).toBe(2);
+      expect(client.setStateCalls).toEqual([
+        { id: ticket.id, state: "in_review" },
+        { id: ticket.id, state: "done" },
+      ]);
+      expect(worktreeRemoves).toHaveLength(1);
+      expect(readFileSync(outbox, "utf8")).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("permanent publish failures immediately park in_review with a compare fallback", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-publish-permanent-"));
+    try {
+      const outbox = join(dir, "publish.jsonl");
+      const client = new FakeClient();
+      const d = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(),
+        resolveRepoRoot: () => "/tmp/repo",
+        publishOutboxPath: outbox,
+        publishRepo: async () => { throw new Error("gh api failed (403): cross-fork PAT limit"); },
+      });
+      const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+      client.board = [ticket];
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      created[0].finish("success", "shipped it");
+      await tick();
+
+      expect(client.setStateCalls).toEqual([{ id: ticket.id, state: "in_review" }]);
+      expect(client.comments.some((c) => c.body.includes("Compare-link fallback"))).toBe(true);
+      const op = JSON.parse(readFileSync(outbox, "utf8"));
+      expect(op.nextAttemptAt).toBe(Number.MAX_SAFE_INTEGER);
+      await d.replayPublishes();
+      expect(worktreeRemoves).toHaveLength(0);
+      await expect(d.courier(ticket.identifier)).resolves.toEqual({ ticket: ticket.identifier, cancelled: true });
+      expect(readFileSync(outbox, "utf8")).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("v3.1: explicit reviewTier 'fresh' forces in_review even at low effort", async () => {

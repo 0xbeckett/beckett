@@ -991,6 +991,13 @@ async function main(): Promise<void> {
       if (!id) fail("usage: beckett ticket restaff <id> [--harness claude|codex|pi]");
       await bus("ticket.restaff", { id, harness: flags.harness ? String(flags.harness) : undefined });
     }
+    if (sub === "courier") {
+      // Tell the live dispatcher a human is about to publish; it cancels the durable retry first
+      // so the courier and outbox can never race into duplicate PRs.
+      const id = _[0];
+      if (!id) fail("usage: beckett ticket courier <id>");
+      await bus("ticket.courier", { id });
+    }
     if (sub === "list") {
       const tickets = await client.listIssues();
       const wanted = flags.state ? String(flags.state) : undefined;
@@ -1004,7 +1011,7 @@ async function main(): Promise<void> {
       if (!ticket) fail(`no such ticket: ${id}`);
       out(ticket);
     }
-    fail("usage: beckett ticket create|comment|state|list|show|restaff <...> (use --board int or --intensive for intensive tickets)");
+    fail("usage: beckett ticket create|comment|state|list|show|restaff|courier <...> (use --board int or --intensive for intensive tickets)");
   }
 
   // ── preset (in-process: inspect the user-defined cast presets in ~/.beckett/presets.json) ──

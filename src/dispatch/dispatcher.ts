@@ -64,6 +64,13 @@ import { projectSlug } from "../plane/cast.ts";
 import { hardCapSeconds, sweepLedgeredWorker } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
 import { AdvanceOutbox, type AdvanceOperation } from "./advance-outbox.ts";
+import {
+  PublishOutbox,
+  PUBLISH_RETRY_DELAYS_MS,
+  classifyPublishError,
+  type PublishOperation,
+  type PublishPurpose,
+} from "./publish-outbox.ts";
 
 // =======================================================================================
 // Collaborators
@@ -133,6 +140,8 @@ export interface DispatcherDeps {
   progress?: ProgressSink;
   /** JSONL path for durable post-finish Plane advances. Omitted in tests unless needed. */
   advanceOutboxPath?: string;
+  /** JSONL path for durable GitHub publish retries. The queued row exclusively owns its worktree. */
+  publishOutboxPath?: string;
   /** JSON path for restart-surviving dispatcher ticket memory (base SHA + retry/rework counters). */
   runtimeStatePath?: string;
   /** Test seam for {@link Dispatcher.recoverFromCrash}'s orphan sweep; default ps-verifies + kills. */
@@ -389,6 +398,7 @@ export class Dispatcher {
   private readonly onAdvance?: (event: PollEvent) => void;
   private readonly logger: Logger;
   private readonly advanceOutbox?: AdvanceOutbox;
+  private readonly publishOutbox?: PublishOutbox;
   private readonly runtimeStatePath?: string;
 
   /** At most one live worker per ticket (implement OR review). */
@@ -489,6 +499,9 @@ export class Dispatcher {
     this.logger = deps.logger ?? log.child("dispatch.dispatcher");
     this.advanceOutbox = deps.advanceOutboxPath
       ? new AdvanceOutbox(deps.advanceOutboxPath, this.logger.child("advance-outbox"))
+      : undefined;
+    this.publishOutbox = deps.publishOutboxPath
+      ? new PublishOutbox(deps.publishOutboxPath, this.logger.child("publish-outbox"))
       : undefined;
     this.runtimeStatePath = deps.runtimeStatePath;
     this.sweepOrphan =
@@ -598,6 +611,7 @@ export class Dispatcher {
    */
   async handle(event: PollEvent | PollEvent[]): Promise<void> {
     await this.replayAdvances();
+    await this.replayPublishes();
     const batch = Array.isArray(event) ? event : [event];
     for (const e of batch) {
       // Per-event isolation (issue #33): the poller's snapshot has already advanced past this
@@ -620,6 +634,29 @@ export class Dispatcher {
     if (!this.advanceOutbox) return;
     const applied = await this.advanceOutbox.drain((op) => this.applyAdvance(op));
     if (applied > 0) this.logger.info("replayed queued Plane advances", { count: applied });
+  }
+
+  /** Drain due GitHub publishes on every poll and once during boot. */
+  async replayPublishes(): Promise<void> {
+    if (!this.publishOutbox) return;
+    const applied = await this.publishOutbox.drain((op) => this.applyQueuedPublish(op));
+    if (applied > 0) this.logger.info("replayed queued GitHub publishes", { count: applied });
+  }
+
+  /** Explicit courier handoff for Concierge/manual tooling. */
+  cancelPendingPublish(ticketId: string): boolean {
+    return this.publishOutbox?.cancel(ticketId) ?? false;
+  }
+
+  /** Concierge/manual courier handoff: resolve a human id, then relinquish retry ownership. */
+  async courier(idOrIdentifier: string): Promise<{ ticket: string; cancelled: boolean }> {
+    const ticket = await this.findTicket(idOrIdentifier);
+    if (!ticket) throw new Error(`no such ticket: ${idOrIdentifier}`);
+    const cancelled = this.cancelPendingPublish(ticket.id);
+    if (cancelled) {
+      await this.postComment(ticket.id, "Publish retry cancelled — concierge courier took exclusive publish ownership.");
+    }
+    return { ticket: ticket.identifier, cancelled };
   }
 
   /** Current active and queued dispatcher work, including repo queue context for status surfaces. */
@@ -784,6 +821,12 @@ export class Dispatcher {
     to: TicketState,
   ): Promise<void> {
     this.logger.info("ticket state changed", { ticket: ticket.identifier, from, to });
+    // A queued operation owns the checkout while it holds the ticket in_review. Any human move
+    // away from that hold is an explicit courier/intervention handoff, never a race to a second PR.
+    const courierTookPublish = to !== "in_review" && (this.publishOutbox?.cancel(ticket.id) ?? false);
+    if (courierTookPublish) {
+      await this.postComment(ticket.id, "Publish retry cancelled — a human/concierge state change took courier ownership.");
+    }
     switch (to) {
       case "design":
         // `design` is INT-only. The identifier guard keeps a malformed non-INT board state
@@ -797,6 +840,9 @@ export class Dispatcher {
         this.spawnGuarded(ticket, "implement");
         return;
       case "in_review":
+        // Publish retries deliberately hold completed work in_review; it is not an unstaffed
+        // review gate and must not burn a new reviewer on every poll/restart.
+        if (this.publishOutbox?.has(ticket.id)) return;
         if (this.workers.has(ticket.id)) return; // already has a reviewer
         this.spawnGuarded(ticket, "review");
         return;
@@ -814,6 +860,9 @@ export class Dispatcher {
         }
         await this.reapTicket(ticket.id, "ticket done");
         await this.promoteDependents(ticket);
+        // A courier's state-to-done is their success acknowledgement. The outbox had exclusive
+        // lifetime ownership up to this point, so it may finally release the checkout.
+        if (courierTookPublish) await this.disposeWorktree(ticket.id);
         return;
       }
       case "cancelled":
@@ -836,6 +885,11 @@ export class Dispatcher {
   private async onComment(ticket: Ticket, comment: PlaneComment): Promise<void> {
     if (this.isBeckettComment(comment)) {
       return; // our own summary/status comment — never self-nudge
+    }
+    // A human comment on a publish-held ticket is a courier touch. Stop first, then let normal
+    // steering semantics apply; this makes the ownership transfer visible and race-free.
+    if (this.publishOutbox?.cancel(ticket.id)) {
+      await this.postComment(ticket.id, "Publish retry cancelled — a human/concierge courier took ownership.");
     }
     const handle = this.workers.get(ticket.id);
 
@@ -929,6 +983,7 @@ export class Dispatcher {
   }
 
   private async onCancelled(ticket: Ticket): Promise<void> {
+    this.publishOutbox?.cancel(ticket.id);
     const handle = this.workers.get(ticket.id);
     // Cancelled = the work is not wanted; held steering dies with it (deliberate, issue #22).
     if (this.pendingSteers.delete(ticket.id)) this.persistRuntimeState();
@@ -955,6 +1010,7 @@ export class Dispatcher {
   }
 
   private async onParked(ticket: Ticket, state: "todo" | "backlog" | "design_review"): Promise<void> {
+    this.publishOutbox?.cancel(ticket.id);
     const handle = this.workers.get(ticket.id);
     this.clearTicketMemory(ticket.id);
     this.staffing.delete(ticket.id);
@@ -2042,6 +2098,16 @@ export class Dispatcher {
     this.implementRetries.delete(ticket.id);
     this.persistRuntimeState();
     const pub = await this.publishProject(ticket);
+    if (pub.status === "failed" && this.publishOutbox) {
+      await this.queueFailedPublish(
+        ticket,
+        "WIP publish pending",
+        summary,
+        "wip",
+        pub.error,
+      );
+      return;
+    }
     const link =
       pub.status === "published"
         ? pub.kind === "pr"
@@ -2127,6 +2193,121 @@ export class Dispatcher {
         ticket: ticket.identifier,
         error: (err as Error).message,
       });
+      return { status: "failed", error: (err as Error).message };
+    }
+  }
+
+  /** Queue a failed first attempt before changing ticket state: the durable row owns the worktree. */
+  private async queueFailedPublish(
+    ticket: Ticket,
+    messagePrefix: string,
+    summary: string,
+    purpose: PublishPurpose,
+    error: string,
+  ): Promise<void> {
+    const repoRoot = this.workspaceByTicket.get(ticket.id) ?? this.resolveRepoRoot(ticket);
+    const op: PublishOperation = {
+      id: randomUUID(),
+      ticket,
+      slug: projectSlug(ticket.project || ticket.identifier),
+      repoRoot,
+      messagePrefix,
+      summary,
+      purpose,
+      attempt: 1,
+      nextAttemptAt: Date.now() + PUBLISH_RETRY_DELAYS_MS[0],
+      createdAt: new Date().toISOString(),
+    };
+    if (classifyPublishError(error) === "permanent") {
+      // Keep a non-due ownership marker until a human touches the ticket. It is not a retry: it
+      // merely survives restarts and prevents an in_review poll event from launching a reviewer.
+      op.nextAttemptAt = Number.MAX_SAFE_INTEGER;
+      this.publishOutbox!.append(op);
+      await this.parkPermanentPublish(ticket, op, error);
+      return;
+    }
+    this.publishOutbox!.append(op);
+    await this.holdForPublish(ticket, op, error, PUBLISH_RETRY_DELAYS_MS[0]);
+  }
+
+  /** Visible state for the board: comments are durable across Plane versions, including label text. */
+  private async holdForPublish(ticket: Ticket, op: PublishOperation, error: string, delayMs: number): Promise<void> {
+    const retry = Math.round(delayMs / 60_000);
+    const body =
+      `🏷️ **Label: \`beckett:publish-pending\`**\n\nGitHub publish attempt ${op.attempt} failed ` +
+      `(${error}). The completed work is held in **in_review** with its worktree intact; retry ${op.attempt + 1} ` +
+      `is scheduled in ${retry} minute${retry === 1 ? "" : "s"}.`;
+    if (ticket.state === "in_review") await this.postComment(ticket.id, body);
+    else await this.advanceTicket(ticket, "in_review", body);
+  }
+
+  private async parkPermanentPublish(ticket: Ticket, op: PublishOperation, error: string): Promise<void> {
+    const body =
+      `🏷️ **Label: \`beckett:publish-human\`**\n\nGitHub publish cannot be retried automatically (${error}). ` +
+      `Please courier the committed work from \`${op.repoRoot}\`. Compare-link fallback: ${this.compareLink(op)}. ` +
+      `It remains in **in_review** for a human; no worktree was disposed.`;
+    if (ticket.state === "in_review") await this.postComment(ticket.id, body);
+    else await this.advanceTicket(ticket, "in_review", body);
+  }
+
+  private compareLink(op: PublishOperation): string {
+    const branch = `beckett/${op.ticket.identifier.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
+    return `https://github.com/0xbeckett/${op.slug}/compare/main...${branch}`;
+  }
+
+  /** Apply one due publish row. It is intentionally idempotent: ensurePublished is safe to rerun. */
+  private async applyQueuedPublish(op: PublishOperation): Promise<
+    { action: "remove" } | { action: "keep"; operation: PublishOperation }
+  > {
+    const current = await this.clientForTicketId(op.ticket.id, op.ticket.projectId).getIssue?.(op.ticket.id);
+    if (current && current.state !== "in_review") {
+      this.logger.info("discarding publish retry after human state change", { ticket: current.identifier, state: current.state });
+      return { action: "remove" };
+    }
+    const ticket = current ?? op.ticket;
+    // Reloaded daemons do not have the in-memory workspace map; restore the outbox owner's path
+    // solely so a successful publish can tear down exactly this worktree.
+    this.workspaceByTicket.set(ticket.id, op.repoRoot);
+    this.repoByTicket.set(ticket.id, this.resolveRepoRoot(ticket));
+    await this.postComment(ticket.id, `🏷️ **Label: \`beckett:publish-pending\`**\n\nStarting GitHub publish attempt ${op.attempt}.`);
+    const pub = await this.publishQueuedProject(op);
+    if (pub.status === "published" || pub.status === "skipped") {
+      const link = pub.status === "published"
+        ? pub.kind === "pr" ? `\n\nPR opened (needs your merge): ${pub.prUrl ?? pub.url}` : `\n\nShipped: ${pub.url}`
+        : "";
+      const state = op.purpose === "done" ? "done" : "todo";
+      const message = op.purpose === "done"
+        ? `${op.messagePrefix}${link}\n\n${op.summary}`
+        : `WIP published${link}. Automatic implementation retries are exhausted, so this is parked in **todo** for a human.\n\n${op.summary}`;
+      const advanced = await this.advanceTicket(ticket, state, message, op.purpose === "done" ? { promoteDependents: true } : {});
+      if (!advanced) return { action: "keep", operation: op };
+      await this.postComment(ticket.id, "GitHub publish succeeded; removing `beckett:publish-pending` hold.");
+      // A completed ticket has no future stage; its owner may now release the worktree. WIP stays
+      // available for the human who will resume it from todo.
+      if (op.purpose === "done") await this.disposeWorktree(ticket.id);
+      return { action: "remove" };
+    }
+
+    if (classifyPublishError(pub.error) === "permanent") {
+      const parked = { ...op, nextAttemptAt: Number.MAX_SAFE_INTEGER };
+      await this.parkPermanentPublish(ticket, parked, pub.error);
+      return { action: "keep", operation: parked };
+    }
+
+    const delay = PUBLISH_RETRY_DELAYS_MS[Math.min(op.attempt - 1, PUBLISH_RETRY_DELAYS_MS.length - 1)]!;
+    const retry = { ...op, attempt: op.attempt + 1, nextAttemptAt: Date.now() + delay };
+    await this.holdForPublish(ticket, retry, pub.error, delay);
+    return { action: "keep", operation: retry };
+  }
+
+  private async publishQueuedProject(op: PublishOperation): Promise<PublishOutcome> {
+    if (!this.publishRepo) return { status: "skipped" };
+    try {
+      const r = await this.publishRepo({
+        slug: op.slug, repoRoot: op.repoRoot, description: op.ticket.title, ticket: op.ticket.identifier,
+      });
+      return { status: "published", url: r.url, kind: r.kind, prUrl: r.prUrl };
+    } catch (err) {
       return { status: "failed", error: (err as Error).message };
     }
   }
@@ -2227,11 +2408,12 @@ export class Dispatcher {
   /**
    * Publish FIRST, then mark done — publish success now gates the done transition (and DAG promotion).
    * This reverses the old "done before best-effort publish" ordering: that let a publish failure slip
-   * through as a green "done" while nothing shipped (the false-done, OPS-30). On failure the ticket is
-   * Parked in `todo` with a loud "needs a courier" comment and dependents are NOT promoted. That
-   * keeps the ticket from being re-staffed on restart while still refusing to report `done` for work
-   * that did not leave the box. DAG dependents build from the local `~/Projects/<slug>` checkout, so
-   * a PR-up-but-unmerged ticket doesn't starve them.
+   * through as a green "done" while nothing shipped (the false-done, OPS-30). On failure production
+   * persists an exclusive publish operation and holds the ticket in `in_review`: transient failures
+   * self-heal, while auth/cross-fork failures immediately expose a compare-link courier fallback.
+   * The row owns the worktree until successful publish (or an explicit human courier handoff). DAG
+   * dependents build from the local `~/Projects/<slug>` checkout, so a PR-up-but-unmerged ticket
+   * doesn't starve them.
    */
   private async finishTicketAsDone(
     ticket: Ticket,
@@ -2245,16 +2427,22 @@ export class Dispatcher {
 
     const pub = await this.publishProject(ticket);
     if (pub.status === "failed") {
+      if (this.publishOutbox) {
+        await this.queueFailedPublish(ticket, messagePrefix, summary, "done", pub.error);
+        this.logger.warn("publish failed — queued durable retry", { ticket: ticket.identifier });
+        return false;
+      }
+      // Compatibility for embedders that have not configured persistence yet. Production always
+      // wires publishOutboxPath, so it takes the self-healing branch above.
       await this.advanceTicket(
         ticket,
         "todo",
         `The work is complete, but I couldn't publish it to GitHub (${pub.error}). It's committed ` +
           `locally in \`${this.resolveRepoRoot(ticket)}\` — moving this ticket to **todo** for a ` +
-          `human/courier to push or PR. I'm NOT marking it done, so it isn't lost, and I'm parking ` +
-          `it so no worker keeps burning tokens.\n\n${summary}`,
+          `human/courier to push or PR. I'm NOT marking it done, and parking it so no worker keeps ` +
+          `burning tokens.\n\n${summary}`,
       );
-      this.logger.warn("publish failed — parked ticket for courier", { ticket: ticket.identifier });
-      return false; // no setState(done) — the work isn't shipped (dependents build locally)
+      return false;
     }
 
     // Honest wording: a PR still needs the human's merge; a direct push is actually shipped.
@@ -2360,7 +2548,7 @@ export class Dispatcher {
       // those spawn as before; spawnGuarded's isStaffed dedup makes a double-trigger a no-op, and a
       // still-held repo (finishing worker not yet reaped) just queues the spawn until pump().
       if (state === "design" && this.isIntTicket(ticket)) this.spawnGuarded(ticket, "design");
-      else if (state === "in_review") this.spawnGuarded(ticket, "review");
+      else if (state === "in_review" && !this.publishOutbox?.has(ticket.id)) this.spawnGuarded(ticket, "review");
       else if (state === "in_progress") this.spawnGuarded(ticket, "implement");
       return true;
     } catch (err) {

@@ -522,6 +522,14 @@ export class GitHubCli implements GitHubClient {
     // Case 1 — cloned from a third-party upstream: fork → push branch to fork → PR to upstream.
     const upstream = await this.originUpstream(p.sourceDir);
     if (upstream) {
+      // A retry after a lost response must not even start the create path: look for the ticket
+      // branch's open PR before forking/pushing/opening. This is the publish-outbox idempotency
+      // boundary (and avoids cross-fork PAT churn once a PR already exists).
+      const existing = await this.findOpenPR(upstream, `${this.opts.account}:${branch}`);
+      if (existing) {
+        this.opts.logger.info("reused existing upstream PR", { upstream, branch, pr: existing.url });
+        return { nameWithOwner: upstream, url: `${this.gitHost()}/${upstream}`, kind: "pr", prUrl: existing.url };
+      }
       const fork = await this.ensureFork(upstream);
       await this.gitPush(p.sourceDir, fork, "HEAD", branch);
       const base = await this.defaultBranch(upstream);
