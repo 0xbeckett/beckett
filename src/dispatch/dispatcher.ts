@@ -639,7 +639,11 @@ export class Dispatcher {
   /** Drain due GitHub publishes on every poll and once during boot. */
   async replayPublishes(): Promise<void> {
     if (!this.publishOutbox) return;
-    const applied = await this.publishOutbox.drain((op) => this.applyQueuedPublish(op));
+    const applied = await this.publishOutbox.drain(
+      (op) => this.applyQueuedPublish(op),
+      Date.now(),
+      (op) => this.reconcileQueuedPublishHold(op),
+    );
     if (applied > 0) this.logger.info("replayed queued GitHub publishes", { count: applied });
   }
 
@@ -2255,14 +2259,41 @@ export class Dispatcher {
     return `https://github.com/0xbeckett/${op.slug}/compare/main...${branch}`;
   }
 
+  /**
+   * Repair the append-before-Plane-write crash window without running a retry ahead of schedule.
+   * A state other than the expected hold is a human intervention and relinquishes the row.
+   */
+  private async reconcileQueuedPublishHold(op: PublishOperation): Promise<
+    { action: "remove" } | { action: "keep"; operation: PublishOperation } | null
+  > {
+    const current = await this.clientForTicketId(op.ticket.id, op.ticket.projectId).getIssue?.(op.ticket.id);
+    if (!current || current.state === "in_review") return null;
+    if (current.state === "in_progress") {
+      await this.holdForPublish(
+        current,
+        op,
+        "recovering a durable publish request after an interrupted state update",
+        Math.max(0, op.nextAttemptAt - Date.now()),
+      );
+      return { action: "keep", operation: op };
+    }
+    this.logger.info("discarding publish retry after human state change", {
+      ticket: current.identifier,
+      state: current.state,
+    });
+    return { action: "remove" };
+  }
+
   /** Apply one due publish row. It is intentionally idempotent: ensurePublished is safe to rerun. */
   private async applyQueuedPublish(op: PublishOperation): Promise<
     { action: "remove" } | { action: "keep"; operation: PublishOperation }
   > {
     const current = await this.clientForTicketId(op.ticket.id, op.ticket.projectId).getIssue?.(op.ticket.id);
     if (current && current.state !== "in_review") {
-      this.logger.info("discarding publish retry after human state change", { ticket: current.identifier, state: current.state });
-      return { action: "remove" };
+      const reconciled = await this.reconcileQueuedPublishHold(op);
+      // A due row in the crash window has just restored its hold; do not publish in the same
+      // pass (the original backoff still applies).
+      return reconciled ?? { action: "keep", operation: op };
     }
     const ticket = current ?? op.ticket;
     // Reloaded daemons do not have the in-memory workspace map; restore the outbox owner's path
@@ -2270,7 +2301,17 @@ export class Dispatcher {
     this.workspaceByTicket.set(ticket.id, op.repoRoot);
     this.repoByTicket.set(ticket.id, this.resolveRepoRoot(ticket));
     await this.postComment(ticket.id, `🏷️ **Label: \`beckett:publish-pending\`**\n\nStarting GitHub publish attempt ${op.attempt}.`);
+    // A courier may have cancelled the row while the status comment was being posted. Do not
+    // begin a network publish after yielding ownership (and re-check below for a cancellation
+    // that lands while GitHub is in flight).
+    if (!this.publishOutbox?.has(ticket.id)) return { action: "remove" };
     const pub = await this.publishQueuedProject(op);
+    if (!this.publishOutbox?.has(ticket.id)) {
+      this.logger.info("publish completed after courier handoff; leaving state/worktree to courier", {
+        ticket: ticket.identifier,
+      });
+      return { action: "remove" };
+    }
     if (pub.status === "published" || pub.status === "skipped") {
       const link = pub.status === "published"
         ? pub.kind === "pr" ? `\n\nPR opened (needs your merge): ${pub.prUrl ?? pub.url}` : `\n\nShipped: ${pub.url}`
@@ -2294,7 +2335,9 @@ export class Dispatcher {
       return { action: "keep", operation: parked };
     }
 
-    const delay = PUBLISH_RETRY_DELAYS_MS[Math.min(op.attempt - 1, PUBLISH_RETRY_DELAYS_MS.length - 1)]!;
+    // `op.attempt` is the failed initial attempt count. This failure is the NEXT one, so use
+    // 5m after the second failure and 30m from the third onward (not a second 1m delay).
+    const delay = PUBLISH_RETRY_DELAYS_MS[Math.min(op.attempt, PUBLISH_RETRY_DELAYS_MS.length - 1)]!;
     const retry = { ...op, attempt: op.attempt + 1, nextAttemptAt: Date.now() + delay };
     await this.holdForPublish(ticket, retry, pub.error, delay);
     return { action: "keep", operation: retry };

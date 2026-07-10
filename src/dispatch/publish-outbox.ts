@@ -46,10 +46,21 @@ export type PublishDrainResult =
   | { action: "keep"; operation: PublishOperation };
 
 export class PublishOutbox {
+  /**
+   * `drain()` can be entered by boot recovery and a poll tick at the same time.  One in-process
+   * drainer prevents both from reading the same JSONL row and publishing it twice.  GitHub-side
+   * idempotency is still the last line of defence for a process crash.
+   */
+  private draining: Promise<number> | undefined;
+  /** Rows cancelled while an in-flight drain is awaiting I/O must never be written back. */
+  private readonly cancelled = new Set<string>();
+
   constructor(private readonly path: string, private readonly logger: Logger) {}
 
   /** Replaces an existing row for the ticket: an outbox row has exclusive publish ownership. */
   append(op: PublishOperation): void {
+    // A genuinely new operation after a previous courier handoff owns the ticket anew.
+    this.cancelled.delete(op.ticket.id);
     const ops = this.read().filter((existing) => existing.ticket.id !== op.ticket.id);
     ops.push(op);
     this.writeAll(ops);
@@ -65,6 +76,8 @@ export class PublishOutbox {
   /** A human courier owns publishing from this point; never race them with a stale retry. */
   cancel(ticketId: string): boolean {
     const ops = this.read();
+    // Record the cancellation before an async drain can resume and rewrite its stale snapshot.
+    this.cancelled.add(ticketId);
     const kept = ops.filter((op) => op.ticket.id !== ticketId);
     if (kept.length === ops.length) return false;
     this.writeAll(kept);
@@ -72,9 +85,26 @@ export class PublishOutbox {
     return true;
   }
 
-  async drain(
+  drain(
     apply: (op: PublishOperation) => Promise<PublishDrainResult>,
     now = Date.now(),
+    /** Reconcile durable ownership/state without spending an early retry attempt. */
+    reconcile?: (op: PublishOperation) => Promise<PublishDrainResult | null>,
+  ): Promise<number> {
+    if (this.draining) return this.draining;
+    const active = this.drainNow(apply, now, reconcile);
+    this.draining = active;
+    void active.then(
+      () => { if (this.draining === active) this.draining = undefined; },
+      () => { if (this.draining === active) this.draining = undefined; },
+    );
+    return active;
+  }
+
+  private async drainNow(
+    apply: (op: PublishOperation) => Promise<PublishDrainResult>,
+    now: number,
+    reconcile?: (op: PublishOperation) => Promise<PublishDrainResult | null>,
   ): Promise<number> {
     const ops = this.read();
     if (!ops.length) return 0;
@@ -82,7 +112,19 @@ export class PublishOutbox {
     let applied = 0;
     for (const op of ops) {
       if (op.nextAttemptAt > now) {
-        kept.push(op);
+        // A row can survive a crash after it is appended but before Plane is moved to in_review.
+        // Reconcile that ownership immediately; never turn a scheduled retry into an early GitHub
+        // call merely to repair its visible hold.
+        try {
+          const result = await reconcile?.(op);
+          if (result?.action === "remove") applied++;
+          else kept.push(result?.operation ?? op);
+        } catch (err) {
+          kept.push(op);
+          this.logger.warn("queued GitHub publish reconciliation still failing", {
+            id: op.id, ticket: op.ticket.identifier, error: (err as Error).message,
+          });
+        }
         continue;
       }
       try {
@@ -97,7 +139,15 @@ export class PublishOutbox {
         });
       }
     }
-    this.writeAll(kept);
+    // `cancel()` is allowed while apply() awaits Plane/GitHub. Do not resurrect a row the
+    // concierge just relinquished to a human courier. Likewise preserve a newly appended row:
+    // its synchronous append may have happened while this async drain held an old snapshot.
+    const newlyAppended = this.read().filter((current) => !ops.some((original) => original.id === current.id));
+    const final = [
+      ...kept.filter((op) => !newlyAppended.some((newer) => newer.ticket.id === op.ticket.id)),
+      ...newlyAppended,
+    ].filter((op) => !this.cancelled.has(op.ticket.id));
+    this.writeAll(final);
     return applied;
   }
 
