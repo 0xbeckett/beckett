@@ -106,6 +106,9 @@ in_review = "In Review"
 done = "Done"
 cancelled = "Cancelled"
 
+[github]
+poll_secs = 60
+
 [proactivity]
 enabled = false
 default_mode = "off"

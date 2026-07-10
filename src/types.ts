@@ -642,6 +642,11 @@ export interface Config {
     /** Board name used when a caller omits --board. */
     default_board: string;
   };
+  /** OPS-124 — GitHub PR poller. Secret GITHUB_PAT lives in env; active only when it's set. */
+  github: {
+    /** How often to re-read watched PRs' review/CI/merge signal (seconds). */
+    poll_secs: number;
+  };
   /** Ambient interjection policy. Ships disabled; per-channel modes are opt-in. */
   proactivity: {
     enabled: boolean;

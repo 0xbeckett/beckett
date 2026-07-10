@@ -153,6 +153,13 @@ export interface DispatcherDeps {
    * `poller.observe` (so the next tick doesn't re-emit the transition as a duplicate).
    */
   onAdvance?: (event: PollEvent) => void;
+  /**
+   * Fired the moment the dispatcher opens a PR for a ticket (OPS-124), so the GitHub PR poller can
+   * start watching it and relay review/CI/merge signal back to the ticket's channel. `prUrl` is the
+   * PR's web URL; `ticket` carries the identifier, title, and origin channel used for routing.
+   * Omitted in tests / when no PAT is configured.
+   */
+  onPrOpened?: (info: { prUrl: string; ticket: Ticket }) => void;
   logger?: Logger;
 }
 
@@ -397,6 +404,7 @@ export class Dispatcher {
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   private readonly progress?: ProgressSink;
   private readonly onAdvance?: (event: PollEvent) => void;
+  private readonly onPrOpened?: (info: { prUrl: string; ticket: Ticket }) => void;
   private readonly logger: Logger;
   private readonly advanceOutbox?: AdvanceOutbox;
   private readonly runtimeStatePath?: string;
@@ -499,6 +507,7 @@ export class Dispatcher {
     this.publishRepo = deps.publishRepo;
     this.progress = deps.progress;
     this.onAdvance = deps.onAdvance;
+    this.onPrOpened = deps.onPrOpened;
     this.logger = deps.logger ?? log.child("dispatch.dispatcher");
     this.advanceOutbox = deps.advanceOutboxPath
       ? new AdvanceOutbox(deps.advanceOutboxPath, this.logger.child("advance-outbox"))
@@ -2210,6 +2219,19 @@ export class Dispatcher {
     try {
       const r = await this.publishRepo({ slug, repoRoot, description: ticket.title, ticket: ticket.identifier });
       this.logger.info("project published to github", { ticket: ticket.identifier, url: r.url, kind: r.kind });
+      // OPS-124: hand a freshly-opened PR to the GitHub poller so review/CI/merge signal flows back
+      // to the ticket's channel. Only PRs (not direct pushes) are watchable; best-effort — a failing
+      // hook must never turn a successful publish into a failure.
+      if (r.kind === "pr" && r.prUrl && this.onPrOpened) {
+        try {
+          this.onPrOpened({ prUrl: r.prUrl, ticket });
+        } catch (err) {
+          this.logger.warn("onPrOpened hook failed (publish still succeeded)", {
+            ticket: ticket.identifier,
+            error: (err as Error).message,
+          });
+        }
+      }
       return { status: "published", url: r.url, kind: r.kind, prUrl: r.prUrl };
     } catch (err) {
       this.logger.warn("github publish failed", {

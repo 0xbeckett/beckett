@@ -30,6 +30,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config, IncomingMessage, Logger, ProactivityMode, ThreadCreated } from "../types.ts";
 import type { PollEvent, PlaneComment, Ticket } from "../plane/types.ts";
+import type { PrPollEvent } from "../github/types.ts";
 import { log as rootLog } from "../log.ts";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
@@ -1223,6 +1224,48 @@ export class Concierge {
       `The ${run.agent} quick agent you dispatched earlier (run ${run.runId}) finished with state "${run.state}".\n` +
       `Its report:\n\n${run.result ?? "(no report)"}\n\n${where}`;
     this.askUpdate(framed, `quick:${run.runId}`);
+  }
+
+  /**
+   * Relay material GitHub PR transitions (OPS-124): the PR poller surfaces new reviews, CI
+   * conclusions, merges, and closes on the PRs Beckett opened. Each becomes an automated-update
+   * turn routed to the ticket's origin channel — the SAME mechanism as {@link notify} ticket
+   * updates. Read-and-relay only: nothing here replies to a review or merges a PR. Events whose PR
+   * carries no origin channel are dropped SILENTLY (criterion: nowhere to route → say nothing). A
+   * batch is grouped per channel so one poll wave costs one turn per channel, not one per event.
+   */
+  notifyPrEvents(events: PrPollEvent | PrPollEvent[]): void {
+    const batch = Array.isArray(events) ? events : [events];
+    const byChannel = new Map<string, { lines: string[]; refs: string[] }>();
+    for (const event of batch) {
+      const channel = event.pr.channel;
+      if (!channel) {
+        // The exact drop the criteria call for: a PR with no known origin channel is not surfaced.
+        this.log.debug("PR update dropped — no origin channel", {
+          repo: event.pr.repo,
+          number: event.pr.number,
+          kind: event.kind,
+        });
+        continue;
+      }
+      const bucket = byChannel.get(channel) ?? { lines: [], refs: [] };
+      bucket.lines.push(describePrEvent(event));
+      bucket.refs.push(`${event.pr.repo}#${event.pr.number}`);
+      byChannel.set(channel, bucket);
+    }
+    for (const [channel, bucket] of byChannel) {
+      const detail = bucket.lines.map((l) => `- ${l}`).join("\n");
+      const framed =
+        `SYSTEM (automated PR update — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
+        `One or more PRs you opened had activity:\n\n${detail}\n\n` +
+        `If this is worth telling the person who's following this work, send them a short note IN ` +
+        `YOUR VOICE by running this from your Bash tool:\n` +
+        `  beckett discord reply --channel ${channel} "<your message>"\n` +
+        `Paraphrase — don't dump the raw status. A CI failure or requested changes is worth a ping; ` +
+        `routine green CI usually isn't. You OBSERVE and RELAY only — do NOT reply to the review on ` +
+        `GitHub and do NOT merge the PR; a merge stays the person's call.`;
+      this.askUpdate(framed, `pr:${[...new Set(bucket.refs)].join(",")}`);
+    }
   }
 
   /**
@@ -2933,6 +2976,45 @@ function combineUpdateTurns(updates: string[]): string {
     `single message; skip the routine ones; reply via \`beckett discord reply\` per the ` +
     `instructions inside each update.\n\n${items}`
   );
+}
+
+/**
+ * One-line, factual description of a material PR transition (OPS-124), fed into the automated-update
+ * turn. Deliberately neutral so the Concierge can voice it; the raw review/comment body is included
+ * (trimmed) as data for the model to paraphrase, never echoed verbatim to the person.
+ */
+function describePrEvent(event: PrPollEvent): string {
+  const pr = event.pr;
+  const tag = `#${pr.number}${pr.title ? ` ("${pr.title}")` : ""}`;
+  const where = `${pr.url}${pr.ticket ? ` — ticket ${pr.ticket}` : ""}`;
+  switch (event.kind) {
+    case "review": {
+      const who = event.review.author || "someone";
+      const verb =
+        event.review.state === "APPROVED"
+          ? "approved"
+          : event.review.state === "CHANGES_REQUESTED"
+            ? "requested changes on"
+            : "left a review comment on";
+      const body = event.review.body.trim();
+      const snippet = body ? `\n  their note: ${body.slice(0, 400)}` : "";
+      return `${who} ${verb} PR ${tag}. ${where}${snippet}`;
+    }
+    case "comment": {
+      const who = event.comment.author || "someone";
+      const body = event.comment.body.trim();
+      const snippet = body ? `\n  their note: ${body.slice(0, 400)}` : "";
+      return `${who} commented on PR ${tag}. ${where}${snippet}`;
+    }
+    case "ci":
+      return event.conclusion === "FAILURE"
+        ? `CI FAILED on PR ${tag}. ${where}`
+        : `CI passed on PR ${tag}. ${where}`;
+    case "merged":
+      return `PR ${tag} was MERGED. ${where}`;
+    case "closed":
+      return `PR ${tag} was closed without merging. ${where}`;
+  }
 }
 
 /**

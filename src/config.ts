@@ -379,6 +379,16 @@ const ConfigSchema = z
     // PLANE_API_TOKEN secret comes from .env, NOT here. Named boards select a Plane project plus
     // the project's workflow-state NAME map; Beckett keeps the six canonical TicketStates.
     plane: PlaneConfigSchema,
+    // OPS-124 — GitHub PR sense: the poller that watches the PRs Beckett opened on the 0xbeckett
+    // org and relays review/CI/merge signal. The GITHUB_PAT secret lives in env, not here. Active
+    // only when a PAT is configured. GitHub's REST API is rate-limited, so this polls far less
+    // aggressively than Plane (60s default is ample for review/CI latency).
+    github: z
+      .object({
+        poll_secs: posInt.default(60),
+      })
+      .strict()
+      .default({}),
     proactivity: z
       .object({
         enabled: z.boolean().default(false),

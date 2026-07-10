@@ -34,6 +34,8 @@ import { projectSlug } from "../plane/cast.ts";
 import { createPlaneClient, type PlaneClient } from "../plane/client.ts";
 import { createPlanePoller, type PlanePoller } from "../plane/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
+import { createGitHubPrPoller, type GitHubPrPoller } from "../github/poll.ts";
+import { parsePrUrl } from "../github/types.ts";
 import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
 import { createQuickRunner, type QuickRunner } from "../quick/index.ts";
@@ -77,6 +79,7 @@ interface BootedSystem {
   clients: Map<string, PlaneClient>;
   poller: PlanePoller;
   pollers: Map<string, PlanePoller>;
+  prPoller: GitHubPrPoller | null;
   dispatcher: Dispatcher;
   concierge: Concierge;
   quick: QuickRunner;
@@ -143,6 +146,28 @@ async function boot(): Promise<BootedSystem> {
     logger.warn("no GITHUB_PAT — project repos will stay local-only (not pushed to GitHub)");
   }
 
+  // GitHub PR sense (OPS-124): watch the PRs Beckett opens on the 0xbeckett org and relay review/CI/
+  // merge signal back to the ticket's channel. Registry-driven — the dispatcher's `onPrOpened` hook
+  // (below) registers each PR at open time with its origin channel. Read-only: it observes and
+  // relays, never replies or merges. Skipped without a PAT (nothing to read GitHub with).
+  const paths = buildPaths(config);
+  const beckettDir = paths.beckettDir;
+  const prPoller: GitHubPrPoller | null = identity.github.pat
+    ? createGitHubPrPoller({
+        reader: new GitHubCli({
+          pat: identity.github.pat,
+          account: identity.github.account,
+          apiBase: identity.github.apiBase,
+          resolveRepoDir: () => PROJECTS_ROOT, // unused for reads (prSignals passes --repo)
+          logger: logger.child("gh.read"),
+        }),
+        account: identity.github.account,
+        pollSecs: config.github.poll_secs,
+        statePath: join(beckettDir, "github-prs.json"),
+        logger: logger.child("github.poll"),
+      })
+    : null;
+
   // 5. Concierge — owns Discord (and the private ticket journal the dispatcher feeds). Constructed
   //    here (cheap, no I/O) so its progress sink can be wired into the dispatcher below; started
   //    further down (FIRST of the live parts) so a bad claude launch fails the whole boot early.
@@ -152,8 +177,6 @@ async function boot(): Promise<BootedSystem> {
   //    snapshot first (so we don't replay history) then self-schedules every poll_secs.
   //    Constructed BEFORE the dispatcher so the dispatcher's instant-advance path (issue #33)
   //    can reference the correct board poller.
-  const paths = buildPaths(config);
-  const beckettDir = paths.beckettDir;
   const pollers = new Map<string, PlanePoller>();
   for (const [board, boardClient] of clients) {
     pollers.set(
@@ -219,6 +242,23 @@ async function boot(): Promise<BootedSystem> {
       (pollerByProjectId.get(event.ticket.projectId) ?? poller).observe(event);
       concierge.notify(event);
     },
+    // OPS-124: a PR Beckett just opened → start watching it, routed to the ticket's origin channel.
+    // Parse the repo+number from the PR URL; a non-PR URL yields null and is ignored. The poller
+    // itself drops PRs outside our org and (at relay time) PRs with no origin channel.
+    onPrOpened: prPoller
+      ? ({ prUrl, ticket }) => {
+          const parsed = parsePrUrl(prUrl);
+          if (!parsed) return;
+          prPoller.watch({
+            repo: parsed.repo,
+            number: parsed.number,
+            url: prUrl,
+            title: ticket.title,
+            ticket: ticket.identifier,
+            channel: ticket.originChannel,
+          });
+        }
+      : undefined,
     logger: logger.child("dispatch"),
   });
 
@@ -259,6 +299,7 @@ async function boot(): Promise<BootedSystem> {
       boards: Object.fromEntries([...pollers].map(([board, p]) => [board, p.stats()])),
       ...poller.stats(),
     },
+    githubPr: prPoller ? prPoller.stats() : null,
     plane: {
       baseUrl: config.plane.base_url,
       defaultBoard: config.plane.default_board,
@@ -288,6 +329,13 @@ async function boot(): Promise<BootedSystem> {
       }),
     ),
   );
+  // GitHub PR sense (OPS-124): start watching after the dispatcher is live, so any PR opened during
+  // boot recovery already has a home. Each material transition lands as a Concierge update turn —
+  // the same routing as ticket updates. Best-effort: a poll failure never affects the rest.
+  if (prPoller) {
+    await prPoller.start((events) => concierge.notifyPrEvents(events));
+  }
+
   // Memory self-healing (OPS-121): one maintenance pass shortly after boot, then daily —
   // archives expired/superseded facts and merges near-duplicates so the knowledge graph
   // doesn't rot between deploys. Failures log and never affect the rest of the daemon.
@@ -303,13 +351,14 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, dispatcher, concierge, quick, memoryMaintenance };
+  return { config, logger, client, clients, poller, pollers, prPoller, dispatcher, concierge, quick, memoryMaintenance };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
 async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   sys.logger.info("shutting down beckett v3", { signal });
   sys.memoryMaintenance.stop();
+  sys.prPoller?.stop();
   for (const p of sys.pollers.values()) p.stop();
   try {
     const drain = await sys.dispatcher.drainForShutdown(signal, 20_000);

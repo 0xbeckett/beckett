@@ -47,6 +47,7 @@ import type {
   Logger,
 } from "../types.ts";
 import { ActionClass } from "../types.ts";
+import type { CheckConclusion, GitHubPrReader, PrSignals } from "../github/types.ts";
 import { pendingActionId } from "../ids.ts";
 import { log as rootLog } from "../log.ts";
 import { childEnv } from "../env.ts";
@@ -327,7 +328,7 @@ export interface PublishResult {
  * (`$GITHUB_PAT`) so the token never appears in argv. Most ops are FREE; the caller GATES
  * `mergePR` behind {@link Agency.perform}.
  */
-export class GitHubCli implements GitHubClient {
+export class GitHubCli implements GitHubClient, GitHubPrReader {
   private readonly runner: (
     cmd: string[],
     opts?: { cwd?: string; env?: Record<string, string | undefined> },
@@ -803,6 +804,100 @@ export class GitHubCli implements GitHubClient {
       return GREEN.has(verdict);
     });
   }
+
+  /**
+   * The full signal read the PR poller diffs (OPS-124): lifecycle, draft flag, head sha, reviews,
+   * conversation comments, and the rolled-up CI conclusion — in ONE `gh pr view` round-trip. Read
+   * only (no state change), so it's FREE. Throws with a clear message on an unreadable/missing PR
+   * so the poller can skip it for the tick and retry, exactly like the Plane poller's read failures.
+   */
+  async prSignals(repo: string, n: number): Promise<PrSignals> {
+    this.requireCreds("read PR signals");
+    const fields =
+      "number,url,title,state,isDraft,headRefOid,reviewDecision,reviews,comments,statusCheckRollup";
+    const r = await this.runner(["gh", "pr", "view", String(n), "--repo", repo, "--json", fields], {
+      env: this.ghEnv(),
+    });
+    if (r.code !== 0) {
+      throw new Error(`gh pr view (signals) failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+    let p: {
+      number?: number;
+      url?: string;
+      title?: string;
+      state?: string;
+      isDraft?: boolean;
+      headRefOid?: string;
+      reviewDecision?: string;
+      reviews?: Array<{ id?: string | number; author?: { login?: string }; state?: string; submittedAt?: string; body?: string }>;
+      comments?: Array<{ id?: string | number; author?: { login?: string }; createdAt?: string; body?: string }>;
+      statusCheckRollup?: Array<{ status?: string; conclusion?: string; state?: string }>;
+    };
+    try {
+      p = JSON.parse(r.stdout);
+    } catch {
+      throw new Error(`gh pr view (signals) returned unparseable JSON for PR #${n}`);
+    }
+    const state = String(p.state ?? "OPEN").toUpperCase();
+    return {
+      number: typeof p.number === "number" ? p.number : n,
+      url: p.url ?? "",
+      title: p.title ?? "",
+      state: state === "MERGED" || state === "CLOSED" ? state : "OPEN",
+      isDraft: Boolean(p.isDraft),
+      headRefOid: String(p.headRefOid ?? ""),
+      reviewDecision: String(p.reviewDecision ?? "").toUpperCase(),
+      reviews: (p.reviews ?? []).map((rv) => ({
+        id: String(rv.id ?? `${rv.author?.login ?? "?"}@${rv.submittedAt ?? ""}`),
+        author: rv.author?.login ?? "",
+        state: String(rv.state ?? "").toUpperCase() as PrSignals["reviews"][number]["state"],
+        submittedAt: rv.submittedAt ?? "",
+        body: rv.body ?? "",
+      })),
+      comments: (p.comments ?? []).map((c) => ({
+        id: String(c.id ?? `${c.author?.login ?? "?"}@${c.createdAt ?? ""}`),
+        author: c.author?.login ?? "",
+        createdAt: c.createdAt ?? "",
+        body: c.body ?? "",
+      })),
+      checkConclusion: rollupConclusion(p.statusCheckRollup),
+    };
+  }
+}
+
+/**
+ * Reduce GitHub's `statusCheckRollup` (a mix of CheckRun and StatusContext entries) to one
+ * {@link CheckConclusion}. Failures are LOUD: any failed/errored check makes the whole rollup a
+ * FAILURE even while others are still running, so "CI failed" reaches the person as fast as
+ * possible. No checks configured → NONE (nothing to report).
+ */
+function rollupConclusion(rollup?: Array<{ status?: string; conclusion?: string; state?: string }>): CheckConclusion {
+  const checks = rollup ?? [];
+  if (checks.length === 0) return "NONE";
+  const GREEN = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+  let anyPending = false;
+  for (const c of checks) {
+    const status = String(c.status ?? "").toUpperCase();
+    const conclusion = String(c.conclusion ?? "").toUpperCase();
+    const contextState = String(c.state ?? "").toUpperCase();
+    if (!status && contextState) {
+      // Legacy commit-status context: state is PENDING/EXPECTED/SUCCESS/FAILURE/ERROR.
+      if (contextState === "PENDING" || contextState === "EXPECTED") anyPending = true;
+      else if (!GREEN.has(contextState)) return "FAILURE";
+      continue;
+    }
+    // Check run: not COMPLETED → still pending; COMPLETED → judge by conclusion.
+    if (status && status !== "COMPLETED") {
+      anyPending = true;
+      continue;
+    }
+    if (!conclusion) {
+      anyPending = true;
+      continue;
+    }
+    if (!GREEN.has(conclusion)) return "FAILURE"; // FAILURE/TIMED_OUT/CANCELLED/ACTION_REQUIRED/…
+  }
+  return anyPending ? "PENDING" : "SUCCESS";
 }
 
 // =======================================================================================
