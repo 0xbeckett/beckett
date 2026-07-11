@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### One-command self-host installer
+
+- **Fresh VPS to staged Beckett in one command.** The new repository-root `install.sh` supports
+  Ubuntu/Debian x64 and arm64, creates an unprivileged lingering service account, installs the
+  official Node 24 LTS/Bun/Claude/Codex/Pi/GitHub toolchain, clones and typechecks Beckett, prompts
+  privately for instance configuration, and is safe to rerun.
+- **No credential crash loops.** The lower-level unit installer gained `--no-start`; normal starts
+  require the core secrets plus Claude login, provision every Plane board, and wait for a real
+  control-socket response. Failed readiness disables both daemon and heartbeat instead of leaving
+  either active. Reruns reset start limits and restart onto current code rather than accepting an
+  already-running stale process.
+- **Portable Bun and current Pi runtime.** Units resolve Bun from their explicit daemon `PATH`
+  rather than assuming `/usr/local/bin`. Pi's current package requires Node `>=22.19.0`, so its
+  preflight and `beckett doctor` now enforce that floor; disabled optional harnesses are no longer
+  reported as broken.
+- **No silent root escalation.** The public path does not add passwordless sudo or relax AppArmor.
+  Secrets/config are mode `0600`, the state directory is `0700`, root secrets are removed before
+  subprocesses and service-user commands cross an `env -i` boundary. User-owned paths are mutated
+  only after dropping privileges, and config/env symlinks are refused.
+- **Current Plane and portable ownership.** Plane Cloud uses separate app/API origins, API calls use
+  the current `/work-items/` routes, and provisioned workflow states include required colors. The
+  configured GitHub owner now flows through repo publishing, worker guidance, Concierge doctrine,
+  doctor validation, and fallback links instead of silently targeting `0xbeckett`.
+
 ### Ambient classifier: natural turn-taking and reliable fast scoring
 
 - **Turn-taking, not keyword relevance.** The triage rubric now judges the latest unresolved turn,

@@ -328,6 +328,49 @@ test("preflight rejects stale pi without --session-id support", async () => {
   }
 });
 
+test("preflight rejects Node below the current Pi package's 22.19 floor", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-old-node-"));
+  const oldHome = process.env.HOME;
+  try {
+    const localBin = join(dir, ".local/bin");
+    mkdirSync(localBin, { recursive: true });
+    const node = join(localBin, "node");
+    writeFileSync(node, "#!/bin/sh\necho v22.18.0\n", "utf8");
+    chmodSync(node, 0o755);
+
+    const pi = join(localBin, "pi");
+    writeFileSync(
+      pi,
+      [
+        "#!/bin/sh",
+        'case "$1" in',
+        "  --version) echo 0.80.6 ;;",
+        "  --help) echo '--mode --session --session-id --print --no-extensions --no-skills --no-themes' ;;",
+        "esac",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    chmodSync(pi, 0o755);
+    const authDir = join(dir, ".pi/agent");
+    mkdirSync(authDir, { recursive: true });
+    writeFileSync(join(authDir, "auth.json"), '{"openai-codex":{}}\n', "utf8");
+    process.env.HOME = dir;
+
+    const testConfig = {
+      harness: { pi: { ...(config.harness as { pi: object }).pi, bin: "pi" } },
+    } as unknown as Config;
+    const pf = await piPreflight(testConfig);
+    expect(pf.ok).toBe(false);
+    expect(pf.nodeVersion).toBe("v22.18.0");
+    expect(pf.problems.join(" ")).toContain("node >=22.19.0");
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── issue #31: config & telemetry truthfulness. ──
 test("turn_end usage.cost.total accumulates into getTelemetry().usdEstimate", () => {
   const { driver, feed } = harness();

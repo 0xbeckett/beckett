@@ -127,6 +127,7 @@ const fakeSpawn = async (args: any) => {
 };
 
 let provisioned: string[] = [];
+let provisionedOwners: string[] = [];
 let commitResult: { committed: boolean; sha: string | null } = { committed: true, sha: "commit000" };
 let commitCalls: { workspace: string; message: string }[] = [];
 let diffSince = true;
@@ -145,8 +146,9 @@ const gitFakes: Partial<GitOps> = {
   },
   headSha: async () => "base000", // v3.1 per-ticket diff base (fake repo has no real HEAD)
   hasDiffSince: async () => diffSince,
-  ensureProjectRepo: async (_repoRoot: string, slug: string) => {
+  ensureProjectRepo: async (_repoRoot: string, slug: string, owner?: string) => {
     provisioned.push(slug);
+    provisionedOwners.push(owner ?? "");
   },
   readDiff: async () => fakeReviewDiff, // issue #27: pre-read diff handed to reviewers
   // v3.2 worktrees: faked so tests never touch real git. createWorktree records + echoes a handle;
@@ -273,6 +275,7 @@ beforeEach(() => {
   counter = 0;
   spawnGate = null;
   provisioned = [];
+  provisionedOwners = [];
   commitResult = { committed: true, sha: "commit000" };
   commitCalls = [];
   diffSince = true;
@@ -799,13 +802,21 @@ describe("advance on finish", () => {
 
   test("permanent publish failures immediately park in_review with a compare fallback", async () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-publish-permanent-"));
+    const previousOwner = process.env.BECKETT_GH_ORG;
+    const previousAccount = process.env.GITHUB_ACCOUNT;
+    process.env.BECKETT_GH_ORG = "acme-labs";
+    process.env.GITHUB_ACCOUNT = "publisher-bot";
     try {
       const outbox = join(dir, "publish.jsonl");
       const client = new FakeClient();
+      const config = {
+        ...cfg(),
+        identity: { github_user: "octocat", gmail_address: "" },
+      } as Config;
       const d = new Dispatcher({
         gitOps: gitFakes,
         client,
-        config: cfg(),
+        config,
         resolveRepoRoot: () => "/tmp/repo",
         publishOutboxPath: outbox,
         publishRepo: async () => { throw new Error("gh api failed (403): cross-fork PAT limit"); },
@@ -819,6 +830,9 @@ describe("advance on finish", () => {
 
       expect(client.setStateCalls).toEqual([{ id: ticket.id, state: "in_review" }]);
       expect(client.comments.some((c) => c.body.includes("Compare-link fallback"))).toBe(true);
+      expect(client.comments.some((c) => c.body.includes(
+        "https://github.com/acme-labs/ops-1/compare/main...beckett/ops-1",
+      ))).toBe(true);
       const op = JSON.parse(readFileSync(outbox, "utf8"));
       expect(op.nextAttemptAt).toBe(Number.MAX_SAFE_INTEGER);
       await d.replayPublishes();
@@ -826,6 +840,10 @@ describe("advance on finish", () => {
       await expect(d.courier(ticket.identifier)).resolves.toEqual({ ticket: ticket.identifier, cancelled: true });
       expect(readFileSync(outbox, "utf8")).toBe("");
     } finally {
+      if (previousOwner === undefined) delete process.env.BECKETT_GH_ORG;
+      else process.env.BECKETT_GH_ORG = previousOwner;
+      if (previousAccount === undefined) delete process.env.GITHUB_ACCOUNT;
+      else process.env.GITHUB_ACCOUNT = previousAccount;
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -951,6 +969,36 @@ describe("v3.1 project-repo provisioning", () => {
     await d.handle(stateChanged(ticket, "in_progress"));
     await tick();
     expect(provisioned).toContain("balloons-game"); // sanitized slug
+  });
+
+  test("passes the config-derived publishing owner into repo provisioning", async () => {
+    const previousOrg = process.env.BECKETT_GH_ORG;
+    const previousAccount = process.env.GITHUB_ACCOUNT;
+    delete process.env.BECKETT_GH_ORG;
+    delete process.env.GITHUB_ACCOUNT;
+    try {
+      const client = new FakeClient();
+      const config = {
+        ...cfg(),
+        identity: { github_user: "octocat", gmail_address: "" },
+      } as Config;
+      const d = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config,
+        resolveRepoRoot: () => "/tmp/repo/octocat-project",
+      });
+
+      await d.handle(stateChanged(makeTicket({ project: "Config Project" }), "in_progress"));
+      await tick();
+
+      expect(provisionedOwners).toContain("octocat");
+    } finally {
+      if (previousOrg === undefined) delete process.env.BECKETT_GH_ORG;
+      else process.env.BECKETT_GH_ORG = previousOrg;
+      if (previousAccount === undefined) delete process.env.GITHUB_ACCOUNT;
+      else process.env.GITHUB_ACCOUNT = previousAccount;
+    }
   });
 });
 

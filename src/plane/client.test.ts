@@ -67,6 +67,19 @@ function privateReq(client: PlaneClient, method: string, path: string): Promise<
   return (client as unknown as { req(method: string, path: string): Promise<unknown> }).req(method, path);
 }
 
+test("a blank PLANE_INTERNAL_URL falls back to the configured web origin", () => {
+  const previous = process.env.PLANE_INTERNAL_URL;
+  try {
+    process.env.PLANE_INTERNAL_URL = "";
+    const client = new PlaneClient({ config, token: "tok", logger: quiet, fetch: fetch });
+    const apiBase = (client as unknown as { apiBase: string }).apiBase;
+    expect(apiBase).toBe("https://plane.test/api/v1/workspaces/beckett");
+  } finally {
+    if (previous === undefined) delete process.env.PLANE_INTERNAL_URL;
+    else process.env.PLANE_INTERNAL_URL = previous;
+  }
+});
+
 test("req retries transient 5xx responses", async () => {
   let calls = 0;
   const fetchImpl = (async () => {
@@ -179,10 +192,14 @@ test("provisioning creates a missing board/project workflow once and backs off o
   expect(delays[0]).toBeGreaterThanOrEqual(1_000);
   expect(writes[0]).toMatchObject({ body: { name: "INT", identifier: "INT" } });
   expect(writes.slice(1).map((w) => w.body)).toEqual([
-    { name: "Backlog", group: "backlog" }, { name: "Todo", group: "unstarted" },
-    { name: "Design", group: "started" }, { name: "Design Review", group: "unstarted" },
-    { name: "In Progress", group: "started" }, { name: "Review", group: "started" },
-    { name: "Done", group: "completed" }, { name: "Cancelled", group: "cancelled" },
+    { name: "Backlog", group: "backlog", color: "#60646C" },
+    { name: "Todo", group: "unstarted", color: "#60646C" },
+    { name: "Design", group: "started", color: "#F59E0B" },
+    { name: "Design Review", group: "unstarted", color: "#60646C" },
+    { name: "In Progress", group: "started", color: "#F59E0B" },
+    { name: "Review", group: "started", color: "#F59E0B" },
+    { name: "Done", group: "completed", color: "#46A758" },
+    { name: "Cancelled", group: "cancelled", color: "#9AA4BC" },
   ]);
 
   // A fresh client represents the next deploy: it observes the same resources and sends no POSTs.
@@ -226,14 +243,14 @@ test("list, show, create, comment, and state calls retry their first 429", async
         ],
       });
     }
-    if (path.endsWith("/issues/t1/comments/")) {
+    if (path.endsWith("/work-items/t1/comments/")) {
       return method === "POST"
         ? Response.json({ id: "c1", comment_html: "<p>hello</p>", issue: "t1", created_at: "2026-01-01T00:00:00Z" })
         : Response.json({ results: [] });
     }
-    if (path.endsWith("/issues/t1/") && method === "PATCH") return new Response(null, { status: 204 });
-    if (path.endsWith("/issues/t1/")) return Response.json(issue);
-    if (path.endsWith("/issues/")) return method === "POST" ? Response.json(issue) : Response.json({ results: [issue] });
+    if (path.endsWith("/work-items/t1/") && method === "PATCH") return new Response(null, { status: 204 });
+    if (path.endsWith("/work-items/t1/")) return Response.json(issue);
+    if (path.endsWith("/work-items/")) return method === "POST" ? Response.json(issue) : Response.json({ results: [issue] });
     throw new Error(`unexpected Plane route: ${key}`);
   }) as unknown as typeof fetch;
   const client = new PlaneClient({ config, token: "tok", logger: quiet, fetch: fetchImpl });
@@ -247,12 +264,12 @@ test("list, show, create, comment, and state calls retry their first 429", async
   await expect(client.setState("t1", "done")).resolves.toBeUndefined();
 
   for (const route of [
-    { method: "GET", path: "/projects/p1/issues/" },
-    { method: "GET", path: "/projects/p1/issues/t1/" },
-    { method: "POST", path: "/projects/p1/issues/" },
-    { method: "GET", path: "/projects/p1/issues/t1/comments/" },
-    { method: "POST", path: "/projects/p1/issues/t1/comments/" },
-    { method: "PATCH", path: "/projects/p1/issues/t1/" },
+    { method: "GET", path: "/projects/p1/work-items/" },
+    { method: "GET", path: "/projects/p1/work-items/t1/" },
+    { method: "POST", path: "/projects/p1/work-items/" },
+    { method: "GET", path: "/projects/p1/work-items/t1/comments/" },
+    { method: "POST", path: "/projects/p1/work-items/t1/comments/" },
+    { method: "PATCH", path: "/projects/p1/work-items/t1/" },
   ]) {
     const calls = [...attempts.entries()].find(
       ([key]) => key.startsWith(`${route.method} `) && key.includes(route.path),
@@ -280,7 +297,7 @@ function dietFetch(route: (url: string) => Response | null, calls: string[]): ty
         ],
       });
     }
-    if (u.includes("/projects/") && !u.includes("/issues/")) {
+    if (u.includes("/projects/") && !u.includes("/work-items/")) {
       return Response.json({ results: [{ id: "p1", identifier: "OPS", name: "ops" }] });
     }
     return route(u) ?? Response.json({ results: [] });
@@ -290,7 +307,7 @@ function dietFetch(route: (url: string) => Response | null, calls: string[]): ty
 test("listIssueHeads sweeps with fields=id,updated_at only", async () => {
   const calls: string[] = [];
   const fetchImpl = dietFetch((u) => {
-    if (u.includes("/issues/")) {
+    if (u.includes("/work-items/")) {
       return Response.json({ results: [{ id: "t1", updated_at: "2026-01-01T00:00:00Z" }] });
     }
     return null;
@@ -299,7 +316,7 @@ test("listIssueHeads sweeps with fields=id,updated_at only", async () => {
 
   const heads = await client.listIssueHeads();
   expect(heads).toEqual([{ id: "t1", updatedAt: "2026-01-01T00:00:00Z" }]);
-  const sweep = calls.find((u) => u.includes("/issues/?") || u.includes("fields="));
+  const sweep = calls.find((u) => u.includes("/work-items/?") || u.includes("fields="));
   expect(sweep).toContain("fields=id%2Cupdated_at");
 });
 
@@ -309,7 +326,7 @@ test("VID client files into the VID project and maps video states back to canoni
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
     calls.push(u);
-    if (u.includes("/projects/") && !u.includes("/issues/") && !u.includes("/states/")) {
+    if (u.includes("/projects/") && !u.includes("/work-items/") && !u.includes("/states/")) {
       return Response.json({
         results: [
           { id: "pops", identifier: "OPS", name: "beckett" },
@@ -332,7 +349,7 @@ test("VID client files into the VID project and maps video states back to canoni
         ],
       });
     }
-    if (u.endsWith("/projects/pvid/issues/") && init?.method === "POST") {
+    if (u.endsWith("/projects/pvid/work-items/") && init?.method === "POST") {
       createPayload = JSON.parse(String(init.body));
       return Response.json({
         id: "vid-issue-1",
@@ -344,7 +361,7 @@ test("VID client files into the VID project and maps video states back to canoni
         updated_at: "2026-01-01T00:00:00Z",
       });
     }
-    if (u.endsWith("/projects/pvid/issues/vid-issue-voice/")) {
+    if (u.endsWith("/projects/pvid/work-items/vid-issue-voice/")) {
       return Response.json({
         id: "vid-issue-voice",
         name: "Voiceover task",
@@ -362,6 +379,7 @@ test("VID client files into the VID project and maps video states back to canoni
   expect(createPayload.state).toBe("sv-prod");
   expect(created.identifier).toBe("VID-7");
   expect(created.state).toBe("in_progress");
+  expect(created.url).toBe("https://plane.test/beckett/projects/pvid/issues/vid-issue-1");
 
   const voice = await client.getIssue("vid-issue-voice");
   expect(voice?.identifier).toBe("VID-8");
@@ -371,7 +389,7 @@ test("VID client files into the VID project and maps video states back to canoni
 test("VIDPIP client files with the VIDPIP identifier", async () => {
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
-    if (u.includes("/projects/") && !u.includes("/issues/") && !u.includes("/states/")) {
+    if (u.includes("/projects/") && !u.includes("/work-items/") && !u.includes("/states/")) {
       return Response.json({ results: [{ id: "pvidpip", identifier: "VIDPIP", name: "Video Pipeline" }] });
     }
     if (u.includes("/projects/pvidpip/states/")) {
@@ -379,7 +397,7 @@ test("VIDPIP client files with the VIDPIP identifier", async () => {
         results: ["Backlog", "Todo", "In Progress", "In Review", "Done", "Cancelled"].map((name, i) => ({ id: `sp-${i}`, name })),
       });
     }
-    if (u.endsWith("/projects/pvidpip/issues/") && init?.method === "POST") {
+    if (u.endsWith("/projects/pvidpip/work-items/") && init?.method === "POST") {
       const payload = JSON.parse(String(init.body));
       return Response.json({ id: "pip-1", name: "Pipeline task", state: payload.state, sequence_id: 3, project: "pvidpip", updated_at: "now" });
     }

@@ -72,6 +72,7 @@ import {
   type PublishOperation,
   type PublishPurpose,
 } from "./publish-outbox.ts";
+import { resolveGitHubOwner } from "../github/owner.ts";
 
 // =======================================================================================
 // Collaborators
@@ -123,7 +124,7 @@ export interface DispatcherDeps {
   /** Resolve the absolute path of a ticket's own project repo (`~/Projects/<slug>`). */
   resolveRepoRoot: (ticket: Ticket) => string;
   /**
-   * Publish a done ticket's project repo to GitHub (`0xbeckett/<slug>`, public) and return its web
+   * Publish a done ticket's project repo to the configured GitHub owner and return its web
    * URL. Injected so the dispatcher stays decoupled from the GitHub client + identity loading (and
    * stays unit-testable). Omitted in tests / when no PAT is configured → publishing is skipped.
    */
@@ -409,6 +410,7 @@ export class Dispatcher {
   private readonly clientForProjectIdDep?: (projectId: string) => PlaneClientLike | undefined;
   private readonly projectIdByTicketId = new Map<string, string>();
   private readonly config: Config;
+  private readonly githubOwner: string;
   private readonly git: GitOps;
   private readonly resolveRepoRoot: (ticket: Ticket) => string;
   private readonly publishRepo?: (args: {
@@ -512,6 +514,7 @@ export class Dispatcher {
     this.clients = deps.clients && deps.clients.length > 0 ? deps.clients : [deps.client];
     this.clientForProjectIdDep = deps.clientForProjectId;
     this.config = deps.config;
+    this.githubOwner = resolveGitHubOwner(this.config);
     this.git = {
       commitWorktree,
       headSha,
@@ -1431,11 +1434,15 @@ export class Dispatcher {
     }
 
     // v3.1: ensure the ticket's OWN project repo exists before any stage runs — clone
-    // `0xbeckett/<slug>` if it's already on GitHub (a continuing project, or Beckett's source for a
-    // self-improvement ticket), else `git init` a fresh one. A worker never touches Beckett's live
+    // `<configured-owner>/<slug>` if it is already on GitHub (a continuing project, or Beckett's
+    // source for a self-improvement ticket), else `git init` a fresh one. A worker never touches Beckett's live
     // source. A provisioning failure leaves the ticket for a human rather than spawning blind.
     try {
-      await this.git.ensureProjectRepo(repoRoot, projectSlug(ticket.project || ticket.identifier));
+      await this.git.ensureProjectRepo(
+        repoRoot,
+        projectSlug(ticket.project || ticket.identifier),
+        this.githubOwner,
+      );
     } catch (err) {
       this.logger.error("project repo provisioning failed", {
         ticket: ticket.identifier,
@@ -2465,7 +2472,7 @@ export class Dispatcher {
 
   private compareLink(op: PublishOperation): string {
     const branch = `beckett/${op.ticket.identifier.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
-    return `https://github.com/0xbeckett/${op.slug}/compare/main...${branch}`;
+    return `https://github.com/${this.githubOwner}/${op.slug}/compare/main...${branch}`;
   }
 
   /**

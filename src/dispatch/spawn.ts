@@ -3,7 +3,8 @@
  * =======================================================================================
  * The thin v3 spawn glue the {@link Dispatcher} (`./dispatcher.ts`) calls to stand up one
  * worker for a ticket stage (see `docs/V3.md` §6). v3.1: each ticket builds its OWN project repo
- * at `~/Projects/<slug>` (pushed to `0xbeckett/<slug>`), fully decoupled from Beckett's own source.
+ * at `~/Projects/<slug>` (pushed to the configured GitHub owner), fully decoupled from Beckett's
+ * own source.
  * The worker runs IN that repo — implement, review, and rework share the one checkout and edit in
  * place. Isolation between tickets is just "different project dirs," so `beckett plan` nodes still
  * run in parallel. The dispatcher provisions the repo (clone-or-init) before the first spawn.
@@ -51,6 +52,7 @@ import { excludeFromGit, installScaffoldingGuardHook, SCAFFOLDING_DIR } from "..
 import { scopeGuardSpec } from "../hooks/scope-guard.ts";
 import { renderClaudeSettings } from "../hooks/registry.ts";
 import { buildResumeBrief, steeringBlock } from "./resume-brief.ts";
+import { buildGitHubPublishingGuidance } from "./publishing-guidance.ts";
 
 // =======================================================================================
 // Handle contract
@@ -355,7 +357,13 @@ function ticketMentionsDeploy(ticket: Ticket): boolean {
  * live ONCE, in the task brief (the prompt) — duplicating them here doubled every worker's
  * criteria tokens for nothing (issue #25).
  */
-function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): string {
+export function buildSystemAppend(
+  ticket: Ticket,
+  stage: string,
+  config: Config,
+  baseRef?: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
   if (stage === "review") {
     return (
       `<persona>\n` +
@@ -379,6 +387,7 @@ function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): str
     );
   }
   const slug = projectSlug(ticket.project || ticket.identifier);
+  const githubGuidance = buildGitHubPublishingGuidance(slug, config, env);
   const deployNote = ticketMentionsDeploy(ticket) ? `${deployDurabilityNote(slug)}\n` : "";
   const designOnly = stage === "design"
     ? `This is a DESIGN stage: write and commit the design document only; do not implement the requested change.\n`
@@ -391,9 +400,7 @@ function buildSystemAppend(ticket: Ticket, stage: string, baseRef?: string): str
     `You are done when ALL the acceptance criteria in your task brief hold.\n` +
     `SELF-REVIEW before you finish: re-read your own diff and CHECK each acceptance criterion ` +
     `holds — there may be no separate reviewer after you. Run the check commands; fix what fails.\n` +
-    `GITHUB: don't push anything yourself. When this ticket is done, Beckett automatically ` +
-    `publishes this repo to \`0xbeckett/${slug}\` (a standalone PUBLIC repo, NOT tied to ` +
-    `0xbeckett/beckett). Just commit your work in this checkout — the push is handled for you.\n` +
+    `${githubGuidance}\n` +
     `${designOnly}${deployNote}` +
     `When finished, emit the structured done-signal matching the provided schema (status ` +
     `"complete" when all criteria hold AND your self-review passed, "blocked"/"partial" ` +
@@ -473,8 +480,9 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
  * Stand up one worker for a ticket stage. v3.1: the worker runs IN the ticket's own project repo
  * (`repoRoot` = `~/Projects/<slug>`, provisioned by the dispatcher) — implement, review, and every
  * rework cycle share that one checkout and the worker edits + commits in place. Isolation between
- * tickets comes from each one having its OWN project repo, not from worktrees; the worker pushes to
- * `0xbeckett/<slug>` via the github skill. The scope-guard (delivered via `claude --settings`, so
+ * tickets comes from each one having its OWN project repo, not from worktrees; Beckett publishes
+ * the worker's commits under the configured GitHub owner. The scope-guard (delivered via
+ * `claude --settings`, so
  * it never clobbers the project's own `.claude`) bounds writes to the project repo. Throws if the
  * harness launch fails; the dispatcher surfaces that as a ticket comment.
  *
@@ -590,7 +598,7 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
       prompt: resumeSessionId
         ? buildResumeBrief(ticket, stage, baseRef, steering)
         : buildPrompt(ticket, stage, baseRef, steering, reviewDiff),
-      systemAppend: buildSystemAppend(ticket, stage, baseRef),
+      systemAppend: buildSystemAppend(ticket, stage, config, baseRef),
       workspace,
       scope,
       envelope,

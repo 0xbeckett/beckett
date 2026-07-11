@@ -432,6 +432,7 @@ async function main(): Promise<void> {
     const gh = new GitHubCli({
       pat: identity.github.pat,
       account: identity.github.account,
+      owner: identity.github.owner,
       apiBase: identity.github.apiBase,
       resolveRepoDir: () => dir,
       logger: quiet,

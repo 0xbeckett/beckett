@@ -131,6 +131,7 @@ async function boot(): Promise<BootedSystem> {
         const gh = new GitHubCli({
           pat: identity.github.pat,
           account: identity.github.account,
+          owner: identity.github.owner,
           apiBase: identity.github.apiBase,
           resolveRepoDir: () => a.repoRoot,
           logger: logger.child("gh"),
@@ -159,6 +160,7 @@ async function boot(): Promise<BootedSystem> {
         reader: new GitHubCli({
           pat: identity.github.pat,
           account: identity.github.account,
+          owner: identity.github.owner,
           apiBase: identity.github.apiBase,
           resolveRepoDir: () => PROJECTS_ROOT, // unused for reads (prSignals passes --repo)
           logger: logger.child("gh.read"),
@@ -179,6 +181,7 @@ async function boot(): Promise<BootedSystem> {
         reader: new GitHubCli({
           pat: identity.github.pat,
           account: identity.github.account,
+          owner: identity.github.owner,
           apiBase: identity.github.apiBase,
           resolveRepoDir: () => PROJECTS_ROOT,
           logger: logger.child("gh.activity.read"),

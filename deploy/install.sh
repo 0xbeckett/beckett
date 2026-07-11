@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
-# Beckett — install/refresh the systemd user units on the box (idempotent; issue #29).
-# Run AS the beckett user on loom-desk:  ~/beckett/deploy/install.sh
+# Beckett - install/refresh the systemd user units (idempotent; issue #29).
+# Run as the Beckett service user. Pass --no-start while staging a fresh host.
 set -euo pipefail
+
+START=1
+case "${1:-}" in
+  "") ;;
+  --no-start) START=0 ;;
+  *)
+    echo "usage: $0 [--no-start]" >&2
+    exit 2
+    ;;
+esac
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UNIT_DIR="${HOME}/.config/systemd/user"
@@ -43,8 +53,76 @@ for stale in beckett.service beckett-v2.service beckett-v3.service; do
 done
 
 systemctl --user daemon-reload
-systemctl --user enable --now beckett-v4.service
-# Weekly doctor heartbeat (issue #30) — a no-op until DISCORD_ALERT_WEBHOOK_URL is set.
+
+stage_units() {
+  systemctl --user disable --now beckett-v4.service >/dev/null 2>&1 || true
+  systemctl --user disable --now beckett-heartbeat.timer >/dev/null 2>&1 || true
+  # `disable` removes a manually linked unit's primary symlink as well as its wants link. Restore
+  # the source-of-truth links so a staged install remains startable without rerunning this script.
+  ln -sf "${REPO_DIR}/deploy/systemd/beckett-v4.service" "${UNIT_DIR}/beckett-v4.service"
+  ln -sf "${REPO_DIR}/deploy/systemd/beckett-heartbeat.timer" "${UNIT_DIR}/beckett-heartbeat.timer"
+  systemctl --user daemon-reload
+}
+
+if [ "${START}" -eq 0 ]; then
+  stage_units
+  echo "beckett-v4 units installed, disabled, and stopped (--no-start)"
+  exit 0
+fi
+
+# Refuse a known crash loop on fresh hosts. The public installer calls us with --no-start until
+# the required secrets and the subscription-backed Claude login exist.
+ENV_FILE="${HOME}/.beckett/.env"
+env_value() {
+  local key="$1"
+  [ -f "${ENV_FILE}" ] || return 0
+  awk -v key="${key}" 'index($0, key "=") == 1 { value = substr($0, length(key) + 2); gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); gsub(/^\047|\047$/, "", value); gsub(/^\"|\"$/, "", value); print value; exit }' "${ENV_FILE}"
+}
+for required in DISCORD_TOKEN DISCORD_OWNER_ID PLANE_API_TOKEN GITHUB_PAT; do
+  [ -n "$(env_value "${required}")" ] || {
+    stage_units
+    echo "cannot start beckett-v4: ${required} is missing from ${ENV_FILE}; use --no-start while staging" >&2
+    exit 1
+  }
+done
+[ -s "${HOME}/.claude/.credentials.json" ] || {
+  stage_units
+  echo "cannot start beckett-v4: Claude is not logged in; run 'claude auth login' as this user" >&2
+  exit 1
+}
+
+systemctl --user enable beckett-v4.service
+systemctl --user reset-failed beckett-v4.service
+if ! systemctl --user restart beckett-v4.service; then
+  stage_units
+  echo "beckett-v4 failed to restart" >&2
+  exit 1
+fi
+
+# An immediate is-active can catch a process between crashes. The control socket proves the
+# daemon finished booting far enough to answer a real request.
+PATH="${HOME}/.local/bin:${HOME}/.bun/bin:${PATH:-/usr/local/bin:/usr/bin:/bin}"
+export PATH
+READY=0
+for _ in $(seq 1 "${BECKETT_START_TIMEOUT_SECS:-45}"); do
+  if ! systemctl --user is-active --quiet beckett-v4.service; then
+    sleep 1
+    continue
+  fi
+  if [ -x "${HOME}/.local/bin/beckett" ] && "${HOME}/.local/bin/beckett" status >/dev/null 2>&1; then
+    READY=1
+    break
+  fi
+  sleep 1
+done
+
+if [ "${READY}" -ne 1 ]; then
+  echo "beckett-v4 did not become ready within ${BECKETT_START_TIMEOUT_SECS:-45}s" >&2
+  systemctl --user status --no-pager beckett-v4.service >&2 || true
+  stage_units
+  exit 1
+fi
+
+# Weekly doctor heartbeat (issue #30) - a no-op until DISCORD_ALERT_WEBHOOK_URL is set.
 systemctl --user enable --now beckett-heartbeat.timer
-systemctl --user is-active beckett-v4.service
-echo "beckett-v4 installed and running"
+echo "beckett-v4 installed and ready"

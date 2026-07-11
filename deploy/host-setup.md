@@ -1,19 +1,29 @@
-# Beckett host setup (loom-desk)
+# Beckett host setup (manual/advanced)
 
-Everything a fresh box needs beyond `git clone` + the secrets backup (issue #29). The long-form
-history lives in `my-docs/loom-desk-setup-log.md`; this is the runnable distillation.
+The supported fresh-host path is the repository-root `install.sh`; it performs these steps
+idempotently and stages the service until credentials are ready. This document keeps the manual
+recovery/operator path. The long-form history of the original host lives in
+`my-docs/loom-desk-setup-log.md`.
+
+Host requirements: Ubuntu 20.04+ or Debian 10+ with systemd, x64/arm64, 4 GB RAM, and 5 GB free
+disk. The public installer also installs `sudo` so its printed operator commands work on minimal
+root-first Debian images.
 
 ## 1. OS user + lingering
 
 ```bash
 sudo useradd -m -s /bin/bash beckett
 sudo loginctl enable-linger beckett          # user units run without an open session
-# passwordless sudo for tooling/agency (self-provisioning; NOT needed by the sandbox):
-echo 'beckett ALL=(ALL:ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/beckett-nopasswd
-sudo chmod 0440 /etc/sudoers.d/beckett-nopasswd
 ```
 
-## 2. Kernel knob for codex's bwrap sandbox (Ubuntu 24.04)
+Do not give this account unrestricted passwordless sudo on a public/shared host: every model
+worker runs with the account's privileges. Install host-level tools as an administrator instead.
+
+## 2. Optional kernel knob for Codex's bwrap sandbox (Ubuntu 24.04)
+
+The shipped Codex worker defaults to `danger-full-access` and does not need this. Only make this
+host-wide AppArmor change if you deliberately switch Codex back to `workspace-write` and accept
+the security tradeoff:
 
 ```bash
 echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-beckett-userns.conf
@@ -22,9 +32,10 @@ sudo sysctl --system
 
 ## 3. Toolchain (as `beckett`)
 
-bun (`/usr/local/bin/bun`), node ≥ 20 via fnm into `~/.local/bin`, `claude`, `codex`, `pi`,
-`gh`, `rg`/`fd`/`jq`/`yq`, cloudflared. See `my-docs/loom-desk-setup-log.md` and the
-beckett-self-provisions-tools principle: this is a baseline, Beckett installs what it needs.
+Node 24 LTS under `~/.local/bin`, Bun under `~/.bun/bin`, the native `claude` and `codex`
+installers, Pi's current `@earendil-works/pi-coding-agent` package, plus `gh`, `rg`, `fd`, and
+`jq`. The public installer uses vendor-supported install paths and verifies Node's published
+SHA256 before extraction. Cloudflared is optional.
 
 ## 4. Credentials (from the encrypted backup — never in git)
 
@@ -59,7 +70,9 @@ key (`~/.config/age/beckett-backup.key`) exists ONLY there. Backups are delibera
 ```bash
 git clone https://github.com/0xbeckett/beckett.git ~/beckett
 cd ~/beckett && bun install --frozen-lockfile
-./deploy/install.sh        # links deploy/systemd/* (units + timers), enables beckett-v4 + heartbeat
+./deploy/install.sh --no-start  # links units and keeps any existing daemon disabled/stopped
+# After credentials are ready:
+./deploy/install.sh
 ```
 
 ## Ops visibility (issue #30)
