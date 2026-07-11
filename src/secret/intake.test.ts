@@ -9,6 +9,7 @@ import {
   generateSecretToken,
   mintSecretRequest,
   secretRequestStatus,
+  serveSecretIntake,
   upsertEnvKey,
   validateSecretEnvName,
 } from "./intake.ts";
@@ -112,6 +113,62 @@ describe("one-time secret intake", () => {
     }));
     expect(res.status).toBe(400);
     expect(readFileSync(paths.envFile, "utf8")).toBe("SAFE=old\nOTHER=keep\n");
+  });
+
+  test("rejects a headerless form body that exceeds the streaming cap", async () => {
+    const paths = tempPaths();
+    const minted = mintSecretRequest({
+      paths,
+      name: "SAFE",
+      baseUrl: "https://secret.0xbeckett.me",
+      token: "e".repeat(43),
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`value=${"x".repeat(32 * 1024)}`));
+        controller.close();
+      },
+    });
+    const request = new Request(minted.url, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    expect(request.headers.get("content-length")).toBeNull();
+
+    const response = await createSecretHandler({ paths })(request);
+
+    expect(response.status).toBe(413);
+    expect(secretRequestStatus(paths, minted.token).ok).toBe(true);
+  });
+
+  test("the HTTP server rejects an oversized chunked body at the transport boundary", async () => {
+    const paths = tempPaths();
+    const minted = mintSecretRequest({
+      paths,
+      name: "SAFE",
+      baseUrl: "https://secret.0xbeckett.me",
+      token: "f".repeat(43),
+    });
+    const server = serveSecretIntake({ paths, port: 0 });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(32 * 1024));
+        controller.close();
+      },
+    });
+
+    try {
+      const response = await fetch(`${server.url}/s/${minted.token}`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      expect(response.status).toBe(413);
+      expect(secretRequestStatus(paths, minted.token).ok).toBe(true);
+    } finally {
+      server.stop();
+    }
   });
 
   test("upsert replaces only the target line or appends when absent", () => {

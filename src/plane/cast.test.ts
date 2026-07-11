@@ -4,7 +4,14 @@
  * a Plane issue description — its round-trip integrity is load-bearing for the whole queue.
  */
 import { describe, expect, test } from "bun:test";
-import { parseCast, serializeCast, parseCastJson, CAST_FENCE, CRITERIA_HEADING } from "./cast.ts";
+import {
+  parseCast,
+  serializeCast,
+  parseCastJson,
+  projectSlug,
+  CAST_FENCE,
+  CRITERIA_HEADING,
+} from "./cast.ts";
 import type { Casting } from "./types.ts";
 
 describe("cast round-trip", () => {
@@ -96,5 +103,20 @@ describe("cast degradation (never throws on bad input)", () => {
     const out = serializeCast({}, ["only criteria"], "body");
     expect(out).not.toContain(CAST_FENCE);
     expect(out).toContain(CRITERIA_HEADING);
+  });
+});
+
+describe("project slug safety", () => {
+  test("dot path segments cannot escape the projects root", () => {
+    expect(projectSlug(".")).toBe("project");
+    expect(projectSlug("..")).toBe("project");
+    expect(projectSlug("../")).toBe("project");
+    expect(projectSlug("/")).toBe("project");
+    expect(projectSlug("!!!")).toBe("project");
+    expect(projectSlug("---")).toBe("project");
+  });
+
+  test("ordinary dots in project names remain intact", () => {
+    expect(projectSlug("Beckett.Web v2")).toBe("beckett.web-v2");
   });
 });

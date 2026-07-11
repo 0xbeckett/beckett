@@ -42,6 +42,7 @@ function makeConfig(dir: string, overrides: Partial<Config["quick"]> = {}): Conf
       logs_dir: "logs",
       memory_dir: "memory",
       socket: "beckett.sock",
+      spend: "spend.jsonl",
       projects: "projects",
     },
     quick: {
