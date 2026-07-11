@@ -28,6 +28,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+// ONE version source (issue #29): package.json, the same file `BECKETT_VERSION` reads. Used to
+// stamp the restart release note's `-#` subheader so it tracks the shipped version, never a literal.
+import pkg from "../../package.json" with { type: "json" };
 import type { Config, IncomingMessage, Logger, ProactivityMode, ThreadCreated } from "../types.ts";
 import type { PollEvent, PlaneComment, Ticket } from "../plane/types.ts";
 import type { PrPollEvent } from "../github/types.ts";
@@ -89,6 +92,13 @@ export type TurnMessage = string | TurnContentBlock[];
  * ops constant, not per-conversation), overridable via `BECKETT_STARTUP_CHANNEL_ID` for dev.
  */
 const STARTUP_CHANNEL_ID = "1520658476974735490";
+
+/**
+ * Where the restart "what's new" release note lands (owner's pick: #general). The `announce` config
+ * still gates WHETHER it fires (fork-silent by default), but the post itself always goes here — this
+ * is the send target baked into the injected SYSTEM prompt, not a per-instance config knob.
+ */
+const RELEASE_NOTE_CHANNEL_ID = "1520658476974735490";
 
 /** Hard ceiling on one chat turn before we give up waiting for its `result` line. */
 const TURN_TIMEOUT_MS = 240_000;
@@ -1345,10 +1355,11 @@ export class Concierge {
       // Persist BEFORE the async post so a restart mid-announce can't re-announce the same range.
       writeAnnouncedSha(announcedFile, head);
       if (subjects.length === 0) return;
+      // `channelId` (config) gates whether we announce; the post itself always lands in #general.
       void this.session
-        .ask(buildReleaseNote(channelId, subjects))
+        .ask(buildReleaseNote(RELEASE_NOTE_CHANNEL_ID, subjects))
         .catch((err) => this.log.warn("changes announcement turn failed (continuing)", { err: String(err) }));
-      this.log.info("queued changes announcement", { channelId, commits: subjects.length });
+      this.log.info("queued changes announcement", { channelId: RELEASE_NOTE_CHANNEL_ID, commits: subjects.length });
     } catch (err) {
       this.log.warn("changes announcement failed (continuing)", { err: String(err) });
     }
@@ -2638,15 +2649,29 @@ export async function commitSubjectsSince(
  */
 export function buildReleaseNote(channelId: string, subjects: string[]): string {
   const list = subjects.map((s) => `- ${s}`).join("\n");
+  // Read at build time from the ONE version source (package.json) so the `-#` tail tracks the
+  // shipped release across deploys — never a literal.
+  const version = pkg.version;
   return (
     `SYSTEM (release note — you just restarted with new code; NOT a message from a user, do not reply as if a person typed it):\n` +
     `You're back online and the code changed since you last announced. Newest first:\n\n` +
     `<context>\n${list}\n</context>\n\n` +
     `<task>\n` +
-    `Tell the server what's new by running this from your Bash tool:\n` +
-    `  beckett discord reply --channel ${channelId} "<your message>"\n` +
-    `Keep it short and FUN, in your voice — a couple lines. Summarize what you can do now and call ` +
-    `out the interesting stuff; skip boring chore/plumbing commits and don't just paste the list. ` +
+    `Announce the glow-up to the server by running this from your Bash tool:\n` +
+    `  beckett discord reply --channel ${channelId} "<your message>"\n\n` +
+    `This is a "patch notes" flex, not a changelog. Make it FUNNY, witty, a little bit STUPID, ` +
+    `and fully self-aware. Lean into the bit. Chaos energy, lowercase, your gen-z voice. Roast ` +
+    `yourself if it lands. Absolutely NOT a dry list of commits.\n` +
+    `- a couple lines max. hype up the one or two things that actually slap and skip the boring ` +
+    `chore/plumbing commits entirely. do NOT just paste the list back.\n` +
+    `- talk about what you can DO now, not what got refactored. make people care.\n` +
+    `- then close it out with your sign-off "we're so back" written THREE separate times (owner's ` +
+    `rule, non-negotiable), each on its own line.\n` +
+    `- the VERY LAST line of the message must be this exact Discord small-text subheader, verbatim, ` +
+    `so it renders as tiny muted text stamping the version:\n` +
+    `  -# beckett v${version}\n` +
+    `So the tail of your message should read, in order:\n` +
+    `  we're so back\n  we're so back\n  we're so back\n  -# beckett v${version}\n` +
     `If genuinely nothing here is worth sharing, do nothing.\n` +
     `</task>`
   );

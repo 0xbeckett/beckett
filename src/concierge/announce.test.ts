@@ -7,6 +7,7 @@ import { test, expect, describe, beforeAll } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import pkg from "../../package.json" with { type: "json" };
 import {
   buildReleaseNote,
   readAnnouncedSha,
@@ -22,7 +23,31 @@ describe("buildReleaseNote", () => {
     expect(note).toContain("beckett discord reply --channel 999");
     expect(note).toContain("- chunk: split on blank lines");
     expect(note).toContain("- federation: peers");
-    expect(note.toLowerCase()).toContain("in your voice");
+    expect(note.toLowerCase()).toContain("your gen-z voice");
+  });
+
+  test("instructs a funny/witty/self-aware tone, not a dry changelog", () => {
+    const note = buildReleaseNote("999", ["x"]).toLowerCase();
+    expect(note).toContain("funny");
+    expect(note).toContain("witty");
+    expect(note).toContain("stupid");
+    expect(note).toContain("not a dry list");
+  });
+
+  test("stamps the CURRENT version from package.json as a Discord -# subheader tail", () => {
+    const note = buildReleaseNote("999", ["x"]);
+    expect(note).toContain(`-# beckett v${pkg.version}`);
+    // The version must be read dynamically, never a literal — the live pkg version must appear.
+    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  test("instructs the 'we're so back' sign-off three times, before the version subheader", () => {
+    const note = buildReleaseNote("999", ["x"]);
+    expect(note.toLowerCase()).toContain("we're so back");
+    expect(note.toLowerCase()).toContain("three");
+    // The modeled tail: three sign-offs then the version subheader as the very last line.
+    const tail = `  we're so back\n  we're so back\n  we're so back\n  -# beckett v${pkg.version}\n`;
+    expect(note).toContain(tail);
   });
 });
 
