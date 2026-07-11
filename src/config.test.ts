@@ -91,6 +91,7 @@ test("proactivity defaults ship disabled and off", () => {
   expect(config.proactivity).toMatchObject({
     enabled: false,
     default_mode: "off",
+    triage_provider: "claude",
     triage_model: "claude-haiku-4-5",
     triage_threshold: 0.45,
     burst_quiet_secs: 20,
@@ -102,6 +103,20 @@ test("proactivity defaults ship disabled and off", () => {
     transcript_window: 15,
     channels: {},
   });
+});
+
+test("proactivity classifier model defaults follow the selected provider", () => {
+  expect(validateConfig({ proactivity: { triage_provider: "cerebras" } }).proactivity.triage_model).toBe(
+    "gemma-4-31b",
+  );
+  expect(
+    validateConfig({ proactivity: { triage_provider: "cerebras", triage_model: "claude-haiku-4-5" } })
+      .proactivity.triage_model,
+  ).toBe("gemma-4-31b");
+  expect(
+    validateConfig({ proactivity: { triage_provider: "cerebras", triage_model: "custom-cerebras-model" } })
+      .proactivity.triage_model,
+  ).toBe("custom-cerebras-model");
 });
 
 test("shared_context defaults ship enabled with the OPS-80 bounds", () => {

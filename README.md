@@ -236,6 +236,11 @@ specs/          design specs (v2 archived under _legacy-v2/)
   bun x tsc --noEmit    # typecheck — must be clean
   bun test              # the suite
   ```
+- **Classifier prompt changes:** run `bun run eval:triage --provider=claude --runs=3` or use
+  `--provider=cerebras --model=gemma-4-31b` with `CEREBRAS_API_KEY` set. The labeled contrast suite
+  reports repeated-run exact accuracy, respond precision/recall, addressee and kind accuracy,
+  classifier failures, p50/p95 latency, and a quality gate rather than requiring a stochastic model
+  to reproduce every label in every run.
 - **Style:** match the neighbors. This codebase leans on dense, explanatory comments that say
   *why*, strict config validation, and pure/testable helpers split out from I/O. Read
   [`docs/V3.md`](docs/V3.md) §1 for the non-negotiable conventions.

@@ -1157,6 +1157,7 @@ export class Concierge {
           createTriageClassifier({
             provider: this.config.proactivity.triage_provider ?? "claude",
             model: this.config.proactivity.triage_model,
+            threshold: this.config.proactivity.triage_threshold,
             logger: this.log.child("triage"),
           }),
         engage: (turn) => this.runAmbientTurn(turn),
@@ -1192,9 +1193,12 @@ export class Concierge {
     return (this.channelStore?.recent(channelId) ?? []).map((e) => ({
       userId: e.authorId,
       messageId: e.messageId,
+      authorId: e.authorId,
       authorDisplayName: e.authorName,
       content: e.content,
       ts: e.ts,
+      repliedToId: e.repliedToId,
+      isBeckett: e.kind === "beckett",
     }));
   }
 
@@ -2260,6 +2264,7 @@ export class Concierge {
       // allow newlines in names, but the record's invariants don't lean on Discord).
       authorName: (m.authorDisplayName?.trim() || m.userId).replace(/\s+/g, " "),
       content,
+      repliedToId: m.repliedToId,
       kind: "user",
     });
     this.profiler?.notifyAppend(m.channelId);
@@ -2276,10 +2281,9 @@ export class Concierge {
   private recordBeckettPost(channelId: string, text: string, messageId: string | null): void {
     const content = text.trim();
     if (!content) return;
-    // Anything Beckett says opens the engaged window: the channel's next chatter is people
-    // responding to it, and the coordinator must treat that as a continuation, not an
-    // interjection to triage. Deliberately BEFORE the store guard — legacy flag-off configs
-    // still hold conversations.
+    // Anything Beckett says opens the recent-conversation window. The next burst gets the fast
+    // continuation check (which still verifies who it addresses) instead of another classifier
+    // call. Deliberately BEFORE the store guard so legacy flag-off configs still hold conversations.
     this.ambient?.noteBeckettPost(channelId);
     if (!this.channelStore) return;
     this.channelStore.append(channelId, {
@@ -2819,10 +2823,27 @@ function hhmm(ts: number): string {
   return new Date(ts).toISOString().slice(11, 16);
 }
 
+function ambientReplySuffix(
+  message: AmbientTranscriptMessage,
+  byId: Map<string, AmbientTranscriptMessage>,
+): string {
+  if (!message.repliedToId) return "";
+  const target = byId.get(message.repliedToId);
+  if (!target) return " (reply to a message outside this window)";
+  const who =
+    target.isBeckett || target.userId === "beckett"
+      ? "beckett"
+      : `${target.authorDisplayName} (user:${target.userId})`;
+  return ` (reply to ${who})`;
+}
+
 /** Render a ring-buffer excerpt as indented `[HH:MM] Name: text` lines for a SYSTEM frame. */
 function ambientTranscriptLines(transcript: AmbientTranscriptMessage[]): string {
   if (transcript.length === 0) return "  (no recent messages)";
-  return transcript.map((m) => `  [${hhmm(m.ts)}] ${m.authorDisplayName}: ${m.content}`).join("\n");
+  const byId = new Map(transcript.map((message) => [message.messageId, message]));
+  return transcript
+    .map((m) => `  [${hhmm(m.ts)}] ${m.authorDisplayName}${ambientReplySuffix(m, byId)}: ${m.content}`)
+    .join("\n");
 }
 
 /**
@@ -2870,10 +2891,11 @@ function sharedTranscriptLine(e: ChannelEntry): string {
 /** The attributed variant of {@link ambientTranscriptLines} for store-backed frames (OPS-80). */
 function attributedTranscriptLines(transcript: AmbientTranscriptMessage[]): string {
   if (transcript.length === 0) return "  (no recent messages)";
+  const byId = new Map(transcript.map((message) => [message.messageId, message]));
   return transcript
     .map((m) => {
       const who = m.userId === "beckett" ? "beckett" : `${m.authorDisplayName} (user:${m.userId})`;
-      return `  [${hhmm(m.ts)}] ${who}: ${nestContinuations(m.content)}`;
+      return `  [${hhmm(m.ts)}] ${who}${ambientReplySuffix(m, byId)}: ${nestContinuations(m.content)}`;
     })
     .join("\n");
 }
@@ -2886,10 +2908,9 @@ function ambientAnchorId(turn: AmbientTurn): string {
 }
 
 /**
- * The ambient-candidate frame (§4.5): overheard chatter Beckett is *choosing* whether to speak to.
- * Lean toward chiming in when there's a beat; a reply is ONE line that ADDS something — a concrete
- * offer/answer OR a genuine social beat (a funny line, a useful pointer, a spicy-but-kind take).
- * Never a ticket. Silence is for truly-empty turns, not for whenever Beckett isn't 100% sure.
+ * The ambient-candidate frame (§4.5): overheard chatter Beckett is choosing whether to speak to.
+ * Triage gets the first vote; the full session still checks that its proposed beat remains timely
+ * before drafting one short reply or returning PASS.
  */
 function frameAmbientCandidate(
   channelId: string,
@@ -2900,30 +2921,30 @@ function frameAmbientCandidate(
 ): string {
   const lines = attributed ? attributedTranscriptLines(transcript) : ambientTranscriptLines(transcript);
   if (engaged) {
-    // The continuation frame (OPS-87 follow-up): Beckett spoke here moments ago and this burst
-    // is the response. No triage ran — going silent mid-conversation is the failure mode here,
-    // so the default flips from "PASS unless there's a beat" to "reply unless it's clearly over".
+    // Keep the no-extra-classifier fast path, but do not confuse a recent timestamp with proof of
+    // addressee. The full session can read native reply edges and PASS on a human-to-human pivot.
     return (
-      `SYSTEM (ambient continuation — you're mid-conversation here; the newest lines respond to YOU):\n` +
+      `SYSTEM (ambient continuation check — you spoke here recently):\n` +
       `[channel:${channelId}] recent conversation:\n${lines}\n` +
-      `Someone is engaging with what you said. Keep the conversation going the way a person would —\n` +
-      `answer them, riff back, or close it out warmly. ONE short message in your voice.\n` +
-      `Reply with exactly PASS only when the exchange is clearly finished (a bare "lol"/"k"/"thanks"\n` +
-      `that needs nothing back) — ghosting someone mid-conversation reads as rude.\n` +
+      `Your recent message makes a continuation plausible, not certain. Read the newest lines and\n` +
+      `reply targets first. If the latest unresolved turn still addresses you and invites a response,\n` +
+      `answer, riff back, or close it out warmly with ONE short message in your voice.\n` +
+      `Reply with exactly PASS if people pivoted to each other, a human already answered, the moment\n` +
+      `is settled, or the latest line is a natural closer. Never reply merely because you spoke earlier.\n` +
       `Do not file a ticket yet. An offer is a question, not a commitment.`
     );
   }
   return (
-    `SYSTEM (ambient — nobody addressed you; you are choosing whether to speak):\n` +
+    `SYSTEM (ambient candidate — decide whether a reply is warranted):\n` +
     `[channel:${channelId}] recent conversation:\n${lines}\n` +
     `Triage says: ${verdict.kind} (confidence ${verdict.confidence.toFixed(2)}).\n` +
     `${addresseeFrameLine(verdict.addressee)}\n` +
-    `You're a sharp friend in this server — if you've got a beat, take it. A concrete offer or\n` +
-    `answer, a genuinely funny line, a useful pointer, or a spicy-but-kind take: reply with ONE\n` +
-    `short message in your voice. Lean toward chiming in on a live, interesting burst.\n` +
-    `Only reply with exactly PASS when you'd clearly be crowding the room — piling on a settled\n` +
-    `plan, "well actually"-ing, quipping over someone who's upset, or the turn is truly empty.\n` +
-    `If on reflection this wasn't aimed at you at all (triage can misread the addressee), run\n` +
+    `Triage found a possible beat, not an obligation to speak. If the latest unresolved turn still\n` +
+    `has specific, welcome value you can add, reply with ONE short message in your voice. A concrete\n` +
+    `offer or answer, a genuinely funny line, or a useful pointer can qualify.\n` +
+    `Reply with exactly PASS when a human already answered, the plan is settled, the moment closed,\n` +
+    `someone is upset, or your reply would only agree, restate, nitpick, or add a generic quip.\n` +
+    `If on reflection this turn belongs to someone else (triage can misread the addressee), run\n` +
     `\`beckett discord decline\` BEFORE you write anything — that quietly drops the turn, posting\n` +
     `nothing. Prefer it over posting a reply into a conversation that wasn't yours.\n` +
     `Do not file a ticket yet. An offer is a question, not a commitment.`

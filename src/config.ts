@@ -106,6 +106,15 @@ const int = z.number().int();
 const posInt = int.min(1);
 const nonNegInt = int.min(0);
 const ProactivityModeSchema = z.enum(["off", "suggest", "auto"]);
+const CLAUDE_TRIAGE_MODEL = "claude-haiku-4-5";
+const CEREBRAS_TRIAGE_MODEL = "gemma-4-31b";
+
+function triageModelForProvider(provider: "claude" | "cerebras", model?: string): string {
+  if (provider === "cerebras") {
+    return !model || model === CLAUDE_TRIAGE_MODEL ? CEREBRAS_TRIAGE_MODEL : model;
+  }
+  return !model || model === CEREBRAS_TRIAGE_MODEL ? CLAUDE_TRIAGE_MODEL : model;
+}
 
 const DEV_STATE_MAP = {
   backlog: "Backlog",
@@ -399,12 +408,11 @@ const ConfigSchema = z
       .object({
         enabled: z.boolean().default(false),
         default_mode: ProactivityModeSchema.default("off"),
-        // Where the burst classifier runs. `claude` spawns the subscription CLI; `cerebras`
-        // hits their OpenAI-compatible API (key = CEREBRAS_API_KEY in ~/.beckett/.env) — a
-        // ~100-token scorer wants wire speed, not Haiku pricing. triage_model must name a model
-        // the chosen provider actually serves.
+        // Where the burst classifier runs. `claude` is the subscription-CLI default; `cerebras` is
+        // the wire-speed API option and needs CEREBRAS_API_KEY in ~/.beckett/.env. triage_model must
+        // name a model the chosen provider serves.
         triage_provider: z.enum(["claude", "cerebras"]).default("claude"),
-        triage_model: z.string().min(1).default("claude-haiku-4-5"),
+        triage_model: z.string().min(1).optional(),
         triage_threshold: z.number().min(0).max(1).default(0.45),
         burst_quiet_secs: posInt.default(20),
         // Mid-conversation, waiting out the full cold debounce reads as wandering off — a short
@@ -415,16 +423,20 @@ const ConfigSchema = z
         // interjections only; engaged continuations bypass them. 0 = disabled.
         channel_cooldown_secs: nonNegInt.default(60),
         max_interjections_per_hour: nonNegInt.default(0),
-        // How long after Beckett speaks in a channel its ambient messages count as CONTINUING
-        // that conversation: no triage, no cooldown — the session itself decides (it can PASS).
-        // Someone answering Beckett is not an interjection opportunity. 0 disables the lane.
+        // How long after Beckett speaks in a channel to use the short-lull continuation lane. It
+        // bypasses cold caps; native replies to known humans get a fast addressee recheck before the
+        // session, while other turns let the session decide (it can PASS). 0 disables the lane.
         engaged_window_secs: nonNegInt.default(180),
         offer_ttl_secs: posInt.default(600),
         transcript_window: posInt.default(15),
         channels: z.record(ProactivityModeSchema).default({}),
       })
       .strict()
-      .default({}),
+      .default({})
+      .transform((proactivity) => ({
+        ...proactivity,
+        triage_model: triageModelForProvider(proactivity.triage_provider, proactivity.triage_model),
+      })),
     // OPS-80 — channel-scoped shared context (multiplayer): the per-channel attributed
     // transcript (JSONL under paths.channelsDir) injected into Concierge turns. Ships enabled;
     // `enabled = false` is the kill switch back to the old per-channel ring-buffer prefix path.
