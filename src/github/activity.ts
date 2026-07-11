@@ -35,7 +35,15 @@ export type GitHubActivityEvent =
 
 interface ActivityState {
   lastCommitSha?: string;
+  /** Retained for simple inspection/backward compatibility with the original watermark. */
   lastMergedPrNumber?: number;
+  /**
+   * PR numbers are allocated when a PR opens, not when it merges. A high-numbered PR can merge
+   * before an older one, so `lastMergedPrNumber` alone would silently miss that later merge.
+   * Keep the observed merged ids too: this repository-sized cursor is what makes every PR number
+   * exactly-once across restarts.
+   */
+  seenMergedPrNumbers?: number[];
 }
 
 export interface GitHubActivityPollerDeps {
@@ -129,24 +137,28 @@ export class GitHubActivityPoller {
     if (prsResult.status === "fulfilled") {
       const prs = prsResult.value.filter((pr) => Number.isInteger(pr.number) && pr.number > 0);
       const maxNumber = prs.reduce((max, pr) => Math.max(max, pr.number), 0);
-      const previous = this.state.lastMergedPrNumber;
-      if (maxNumber === 0 && previous === undefined) {
-        // Same empty-baseline rule as commits: the first PR merged after boot is new activity.
-        this.state.lastMergedPrNumber = 0;
+      const known = this.state.seenMergedPrNumbers;
+      if (known === undefined) {
+        // First observation (and old state files written before the id cursor existed) is a
+        // baseline, never a replay. Store every observed id: PR numbers reflect creation order,
+        // so a lower-numbered PR can merge after a higher-numbered one.
+        this.state.seenMergedPrNumbers = prs.map((pr) => pr.number);
+        this.state.lastMergedPrNumber = maxNumber;
         changed = true;
-      } else if (maxNumber > 0) {
-        if (previous === undefined) {
-          this.state.lastMergedPrNumber = maxNumber;
-          changed = true;
-        } else {
-          for (const pr of prs.filter((pr) => pr.number > previous).sort((a, b) => a.number - b.number)) {
-            if (!this.isIgnored(pr.author)) {
-              events.push({ kind: "merged", pr, line: formatMergedPrLine(pr) });
-            }
+      } else {
+        const seen = new Set(known);
+        for (const pr of [...prs].sort((a, b) => a.number - b.number)) {
+          if (seen.has(pr.number)) continue;
+          seen.add(pr.number);
+          if (!this.isIgnored(pr.author)) {
+            events.push({ kind: "merged", pr, line: formatMergedPrLine(pr) });
           }
-          this.state.lastMergedPrNumber = Math.max(previous, maxNumber);
-          changed = true;
         }
+        // Persist suppression decisions as seen too: changing config/restarting must never turn a
+        // bot/deploy merge into an old "new" event. The list remains tiny for this one repository.
+        this.state.seenMergedPrNumbers = [...seen].sort((a, b) => a - b);
+        this.state.lastMergedPrNumber = Math.max(this.state.lastMergedPrNumber ?? 0, maxNumber);
+        changed = true;
       }
     } else {
       this.logger.warn("merged PR read failed — skipping this source", { error: String(prsResult.reason) });
@@ -221,6 +233,9 @@ export class GitHubActivityPoller {
         ...(typeof raw.lastCommitSha === "string" ? { lastCommitSha: raw.lastCommitSha } : {}),
         ...(typeof raw.lastMergedPrNumber === "number" && raw.lastMergedPrNumber >= 0
           ? { lastMergedPrNumber: raw.lastMergedPrNumber }
+          : {}),
+        ...(Array.isArray(raw.seenMergedPrNumbers) && raw.seenMergedPrNumbers.every((n) => Number.isInteger(n) && n > 0)
+          ? { seenMergedPrNumbers: [...new Set(raw.seenMergedPrNumbers)] }
           : {}),
       };
     } catch (err) {
