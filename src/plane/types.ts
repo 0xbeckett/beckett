@@ -109,6 +109,12 @@ export interface Ticket {
    * ticket identifier (a per-ticket sandbox). NOT the Plane project (that's `projectId`).
    */
   project?: string;
+  /** Stable user-facing task-branch reference, for example `42.2`. */
+  branchRef?: string;
+  /** Native Plane parent work-item id when this branch is nested under another started branch. */
+  parentId?: string;
+  /** Lifecycle state a held task branch should enter once its dependencies finish. */
+  startState?: TicketState;
   projectId: string; // Plane project id (the queue, e.g. "ops") — NOT the code project above
   url: string; // deep link to the issue in the Plane web UI
   updatedAt: string; // ISO-8601; the poll cursor / change key
@@ -157,5 +163,7 @@ export interface ParsedCast {
   criteria: string[];
   blockedBy: string[]; // ticket identifiers this one waits on (```beckett-deps``` block)
   project?: string; // code-project slug (```beckett-project``` block) — see Ticket.project
+  branchRef?: string; // user-facing task branch (```beckett-branch``` block), e.g. `42.2`
+  startState?: TicketState; // desired post-dependency state (```beckett-start-state``` block)
   body: string; // prose with the cast/deps/project blocks + criteria section removed
 }

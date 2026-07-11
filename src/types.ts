@@ -254,9 +254,8 @@ export interface IncomingMessage {
 
 
 /**
- * A thread a PERSON just opened, normalized off the gateway's thread-create event. Under the
- * Coworker-as-a-Service model these become ticket workspaces (`src/discord/workspaces.ts`) —
- * Beckett never creates threads itself, so every registration originates here.
+ * A thread a PERSON just opened, normalized off the gateway's thread-create event. These can be
+ * adopted as workspaces; Beckett-created numbered task threads use {@link TaskThreadCreated}.
  */
 export interface ThreadCreated {
   threadId: string;
@@ -272,12 +271,56 @@ export interface ThreadCreated {
 export interface ReplyOptions {
   replyToMessageId?: string; // native reply-to for correlation
   files?: string[]; // local file paths to attach (image-only posts OK)
+  embeds?: DiscordEmbed[]; // rich status cards; never carry raw diffs or secret account data
+  buttons?: DiscordLinkButton[]; // URL-only actions such as Open PR / Checks / Comments
   /**
    * Opt IN to chilltext compression (OPS-73) for this post. Only the Concierge's own
    * conversational replies set this — mechanical output (worker logs relayed into progress
    * threads, startup banners, fixed acks) must reach Discord verbatim, so the default is raw.
    */
   chill?: boolean;
+}
+
+export interface DiscordEmbedField {
+  name: string;
+  value: string;
+  inline?: boolean;
+}
+
+/** Render-neutral subset of Discord's embed payload used by task, branch, and usage cards. */
+export interface DiscordEmbed {
+  title?: string;
+  description?: string;
+  url?: string;
+  color?: number;
+  fields?: DiscordEmbedField[];
+  footer?: { text: string };
+  timestamp?: string;
+}
+
+export interface DiscordLinkButton {
+  label: string;
+  url: string;
+}
+
+export interface DiscordCommand {
+  name: "stats" | "task" | "branch";
+  subcommand?: string;
+  userId: string;
+  channelId: string;
+  options: Record<string, string | number | boolean>;
+}
+
+export interface DiscordCommandReply {
+  content?: string;
+  embeds?: DiscordEmbed[];
+  buttons?: DiscordLinkButton[];
+}
+
+export interface TaskThreadCreated {
+  threadId: string;
+  parentChannelId: string;
+  name: string;
 }
 
 // =======================================================================================
@@ -865,6 +908,10 @@ export interface DiscordGateway {
    * activity/progress threads are gone; the worker firehose goes to the private ticket journal.
    */
   onThreadCreate(cb: (t: ThreadCreated) => void | Promise<void>): void;
+  /** Register native slash-command handling. Optional on legacy injected test gateways. */
+  onCommand?(cb: (command: DiscordCommand) => Promise<DiscordCommandReply>): void;
+  /** Create or rename the dedicated Discord workspace for a numbered task. */
+  createTaskThread?(channelId: string, name: string): Promise<TaskThreadCreated>;
   isConnected(): boolean;
   lastEventAgeMs(): number | null;
 }

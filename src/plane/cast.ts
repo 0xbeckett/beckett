@@ -24,7 +24,7 @@
  */
 
 import { z } from "zod";
-import type { Casting, HarnessSpec, ParsedCast } from "./types.ts";
+import type { Casting, HarnessSpec, ParsedCast, TicketState } from "./types.ts";
 
 /** The fenced-block language tag that carries the casting JSON. */
 export const CAST_FENCE = "beckett-cast";
@@ -34,6 +34,12 @@ export const DEPS_FENCE = "beckett-deps";
 
 /** The fenced-block language tag that carries the code-project slug (a bare string, e.g. "balloons"). */
 export const PROJECT_FENCE = "beckett-project";
+
+/** The fenced-block language tag that carries a user-facing task branch reference. */
+export const BRANCH_FENCE = "beckett-branch";
+
+/** Desired lifecycle state after a task branch's dependencies clear. */
+export const START_STATE_FENCE = "beckett-start-state";
 
 /** The markdown heading that introduces the acceptance-criteria bullet list. */
 export const CRITERIA_HEADING = "## Acceptance criteria";
@@ -125,6 +131,32 @@ const PROJECT_RE = new RegExp(
   "i",
 );
 
+const BRANCH_RE = new RegExp(
+  "```" + BRANCH_FENCE + "\\s*\\n([\\s\\S]*?)\\n?```",
+  "i",
+);
+
+const START_STATE_RE = new RegExp(
+  "```" + START_STATE_FENCE + "\\s*\\n([\\s\\S]*?)\\n?```",
+  "i",
+);
+
+const BRANCH_REF_RE = /^#?(\d+(?:\.\d+)+)$/;
+
+/** Canonicalize `#42.2`/`42.2` to `42.2`; invalid external values are ignored. */
+export function branchRef(raw: string): string | undefined {
+  return raw.trim().match(BRANCH_REF_RE)?.[1];
+}
+
+const TICKET_STATES = new Set<TicketState>([
+  "backlog", "todo", "design", "design_review", "in_progress", "in_review", "done", "cancelled",
+]);
+
+function startState(raw: string): TicketState | undefined {
+  const value = raw.trim().toLowerCase() as TicketState;
+  return TICKET_STATES.has(value) ? value : undefined;
+}
+
 /** Normalize a project name into a filesystem/GitHub-safe slug (lowercase, hyphenated). */
 export function projectSlug(raw: string): string {
   const slug = raw
@@ -181,6 +213,15 @@ export function parseCast(description: string): ParsedCast {
   const project = projectRaw ? projectSlug(projectRaw) : undefined;
   if (projMatch) rest = rest.replace(projMatch[0], "");
 
+  // 1d. user-facing task branch reference
+  const branchMatch = rest.match(BRANCH_RE);
+  const parsedBranchRef = branchMatch ? branchRef(branchMatch[1] ?? "") : undefined;
+  if (branchMatch) rest = rest.replace(branchMatch[0], "");
+
+  const startStateMatch = rest.match(START_STATE_RE);
+  const parsedStartState = startStateMatch ? startState(startStateMatch[1] ?? "") : undefined;
+  if (startStateMatch) rest = rest.replace(startStateMatch[0], "");
+
   // 2. acceptance-criteria section (heading → end-of-string or next h2)
   const criteria: string[] = [];
   const headingIdx = indexOfHeading(rest);
@@ -203,7 +244,15 @@ export function parseCast(description: string): ParsedCast {
     rest = rest.slice(0, headingIdx) + after.slice(consumed.length);
   }
 
-  return { casting, criteria, blockedBy, project, body: rest.trim() };
+  return {
+    casting,
+    criteria,
+    blockedBy,
+    project,
+    branchRef: parsedBranchRef,
+    startState: parsedStartState,
+    body: rest.trim(),
+  };
 }
 
 /** Case-insensitive index of the criteria heading at a line start, or -1. */
@@ -231,6 +280,8 @@ export function serializeCast(
   body: string,
   blockedBy: string[] = [],
   project?: string,
+  taskBranchRef?: string,
+  desiredStartState?: TicketState,
 ): string {
   const parts: string[] = [];
   const trimmedBody = (body ?? "").trim();
@@ -238,6 +289,13 @@ export function serializeCast(
 
   const cleanProject = project ? projectSlug(project) : "";
   if (cleanProject) parts.push("```" + PROJECT_FENCE + "\n" + cleanProject + "\n```");
+
+  const cleanBranchRef = taskBranchRef ? branchRef(taskBranchRef) : undefined;
+  if (cleanBranchRef) parts.push("```" + BRANCH_FENCE + "\n" + cleanBranchRef + "\n```");
+
+  if (desiredStartState && TICKET_STATES.has(desiredStartState)) {
+    parts.push("```" + START_STATE_FENCE + "\n" + desiredStartState + "\n```");
+  }
 
   const castEntries = Object.entries(casting ?? {}).filter(([, v]) => v !== undefined);
   if (castEntries.length > 0) {

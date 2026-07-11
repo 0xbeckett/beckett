@@ -20,6 +20,22 @@ function cli(stdout: string, code = 0) {
   });
 }
 
+function recordingCli(stdout: string, code = 0) {
+  const calls: string[][] = [];
+  const gh = new GitHubCli({
+    pat: "tok",
+    account: "0xbeckett",
+    apiBase: "https://api.github.com",
+    resolveRepoDir: () => "/tmp",
+    logger: noopLog,
+    run: async (cmd) => {
+      calls.push(cmd);
+      return { code, stdout, stderr: code === 0 ? "" : "boom" };
+    },
+  });
+  return { gh, calls };
+}
+
 test("activity reads parse main commits and only merged pull requests through GitHubCli", async () => {
   const commits = cli(
     JSON.stringify([
@@ -96,4 +112,78 @@ test("prSignals handles legacy commit-status contexts", async () => {
 test("prSignals throws a clear error on an unreadable PR", async () => {
   const gh = cli("", 1);
   await expect(gh.prSignals("0xbeckett/foo", 404)).rejects.toThrow(/gh pr view/);
+});
+
+test("branchCard reads aggregate PR metrics in one gh query without requesting diff content", async () => {
+  const { gh, calls } = recordingCli(
+    JSON.stringify({
+      number: 96,
+      url: "https://github.com/0xbeckett/foo/pull/96",
+      title: "Add branch cards",
+      state: "OPEN",
+      isDraft: false,
+      headRefName: "beckett/42-1-branch-cards",
+      baseRefName: "main",
+      headRefOid: "abc123",
+      updatedAt: "2026-07-12T08:00:00Z",
+      additions: 184,
+      deletions: 37,
+      changedFiles: 6,
+      commits: [{ oid: "a" }, { oid: "b" }, { oid: "c" }],
+      reviewDecision: "CHANGES_REQUESTED",
+      latestReviews: [{ state: "APPROVED" }, { state: "CHANGES_REQUESTED" }],
+      comments: [{ id: "c1" }, { id: "c2" }, { id: "c3" }, { id: "c4" }],
+      statusCheckRollup: [
+        { status: "COMPLETED", conclusion: "SUCCESS" },
+        { status: "IN_PROGRESS" },
+        { status: "COMPLETED", conclusion: "SKIPPED" },
+        { status: "COMPLETED", conclusion: "TIMED_OUT" },
+      ],
+    }),
+  );
+
+  const card = await gh.branchCard("0xbeckett/foo", "beckett/42-1-branch-cards");
+  expect(card).toMatchObject({
+    repo: "0xbeckett/foo",
+    number: 96,
+    state: "OPEN",
+    headRefName: "beckett/42-1-branch-cards",
+    baseRefName: "main",
+    additions: 184,
+    deletions: 37,
+    changedFiles: 6,
+    commits: 3,
+    reviewDecision: "CHANGES_REQUESTED",
+    reviewCount: 2,
+    commentCount: 4,
+    checks: { total: 4, passed: 1, pending: 1, failed: 1, skipped: 1, conclusion: "FAILURE" },
+  });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.slice(0, 7)).toEqual([
+    "gh", "pr", "view", "beckett/42-1-branch-cards", "--repo", "0xbeckett/foo", "--json",
+  ]);
+  const fields = calls[0]?.[7] ?? "";
+  expect(fields).toContain("additions,deletions,changedFiles,commits");
+  expect(fields).toContain("latestReviews,comments,statusCheckRollup");
+  expect(fields.split(",")).not.toContain("files");
+});
+
+test("branchCard distinguishes no checks from green checks and accepts a PR number selector", async () => {
+  const { gh } = recordingCli(JSON.stringify({ number: 7, state: "MERGED", statusCheckRollup: [] }));
+  const card = await gh.branchCard("0xbeckett/foo", 7);
+  expect(card.state).toBe("MERGED");
+  expect(card.checks).toEqual({
+    total: 0,
+    passed: 0,
+    pending: 0,
+    failed: 0,
+    skipped: 0,
+    conclusion: "NONE",
+  });
+});
+
+test("branchCard fails clearly on command errors, malformed JSON, and missing PR identity", async () => {
+  await expect(recordingCli("", 1).gh.branchCard("0xbeckett/foo", 404)).rejects.toThrow(/branch card.*boom/i);
+  await expect(recordingCli("not-json").gh.branchCard("0xbeckett/foo", 1)).rejects.toThrow(/unparseable JSON/);
+  await expect(recordingCli("{}").gh.branchCard("0xbeckett/foo", "branch")).rejects.toThrow(/valid PR number/);
 });

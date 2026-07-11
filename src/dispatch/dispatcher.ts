@@ -58,6 +58,8 @@ import {
   createWorktree,
   removeWorktree,
   fetchRemote,
+  refExists,
+  mergeBranchesIntoWorktree,
   SCAFFOLDING_DIR,
 } from "../worker/worktree.ts";
 import { projectSlug } from "../plane/cast.ts";
@@ -73,6 +75,7 @@ import {
   type PublishPurpose,
 } from "./publish-outbox.ts";
 import { resolveGitHubOwner } from "../github/owner.ts";
+import { gitBranchForTicket } from "../git/branch-name.ts";
 
 // =======================================================================================
 // Collaborators
@@ -109,6 +112,8 @@ export interface GitOps {
   createWorktree: typeof createWorktree;
   removeWorktree: typeof removeWorktree;
   fetchRemote: typeof fetchRemote;
+  refExists: typeof refExists;
+  mergeBranchesIntoWorktree: typeof mergeBranchesIntoWorktree;
 }
 
 export interface DispatcherDeps {
@@ -162,14 +167,25 @@ export interface DispatcherDeps {
    * `concierge.notify` (an instant done ping instead of a poll-gap-delayed one) AND into
    * `poller.observe` (so the next tick doesn't re-emit the transition as a duplicate).
    */
-  onAdvance?: (event: PollEvent) => void;
+  onAdvance?: (event: PollEvent) => unknown;
   /**
    * Fired the moment the dispatcher opens a PR for a ticket (OPS-124), so the GitHub PR poller can
    * start watching it and relay review/CI/merge signal back to the ticket's channel. `prUrl` is the
    * PR's web URL; `ticket` carries the identifier, title, and origin channel used for routing.
    * Omitted in tests / when no PAT is configured.
    */
-  onPrOpened?: (info: { prUrl: string; ticket: Ticket }) => void;
+  onPrOpened?: (info: { prUrl: string; ticket: Ticket }) => void | Promise<void>;
+  /** Persist/relay every successful publication, including direct pushes with no PR. */
+  onPublished?: (info: {
+    url: string;
+    kind: "pushed" | "pr";
+    prUrl?: string;
+    ticket: Ticket;
+  }) => unknown;
+  /** Snapshot task-local contribution metrics before a publisher can rebase onto newer main. */
+  onBeforePublish?: (info: { ticket: Ticket }) => unknown;
+  /** Persist user-facing branch Git coordinates once the isolated worktree and base are known. */
+  onBranchWorkspace?: (info: { ticket: Ticket; workspace: string; gitRef: string; baseSha: string }) => void;
   logger?: Logger;
 }
 
@@ -420,8 +436,11 @@ export class Dispatcher {
     ticket?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   private readonly progress?: ProgressSink;
-  private readonly onAdvance?: (event: PollEvent) => void;
-  private readonly onPrOpened?: (info: { prUrl: string; ticket: Ticket }) => void;
+  private readonly onAdvance?: DispatcherDeps["onAdvance"];
+  private readonly onPrOpened?: DispatcherDeps["onPrOpened"];
+  private readonly onPublished?: DispatcherDeps["onPublished"];
+  private readonly onBeforePublish?: DispatcherDeps["onBeforePublish"];
+  private readonly onBranchWorkspace?: DispatcherDeps["onBranchWorkspace"];
   private readonly logger: Logger;
   private readonly advanceOutbox?: AdvanceOutbox;
   private readonly publishOutbox?: PublishOutbox;
@@ -524,6 +543,8 @@ export class Dispatcher {
       createWorktree,
       removeWorktree,
       fetchRemote,
+      refExists,
+      mergeBranchesIntoWorktree,
       ...deps.gitOps,
     };
     this.resolveRepoRoot = deps.resolveRepoRoot;
@@ -531,6 +552,9 @@ export class Dispatcher {
     this.progress = deps.progress;
     this.onAdvance = deps.onAdvance;
     this.onPrOpened = deps.onPrOpened;
+    this.onPublished = deps.onPublished;
+    this.onBeforePublish = deps.onBeforePublish;
+    this.onBranchWorkspace = deps.onBranchWorkspace;
     this.logger = deps.logger ?? log.child("dispatch.dispatcher");
     this.advanceOutbox = deps.advanceOutboxPath
       ? new AdvanceOutbox(deps.advanceOutboxPath, this.logger.child("advance-outbox"))
@@ -764,6 +788,38 @@ export class Dispatcher {
       (op) => this.reconcileQueuedPublishHold(op),
     );
     if (applied > 0) this.logger.info("replayed queued GitHub publishes", { count: applied });
+  }
+
+  /**
+   * Promote held DAG nodes that became ready while Beckett was offline. Poller priming snapshots
+   * terminal states without replaying their transitions, so boot must recompute readiness from the
+   * authoritative board before normal polling starts.
+   */
+  async reconcileDependents(): Promise<number> {
+    let all: Ticket[];
+    try {
+      all = await this.listAllIssues();
+    } catch (err) {
+      this.logger.warn("dependent reconciliation: listIssues failed", {
+        error: (err as Error).message,
+      });
+      return 0;
+    }
+
+    const stateByIdent = new Map(all.map((ticket) => [ticket.identifier, ticket.state]));
+    let promoted = 0;
+    for (const ticket of all) {
+      if ((ticket.state !== "backlog" && ticket.state !== "todo") || ticket.blockedBy.length === 0) continue;
+      const unresolved = ticket.blockedBy.filter((identifier) => stateByIdent.get(identifier) !== "done");
+      if (unresolved.length > 0) continue;
+      // A task can intentionally request `todo` as its post-blocker state. Do not churn it or
+      // manufacture a misleading promotion comment when it is already where the user asked.
+      if (this.dependentStartState(ticket) === ticket.state) continue;
+      if (await this.promoteHeldDependent(ticket, "boot reconciliation")) promoted++;
+    }
+
+    if (promoted > 0) this.logger.info("reconciled ready dependents", { count: promoted });
+    return promoted;
   }
 
   /** Explicit courier handoff for Concierge/manual tooling. */
@@ -1327,7 +1383,8 @@ export class Dispatcher {
    * so concurrent same-repo spawns don't race `git fetch`/`worktree add` on the shared `.git`;
    * the workers then run in parallel in their isolated trees. First allocation branches from a
    * freshly-fetched `origin/main` (no stale-base stacking — the OPS-59/61 failure); later stages
-   * (review/rework) reuse the existing tree so they see the in-progress work.
+   * (review/rework) reuse the existing tree so they see the in-progress work. Numbered task
+   * dependencies instead base on their completed predecessor branches and compose extra blockers.
    */
   private prepareWorktree(ticket: Ticket, repoRoot: string): Promise<string> {
     const prior = this.repoAllocChain.get(repoRoot) ?? Promise.resolve();
@@ -1341,10 +1398,43 @@ export class Dispatcher {
     const workspace = this.workspaceByTicket.get(ticket.id) ?? join(repoRoot, SCAFFOLDING_DIR, "worktrees", ticket.id);
     // Fresh base only when first cutting the tree; a reused tree keeps its in-progress commits.
     if (firstTouch) await this.git.fetchRemote(repoRoot);
-    const branch = `beckett/${ticket.identifier.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
-    await this.git.createWorktree({ repoRoot, workspace, branch, baseRef: "origin/main", reuseIfExists: true });
+    const branch = gitBranchForTicket(ticket);
+    const dependencyRefs = firstTouch ? await this.taskDependencyGitRefs(ticket) : [];
+    for (const ref of dependencyRefs) {
+      if (!await this.git.refExists(repoRoot, ref)) {
+        throw new Error(`dependency Git branch ${ref} is unavailable locally; refusing to start from stale main`);
+      }
+    }
+    await this.git.createWorktree({
+      repoRoot,
+      workspace,
+      branch,
+      baseRef: dependencyRefs[0] ?? "origin/main",
+      reuseIfExists: true,
+    });
+    if (dependencyRefs.length > 1) {
+      await this.git.mergeBranchesIntoWorktree(workspace, dependencyRefs.slice(1));
+    }
     this.workspaceByTicket.set(ticket.id, workspace);
     return workspace;
+  }
+
+  /** Resolve task dependencies to committed local branches so stacked work never starts from stale main. */
+  private async taskDependencyGitRefs(ticket: Ticket): Promise<string[]> {
+    if (!ticket.branchRef || ticket.blockedBy.length === 0) return [];
+    const all = await this.listAllIssues();
+    const byIdentifier = new Map(all.map((candidate) => [candidate.identifier, candidate]));
+    const project = projectSlug(ticket.project || ticket.identifier);
+    return ticket.blockedBy.map((identifier) => {
+      const dependency = byIdentifier.get(identifier);
+      if (!dependency) throw new Error(`dependency ${identifier} is missing from Plane`);
+      if (dependency.state !== "done") throw new Error(`dependency ${identifier} is not done`);
+      if (!dependency.branchRef) throw new Error(`dependency ${identifier} is not a numbered task branch`);
+      if (projectSlug(dependency.project || dependency.identifier) !== project) {
+        throw new Error(`dependency ${identifier} belongs to a different project`);
+      }
+      return gitBranchForTicket(dependency);
+    });
   }
 
   /** Tear down a ticket's worktree (best-effort) once it's terminal-and-shipped or cancelled. */
@@ -1475,11 +1565,11 @@ export class Dispatcher {
       );
       return; // launchSpawn's finally releases the reservation + pumps
     }
-    const branch = `beckett/${ticket.identifier.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
+    const branch = gitBranchForTicket(ticket);
 
-    // Capture the diff base the first time a ticket implements: the worktree branches from
-    // origin/main, so its HEAD-before-any-work is how a later REVIEW sees the ticket's whole
-    // contribution. A git hiccup here must never block the spawn — review falls back to diffing HEAD.
+    // Capture the diff base the first time a ticket implements: HEAD-before-any-new-work is how a
+    // later REVIEW sees this branch's own contribution, whether the base is main or composed task
+    // dependencies. A git hiccup here must never block the spawn — review falls back to diffing HEAD.
     if (stage === "implement" && !this.baseShaForTicket.has(ticket.id)) {
       try {
         const sha = await this.git.headSha(workspace);
@@ -1495,6 +1585,17 @@ export class Dispatcher {
       }
     }
     const baseRef = this.baseShaForTicket.get(ticket.id) ?? "HEAD";
+    if (ticket.branchRef && this.onBranchWorkspace) {
+      try {
+        this.onBranchWorkspace({ ticket, workspace, gitRef: branch, baseSha: baseRef });
+      } catch (err) {
+        this.logger.warn("task branch workspace sync failed (worker still starts)", {
+          ticket: ticket.identifier,
+          branch: ticket.branchRef,
+          error: String(err),
+        });
+      }
+    }
 
     // Mirror this worker's granular event stream into the ticket's Discord thread, keyed by the
     // stable ticket identifier so implement/review/rework workers all post to the one thread.
@@ -2385,6 +2486,18 @@ export class Dispatcher {
    * done ticket whose work never left the box is the false-done this fixes — see OPS-30).
    */
   private async publishProject(ticket: Ticket): Promise<PublishOutcome> {
+    // Owned-repo publication rebases this branch onto the latest remote default. Capture the
+    // branch's own contribution first or a parallel branch already on main contaminates its card.
+    if (this.onBeforePublish) {
+      try {
+        await this.onBeforePublish({ ticket });
+      } catch (err) {
+        this.logger.warn("onBeforePublish hook failed (publish will continue)", {
+          ticket: ticket.identifier,
+          error: String(err),
+        });
+      }
+    }
     if (!this.publishRepo) return { status: "skipped" };
     const slug = projectSlug(ticket.project || ticket.identifier);
     // Publish FROM the ticket's worktree (its work lives on `beckett/<ticket>`, not repoRoot's
@@ -2392,22 +2505,13 @@ export class Dispatcher {
     // is precisely what removes the stale-base conflict that stranded OPS-59/61.
     const repoRoot = this.workspaceByTicket.get(ticket.id) ?? this.resolveRepoRoot(ticket);
     try {
-      const r = await this.publishRepo({ slug, repoRoot, description: ticket.title, ticket: ticket.identifier });
-      this.logger.info("project published to github", { ticket: ticket.identifier, url: r.url, kind: r.kind });
-      // OPS-124: hand a freshly-opened PR to the GitHub poller so review/CI/merge signal flows back
-      // to the ticket's channel. Only PRs (not direct pushes) are watchable; best-effort — a failing
-      // hook must never turn a successful publish into a failure.
-      if (r.kind === "pr" && r.prUrl && this.onPrOpened) {
-        try {
-          this.onPrOpened({ prUrl: r.prUrl, ticket });
-        } catch (err) {
-          this.logger.warn("onPrOpened hook failed (publish still succeeded)", {
-            ticket: ticket.identifier,
-            error: (err as Error).message,
-          });
-        }
-      }
-      return { status: "published", url: r.url, kind: r.kind, prUrl: r.prUrl };
+      const r = await this.publishRepo({
+        slug,
+        repoRoot,
+        description: ticket.title,
+        ticket: this.publicPublishTicket(ticket),
+      });
+      return await this.recordPublication(ticket, r);
     } catch (err) {
       this.logger.warn("github publish failed", {
         ticket: ticket.identifier,
@@ -2471,7 +2575,7 @@ export class Dispatcher {
   }
 
   private compareLink(op: PublishOperation): string {
-    const branch = `beckett/${op.ticket.identifier.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}`;
+    const branch = gitBranchForTicket(op.ticket);
     return `https://github.com/${this.githubOwner}/${op.slug}/compare/main...${branch}`;
   }
 
@@ -2511,7 +2615,9 @@ export class Dispatcher {
       // pass (the original backoff still applies).
       return reconciled ?? { action: "keep", operation: op };
     }
-    const ticket = current ?? op.ticket;
+    // The durable row carries public task metadata that older Plane payloads may not hydrate.
+    // Prefer live lifecycle fields without discarding that restart-critical branch identity.
+    const ticket: Ticket = current ? { ...op.ticket, ...current } : op.ticket;
     // Reloaded daemons do not have the in-memory workspace map; restore the outbox owner's path
     // solely so a successful publish can tear down exactly this worktree.
     this.workspaceByTicket.set(ticket.id, op.repoRoot);
@@ -2521,7 +2627,7 @@ export class Dispatcher {
     // begin a network publish after yielding ownership (and re-check below for a cancellation
     // that lands while GitHub is in flight).
     if (!this.publishOutbox?.has(ticket.id)) return { action: "remove" };
-    const pub = await this.publishQueuedProject(op);
+    const pub = await this.publishQueuedProject(op, ticket);
     if (!this.publishOutbox?.has(ticket.id)) {
       this.logger.info("publish completed after courier handoff; leaving state/worktree to courier", {
         ticket: ticket.identifier,
@@ -2559,16 +2665,63 @@ export class Dispatcher {
     return { action: "keep", operation: retry };
   }
 
-  private async publishQueuedProject(op: PublishOperation): Promise<PublishOutcome> {
+  private async publishQueuedProject(op: PublishOperation, ticket: Ticket): Promise<PublishOutcome> {
     if (!this.publishRepo) return { status: "skipped" };
     try {
       const r = await this.publishRepo({
-        slug: op.slug, repoRoot: op.repoRoot, description: op.ticket.title, ticket: op.ticket.identifier,
+        slug: op.slug,
+        repoRoot: op.repoRoot,
+        description: ticket.title,
+        ticket: this.publicPublishTicket(ticket),
       });
-      return { status: "published", url: r.url, kind: r.kind, prUrl: r.prUrl };
+      return await this.recordPublication(ticket, r);
     } catch (err) {
       return { status: "failed", error: (err as Error).message };
     }
+  }
+
+  private publicPublishTicket(ticket: Ticket): string {
+    return ticket.branchRef ? `task-${ticket.branchRef.replace(/\./g, "-")}` : ticket.identifier;
+  }
+
+  /** Persist and route a successful synchronous or crash-replayed publication. */
+  private async recordPublication(
+    ticket: Ticket,
+    publication: { url: string; kind: "pushed" | "pr"; prUrl?: string },
+  ): Promise<PublishOutcome> {
+    this.logger.info("project published to github", {
+      ticket: ticket.identifier,
+      url: publication.url,
+      kind: publication.kind,
+    });
+    if (this.onPublished) {
+      try {
+        await this.onPublished({ ...publication, ticket });
+      } catch (err) {
+        this.logger.warn("onPublished hook failed (publish still succeeded)", {
+          ticket: ticket.identifier,
+          error: String(err),
+        });
+      }
+    }
+    // Only PRs are watchable. Hooks are best-effort: a relay failure cannot turn a successful
+    // GitHub publication into another network retry.
+    if (publication.kind === "pr" && publication.prUrl && this.onPrOpened) {
+      try {
+        await this.onPrOpened({ prUrl: publication.prUrl, ticket });
+      } catch (err) {
+        this.logger.warn("onPrOpened hook failed (publish still succeeded)", {
+          ticket: ticket.identifier,
+          error: (err as Error).message,
+        });
+      }
+    }
+    return {
+      status: "published",
+      url: publication.url,
+      kind: publication.kind,
+      prUrl: publication.prUrl,
+    };
   }
 
   private async onReviewDone(
@@ -2752,6 +2905,9 @@ export class Dispatcher {
     for (const t of all) {
       if (!t.blockedBy.includes(doneTicket.identifier)) continue; // not waiting on this ticket
       if (t.state !== "backlog" && t.state !== "todo") continue; // already running/terminal — leave it
+      // Task branches base their worktree on the completed predecessor's local Git branch. Wait
+      // for the real done write (after publish), rather than racing the early legacy DAG promotion.
+      if (opts.assumeDone && t.branchRef) continue;
       const unresolved = t.blockedBy.filter((id) => stateByIdent.get(id) !== "done");
       if (unresolved.length > 0) {
         this.logger.info("dependent still blocked — leaving held", {
@@ -2760,23 +2916,42 @@ export class Dispatcher {
         });
         continue;
       }
-      this.logger.info("promoting unblocked dependent → in_progress", {
-        ticket: t.identifier,
-        after: doneTicket.identifier,
-      });
-      try {
-        await this.clientForTicket(t).setState(t.id, "in_progress");
-        await this.postComment(
-          t.id,
-          `All blockers done (${t.blockedBy.join(", ")}) → starting now.`,
-        );
-      } catch (err) {
-        this.logger.warn("promote: setState failed", {
-          ticket: t.identifier,
-          error: (err as Error).message,
-        });
-      }
+      await this.promoteHeldDependent(t, doneTicket.identifier);
     }
+  }
+
+  private dependentStartState(ticket: Ticket): TicketState {
+    if (!ticket.branchRef) return "in_progress";
+    return ticket.startState ?? (this.isIntTicket(ticket) ? "design" : "in_progress");
+  }
+
+  private async promoteHeldDependent(ticket: Ticket, after: string): Promise<boolean> {
+    const nextState = this.dependentStartState(ticket);
+    this.logger.info(`promoting unblocked dependent → ${nextState}`, {
+      ticket: ticket.identifier,
+      after,
+    });
+    try {
+      await this.clientForTicket(ticket).setState(ticket.id, nextState);
+    } catch (err) {
+      this.logger.warn("promote: setState failed", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
+      return false;
+    }
+    try {
+      await this.postComment(
+        ticket.id,
+        `All blockers done (${ticket.blockedBy.join(", ")}) → moving to **${nextState}**.`,
+      );
+    } catch (err) {
+      this.logger.warn("promote: comment failed after state advance", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
+    }
+    return true;
   }
 
   private async advanceTicket(
@@ -2838,7 +3013,7 @@ export class Dispatcher {
     // the poller would emit ≤5s later. Best-effort — a throwing listener must not fail the advance.
     if (this.onAdvance && current) {
       try {
-        this.onAdvance({ kind: "state_changed", ticket: { ...current, state }, from: current.state, to: state });
+        await this.onAdvance({ kind: "state_changed", ticket: { ...current, state }, from: current.state, to: state });
       } catch (err) {
         this.logger.warn("onAdvance listener failed (ignored)", { error: (err as Error).message });
       }

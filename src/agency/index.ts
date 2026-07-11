@@ -47,7 +47,13 @@ import type {
   Logger,
 } from "../types.ts";
 import { ActionClass } from "../types.ts";
-import type { CheckConclusion, GitHubPrReader, PrSignals } from "../github/types.ts";
+import type {
+  BranchCardCheckSummary,
+  GitHubBranchCard,
+  GitHubBranchCardReader,
+  GitHubPrReader,
+  PrSignals,
+} from "../github/types.ts";
 import type { GitHubActivityCommit, GitHubActivityReader, GitHubMergedPullRequest } from "../github/activity.ts";
 import { pendingActionId } from "../ids.ts";
 import { log as rootLog } from "../log.ts";
@@ -332,7 +338,7 @@ export interface PublishResult {
  * (`$GITHUB_PAT`) so the token never appears in argv. Most ops are FREE; the caller GATES
  * `mergePR` behind {@link Agency.perform}.
  */
-export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityReader {
+export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCardReader, GitHubActivityReader {
   private readonly runner: (
     cmd: string[],
     opts?: { cwd?: string; env?: Record<string, string | undefined> },
@@ -812,19 +818,14 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
     if (r.code !== 0) {
       throw new Error(`gh pr view failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
     }
-    let parsed: { statusCheckRollup?: Array<{ conclusion?: string; state?: string; status?: string }> };
+    let parsed: { statusCheckRollup?: CheckRollupEntry[] };
     try {
       parsed = JSON.parse(r.stdout);
     } catch {
       return false; // unparseable → not provably green → fail-closed
     }
-    const checks = parsed.statusCheckRollup ?? [];
-    if (checks.length === 0) return true; // no required checks configured → nothing blocking
-    const GREEN = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-    return checks.every((c) => {
-      const verdict = (c.conclusion ?? c.state ?? c.status ?? "").toUpperCase();
-      return GREEN.has(verdict);
-    });
+    const checks = summarizeCheckRollup(parsed.statusCheckRollup);
+    return checks.total === 0 || checks.conclusion === "SUCCESS";
   }
 
   /**
@@ -883,6 +884,75 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
       }));
   }
 
+  /**
+   * Read the aggregate metadata for one published branch/PR in a single `gh pr view` call. The
+   * selected JSON fields intentionally exclude `files` and patch text: cards show scale and health,
+   * never a wall of diff lines.
+   */
+  async branchCard(repo: string, ref: string | number): Promise<GitHubBranchCard> {
+    this.requireCreds("read branch card");
+    const selector = String(ref).trim();
+    if (!repo.trim() || !selector) throw new Error("branch card needs both repo and branch/PR ref");
+    const fields =
+      "number,url,title,state,isDraft,headRefName,baseRefName,headRefOid,updatedAt," +
+      "additions,deletions,changedFiles,commits,reviewDecision,latestReviews,comments,statusCheckRollup";
+    const r = await this.runner(["gh", "pr", "view", selector, "--repo", repo, "--json", fields], {
+      env: this.ghEnv(),
+    });
+    if (r.code !== 0) {
+      throw new Error(`gh pr view (branch card) failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+    let p: {
+      number?: unknown;
+      url?: unknown;
+      title?: unknown;
+      state?: unknown;
+      isDraft?: unknown;
+      headRefName?: unknown;
+      baseRefName?: unknown;
+      headRefOid?: unknown;
+      updatedAt?: unknown;
+      additions?: unknown;
+      deletions?: unknown;
+      changedFiles?: unknown;
+      commits?: unknown;
+      reviewDecision?: unknown;
+      latestReviews?: unknown;
+      comments?: unknown;
+      statusCheckRollup?: CheckRollupEntry[];
+    };
+    try {
+      p = JSON.parse(r.stdout);
+    } catch {
+      throw new Error(`gh pr view (branch card) returned unparseable JSON for ${repo}@${selector}`);
+    }
+    const number = positiveInteger(p.number);
+    if (number === null) {
+      throw new Error(`gh pr view (branch card) returned no valid PR number for ${repo}@${selector}`);
+    }
+    const state = String(p.state ?? "OPEN").toUpperCase();
+    return {
+      repo,
+      number,
+      url: String(p.url ?? ""),
+      title: String(p.title ?? ""),
+      state: state === "MERGED" || state === "CLOSED" ? state : "OPEN",
+      isDraft: Boolean(p.isDraft),
+      headRefName: String(p.headRefName ?? ""),
+      baseRefName: String(p.baseRefName ?? ""),
+      headRefOid: String(p.headRefOid ?? ""),
+      updatedAt: String(p.updatedAt ?? ""),
+      additions: nonNegativeInteger(p.additions),
+      deletions: nonNegativeInteger(p.deletions),
+      changedFiles: nonNegativeInteger(p.changedFiles),
+      commits: Array.isArray(p.commits) ? p.commits.length : 0,
+      reviewDecision: String(p.reviewDecision ?? "").toUpperCase(),
+      reviewCount: Array.isArray(p.latestReviews) ? p.latestReviews.length : 0,
+      commentCount: Array.isArray(p.comments) ? p.comments.length : 0,
+      checks: summarizeCheckRollup(p.statusCheckRollup),
+    };
+  }
+
   async prSignals(repo: string, n: number): Promise<PrSignals> {
     this.requireCreds("read PR signals");
     const fields =
@@ -903,7 +973,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
       reviewDecision?: string;
       reviews?: Array<{ id?: string | number; author?: { login?: string }; state?: string; submittedAt?: string; body?: string }>;
       comments?: Array<{ id?: string | number; author?: { login?: string }; createdAt?: string; body?: string }>;
-      statusCheckRollup?: Array<{ status?: string; conclusion?: string; state?: string }>;
+      statusCheckRollup?: CheckRollupEntry[];
     };
     try {
       p = JSON.parse(r.stdout);
@@ -932,44 +1002,69 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
         createdAt: c.createdAt ?? "",
         body: c.body ?? "",
       })),
-      checkConclusion: rollupConclusion(p.statusCheckRollup),
+      checkConclusion: summarizeCheckRollup(p.statusCheckRollup).conclusion,
     };
   }
 }
 
+interface CheckRollupEntry {
+  status?: string;
+  conclusion?: string;
+  state?: string;
+}
+
 /**
- * Reduce GitHub's `statusCheckRollup` (a mix of CheckRun and StatusContext entries) to one
- * {@link CheckConclusion}. Failures are LOUD: any failed/errored check makes the whole rollup a
- * FAILURE even while others are still running, so "CI failed" reaches the person as fast as
- * possible. No checks configured → NONE (nothing to report).
+ * Reduce GitHub's mixed CheckRun/StatusContext rollup into exact card counts and the existing loud
+ * conclusion. Neutral and skipped checks are healthy but remain separate from genuinely passed
+ * checks so the card never overstates what ran.
  */
-function rollupConclusion(rollup?: Array<{ status?: string; conclusion?: string; state?: string }>): CheckConclusion {
+export function summarizeCheckRollup(rollup?: CheckRollupEntry[]): BranchCardCheckSummary {
   const checks = rollup ?? [];
-  if (checks.length === 0) return "NONE";
-  const GREEN = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-  let anyPending = false;
-  for (const c of checks) {
-    const status = String(c.status ?? "").toUpperCase();
-    const conclusion = String(c.conclusion ?? "").toUpperCase();
-    const contextState = String(c.state ?? "").toUpperCase();
+  const summary: BranchCardCheckSummary = {
+    total: checks.length,
+    passed: 0,
+    pending: 0,
+    failed: 0,
+    skipped: 0,
+    conclusion: "NONE",
+  };
+  for (const check of checks) {
+    const status = String(check.status ?? "").toUpperCase();
+    const conclusion = String(check.conclusion ?? "").toUpperCase();
+    const contextState = String(check.state ?? "").toUpperCase();
+
     if (!status && contextState) {
-      // Legacy commit-status context: state is PENDING/EXPECTED/SUCCESS/FAILURE/ERROR.
-      if (contextState === "PENDING" || contextState === "EXPECTED") anyPending = true;
-      else if (!GREEN.has(contextState)) return "FAILURE";
+      if (contextState === "SUCCESS") summary.passed += 1;
+      else if (contextState === "NEUTRAL" || contextState === "SKIPPED") summary.skipped += 1;
+      else if (contextState === "PENDING" || contextState === "EXPECTED") summary.pending += 1;
+      else summary.failed += 1;
       continue;
     }
-    // Check run: not COMPLETED → still pending; COMPLETED → judge by conclusion.
     if (status && status !== "COMPLETED") {
-      anyPending = true;
+      summary.pending += 1;
       continue;
     }
-    if (!conclusion) {
-      anyPending = true;
-      continue;
-    }
-    if (!GREEN.has(conclusion)) return "FAILURE"; // FAILURE/TIMED_OUT/CANCELLED/ACTION_REQUIRED/…
+    if (conclusion === "SUCCESS") summary.passed += 1;
+    else if (conclusion === "NEUTRAL" || conclusion === "SKIPPED") summary.skipped += 1;
+    else if (!conclusion) summary.pending += 1;
+    else summary.failed += 1;
   }
-  return anyPending ? "PENDING" : "SUCCESS";
+  summary.conclusion = summary.total === 0
+    ? "NONE"
+    : summary.failed > 0
+      ? "FAILURE"
+      : summary.pending > 0
+        ? "PENDING"
+        : "SUCCESS";
+  return summary;
+}
+
+function nonNegativeInteger(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function positiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 // =======================================================================================

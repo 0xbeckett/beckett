@@ -43,6 +43,10 @@ import { createQuickRunner, type QuickRunner } from "../quick/index.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createMemory } from "../memory/index.ts";
 import { startRoutineMaintenance } from "../memory/maintain.ts";
+import { TaskStore } from "../task/store.ts";
+import { createBranchStatusService } from "../task/status.ts";
+import { readLocalBranchStats } from "../git/branch-stats.ts";
+import { reconcileTaskTickets } from "../task/reconcile.ts";
 
 /**
  * Root under which every ticket builds its OWN project repo — one directory per code project,
@@ -155,16 +159,36 @@ async function boot(): Promise<BootedSystem> {
   // relays, never replies or merges. Skipped without a PAT (nothing to read GitHub with).
   const paths = buildPaths(config);
   const beckettDir = paths.beckettDir;
+  const tasks = new TaskStore(join(beckettDir, "tasks.json"));
+  const syncTaskBranch = async (ticket: Ticket, board: string, snapshot = false): Promise<void> => {
+    if (!ticket.branchRef) return;
+    const branch = await tasks.syncTicket(ticket, board);
+    if (!snapshot || !branch?.git?.workspace || !branch.git.baseSha) return;
+    try {
+      const stats = await readLocalBranchStats(branch.git.workspace, branch.git.baseSha);
+      await tasks.setDiff(branch.ref, {
+        additions: stats.additions,
+        deletions: stats.deletions,
+        files: stats.changedFiles,
+        commits: stats.commits,
+      });
+    } catch (err) {
+      logger.warn("task branch diff snapshot failed", { branch: branch.ref, error: String(err) });
+    }
+  };
+  const githubReader = identity.github.pat
+    ? new GitHubCli({
+        pat: identity.github.pat,
+        account: identity.github.account,
+        owner: identity.github.owner,
+        apiBase: identity.github.apiBase,
+        resolveRepoDir: () => PROJECTS_ROOT,
+        logger: logger.child("gh.read"),
+      })
+    : null;
   const prPoller: GitHubPrPoller | null = identity.github.pat
     ? createGitHubPrPoller({
-        reader: new GitHubCli({
-          pat: identity.github.pat,
-          account: identity.github.account,
-          owner: identity.github.owner,
-          apiBase: identity.github.apiBase,
-          resolveRepoDir: () => PROJECTS_ROOT, // unused for reads (prSignals passes --repo)
-          logger: logger.child("gh.read"),
-        }),
+        reader: githubReader!,
         account: identity.github.account,
         pollSecs: config.github.poll_secs,
         statePath: join(beckettDir, "github-prs.json"),
@@ -178,14 +202,7 @@ async function boot(): Promise<BootedSystem> {
   const activityConfig = config.github.activity;
   const activityPoller: GitHubActivityPoller | null = identity.github.pat && activityConfig.enabled
     ? createGitHubActivityPoller({
-        reader: new GitHubCli({
-          pat: identity.github.pat,
-          account: identity.github.account,
-          owner: identity.github.owner,
-          apiBase: identity.github.apiBase,
-          resolveRepoDir: () => PROJECTS_ROOT,
-          logger: logger.child("gh.activity.read"),
-        }),
+        reader: githubReader!,
         repo: activityConfig.repo,
         branch: activityConfig.branch,
         pollSecs: activityConfig.poll_secs,
@@ -199,7 +216,17 @@ async function boot(): Promise<BootedSystem> {
   // 5. Concierge — owns Discord (and the private ticket journal the dispatcher feeds). Constructed
   //    here (cheap, no I/O) so its progress sink can be wired into the dispatcher below; started
   //    further down (FIRST of the live parts) so a bad claude launch fails the whole boot early.
-  const concierge = createConcierge({ config, logger: logger.child("concierge"), plane: client });
+  const concierge = createConcierge({
+    config,
+    logger: logger.child("concierge"),
+    plane: client,
+    tasks,
+    branchStatus: createBranchStatusService({
+      store: tasks,
+      ...(githubReader ? { github: githubReader } : {}),
+      githubOwner: identity.github.owner,
+    }),
+  });
 
   // 3. Pollers — one per board, all feeding the same dispatcher. `start()` primes the
   //    snapshot first (so we don't replay history) then self-schedules every poll_secs.
@@ -234,6 +261,15 @@ async function boot(): Promise<BootedSystem> {
       clientByProjectId.set(info.projectId, boardClient);
       const boardPoller = pollers.get(board);
       if (boardPoller) pollerByProjectId.set(info.projectId, boardPoller);
+      // Poller priming intentionally emits recovery events only for active work. Reconcile the
+      // complete board here as well so terminal/parked changes made while offline cannot leave
+      // the public task registry stale or a dependent permanently held.
+      await reconcileTaskTickets(tasks, await boardClient.listIssues(), board, (ticket, err) => {
+        logger.warn("task branch boot reconciliation failed", {
+          branch: ticket.branchRef,
+          error: String(err),
+        });
+      });
     } catch (err) {
       logger.warn("Plane board provisioning/pre-resolution failed", { board, error: (err as Error).message });
     }
@@ -264,30 +300,76 @@ async function boot(): Promise<BootedSystem> {
     // Harness health probe (issue #17): a dead harness (binary gone, login expired) becomes one
     // clear substitution comment instead of a wedged ticket. ~5-min cached per harness.
     preflight: (harness) => preflightFor(harness, config),
+    onBeforePublish: async ({ ticket }) => {
+      if (!ticket.branchRef) return;
+      const board = clientByProjectId.get(ticket.projectId)?.board() ?? config.plane.default_board;
+      // Snapshot against the original task base before an owned-repo push rebases onto a parallel
+      // branch that reached main first. This persisted aggregate survives worktree teardown.
+      await syncTaskBranch(ticket, board, true);
+    },
     // Instant milestone path (issue #33): a dispatcher-written advance reaches Discord NOW
     // (concierge.notify) instead of after the next poll, and the poller's snapshot is synced so
     // the same transition isn't re-emitted as a duplicate ping ≤5s later.
-    onAdvance: (event) => {
+    onAdvance: async (event) => {
       (pollerByProjectId.get(event.ticket.projectId) ?? poller).observe(event);
+      if (event.ticket.branchRef) {
+        const board = clientByProjectId.get(event.ticket.projectId)?.board() ?? config.plane.default_board;
+        try {
+          // Publication snapshots completed contributions before any rebase. State advances only
+          // update lifecycle here so the accurate pre-publish aggregate is never overwritten.
+          await syncTaskBranch(event.ticket, board);
+        } catch (err) {
+          logger.warn("task branch state sync failed", { branch: event.ticket.branchRef, error: String(err) });
+        }
+      }
       concierge.notify(event);
+    },
+    onPublished: async ({ url, kind, ticket }) => {
+      if (!ticket.branchRef) return;
+      try {
+        await tasks.setPublication(ticket.branchRef, {
+          repo: `${identity.github.owner}/${projectSlug(ticket.project || ticket.identifier)}`,
+          url,
+          kind,
+        });
+      } catch (err) {
+        logger.warn("task branch publication sync failed", { branch: ticket.branchRef, error: String(err) });
+      }
     },
     // OPS-124: a PR Beckett just opened → start watching it, routed to the ticket's origin channel.
     // Parse the repo+number from the PR URL; a non-PR URL yields null and is ignored. The poller
     // itself drops PRs outside our org and (at relay time) PRs with no origin channel.
-    onPrOpened: prPoller
-      ? ({ prUrl, ticket }) => {
-          const parsed = parsePrUrl(prUrl);
-          if (!parsed) return;
-          prPoller.watch({
-            repo: parsed.repo,
-            number: parsed.number,
-            url: prUrl,
-            title: ticket.title,
-            ticket: ticket.identifier,
-            channel: ticket.originChannel,
-          });
+    onPrOpened: async ({ prUrl, ticket }) => {
+      const parsed = parsePrUrl(prUrl);
+      if (!parsed) return;
+      if (ticket.branchRef) {
+        try {
+          await tasks.setPullRequest(ticket.branchRef, { repo: parsed.repo, number: parsed.number, url: prUrl });
+        } catch (err) {
+          logger.warn("task branch PR sync failed", { branch: ticket.branchRef, error: String(err) });
         }
-      : undefined,
+      }
+      if (prPoller) {
+        const taskThread = tasks.findByTicket(ticket.id)?.task.threadId;
+        prPoller.watch({
+          repo: parsed.repo,
+          number: parsed.number,
+          url: prUrl,
+          title: ticket.title,
+          ticket: ticket.identifier,
+          channel: taskThread ?? ticket.originChannel,
+        });
+      }
+    },
+    onBranchWorkspace: ({ ticket, workspace, gitRef, baseSha }) => {
+      if (!ticket.branchRef) return;
+      void tasks.setGit(ticket.branchRef, {
+        project: projectSlug(ticket.project || ticket.identifier),
+        workspace,
+        gitRef,
+        baseSha,
+      }).catch((err) => logger.warn("task branch Git sync failed", { branch: ticket.branchRef, error: String(err) }));
+    },
     logger: logger.child("dispatch"),
   });
 
@@ -342,8 +424,25 @@ async function boot(): Promise<BootedSystem> {
   // Start the Concierge FIRST (of the live parts) so a bad claude launch fails the whole boot
   //    before we begin polling. (Constructed above so its progress sink could be wired in.)
   await concierge.start();
+  if (prPoller) {
+    for (const task of tasks.list()) {
+      if (!task.threadId) continue;
+      for (const branch of task.branches) {
+        if (!branch.pullRequest || !branch.ticket) continue;
+        prPoller.watch({
+          repo: branch.pullRequest.repo,
+          number: branch.pullRequest.number,
+          url: branch.pullRequest.url,
+          title: branch.title,
+          ticket: branch.ticket.identifier,
+          channel: task.threadId,
+        });
+      }
+    }
+  }
   await dispatcher.replayAdvances();
   await dispatcher.replayPublishes();
+  await dispatcher.reconcileDependents();
 
   // Crash recovery (issue #20): BEFORE the poller re-staffs anything, sweep worker processes a
   // crashed daemon orphaned, commit their ghost WIP, and arm session-resume hints so re-staffed
@@ -362,6 +461,12 @@ async function boot(): Promise<BootedSystem> {
     [...pollers].map(([board, p]) =>
       p.start((events) => {
         rememberRouting(events.map((event) => event.ticket), board);
+        for (const event of events) {
+          if (!event.ticket.branchRef) continue;
+          void syncTaskBranch(event.ticket, board).catch((err) =>
+            logger.warn("task branch poll sync failed", { branch: event.ticket.branchRef, error: String(err) })
+          );
+        }
         concierge.notify(events);
         return dispatcher.handle(events);
       }),

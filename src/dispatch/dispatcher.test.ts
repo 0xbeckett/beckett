@@ -132,8 +132,9 @@ let commitResult: { committed: boolean; sha: string | null } = { committed: true
 let commitCalls: { workspace: string; message: string }[] = [];
 let diffSince = true;
 let fakeReviewDiff = "diff --git a/x.ts b/x.ts\n+added";
-let worktreeAdds: { workspace: string; branch: string }[] = [];
+let worktreeAdds: { workspace: string; branch: string; baseRef: string }[] = [];
 let worktreeRemoves: string[] = [];
+let worktreeMerges: { workspace: string; branches: string[] }[] = [];
 mock.module("./spawn.ts", () => ({ spawnWorker: fakeSpawn, spawnTicketWorker: fakeSpawn }));
 // The dispatcher's git ops, faked via dependency injection (deps.gitOps) rather than
 // `mock.module("../worker/worktree.ts")`. bun's module mock is process-global and leaked these
@@ -154,13 +155,17 @@ const gitFakes: Partial<GitOps> = {
   // v3.2 worktrees: faked so tests never touch real git. createWorktree records + echoes a handle;
   // removeWorktree records teardown; fetchRemote is a no-op success.
   createWorktree: async (opts) => {
-    worktreeAdds.push({ workspace: opts.workspace, branch: opts.branch });
+    worktreeAdds.push({ workspace: opts.workspace, branch: opts.branch, baseRef: opts.baseRef });
     return { repoRoot: opts.repoRoot, workspace: opts.workspace, branch: opts.branch };
   },
   removeWorktree: async (_repoRoot: string, workspace: string) => {
     worktreeRemoves.push(workspace);
   },
   fetchRemote: async () => true,
+  refExists: async () => true,
+  mergeBranchesIntoWorktree: async (workspace, branches) => {
+    worktreeMerges.push({ workspace, branches });
+  },
 };
 
 const { Dispatcher, BECKETT_COMMENT_MARKER } = await import("./dispatcher.ts");
@@ -214,6 +219,8 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
     criteria: over.criteria ?? ["it works"],
     blockedBy: over.blockedBy ?? [],
     ...(over.project ? { project: over.project } : {}),
+    ...(over.branchRef ? { branchRef: over.branchRef } : {}),
+    ...(over.startState ? { startState: over.startState } : {}),
     projectId: over.projectId ?? "proj-1",
     url: "http://x",
     updatedAt: "now",
@@ -281,6 +288,7 @@ beforeEach(() => {
   diffSince = true;
   worktreeAdds = [];
   worktreeRemoves = [];
+  worktreeMerges = [];
   failNextResumeSpawn = false;
 });
 
@@ -592,6 +600,7 @@ describe("advance on finish", () => {
   test("v3.1: publishes the project repo to GitHub on done and links the URL in the comment", async () => {
     const client = new FakeClient();
     const calls: { slug: string; repoRoot: string; description: string; ticket?: string }[] = [];
+    const published: Array<{ url: string; kind: string; ticket: string }> = [];
     const d = new Dispatcher({
     gitOps: gitFakes,
       client,
@@ -600,6 +609,9 @@ describe("advance on finish", () => {
       publishRepo: async (a) => {
         calls.push(a);
         return { url: "https://github.com/0xbeckett/balloons-game", kind: "pushed" as const };
+      },
+      onPublished: ({ url, kind, ticket }) => {
+        published.push({ url, kind, ticket: ticket.identifier });
       },
     });
     const ticket = makeTicket({
@@ -623,7 +635,49 @@ describe("advance on finish", () => {
       },
     ]);
     expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
+    expect(published).toEqual([{
+      url: "https://github.com/0xbeckett/balloons-game",
+      kind: "pushed",
+      ticket: "OPS-1",
+    }]);
     expect(client.comments.at(-1)!.body).toContain("https://github.com/0xbeckett/balloons-game");
+  });
+
+  test("snapshots a branch contribution before direct publication can rebase onto newer main", async () => {
+    const client = new FakeClient();
+    let visibleAdditions = 4;
+    let durableSnapshot = -1;
+    let additionsAtDone = -1;
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/tmp/voting",
+      onBeforePublish: () => { durableSnapshot = visibleAdditions; },
+      publishRepo: async () => {
+        // Model a parallel branch already landing 7 lines on main before this owned-repo push.
+        // The publisher rebases onto it, so the original-base diff now contains A + B.
+        visibleAdditions = 11;
+        return { url: "https://github.com/acme/voting", kind: "pushed" as const };
+      },
+      onAdvance: (event) => {
+        if (event.kind === "state_changed" && event.to === "done") additionsAtDone = visibleAdditions;
+      },
+    });
+    const ticket = makeTicket({
+      branchRef: "42.2",
+      project: "voting",
+      casting: { implement: { harness: "claude", effort: "low" } },
+    });
+    client.board = [ticket];
+
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0]!.finish("success", "shipped it");
+    await tick();
+
+    expect(durableSnapshot).toBe(4);
+    expect(additionsAtDone).toBe(11);
   });
 
   test("v3.1: a `pr` publish words the done comment as needing a human merge (not 'shipped')", async () => {
@@ -713,6 +767,60 @@ describe("advance on finish", () => {
         { id: ticket.id, state: "done" },
       ]);
       expect(worktreeRemoves).toHaveLength(1);
+      expect(readFileSync(outbox, "utf8")).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a replayed task PR uses its public ref and fires publication routing hooks", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-task-publish-replay-"));
+    try {
+      const outbox = join(dir, "publish.jsonl");
+      const client = new FakeClient();
+      const publishTickets: string[] = [];
+      const publications: string[] = [];
+      const watchedPrs: string[] = [];
+      let calls = 0;
+      const d = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(),
+        resolveRepoRoot: () => "/tmp/repo",
+        publishOutboxPath: outbox,
+        publishRepo: async (args) => {
+          calls++;
+          publishTickets.push(args.ticket ?? "");
+          if (calls === 1) throw new Error("ETIMEDOUT github");
+          return {
+            url: "https://github.com/acme/voting/pull/9",
+            kind: "pr" as const,
+            prUrl: "https://github.com/acme/voting/pull/9",
+          };
+        },
+        onPublished: ({ ticket }) => { publications.push(ticket.branchRef ?? ""); },
+        onPrOpened: ({ prUrl }) => { watchedPrs.push(prUrl); },
+      });
+      const ticket = makeTicket({
+        branchRef: "42.1",
+        project: "voting",
+        casting: { implement: { harness: "claude", effort: "low" } },
+      });
+      client.board = [ticket];
+
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      created[0]!.finish("success", "shipped it");
+      await tick();
+
+      const op = JSON.parse(readFileSync(outbox, "utf8"));
+      writeFileSync(outbox, JSON.stringify({ ...op, nextAttemptAt: 0 }) + "\n");
+      await d.replayPublishes();
+
+      expect(publishTickets).toEqual(["task-42-1", "task-42-1"]);
+      expect(publications).toEqual(["42.1"]);
+      expect(watchedPrs).toEqual(["https://github.com/acme/voting/pull/9"]);
+      expect(client.setStateCalls.at(-1)).toEqual({ id: ticket.id, state: "done" });
       expect(readFileSync(outbox, "utf8")).toBe("");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1876,6 +1984,51 @@ describe("worktrees (v3.2)", () => {
 });
 
 describe("dependency promotion (beckett plan DAG)", () => {
+  test("boot reconciliation promotes task dependents completed while Beckett was offline", async () => {
+    const { d, client } = newDispatcher();
+    const blocker = makeTicket({ id: "a", identifier: "OPS-A", state: "done" });
+    const standard = makeTicket({
+      id: "b",
+      identifier: "OPS-B",
+      branchRef: "42.1",
+      state: "backlog",
+      blockedBy: ["OPS-A"],
+    });
+    const intensive = makeTicket({
+      id: "c",
+      identifier: "INT-2",
+      branchRef: "42.2",
+      state: "backlog",
+      blockedBy: ["OPS-A"],
+      startState: "design",
+    });
+    const unresolved = makeTicket({
+      id: "d",
+      identifier: "OPS-D",
+      branchRef: "42.3",
+      state: "backlog",
+      blockedBy: ["OPS-MISSING"],
+    });
+    const intentionallyTodo = makeTicket({
+      id: "e",
+      identifier: "OPS-E",
+      branchRef: "42.4",
+      state: "todo",
+      blockedBy: ["OPS-A"],
+      startState: "todo",
+    });
+    client.board = [blocker, standard, intensive, unresolved, intentionallyTodo];
+
+    await expect(d.reconcileDependents()).resolves.toBe(2);
+
+    expect(client.setStateCalls).toEqual([
+      { id: "b", state: "in_progress" },
+      { id: "c", state: "design" },
+    ]);
+    expect(client.setStateCalls.some((call) => call.id === "d" || call.id === "e")).toBe(false);
+    expect(client.comments.filter((comment) => comment.body.includes("All blockers done"))).toHaveLength(2);
+  });
+
   test("a held dependent is promoted to in_progress when its only blocker finishes", async () => {
     const { d, client } = newDispatcher();
     const blocker = makeTicket({ id: "a", identifier: "OPS-A", state: "done" });
@@ -1912,6 +2065,79 @@ describe("dependency promotion (beckett plan DAG)", () => {
     await tick();
 
     expect(client.setStateCalls.some((s) => s.id === "z")).toBe(false);
+  });
+
+  test("task dependents wait for publish, then branch from the predecessor's public Git ref", async () => {
+    const client = new FakeClient();
+    const blocker = makeTicket({
+      id: "a",
+      identifier: "OPS-A",
+      branchRef: "42.1",
+      project: "voting",
+      casting: { implement: { harness: "claude", effort: "low" } },
+    });
+    const dependent = makeTicket({
+      id: "b",
+      identifier: "OPS-B",
+      branchRef: "42.2",
+      project: "voting",
+      state: "backlog",
+      blockedBy: ["OPS-A"],
+      startState: "in_progress",
+    });
+    client.board = [blocker, dependent];
+    let releasePublish!: () => void;
+    let publishedTicket: string | undefined;
+    const publishGate = new Promise<void>((resolve) => { releasePublish = resolve; });
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/tmp/voting",
+      publishRepo: async (args) => {
+        publishedTicket = args.ticket;
+        await publishGate;
+        return { url: "https://github.com/acme/voting", kind: "pushed" };
+      },
+    });
+
+    await d.handle(stateChanged(blocker, "in_progress"));
+    await tick();
+    created[0]!.finish("success", "done");
+    await tick();
+    expect(client.setStateCalls.some((call) => call.id === "b")).toBe(false);
+
+    releasePublish();
+    await tick();
+    await tick();
+    expect(client.setStateCalls).toContainEqual({ id: "a", state: "done" });
+    expect(client.setStateCalls).toContainEqual({ id: "b", state: "in_progress" });
+    expect(publishedTicket).toBe("task-42-1");
+
+    await d.handle(stateChanged(dependent, "in_progress", "backlog"));
+    await tick();
+    expect(worktreeAdds.at(-1)).toMatchObject({
+      branch: "beckett/task-42-2",
+      baseRef: "beckett/task-42-1",
+    });
+  });
+
+  test("an intensive task dependent enters its recorded design state", async () => {
+    const { d, client } = newDispatcher();
+    const blocker = makeTicket({ id: "a", identifier: "INT-1", branchRef: "7.1", state: "done" });
+    const dependent = makeTicket({
+      id: "b",
+      identifier: "INT-2",
+      branchRef: "7.2",
+      state: "backlog",
+      blockedBy: ["INT-1"],
+      startState: "design",
+    });
+    client.board = [blocker, dependent];
+
+    await d.handle(stateChanged(blocker, "done", "design_review"));
+    await tick();
+    expect(client.setStateCalls).toContainEqual({ id: "b", state: "design" });
   });
 });
 

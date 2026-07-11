@@ -66,6 +66,46 @@ export interface GitHubPrReader {
   prSignals(repo: string, number: number): Promise<PrSignals>;
 }
 
+/** Counted status-check rollup for a compact branch/PR card. */
+export interface BranchCardCheckSummary {
+  total: number;
+  passed: number;
+  pending: number;
+  failed: number;
+  skipped: number;
+  conclusion: CheckConclusion;
+}
+
+/**
+ * GitHub's authoritative view of a published branch with a pull request. This deliberately carries
+ * aggregate metadata only: Discord cards must never receive or render patch hunks.
+ */
+export interface GitHubBranchCard {
+  repo: string;
+  number: number;
+  url: string;
+  title: string;
+  state: PrLifecycle;
+  isDraft: boolean;
+  headRefName: string;
+  baseRefName: string;
+  headRefOid: string;
+  updatedAt: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  commits: number;
+  reviewDecision: string;
+  reviewCount: number;
+  commentCount: number;
+  checks: BranchCardCheckSummary;
+}
+
+/** On-demand published-branch read primitive, implemented by `GitHubCli.branchCard`. */
+export interface GitHubBranchCardReader {
+  branchCard(repo: string, ref: string | number): Promise<GitHubBranchCard>;
+}
+
 /**
  * The routing context stamped on every emitted event: enough to name the PR in voice AND to
  * route the update back to the channel that filed the originating ticket. A `channel` of
