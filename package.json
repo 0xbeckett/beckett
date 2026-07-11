@@ -8,6 +8,7 @@
   "scripts": {
     "v4": "bun src/shell/v4-main.ts",
     "beckett": "bun src/cli/beckett.ts",
+    "eval:triage": "bun scripts/eval/triage-classifier.ts",
     "typecheck": "bun x tsc --noEmit",
     "test": "bun test"
   },

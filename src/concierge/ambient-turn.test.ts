@@ -100,7 +100,7 @@ function harness(
   tmpDirs.push(dir);
   process.env.BECKETT_DIR = dir;
   delete process.env.DISCORD_OWNER_ID;
-  writeFileSync(join(dir, "access.txt"), `${MEMBER}\n`, "utf8");
+  writeFileSync(join(dir, "access.txt"), `${MEMBER}\n444444444444444444\n555555555555555555\n`, "utf8");
 
   const state = { reply: opts.reply ?? "want me to kick that off?", triageCalls: 0 };
   const asks: TurnMessage[] = [];
@@ -196,7 +196,7 @@ test("candidate reply auto-posts plainly (no native reply) and frames the transc
     { channelId: CHAN, text: "I can build that — want me to kick it off?", replyTo: undefined },
   ]);
   const frame = h.asks[0] as string;
-  expect(frame).toContain("SYSTEM (ambient — nobody addressed you");
+  expect(frame).toContain("SYSTEM (ambient candidate");
   expect(frame).toContain("wish it just gave me a csv");
   expect(frame).toContain("Triage says: feature-wish (confidence 0.90)");
 });
@@ -248,6 +248,20 @@ test("a beckett-thread verdict frames as a continuation aimed your way, not at a
   const frame = h.asks[0] as string;
   expect(frame).toContain("continues a thread you're in");
   expect(frame).not.toContain("aimed at ANOTHER person");
+});
+
+test("a cold Beckett-addressed verdict gets a neutral header and an aimed-at-you signal", async () => {
+  const h = harness({ reply: "PASS", verdict: { ...yes, addressee: "beckett", kind: "question" } });
+  const clock = clockOf(h);
+
+  await h.concierge.onMessage(msg("m1", "Beckett, can you check the deploy?", 0));
+  clock.advance(2_000);
+  await drain();
+
+  const frame = h.asks[0] as string;
+  expect(frame).toContain("SYSTEM (ambient candidate");
+  expect(frame).toContain("aimed at YOU");
+  expect(frame).not.toContain("nobody addressed you");
 });
 
 test("a candidate that runs `discord decline` mid-turn posts nothing and consumes no cooldown", async () => {
@@ -535,12 +549,81 @@ test("engaged continuation sends typing (the 'seen you' signal) and flushes on t
 
   // Someone answers WITHOUT a mention → engaged continuation: typing fires before the reply
   // posts, the frame is the continuation frame, and the flush needed only the 4s engaged lull.
-  await h.concierge.onMessage(msg("m2", "lmao ok that's fair", 3_000));
+  await h.concierge.onMessage(msg("m2", "lmao ok that's fair", 3_000, { repliedToId: "posted-1" }));
   clock.advance(4_000);
   await drain();
-  expect(h.asks[1] as string).toContain("SYSTEM (ambient continuation");
+  const frame = h.asks[1] as string;
+  expect(frame).toContain("SYSTEM (ambient continuation");
+  expect(frame).toContain("reply to beckett");
+  expect(frame).toContain("makes a continuation plausible, not certain");
+  expect(frame).toContain("Never reply merely because you spoke earlier");
   expect(h.typings.length).toBe(typingsAfterMention + 1);
   expect(h.typings[h.typings.length - 1]).toBe(CHAN);
   expect(h.posts).toHaveLength(2);
   expect(h.triageCalls).toBe(0); // never classified — it's Beckett's own conversation
+});
+
+test("an engaged native reply classified for a human is skipped before typing or a full session turn", async () => {
+  const h = harness({
+    reply: "status is green",
+    verdict: { ...yes, interject: false, kind: "none", addressee: "other" },
+  });
+  const clock = clockOf(h);
+
+  await h.concierge.onMessage(msg("m1", "hey beckett, status?", 0, { mentionsBot: true }));
+  await drain();
+  expect(h.posts).toHaveLength(1);
+  const typingsAfterMention = h.typings.length;
+
+  await h.concierge.onMessage(
+    msg("m2", "I have the logs", 3_000, {
+      userId: "444444444444444444",
+      authorDisplayName: "beckett",
+    }),
+  );
+  await h.concierge.onMessage(
+    msg("m3", "can you paste them?", 3_500, {
+      userId: "555555555555555555",
+      authorDisplayName: "Ro",
+      repliedToId: "m2",
+    }),
+  );
+  clock.advance(4_000);
+  await drain();
+
+  expect(h.asks).toHaveLength(1); // no full model turn for an explicit human-to-human reply
+  expect(h.typings).toHaveLength(typingsAfterMention); // Beckett never visibly enters the exchange
+  expect(h.posts).toHaveLength(1);
+  expect(h.triageCalls).toBe(1); // one fast addressee check replaced the expensive full turn
+});
+
+test("an engaged human reply with an explicit room invitation still reaches the session", async () => {
+  const h = harness({ reply: "I can check that" });
+  const clock = clockOf(h);
+
+  await h.concierge.onMessage(msg("m1", "hey beckett, status?", 0, { mentionsBot: true }));
+  await drain();
+  const typingsAfterMention = h.typings.length;
+
+  await h.concierge.onMessage(
+    msg("m2", "the export is still failing", 3_000, {
+      userId: "444444444444444444",
+      authorDisplayName: "Maya",
+    }),
+  );
+  await h.concierge.onMessage(
+    msg("m3", "could the concierge check this too?", 3_500, {
+      userId: "555555555555555555",
+      authorDisplayName: "Ro",
+      repliedToId: "m2",
+    }),
+  );
+  clock.advance(4_000);
+  await drain();
+
+  expect(h.asks).toHaveLength(2);
+  expect(h.asks[1] as string).toContain("could the concierge check this too?");
+  expect(h.typings).toHaveLength(typingsAfterMention + 1);
+  expect(h.posts).toHaveLength(2);
+  expect(h.triageCalls).toBe(1); // ambiguous human reply was validated rather than hard-skipped
 });

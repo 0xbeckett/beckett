@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import type { AccessLevel } from "../discord/access.ts";
 import { buildPaths } from "../paths.ts";
 import type { Config, IncomingMessage, Logger, ProactivityMode } from "../types.ts";
-import type { TriageFn, TriageMessage, TriageVerdict } from "./triage.ts";
+import { passesTriageGate, type TriageFn, type TriageMessage, type TriageVerdict } from "./triage.ts";
 
 export interface AmbientTranscriptMessage extends TriageMessage {
   userId: string;
@@ -31,9 +31,9 @@ export type AmbientTurn =
       transcript: AmbientTranscriptMessage[];
       verdict: TriageVerdict;
       /**
-       * True when the burst arrived inside the engaged window (Beckett spoke here moments ago):
-       * this is people responding to Beckett, not chatter it's eavesdropping on — no triage ran,
-       * no caps applied, and the frame tells the session it's mid-conversation.
+       * True when the burst arrived inside the recent-conversation window after Beckett spoke.
+       * Recency makes a continuation plausible but does not prove one; explicit native replies to
+       * known humans are filtered first, and the session still verifies the latest turn.
        */
       engaged?: boolean;
     }
@@ -102,10 +102,29 @@ function asTranscriptMessage(m: IncomingMessage): AmbientTranscriptMessage {
   return {
     userId: m.userId,
     messageId: m.messageId,
+    authorId: m.userId,
     authorDisplayName: m.authorDisplayName?.trim() || m.userId,
     content: m.content,
     ts: m.createdAt,
+    repliedToId: m.repliedToId,
+    isBeckett: false,
   };
+}
+
+function latestReplyTargetsKnownHuman(
+  burst: AmbientTranscriptMessage[],
+  transcript: AmbientTranscriptMessage[],
+): boolean {
+  const latest = burst[burst.length - 1];
+  if (!latest?.repliedToId) return false;
+  const byId = new Map([...transcript, ...burst].map((message) => [message.messageId, message]));
+  const target = byId.get(latest.repliedToId);
+  return (
+    target !== undefined &&
+    target.userId !== latest.userId &&
+    target.isBeckett !== true &&
+    target.userId !== "beckett"
+  );
 }
 
 function serializeOffers(offers: Map<string, PendingOffer>): { offers: PendingOfferRecord[] } {
@@ -199,7 +218,7 @@ class Coordinator implements AmbientCoordinator {
     this.lastBeckettPostAt.set(channelId, this.clock.now());
   }
 
-  /** Inside the window after Beckett spoke here, chatter is a continuation, not an interjection. */
+  /** Whether Beckett spoke recently enough to use the short-lull continuation check. */
   private isEngaged(channelId: string): boolean {
     const windowSecs = this.config.engaged_window_secs ?? 180;
     if (windowSecs <= 0) return false;
@@ -286,30 +305,40 @@ class Coordinator implements AmbientCoordinator {
       if (burst.length === 0) return;
       if (this.effectiveMode(channelId) === "off") return;
 
-      // Engaged continuation (OPS-87 follow-up): Beckett spoke here moments ago, so this burst
-      // is people responding to it. Gating that behind the classifier + cooldown is what made
-      // Beckett go silent mid-conversation ("adding another voice just crowds the room" — on its
-      // OWN thread). Skip both; the session turn still decides (it can PASS a conversation-ender).
+      // Recent-conversation lane (OPS-87 follow-up): after Beckett speaks, skip the extra classifier
+      // and cooldown so real continuations stay quick. Recency is only a hint, though; the downstream
+      // turn still verifies the addressee and can PASS a closer or human-to-human pivot.
       const engaged = this.isEngaged(channelId);
       const transcript = this.getTranscript(channelId);
       let verdict: TriageVerdict;
-      if (engaged) {
+      if (engaged && latestReplyTargetsKnownHuman(burst, transcript)) {
+        // A native human reply is structurally likely to be a pivot, but group wording can still
+        // invite Beckett. Use the fast classifier before any typing/full session instead of a brittle
+        // wording heuristic or an unconditional skip.
+        verdict = await this.triage(burst, transcript, { channelId });
+        if (!passesTriageGate(verdict, this.config.triage_threshold)) {
+          this.logger.info("ambient engaged human reply skipped", { channel: channelId, burst: burst.length });
+          return;
+        }
+        this.logger.info("ambient engaged human reply validated", { channel: channelId, burst: burst.length });
+      } else if (engaged) {
         verdict = {
           interject: true,
           kind: "none",
           confidence: 1,
-          reason: "engaged conversation — the burst responds to something Beckett just said",
-          // Engaged by construction means people are talking WITH Beckett (it spoke moments ago),
-          // so this is a continuation of a Beckett thread — `beckett-thread`, the addressee read
-          // that captures exactly this (OPS-101 / OPS-99 §3.2, sharpened OPS-116). No classifier
-          // ran to read it; the engaged frame short-circuits addresseeFrameLine anyway.
-          addressee: "beckett-thread",
+          reason: "recent Beckett activity — downstream turn must verify who the burst addresses",
+          // The clock only says Beckett spoke recently. It does not prove the latest turn still
+          // points at Beckett; the fast engaged lane leaves that read to the downstream PASS check.
+          addressee: "unclear",
         };
         this.logger.info("ambient engaged continuation", { channel: channelId, burst: burst.length });
       } else {
         if (this.isCapped(channelId)) return;
         verdict = await this.triage(burst, transcript, { channelId });
-        if (!verdict.interject || verdict.confidence < this.config.triage_threshold) return;
+        // A turn mechanically read as aimed at another person is not Beckett's to answer. Keep this
+        // invariant outside the model so an internally inconsistent high-score verdict cannot barge
+        // into a human-to-human exchange.
+        if (!passesTriageGate(verdict, this.config.triage_threshold)) return;
         if (this.isCapped(channelId)) return;
       }
 

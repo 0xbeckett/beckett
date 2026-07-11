@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Ambient classifier: natural turn-taking and reliable fast scoring
+
+- **Turn-taking, not keyword relevance.** The triage rubric now judges the latest unresolved turn,
+  addressee, conversation state, and marginal value of speaking. Balanced contrasts cover pivots,
+  already-answered questions, accepted Beckett offers, natural closers, venting, and prompt-injected
+  chat text. The model emits a threshold-independent utility score and candidate kind; runtime code
+  derives the final speaking decision from the configured threshold.
+- **Better conversation signals.** Native Discord reply targets survive the shared-context store and
+  reach both triage and engaged-turn framing. Beckett is mechanically excluded from the human roster,
+  and the burst is no longer duplicated in recent context.
+- **Faster and more dependable calls.** Static instructions are cached and separated from untrusted
+  JSON conversation data. Cerebras uses strict structured output with a smaller completion budget;
+  Claude runs in isolated safe mode without tools, skills, Chrome, session persistence, or extended
+  thinking. Verdict logs now include provider, model, addressee, and elapsed time.
+- **False-positive backstops.** A cold verdict aimed at another human cannot pass the runtime gate.
+  The engaged lane now treats recent Beckett activity as a hint and revalidates native replies to
+  known humans with the fast classifier before typing or spending a full turn. The session verifies
+  the remaining ambiguous continuations. A labeled opt-in eval reports accuracy and latency.
+
 ### OPS-121 — better memory: sharper recall, global context, routine staleness pruning
 
 - **Sharper recall (still keyword/relevance — deliberately no semantic/embedding layer).**

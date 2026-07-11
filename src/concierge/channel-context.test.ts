@@ -62,7 +62,7 @@ function fileLines(channelsDir: string, channelId: string): string[] {
 
 test("append → recent round-trips all fields in order", () => {
   const { store } = makeStore({ now: () => 10_000 });
-  const a = entry("m1", 1_000);
+  const a = entry("m1", 1_000, { repliedToId: "prior-message" });
   const b = entry("m2", 2_000, { authorId: "beckett", authorName: "beckett", kind: "beckett" });
   const c = entry("m3", 3_000, { authorName: "angry worm", content: "it 502s for me too" });
   store.append("chan", a);

@@ -41,6 +41,8 @@ export interface ChannelEntry {
   authorName: string;
   /** Raw text (attachments already folded in by the caller). */
   content: string;
+  /** Discord's native reply target, when present. Optional for backward-compatible stored rows. */
+  repliedToId?: string | null;
   kind: "user" | "beckett";
 }
 
@@ -196,6 +198,7 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
         typeof raw.content === "string" &&
         typeof raw.ts === "number" &&
         Number.isFinite(raw.ts) &&
+        (raw.repliedToId === undefined || raw.repliedToId === null || typeof raw.repliedToId === "string") &&
         (raw.kind === "user" || raw.kind === "beckett")
       ) {
         return {
@@ -204,6 +207,7 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
           authorId: raw.authorId,
           authorName: raw.authorName,
           content: raw.content,
+          ...(raw.repliedToId !== undefined ? { repliedToId: raw.repliedToId } : {}),
           kind: raw.kind,
         };
       }

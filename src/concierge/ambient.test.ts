@@ -49,7 +49,13 @@ class FakeClock implements AmbientClock {
   }
 }
 
-function msg(id: string, channelId: string, content: string, createdAt: number): IncomingMessage {
+function msg(
+  id: string,
+  channelId: string,
+  content: string,
+  createdAt: number,
+  over: Partial<IncomingMessage> = {},
+): IncomingMessage {
   return {
     messageId: id,
     userId: "user-1",
@@ -62,6 +68,7 @@ function msg(id: string, channelId: string, content: string, createdAt: number):
     authorIsBot: false,
     createdAt,
     attachments: [],
+    ...over,
   };
 }
 
@@ -146,6 +153,50 @@ describe("AmbientCoordinator", () => {
     expect(bursts).toEqual([["export flow hurts", "wish it gave me csv"]]);
     expect(turns).toHaveLength(1);
     expect(turns[0]).toMatchObject({ kind: "candidate", channelId: "c1" });
+  });
+
+  test("preserves Discord's native reply edge for classifier addressee reads", async () => {
+    const clock = new FakeClock();
+    let replyTarget: string | null | undefined;
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({
+        proactivity: { enabled: true, default_mode: "suggest", burst_quiet_secs: 1, engaged_window_secs: 0 },
+      }),
+      logger: quietLogger,
+      clock,
+      triage: async (burst) => {
+        replyTarget = burst[0]?.repliedToId;
+        return { ...yes, interject: false, kind: "none" };
+      },
+      engage: async () => "must not run",
+    });
+
+    coordinator.observe(msg("m2", "c1", "can you paste that?", 0, { repliedToId: "m1" }), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(replyTarget).toBe("m1");
+  });
+
+  test("hard-stops an internally inconsistent high-score verdict aimed at another person", async () => {
+    const clock = new FakeClock();
+    let engageCalls = 0;
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({
+        proactivity: { enabled: true, default_mode: "suggest", burst_quiet_secs: 1, engaged_window_secs: 0 },
+      }),
+      logger: quietLogger,
+      clock,
+      triage: async () => ({ ...yes, confidence: 1, addressee: "other" }),
+      engage: async () => {
+        engageCalls++;
+        return "I should not interrupt";
+      },
+    });
+
+    coordinator.observe(msg("m1", "c1", "ssh, can you check the deploy?", 0), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(engageCalls).toBe(0);
   });
 
   test("mention mid-burst cancels pending flush", async () => {
