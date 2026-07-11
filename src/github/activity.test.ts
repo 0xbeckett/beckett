@@ -65,6 +65,18 @@ describe("GitHubActivityPoller", () => {
     });
   });
 
+  test("an empty baseline still relays the first later commit and merge", async () => {
+    const reader = new Reader();
+    reader.commits = [[], [commit("a1")]];
+    reader.prs = [[], [pr(1)]];
+    const p = poller(reader);
+    expect(await p.poll()).toEqual([]);
+    expect((await p.poll()).map((event) => event.line)).toEqual([
+      "zoom pushed 1 commit to main (a1)",
+      "PR #1 merged: Ship 1 by zoom",
+    ]);
+  });
+
   test("durable commit and PR watermarks prevent re-announcement after restart", async () => {
     const dir = mkdtempSync(join(tmpdir(), "github-activity-"));
     const statePath = join(dir, "activity.json");

@@ -101,8 +101,13 @@ export class GitHubActivityPoller {
 
     if (commitsResult.status === "fulfilled") {
       const commits = commitsResult.value.filter((commit) => Boolean(commit.sha)); // newest first from GitHub
-      if (commits.length > 0) {
-        const previous = this.state.lastCommitSha;
+      const previous = this.state.lastCommitSha;
+      if (commits.length === 0 && previous === undefined) {
+        // Persist an empty baseline too: a repository created after daemon boot must announce its
+        // first commit rather than mistaking it for old history.
+        this.state.lastCommitSha = "";
+        changed = true;
+      } else if (commits.length > 0) {
         if (previous === undefined) {
           // First observation is a baseline, not an announcement.
           this.state.lastCommitSha = commits[0]!.sha;
@@ -124,8 +129,12 @@ export class GitHubActivityPoller {
     if (prsResult.status === "fulfilled") {
       const prs = prsResult.value.filter((pr) => Number.isInteger(pr.number) && pr.number > 0);
       const maxNumber = prs.reduce((max, pr) => Math.max(max, pr.number), 0);
-      if (maxNumber > 0) {
-        const previous = this.state.lastMergedPrNumber;
+      const previous = this.state.lastMergedPrNumber;
+      if (maxNumber === 0 && previous === undefined) {
+        // Same empty-baseline rule as commits: the first PR merged after boot is new activity.
+        this.state.lastMergedPrNumber = 0;
+        changed = true;
+      } else if (maxNumber > 0) {
         if (previous === undefined) {
           this.state.lastMergedPrNumber = maxNumber;
           changed = true;
@@ -209,8 +218,8 @@ export class GitHubActivityPoller {
     try {
       const raw = JSON.parse(readFileSync(this.statePath, "utf8")) as ActivityState;
       return {
-        ...(typeof raw.lastCommitSha === "string" && raw.lastCommitSha ? { lastCommitSha: raw.lastCommitSha } : {}),
-        ...(typeof raw.lastMergedPrNumber === "number" && raw.lastMergedPrNumber > 0
+        ...(typeof raw.lastCommitSha === "string" ? { lastCommitSha: raw.lastCommitSha } : {}),
+        ...(typeof raw.lastMergedPrNumber === "number" && raw.lastMergedPrNumber >= 0
           ? { lastMergedPrNumber: raw.lastMergedPrNumber }
           : {}),
       };
