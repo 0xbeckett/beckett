@@ -94,11 +94,11 @@ export type TurnMessage = string | TurnContentBlock[];
 const STARTUP_CHANNEL_ID = "1520658476974735490";
 
 /**
- * Where the restart "what's new" release note lands (owner's pick: #general). The `announce` config
+ * Where the restart "what's new" release note lands (owner's pick: #announcements). The `announce` config
  * still gates WHETHER it fires (fork-silent by default), but the post itself always goes here — this
  * is the send target baked into the injected SYSTEM prompt, not a per-instance config knob.
  */
-const RELEASE_NOTE_CHANNEL_ID = "1520658476974735490";
+const RELEASE_NOTE_CHANNEL_ID = "1523507437485948958";
 
 /** Hard ceiling on one chat turn before we give up waiting for its `result` line. */
 const TURN_TIMEOUT_MS = 240_000;
