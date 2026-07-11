@@ -147,8 +147,10 @@ export class GitHubActivityPoller {
         changed = true;
       } else {
         const seen = new Set(known);
+        let sawNewPr = false;
         for (const pr of [...prs].sort((a, b) => a.number - b.number)) {
           if (seen.has(pr.number)) continue;
+          sawNewPr = true;
           seen.add(pr.number);
           if (!this.isIgnored(pr.author)) {
             events.push({ kind: "merged", pr, line: formatMergedPrLine(pr) });
@@ -156,9 +158,12 @@ export class GitHubActivityPoller {
         }
         // Persist suppression decisions as seen too: changing config/restarting must never turn a
         // bot/deploy merge into an old "new" event. The list remains tiny for this one repository.
-        this.state.seenMergedPrNumbers = [...seen].sort((a, b) => a - b);
-        this.state.lastMergedPrNumber = Math.max(this.state.lastMergedPrNumber ?? 0, maxNumber);
-        changed = true;
+        const nextMax = Math.max(this.state.lastMergedPrNumber ?? 0, maxNumber);
+        if (sawNewPr || nextMax !== this.state.lastMergedPrNumber) {
+          this.state.seenMergedPrNumbers = [...seen].sort((a, b) => a - b);
+          this.state.lastMergedPrNumber = nextMax;
+          changed = true;
+        }
       }
     } else {
       this.logger.warn("merged PR read failed — skipping this source", { error: String(prsResult.reason) });

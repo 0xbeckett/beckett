@@ -77,6 +77,18 @@ describe("GitHubActivityPoller", () => {
     ]);
   });
 
+  test("a lower-numbered PR merged later is relayed once", async () => {
+    const reader = new Reader();
+    // PR numbers are allocated at open time: #9 may stay open while #10 merges first.
+    reader.commits = [[commit("a1")], [commit("a1")], [commit("a1")]];
+    reader.prs = [[pr(10)], [pr(10), pr(9)], [pr(10), pr(9)]];
+    const p = poller(reader);
+
+    expect(await p.poll()).toEqual([]);
+    expect((await p.poll()).map((event) => event.line)).toEqual(["PR #9 merged: Ship 9 by zoom"]);
+    expect(await p.poll()).toEqual([]);
+  });
+
   test("durable commit and PR watermarks prevent re-announcement after restart", async () => {
     const dir = mkdtempSync(join(tmpdir(), "github-activity-"));
     const statePath = join(dir, "activity.json");
@@ -92,7 +104,11 @@ describe("GitHubActivityPoller", () => {
         "PR #11 merged: Ship 11 by zoom",
       ]);
       expect(existsSync(statePath)).toBe(true);
-      expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({ lastCommitSha: "b2", lastMergedPrNumber: 11 });
+      expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({
+        lastCommitSha: "b2",
+        lastMergedPrNumber: 11,
+        seenMergedPrNumbers: [10, 11],
+      });
 
       const restarted = new Reader();
       restarted.commits = [[commit("b2"), commit("a1")]];
