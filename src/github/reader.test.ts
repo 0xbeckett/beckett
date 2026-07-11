@@ -20,6 +20,29 @@ function cli(stdout: string, code = 0) {
   });
 }
 
+test("activity reads parse main commits and only merged pull requests through GitHubCli", async () => {
+  const commits = cli(
+    JSON.stringify([
+      { sha: "abcdef123", author: { login: "zoom" }, commit: { message: "relay activity\n\nmore" } },
+      { sha: "fedcba987", commit: { author: { name: "external" }, message: "fallback author" } },
+    ]),
+  );
+  expect(await commits.mainCommits("0xbeckett/beckett", "main")).toEqual([
+    { sha: "abcdef123", author: "zoom", message: "relay activity" },
+    { sha: "fedcba987", author: "external", message: "fallback author" },
+  ]);
+
+  const prs = cli(
+    JSON.stringify([
+      { number: 100, title: "Relay", user: { login: "zoom" }, merged_at: "2026-07-11T00:00:00Z" },
+      { number: 101, title: "Open then closed", user: { login: "ro" }, merged_at: null },
+    ]),
+  );
+  expect(await prs.mergedPullRequests("0xbeckett/beckett")).toEqual([
+    { number: 100, title: "Relay", author: "zoom", mergedAt: "2026-07-11T00:00:00Z" },
+  ]);
+});
+
 test("prSignals parses lifecycle, reviews, comments, and a green rollup", async () => {
   const gh = cli(
     JSON.stringify({

@@ -86,6 +86,16 @@ test("unknown default Plane board is a loud config error listing valid boards", 
   expect(() => loadToml(`[plane]\ndefault_board = "missing"\n`)).toThrow(/unknown default_board "missing" \(have: ops, int, vid, vidpip\)/);
 });
 
+test("github activity relay defaults route to the configured dev feed", () => {
+  expect(validateConfig({}).github.activity).toMatchObject({
+    enabled: true,
+    repo: "0xbeckett/beckett",
+    branch: "main",
+    poll_secs: 60,
+    channel_id: "1520658476974735490",
+  });
+});
+
 test("proactivity defaults ship disabled and off", () => {
   const config = validateConfig({});
   expect(config.proactivity).toMatchObject({
