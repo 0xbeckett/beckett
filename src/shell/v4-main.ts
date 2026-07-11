@@ -35,6 +35,7 @@ import { createPlaneClient, type PlaneClient } from "../plane/client.ts";
 import { createPlanePoller, type PlanePoller } from "../plane/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
 import { createGitHubPrPoller, type GitHubPrPoller } from "../github/poll.ts";
+import { createGitHubActivityPoller, type GitHubActivityPoller } from "../github/activity.ts";
 import { parsePrUrl } from "../github/types.ts";
 import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
@@ -80,6 +81,7 @@ interface BootedSystem {
   poller: PlanePoller;
   pollers: Map<string, PlanePoller>;
   prPoller: GitHubPrPoller | null;
+  activityPoller: GitHubActivityPoller | null;
   dispatcher: Dispatcher;
   concierge: Concierge;
   quick: QuickRunner;
@@ -165,6 +167,29 @@ async function boot(): Promise<BootedSystem> {
         pollSecs: config.github.poll_secs,
         statePath: join(beckettDir, "github-prs.json"),
         logger: logger.child("github.poll"),
+      })
+    : null;
+
+  // OPS-128: a separate read-only feed for contributors pushing directly to Beckett's main or
+  // merging PRs there. It uses the same credentialed GitHubCli boundary as every other GitHub
+  // operation; deployment identities are advanced as watermarks but never become Discord lines.
+  const activityConfig = config.github.activity;
+  const activityPoller: GitHubActivityPoller | null = identity.github.pat && activityConfig.enabled
+    ? createGitHubActivityPoller({
+        reader: new GitHubCli({
+          pat: identity.github.pat,
+          account: identity.github.account,
+          apiBase: identity.github.apiBase,
+          resolveRepoDir: () => PROJECTS_ROOT,
+          logger: logger.child("gh.activity.read"),
+        }),
+        repo: activityConfig.repo,
+        branch: activityConfig.branch,
+        pollSecs: activityConfig.poll_secs,
+        statePath: join(beckettDir, "github-activity.json"),
+        // Always suppress the actually configured daemon identity even if a box overrides it.
+        ignoredAuthors: [...new Set([...activityConfig.ignored_authors, identity.github.account])],
+        logger: logger.child("github.activity"),
       })
     : null;
 
@@ -302,6 +327,7 @@ async function boot(): Promise<BootedSystem> {
       ...poller.stats(),
     },
     githubPr: prPoller ? prPoller.stats() : null,
+    githubActivity: activityPoller ? { repo: activityConfig.repo, branch: activityConfig.branch } : null,
     plane: {
       baseUrl: config.plane.base_url,
       defaultBoard: config.plane.default_board,
@@ -344,6 +370,9 @@ async function boot(): Promise<BootedSystem> {
   if (prPoller) {
     await prPoller.start((events) => concierge.notifyPrEvents(events));
   }
+  if (activityPoller) {
+    await activityPoller.start((events) => concierge.relayGitHubActivity(events, activityConfig.channel_id));
+  }
 
   // Memory self-healing (OPS-121): one maintenance pass shortly after boot, then daily —
   // archives expired/superseded facts and merges near-duplicates so the knowledge graph
@@ -360,7 +389,7 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, dispatcher, concierge, quick, memoryMaintenance };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, dispatcher, concierge, quick, memoryMaintenance };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -368,6 +397,7 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   sys.logger.info("shutting down beckett v3", { signal });
   sys.memoryMaintenance.stop();
   sys.prPoller?.stop();
+  sys.activityPoller?.stop();
   for (const p of sys.pollers.values()) p.stop();
   try {
     const drain = await sys.dispatcher.drainForShutdown(signal, 20_000);

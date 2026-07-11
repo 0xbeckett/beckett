@@ -34,6 +34,7 @@ import pkg from "../../package.json" with { type: "json" };
 import type { Config, IncomingMessage, Logger, ProactivityMode, ThreadCreated } from "../types.ts";
 import type { PollEvent, PlaneComment, Ticket } from "../plane/types.ts";
 import type { PrPollEvent } from "../github/types.ts";
+import type { GitHubActivityEvent } from "../github/activity.ts";
 import { log as rootLog } from "../log.ts";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
@@ -1249,6 +1250,19 @@ export class Concierge {
    * carries no origin channel are dropped SILENTLY (criterion: nowhere to route → say nothing). A
    * batch is grouped per channel so one poll wave costs one turn per channel, not one per event.
    */
+  /**
+   * Post external GitHub main/merge activity straight into the configured dev feed. This bypasses
+   * the chat model deliberately: it is an operational log, so exact terse lines are preferable to
+   * a conversational paraphrase. The poller persists before this send, preventing restart spam.
+   */
+  relayGitHubActivity(events: GitHubActivityEvent | GitHubActivityEvent[], channelId: string): void {
+    for (const event of Array.isArray(events) ? events : [events]) {
+      void this.gateway.post(channelId, event.line).catch((err) =>
+        this.log.warn("github activity relay post failed", { channelId, error: String(err) }),
+      );
+    }
+  }
+
   notifyPrEvents(events: PrPollEvent | PrPollEvent[]): void {
     const batch = Array.isArray(events) ? events : [events];
     const byChannel = new Map<string, { lines: string[]; refs: string[] }>();

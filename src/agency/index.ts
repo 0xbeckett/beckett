@@ -48,6 +48,7 @@ import type {
 } from "../types.ts";
 import { ActionClass } from "../types.ts";
 import type { CheckConclusion, GitHubPrReader, PrSignals } from "../github/types.ts";
+import type { GitHubActivityCommit, GitHubActivityReader, GitHubMergedPullRequest } from "../github/activity.ts";
 import { pendingActionId } from "../ids.ts";
 import { log as rootLog } from "../log.ts";
 import { childEnv } from "../env.ts";
@@ -328,7 +329,7 @@ export interface PublishResult {
  * (`$GITHUB_PAT`) so the token never appears in argv. Most ops are FREE; the caller GATES
  * `mergePR` behind {@link Agency.perform}.
  */
-export class GitHubCli implements GitHubClient, GitHubPrReader {
+export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityReader {
   private readonly runner: (
     cmd: string[],
     opts?: { cwd?: string; env?: Record<string, string | undefined> },
@@ -819,6 +820,56 @@ export class GitHubCli implements GitHubClient, GitHubPrReader {
    * only (no state change), so it's FREE. Throws with a clear message on an unreadable/missing PR
    * so the poller can skip it for the tick and retry, exactly like the Plane poller's read failures.
    */
+  /**
+   * Recent commits on one branch for the external activity relay. This stays behind GitHubCli so
+   * pollers reuse Beckett's credential boundary instead of invoking gh/git themselves.
+   */
+  async mainCommits(repo: string, branch: string): Promise<GitHubActivityCommit[]> {
+    this.requireCreds("read repository commits");
+    const r = await this.runner(
+      ["gh", "api", "--method", "GET", `repos/${repo}/commits`, "-f", `sha=${branch}`, "-f", "per_page=100"],
+      { env: this.ghEnv() },
+    );
+    if (r.code !== 0) throw new Error(`gh api (commits) failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    let commits: Array<{ sha?: string; author?: { login?: string }; committer?: { login?: string }; commit?: { message?: string; author?: { name?: string } } }>;
+    try {
+      commits = JSON.parse(r.stdout);
+    } catch {
+      throw new Error(`gh api (commits) returned unparseable JSON for ${repo}`);
+    }
+    if (!Array.isArray(commits)) throw new Error(`gh api (commits) returned a non-list for ${repo}`);
+    return commits.map((commit) => ({
+      sha: String(commit.sha ?? ""),
+      author: commit.author?.login ?? commit.committer?.login ?? commit.commit?.author?.name ?? "",
+      message: String(commit.commit?.message ?? "").split("\n")[0] ?? "",
+    }));
+  }
+
+  /** Recently merged pull requests for the external activity relay (read-only). */
+  async mergedPullRequests(repo: string): Promise<GitHubMergedPullRequest[]> {
+    this.requireCreds("read merged pull requests");
+    const r = await this.runner(
+      ["gh", "api", "--method", "GET", `repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100`],
+      { env: this.ghEnv() },
+    );
+    if (r.code !== 0) throw new Error(`gh api (pulls) failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    let prs: Array<{ number?: number; title?: string; user?: { login?: string }; merged_at?: string | null }>;
+    try {
+      prs = JSON.parse(r.stdout);
+    } catch {
+      throw new Error(`gh api (pulls) returned unparseable JSON for ${repo}`);
+    }
+    if (!Array.isArray(prs)) throw new Error(`gh api (pulls) returned a non-list for ${repo}`);
+    return prs
+      .filter((pr) => Boolean(pr.merged_at))
+      .map((pr) => ({
+        number: Number(pr.number ?? 0),
+        title: String(pr.title ?? ""),
+        author: pr.user?.login ?? "",
+        mergedAt: String(pr.merged_at ?? ""),
+      }));
+  }
+
   async prSignals(repo: string, n: number): Promise<PrSignals> {
     this.requireCreds("read PR signals");
     const fields =

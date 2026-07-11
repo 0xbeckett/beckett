@@ -401,6 +401,20 @@ const ConfigSchema = z
     github: z
       .object({
         poll_secs: posInt.default(60),
+        // OPS-128 — external main/merge relay. Unlike the ticket-scoped PR sense above, this
+        // watches Beckett's own repository and sends terse dev-feed lines to one configured room.
+        activity: z
+          .object({
+            enabled: z.boolean().default(true),
+            repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/, "must be owner/repo").default("0xbeckett/beckett"),
+            branch: z.string().min(1).default("main"),
+            poll_secs: posInt.default(60),
+            channel_id: z.string().regex(/^\d{17,20}$/, "must be a Discord channel id").default("1520658476974735490"),
+            // The daemon account and deployment/bot identities are never external activity.
+            ignored_authors: z.array(z.string().min(1)).default(["0xbeckett", "github-actions[bot]", "dependabot[bot]"]),
+          })
+          .strict()
+          .default({}),
       })
       .strict()
       .default({}),

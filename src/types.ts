@@ -650,6 +650,16 @@ export interface Config {
   github: {
     /** How often to re-read watched PRs' review/CI/merge signal (seconds). */
     poll_secs: number;
+    /** External commits and merged PRs from Beckett's own repository, relayed to the dev feed. */
+    activity: {
+      enabled: boolean;
+      repo: string;
+      branch: string;
+      poll_secs: number;
+      channel_id: string;
+      /** Daemon/deploy automation accounts whose commits and PRs are intentionally silent. */
+      ignored_authors: string[];
+    };
   };
   /** Ambient interjection policy. Ships disabled; per-channel modes are opt-in. */
   proactivity: {
