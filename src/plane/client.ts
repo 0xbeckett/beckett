@@ -28,6 +28,17 @@ const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 const RETRY_JITTER_RATIO = 0.25;
 
+// Plane requires a color for every created workflow state. Reuse its stock group palette so
+// provisioning is deterministic and custom Beckett states still read naturally in the board UI.
+const WORKFLOW_STATE_COLORS = {
+  backlog: "#60646C",
+  unstarted: "#60646C",
+  started: "#F59E0B",
+  completed: "#46A758",
+  cancelled: "#9AA4BC",
+} as const;
+type WorkflowStateGroup = keyof typeof WORKFLOW_STATE_COLORS;
+
 // =======================================================================================
 // Public input/dependency shapes (the contract in docs/V3.md §3)
 // =======================================================================================
@@ -283,7 +294,7 @@ export class PlaneClient {
     this.boardConfig = resolvePlaneBoard(this.config, this.boardName);
     // API calls use the internal URL when set (bypasses the public auth gate / TLS);
     // base_url stays public for human-facing ticket links.
-    const apiRoot = (process.env.PLANE_INTERNAL_URL ?? this.config.plane.base_url).replace(/\/+$/, "");
+    const apiRoot = (process.env.PLANE_INTERNAL_URL?.trim() || this.config.plane.base_url).replace(/\/+$/, "");
     this.apiBase = `${apiRoot}/api/v1/workspaces/${this.config.plane.workspace_slug}`;
   }
 
@@ -305,7 +316,7 @@ export class PlaneClient {
   /** All issues in the configured project, hydrated to {@link Ticket}s. `updatedSince` narrows. */
   async listIssues(opts?: { updatedSince?: string }): Promise<Ticket[]> {
     await this.bootstrap();
-    const raw = await this.fetchAllPages(this.issuesPath());
+    const raw = await this.fetchAllPages(this.workItemsPath());
     let tickets = raw.map((r) => this.hydrate(r));
     if (opts?.updatedSince) {
       const since = opts.updatedSince;
@@ -322,7 +333,7 @@ export class PlaneClient {
    */
   async listIssueHeads(): Promise<Array<{ id: string; updatedAt: string }>> {
     await this.bootstrap();
-    const raw = await this.fetchAllPages(this.issuesPath(), { fields: "id,updated_at" });
+    const raw = await this.fetchAllPages(this.workItemsPath(), { fields: "id,updated_at" });
     return raw.map((r) => {
       const row = IssueHeadSchema.parse(r);
       return { id: row.id, updatedAt: row.updated_at };
@@ -333,7 +344,7 @@ export class PlaneClient {
   async getIssue(id: string): Promise<Ticket | null> {
     await this.bootstrap();
     try {
-      const raw = await this.req("GET", `${this.issuesPath()}${encodeURIComponent(id)}/`);
+      const raw = await this.req("GET", `${this.workItemsPath()}${encodeURIComponent(id)}/`);
       return this.hydrate(raw);
     } catch (err) {
       if (err instanceof PlaneApiError && err.status === 404) return null;
@@ -359,14 +370,14 @@ export class PlaneClient {
     };
     if (input.assignees && input.assignees.length > 0) payload.assignees = input.assignees;
 
-    const raw = await this.req("POST", this.issuesPath(), payload);
+    const raw = await this.req("POST", this.workItemsPath(), payload);
     return this.hydrate(raw);
   }
 
   /** Move a ticket to a new lifecycle state (resolves `state_map` name → Plane state UUID). */
   async setState(id: string, state: TicketState): Promise<void> {
     await this.bootstrap();
-    await this.req("PATCH", `${this.issuesPath()}${encodeURIComponent(id)}/`, {
+    await this.req("PATCH", `${this.workItemsPath()}${encodeURIComponent(id)}/`, {
       state: this.resolveStateId(state),
     });
     this.logger.info("ticket state set", { ticketId: id, state });
@@ -392,7 +403,7 @@ export class PlaneClient {
   ): Promise<PlaneComment[]> {
     await this.bootstrap();
     const raw = await this.fetchAllPages(
-      `${this.issuesPath()}${encodeURIComponent(ticketId)}/comments/`,
+      `${this.workItemsPath()}${encodeURIComponent(ticketId)}/comments/`,
       { order_by: "-created_at" },
       since
         ? (pageRows) =>
@@ -419,7 +430,7 @@ export class PlaneClient {
     await this.bootstrap();
     const raw = await this.req(
       "POST",
-      `${this.issuesPath()}${encodeURIComponent(ticketId)}/comments/`,
+      `${this.workItemsPath()}${encodeURIComponent(ticketId)}/comments/`,
       { comment_html: textToParagraphHtml(body) },
     );
     return this.hydrateComment(ticketId, raw);
@@ -599,8 +610,13 @@ export class PlaneClient {
     }
   }
 
-  private desiredWorkflowStates(): Array<{ ticketState: TicketState; name: string; group: string }> {
-    const groups: Record<TicketState, string> = {
+  private desiredWorkflowStates(): Array<{
+    ticketState: TicketState;
+    name: string;
+    group: WorkflowStateGroup;
+    color: string;
+  }> {
+    const groups: Record<TicketState, WorkflowStateGroup> = {
       backlog: "backlog",
       todo: "unstarted",
       design: "started",
@@ -618,7 +634,8 @@ export class PlaneClient {
       const name = this.boardConfig.state_map[ticketState];
       if (!name || seen.has(name.toLowerCase())) return [];
       seen.add(name.toLowerCase());
-      return [{ ticketState, name, group: groups[ticketState] }];
+      const group = groups[ticketState];
+      return [{ ticketState, name, group, color: WORKFLOW_STATE_COLORS[group] }];
     });
   }
 
@@ -657,7 +674,11 @@ export class PlaneClient {
       if (states.some((state) => state.name.toLowerCase() === wanted.name.toLowerCase())) continue;
       try {
         const created = StateSchema.parse(
-          await this.req("POST", `${this.issuesProjectPath()}states/`, { name: wanted.name, group: wanted.group }),
+          await this.req("POST", `${this.issuesProjectPath()}states/`, {
+            name: wanted.name,
+            group: wanted.group,
+            color: wanted.color,
+          }),
         );
         states.push({ id: created.id, name: created.name, group: created.group ?? undefined });
         statesCreated.push(created.name);
@@ -680,8 +701,8 @@ export class PlaneClient {
     return `${this.apiBase}/projects/${this.projectId}/`;
   }
 
-  private issuesPath(): string {
-    return `${this.issuesProjectPath()}issues/`;
+  private workItemsPath(): string {
+    return `${this.issuesProjectPath()}work-items/`;
   }
 
   // ── HTTP plumbing ──────────────────────────────────────────────────────────────────────

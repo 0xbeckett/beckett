@@ -35,6 +35,7 @@ import type { Config, IncomingMessage, Logger, ProactivityMode, ThreadCreated } 
 import type { PollEvent, PlaneComment, Ticket } from "../plane/types.ts";
 import type { PrPollEvent } from "../github/types.ts";
 import type { GitHubActivityEvent } from "../github/activity.ts";
+import { resolveGitHubOwner } from "../github/owner.ts";
 import { log as rootLog } from "../log.ts";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
@@ -90,9 +91,16 @@ export type TurnMessage = string | TurnContentBlock[];
 /**
  * Ops channel that gets a one-line banner on every daemon boot (short git hash + subject) so a
  * restart is visible and we can see exactly which commit is live. Hardcoded by design (it's an
- * ops constant, not per-conversation), overridable via `BECKETT_STARTUP_CHANNEL_ID` for dev.
+ * ops constant, not per-conversation), overridable via `BECKETT_STARTUP_CHANNEL_ID` for dev or
+ * disabled entirely by setting that variable to `disabled`.
  */
 const STARTUP_CHANNEL_ID = "1520658476974735490";
+
+function startupChannelId(): string | null {
+  const configured = process.env.BECKETT_STARTUP_CHANNEL_ID?.trim();
+  if (configured?.toLowerCase() === "disabled") return null;
+  return configured || STARTUP_CHANNEL_ID;
+}
 
 /**
  * Where the restart "what's new" release note lands (owner's pick: #announcements). The `announce` config
@@ -922,7 +930,7 @@ export class ConciergeSession {
    */
   private composeSystemPrompt(): string {
     if (this.staticPrompt !== undefined) return this.staticPrompt;
-    const doctrine = readDoctrine();
+    const doctrine = readDoctrine(this.config);
     const persona = readOrSeedPersona(this.personaFilePath());
     const doctrineBlock = `<doctrine>\n${doctrine}\n</doctrine>`;
     return persona.trim() ? `${doctrineBlock}\n\n<persona>\n${persona}\n</persona>` : doctrineBlock;
@@ -1097,9 +1105,11 @@ export class Concierge {
         // Crash-loop alarm (issue #24): a repeating child crash (bad auth/config) pings the ops
         // channel instead of surfacing only as per-message "something broke" replies.
         onCrashLoop: (info) => {
+          const channelId = startupChannelId();
+          if (!channelId) return;
           void this.gateway
             .post(
-              process.env.BECKETT_STARTUP_CHANNEL_ID?.trim() || STARTUP_CHANNEL_ID,
+              channelId,
               `⚠️ My chat session has crashed ${info.count}× in a row (last exit code ${info.code}). ` +
                 `Probably auth or config — check \`journalctl --user -u beckett-v4\`.`,
             )
@@ -1339,7 +1349,8 @@ export class Concierge {
    * once per boot (called from {@link start}); best-effort — never throws, never blocks startup.
    */
   private async announceStartup(): Promise<void> {
-    const channelId = process.env.BECKETT_STARTUP_CHANNEL_ID?.trim() || STARTUP_CHANNEL_ID;
+    const channelId = startupChannelId();
+    if (!channelId) return;
     try {
       const { short, subject } = await currentGitCommit(defaultRepoRoot());
       const line = subject
@@ -2714,9 +2725,18 @@ export function writeAnnouncedSha(file: string, sha: string): void {
   }
 }
 
-/** Read the sibling `concierge.md` — the stable operating doctrine half of the system prompt. */
-function readDoctrine(): string {
-  return readFileSync(join(import.meta.dir, "concierge.md"), "utf8");
+/** Fill instance-owned values into the stable operating doctrine template. */
+export function renderDoctrine(
+  doctrine: string,
+  config: { identity?: { github_user?: string } },
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return doctrine.replaceAll("{{github_owner}}", resolveGitHubOwner(config, env));
+}
+
+/** Read and render the sibling `concierge.md`, the stable operating doctrine system prompt. */
+function readDoctrine(config: Config): string {
+  return renderDoctrine(readFileSync(join(import.meta.dir, "concierge.md"), "utf8"), config);
 }
 
 /**

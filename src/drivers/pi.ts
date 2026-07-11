@@ -47,7 +47,7 @@
  * Auth (Spec 00 §4): subscription/OAuth only — the child env strips API keys (src/env.ts) so pi
  * uses the `~/.pi/agent/auth.json` login (the ChatGPT/Codex OAuth via the `openai-codex`
  * provider). The child PATH is prefixed with `~/.local/bin` + `~/.bun/bin` so `pi` resolves AND
- * runs under the modern node there (pi needs node ≥20; the system node is older).
+ * runs under the modern node there (the current Pi package needs node >=22.19.0).
  */
 
 import { randomUUID } from "node:crypto";
@@ -78,7 +78,7 @@ const REQUIRED_PI_FLAGS = [
 
 /**
  * The PATH a pi child runs under: prefix `~/.local/bin` & `~/.bun/bin` so `pi` both RESOLVES and
- * RUNS under the modern node there (pi needs node ≥20; the system node is older). Shared by the
+ * RUNS under the modern node there (the current Pi package needs node >=22.19.0). Shared by the
  * live child env and the {@link piPreflight} probe so preflight tests the SAME binary a spawn would.
  */
 function piChildPath(base = process.env.PATH): string {
@@ -115,9 +115,9 @@ export async function piPreflight(config: Config): Promise<PiPreflight> {
     const n = Bun.spawnSync({ cmd: ["node", "--version"], env, stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
     const raw = `${n.stdout.toString()}\n${n.stderr.toString()}`.trim();
     nodeVersion = raw.split("\n").map((l) => l.trim()).find(Boolean) ?? null;
-    if (!n.success || !nodeVersion || !semverGte(nodeVersion, "20.0.0")) {
+    if (!n.success || !nodeVersion || !semverGte(nodeVersion, "22.19.0")) {
       problems.push(
-        `daemon PATH resolves node ${nodeVersion ?? "unknown"}; pi needs node >=20. ` +
+        `daemon PATH resolves node ${nodeVersion ?? "unknown"}; pi needs node >=22.19.0. ` +
           `Put a modern node before /usr/bin in the daemon PATH.`,
       );
     }

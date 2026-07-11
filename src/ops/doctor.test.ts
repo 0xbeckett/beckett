@@ -1,6 +1,6 @@
 /**
  * `beckett doctor` regression checklist (issue #30): the doctor must detect each of the real
- * outages that motivated it — pi running under node 18, a stale pi version, a leaked worker
+ * outages that motivated it - Pi running under an unsupported Node, a stale Pi version, a leaked worker
  * process on a done ticket, and missing env keys — plus report healthy when everything is.
  */
 import { describe, expect, test } from "bun:test";
@@ -13,7 +13,7 @@ const HOME = "/home/beckett";
 function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
   const versions: Record<string, string> = {
     bun: "1.3.13",
-    node: "v22.14.0",
+    node: "v24.4.1",
     claude: "2.1.0 (Claude Code)",
     codex: "codex-cli 0.99.0",
     pi: "0.80.2",
@@ -37,7 +37,10 @@ function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
       return { code: 127, stdout: "", stderr: "not found" };
     },
     preflight: async () => ({ ok: true, problems: [] }),
-    fetchFn: (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+    fetchFn: (async (url: string | URL | Request) =>
+      String(url).includes("api.github.com")
+        ? Response.json({ login: "0xbeckett" })
+        : new Response("{}", { status: 200 })) as unknown as typeof fetch,
     listProcesses: async () => [],
     readFile: (path: string) => {
       if (path.endsWith(".env.example")) {
@@ -72,21 +75,83 @@ describe("doctor — healthy box", () => {
 });
 
 describe("doctor — the issue-#30 regression checklist", () => {
-  test("node 18 on the daemon PATH is a FAIL (the hidden pi crash)", async () => {
+  test("node below Pi's 22.19 floor on the daemon PATH is a FAIL", async () => {
     const base = healthyDeps();
     const report = await runDoctor(
       healthyDeps({
         exec: async (argv, opts) => {
-          if (argv[0] === "node") return { code: 0, stdout: "v18.19.1", stderr: "" };
+          if (argv[0] === "node") return { code: 0, stdout: "v22.18.0", stderr: "" };
           return base.exec!(argv, opts);
         },
       }),
     );
     const node = byName(report.checks, "binary: node");
     expect(node.level).toBe("fail");
-    expect(node.detail).toContain("v18.19.1");
-    expect(node.detail).toContain("20");
+    expect(node.detail).toContain("v22.18.0");
+    expect(node.detail).toContain("22.19.0");
     expect(report.ok).toBeFalse();
+  });
+
+  test("disabled Pi does not impose its Node 22.19 floor", async () => {
+    const config = defaultConfig();
+    config.harness.pi.enabled = false;
+    const base = healthyDeps({ config });
+    const report = await runDoctor(
+      healthyDeps({
+        config,
+        exec: async (argv, opts) =>
+          argv[0] === "node"
+            ? { code: 0, stdout: "v20.18.0", stderr: "" }
+            : base.exec!(argv, opts),
+      }),
+    );
+
+    expect(byName(report.checks, "binary: node")).toEqual({
+      name: "binary: node",
+      level: "ok",
+      detail: "v20.18.0",
+    });
+  });
+
+  test("disabled optional harnesses are not probed or reported missing", async () => {
+    const config = defaultConfig();
+    config.harness.pi.enabled = false;
+    config.harness.codex.enabled = false;
+    const probed: string[] = [];
+    const base = healthyDeps({ config });
+    const report = await runDoctor(
+      healthyDeps({
+        config,
+        exec: async (argv, opts) => {
+          if (argv[0] === "pi" || argv[0] === "codex") return { code: 127, stdout: "", stderr: "not found" };
+          return base.exec!(argv, opts);
+        },
+        preflight: async (harness) => {
+          probed.push(harness);
+          return { ok: true, problems: [] };
+        },
+      }),
+    );
+    expect(probed).toEqual(["claude"]);
+    expect(report.checks.some((check) => check.name === "binary: pi")).toBeFalse();
+    expect(report.checks.some((check) => check.name === "binary: codex")).toBeFalse();
+  });
+
+  test("an enabled Codex harness is required and preflighted", async () => {
+    const config = defaultConfig();
+    config.harness.codex.enabled = true;
+    const base = healthyDeps({ config });
+    const report = await runDoctor(
+      healthyDeps({
+        config,
+        exec: async (argv, opts) =>
+          argv[0] === "codex"
+            ? { code: 127, stdout: "", stderr: "not found" }
+            : base.exec!(argv, opts),
+      }),
+    );
+    expect(byName(report.checks, "binary: codex").level).toBe("fail");
+    expect(byName(report.checks, "preflight: codex").level).toBe("ok");
   });
 
   test("a stale pi (0.72.1 < 0.78) surfaces as a preflight FAIL", async () => {
@@ -123,13 +188,30 @@ describe("doctor — the issue-#30 regression checklist", () => {
     const report = await runDoctor(
       healthyDeps({
         listProcesses: async () => [
-          { pid: 5151, ppid: 900, command: "codex exec --json", cwd: `${HOME}/Projects/widgets` },
+          { pid: 5151, ppid: 900, command: "pi -p --mode json", cwd: `${HOME}/Projects/widgets` },
         ],
       }),
     );
     const procs = byName(report.checks, "processes: harness leaks");
     expect(procs.level).toBe("warn");
     expect(procs.detail).toContain("5151");
+    expect(procs.detail).toContain("ledger");
+  });
+
+  test("a disabled harness process is still reported as a leak", async () => {
+    const config = defaultConfig();
+    config.harness.codex.enabled = false;
+    const report = await runDoctor(
+      healthyDeps({
+        config,
+        listProcesses: async () => [
+          { pid: 5252, ppid: 900, command: "codex exec --json", cwd: `${HOME}/Projects/widgets` },
+        ],
+      }),
+    );
+    const procs = byName(report.checks, "processes: harness leaks");
+    expect(procs.level).toBe("warn");
+    expect(procs.detail).toContain("5252");
     expect(procs.detail).toContain("ledger");
   });
 
@@ -196,6 +278,45 @@ describe("doctor — the issue-#30 regression checklist", () => {
     const gh = byName(report.checks, "token: github");
     expect(gh.level).toBe("fail");
     expect(gh.detail).toContain("401");
+  });
+
+  test("a GitHub PAT for a different account is a FAIL", async () => {
+    const base = healthyDeps();
+    const report = await runDoctor(
+      healthyDeps({
+        fetchFn: (async (url: string | URL | Request, init?: RequestInit) =>
+          String(url).includes("api.github.com")
+            ? Response.json({ login: "someone-else" })
+            : base.fetchFn!(url, init)) as unknown as typeof fetch,
+      }),
+    );
+    const gh = byName(report.checks, "token: github");
+    expect(gh.level).toBe("fail");
+    expect(gh.detail).toContain("someone-else");
+    expect(gh.detail).toContain("0xbeckett");
+  });
+
+  test("GITHUB_ACCOUNT selects the PAT identity even when projects publish to an org", async () => {
+    const base = healthyDeps();
+    const report = await runDoctor(
+      healthyDeps({
+        env: {
+          ...base.env,
+          GITHUB_ACCOUNT: "publisher-bot",
+          BECKETT_GH_ORG: "acme-labs",
+        },
+        fetchFn: (async (url: string | URL | Request, init?: RequestInit) =>
+          String(url).includes("api.github.com")
+            ? Response.json({ login: "publisher-bot" })
+            : base.fetchFn!(url, init)) as unknown as typeof fetch,
+      }),
+    );
+
+    expect(byName(report.checks, "token: github")).toEqual({
+      name: "token: github",
+      level: "ok",
+      detail: "HTTP 200 as publisher-bot",
+    });
   });
 
   test("no alert webhook → WARN, daemon down → FAIL", async () => {

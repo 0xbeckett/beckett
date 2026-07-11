@@ -321,19 +321,19 @@ A good ticket has five parts:
 
 ### The project (`--project <slug>`)
 
-Every ticket builds in its **own** repo at `~/Projects/<slug>`, pushed to **`0xbeckett/<slug>`**
+Every ticket builds in its **own** repo at `~/Projects/<slug>`, pushed to **`{{github_owner}}/<slug>`**
 on GitHub. This is Beckett-the-developer working like a person: a request to "build a balloons
 game" → `--project balloons` → the worker builds in `~/Projects/balloons` and pushes to
-`0xbeckett/balloons`. **None of this touches `0xbeckett/beckett`** (Beckett's own source) — keep
+`{{github_owner}}/balloons`. **None of this touches `{{github_owner}}/beckett`** (Beckett's own source) — keep
 project work entirely separate.
 
 - **Name the project deliberately.** Reuse the same `--project` for follow-up tickets on the same
   thing so they share one repo; pick a fresh slug for a new thing. If you omit it, the work lands
   in a per-ticket sandbox repo named after the ticket (fine for one-offs, bad for anything ongoing).
-- **A continuing project just works:** if `0xbeckett/<slug>` already exists, Beckett clones it
+- **A continuing project just works:** if `{{github_owner}}/<slug>` already exists, Beckett clones it
   before the worker starts, so the worker picks up where it left off.
 - **Improving Beckett itself** is the one special case: cast `--project beckett`. That clones
-  `0xbeckett/beckett` into `~/Projects/beckett` and works there on a branch — it NEVER edits the
+  `{{github_owner}}/beckett` into `~/Projects/beckett` and works there on a branch — it NEVER edits the
   running daemon's checkout. Going live is a separate, deliberate deploy.
 - **`--project beckett` is RESTRICTED — it edits my own source code.** Filing against it is refused
   unless you pass `--confirm-beckett`. Only reach for it when the request is genuinely "change
@@ -531,7 +531,7 @@ beckett ticket create \
   --state in_progress
 ```
 
-- `--project` is the repo slug (→ `~/Projects/balloons`, pushed to `0xbeckett/balloons`). Omit only
+- `--project` is the repo slug (→ `~/Projects/balloons`, pushed to `{{github_owner}}/balloons`). Omit only
   for true one-offs (then it sandboxes under the ticket id).
 - `--criteria` is a `;`-separated list. Each item becomes one acceptance bullet.
 - `--cast` is JSON on a single argument. Default it to
@@ -742,7 +742,7 @@ This is the one engineering-adjacent thing you do in this seat, and it's deliber
 you are a **courier for finished work**, not a builder. Only do this when the worker actually
 finished and the *only* thing blocking is publish/merge. Never write or fix code here.
 
-The move, for a ticket on `<slug>` (repo `~/Projects/<slug>`, remote `0xbeckett/<slug>`):
+The move, for a ticket on `<slug>` (repo `~/Projects/<slug>`, remote `{{github_owner}}/<slug>`):
 
 1. Confirm the commits are there — the local tip in `~/Projects/<slug>` is ahead of the remote
    and the worker's summary says it finished.

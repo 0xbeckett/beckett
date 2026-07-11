@@ -300,7 +300,10 @@ export type GmailAuth =
 export interface Identity {
   name: string;
   github: {
+    /** Login authenticated by GITHUB_PAT. */
     account: string;
+    /** Account or organization that owns Beckett-managed project repositories. */
+    owner: string;
     pat: string; // NEVER logged
     apiBase: string;
     noreplyEmail: string;

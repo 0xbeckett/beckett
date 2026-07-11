@@ -95,30 +95,63 @@ The authoritative build contract is [`docs/V3.md`](docs/V3.md). Specs live in
 
 ## Run your own Beckett
 
-Beckett runs as a set of **systemd user services** on a Linux box (the reference host is a
-machine named `loom-desk`). The full, runnable host setup is [`deploy/host-setup.md`](deploy/host-setup.md);
-the short version:
+Beckett runs as a set of **systemd user services**. The supported host is Ubuntu 20.04+ or
+Debian 10+ with systemd, x64/arm64, at least 4 GB RAM, and 5 GB free disk. Most VPS images log in
+as root, so the shortest install is:
 
-1. **A Linux user with lingering enabled** (so user units run without a login session) and
-   passwordless sudo (Beckett self-provisions tools):
-   ```bash
-   sudo useradd -m -s /bin/bash beckett
-   sudo loginctl enable-linger beckett
-   ```
-2. **Toolchain** (as that user): [`bun`](https://bun.sh), node ≥ 20, the `claude` CLI, optionally
-   `codex` / `pi`, plus `gh`, `rg`/`fd`/`jq`/`yq`, and `cloudflared`.
-3. **A self-hosted Plane** for the ticket queue, and a **Discord bot** (with the Message Content
-   privileged intent enabled).
-4. **Clone + install:**
-   ```bash
-   git clone https://github.com/<you>/beckett.git ~/beckett
-   cd ~/beckett && bun install --frozen-lockfile
-   ./deploy/install.sh    # links deploy/systemd/* and enables beckett-v4 + heartbeat
-   ```
+```bash
+curl -fsSL https://raw.githubusercontent.com/0xbeckett/beckett/main/install.sh | bash
+```
 
-`deploy/install.sh` is idempotent — it symlinks every unit in `deploy/systemd/`, retires stale
-units, and does `systemctl --user enable --now beckett-v4.service`. Re-run it any time the unit
-files change.
+From a sudo-enabled account, pipe to `sudo bash` instead. A minimal image without `curl` needs
+`apt-get update && apt-get install -y curl` first.
+
+The installer is interactive even through a pipe: it reads setup answers from the terminal and
+keeps secret input hidden. To inspect it before running:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0xbeckett/beckett/main/install.sh -o /tmp/install-beckett.sh
+less /tmp/install-beckett.sh
+bash /tmp/install-beckett.sh        # as root; otherwise: sudo bash /tmp/install-beckett.sh
+```
+
+It creates an unprivileged `beckett` account, enables user-service lingering, installs Node 24
+LTS plus Bun/Claude/Codex/Pi/GitHub CLI, clones the locked app dependencies, writes private
+instance config, and links the systemd units. It deliberately does **not** grant passwordless
+sudo or weaken the host's AppArmor policy.
+
+Have these ready when prompted:
+
+- a Discord app installed into your server with the `bot` scope. Enable the Message Content
+  privileged intent and grant View Channels, Send Messages, Read Message History, Send Messages
+  in Threads, and Attach Files. Discord's [bot quick start](https://docs.discord.com/developers/quick-start/getting-started)
+  walks through creation and Guild Install;
+- a [Plane](https://plane.so) workspace plus a personal API token from Profile Settings. Plane
+  Cloud is the easy default; use the workspace slug shown in `app.plane.so/<slug>/...`. Beckett
+  creates its four project boards and workflow states automatically. Plane
+  [self-hosting](https://developers.plane.so/self-hosting/methods/docker-compose) also works;
+- a GitHub PAT and the matching GitHub username;
+- a Claude Code subscription login. Pi and Codex logins are needed only when those workers are
+  enabled.
+
+Browser/device authentication cannot be completed on someone else's behalf, so a fresh install
+stays safely staged instead of crash-looping. The installer prints the exact login commands and
+one rerun command; that rerun starts Beckett only after required secrets and enabled harness
+credentials exist. Before startup it provisions every Plane board, validates the GitHub PAT belongs
+to the configured account, and then runs `beckett doctor`. Every rerun is idempotent, preserves
+custom config/secrets, and explicitly restarts an already-running daemon onto the new code.
+
+Installing a fork is the same flow:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/0xbeckett/beckett/main/install.sh |
+  bash -s -- --repo https://github.com/<you>/beckett.git
+```
+
+The manual/advanced path remains in [`deploy/host-setup.md`](deploy/host-setup.md).
+`deploy/install.sh` is the lower-level unit refresher; `--no-start` links the units and enforces a
+stopped/disabled daemon, while the default path restarts onto current code and waits for a real
+control-socket response before reporting readiness.
 
 **Auth is subscription-only by design.** Beckett drives `claude` / `codex` / `pi` through their
 own `~/.claude` / `~/.codex` / `~/.pi` logins — it deliberately refuses `ANTHROPIC_*` / `OPENAI_*`

@@ -271,3 +271,53 @@ test("start() posts a one-time startup banner with the live commit to the ops ch
     else process.env.BECKETT_STARTUP_CHANNEL_ID = prev;
   }
 });
+
+test("an empty startup channel preserves the legacy ops-channel default", async () => {
+  const prev = process.env.BECKETT_STARTUP_CHANNEL_ID;
+  process.env.BECKETT_STARTUP_CHANNEL_ID = "";
+  const posts: Array<{ channelId: string; text: string }> = [];
+  const concierge = new Concierge({
+    config: config(tmpBeckettDir()),
+    session: fakeSession("", []),
+    gateway: fakeGateway(posts),
+  });
+  try {
+    await concierge.start();
+    for (let i = 0; i < 50 && posts.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(posts.some((post) => post.channelId === "1520658476974735490")).toBeTrue();
+  } finally {
+    await concierge.stop();
+    if (prev === undefined) delete process.env.BECKETT_STARTUP_CHANNEL_ID;
+    else process.env.BECKETT_STARTUP_CHANNEL_ID = prev;
+  }
+});
+
+test("BECKETT_STARTUP_CHANNEL_ID=disabled suppresses startup and crash-loop posts", async () => {
+  const prev = process.env.BECKETT_STARTUP_CHANNEL_ID;
+  process.env.BECKETT_STARTUP_CHANNEL_ID = "disabled";
+  const posts: Array<{ channelId: string; text: string }> = [];
+  const gateway = fakeGateway(posts);
+  try {
+    const startupConcierge = new Concierge({
+      config: config(tmpBeckettDir()),
+      session: fakeSession("", []),
+      gateway,
+    });
+    await (startupConcierge as unknown as { announceStartup(): Promise<void> }).announceStartup();
+    expect(posts).toHaveLength(0);
+
+    const crashConcierge = new Concierge({ config: config(tmpBeckettDir()), gateway });
+    const session = (crashConcierge as unknown as {
+      session: { onCrashLoop?: (info: { count: number; code: number }) => void };
+    }).session;
+    expect(typeof session.onCrashLoop).toBe("function");
+    session.onCrashLoop!({ count: 3, code: 1 });
+    await Promise.resolve();
+    expect(posts).toHaveLength(0);
+  } finally {
+    if (prev === undefined) delete process.env.BECKETT_STARTUP_CHANNEL_ID;
+    else process.env.BECKETT_STARTUP_CHANNEL_ID = prev;
+  }
+});

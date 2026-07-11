@@ -13,7 +13,9 @@ OnFailure=beckett-alert@%N.service
 [Service]
 Type=simple
 WorkingDirectory=%h/beckett
-ExecStart=/usr/local/bin/bun src/shell/v4-main.ts
+# Resolve Bun from the explicit daemon PATH below. The public installer puts it in ~/.bun/bin;
+# older hosts may still keep the same binary in /usr/local/bin.
+ExecStart=/usr/bin/env bun src/shell/v4-main.ts
 # Always come back — a crash, an OOM kill, or a clean-looking exit all mean the coworker is
 # offline until something restarts it. Crash recovery (issue #20) makes restarts safe.
 Restart=always
@@ -25,7 +27,7 @@ TimeoutStopSec=30
 # the daemon itself too, but exporting here keeps child tooling consistent. `-` = optional.
 EnvironmentFile=-%h/.beckett/.env
 # The concierge + claude/pi/codex workers must resolve on PATH (a systemd unit does not inherit
-# the interactive PATH). ~/.local/bin carries the modern node that pi needs (node >= 20).
+# the interactive PATH). ~/.local/bin carries the modern node that Pi needs (node >= 22.19.0).
 # MUST stay in sync with `daemonPath()` in src/ops/doctor.ts — the doctor probes under this PATH.
 Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
 # Every unclean death posts a Discord alert within seconds (rate-limited in the script; clean

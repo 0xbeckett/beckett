@@ -11,7 +11,7 @@ WorkingDirectory=%h/beckett
 EnvironmentFile=-%h/.beckett/.env
 Environment=DISCORD_RPC_LARGE_IMAGE=beckett
 Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/local/bin/bun src/rpc/daemon.ts
+ExecStart=/usr/bin/env bun src/rpc/daemon.ts
 Restart=always
 RestartSec=15
 # journald owns the logs (issue #30) — the old `append:~/.beckett/logs/rpc.log` grew unrotated.

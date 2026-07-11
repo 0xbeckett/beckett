@@ -53,6 +53,7 @@ import { pendingActionId } from "../ids.ts";
 import { log as rootLog } from "../log.ts";
 import { childEnv } from "../env.ts";
 import { SCAFFOLDING_DIR } from "../worker/worktree.ts";
+import { resolveGitHubTarget } from "../github/owner.ts";
 
 // =======================================================================================
 // Errors
@@ -300,6 +301,8 @@ export interface GitHubClientOptions {
   pat: string;
   /** GitHub login the commits/PRs are attributed to (Identity.github.account). */
   account: string;
+  /** Account or organization that owns managed project repos. Defaults to `account`. */
+  owner?: string;
   /** API base (https://api.github.com or a GHE base). */
   apiBase: string;
   /** Resolve a repo "org/name" to its local working dir (for `git push`). */
@@ -346,6 +349,11 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
 
   private requireCreds(op: string): void {
     if (!this.available) throw new GitHubUnavailableError(op);
+  }
+
+  /** Managed project-repository destination; authentication still uses `account`. */
+  private publishingOwner(): string {
+    return this.opts.owner?.trim() || this.opts.account;
   }
 
   /** The git host derived from the API base (github.com for the public API). */
@@ -494,8 +502,8 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
    * "already exists" (the original bug: `gh repo create` blew up because the cloned checkout already
    * had an `origin`, and the ticket had already been marked done, so the work silently never shipped):
    *
-   *   1. **Cloned third-party upstream** (`origin` points outside our account) → fork it under our
-   *      account, push a ticket branch to the fork, open a PR back to the upstream's default branch.
+   *   1. **Cloned third-party upstream** (`origin` points outside our account and managed owner) →
+   *      fork it under the authenticated account, push a ticket branch to the fork, and open a PR.
    *      We can't push to someone else's repo and merging is a human call → `kind: "pr"`.
    *   2. **A repo we already own** (a continuing/shared project, e.g. the beckett self-repo) → push a
    *      ticket branch and open a PR against its default branch. NEVER `HEAD→main` (that's the
@@ -540,7 +548,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
       return { nameWithOwner: upstream, url: `${this.gitHost()}/${upstream}`, kind: "pr", prUrl: pr.url };
     }
 
-    const repo = `${this.opts.account}/${p.slug}`;
+    const repo = `${this.publishingOwner()}/${p.slug}`;
 
     // Case 2 — a repo we already own (a continuing project, incl. beckett's own repos): ship straight
     // to its default branch. Integrate the remote tip FIRST (fetch + rebase) so this isn't the
@@ -559,7 +567,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
     // so we must name the remote branch `main` rather than let `gh repo create --push` make the
     // local branch name the repo's default. gitPush also strips any tracked scaffolding first.
     const created = await this.createRepo({
-      name: p.slug,
+      name: repo,
       private: false, // project repos are public so links Beckett hands out actually resolve
       description: p.description,
     });
@@ -601,9 +609,8 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
   }
 
   /**
-   * The upstream `owner/repo` when `sourceDir`'s `origin` points OUTSIDE our account (a cloned
-   * third-party repo). Null when there's no `origin` (a fresh `git init` project) or `origin` is
-   * already ours (a continuing project we own) — both handled by the own-repo cases.
+   * The upstream `owner/repo` when `sourceDir`'s `origin` points outside both the authenticated
+   * account and managed project owner. Null for a fresh repo or either kind of owned checkout.
    */
   private async originUpstream(sourceDir: string): Promise<string | null> {
     const r = await this.runner(["git", "remote", "get-url", "origin"], { cwd: sourceDir });
@@ -611,7 +618,11 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
     const nwo = parseRepoNwo(r.stdout.trim());
     if (!nwo) return null;
     const owner = nwo.split("/")[0] ?? "";
-    if (owner.toLowerCase() === this.opts.account.toLowerCase()) return null; // already ours
+    const ownOrigins = new Set([
+      this.opts.account.toLowerCase(),
+      this.publishingOwner().toLowerCase(),
+    ]);
+    if (ownOrigins.has(owner.toLowerCase())) return null;
     return nwo;
   }
 
@@ -632,7 +643,9 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubActivityRe
    */
   private async ensureFork(upstream: string): Promise<string> {
     const fork = `${this.opts.account}/${upstream.split("/")[1]}`;
-    const r = await this.runner(["gh", "repo", "fork", upstream, "--clone=false"], { env: this.ghEnv() });
+    const r = await this.runner(["gh", "repo", "fork", upstream, "--clone=false"], {
+      env: this.ghEnv(),
+    });
     if (r.code !== 0 && !/already exists|forked|exists/i.test(`${r.stderr}${r.stdout}`)) {
       throw new Error(`gh repo fork failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
     }
@@ -970,7 +983,7 @@ function rollupConclusion(rollup?: Array<{ status?: string; conclusion?: string;
  * is read here but MUST NEVER be logged (Spec 07 §7.1).
  */
 export function loadIdentity(config: Config, env: NodeJS.ProcessEnv = process.env): Identity {
-  const account = env.GITHUB_ACCOUNT ?? config.identity.github_user;
+  const github = resolveGitHubTarget(config, env);
   const apiBase = env.GITHUB_API_BASE ?? "https://api.github.com";
 
   let gmailAuth: GmailAuth;
@@ -988,10 +1001,11 @@ export function loadIdentity(config: Config, env: NodeJS.ProcessEnv = process.en
   return {
     name: "Beckett",
     github: {
-      account,
+      account: github.account,
+      owner: github.owner,
       pat: env.GITHUB_PAT ?? "",
       apiBase,
-      noreplyEmail: `${account}@users.noreply.github.com`,
+      noreplyEmail: `${github.account}@users.noreply.github.com`,
     },
     gmail: {
       account: env.GMAIL_ACCOUNT ?? config.identity.gmail_address,

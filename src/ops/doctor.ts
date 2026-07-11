@@ -22,6 +22,7 @@ import type { Config, Harness } from "../types.ts";
 import { preflightFor, type PreflightResult } from "../drivers/index.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus } from "../shell/control-bus.ts";
+import { resolveGitHubAccount } from "../github/owner.ts";
 
 /** One health probe's outcome. `fail` rows flip the report's overall `ok` to false. */
 export interface DoctorCheck {
@@ -158,7 +159,23 @@ function envKeys(body: string): Set<string> {
 
 // ── the doctor ─────────────────────────────────────────────────────────────────────────────
 
-const HARNESSES: Harness[] = ["claude", "codex", "pi"];
+const KNOWN_HARNESSES: Harness[] = ["claude", "codex", "pi"];
+
+/** Compare the numeric core of semver-shaped CLI output (for example, `v22.19.0`). */
+function semverGte(raw: string, minimum: string): boolean {
+  const parse = (value: string): [number, number, number] | null => {
+    const match = value.match(/v?(\d+)\.(\d+)\.(\d+)/);
+    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+  };
+  const current = parse(raw);
+  const wanted = parse(minimum);
+  if (!current || !wanted) return false;
+  for (let index = 0; index < current.length; index += 1) {
+    if (current[index]! > wanted[index]!) return true;
+    if (current[index]! < wanted[index]!) return false;
+  }
+  return true;
+}
 
 export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   const config = deps.config;
@@ -184,12 +201,25 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
 
   // 1. Binaries + versions, resolved exactly as systemd resolves them.
   const harnessCfg = config.harness as unknown as Record<string, { bin?: string } | undefined>;
-  const binaries: Array<{ bin: string; required: boolean; minMajor?: number; why?: string }> = [
+  const binaries: Array<{ bin: string; required: boolean; minVersion?: string; why?: string }> = [
     { bin: "bun", required: true },
-    { bin: "node", required: true, minMajor: 20, why: "pi crashes under node < 20" },
+    {
+      bin: "node",
+      required: true,
+      ...(config.harness.pi.enabled
+        ? {
+            minVersion: "22.19.0",
+            why: "the current Pi package requires node >= 22.19.0",
+          }
+        : {}),
+    },
     { bin: harnessCfg.claude?.bin || "claude", required: true },
-    { bin: harnessCfg.codex?.bin || "codex", required: true },
-    { bin: harnessCfg.pi?.bin || "pi", required: true },
+    ...(config.harness.codex.enabled
+      ? [{ bin: harnessCfg.codex?.bin || "codex", required: true }]
+      : []),
+    ...(config.harness.pi.enabled
+      ? [{ bin: harnessCfg.pi?.bin || "pi", required: true }]
+      : []),
     { bin: "gh", required: false },
     { bin: "cloudflared", required: false },
   ];
@@ -204,13 +234,12 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       });
       continue;
     }
-    if (b.minMajor !== undefined) {
-      const major = Number(version.match(/v?(\d+)/)?.[1]);
-      if (Number.isFinite(major) && major < b.minMajor) {
+    if (b.minVersion !== undefined) {
+      if (!semverGte(version, b.minVersion)) {
         checks.push({
           name: `binary: ${b.bin}`,
           level: "fail",
-          detail: `${version} on the daemon PATH but ${b.bin} ≥ ${b.minMajor} is required — ${b.why}`,
+          detail: `${version || "unknown version"} on the daemon PATH but ${b.bin} >= ${b.minVersion} is required - ${b.why}`,
         });
         continue;
       }
@@ -218,8 +247,14 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     checks.push({ name: `binary: ${b.bin}`, level: "ok", detail: version });
   }
 
-  // 2. Harness preflights (issue #17's checks, forced fresh): auth artifact, version minimum, flags.
-  for (const h of HARNESSES) {
+  // 2. Harness preflights (issue #17's checks, forced fresh): auth artifact, version minimum,
+  // flags. Disabled optional harnesses are intentionally absent rather than permanently yellow.
+  const activeHarnesses: Harness[] = [
+    "claude",
+    ...(config.harness.pi.enabled ? (["pi"] as Harness[]) : []),
+    ...(config.harness.codex.enabled ? (["codex"] as Harness[]) : []),
+  ];
+  for (const h of activeHarnesses) {
     try {
       const r = await preflight(h);
       checks.push(
@@ -233,7 +268,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   }
 
   // 3. Live token probes — the only honest answer to "is this credential still good?".
-  const planeApiRoot = (env.PLANE_INTERNAL_URL ?? config.plane.base_url).replace(/\/+$/, "");
+  const planeApiRoot = (env.PLANE_INTERNAL_URL?.trim() || config.plane.base_url).replace(/\/+$/, "");
   const probes: Array<{ name: string; key: string; required: boolean; url: (v: string) => string; headers: (v: string) => Record<string, string>; missingDetail?: string }> = [
     {
       name: "token: plane",
@@ -285,6 +320,23 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     }
     try {
       const res = await fetchFn(p.url(value), { headers: p.headers(value), signal: AbortSignal.timeout(10_000) });
+      if (res.ok && p.name === "token: github") {
+        const body = await res.json().catch(() => null) as { login?: unknown } | null;
+        const login = typeof body?.login === "string" ? body.login.trim() : "";
+        const expected = resolveGitHubAccount(config, env);
+        if (!login) {
+          checks.push({ name: p.name, level: "fail", detail: `HTTP ${res.status} but GitHub returned no account login` });
+        } else if (login.toLowerCase() !== expected.toLowerCase()) {
+          checks.push({
+            name: p.name,
+            level: "fail",
+            detail: `PAT belongs to ${login}, but the configured authenticated account is ${expected}`,
+          });
+        } else {
+          checks.push({ name: p.name, level: "ok", detail: `HTTP ${res.status} as ${login}` });
+        }
+        continue;
+      }
       checks.push(
         res.ok
           ? { name: p.name, level: "ok", detail: `HTTP ${res.status}` }
@@ -340,7 +392,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       }
     }
     const harnessBins = new Set(
-      HARNESSES.map((h) => basename(harnessCfg[h]?.bin || h)),
+      KNOWN_HARNESSES.map((h) => basename(harnessCfg[h]?.bin || h)),
     );
     const looksLikeHarness = (command: string): boolean => {
       const argv = command.split(/\s+/);

@@ -21,6 +21,7 @@ import { mkdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, chm
 import { dirname, resolve } from "node:path";
 import { log } from "../log.ts";
 import { parseNumstat } from "../git/diff.ts";
+import { resolveGitHubOwner } from "../github/owner.ts";
 
 const logger = log.child("worktree");
 
@@ -468,8 +469,8 @@ export async function fetchRemote(repoRoot: string, remote = "origin"): Promise<
   return true;
 }
 
-/** GitHub org/account Beckett owns and pushes project repos to (override via `BECKETT_GH_ORG`). */
-export const GH_ORG = process.env.BECKETT_GH_ORG?.trim() || "0xbeckett";
+/** Process-level fallback for legacy callers that do not pass the validated config owner. */
+export const GH_ORG = resolveGitHubOwner({});
 
 /**
  * The bot git identity every commit in a project checkout must carry. Set repo-LOCAL on each
@@ -512,18 +513,18 @@ const projectRepoEnsures = new Map<string, Promise<void>>();
  * worker then commits in place and (if the ticket calls for it) creates/pushes the GitHub repo via
  * the github skill. Idempotent — a no-op once `repoRoot/.git` exists.
  */
-export async function ensureProjectRepo(repoRoot: string, slug: string): Promise<void> {
+export async function ensureProjectRepo(repoRoot: string, slug: string, owner = GH_ORG): Promise<void> {
   const existing = projectRepoEnsures.get(repoRoot);
   if (existing) return existing;
 
-  const ensure = ensureProjectRepoUncached(repoRoot, slug).finally(() => {
+  const ensure = ensureProjectRepoUncached(repoRoot, slug, owner).finally(() => {
     projectRepoEnsures.delete(repoRoot);
   });
   projectRepoEnsures.set(repoRoot, ensure);
   return ensure;
 }
 
-async function ensureProjectRepoUncached(repoRoot: string, slug: string): Promise<void> {
+async function ensureProjectRepoUncached(repoRoot: string, slug: string, owner: string): Promise<void> {
   if (existsSync(`${repoRoot}/.git`)) {
     await applyRepoIdentity(repoRoot); // re-pin every call — existing checkouts predate this
     return;
@@ -531,7 +532,7 @@ async function ensureProjectRepoUncached(repoRoot: string, slug: string): Promis
   const parent = dirname(repoRoot);
   mkdirSync(parent, { recursive: true });
 
-  const remote = `https://github.com/${GH_ORG}/${slug}.git`;
+  const remote = `https://github.com/${owner}/${slug}.git`;
   const onGitHub = (await runGit(["ls-remote", remote, "HEAD"], parent)).code === 0;
   if (onGitHub) {
     await git(["clone", remote, repoRoot], parent);
