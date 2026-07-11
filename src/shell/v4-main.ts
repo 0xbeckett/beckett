@@ -321,6 +321,12 @@ async function boot(): Promise<BootedSystem> {
   // tickets continue their interrupted sessions instead of re-running from scratch.
   await dispatcher.recoverFromCrash();
 
+  // Blip-proofing (OPS-125): with recovery done, arm the periodic worktree-checkpoint loop so a
+  // HARD crash (SIGKILL / OOM / power) — where the graceful shutdown drain never runs — loses at
+  // most one checkpoint window of in-flight WIP, not the whole session. The graceful path
+  // (drainForShutdown) still commits WIP itself and stops this loop first.
+  dispatcher.startCheckpointLoop();
+
   // Fan each board's poll batch to BOTH the dispatcher (acts on the work) and the Concierge
   // (surfaces milestones/errors back to the Discord conversation that filed the ticket).
   await Promise.all(

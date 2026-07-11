@@ -262,6 +262,10 @@ interface LedgeredWorker {
   repoRoot: string;
   harness: string;
   spawnedAt: number;
+  /** Epoch ms of the last periodic worktree checkpoint (OPS-125); absent until first checkpoint. */
+  lastCheckpointAt?: number;
+  /** Sha of the last checkpoint commit (OPS-125) — the floor a hard crash falls back to. */
+  lastCheckpointSha?: string;
 }
 
 interface DispatcherRuntimeState {
@@ -370,6 +374,8 @@ function parseLedger(value: unknown): Record<string, LedgeredWorker> {
       repoRoot: w.repoRoot,
       harness: typeof w.harness === "string" ? w.harness : "claude",
       spawnedAt: typeof w.spawnedAt === "number" ? w.spawnedAt : 0,
+      ...(typeof w.lastCheckpointAt === "number" ? { lastCheckpointAt: w.lastCheckpointAt } : {}),
+      ...(typeof w.lastCheckpointSha === "string" ? { lastCheckpointSha: w.lastCheckpointSha } : {}),
     };
   }
   return out;
@@ -474,6 +480,10 @@ export class Dispatcher {
   private readonly liveLedger = new Map<string, LedgeredWorker>();
   /** Epoch ms of each live worker's last driver event — the "is it moving?" status signal (#30). */
   private readonly lastEventAt = new Map<string, number>();
+  /** Periodic worktree-checkpoint timer (OPS-125); undefined when disabled or not yet started. */
+  private checkpointTimer?: ReturnType<typeof setInterval>;
+  /** True while a checkpoint pass is in flight, so overlapping ticks are skipped, not stacked. */
+  private checkpointInFlight = false;
   /** Ledger entries loaded from a previous daemon's state file, consumed by {@link recoverFromCrash}. */
   private recoveredWorkers: Record<string, LedgeredWorker> | null = null;
   /** Per-ticket resume hints produced by recovery: the next same-stage spawn resumes this session. */
@@ -588,6 +598,88 @@ export class Dispatcher {
       sweptOrphans: swept,
       resumable: this.resumables.size,
     });
+  }
+
+  /**
+   * Start the periodic worktree-checkpoint loop (OPS-125). Call ONCE at boot, after
+   * {@link recoverFromCrash}. On a `supervise.worker_checkpoint_s` cadence it commits every live
+   * worker's worktree as a WIP checkpoint, so a HARD daemon crash (SIGKILL / OOM / power loss) —
+   * where {@link drainForShutdown} never runs — loses at most one checkpoint window of on-disk work
+   * instead of the whole session's in-flight edits. This EXTENDS the issue #20 recovery machinery
+   * (same {@link commitWorktree} the boot ghost-WIP sweep and the finish path already use, same
+   * persisted ledger); it never touches Plane, the advance-outbox, or the publish-outbox, so it
+   * cannot affect finish-path idempotency. `worker_checkpoint_s = 0` disables it. Idempotent — a
+   * second call is a no-op while a timer is already armed.
+   */
+  startCheckpointLoop(): void {
+    if (this.checkpointTimer) return;
+    const seconds = this.config.supervise?.worker_checkpoint_s ?? 0;
+    if (!seconds || seconds <= 0) {
+      this.logger.info("periodic worktree checkpointing disabled", { worker_checkpoint_s: seconds });
+      return;
+    }
+    const intervalMs = seconds * 1000;
+    this.checkpointTimer = setInterval(() => {
+      void this.checkpointLiveWorkers().catch((err) =>
+        this.logger.warn("checkpoint pass failed", { error: (err as Error).message }),
+      );
+    }, intervalMs);
+    // Don't keep the event loop alive on the checkpoint timer alone (clean process exit + tests).
+    this.checkpointTimer.unref?.();
+    this.logger.info("periodic worktree checkpointing armed", { everySeconds: seconds });
+  }
+
+  /** Stop the checkpoint loop (daemon shutdown). Idempotent. */
+  stopCheckpointLoop(): void {
+    if (!this.checkpointTimer) return;
+    clearInterval(this.checkpointTimer);
+    this.checkpointTimer = undefined;
+  }
+
+  /**
+   * Commit every live worker's worktree as a WIP checkpoint (OPS-125). Best-effort per worker: a
+   * git failure (e.g. an index.lock race with the worker's own commit) is logged and skipped, never
+   * fatal, and one worker's failure never blocks the others. A worker that has already produced its
+   * terminal result is skipped — its finish path owns the commit. The ledger records the checkpoint
+   * sha/time so a restart's recovery, and `beckett status`, can report the loss floor. Exposed for
+   * the boot loop and for unit tests to drive a pass deterministically without a timer.
+   */
+  async checkpointLiveWorkers(): Promise<number> {
+    if (this.checkpointInFlight) return 0; // a slow pass must not overlap the next tick
+    this.checkpointInFlight = true;
+    let checkpointed = 0;
+    try {
+      for (const [ticketId, handle] of [...this.workers.entries()]) {
+        if (handle.result) continue; // finishing — its onDone path commits; don't race it
+        const ledger = this.liveLedger.get(ticketId);
+        try {
+          const commit = await this.git.commitWorktree(
+            handle.workspace,
+            `beckett: ${ledger?.identifier ?? handle.ticketId} checkpoint (${handle.workerId})`,
+          );
+          if (!commit.committed) continue; // clean tree — nothing new since the last checkpoint
+          checkpointed++;
+          if (ledger) {
+            ledger.lastCheckpointAt = Date.now();
+            if (commit.sha) ledger.lastCheckpointSha = commit.sha;
+          }
+          this.logger.info("worktree checkpoint committed", {
+            ticket: ledger?.identifier ?? handle.ticketId,
+            stage: handle.stage,
+            sha: commit.sha,
+          });
+        } catch (err) {
+          this.logger.warn("worktree checkpoint failed (skipping this worker)", {
+            ticket: ledger?.identifier ?? handle.ticketId,
+            error: (err as Error).message,
+          });
+        }
+      }
+      if (checkpointed > 0) this.persistRuntimeState();
+    } finally {
+      this.checkpointInFlight = false;
+    }
+    return checkpointed;
   }
 
   /** The binary name expected on a ledgered worker's command line (for the ps identity check). */
@@ -730,6 +822,9 @@ export class Dispatcher {
         workerState: h.state,
         elapsedSecs: ledger ? Math.round((now - ledger.spawnedAt) / 1000) : null,
         lastEventAgeSecs: lastEvent === undefined ? null : Math.round((now - lastEvent) / 1000),
+        // OPS-125: how long since this worker's WIP was last checkpointed — the crash loss floor.
+        lastCheckpointAgeSecs:
+          ledger?.lastCheckpointAt === undefined ? null : Math.round((now - ledger.lastCheckpointAt) / 1000),
       };
     });
     const queued = this.pending.map((p) => ({
@@ -752,6 +847,9 @@ export class Dispatcher {
     const live = [...this.workers.entries()];
     const queuedSpawns = this.pending.length;
     this.pending.splice(0);
+    // Stop the periodic checkpoint loop first (OPS-125): a graceful drain commits each worker's WIP
+    // itself below, so a checkpoint pass racing the drain would only contend on the same worktree.
+    this.stopCheckpointLoop();
     for (const timer of this.spawnRetryTimers.values()) clearTimeout(timer);
     this.spawnRetryTimers.clear();
     if (live.length === 0) {

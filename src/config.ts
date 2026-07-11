@@ -261,6 +261,12 @@ const ConfigSchema = z
         // `stalled` signal (driver watchdog) and the dispatcher escalates nudge → abort+retry,
         // instead of burning a slot until the hard cap. 0 disables stall detection.
         worker_stall_s: nonNegInt.default(300),
+        // Checkpoint cadence (OPS-125): every this-many seconds the dispatcher commits each live
+        // worker's worktree as a WIP checkpoint, so a HARD daemon crash (SIGKILL/OOM/power) — where
+        // the graceful shutdown drain never runs — loses at most one checkpoint window of on-disk
+        // work instead of the whole session. Best-effort and side-effect-free beyond the worktree
+        // (never touches Plane / the advance- or publish-outbox). 0 disables periodic checkpointing.
+        worker_checkpoint_s: nonNegInt.default(120),
       })
       .default({}),
     models: z

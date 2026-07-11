@@ -561,6 +561,10 @@ export interface Config {
     /** Stall window (s): no progress event for this long → the driver emits a `stalled` signal
      *  and the dispatcher escalates (nudge → abort+retry). 0 disables. Default 300 (issue #21). */
     worker_stall_s: number;
+    /** Checkpoint cadence (s): commit each live worker's worktree this often so a hard daemon
+     *  crash loses at most one window of on-disk WIP, not the whole session. 0 disables. Default
+     *  120 (OPS-125). */
+    worker_checkpoint_s: number;
   };
   models: {
     /** Default review-stage model (issue #27); per-ticket casts override. */

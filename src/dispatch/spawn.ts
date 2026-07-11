@@ -50,6 +50,7 @@ import { log } from "../log.ts";
 import { excludeFromGit, installScaffoldingGuardHook, SCAFFOLDING_DIR } from "../worker/worktree.ts";
 import { scopeGuardSpec } from "../hooks/scope-guard.ts";
 import { renderClaudeSettings } from "../hooks/registry.ts";
+import { buildResumeBrief, steeringBlock } from "./resume-brief.ts";
 
 // =======================================================================================
 // Handle contract
@@ -263,31 +264,6 @@ function diffHint(baseRef?: string): string {
   return baseRef && baseRef !== "HEAD"
     ? `\`git diff ${baseRef}..HEAD\` (plus \`git status\` for anything uncommitted)`
     : "`git diff HEAD` and `git log`";
-}
-
-/**
- * The continuation instruction for a RESUMED session (issue #20). The restored transcript already
- * carries the full ticket brief; re-sending it would duplicate context. Any pre-restart WIP was
- * committed by the shutdown drain / boot sweep, so the worker is pointed at git for ground truth.
- */
-function buildResumePrompt(ticket: Ticket, stage: string, steering?: string[]): string {
-  return (
-    `A daemon restart interrupted your previous session on ticket [${ticket.identifier}] ` +
-    `${ticket.title}. This session RESUMES that one — your prior context is above, and any ` +
-    `work-in-progress was committed to the repo. Check \`git status\` and \`git log\` to see ` +
-    `exactly where you stopped, then continue the ${stage} work to completion. Finish with the ` +
-    `structured done-signal as originally instructed.${steeringBlock(steering)}`
-  );
-}
-
-/**
- * The steering block folded into a prompt when comments arrived while no worker was live
- * (issue #22): the user's words must provably reach the first model turn, not vanish.
- */
-function steeringBlock(steering: string[] | undefined): string {
-  if (!steering || steering.length === 0) return "";
-  const notes = steering.map((s) => `- ${s.trim()}`).join("\n");
-  return `\n\n<context>\nSteering from the user since this ticket was filed (treat as part of the brief):\n${notes}\n</context>`;
 }
 
 /** Above this size the review prompt carries a changed-file summary instead of the raw diff. */
@@ -612,7 +588,7 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     const spec: SpawnSpec = {
       workerId: id,
       prompt: resumeSessionId
-        ? buildResumePrompt(ticket, stage, steering)
+        ? buildResumeBrief(ticket, stage, baseRef, steering)
         : buildPrompt(ticket, stage, baseRef, steering, reviewDiff),
       systemAppend: buildSystemAppend(ticket, stage, baseRef),
       workspace,

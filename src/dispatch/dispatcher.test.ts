@@ -52,6 +52,11 @@ function makeHandle(ticket: Ticket, stage: string, harness = "claude") {
     get result() {
       return result;
     },
+    // Test-only setter so a test can put a handle into the "terminal result set, not yet reaped"
+    // window (the real driver sets `result` inside its finished handler before onDone removes it).
+    set result(v: any) {
+      result = v;
+    },
     nudges: [] as string[],
     aborted: false,
     reaped: false,
@@ -1427,6 +1432,150 @@ describe("crash recovery", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("a restart mid-REVIEW re-enters review and resumes that session (not a fresh implement)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-midreview-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const ticket = makeTicket({ state: "in_review" });
+      const { d: before } = newDispatcher(2, { runtimeStatePath });
+      await before.handle(stateChanged(ticket, "in_review"));
+      await tick();
+      // The live worker is a REVIEWER; the ledger records stage "review".
+      expect(spawnCalls.at(-1)).toMatchObject({ stage: "review" });
+      expect(readState(runtimeStatePath).liveWorkers[ticket.id]).toMatchObject({ stage: "review" });
+      // No finish — the daemon dies mid-review.
+
+      const after = new Dispatcher({
+        gitOps: gitFakes,
+        client: new FakeClient(),
+        config: cfg(2),
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+        runtimeStatePath,
+        sweepOrphan: () => false,
+      });
+      await after.recoverFromCrash();
+      await after.handle(stateChanged(ticket, "in_review"));
+      await tick();
+
+      // Re-enters review, resuming the interrupted review session — never a fresh implement.
+      expect(spawnCalls.at(-1)).toMatchObject({ stage: "review", resumeSessionId: "sess-1" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── OPS-125: periodic worktree checkpoint (bounds the hard-crash loss window) ─────────────
+describe("periodic checkpoint (OPS-125)", () => {
+  function readState(path: string) {
+    return JSON.parse(readFileSync(path, "utf8"));
+  }
+
+  test("commits every live worker's worktree and records the checkpoint on the ledger", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-checkpoint-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const { d } = newDispatcher(2, { runtimeStatePath });
+      const a = makeTicket({ id: "tkt-a", identifier: "OPS-A" });
+      const b = makeTicket({ id: "tkt-b", identifier: "OPS-B" });
+      await d.handle(stateChanged(a, "in_progress"));
+      await tick();
+      await d.handle(stateChanged(b, "in_progress"));
+      await tick();
+      expect(created).toHaveLength(2);
+      commitCalls = []; // ignore any spawn-path commits; count only the checkpoint pass
+
+      const n = await d.checkpointLiveWorkers();
+      expect(n).toBe(2);
+      // Each live worker's OWN worktree was committed with a checkpoint message.
+      const workspaces = created.map((h) => h.workspace).sort();
+      expect(commitCalls.map((c) => c.workspace).sort()).toEqual(workspaces);
+      expect(commitCalls.every((c) => c.message.includes("checkpoint"))).toBe(true);
+
+      // The ledger now carries the checkpoint floor, persisted to disk.
+      const live = readState(runtimeStatePath).liveWorkers;
+      expect(live["tkt-a"].lastCheckpointSha).toBe("commit000");
+      expect(typeof live["tkt-a"].lastCheckpointAt).toBe("number");
+      expect(live["tkt-b"].lastCheckpointSha).toBe("commit000");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a clean worktree is skipped (nothing to checkpoint)", async () => {
+    const { d } = newDispatcher(2);
+    await d.handle(stateChanged(makeTicket(), "in_progress"));
+    await tick();
+    commitCalls = [];
+    commitResult = { committed: false, sha: null }; // nothing changed since the last checkpoint
+
+    const n = await d.checkpointLiveWorkers();
+    expect(n).toBe(0);
+    expect(commitCalls).toHaveLength(1); // it TRIED to commit, found a clean tree
+  });
+
+  test("best-effort: one worker's commit failure never blocks the others and never throws", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-checkpoint-fail-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const seen: string[] = [];
+      const failingGit: Partial<GitOps> = {
+        ...gitFakes,
+        commitWorktree: async (workspace: string, message: string) => {
+          seen.push(workspace);
+          if (workspace.endsWith("/1")) throw new Error("index.lock: worker mid-commit");
+          commitCalls.push({ workspace, message });
+          return { committed: true, sha: "commitOK" };
+        },
+      };
+      const d = new Dispatcher({
+        gitOps: failingGit,
+        client: new FakeClient(),
+        config: cfg(2),
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+        runtimeStatePath,
+      });
+      await d.handle(stateChanged(makeTicket({ id: "tkt-a", identifier: "OPS-A" }), "in_progress"));
+      await tick();
+      await d.handle(stateChanged(makeTicket({ id: "tkt-b", identifier: "OPS-B" }), "in_progress"));
+      await tick();
+      commitCalls = [];
+
+      // The first worker's worktree throws; the pass must still checkpoint the second and resolve.
+      const n = await d.checkpointLiveWorkers();
+      expect(seen).toHaveLength(2); // both were attempted
+      expect(n).toBe(1); // only the healthy one succeeded
+      // Only the surviving worker's ledger entry gets a checkpoint sha.
+      const live = readState(runtimeStatePath).liveWorkers;
+      const shas = Object.values(live).map((w: any) => w.lastCheckpointSha);
+      expect(shas.filter(Boolean)).toEqual(["commitOK"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a worker that has already finished is not checkpointed (its finish path owns the commit)", async () => {
+    const { d } = newDispatcher(2);
+    await d.handle(stateChanged(makeTicket(), "in_progress"));
+    await tick();
+    // Simulate the terminal result being set but the onDone reap not yet having removed the handle
+    // (the checkpoint tick must not race the finish-path commit).
+    created[0].result = { status: "success", summary: "done", structured: null, timedOut: false, unappliedNudges: [] };
+    commitCalls = [];
+
+    const n = await d.checkpointLiveWorkers();
+    expect(n).toBe(0);
+    expect(commitCalls).toHaveLength(0);
+  });
+
+  test("start/stop is idempotent and a disabled cadence never arms a timer", () => {
+    const { d } = newDispatcher(2); // cfg() has no supervise → worker_checkpoint_s undefined → disabled
+    expect(() => d.startCheckpointLoop()).not.toThrow();
+    expect(() => d.startCheckpointLoop()).not.toThrow(); // second call is a no-op
+    expect(() => d.stopCheckpointLoop()).not.toThrow();
+    expect(() => d.stopCheckpointLoop()).not.toThrow(); // idempotent
   });
 });
 
