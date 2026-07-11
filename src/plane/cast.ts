@@ -127,12 +127,16 @@ const PROJECT_RE = new RegExp(
 
 /** Normalize a project name into a filesystem/GitHub-safe slug (lowercase, hyphenated). */
 export function projectSlug(raw: string): string {
-  return raw
+  const slug = raw
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 64);
+  // `path.join(root, "." | "..")` normalizes outside the per-project directory. Dot-only names
+  // are not useful GitHub repo names either, so collapse the two special path segments to a safe
+  // deterministic slug at the shared normalization boundary.
+  return slug === "" || slug === "." || slug === ".." ? "project" : slug;
 }
 
 /** A blocked-by dependency list is a JSON array of ticket-identifier strings. */

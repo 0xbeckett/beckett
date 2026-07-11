@@ -67,6 +67,95 @@ test("default image generation remains the Codex path and does not need a FAL ke
   expect(statSync(out).size).toBe(4);
 });
 
+test("Codex image generation rejects a nonzero exit instead of returning an old output", async () => {
+  const dir = tmp();
+  const fakeCodex = join(dir, "failing-codex");
+  const out = join(dir, "existing.png");
+  writeFileSync(fakeCodex, "#!/usr/bin/env bash\necho failed >&2\nexit 7\n");
+  chmodSync(fakeCodex, 0o755);
+  writeFileSync(out, "OLD");
+  const gen = new CodexImageGen({
+    imagesDir: join(dir, "images"),
+    logger: quiet,
+    codexBin: fakeCodex,
+    codexHome: join(dir, "codex-home"),
+  });
+
+  await expect(gen.generate({ prompt: "replace this", out })).rejects.toThrow(
+    /failed \(exit 7\)/,
+  );
+  expect(Bun.file(out).size).toBe(3);
+});
+
+test("Codex image generation rejects an unchanged pre-existing output", async () => {
+  const dir = tmp();
+  const fakeCodex = join(dir, "noop-codex");
+  const out = join(dir, "existing.png");
+  writeFileSync(fakeCodex, "#!/usr/bin/env bash\nexit 0\n");
+  chmodSync(fakeCodex, 0o755);
+  writeFileSync(out, "OLD");
+  const gen = new CodexImageGen({
+    imagesDir: join(dir, "images"),
+    logger: quiet,
+    codexBin: fakeCodex,
+    codexHome: join(dir, "codex-home"),
+  });
+
+  await expect(gen.generate({ prompt: "replace this", out })).rejects.toThrow(
+    /no fresh image/,
+  );
+});
+
+test("Codex image generation does not relocate a recent pre-existing sibling", async () => {
+  const dir = tmp();
+  const fakeCodex = join(dir, "noop-codex");
+  const out = join(dir, "existing.png");
+  writeFileSync(fakeCodex, "#!/usr/bin/env bash\nexit 0\n");
+  chmodSync(fakeCodex, 0o755);
+  writeFileSync(out, "OLD");
+  writeFileSync(join(dir, "recent-sibling.png"), "UNRELATED");
+  const gen = new CodexImageGen({
+    imagesDir: join(dir, "images"),
+    logger: quiet,
+    codexBin: fakeCodex,
+    codexHome: join(dir, "codex-home"),
+  });
+
+  await expect(gen.generate({ prompt: "replace this", out })).rejects.toThrow(
+    /no fresh image/,
+  );
+  expect(await Bun.file(out).text()).toBe("OLD");
+});
+
+test("Codex image generation does not treat touching old bytes as a new image", async () => {
+  const dir = tmp();
+  const fakeCodex = join(dir, "touch-codex");
+  const out = join(dir, "existing.png");
+  writeFileSync(
+    fakeCodex,
+    [
+      "#!/usr/bin/env bash",
+      'last="${!#}"',
+      'out="$(printf \'%s\' "$last" | awk \'/Save the final image to EXACTLY this absolute path/{getline; print; exit}\')"',
+      'touch "$out"',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(fakeCodex, 0o755);
+  writeFileSync(out, "OLD");
+  const gen = new CodexImageGen({
+    imagesDir: join(dir, "images"),
+    logger: quiet,
+    codexBin: fakeCodex,
+    codexHome: join(dir, "codex-home"),
+  });
+
+  await expect(gen.generate({ prompt: "replace this", out })).rejects.toThrow(
+    /no fresh image/,
+  );
+  expect(await Bun.file(out).text()).toBe("OLD");
+});
+
 test("fal missing key fails cleanly before any network call", () => {
   delete process.env.FAL_KEY;
   delete process.env.FAL_API_KEY;

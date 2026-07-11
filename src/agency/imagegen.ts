@@ -13,7 +13,17 @@
  * absolute path it asked for, or a hard error. No half-success, no stray projects.
  */
 
-import { existsSync, mkdirSync, readdirSync, statSync, copyFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  copyFileSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
 import { join, resolve, isAbsolute, dirname } from "node:path";
 import { homedir } from "node:os";
 import { loadEnvFile } from "../config.ts";
@@ -388,6 +398,7 @@ export class CodexImageGen {
       : join(this.imagesDir, `${Date.now()}-${slugify(prompt)}.png`);
     const outDir = dirname(outPath);
     mkdirSync(outDir, { recursive: true });
+    const previousOutDigest = existsSync(outPath) ? this.imageDigest(outPath) : null;
 
     const instruction = this.buildInstruction({ prompt, size, outPath, transparent: !!opts.transparent, edited });
 
@@ -403,20 +414,40 @@ export class CodexImageGen {
     for (const r of refs) args.push("-i", r);
     args.push(instruction);
 
+    const fallbackDirs = [
+      outDir,
+      join(outDir, "tmp/imagegen"),
+      join(this.codexHome, "generated_images"),
+    ];
+    const fallbackBaseline = this.snapshotImages(fallbackDirs);
     const startedAt = Date.now() - 2000; // small skew cushion for mtime comparisons
 
     this.logger.info("image gen start", { outPath, size, refs: refs.length, edited });
     const { code, stdout, stderr } = await this.runCodex(args, outDir, opts.timeoutMs ?? 300_000);
+    const tail = (stderr || stdout || "").trim().split("\n").slice(-12).join("\n");
+    if (code !== 0) {
+      throw new ImageGenError(`codex image generation failed (exit ${code}).\n${tail}`.trim());
+    }
 
     // Find the artifact. Prefer the exact path we asked for; otherwise locate the freshest
-    // image Codex produced and relocate it. This is what makes the wrapper deterministic.
+    // image Codex produced and relocate it. A pre-existing exact path only counts when this run
+    // changed its bytes; otherwise a failed/no-op run that only touched metadata could return an
+    // old asset as a brand-new success.
     let relocated = false;
-    if (!existsSync(outPath)) {
-      const found = this.findFreshImage(startedAt, [outDir, join(outDir, "tmp/imagegen"), join(this.codexHome, "generated_images")]);
+    const currentOutDigest = existsSync(outPath) ? this.imageDigest(outPath) : null;
+    const exactIsFresh =
+      currentOutDigest !== null &&
+      (previousOutDigest === null || currentOutDigest !== previousOutDigest);
+    if (!exactIsFresh) {
+      const found = this.findFreshImage(
+        startedAt,
+        fallbackDirs,
+        fallbackBaseline,
+        new Set([outPath]),
+      );
       if (!found) {
-        const tail = (stderr || stdout || "").trim().split("\n").slice(-12).join("\n");
         throw new ImageGenError(
-          `codex produced no image (exit ${code}). No file at ${outPath} and none found in the default dirs.\n${tail}`,
+          `codex produced no fresh image. No new file at ${outPath} and none found in the default dirs.\n${tail}`.trim(),
         );
       }
       copyFileSync(found, outPath);
@@ -470,19 +501,44 @@ export class CodexImageGen {
   }
 
   /** Newest image file (by mtime) at or under the given dirs, modified since `sinceMs`. */
-  private findFreshImage(sinceMs: number, dirs: string[]): string | undefined {
+  private findFreshImage(
+    sinceMs: number,
+    dirs: string[],
+    baseline: ReadonlyMap<string, string>,
+    excluded: ReadonlySet<string> = new Set(),
+  ): string | undefined {
     let best: { path: string; mtime: number } | undefined;
+    for (const { path, mtime, fingerprint } of this.imageCandidates(dirs)) {
+      if (excluded.has(path)) continue;
+      if (mtime < sinceMs || baseline.get(path) === fingerprint) continue;
+      if (!best || mtime > best.mtime) best = { path, mtime };
+    }
+    return best?.path;
+  }
+
+  /** Snapshot eligible fallback files so a recent but pre-existing neighbor cannot win this run. */
+  private snapshotImages(dirs: string[]): Map<string, string> {
+    return new Map(this.imageCandidates(dirs).map(({ path, fingerprint }) => [path, fingerprint]));
+  }
+
+  private imageCandidates(
+    dirs: string[],
+  ): Array<{ path: string; mtime: number; fingerprint: string }> {
+    const found: Array<{ path: string; mtime: number; fingerprint: string }> = [];
     const consider = (path: string) => {
       const dot = path.lastIndexOf(".");
       if (dot < 0 || !IMAGE_EXTS.has(path.slice(dot).toLowerCase())) return;
-      let st;
       try {
-        st = statSync(path);
+        const st = statSync(path);
+        if (!st.isFile()) return;
+        found.push({
+          path,
+          mtime: st.mtimeMs,
+          fingerprint: this.imageDigest(path),
+        });
       } catch {
         return;
       }
-      if (!st.isFile() || st.mtimeMs < sinceMs) return;
-      if (!best || st.mtimeMs > best.mtime) best = { path, mtime: st.mtimeMs };
     };
     for (const dir of dirs) {
       if (!existsSync(dir)) continue;
@@ -507,7 +563,11 @@ export class CodexImageGen {
         }
       }
     }
-    return best?.path;
+    return found;
+  }
+
+  private imageDigest(path: string): string {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
   }
 
   private async runCodex(

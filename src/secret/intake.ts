@@ -168,10 +168,11 @@ export function createSecretHandler(opts: SecretHandlerOptions): (req: Request) 
       if (Number.isFinite(len) && len > MAX_FORM_BYTES) return text("request too large", 413);
       let value = "";
       try {
-        const form = await req.formData();
+        const form = await readBoundedForm(req, MAX_FORM_BYTES);
         const raw = form.get("value");
         value = typeof raw === "string" ? raw : "";
-      } catch {
+      } catch (err) {
+        if (err instanceof FormBodyTooLargeError) return text("request too large", 413);
         return text("bad request", 400);
       }
       const redeemed = redeemSecretValue(opts.paths, token, value, now());
@@ -183,10 +184,49 @@ export function createSecretHandler(opts: SecretHandlerOptions): (req: Request) 
   };
 }
 
+class FormBodyTooLargeError extends Error {}
+
+/** Consume an untrusted form stream without trusting Content-Length or buffering past the cap. */
+async function readBoundedForm(
+  req: Request,
+  maxBytes: number,
+): Promise<{ get(name: string): unknown }> {
+  const contentType = req.headers.get("content-type");
+  if (!contentType) throw new Error("missing content type");
+  const reader = req.body?.getReader();
+  if (!reader) throw new Error("missing request body");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new FormBodyTooLargeError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new Response(body, { headers: { "content-type": contentType } }).formData();
+}
+
 export function serveSecretIntake(p: { paths: SecretPaths; port: number; hostname?: string }): { stop: () => void; url: string } {
   const server = Bun.serve({
     hostname: p.hostname ?? "127.0.0.1",
     port: p.port,
+    // Reject oversized chunked bodies before Bun allocates a full stream chunk for the handler.
+    maxRequestBodySize: MAX_FORM_BYTES,
     fetch: createSecretHandler({ paths: p.paths }),
   });
   return { stop: () => server.stop(true), url: `http://${server.hostname}:${server.port}` };
