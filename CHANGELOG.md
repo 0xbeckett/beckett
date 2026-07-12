@@ -25,8 +25,8 @@
 - **Questions that actually wait.** Browser work detaches immediately. A genuine blocker parks the
   Claude session, posts the relevant page screenshot to Discord, consumes a native reply without
   leaking it into shared chat context, then resumes the same session. Password fields and
-  agent-created credentials are allowed rather than treated as an automatic dead end. Dispatch is
-  code-gated to Discord role `1520985787062030456` or approved user `1132125761264951339`, and
+  agent-created credentials are allowed rather than treated as an automatic dead end. Computer-use
+  is available to every user admitted through Beckett's normal owner/access-list gate, and
   follow-ups stay bound to their initiating user. Every exact resumed answer is redacted from later
   questions and summaries. Question
   correlation fails closed by deleting a visible question if its durable ledger cannot be written;

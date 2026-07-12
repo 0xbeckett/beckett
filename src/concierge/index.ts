@@ -2234,7 +2234,7 @@ export class Concierge {
       const channelId = agent === "computer-use" ? mention!.channelId : requestedChannelId;
       const requesterId = mention?.userId || null;
       if (agent === "computer-use" && !requesterId) {
-        return { ok: false, error: "computer-use needs an authenticated role-authorized request" };
+        return { ok: false, error: "computer-use needs an authenticated authorized request" };
       }
       try {
         return { ok: true, data: await this.quickRunner.run(agent, task, channelId, requesterId) };

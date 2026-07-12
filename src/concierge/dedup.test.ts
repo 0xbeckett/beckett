@@ -11,13 +11,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  BROWSER_OPERATOR_ROLE_ID,
-  browserAccessAllowed,
-  Concierge,
-  redactBrowserSecrets,
-  type ConciergeSession,
-} from "./index.ts";
+import { Concierge, redactBrowserSecrets, type ConciergeSession } from "./index.ts";
 import { callBus, ControlBusTimeoutError, serveBus } from "../shell/control-bus.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
@@ -27,14 +21,6 @@ import type { QuickRun, QuickRunner } from "../quick/index.ts";
 const CHAN = "1097283746520174592";
 const MSG = "msg-42";
 const USER = "111111111111111111";
-const MAINTAINER = "777777777777777777";
-
-/** A prepared BECKETT_DIR whose runtime maintainers.txt lists `id` (OPS-144). */
-function dirWithMaintainer(id: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "beckett-dedup-"));
-  writeFileSync(join(dir, "maintainers.txt"), `${id}\n`, "utf8");
-  return dir;
-}
 const config = { concierge: { model: "m", rotate_at_tokens: 190_000 }, paths: {} } as unknown as Config;
 
 const savedDir = process.env.BECKETT_DIR;
@@ -71,7 +57,6 @@ function harness(opts: {
     messageId: string;
     userId: string;
     isOwner: boolean;
-    canUseBrowser: boolean;
     repliedViaCli: boolean;
     ackMessageId: string | null;
   };
@@ -161,7 +146,7 @@ function mention(): IncomingMessage {
     messageId: MSG,
     userId: USER,
     channelId: CHAN,
-    roleIds: [BROWSER_OPERATOR_ROLE_ID],
+    roleIds: [],
     content: "@beckett where my site at",
     mentionsBot: true,
     attachments: [],
@@ -200,7 +185,7 @@ test("discord.reply forwards files and permits image-only posts", async () => {
   expect(posts).toEqual([{ channelId: CHAN, text: "", replyTo: undefined, files: ["/tmp/logo.png"] }]);
 });
 
-test("computer-use cannot borrow the profile outside an authenticated role-bearing turn", async () => {
+test("computer-use cannot borrow the profile outside an authenticated request", async () => {
   const { concierge } = harness({ replyViaCli: false, turnText: "" });
   let runs = 0;
   concierge.setQuickRunner({
@@ -215,79 +200,28 @@ test("computer-use cannot borrow the profile outside an authenticated role-beari
     args: { agent: "computer-use", task: "open inbox", channelId: CHAN },
   });
   expect(result.ok).toBe(false);
-  expect(result.error).toContain(BROWSER_OPERATOR_ROLE_ID);
+  expect(result.error).toContain("authenticated authorized request");
   expect(runs).toBe(0);
 });
 
-test("browser access accepts the configured role or a maintainer and nothing else", () => {
-  const maintainers = new Set([MAINTAINER]);
-  expect(browserAccessAllowed(USER, [BROWSER_OPERATOR_ROLE_ID], BROWSER_OPERATOR_ROLE_ID, maintainers)).toBe(true);
-  expect(browserAccessAllowed(MAINTAINER, [], BROWSER_OPERATOR_ROLE_ID, maintainers)).toBe(true);
-  expect(browserAccessAllowed(USER, [], BROWSER_OPERATOR_ROLE_ID, maintainers)).toBe(false);
-  expect(browserAccessAllowed(MAINTAINER, [], BROWSER_OPERATOR_ROLE_ID, new Set())).toBe(false);
-});
-
-test("a maintainer can start computer-use from a role-free Discord mention", async () => {
-  const { concierge } = harness({
-    replyViaCli: false,
-    turnText: "",
-    quickOnAsk: true,
-    dir: dirWithMaintainer(MAINTAINER),
-  });
+test("an authorized user can start computer-use from a role-free Discord mention", async () => {
+  const { concierge } = harness({ replyViaCli: false, turnText: "", quickOnAsk: true });
   const runs: { channelId: string | null | undefined; requesterId: string | null | undefined }[] = [];
   concierge.setQuickRunner({
     agents: () => [],
     run: async (_agent, _task, channelId, requesterId) => {
       runs.push({ channelId, requesterId });
-      return { detached: true, runId: "maintainer-run" };
+      return { detached: true, runId: "authorized-run" };
     },
     resume: async () => {},
     stats: () => ({ running: 0, waiting: 0, runs: [] }),
     stopAll: async () => {},
   });
-  await concierge.onMessage({
-    ...mention(),
-    userId: MAINTAINER,
-    roleIds: [],
-  });
-  expect(runs).toEqual([{ channelId: CHAN, requesterId: MAINTAINER }]);
+  await concierge.onMessage(mention());
+  expect(runs).toEqual([{ channelId: CHAN, requesterId: USER }]);
 });
 
-test("Beckett ownership alone does not bypass the browser role", async () => {
-  const { concierge } = harness({
-    replyViaCli: false,
-    turnText: "",
-    currentMeta: {
-      channelId: CHAN,
-      messageId: MSG,
-      userId: USER,
-      isOwner: true,
-      canUseBrowser: false,
-      repliedViaCli: false,
-      ackMessageId: null,
-    },
-  });
-  let runs = 0;
-  concierge.setQuickRunner({
-    agents: () => [],
-    run: async () => {
-      runs++;
-      return { detached: true, runId: "bad" };
-    },
-    resume: async () => {},
-    stats: () => ({ running: 0, waiting: 0, runs: [] }),
-    stopAll: async () => {},
-  } as QuickRunner);
-  const result = await concierge.onBusRequest({
-    cmd: "quick.run",
-    args: { agent: "computer-use", task: "open inbox", channelId: CHAN },
-  });
-  expect(result.ok).toBe(false);
-  expect(result.error).toContain(BROWSER_OPERATOR_ROLE_ID);
-  expect(runs).toBe(0);
-});
-
-test("a non-owner with the browser role can start computer-use and is stamped as requester", async () => {
+test("an authenticated request can start computer-use and is stamped as requester", async () => {
   const { concierge } = harness({
     replyViaCli: false,
     turnText: "",
@@ -296,7 +230,6 @@ test("a non-owner with the browser role can start computer-use and is stamped as
       messageId: MSG,
       userId: USER,
       isOwner: false,
-      canUseBrowser: true,
       repliedViaCli: false,
       ackMessageId: null,
     },
@@ -518,7 +451,7 @@ test("only the browser-run owner can answer its screenshot-backed question", asy
   expect(posts.at(-1)?.text).toContain("Only the person who started");
 });
 
-test("the initiating user must still hold the configured browser role when answering", async () => {
+test("the initiating authorized user can answer a browser question without a Discord role", async () => {
   const { concierge, posts, deletedMessages } = harness({ replyViaCli: false, turnText: "must not run" });
   let resumes = 0;
   concierge.setQuickRunner({
@@ -541,41 +474,8 @@ test("the initiating user must still hold the configured browser role when answe
     repliedToId: questionId,
     authorIsBot: false,
   });
-  expect(resumes).toBe(0);
+  expect(resumes).toBe(1);
   expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "answer-revoked" });
-  expect(posts.at(-1)?.text).toContain(BROWSER_OPERATOR_ROLE_ID);
-});
-
-test("a maintainer can answer without the browser role", async () => {
-  const { concierge, posts, deletedMessages } = harness({
-    replyViaCli: false,
-    turnText: "must not run",
-    dir: dirWithMaintainer(MAINTAINER),
-  });
-  const resumed: { runId: string; answer: string }[] = [];
-  concierge.setQuickRunner({
-    agents: () => [],
-    run: async () => ({ detached: true, runId: "unused" }),
-    resume: async (runId, answer) => { resumed.push({ runId, answer }); },
-    stats: () => ({ running: 0, waiting: 1, runs: [] }),
-    stopAll: async () => {},
-  } as QuickRunner);
-  const questionId = await concierge.notifyQuickQuestion(
-    browserRun({ requesterId: MAINTAINER }),
-    { text: "Which plan?", screenshot: "/tmp/question.png" },
-  );
-  await concierge.onMessage({
-    ...mention(),
-    messageId: "maintainer-answer",
-    userId: MAINTAINER,
-    roleIds: [],
-    content: "Pro",
-    mentionsBot: false,
-    repliedToId: questionId,
-    authorIsBot: false,
-  });
-  expect(resumed).toEqual([{ runId: "browser-1", answer: "Pro" }]);
-  expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "maintainer-answer" });
   expect(posts.at(-1)?.text).toContain("Continuing from that page");
 });
 
