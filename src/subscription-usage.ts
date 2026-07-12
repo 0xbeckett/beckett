@@ -75,6 +75,8 @@ export interface SubscriptionUsageDeps {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+// `/usage` starts a full Claude session, unlike the lightweight auth-status probe.
+const CLAUDE_USAGE_TIMEOUT_MS = 30_000;
 
 const USAGE_ENV_KEYS = [
   "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL",
@@ -303,13 +305,14 @@ export async function readClaudeSubscriptionUsage(
 ): Promise<SubscriptionUsage> {
   const observedAt = (deps.now ?? Date.now)();
   const run = deps.commandRunner ?? defaultCommandRunner;
-  const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const authTimeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const usageTimeoutMs = deps.timeoutMs ?? CLAUDE_USAGE_TIMEOUT_MS;
   const env = usageProbeEnv();
   const bin = config.harness.claude.bin;
 
   let auth: CommandResult;
   try {
-    auth = await run([bin, "auth", "status", "--json"], { env, timeoutMs });
+    auth = await run([bin, "auth", "status", "--json"], { env, timeoutMs: authTimeoutMs });
   } catch {
     return report("claude", "unavailable", observedAt, "command-failed");
   }
@@ -323,7 +326,7 @@ export async function readClaudeSubscriptionUsage(
   try {
     usage = await run(
       [bin, "--safe-mode", "--no-session-persistence", "--max-turns", "0", "-p", "/usage", "--output-format", "json"],
-      { env, timeoutMs },
+      { env, timeoutMs: usageTimeoutMs },
     );
   } catch {
     return report("claude", "unavailable", observedAt, "command-failed");

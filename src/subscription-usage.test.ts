@@ -112,8 +112,13 @@ describe("Claude subscription usage", () => {
     const config = defaultConfig();
     config.harness.claude.bin = "claude-test";
     const calls: string[][] = [];
-    const commandRunner = async (argv: string[]): Promise<CommandResult> => {
+    const timeouts: number[] = [];
+    const commandRunner = async (
+      argv: string[],
+      opts: { timeoutMs: number },
+    ): Promise<CommandResult> => {
       calls.push(argv);
+      timeouts.push(opts.timeoutMs);
       if (argv[1] === "auth") {
         return {
           code: 0,
@@ -145,6 +150,7 @@ describe("Claude subscription usage", () => {
         "json",
       ],
     ]);
+    expect(timeouts).toEqual([10_000, 30_000]);
     expect(usage).toMatchObject({ provider: "claude", plan: "Max", status: "ok", observedAt: NOW });
     expect(usage.windows).toHaveLength(3);
     expect(JSON.stringify(usage)).not.toContain("must-not-leak");
