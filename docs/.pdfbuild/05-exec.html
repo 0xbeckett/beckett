@@ -75,11 +75,12 @@
 ?human / ?cast     <span class="c">gate                 ?human  ·  ?haiku:low(rubric=criteria)</span>
 a -&gt; b             <span class="c">sequence             implement(pi:med) -&gt; review(sonnet:high)</span>
 [a | b | c]        <span class="c">fanout arms          [impl(pi:high) | impl(claude:high) | impl(codex:high)]</span>
-=&gt;judge(cast)      <span class="c">join                 =&gt;judge(fable:high)   ·   =&gt;merge   ·   =&gt;first  ·  =&gt;quorum:2</span>
+=&gt;judge(cast)      <span class="c">join                 =&gt;judge(fable:high) · =&gt;merge · =&gt;first · =&gt;quorum:2</span>
 ^N                 <span class="c">visit cap            review(sonnet)^2 — two rework rounds, then park</span></code></pre>
   <pre><code><span class="c"># what I'd actually type when ro asks for a bake-off with a design gate:</span>
 beckett task file --title "…" --project foo --channel &lt;id&gt; \
-  --flow 'design(opus:high) -&gt; ?human -&gt; [impl(pi:high)|impl(claude:high)] =&gt;judge(fable:high) -&gt; review(sonnet:high)^2'</code></pre>
+  --flow 'design(opus:high) -&gt; ?human -&gt; [impl(pi:high)|impl(claude:high)]
+          =&gt;judge(fable:high) -&gt; review(sonnet:high)^2'</code></pre>
   <p class="small">The grammar is sugar only — it must compile to the §3.2 model and validate identically. If it ever wants a feature the model lacks, the model wins and the feature waits for a design doc.</p>
 
   <h3><span class="tag">5.4</span>What stays exactly as it is</h3>

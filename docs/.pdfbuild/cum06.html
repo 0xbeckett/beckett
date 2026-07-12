@@ -512,7 +512,7 @@ figcaption b { color:var(--ink-soft); font-weight:600; }
   <figcaption><b>Fig. 3 — a bake-off run of show.</b> Design → human gate → three isolated candidate implementations → a judge join that picks (or synthesises) a winner → fresh review → done. Six nodes of data. Under the current engine this is three hand-filed tickets, a human doing the judging, and no joint lineage.</figcaption>
   </figure>
 </section>
-<!-- ================= 4. EXECUTION ================= -->
+</main></body></html><!-- ================= 4. EXECUTION ================= -->
 <section class="sheet">
   <div class="kicker">Runtime · the stage manager</div>
   <h2>Execution semantics</h2>
@@ -708,80 +708,3 @@ beckett task file --title "…" --project foo --channel &lt;id&gt; \
     <p>Build it in the phase order given, and hold the line on smallness: four node kinds, six seed presets, no expression language, board UI deferred. Phase 0 is almost pure addition and produces its own go/no-go evidence; the flip is one config flag with a rollback; Plane dies only after it has been demonstrably decorative for weeks. The payoff is the exact capability requested — stages, iterations and parallelism dictated per task by the concierge at filing time — bought with machinery Beckett already trusts: JSONL ledgers, worktrees, casts, and done-signals.</p>
   </div>
 </section>
-<!-- ================= APPENDIX ================= -->
-<section class="sheet">
-  <div class="kicker">Appendix A · behavioural equivalence</div>
-  <h2 class="nonum">Today&rsquo;s lifecycles as flow specs</h2>
-  <p>These three specs are the compatibility contract: at Phase 0/1 cutover, every filing compiles to one of them, and the engine must reproduce the current dispatcher&rsquo;s decisions on each — same spawns, same caps, same parks. The constants shown are today&rsquo;s hardcoded values (§1.3), now merely <em>defaults</em>.</p>
-
-  <div class="cols">
-  <div>
-  <h4>A.1 — one-pass (today: effort low/medium, tier &ldquo;self&rdquo;)</h4>
-  <pre><code>{ <span class="s">"version"</span>: 1,
-  <span class="s">"entry"</span>: <span class="s">"implement"</span>,
-  <span class="s">"nodes"</span>: {
-    <span class="s">"implement"</span>: {
-      <span class="s">"kind"</span>: <span class="s">"worker"</span>,
-      <span class="s">"cast"</span>: { <span class="s">"harness"</span>:<span class="s">"pi"</span>, <span class="s">"effort"</span>:<span class="s">"medium"</span> },
-      <span class="s">"onPass"</span>: <span class="s">"done"</span>,
-      <span class="s">"onFail"</span>: <span class="s">"park"</span>,
-      <span class="s">"retries"</span>: 3            <span class="c">// = MAX_IMPLEMENT_RETRIES</span>
-    }
-  } }</code></pre>
-  <p class="small">The zero-diff withhold (self-tier finish with no changes → route to review instead <span class="ref">dispatcher.ts:2283–2293</span>) becomes a linter-inserted model gate on this spec — the special case turns into visible structure.</p>
-  </div>
-  <div>
-  <h4>A.2 — reviewed (today: effort high/xhigh, tier &ldquo;fresh&rdquo;)</h4>
-  <pre><code>{ <span class="s">"version"</span>: 1,
-  <span class="s">"entry"</span>: <span class="s">"implement"</span>,
-  <span class="s">"nodes"</span>: {
-    <span class="s">"implement"</span>: {
-      <span class="s">"kind"</span>: <span class="s">"worker"</span>,
-      <span class="s">"cast"</span>: { <span class="s">"harness"</span>:<span class="s">"pi"</span>, <span class="s">"effort"</span>:<span class="s">"high"</span> },
-      <span class="s">"onPass"</span>: <span class="s">"review"</span>,
-      <span class="s">"onFail"</span>: <span class="s">"park"</span>,
-      <span class="s">"maxVisits"</span>: 3,         <span class="c">// = MAX_REWORK_CYCLES</span>
-      <span class="s">"retries"</span>: 3
-    },
-    <span class="s">"review"</span>: {
-      <span class="s">"kind"</span>: <span class="s">"gate"</span>,
-      <span class="s">"by"</span>: { <span class="s">"cast"</span>: { <span class="s">"harness"</span>:<span class="s">"claude"</span>,
-              <span class="s">"model"</span>:<span class="s">"claude-sonnet-5"</span>, <span class="s">"effort"</span>:<span class="s">"high"</span> },
-              <span class="s">"rubric"</span>: <span class="s">"criteria-vs-diff"</span> },
-      <span class="s">"onPass"</span>: <span class="s">"done"</span>,
-      <span class="s">"onFail"</span>: <span class="s">"implement"</span>,
-      <span class="s">"maxFails"</span>: 3
-    }
-  } }</code></pre>
-  </div>
-  </div>
-
-  <h4>A.3 — intensive (today: the entire INT board — two enum values, five modules, one Plane project)</h4>
-  <pre><code>{ <span class="s">"version"</span>: 1, <span class="s">"entry"</span>: <span class="s">"design"</span>, <span class="s">"nodes"</span>: {
-  <span class="s">"design"</span>:       { <span class="s">"kind"</span>:<span class="s">"worker"</span>, <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-opus-4-8"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
-                    <span class="s">"artifact"</span>:<span class="s">"docs/design/&lt;id&gt;.md"</span>,
-                    <span class="s">"onPass"</span>:<span class="s">"completeness"</span>, <span class="s">"onFail"</span>:<span class="s">"park"</span>, <span class="s">"maxVisits"</span>:2 },
-  <span class="s">"completeness"</span>: { <span class="s">"kind"</span>:<span class="s">"gate"</span>,
-                    <span class="s">"by"</span>: { <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-haiku-4-5"</span>,<span class="s">"effort"</span>:<span class="s">"low"</span>},
-                            <span class="s">"rubric"</span>:<span class="s">"design-doc completeness"</span> },
-                    <span class="s">"onPass"</span>:<span class="s">"approve"</span>, <span class="s">"onFail"</span>:<span class="s">"design"</span>, <span class="s">"maxFails"</span>:2 },   <span class="c">// = MAX_DESIGN_CYCLES</span>
-  <span class="s">"approve"</span>:      { <span class="s">"kind"</span>:<span class="s">"gate"</span>, <span class="s">"by"</span>:<span class="s">"human"</span>,                              <span class="c">// PARKED: zero tokens</span>
-                    <span class="s">"onPass"</span>:<span class="s">"implement"</span>, <span class="s">"onFail"</span>:<span class="s">"design"</span>, <span class="s">"maxFails"</span>:3 },
-  <span class="s">"implement"</span>:    { <span class="s">"kind"</span>:<span class="s">"worker"</span>, <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"pi"</span>,<span class="s">"effort"</span>:<span class="s">"medium"</span>},
-                    <span class="s">"onPass"</span>:<span class="s">"review"</span>, <span class="s">"onFail"</span>:<span class="s">"park"</span>, <span class="s">"maxVisits"</span>:3 },
-  <span class="s">"review"</span>:       { <span class="s">"kind"</span>:<span class="s">"gate"</span>,
-                    <span class="s">"by"</span>: { <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-sonnet-5"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
-                            <span class="s">"rubric"</span>:<span class="s">"criteria-vs-diff"</span> },
-                    <span class="s">"onPass"</span>:<span class="s">"done"</span>, <span class="s">"onFail"</span>:<span class="s">"implement"</span>, <span class="s">"maxFails"</span>:3 }
-} }</code></pre>
-
-  <div class="note" style="margin-top:5mm">
-    <span class="nt">Sources &amp; verification</span>
-    <p class="small" style="margin-bottom:1.5mm">All ground-truth claims verified against the working tree at commit <code>6fac13d</code> (2026-07-12), primarily: <code>src/plane/types.ts</code>, <code>cast.ts</code>, <code>client.ts</code>, <code>poll.ts</code>, <code>presets.ts</code> · <code>src/dispatch/dispatcher.ts</code>, <code>spawn.ts</code>, <code>advance-outbox.ts</code>, <code>publish-outbox.ts</code> · <code>src/task/store.ts</code> · <code>src/worker/worktree.ts</code> · <code>src/progress/journal.ts</code> · <code>docs/V3.md</code> · <code>docs/design/int-flow.md</code> (OPS-111) · <code>docs/design/cast-presets.md</code> (OPS-109/110).</p>
-    <p class="small">Authored by Beckett&rsquo;s worker seat (Claude Fable 5, high thinking) for OPS-151. Design proposal only — no code changes accompany this document.</p>
-  </div>
-</section>
-
-</main>
-</body>
-</html>

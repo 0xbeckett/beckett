@@ -77,8 +77,10 @@
   <pre><code>{ <span class="s">"version"</span>: 1, <span class="s">"entry"</span>: <span class="s">"implement"</span>, <span class="s">"nodes"</span>: {
     <span class="s">"implement"</span>: { <span class="s">"kind"</span>:<span class="s">"worker"</span>, <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"pi"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
                    <span class="s">"onPass"</span>:<span class="s">"review"</span>, <span class="s">"onFail"</span>:<span class="s">"park"</span>, <span class="s">"maxVisits"</span>:3, <span class="s">"retries"</span>:3 },
-    <span class="s">"review"</span>:    { <span class="s">"kind"</span>:<span class="s">"gate"</span>, <span class="s">"by"</span>:{<span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-sonnet-5"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
-                   <span class="s">"rubric"</span>:<span class="s">"criteria-vs-diff"</span>}, <span class="s">"onPass"</span>:<span class="s">"done"</span>, <span class="s">"onFail"</span>:<span class="s">"implement"</span>, <span class="s">"maxFails"</span>:3 }
+    <span class="s">"review"</span>:    { <span class="s">"kind"</span>:<span class="s">"gate"</span>,
+                   <span class="s">"by"</span>: { <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-sonnet-5"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
+                           <span class="s">"rubric"</span>:<span class="s">"criteria-vs-diff"</span> },
+                   <span class="s">"onPass"</span>:<span class="s">"done"</span>, <span class="s">"onFail"</span>:<span class="s">"implement"</span>, <span class="s">"maxFails"</span>:3 }
 } }</code></pre>
   <p class="small">One-pass work is the same spec minus the gate (<code>onPass:"done"</code>). The INT design flow adds two nodes in front — a <code>design</code> worker and a <code>human</code> gate — instead of two enum values, a board, and five modules. All three appear in full in Appendix A.</p>
 

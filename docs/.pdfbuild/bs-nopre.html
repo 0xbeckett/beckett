@@ -154,3 +154,94 @@ figcaption b { color:var(--ink-soft); font-weight:600; }
     </div>
   </div>
 </div>
+<main><!-- ================= 3. PROPOSAL ================= -->
+<section class="sheet">
+  <div class="kicker">The proposal · workflow as data</div>
+  <h2>The proposal — a per-task flow spec</h2>
+
+  <p class="lede">Replace the compiled-in lifecycle with a small, validated document — the <strong>flow spec</strong>, or <em>run of show</em> — attached to every task at filing time. The dispatcher&rsquo;s hardcoded state→action table becomes a generic interpreter over exactly <strong>four node kinds</strong>. Everything below the node boundary (worktrees, casting, envelopes, done-signals, journal, steering, courier) is reused unchanged.</p>
+
+  <h3><span class="tag">3.1</span>Design principles</h3>
+  <ul>
+    <li><strong>Small algebra, closed set.</strong> Four node kinds: <code>worker</code>, <code>gate</code>, <code>fanout</code>, <code>join</code>. No expressions, no conditionals beyond pass/fail edges, no user-defined node types. Anything fancier must arrive as a fifth kind with its own design doc — that is the fence against the workflow-engine tarpit (§7.1).</li>
+    <li><strong>Every loop is bounded by construction.</strong> A spec that could run forever does not validate. Caps are per-node fields, defaulted, not global constants.</li>
+    <li><strong>Today&rsquo;s behaviour is two specs.</strong> The OPS and INT lifecycles must be expressible byte-for-byte (Appendix A), so cutover is a no-op until the concierge starts writing new shapes.</li>
+    <li><strong>The concierge composes; the engine conducts.</strong> Authoring is data + presets (§5); execution, recovery and budget enforcement are the engine&rsquo;s (§4). The worker never sees the flow — it still gets a brief, a worktree, and a done-signal schema.</li>
+  </ul>
+
+  <h3><span class="tag">3.2</span>The data model</h3>
+  
+
+  <p>The spec travels in a fenced <code>beckett-flow</code> block exactly where <code>beckett-cast</code> lives today (and, after migration, as a typed field in the local task record — §6). Casting stays a separate concern: the flow names <em>seats</em>; the cast fills them. A flow with no <code>beckett-flow</code> block is compiled from the cast exactly as today (effort → gate), so existing filings never break.</p>
+
+  <h3><span class="tag">3.3</span>Validation — what the linter refuses at filing time</h3>
+  <ul>
+    <li>Unknown edge targets; unreachable nodes; an <code>entry</code> that isn&rsquo;t a node; fanout arms whose edges escape their join.</li>
+    <li><strong>Unbounded cycles:</strong> every cycle in the graph must pass through a node whose <code>maxVisits</code>/<code>maxFails</code> is finite (all default finite; setting one to <code>Infinity</code> is simply not representable).</li>
+    <li>Budget sanity: <code>maxConcurrent</code> ≤ global <code>max_workers</code>; a Fable seat anywhere in the spec triggers the existing confirm-before-cast handshake — flow authoring does not bypass the cast doctrine.</li>
+    <li>Cast validation per seat via the existing <code>validateCasting</code> (blocked models, malformed efforts) <span class="ref">presets.ts:76–112</span>.</li>
+  </ul>
+
+  <h3><span class="tag">3.4</span>What today&rsquo;s shapes look like (proof of containment)</h3>
+  <p>The default reviewed lifecycle, as a spec — this is <em>all</em> of it:</p>
+  
+  <p class="small">One-pass work is the same spec minus the gate (<code>onPass:"done"</code>). The INT design flow adds two nodes in front — a <code>design</code> worker and a <code>human</code> gate — instead of two enum values, a board, and five modules. All three appear in full in Appendix A.</p>
+
+  <h3><span class="tag">3.5</span>And what today cannot do at all</h3>
+  <figure>
+  <svg viewBox="0 0 760 232" xmlns="http://www.w3.org/2000/svg" font-family="Inter" font-size="9.5">
+    <defs>
+      <marker id="fa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#44403A"/></marker>
+      <marker id="fb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8C2B2B"/></marker>
+    </defs>
+    <g text-anchor="middle">
+      <!-- design -->
+      <rect x="8" y="88" width="96" height="44" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.4"/>
+      <text x="56" y="107" font-weight="600">design</text>
+      <text x="56" y="121" font-size="8" fill="#78716A">opus · high</text>
+      <!-- gate human -->
+      <g transform="translate(150,110)"><path d="M0 -26 L30 0 L0 26 L-30 0 Z" fill="#FFFFFF" stroke="#9A4B1F" stroke-width="1.6"/>
+      <text y="-2" font-weight="600" font-size="8.6" fill="#9A4B1F">gate</text><text y="10" font-size="7.6" fill="#9A4B1F">human</text></g>
+      <!-- fanout bar -->
+      <rect x="222" y="70" width="7" height="80" rx="2" fill="#2F5D50"/>
+      <text x="226" y="62" font-size="8" fill="#2F5D50" font-weight="600">fan-out</text>
+      <!-- arms -->
+      <rect x="262" y="34" width="118" height="40" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+      <text x="321" y="51" font-weight="600">implement A</text><text x="321" y="65" font-size="8" fill="#78716A">terra · high · worktree A</text>
+      <rect x="262" y="90" width="118" height="40" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+      <text x="321" y="107" font-weight="600">implement B</text><text x="321" y="121" font-size="8" fill="#78716A">opus · high · worktree B</text>
+      <rect x="262" y="146" width="118" height="40" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+      <text x="321" y="163" font-weight="600">implement C</text><text x="321" y="177" font-size="8" fill="#78716A">codex · high · worktree C</text>
+      <!-- join judge -->
+      <rect x="428" y="88" width="104" height="44" rx="6" fill="#FFFFFF" stroke="#2F5D50" stroke-width="1.7"/>
+      <text x="480" y="106" font-weight="600" fill="#2F5D50">join · judge</text>
+      <text x="480" y="120" font-size="8" fill="#2F5D50">fable · high picks one</text>
+      <!-- review -->
+      <rect x="576" y="88" width="96" height="44" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.4"/>
+      <text x="624" y="106" font-weight="600">review</text>
+      <text x="624" y="120" font-size="8" fill="#78716A">sonnet · high</text>
+      <!-- done -->
+      <rect x="704" y="93" width="50" height="34" rx="17" fill="#171310"/><text x="729" y="114" fill="#F5F1E8" font-weight="600">done</text>
+    </g>
+    <!-- arrows -->
+    <line x1="104" y1="110" x2="118" y2="110" stroke="#44403A" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="182" y1="110" x2="220" y2="110" stroke="#44403A" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="229" y1="84"  x2="260" y2="58"  stroke="#2F5D50" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="229" y1="110" x2="260" y2="110" stroke="#2F5D50" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="229" y1="136" x2="260" y2="163" stroke="#2F5D50" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="380" y1="56"  x2="426" y2="96"  stroke="#44403A" stroke-width="1.2" marker-end="url(#fa)"/>
+    <line x1="380" y1="110" x2="426" y2="110" stroke="#44403A" stroke-width="1.2" marker-end="url(#fa)"/>
+    <line x1="380" y1="165" x2="426" y2="124" stroke="#44403A" stroke-width="1.2" marker-end="url(#fa)"/>
+    <line x1="532" y1="110" x2="574" y2="110" stroke="#44403A" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="672" y1="110" x2="702" y2="110" stroke="#44403A" stroke-width="1.3" marker-end="url(#fa)"/>
+    <!-- fail edge review -> judge? back to winner rework -->
+    <path d="M624 132 Q 560 176 484 134" stroke="#8C2B2B" stroke-width="1.3" fill="none" marker-end="url(#fb)"/>
+    <text x="556" y="172" font-size="8" fill="#8C2B2B" text-anchor="middle">onFail → judge (≤2 visits), then park</text>
+    <!-- gate fail back to design -->
+    <path d="M150 84 Q 110 52 62 86" stroke="#8C2B2B" stroke-width="1.3" fill="none" marker-end="url(#fb)"/>
+    <text x="106" y="46" font-size="8" fill="#8C2B2B" text-anchor="middle">changes requested (≤2)</text>
+  </svg>
+  <figcaption><b>Fig. 3 — a bake-off run of show.</b> Design → human gate → three isolated candidate implementations → a judge join that picks (or synthesises) a winner → fresh review → done. Six nodes of data. Under the current engine this is three hand-filed tickets, a human doing the judging, and no joint lineage.</figcaption>
+  </figure>
+</section>
+</main></body></html>
