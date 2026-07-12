@@ -7,62 +7,80 @@
   <div class="cols">
   <div>
   <h4>A.1 — one-pass (today: effort low/medium, tier &ldquo;self&rdquo;)</h4>
-  <pre><code>{ <span class="s">"version"</span>: 1,
-  <span class="s">"entry"</span>: <span class="s">"implement"</span>,
-  <span class="s">"nodes"</span>: {
-    <span class="s">"implement"</span>: {
-      <span class="s">"kind"</span>: <span class="s">"worker"</span>,
-      <span class="s">"cast"</span>: { <span class="s">"harness"</span>:<span class="s">"pi"</span>, <span class="s">"effort"</span>:<span class="s">"medium"</span> },
-      <span class="s">"onPass"</span>: <span class="s">"done"</span>,
-      <span class="s">"onFail"</span>: <span class="s">"park"</span>,
-      <span class="s">"retries"</span>: 3            <span class="c">// = MAX_IMPLEMENT_RETRIES</span>
+  <pre><code>{ <span class="s">&quot;version&quot;</span>: 1,
+  <span class="s">&quot;entry&quot;</span>: <span class="s">&quot;implement&quot;</span>,
+  <span class="s">&quot;nodes&quot;</span>: {
+    <span class="s">&quot;implement&quot;</span>: {
+      <span class="s">&quot;kind&quot;</span>: <span class="s">&quot;worker&quot;</span>,
+      <span class="s">&quot;cast&quot;</span>: { <span class="s">&quot;harness&quot;</span>: <span class="s">&quot;pi&quot;</span>,
+                <span class="s">&quot;effort&quot;</span>: <span class="s">&quot;medium&quot;</span> },
+      <span class="s">&quot;onPass&quot;</span>: <span class="s">&quot;done&quot;</span>,
+      <span class="s">&quot;onFail&quot;</span>: <span class="s">&quot;park&quot;</span>,
+      <span class="s">&quot;retries&quot;</span>: 3
+      <span class="c">// = MAX_IMPLEMENT_RETRIES</span>
     }
-  } }</code></pre>
+} }</code></pre>
   <p class="small">The zero-diff withhold (self-tier finish with no changes → route to review instead <span class="ref">dispatcher.ts:2283–2293</span>) becomes a linter-inserted model gate on this spec — the special case turns into visible structure.</p>
   </div>
   <div>
   <h4>A.2 — reviewed (today: effort high/xhigh, tier &ldquo;fresh&rdquo;)</h4>
-  <pre><code>{ <span class="s">"version"</span>: 1,
-  <span class="s">"entry"</span>: <span class="s">"implement"</span>,
-  <span class="s">"nodes"</span>: {
-    <span class="s">"implement"</span>: {
-      <span class="s">"kind"</span>: <span class="s">"worker"</span>,
-      <span class="s">"cast"</span>: { <span class="s">"harness"</span>:<span class="s">"pi"</span>, <span class="s">"effort"</span>:<span class="s">"high"</span> },
-      <span class="s">"onPass"</span>: <span class="s">"review"</span>,
-      <span class="s">"onFail"</span>: <span class="s">"park"</span>,
-      <span class="s">"maxVisits"</span>: 3,         <span class="c">// = MAX_REWORK_CYCLES</span>
-      <span class="s">"retries"</span>: 3
+  <pre><code>{ <span class="s">&quot;version&quot;</span>: 1,
+  <span class="s">&quot;entry&quot;</span>: <span class="s">&quot;implement&quot;</span>,
+  <span class="s">&quot;nodes&quot;</span>: {
+    <span class="s">&quot;implement&quot;</span>: {
+      <span class="s">&quot;kind&quot;</span>: <span class="s">&quot;worker&quot;</span>,
+      <span class="s">&quot;cast&quot;</span>: { <span class="s">&quot;harness&quot;</span>: <span class="s">&quot;pi&quot;</span>,
+                <span class="s">&quot;effort&quot;</span>: <span class="s">&quot;high&quot;</span> },
+      <span class="s">&quot;onPass&quot;</span>: <span class="s">&quot;review&quot;</span>,
+      <span class="s">&quot;onFail&quot;</span>: <span class="s">&quot;park&quot;</span>,
+      <span class="s">&quot;maxVisits&quot;</span>: 3,
+      <span class="c">// = MAX_REWORK_CYCLES</span>
+      <span class="s">&quot;retries&quot;</span>: 3
     },
-    <span class="s">"review"</span>: {
-      <span class="s">"kind"</span>: <span class="s">"gate"</span>,
-      <span class="s">"by"</span>: { <span class="s">"cast"</span>: { <span class="s">"harness"</span>:<span class="s">"claude"</span>,
-              <span class="s">"model"</span>:<span class="s">"claude-sonnet-5"</span>, <span class="s">"effort"</span>:<span class="s">"high"</span> },
-              <span class="s">"rubric"</span>: <span class="s">"criteria-vs-diff"</span> },
-      <span class="s">"onPass"</span>: <span class="s">"done"</span>,
-      <span class="s">"onFail"</span>: <span class="s">"implement"</span>,
-      <span class="s">"maxFails"</span>: 3
+    <span class="s">&quot;review&quot;</span>: {
+      <span class="s">&quot;kind&quot;</span>: <span class="s">&quot;gate&quot;</span>,
+      <span class="s">&quot;by&quot;</span>: {
+        <span class="s">&quot;cast&quot;</span>: { <span class="s">&quot;harness&quot;</span>: <span class="s">&quot;claude&quot;</span>,
+                  <span class="s">&quot;model&quot;</span>: <span class="s">&quot;claude-sonnet-5&quot;</span>,
+                  <span class="s">&quot;effort&quot;</span>: <span class="s">&quot;high&quot;</span> },
+        <span class="s">&quot;rubric&quot;</span>: <span class="s">&quot;criteria-vs-diff&quot;</span>
+      },
+      <span class="s">&quot;onPass&quot;</span>: <span class="s">&quot;done&quot;</span>,
+      <span class="s">&quot;onFail&quot;</span>: <span class="s">&quot;implement&quot;</span>,
+      <span class="s">&quot;maxFails&quot;</span>: 3
     }
-  } }</code></pre>
+} }</code></pre>
   </div>
   </div>
 
   <h4>A.3 — intensive (today: the entire INT board — two enum values, five modules, one Plane project)</h4>
-  <pre><code>{ <span class="s">"version"</span>: 1, <span class="s">"entry"</span>: <span class="s">"design"</span>, <span class="s">"nodes"</span>: {
-  <span class="s">"design"</span>:       { <span class="s">"kind"</span>:<span class="s">"worker"</span>, <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-opus-4-8"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
-                    <span class="s">"artifact"</span>:<span class="s">"docs/design/&lt;id&gt;.md"</span>,
-                    <span class="s">"onPass"</span>:<span class="s">"completeness"</span>, <span class="s">"onFail"</span>:<span class="s">"park"</span>, <span class="s">"maxVisits"</span>:2 },
-  <span class="s">"completeness"</span>: { <span class="s">"kind"</span>:<span class="s">"gate"</span>,
-                    <span class="s">"by"</span>: { <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-haiku-4-5"</span>,<span class="s">"effort"</span>:<span class="s">"low"</span>},
-                            <span class="s">"rubric"</span>:<span class="s">"design-doc completeness"</span> },
-                    <span class="s">"onPass"</span>:<span class="s">"approve"</span>, <span class="s">"onFail"</span>:<span class="s">"design"</span>, <span class="s">"maxFails"</span>:2 },   <span class="c">// = MAX_DESIGN_CYCLES</span>
-  <span class="s">"approve"</span>:      { <span class="s">"kind"</span>:<span class="s">"gate"</span>, <span class="s">"by"</span>:<span class="s">"human"</span>,                              <span class="c">// PARKED: zero tokens</span>
-                    <span class="s">"onPass"</span>:<span class="s">"implement"</span>, <span class="s">"onFail"</span>:<span class="s">"design"</span>, <span class="s">"maxFails"</span>:3 },
-  <span class="s">"implement"</span>:    { <span class="s">"kind"</span>:<span class="s">"worker"</span>, <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"pi"</span>,<span class="s">"effort"</span>:<span class="s">"medium"</span>},
-                    <span class="s">"onPass"</span>:<span class="s">"review"</span>, <span class="s">"onFail"</span>:<span class="s">"park"</span>, <span class="s">"maxVisits"</span>:3 },
-  <span class="s">"review"</span>:       { <span class="s">"kind"</span>:<span class="s">"gate"</span>,
-                    <span class="s">"by"</span>: { <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-sonnet-5"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
-                            <span class="s">"rubric"</span>:<span class="s">"criteria-vs-diff"</span> },
-                    <span class="s">"onPass"</span>:<span class="s">"done"</span>, <span class="s">"onFail"</span>:<span class="s">"implement"</span>, <span class="s">"maxFails"</span>:3 }
+  <pre><code>{ <span class="s">&quot;version&quot;</span>: 1, <span class="s">&quot;entry&quot;</span>: <span class="s">&quot;design&quot;</span>, <span class="s">&quot;nodes&quot;</span>: {
+  <span class="s">&quot;design&quot;</span>: {
+    <span class="s">&quot;kind&quot;</span>: <span class="s">&quot;worker&quot;</span>,
+    <span class="s">&quot;cast&quot;</span>: { <span class="s">&quot;harness&quot;</span>: <span class="s">&quot;claude&quot;</span>, <span class="s">&quot;model&quot;</span>: <span class="s">&quot;claude-opus-4-8&quot;</span>, <span class="s">&quot;effort&quot;</span>: <span class="s">&quot;high&quot;</span> },
+    <span class="s">&quot;artifact&quot;</span>: &quot;docs/design/&lt;id&gt;.md&quot;,
+    <span class="s">&quot;onPass&quot;</span>: <span class="s">&quot;completeness&quot;</span>, <span class="s">&quot;onFail&quot;</span>: <span class="s">&quot;park&quot;</span>, <span class="s">&quot;maxVisits&quot;</span>: 2
+  },
+  <span class="s">&quot;completeness&quot;</span>: {
+    <span class="s">&quot;kind&quot;</span>: <span class="s">&quot;gate&quot;</span>,
+    <span class="s">&quot;by&quot;</span>: { <span class="s">&quot;cast&quot;</span>: { <span class="s">&quot;harness&quot;</span>: <span class="s">&quot;claude&quot;</span>, <span class="s">&quot;model&quot;</span>: <span class="s">&quot;claude-haiku-4-5&quot;</span>, <span class="s">&quot;effort&quot;</span>: <span class="s">&quot;low&quot;</span> },
+            <span class="s">&quot;rubric&quot;</span>: <span class="s">&quot;design-doc completeness&quot;</span> },
+    <span class="s">&quot;onPass&quot;</span>: <span class="s">&quot;approve&quot;</span>, <span class="s">&quot;onFail&quot;</span>: <span class="s">&quot;design&quot;</span>, <span class="s">&quot;maxFails&quot;</span>: 2       <span class="c">// = MAX_DESIGN_CYCLES</span>
+  },
+  <span class="s">&quot;approve&quot;</span>: {
+    <span class="s">&quot;kind&quot;</span>: <span class="s">&quot;gate&quot;</span>, <span class="s">&quot;by&quot;</span>: <span class="s">&quot;human&quot;</span>,                               <span class="c">// PARKED: zero tokens</span>
+    <span class="s">&quot;onPass&quot;</span>: <span class="s">&quot;implement&quot;</span>, <span class="s">&quot;onFail&quot;</span>: <span class="s">&quot;design&quot;</span>, <span class="s">&quot;maxFails&quot;</span>: 3
+  },
+  <span class="s">&quot;implement&quot;</span>: {
+    <span class="s">&quot;kind&quot;</span>: <span class="s">&quot;worker&quot;</span>, <span class="s">&quot;cast&quot;</span>: { <span class="s">&quot;harness&quot;</span>: <span class="s">&quot;pi&quot;</span>, <span class="s">&quot;effort&quot;</span>: <span class="s">&quot;medium&quot;</span> },
+    <span class="s">&quot;onPass&quot;</span>: <span class="s">&quot;review&quot;</span>, <span class="s">&quot;onFail&quot;</span>: <span class="s">&quot;park&quot;</span>, <span class="s">&quot;maxVisits&quot;</span>: 3
+  },
+  <span class="s">&quot;review&quot;</span>: {
+    <span class="s">&quot;kind&quot;</span>: <span class="s">&quot;gate&quot;</span>,
+    <span class="s">&quot;by&quot;</span>: { <span class="s">&quot;cast&quot;</span>: { <span class="s">&quot;harness&quot;</span>: <span class="s">&quot;claude&quot;</span>, <span class="s">&quot;model&quot;</span>: <span class="s">&quot;claude-sonnet-5&quot;</span>, <span class="s">&quot;effort&quot;</span>: <span class="s">&quot;high&quot;</span> },
+            <span class="s">&quot;rubric&quot;</span>: <span class="s">&quot;criteria-vs-diff&quot;</span> },
+    <span class="s">&quot;onPass&quot;</span>: <span class="s">&quot;done&quot;</span>, <span class="s">&quot;onFail&quot;</span>: <span class="s">&quot;implement&quot;</span>, <span class="s">&quot;maxFails&quot;</span>: 3
+  }
 } }</code></pre>
 
   <div class="note" style="margin-top:5mm">
