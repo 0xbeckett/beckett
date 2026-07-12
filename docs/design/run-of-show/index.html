@@ -1503,6 +1503,271 @@
   <div class="rf">21 / 34</div>
 </section>
 
+<!-- ============================================================ p22 · §6 opener + 6.1 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">New in rev 2 &middot; nothing fails quietly</div>
+  <div class="secnum">6</div>
+  <h1>Reliability &amp; observability</h1>
+  <p class="lede">Two requirements, verbatim from ro&rsquo;s review: <em>&ldquo;when something goes wrong
+  we know about it&rdquo;</em> and <em>&ldquo;we have clear handshakes the agent can see to make sure the
+  agent understands its environment.&rdquo;</em> &sect;1.6 showed the gap precisely: today every failure is
+  detected somewhere and announced nowhere, and the worker&rsquo;s model of its own situation is an
+  inference from its <code>cwd</code>. This section closes both, with two invariants the rest of the design
+  already leans on: <b>every abnormal event reaches a human surface within sixty seconds</b>, and
+  <b>every worker can prove where it is before it does anything</b>.</p>
+
+  <h2><span class="n">6.1</span>Failure detection &mdash; leases, not vibes</h2>
+  <p>The primitive is a <b>lease</b>. Every LIVE seat holds one; it is renewed automatically by any real
+  progress event from the driver stream &mdash; turns, tool calls, file changes &mdash; the same events
+  the stall watch already counts <span class="rcpt">base.ts:78, 496&ndash;497</span>. The Sentinel folds
+  renewals into at most one <code>progress_noted</code> per seat per minute (telemetry without log spam)
+  and evaluates three clocks against the run&rsquo;s <code>SuperviseSpec</code>:</p>
+<pre><span class="k">interface</span> <b>SuperviseSpec</b> {          <span class="c">// per-run overrides; engine defaults shown. Floors enforced</span>
+  leaseS?: number;                  <span class="c">// 90  — silence longer than this = "quiet" (floor 30)</span>
+  quietStrikes?: number;            <span class="c">// 2   — quiet windows before the stall alarm (floor 1)</span>
+  overrunFactor?: number;           <span class="c">// 1.5 — × the cast's envelope wallClockS → overrun alarm</span>
+  checkpointS?: number;             <span class="c">// 300 — WIP checkpoint cadence (OPS-125, now per-run)</span>
+  readyS?: number;                  <span class="c">// 60  — spawn → worker_ready deadline (SPAWN_TIMEOUT_MS today)</span>
+}</pre>
+  <ul>
+    <li><b>Quiet &rarr; stall.</b> One missed lease window: the seat is marked <code>quiet</code> and gets a
+    status-check nudge &mdash; today&rsquo;s strike 1 <span class="rcpt">dispatcher.ts:1751</span>, kept. A second
+    window: <code>alarm_raised(stall)</code>, and the ladder in &sect;6.2 takes over. The difference from
+    today is not detection &mdash; it is that the alarm is an <em>event in the run log</em>, so it is
+    folded, rendered in <code>beckett status</code>, and announced by the Herald, instead of dying in a
+    logger.warn.</li>
+    <li><b>Overrun.</b> The effort envelope stays advisory for the worker, but crossing
+    <code>overrunFactor &times; wallClockS</code> raises <code>alarm_raised(overrun)</code> &mdash; &ldquo;this low-effort
+    seat predicted 10 minutes and has been out for 15&rdquo; &mdash; long before the 60-minute hard
+    backstop <span class="rcpt">config.ts:269</span> kills anything. The backstop itself survives unchanged,
+    but its firing becomes a <em>page</em>, not a log line: by definition it means every softer layer
+    failed.</li>
+    <li><b>Ready deadline.</b> A seat that hasn&rsquo;t completed the &sect;6.4 readiness handshake within
+    <code>readyS</code> raises <code>alarm_raised(ready_timeout)</code> &mdash; the spawn-phase hang that today
+    only a 60&nbsp;s launch timer catches <span class="rcpt">base.ts:46, 265&ndash;275</span>.</li>
+  </ul>
+  <p>Leases make one distinction structural, and Fig.&nbsp;6 already drew it: <b>a slow worker renews; a
+  dead worker doesn&rsquo;t.</b> No amount of model-side laziness can fake a lease renewal, and no amount
+  of long thinking gets punished for it &mdash; the clocks watch silence, not speed.</p>
+  <div class="rf">22 / 34</div>
+</section>
+
+<!-- ============================================================ p23 · 6.2 alarms + ladder -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">6.2</span>The alarm catalogue and the escalation ladder</h2>
+  <p>Alarms are a closed vocabulary, like nodes and events. Each has one automatic first response and
+  one announcement tier; nothing is configurable into silence.</p>
+  <table class="compact">
+    <tr><th style="width:17%">Alarm</th><th style="width:33%">Raised when</th><th style="width:31%">Automatic first response</th><th>Tier (&sect;6.3)</th></tr>
+    <tr><td><code>stall</code></td><td>lease expired &times; <code>quietStrikes</code></td><td>abort &rarr; checkpoint WIP &rarr; retry same visit (today&rsquo;s strike 2 <span class="rcpt">dispatcher.ts:1771</span>)</td><td>status</td></tr>
+    <tr><td><code>overrun</code></td><td>1.5&times; envelope wall-clock</td><td>none &mdash; informational; repeated &rarr; status</td><td>status</td></tr>
+    <tr><td><code>ready_timeout</code></td><td>no <code>worker_ready</code> within 60&nbsp;s</td><td>kill, retry launch (existing spawn retry)</td><td>status</td></tr>
+    <tr><td><code>refused</code></td><td>worker&rsquo;s environment check failed (&sect;6.4)</td><td>quarantine the seat; re-provision worktree; respawn once</td><td><b>page</b></td></tr>
+    <tr><td><code>silent_exit</code></td><td>process died, no done-signal</td><td>synthesize signal <span class="rcpt">base.ts:327&ndash;343</span>, retry ladder</td><td>status; page on final retry</td></tr>
+    <tr><td><code>hard_cap</code></td><td>wall-clock backstop fired <span class="rcpt">base.ts:393&ndash;409</span></td><td>tree killed by driver; checkpoint floor recovers WIP</td><td><b>page</b></td></tr>
+    <tr><td><code>budget_80</code></td><td>run spend crosses 80% of <code>budget.usd</code></td><td>none &mdash; forewarning</td><td>status</td></tr>
+    <tr><td><code>budget_hit</code></td><td>a pre-spawn gate refused (&sect;4.3)</td><td>park the run</td><td><b>page</b></td></tr>
+    <tr><td><code>join_starved</code></td><td>join waiting &gt; 2&times; slowest arm&rsquo;s envelope on a failed/silent arm</td><td>fail the arm into the join (&sect;5.4)</td><td>status</td></tr>
+    <tr><td><code>mirror_lag</code></td><td>Phase-1 Plane mirror &gt; 10 min behind</td><td>none &mdash; execution unaffected by design</td><td>trace</td></tr>
+  </table>
+
+  <p>The ladder under <code>stall</code>/<code>silent_exit</code> is deliberately today&rsquo;s ladder &mdash; nudge,
+  then abort-checkpoint-retry, then give up <span class="rcpt">dispatcher.ts:1751&ndash;1786,
+  2150&ndash;2236</span> &mdash; with two changes. First, <b>every rung is an event</b>, so the operator watches
+  the ladder climb in real time instead of discovering its result. Second, <b>the top rung pages
+  instead of parking silently</b>: exhausted retries produce <code>parked</code> + a page containing the last
+  checkpoint SHA, the synthesized signal, and the journal tail &mdash; everything needed to decide
+  <em>resume, re-cast, or kill</em> from a phone.</p>
+
+  <div class="callout">
+    <div class="ct">What &ldquo;we know about it&rdquo; means, made testable</div>
+    <p>For every alarm in the table: inject the fault in a harness test (kill the process, freeze the
+    clock, saturate the budget) and assert that (a) the alarm event is in the run log, (b) the
+    automatic response fired, and (c) a Herald delivery record exists within 60&nbsp;s. The invariant is
+    property-tested, not promised. A quarterly <em>fire drill</em> &mdash; one deliberately-wedged canary
+    run &mdash; keeps the path honest in production, the same way the outboxes earn trust by being
+    exercised.</p>
+  </div>
+  <div class="rf">23 / 34</div>
+</section>
+
+<!-- ============================================================ p24 · 6.3 announcement routing -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">6.3</span>Announcement routing &mdash; what lands where, who gets paged</h2>
+  <p>The Herald classifies every run event into one of three tiers. Delivery is durable: pages and
+  status messages go through the same outbox idiom as GitHub publishes
+  <span class="rcpt">publish-outbox.ts</span>, so a Discord outage delays an announcement rather than losing
+  it. Status flushes on a 15&nbsp;s tick; pages flush immediately.</p>
+  <table class="compact">
+    <tr><th style="width:12%">Tier</th><th style="width:30%">Surface</th><th style="width:33%">Carries</th><th>Examples</th></tr>
+    <tr><td><b>trace</b></td>
+        <td>run log + journal only</td>
+        <td>everything &mdash; the full &sect;4.4 vocabulary</td>
+        <td><code>progress_noted</code>, <code>edge_taken</code>, <code>checkpoint_committed</code></td></tr>
+    <tr><td><b>status</b></td>
+        <td>the task&rsquo;s origin channel (threaded under the filing message)</td>
+        <td>one-line human sentence + <code>beckett status</code> deep link</td>
+        <td>node transitions, gate verdicts, stall alarms, join resolutions, <code>budget_80</code></td></tr>
+    <tr><td><b>page</b></td>
+        <td>direct ping to ro (and the concierge&rsquo;s attention queue)</td>
+        <td>the decision packet: reason, checkpoint SHA, journal tail, the verbs that apply</td>
+        <td><code>parked</code>, <code>budget_hit</code>, <code>hard_cap</code>, <code>refused</code>, human gates awaiting approval</td></tr>
+  </table>
+  <p>Three routing rules keep this from becoming noise, because an alarm system that spams gets muted
+  and then it is &sect;1.6 again with extra steps:</p>
+  <ul>
+    <li><b>Status is threaded, not broadcast.</b> A run&rsquo;s chatter lives in one thread under its own
+    filing message; the channel surface stays one line per run.</li>
+    <li><b>Pages are decisions, not news.</b> A page is sent only when a human verb is the next step
+    (<code>resume</code>, <code>grant</code>, <code>cancel</code>, gate approval). News that needs no decision is
+    status, however alarming it sounds.</li>
+    <li><b>Repeats collapse.</b> An unacknowledged alarm re-fires into the <em>same</em> message (edit,
+    not repost) with an escalating age stamp. One wedged run is one page, aging visibly &mdash; not a
+    wall of pings.</li>
+  </ul>
+
+  <p><b>Telemetry.</b> The counters ride the same events: <code>progress_noted</code> carries turns, tool
+  calls and token deltas from the driver&rsquo;s live telemetry <span class="rcpt">base.ts:89&ndash;92</span>;
+  <code>run_done</code> carries totals; the spend ledger keeps its per-seat <code>SpendRecord</code> rows
+  <span class="rcpt">spend.ts:7&ndash;24</span>. <code>beckett status</code> folds all of it per run &mdash; DAG,
+  cursor positions, lease states, visit counters, spend against budget &mdash; and a nightly one-liner
+  per project (runs finished / parked / spend vs. yesterday) goes out at status tier. That rollup is
+  the whole &ldquo;dashboard&rdquo;: the design deliberately stops short of a metrics stack until the
+  JSONL outgrows <code>jq</code>, which it has not.</p>
+  <div class="rf">24 / 34</div>
+</section>
+
+<!-- ============================================================ p25 · 6.4 handshakes + manifest -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">6.4</span>Handshakes &mdash; the worker&rsquo;s environment as a contract it can read</h2>
+  <p>Today a worker infers its situation from its <code>cwd</code> and the prose of its brief
+  <span class="rcpt">spawn.ts:320&ndash;426</span>. The fix is a file, not a protocol stack: every spawn writes a
+  <b>stage manifest</b> into the worktree beside the done-signal schema &mdash; machine-readable,
+  human-readable, and the single answer to &ldquo;where am I and what am I doing?&rdquo;:</p>
+<pre><span class="c">// .beckett/stage-manifest.json — written by the Spawn Adapter, read by the worker (and by §7's sims)</span>
+{ <span class="k">"run"</span>: <span class="s">"#58.1"</span>, <span class="k">"node"</span>: <span class="s">"ui"</span>, <span class="k">"kind"</span>: <span class="s">"worker"</span>, <span class="k">"arm"</span>: 2,
+  <span class="k">"visit"</span>: { <span class="k">"n"</span>: 1, <span class="k">"maxVisits"</span>: 3, <span class="k">"retriesLeft"</span>: 3 },
+  <span class="k">"position"</span>: { <span class="k">"upstream"</span>:   [ { <span class="k">"node"</span>: <span class="s">"design"</span>, <span class="k">"status"</span>: <span class="s">"passed"</span>,
+                                  <span class="k">"artifact"</span>: <span class="s">"docs/design/spend-page.md"</span>,
+                                  <span class="k">"summary"</span>: <span class="s">"two-panel layout; API shape agreed"</span> } ],
+                <span class="k">"downstream"</span>: [ <span class="s">"join:merge"</span>, <span class="s">"review"</span> ] },
+  <span class="k">"workspace"</span>: { <span class="k">"worktree"</span>: <span class="s">".beckett/worktrees/58-1-arm2"</span>,
+                 <span class="k">"branch"</span>: <span class="s">"beckett/task-58.1/arm-2"</span>,
+                 <span class="k">"baseSha"</span>: <span class="s">"f31c09a"</span>, <span class="k">"scope"</span>: [<span class="s">"web/**"</span>] },
+  <span class="k">"criteria"</span>: [ <span class="s">"spend page renders per-project totals"</span>, <span class="s">"loads under 200ms cached"</span> ],
+  <span class="k">"budget"</span>: { <span class="k">"envelope"</span>: { <span class="k">"turnCap"</span>: 60, <span class="k">"wallClockS"</span>: 2400 },
+              <span class="k">"runRemainingUsd"</span>: 4.10 },
+  <span class="k">"handshake"</span>: { <span class="k">"readyBy"</span>: <span class="s">"2026-07-12T14:31:00Z"</span>,
+                 <span class="k">"readyVerb"</span>: <span class="s">"beckett seat ready"</span>,
+                 <span class="k">"refuseVerb"</span>: <span class="s">"beckett seat refuse --reason …"</span>,
+                 <span class="k">"whereami"</span>: <span class="s">"beckett whereami"</span> } }</pre>
+  <p>Around that file, three handshakes &mdash; spawn, progress, completion &mdash; each with an
+  acknowledgment the other side can verify:</p>
+  <ul>
+    <li><b>Ready (spawn &rarr; work).</b> The worker&rsquo;s first required act is <code>beckett seat ready</code>,
+    which independently checks the observed world against the manifest &mdash; current branch equals
+    <code>workspace.branch</code>, <code>HEAD</code> is <code>baseSha</code> or a descendant, the worktree is clean or
+    carries only the expected checkpoint &mdash; and appends <code>worker_ready</code> with what it saw. On any
+    mismatch the verb exits nonzero, the worker calls <code>seat refuse</code> and stops: <b>a confused agent
+    that halts in ten seconds is a reliability feature; one that guesses is an incident.</b> Refusal
+    pages, because it means the engine&rsquo;s bookkeeping and the filesystem disagree &mdash; the one
+    inconsistency that must never be worked through.</li>
+    <li><b>Progress (work).</b> Nothing to remember: leases renew from ordinary activity (&sect;6.1).
+    <code>beckett whereami</code> is available the whole time and answers from the manifest <em>plus</em> the
+    engine&rsquo;s live fold &mdash; node, visit, lease state, budget left, steers pending &mdash; so mid-task
+    disorientation (after a compaction, say) has a canonical cure the agent can invoke itself.</li>
+    <li><b>Done (work &rarr; engine).</b> The done-signal rides the harness&rsquo;s structured output as
+    today <span class="rcpt">claude.ts:598</span>. The engine&rsquo;s ack is the fsync&rsquo;d
+    <code>signal_received</code> event (&sect;4.3 step 1); if the daemon dies between a worker&rsquo;s exit and
+    that fsync, boot-time recovery re-derives the signal from the driver transcript &mdash; the same
+    resumables bridge crash recovery already uses <span class="rcpt">dispatcher.ts:583&ndash;627</span>. A
+    worker&rsquo;s work is therefore never both finished and unrecorded.</li>
+  </ul>
+  <div class="rf">25 / 34</div>
+</section>
+
+<!-- ============================================================ p26 · Fig 7 sequence + ambiguity table + 6.5 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <figure style="margin-top:6mm">
+    <svg viewBox="0 0 660 236">
+      <defs>
+        <marker id="ar7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.4" markerHeight="6.4" orient="auto-start-reverse">
+          <path d="M0,1 L9,5 L0,9" fill="none" stroke="context-stroke" stroke-width="1.5"/>
+        </marker>
+      </defs>
+      <!-- lifelines -->
+      <g font-family="Inter">
+        <rect class="box" x="30" y="12" width="96" height="22" rx="4"/><text class="lbl" x="78" y="26.5" text-anchor="middle">Engine</text>
+        <rect class="box" x="200" y="12" width="96" height="22" rx="4"/><text class="lbl" x="248" y="26.5" text-anchor="middle">Worktree (fs)</text>
+        <rect class="boxRust" x="370" y="12" width="96" height="22" rx="4"/><text class="lbl" x="418" y="26.5" text-anchor="middle">Worker</text>
+        <rect class="boxSage" x="540" y="12" width="96" height="22" rx="4"/><text class="lbl" x="588" y="26.5" text-anchor="middle">Herald &rarr; Discord</text>
+      </g>
+      <line class="edgeMuted edgeDash" x1="78" y1="34" x2="78" y2="228"/>
+      <line class="edgeMuted edgeDash" x1="248" y1="34" x2="248" y2="228"/>
+      <line class="edgeMuted edgeDash" x1="418" y1="34" x2="418" y2="228"/>
+      <line class="edgeMuted edgeDash" x1="588" y1="34" x2="588" y2="228"/>
+
+      <!-- 1 write manifest -->
+      <line class="edge" x1="78" y1="52" x2="248" y2="52" marker-end="url(#ar7)"/>
+      <text class="lbl2" x="163" y="46" text-anchor="middle">write stage-manifest.json &middot; done-schema &middot; scope-guard</text>
+      <!-- 2 spawn -->
+      <line class="edge" x1="78" y1="74" x2="418" y2="74" marker-end="url(#ar7)"/>
+      <text class="lbl2" x="248" y="68" text-anchor="middle">spawn (brief = body + node brief + steers)</text>
+      <!-- 3 verify -->
+      <line class="edge" x1="418" y1="96" x2="248" y2="96" marker-end="url(#ar7)"/>
+      <text class="lbl2" x="333" y="90" text-anchor="middle">read manifest &middot; git branch / HEAD vs baseSha</text>
+      <!-- 4 ready -->
+      <line class="edgeRust" x1="418" y1="118" x2="78" y2="118" marker-end="url(#ar7)"/>
+      <text class="lbl2" x="248" y="112" text-anchor="middle" fill="#b34f28">beckett seat ready &mdash; observed == expected</text>
+      <text class="mono" x="70" y="130" text-anchor="end">worker_ready ✓ fsync</text>
+      <!-- refuse alt -->
+      <path class="edgeMuted edgeDash" d="M 418 138 L 78 138" marker-end="url(#ar7)"/>
+      <text class="lbl2" x="248" y="149" text-anchor="middle">alt: seat refuse &rarr; worker_refused &rarr; page &middot; respawn</text>
+      <!-- work loop -->
+      <rect x="360" y="158" width="116" height="26" rx="4" fill="none" stroke="#b5ada1" stroke-width=".8" stroke-dasharray="3 2"/>
+      <text class="lbl2" x="418" y="169" text-anchor="middle">work: turns &middot; files &middot; checks</text>
+      <text class="mono" x="418" y="179" text-anchor="middle" font-size="5.6">events renew lease &rarr; progress_noted</text>
+      <!-- done signal -->
+      <line class="edgeRust" x1="418" y1="200" x2="78" y2="200" marker-end="url(#ar7)"/>
+      <text class="lbl2" x="248" y="194" text-anchor="middle" fill="#b34f28">done-signal {status, summary, filesChanged…}</text>
+      <text class="mono" x="70" y="212" text-anchor="end">signal_received ✓ fsync = ack &middot; edge_taken</text>
+      <!-- announce -->
+      <line class="edge" x1="78" y1="222" x2="588" y2="222" marker-end="url(#ar7)"/>
+      <text class="lbl2" x="333" y="216" text-anchor="middle">status: &ldquo;ui arm complete &rarr; waiting at join&rdquo; &middot; &le;60 s</text>
+    </svg>
+    <figcaption><b>Fig. 7 &mdash; the seat handshake, end to end.</b> The manifest is written before the
+    worker exists; the worker proves its environment before it works; the engine&rsquo;s fsync is the
+    completion ack; the Herald tells a human within a minute. The dashed <em>refuse</em> alternative is
+    the whole point: disagreement between bookkeeping and filesystem halts in seconds and pages,
+    instead of being guessed through.</figcaption>
+  </figure>
+
+  <table class="compact">
+    <tr><th style="width:30%">The question a worker asks</th><th style="width:33%">Today&rsquo;s answer</th><th>Rev-2 answer</th></tr>
+    <tr><td>What branch/worktree should I be in?</td><td>implied by <code>cwd</code></td><td><code>workspace.*</code>, verified at <code>seat ready</code></td></tr>
+    <tr><td>What stage am I, in what larger shape?</td><td>inferred from brief prose</td><td><code>node</code>, <code>kind</code>, <code>position.upstream/downstream</code></td></tr>
+    <tr><td>What did the stage before me produce?</td><td>sometimes pasted into the brief</td><td><code>position.upstream[].artifact/summary</code>, on disk</td></tr>
+    <tr><td>How much runway do I have?</td><td>unknown</td><td><code>budget.envelope</code> + <code>runRemainingUsd</code></td></tr>
+    <tr><td>Which attempt is this?</td><td>unknown</td><td><code>visit.n</code> of <code>maxVisits</code></td></tr>
+    <tr><td>Did my finish get recorded?</td><td>unknowable</td><td><code>signal_received</code> fsync + boot-time re-derivation</td></tr>
+  </table>
+
+  <h2><span class="n">6.5</span>The stability posture, in one paragraph</h2>
+  <p>The posture is: <b>local, append-only, announced.</b> Execution state never leaves the machine;
+  every transition is one fsync&rsquo;d line in one file; every abnormal line reaches a human inside a
+  minute; every process that touches a worktree first proves it belongs there; and every automatic
+  recovery bottoms out, deliberately, at a parked run and a page &mdash; a system that knows when to
+  stop is the one you can leave running overnight. Nothing in this section is novel infrastructure;
+  it is the discipline the outboxes and the journal already practise, applied to the one place it was
+  missing: the moment things go wrong.</p>
+  <div class="rf">26 / 34</div>
+</section>
+
 <!--@@-->
 </body>
 </html>
