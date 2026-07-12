@@ -1408,13 +1408,9 @@ export class Concierge {
       const title = typeof command.options.name === "string" ? command.options.name : "";
       const created = await this.tasks.createTask({ title, originChannelId: command.channelId });
       const task = this.tasks.getTask(created.task.number)!;
+      let thread: TaskThreadCreated;
       try {
-        const thread = await this.ensureTaskThread(created.task.number, command.channelId);
-        await this.postCards(
-          [renderTaskEmbed(this.tasks.getTask(created.task.number)!)],
-          `Task card for ${displayTaskName(task)}`,
-        );
-        return { content: `Created ${displayTaskName(task)} in <#${thread.threadId}>.` };
+        thread = await this.ensureTaskThread(created.task.number, command.channelId);
       } catch (err) {
         this.log.warn("task allocated but Discord workspace creation failed", {
           task: created.task.number,
@@ -1427,6 +1423,11 @@ export class Concierge {
             `Nothing was lost; retry with \`/task workspace number:${task.number}\`.`,
         };
       }
+      await this.postCards(
+        [renderTaskEmbed(this.tasks.getTask(created.task.number)!)],
+        `Task card for ${displayTaskName(task)}`,
+      );
+      return { content: `Created ${displayTaskName(task)} in <#${thread.threadId}>.` };
     }
     if (command.name === "task" && command.subcommand === "workspace") {
       const raw = String(command.options.number ?? "");
