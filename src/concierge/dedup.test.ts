@@ -52,6 +52,7 @@ function harness(opts: {
   turnText: string;
   cliText?: string;
   dir?: string;
+  ownerId?: string;
   currentMeta?: {
     channelId: string;
     messageId: string;
@@ -69,7 +70,7 @@ function harness(opts: {
   const dir = opts.dir ?? mkdtempSync(join(tmpdir(), "beckett-dedup-"));
   if (!tmpDirs.includes(dir)) tmpDirs.push(dir);
   process.env.BECKETT_DIR = dir;
-  process.env.DISCORD_OWNER_ID = USER;
+  process.env.DISCORD_OWNER_ID = opts.ownerId ?? USER;
   const posts: Post[] = [];
   const deletedMessages: { channelId: string; messageId: string }[] = [];
   let postAttempts = 0;
@@ -204,8 +205,16 @@ test("computer-use cannot borrow the profile outside an authenticated request", 
   expect(runs).toBe(0);
 });
 
-test("an authorized user can start computer-use from a role-free Discord mention", async () => {
-  const { concierge } = harness({ replyViaCli: false, turnText: "", quickOnAsk: true });
+test("an access-list user can start computer-use from a role-free Discord mention", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-dedup-"));
+  writeFileSync(join(dir, "access.txt"), `${USER}\n`, "utf8");
+  const { concierge } = harness({
+    replyViaCli: false,
+    turnText: "",
+    quickOnAsk: true,
+    dir,
+    ownerId: "999999999999999999",
+  });
   const runs: { channelId: string | null | undefined; requesterId: string | null | undefined }[] = [];
   concierge.setQuickRunner({
     agents: () => [],
