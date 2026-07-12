@@ -778,6 +778,57 @@ async function main(): Promise<void> {
     fail("usage: beckett access ls | grant <id> | revoke <id>");
   }
 
+  // ── maintainer (OPS-144: the owner-managed elevated role) ─────────────────────────────────
+  // Same hardened-bouncer shape as `access`: `grant` only FILES a request with a one-time
+  // code; the OWNER approving on Discord (author-id checked in the daemon) applies it. No
+  // approve/deny subcommand exists here — a prompt-injected concierge, or a maintainer
+  // shelling this CLI, cannot mint maintainers. The bundled seed (repo maintainers.txt)
+  // is source-controlled: `revoke` refuses to touch it.
+  if (group === "maintainer") {
+    const ownerId = process.env.DISCORD_OWNER_ID;
+    if (sub === "ls" || sub === "status") {
+      const bundled = Array.from(loadAccess(bundledMaintainersFile()).ids);
+      const all = loadMaintainers(paths.maintainersFile);
+      const pending = loadPending(paths.maintainersPendingFile);
+      out({
+        ids: Array.from(all),
+        bundled,
+        granted: Array.from(all).filter((id) => !bundled.includes(id)),
+        count: all.size,
+        // Codes are secrets shown only in the requesting turn — never re-printed here.
+        pending: pending.map((p) => ({ id: p.id, expiresAt: p.expiresAt })),
+      });
+    }
+    if (sub === "grant") {
+      const id = rest[0];
+      if (!id) fail("usage: beckett maintainer grant <discord-user-id>");
+      const r = requestMaintainerGrant(paths.maintainersPendingFile, paths.maintainersFile, id, ownerId);
+      out({
+        ok: r.ok,
+        status: r.status === "pending" ? "pending-approval" : r.status,
+        id,
+        code: r.code,
+        expiresInMin: Math.round(PENDING_GRANT_TTL_MS / 60_000),
+        how: r.code
+          ? `not granted yet — the owner must reply "@beckett approve ${r.code}" (or "deny ${r.code}") within ${Math.round(PENDING_GRANT_TTL_MS / 60_000)} minutes. Maintainer adds are owner-approved only.`
+          : undefined,
+        pendingCount: r.pendingCount,
+      });
+    }
+    if (sub === "revoke") {
+      const id = rest[0];
+      if (!id) fail("usage: beckett maintainer revoke <discord-user-id>");
+      const r = revokeMaintainer(paths.maintainersFile, id);
+      out({
+        ok: r.ok,
+        status: r.status,
+        id,
+        note: r.status === "bundled" ? "this id ships in the bundled maintainers.txt — removing it is a code change, not a CLI call" : undefined,
+      });
+    }
+    fail("usage: beckett maintainer ls | grant <id> | revoke <id>");
+  }
+
   // ── federation (peer Becketts) ─────────────────────────────────────────────────────────────
   // The living peer list (peers.txt), grown by the OWNER live from Discord ("@beckett add @ABot
   // to my peers"). The Concierge shells these; owner-gating is the Concierge's job (doctrine) —
@@ -1584,7 +1635,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] | memory recall|remember|maintain");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] | memory recall|remember|maintain");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

@@ -13,7 +13,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   BROWSER_OPERATOR_ROLE_ID,
-  BROWSER_OPERATOR_USER_ID,
   browserAccessAllowed,
   Concierge,
   redactBrowserSecrets,
@@ -28,6 +27,14 @@ import type { QuickRun, QuickRunner } from "../quick/index.ts";
 const CHAN = "1097283746520174592";
 const MSG = "msg-42";
 const USER = "111111111111111111";
+const MAINTAINER = "777777777777777777";
+
+/** A prepared BECKETT_DIR whose runtime maintainers.txt lists `id` (OPS-144). */
+function dirWithMaintainer(id: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-dedup-"));
+  writeFileSync(join(dir, "maintainers.txt"), `${id}\n`, "utf8");
+  return dir;
+}
 const config = { concierge: { model: "m", rotate_at_tokens: 190_000 }, paths: {} } as unknown as Config;
 
 const savedDir = process.env.BECKETT_DIR;
