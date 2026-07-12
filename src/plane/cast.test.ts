@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+  branchRef,
   parseCast,
   serializeCast,
   parseCastJson,
@@ -61,6 +62,16 @@ describe("cast round-trip", () => {
     const out = serializeCast({}, [], "just prose");
     expect(out).not.toContain("beckett-project");
     expect(parseCast(out).project).toBeUndefined();
+  });
+
+  test("task branch refs round-trip without leaking into the worker body", () => {
+    const out = serializeCast({}, ["ships"], "implement it", [], "beckett", "#42.2", "design");
+    expect(out).toContain("```beckett-branch\n42.2\n```");
+    expect(out).toContain("```beckett-start-state\ndesign\n```");
+    expect(parseCast(out)).toMatchObject({ branchRef: "42.2", startState: "design", body: "implement it" });
+    expect(branchRef("#7.3.1")).toBe("7.3.1");
+    expect(branchRef("42")).toBeUndefined();
+    expect(branchRef("OPS-7")).toBeUndefined();
   });
 
   test("serialized form contains the fence and the criteria heading", () => {

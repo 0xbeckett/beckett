@@ -17,6 +17,8 @@ import {
   headSha,
   readDiff,
   excludeFromGit,
+  refExists,
+  mergeBranchesIntoWorktree,
   SCAFFOLDING_DIR,
 } from "./worktree.ts";
 
@@ -126,6 +128,31 @@ describe("worktree lifecycle (real git)", () => {
     expect(existsSync(ws)).toBe(false);
     const list = (await run(["worktree", "list"], repo)).stdout;
     expect(list).not.toContain(ws);
+  });
+
+  test("a dependent worktree can compose completed local task branches", async () => {
+    const first = wtPath("first");
+    const second = wtPath("second");
+    await createWorktree({ repoRoot: repo, workspace: first, branch: "beckett/task-1-1", baseRef: "origin/main" });
+    writeFileSync(join(first, "api.ts"), "export const api = true;\n");
+    await run(["add", "-A"], first);
+    await run(["commit", "-m", "api"], first);
+    await createWorktree({ repoRoot: repo, workspace: second, branch: "beckett/task-1-2", baseRef: "origin/main" });
+    writeFileSync(join(second, "ui.ts"), "export const ui = true;\n");
+    await run(["add", "-A"], second);
+    await run(["commit", "-m", "ui"], second);
+
+    expect(await refExists(repo, "beckett/task-1-1")).toBe(true);
+    const dependent = wtPath("dependent");
+    await createWorktree({
+      repoRoot: repo,
+      workspace: dependent,
+      branch: "beckett/task-1-3",
+      baseRef: "beckett/task-1-1",
+    });
+    await mergeBranchesIntoWorktree(dependent, ["beckett/task-1-2"]);
+    expect(existsSync(join(dependent, "api.ts"))).toBe(true);
+    expect(existsSync(join(dependent, "ui.ts"))).toBe(true);
   });
 
   test("fetchRemote succeeds on a real origin and is a no-op (not a throw) with none", async () => {

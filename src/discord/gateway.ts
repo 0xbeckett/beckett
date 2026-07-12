@@ -34,11 +34,23 @@ import {
   type Message,
   type MessageCreateOptions,
   AttachmentBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType,
+  EmbedBuilder,
+  InteractionContextType,
+  MessageFlags,
+  SlashCommandBuilder,
+  ThreadAutoArchiveDuration,
 } from "discord.js";
 import type {
   DiscordGateway,
+  DiscordCommand,
+  DiscordCommandReply,
   IncomingMessage,
   ReplyOptions,
+  TaskThreadCreated,
   ThreadCreated,
   Config,
   Logger,
@@ -52,6 +64,41 @@ import { chillReply } from "./chill.ts";
 
 /** Discord's hard per-message ceiling (Spec 05 §9.1). */
 const DISCORD_MAX_CHARS = 2000;
+
+/** Native command surface. Registration is additive: unrelated application commands survive. */
+export const BECKETT_SLASH_COMMANDS = [
+  new SlashCommandBuilder()
+    .setName("stats")
+    .setDescription("Show remaining usage for connected AI subscriptions")
+    .setContexts(InteractionContextType.Guild),
+  new SlashCommandBuilder()
+    .setName("task")
+    .setDescription("Create or inspect a Beckett task")
+    .setContexts(InteractionContextType.Guild)
+    .addSubcommand((command) =>
+      command
+        .setName("create")
+        .setDescription("Create a numbered task and Discord workspace")
+        .addStringOption((option) => option.setName("name").setDescription("Task name").setRequired(true)),
+    )
+    .addSubcommand((command) =>
+      command
+        .setName("show")
+        .setDescription("Show a task summary")
+        .addStringOption((option) => option.setName("number").setDescription("Task number, e.g. 42").setRequired(true)),
+    )
+    .addSubcommand((command) =>
+      command
+        .setName("workspace")
+        .setDescription("Create or repair a task's Discord workspace")
+        .addStringOption((option) => option.setName("number").setDescription("Task number, e.g. 42").setRequired(true)),
+    ),
+  new SlashCommandBuilder()
+    .setName("branch")
+    .setDescription("Show Git, checks, review, and discussion status for a task branch")
+    .setContexts(InteractionContextType.Guild)
+    .addStringOption((option) => option.setName("reference").setDescription("Branch reference, e.g. 42.2").setRequired(true)),
+] as const;
 
 /** A post buffered while the gateway is down, flushed on reconnect (Spec 01 §6). */
 interface QueuedPost {
@@ -95,8 +142,11 @@ export class DiscordJsGateway implements DiscordGateway {
   /** The single inbound handler the Orchestrator registers via {@link onMessage}. */
   private handler: ((m: IncomingMessage) => void | Promise<void>) | undefined;
 
-  /** Handler for user-created threads ({@link onThreadCreate}) — new workspaces come from here. */
+  /** Handler for user-created threads ({@link onThreadCreate}); numbered task threads register directly. */
   private threadHandler: ((t: ThreadCreated) => void | Promise<void>) | undefined;
+
+  /** Native slash commands are handled outside the transport and return render-neutral cards. */
+  private commandHandler: ((command: DiscordCommand) => Promise<DiscordCommandReply>) | undefined;
 
   /** Outbound posts buffered while disconnected (Spec 01 §6 — flushed on reconnect). */
   private readonly outbound: QueuedPost[] = [];
@@ -182,6 +232,9 @@ export class DiscordJsGateway implements DiscordGateway {
         this.lastEventTs = Date.now();
         this.logger.info("discord gateway up", { tag: c.user.tag, botUserId: c.user.id });
         void this.flushOutbound();
+        void this.syncSlashCommands(c).catch((err) =>
+          this.logger.warn("discord slash-command registration failed; chat remains online", { error: String(err) })
+        );
         resolve();
       });
       // A login/connect error before we go live is fatal to start().
@@ -224,6 +277,11 @@ export class DiscordJsGateway implements DiscordGateway {
     this.handler = cb;
   }
 
+  onCommand(cb: (command: DiscordCommand) => Promise<DiscordCommandReply>): void {
+    if (this.commandHandler) this.logger.warn("discord onCommand handler replaced");
+    this.commandHandler = cb;
+  }
+
   // ── outbound ─────────────────────────────────────────────────────────────────────────
 
   /**
@@ -250,11 +308,33 @@ export class DiscordJsGateway implements DiscordGateway {
     return this.enqueue(channelId, content, opts);
   }
 
+  /** Create a dedicated task thread, or adopt/rename the current thread when already inside one. */
+  async createTaskThread(channelId: string, requestedName: string): Promise<TaskThreadCreated> {
+    const client = this.client;
+    if (!client) throw new Error("discord gateway not started");
+    const name = taskThreadName(requestedName);
+    const channel = await client.channels.fetch(channelId);
+    if (!channel) throw new Error(`discord channel ${channelId} was not found`);
+
+    if (channel.isThread()) {
+      await channel.setName(name, "Beckett task workspace");
+      return { threadId: channel.id, parentChannelId: channel.parentId ?? channel.id, name };
+    }
+    if (channel.type !== ChannelType.GuildText) {
+      throw new Error("tasks can only create workspaces in a server text channel or existing thread");
+    }
+    const thread = await channel.threads.create({
+      name,
+      autoArchiveDuration: ThreadAutoArchiveDuration.OneDay,
+      reason: "Beckett task workspace",
+    });
+    return { threadId: thread.id, parentChannelId: channel.id, name: thread.name };
+  }
+
   /**
-   * Register the handler for threads PEOPLE create. Beckett never opens Discord threads itself
-   * (the bot-spawned progress/workspace threads are gone — the worker firehose lives in the
-   * private ticket journal), so this is the ONLY source of new workspaces: a person opens a
-   * thread, the Concierge registers it. A later call replaces the handler.
+   * Register the handler for threads people create. Numbered task threads are created through
+   * {@link createTaskThread} and registered directly, while the worker firehose remains private.
+   * A later call replaces the handler.
    */
   onThreadCreate(cb: (t: ThreadCreated) => void | Promise<void>): void {
     if (this.threadHandler) this.logger.warn("discord onThreadCreate handler replaced");
@@ -344,6 +424,14 @@ export class DiscordJsGateway implements DiscordGateway {
             error: String(err),
           }),
         );
+    });
+
+    client.on(Events.InteractionCreate, (interaction) => {
+      if (!interaction.isChatInputCommand()) return;
+      if (!BECKETT_SLASH_COMMANDS.some((command) => command.name === interaction.commandName)) return;
+      void this.handleCommandInteraction(interaction).catch((err) =>
+        this.logger.error("discord command handler threw", { command: interaction.commandName, error: String(err) })
+      );
     });
 
     // discord.js owns reconnect/backoff + RESUME-vs-IDENTIFY; we observe for diagnostics
@@ -500,8 +588,13 @@ export class DiscordJsGateway implements DiscordGateway {
     // 2000-char split still guards them.
     const sections = chilled ?? chunkReply(content);
     const chunks = sections.flatMap((section) => splitDiscordContent(section));
-    if (chunks.length === 0 && (!opts?.files || opts.files.length === 0)) {
-      throw new Error("discord post needs text or files");
+    if (
+      chunks.length === 0 &&
+      (!opts?.files || opts.files.length === 0) &&
+      (!opts?.embeds || opts.embeds.length === 0) &&
+      (!opts?.buttons || opts.buttons.length === 0)
+    ) {
+      throw new Error("discord post needs text, files, an embed, or a component");
     }
     if (chunks.length === 0) chunks.push("");
 
@@ -528,7 +621,7 @@ export class DiscordJsGateway implements DiscordGateway {
           });
         }
       }
-      const payload: MessageCreateOptions = { content: chunks[i]! };
+      const payload: MessageCreateOptions = chunks[i] ? { content: chunks[i]! } : {};
       if (i === 0 && opts?.replyToMessageId) {
         // Native reply-to: visual threading without threads + the strong correlation key
         // (Spec 05 §4.2). failIfNotExists=false so a deleted ask doesn't reject the post.
@@ -537,6 +630,8 @@ export class DiscordJsGateway implements DiscordGateway {
       if (i === 0 && opts?.files && opts.files.length > 0) {
         payload.files = opts.files.map((path) => new AttachmentBuilder(path));
       }
+      if (i === 0 && opts?.embeds?.length) payload.embeds = opts.embeds.map((embed) => new EmbedBuilder(embed));
+      if (i === 0 && opts?.buttons?.length) payload.components = [buildButtonRow(opts.buttons)];
 
       const sent = await channel.send(payload);
       this.ownMessageIds.add(sent.id);
@@ -547,6 +642,55 @@ export class DiscordJsGateway implements DiscordGateway {
     // reply-to + any file attachments, so returning it keeps the messageId contract intact even
     // when a long reply lands as several messages.
     return firstId!;
+  }
+
+  private async syncSlashCommands(client: Client<true>): Promise<void> {
+    const application = client.application;
+    if (!application) throw new Error("discord application metadata is unavailable");
+    const existing = await application.commands.fetch();
+    for (const builder of BECKETT_SLASH_COMMANDS) {
+      const data = builder.toJSON();
+      const command = existing.find((candidate) => candidate.name === data.name);
+      if (command) await application.commands.edit(command.id, data);
+      else await application.commands.create(data);
+    }
+    this.logger.info("discord slash commands synced", { commands: BECKETT_SLASH_COMMANDS.map((command) => command.name) });
+  }
+
+  private async handleCommandInteraction(interaction: import("discord.js").ChatInputCommandInteraction): Promise<void> {
+    const handler = this.commandHandler;
+    const ephemeral = interaction.commandName === "stats";
+    await interaction.deferReply(ephemeral ? { flags: MessageFlags.Ephemeral } : {});
+    if (!handler) {
+      await interaction.editReply({ content: "That command is not ready yet.", allowedMentions: { parse: [] } });
+      return;
+    }
+    try {
+      const subcommand = interaction.options.getSubcommand(false) ?? undefined;
+      const command: DiscordCommand = {
+        name: interaction.commandName as DiscordCommand["name"],
+        ...(subcommand ? { subcommand } : {}),
+        userId: interaction.user.id,
+        channelId: interaction.channelId,
+        options: flattenCommandOptions(interaction.options.data),
+      };
+      const reply = await handler(command);
+      if (!reply.content && !reply.embeds?.length && !reply.buttons?.length) {
+        throw new Error("command returned an empty reply");
+      }
+      await interaction.editReply({
+        allowedMentions: { parse: [] },
+        ...(reply.content ? { content: reply.content } : {}),
+        ...(reply.embeds?.length ? { embeds: reply.embeds.map((embed) => new EmbedBuilder(embed)) } : {}),
+        ...(reply.buttons?.length ? { components: [buildButtonRow(reply.buttons)] } : {}),
+      });
+    } catch (err) {
+      this.logger.warn("discord slash command failed", { command: interaction.commandName, error: String(err) });
+      await interaction.editReply({
+        content: "I couldn't load that right now. The failure was logged.",
+        allowedMentions: { parse: [] },
+      });
+    }
   }
 
   /** Buffer a post until reconnect; the promise resolves with the real id when it lands. */
@@ -608,6 +752,35 @@ export function splitDiscordContent(content: string, limit = DISCORD_MAX_CHARS):
   }
   if (rest.length > 0) chunks.push(rest);
   return chunks;
+}
+
+/** Discord channel/thread names are 1-100 characters. Keep task names stable and single-line. */
+export function taskThreadName(raw: string): string {
+  const clean = raw.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!clean) throw new Error("task thread name cannot be empty");
+  return [...clean].slice(0, 100).join("");
+}
+
+type CommandOptionData = { name: string; value?: unknown; options?: readonly CommandOptionData[] };
+
+/** Flatten Discord's one-level subcommand option tree into the transport-neutral command map. */
+export function flattenCommandOptions(data: readonly CommandOptionData[]): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {};
+  for (const option of data) {
+    if (typeof option.value === "string" || typeof option.value === "number" || typeof option.value === "boolean") {
+      out[option.name] = option.value;
+    }
+    if (option.options) Object.assign(out, flattenCommandOptions(option.options));
+  }
+  return out;
+}
+
+function buildButtonRow(buttons: NonNullable<ReplyOptions["buttons"]>): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    buttons.slice(0, 5).map((button) =>
+      new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel(button.label.slice(0, 80)).setURL(button.url)
+    ),
+  );
 }
 
 /** Factory: build a {@link DiscordGateway} from options (the daemon wires the impl). */

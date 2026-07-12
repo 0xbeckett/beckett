@@ -56,6 +56,12 @@ export interface CreateTicketInput {
   blockedBy?: string[];
   /** Code-project slug — the ticket's own repo under `~/Projects/<project>` (see {@link Ticket.project}). */
   project?: string;
+  /** User-facing task branch reference, e.g. `42.2`. */
+  branchRef?: string;
+  /** Native Plane parent work-item id for nested task branches. */
+  parentId?: string;
+  /** State to enter after dependencies clear; defaults to the requested initial state. */
+  startState?: TicketState;
   /** Lifecycle state to file into; defaults to `"backlog"`. */
   state?: TicketState;
   /** Plane member ids to assign. */
@@ -117,6 +123,7 @@ const IssueSchema = z
     state: z.string().nullable().optional(),
     sequence_id: z.number().nullable().optional(),
     project: z.string().nullable().optional(),
+    parent: z.string().nullable().optional(),
     assignees: z.array(z.string()).nullable().optional(),
     created_at: z.string().nullable().optional(),
     updated_at: z.string().nullable().optional(),
@@ -360,7 +367,15 @@ export class PlaneClient {
     const criteria = input.criteria ?? [];
     const blockedBy = input.blockedBy ?? [];
     const description = withOriginMarker(
-      serializeCast(casting, criteria, body, blockedBy, input.project),
+      serializeCast(
+        casting,
+        criteria,
+        body,
+        blockedBy,
+        input.project,
+        input.branchRef,
+        input.branchRef ? (input.startState ?? input.state) : undefined,
+      ),
       input.originChannel,
     );
     const payload: Record<string, unknown> = {
@@ -369,6 +384,7 @@ export class PlaneClient {
       state: this.resolveStateId(input.state ?? "backlog"),
     };
     if (input.assignees && input.assignees.length > 0) payload.assignees = input.assignees;
+    if (input.parentId) payload.parent = input.parentId;
 
     const raw = await this.req("POST", this.workItemsPath(), payload);
     return this.hydrate(raw);
@@ -479,7 +495,15 @@ export class PlaneClient {
     // Pull the origin-channel marker out before anything else parses the description, so neither
     // the worker body nor the cast parser ever sees it (the closed agent loop's routing key).
     const { channel: originChannel, description: rawDescription } = extractOriginMarker(storedDescription);
-    const { casting, criteria, blockedBy, project, body } = parseCast(rawDescription);
+    const {
+      casting,
+      criteria,
+      blockedBy,
+      project,
+      branchRef: taskBranchRef,
+      startState,
+      body,
+    } = parseCast(rawDescription);
     const state = this.reverseState(issue.state ?? null);
     const identifier =
       issue.sequence_id != null && this.projectIdentifier
@@ -498,6 +522,9 @@ export class PlaneClient {
       criteria,
       blockedBy,
       ...(project ? { project } : {}),
+      ...(taskBranchRef ? { branchRef: taskBranchRef } : {}),
+      ...(issue.parent ? { parentId: issue.parent } : {}),
+      ...(startState ? { startState } : {}),
       projectId,
       url: `${this.config.plane.base_url.replace(/\/+$/, "")}/${this.config.plane.workspace_slug}/projects/${projectId}/issues/${issue.id}`,
       updatedAt: issue.updated_at ?? issue.created_at ?? new Date(0).toISOString(),

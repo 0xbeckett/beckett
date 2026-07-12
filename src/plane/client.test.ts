@@ -357,6 +357,7 @@ test("VID client files into the VID project and maps video states back to canoni
         state: createPayload.state,
         sequence_id: 7,
         project: "pvid",
+        parent: createPayload.parent,
         description_html: createPayload.description_html,
         updated_at: "2026-01-01T00:00:00Z",
       });
@@ -375,10 +376,22 @@ test("VID client files into the VID project and maps video states back to canoni
   }) as unknown as typeof fetch;
 
   const client = new PlaneClient({ config: configWithBoards(), board: "vid", token: "tok", logger: quiet, fetch: fetchImpl });
-  const created = await client.createIssue({ title: "Video task", state: "in_progress" });
+  const created = await client.createIssue({
+    title: "Video task",
+    state: "in_progress",
+    branchRef: "#12.3",
+    parentId: "vid-parent",
+    startState: "design",
+  });
   expect(createPayload.state).toBe("sv-prod");
+  expect(createPayload.parent).toBe("vid-parent");
+  expect(String(createPayload.description_html)).toContain("```beckett-branch\n12.3\n```");
+  expect(String(createPayload.description_html)).toContain("```beckett-start-state\ndesign\n```");
   expect(created.identifier).toBe("VID-7");
   expect(created.state).toBe("in_progress");
+  expect(created.branchRef).toBe("12.3");
+  expect(created.parentId).toBe("vid-parent");
+  expect(created.startState).toBe("design");
   expect(created.url).toBe("https://plane.test/beckett/projects/pvid/issues/vid-issue-1");
 
   const voice = await client.getIssue("vid-issue-voice");

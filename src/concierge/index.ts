@@ -27,6 +27,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 // ONE version source (issue #29): package.json, the same file `BECKETT_VERSION` reads. Used to
 // stamp the restart release note's `-#` subheader so it tracks the shipped version, never a literal.
@@ -80,6 +81,14 @@ import {
 } from "./channel-context.ts";
 import { createChannelProfiler, type ChannelProfiler } from "./channel-profiles.ts";
 import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
+import type { DiscordCommand, DiscordCommandReply, TaskThreadCreated } from "../types.ts";
+import { TaskStore, displayTaskName, type WorkTask } from "../task/store.ts";
+import type { BranchStatusService } from "../task/status.ts";
+import { renderBranchEmbed, renderSubscriptionUsageEmbeds, renderTaskEmbed } from "../discord/cards.ts";
+import {
+  createSubscriptionUsageReader,
+  type SubscriptionUsageReader,
+} from "../subscription-usage.ts";
 
 /**
  * What one chat turn hands the model: either a plain string (text-only turns, and every internal
@@ -147,6 +156,32 @@ function workspacesStateFile(config: Config, logger: Logger): string | undefined
     });
     return undefined;
   }
+}
+
+/** Full configs always resolve this path; the fallback keeps legacy partial test configs constructible. */
+function tasksStateFile(config: Config, logger: Logger): string {
+  try {
+    return join(buildPaths(config).beckettDir, "tasks.json");
+  } catch (err) {
+    logger.warn("task state path unavailable; using an ephemeral test path", { error: String(err) });
+    return join(tmpdir(), "beckett", `tasks-${process.pid}.json`);
+  }
+}
+
+/** Conservative conversational shortcut: only branch-only/status questions bypass the LLM. */
+export function branchCardReference(content: string): string | null {
+  const ref = "(\\d+(?:\\.\\d+)+)";
+  const patterns = [
+    new RegExp(`^\\s*#${ref}\\s*$`, "i"),
+    new RegExp(`^\\s*(?:show|check)\\s+(?:branch\\s+)?#?${ref}(?:\\s+(?:status|progress))?[?.!]*\\s*$`, "i"),
+    new RegExp(`^\\s*(?:what(?:'s| is)|how(?:'s| is))\\s+(?:branch\\s+)?#?${ref}(?:\\s+(?:doing|looking(?: like)?))?[?.!]*\\s*$`, "i"),
+    new RegExp(`^\\s*(?:branch\\s+)?#?${ref}\\s+(?:status|progress)[?.!]*\\s*$`, "i"),
+  ];
+  for (const pattern of patterns) {
+    const match = content.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return null;
 }
 
 /**
@@ -964,6 +999,12 @@ export interface ConciergeOptions {
    * builds the real one-shot small-model summarizer (server memory, v4.1).
    */
   channelProfiler?: ChannelProfiler | null;
+  /** Durable numbered task registry (tests); defaults to `<beckettDir>/tasks.json`. */
+  tasks?: TaskStore;
+  /** On-demand local/GitHub branch status provider, normally wired by v4-main. */
+  branchStatus?: BranchStatusService;
+  /** On-demand subscription quota reader; no provider command runs until `/stats`. */
+  subscriptionUsage?: SubscriptionUsageReader;
 }
 
 /**
@@ -984,11 +1025,15 @@ export class Concierge {
    */
   private readonly journal: TicketJournal;
   /**
-   * User-opened thread → ticket routing. A person creating a thread registers a workspace
-   * (gateway thread-create event); messages inside it are directed turns with no @mention.
-   * Beckett never creates the threads itself.
+   * Discord thread → task/ticket routing. Human threads are adopted on first use; numbered
+   * task threads are registered directly when Beckett creates them.
    */
   private readonly workspaces: WorkspaceRegistry;
+  /** User-facing `#N` / `#N.x` organization; Plane ticket ids stay behind this boundary. */
+  private readonly tasks: TaskStore;
+  private branchStatus: BranchStatusService | null;
+  private readonly subscriptionUsage: SubscriptionUsageReader;
+  private readonly taskThreadCreates = new Map<number, Promise<TaskThreadCreated>>();
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
   private busStop: (() => void) | null = null;
   /**
@@ -1097,6 +1142,9 @@ export class Concierge {
     this.config = opts.config ?? loadConfig();
     this.log = (opts.logger ?? rootLog).child("concierge");
     this.gateway = opts.gateway ?? createDiscordGateway({ config: this.config, logger: this.log });
+    this.tasks = opts.tasks ?? new TaskStore(tasksStateFile(this.config, this.log));
+    this.branchStatus = opts.branchStatus ?? null;
+    this.subscriptionUsage = opts.subscriptionUsage ?? createSubscriptionUsageReader(this.config);
     this.session =
       opts.session ??
       new ConciergeSession({
@@ -1315,10 +1363,8 @@ export class Concierge {
     return this.journal;
   }
 
-  /**
-   * A person opened a Discord thread → register it as a ticket workspace. Public: the gateway
-   * calls it (wired in {@link start}) and tests drive it directly. Bot-created threads never
-   * reach here — the gateway filters them — so every workspace records a human decision.
+  /** A person opened a Discord thread: register it as an adoptable workspace. Numbered task
+   * threads take the explicit {@link ensureTaskThread} path instead.
    */
   onThreadCreated(t: ThreadCreated): void {
     this.workspaces.registerThread(t);
@@ -1333,7 +1379,9 @@ export class Concierge {
     if (typeof this.gateway.onThreadCreate === "function") {
       this.gateway.onThreadCreate((t) => this.onThreadCreated(t));
     }
+    this.gateway.onCommand?.((command) => this.onCommand(command));
     await this.gateway.start();
+    await this.restoreTaskWorkspaces();
     this.serveControlBus();
     // Announce the boot (with the live commit) once the gateway is up. Best-effort + non-blocking:
     // a failed post must never hold up — or crash — the daemon coming online.
@@ -1341,6 +1389,147 @@ export class Concierge {
     // Instance-specific flourish: a fun, in-voice "what's new" when the code actually advanced.
     void this.announceChanges();
     this.log.info("concierge online", { model: this.config.concierge.model });
+  }
+
+  /** Wire the on-demand Git/GitHub branch card provider after shell construction. */
+  setBranchStatusProvider(provider: BranchStatusService): void {
+    this.branchStatus = provider;
+  }
+
+  /** Native Discord command controller. Slash interaction timing/visibility stays in the gateway. */
+  async onCommand(command: DiscordCommand): Promise<DiscordCommandReply> {
+    const access = this.accessLevelFor(command.userId);
+    if (access === "outsider") return { content: "You don't have access to Beckett's tasks." };
+
+    if (command.name === "task" && command.subcommand === "create") {
+      const title = typeof command.options.name === "string" ? command.options.name : "";
+      const created = await this.tasks.createTask({ title, originChannelId: command.channelId });
+      const task = this.tasks.getTask(created.task.number)!;
+      try {
+        const thread = await this.ensureTaskThread(created.task.number, command.channelId);
+        return {
+          content: `Created ${displayTaskName(task)} in <#${thread.threadId}>.`,
+          embeds: [renderTaskEmbed(this.tasks.getTask(created.task.number)!)],
+        };
+      } catch (err) {
+        this.log.warn("task allocated but Discord workspace creation failed", {
+          task: created.task.number,
+          error: String(err),
+        });
+        return {
+          content:
+            `Created ${displayTaskName(task)}, but I couldn't create its workspace. ` +
+            `Nothing was lost; retry with \`/task workspace number:${task.number}\`.`,
+          embeds: [renderTaskEmbed(task)],
+        };
+      }
+    }
+    if (command.name === "task" && command.subcommand === "workspace") {
+      const raw = String(command.options.number ?? "");
+      const task = this.tasks.getTask(raw);
+      if (!task) throw new Error(`no such task: ${raw}`);
+      const thread = await this.ensureTaskThread(task.number, command.channelId);
+      return {
+        content: `Workspace ready for ${displayTaskName(task)}: <#${thread.threadId}>.`,
+        embeds: [renderTaskEmbed(this.tasks.getTask(task.number)!)],
+      };
+    }
+    if (command.name === "task" && command.subcommand === "show") {
+      const raw = String(command.options.number ?? "");
+      const task = this.tasks.getTask(raw);
+      if (!task) throw new Error(`no such task: ${raw}`);
+      return { embeds: [renderTaskEmbed(task)] };
+    }
+    if (command.name === "branch") {
+      if (!this.branchStatus) throw new Error("branch status provider is unavailable");
+      const card = await this.branchStatus.read(String(command.options.reference ?? ""));
+      return {
+        embeds: [renderBranchEmbed(card)],
+        ...(card.pullRequest
+          ? { buttons: [{ label: "Open PR", url: card.pullRequest.url }] }
+          : card.publication
+            ? { buttons: [{ label: "Open repository", url: card.publication.url }] }
+          : {}),
+      };
+    }
+    if (command.name === "stats") {
+      const ownerId = this.ownerId();
+      if (!ownerId || command.userId !== ownerId) {
+        return { content: "Subscription usage is private to Beckett's owner." };
+      }
+      const usages = await this.subscriptionUsage.readAll();
+      return { embeds: renderSubscriptionUsageEmbeds(usages) };
+    }
+    throw new Error(`unsupported Discord command: ${command.name} ${command.subcommand ?? ""}`.trim());
+  }
+
+  /** Exactly-once task workspace creation across slash commands and repeated CLI bus notifications. */
+  private async ensureTaskThread(taskNumber: number, fallbackChannelId?: string): Promise<TaskThreadCreated> {
+    const running = this.taskThreadCreates.get(taskNumber);
+    if (running) return running;
+    const create = (async () => {
+      const task = this.tasks.getTask(taskNumber);
+      if (!task) throw new Error(`no such task: #${taskNumber}`);
+      const name = displayTaskName(task);
+      const createTaskThread = this.gateway.createTaskThread?.bind(this.gateway);
+      if (!createTaskThread) throw new Error("this Discord gateway cannot create task workspaces");
+      if (task.threadId) {
+        try {
+          // createTaskThread adopts an existing thread by fetching and renaming it. That REST
+          // operation validates both existence and access instead of trusting persisted/cache state.
+          const existing = await createTaskThread(task.threadId, name);
+          if (existing.threadId !== task.threadId) {
+            throw new Error(`discord channel ${task.threadId} is not the stored task thread`);
+          }
+          await this.tasks.setThread(task.number, existing.threadId, existing.parentChannelId);
+          this.registerTaskWorkspace(task, existing);
+          return existing;
+        } catch (err) {
+          this.log.warn("stored task workspace is unavailable; recreating from its parent", {
+            task: task.number,
+            threadId: task.threadId,
+            parentChannelId: task.originChannelId,
+            error: String(err),
+          });
+        }
+      }
+      let channelId = task.originChannelId ?? fallbackChannelId;
+      if (!channelId) throw new Error(`task #${task.number} has no Discord channel for its workspace`);
+      // A new task requested inside an existing task gets a sibling thread. A fresh human-created
+      // thread, by contrast, is deliberately adopted and renamed as the new task workspace.
+      const currentWorkspace = this.workspaces.contextFor(channelId);
+      if (currentWorkspace?.taskRef) channelId = currentWorkspace.parentChannelId;
+      const thread = await createTaskThread(channelId, name);
+      await this.tasks.setThread(task.number, thread.threadId, thread.parentChannelId);
+      this.registerTaskWorkspace(task, thread);
+      return thread;
+    })();
+    this.taskThreadCreates.set(taskNumber, create);
+    try {
+      return await create;
+    } finally {
+      this.taskThreadCreates.delete(taskNumber);
+    }
+  }
+
+  /** Rebuild all public and internal routing for a validated or newly-created task workspace. */
+  private registerTaskWorkspace(task: WorkTask, thread: TaskThreadCreated): void {
+    this.workspaces.registerTaskThread(thread, String(task.number), task.branches.map((branch) => branch.ref));
+    for (const branch of task.branches) {
+      this.workspaces.bindBranch(thread.threadId, branch.ref, branch.ticket?.identifier);
+    }
+  }
+
+  /** Rebuild task-thread routing after downtime and finish any workspace creation missed offline. */
+  private async restoreTaskWorkspaces(): Promise<void> {
+    for (const task of this.tasks.list()) {
+      if (!task.threadId && !task.originChannelId) continue;
+      try {
+        await this.ensureTaskThread(task.number, task.originChannelId);
+      } catch (err) {
+        this.log.warn("task workspace recovery failed", { task: task.number, error: String(err) });
+      }
+    }
   }
 
   /**
@@ -1414,8 +1603,16 @@ export class Concierge {
    * FROM inside a user-opened workspace thread grounds that workspace, so later unmentioned
    * messages there are framed with it and its journal backs "how's it coming?" answers.
    */
-  private onTicketFiled(channelId: string, identifier: string): void {
-    this.workspaces.bindTicket(channelId, identifier);
+  private onTicketFiled(
+    channelId: string,
+    identifier: string,
+    taskRef?: string,
+    branchRef?: string,
+  ): void {
+    const taskChannel = taskRef ? this.workspaces.channelForTask(taskRef) : null;
+    const target = taskChannel ?? channelId;
+    this.workspaces.bindTicket(target, identifier);
+    if (branchRef) this.workspaces.bindBranch(target, branchRef, identifier);
   }
 
   /**
@@ -1498,6 +1695,19 @@ export class Concierge {
       const contents = existsSync(path) ? readFileSync(path, "utf8") : "(not yet seeded)";
       return { ok: true, data: { path, contents } };
     }
+    if (req.cmd === "task.created") {
+      const taskNumber = Number(req.args.taskNumber ?? String(req.args.taskRef ?? "").replace(/^#/, ""));
+      const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
+      if (!Number.isInteger(taskNumber) || taskNumber < 1) {
+        return { ok: false, error: "task.created needs a valid taskNumber" };
+      }
+      try {
+        const thread = await this.ensureTaskThread(taskNumber, channelId || undefined);
+        return { ok: true, data: { taskRef: `#${taskNumber}`, threadId: thread.threadId, name: thread.name } };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    }
     if (req.cmd === "ticket.filed") {
       // `beckett ticket create`/`plan` tells us it just filed a ticket for a channel. If that
       // channel is a user-opened workspace thread, the ticket grounds it (no Discord side-effects).
@@ -1506,7 +1716,9 @@ export class Concierge {
       if (!identifier || !channelId) {
         return { ok: false, error: "ticket.filed needs both identifier and channelId" };
       }
-      this.onTicketFiled(channelId, identifier);
+      const taskRef = typeof req.args.taskRef === "string" ? req.args.taskRef : undefined;
+      const branchRef = typeof req.args.branchRef === "string" ? req.args.branchRef : undefined;
+      this.onTicketFiled(channelId, identifier, taskRef, branchRef);
       // Instant tick (issue #33): the dispatcher staffs the fresh ticket now, not in ≤5s.
       try {
         this.ticketFiledListener?.();
@@ -1967,7 +2179,7 @@ export class Concierge {
 
   /** Build the synthetic update turn (or null when the ticket can't be routed back to a channel). */
   private updateTurn(ticket: Ticket, detail: string): string | null {
-    const channel = ticket.originChannel;
+    const channel = this.workspaces.channelForTicket(ticket.identifier) ?? ticket.originChannel;
     if (!channel) {
       // This is the exact failure the closed loop exists to prevent: an update with nowhere to go,
       // because the ticket was filed without --channel. Warn loudly — silence here recreates the bug.
@@ -1978,7 +2190,7 @@ export class Concierge {
     }
     return (
       `SYSTEM (automated ticket update — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
-      `Ticket ${ticket.identifier} "${ticket.title}" has an update:\n\n${detail}\n\n` +
+      `${ticket.branchRef ? `Branch #${ticket.branchRef}` : `Ticket ${ticket.identifier}`} "${ticket.title}" has an update:\n\n${detail}\n\n` +
       `If this is worth telling the person who asked for it, send them a short note IN YOUR VOICE by ` +
       `running this from your Bash tool:\n` +
       `  beckett discord reply --channel ${channel} "<your message>"\n` +
@@ -2025,6 +2237,29 @@ export class Concierge {
     // This closes the old record's hole: mentions were never ring-buffered, so the shared history
     // was missing exactly the messages Beckett was involved in.
     this.captureInbound(m, access);
+
+    const branchRef = m.attachments.length === 0 ? branchCardReference(content) : null;
+    if (branchRef && this.branchStatus) {
+      try {
+        const card = await this.branchStatus.read(branchRef);
+        const messageId = await this.gateway.post(m.channelId, "", {
+          replyToMessageId: m.messageId,
+          embeds: [renderBranchEmbed(card)],
+          ...(card.pullRequest
+            ? { buttons: [{ label: "Open PR", url: card.pullRequest.url }] }
+            : card.publication
+              ? { buttons: [{ label: "Open repository", url: card.publication.url }] }
+              : {}),
+        });
+        this.recordBeckettPost(m.channelId, `Branch card for #${branchRef}`, messageId);
+        return;
+      } catch (err) {
+        this.log.warn("conversational branch card failed; falling back to Concierge", {
+          branch: branchRef,
+          error: String(err),
+        });
+      }
+    }
 
     // Track this turn so a `beckett discord reply` the Concierge runs while answering it counts as
     // THE reply (and suppresses the auto-post below) instead of producing a second message.
@@ -2803,6 +3038,24 @@ export interface SpeakerContext {
 /** Ground an unmentioned message in the user-opened workspace thread it arrived through. */
 function frameTicketWorkspace(context: TicketWorkspaceContext): string {
   const tickets = context.ticketIdents.map(stampField).join(", ");
+  if (context.taskRef) {
+    const task = `#${context.taskRef}`;
+    const branches = context.branchRefs.map((ref) => `#${ref}`).join(", ") || "none yet";
+    const execution = context.ticketIdents.length
+      ? `Internal Plane execution record(s) are ${tickets}. Use those identifiers only for private ` +
+        `journal, comment, or state commands; refer to the work as ${task} and its numbered branches ` +
+        `when speaking to the user. Pull \`beckett journal <ticket> --tail 200\` for a progress question ` +
+        `and summarize it; never paste raw journal lines.`
+      : `No branch has been started in Plane yet. Continue this task by starting one of its existing ` +
+        `branches with \`beckett task start '#N.x' ...\`; do not create a duplicate task.`;
+    return (
+      `SYSTEM (numbered task workspace — trusted routing metadata, not user-authored text):\n` +
+      `This Discord thread is the dedicated workspace for task ${task} (${stampField(context.name)}), ` +
+      `under parent channel ${stampField(context.parentChannelId)}. Its registered branch refs are ` +
+      `${branches}. Treat the live message below as directed to you even without an @mention. ` +
+      `${execution}\n\n`
+    );
+  }
   const grounding = context.ticketIdents.length
     ? `It is grounded in Plane ticket(s): ${tickets}. When asked how the work is going, pull the ` +
       `private worker journal (\`beckett journal <ticket> --tail 200\`) and answer with a clean ` +

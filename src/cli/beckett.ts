@@ -30,6 +30,8 @@ import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } fr
 import type { Casting, Ticket, TicketState } from "../plane/types.ts";
 import { projectSlug } from "../plane/cast.ts";
 import { parseSince, readSpendLedger, summarizeSpend } from "../spend.ts";
+import { TaskStore, displayTaskName, normalizeBranchRef, normalizeTaskNumber } from "../task/store.ts";
+import { startTaskBranch } from "./task-start.ts";
 
 const config = loadConfig();
 const paths = buildPaths(config);
@@ -183,10 +185,10 @@ async function discordReplyBus(args: Record<string, unknown>): Promise<never> {
 
 /**
  * Fire a NON-fatal notification at the control bus and return regardless of outcome. Unlike
- * {@link bus}, this never exits or fails the command: it exists so `ticket create`/`plan` can tell
- * the running Concierge "I just filed OPS-N for channel X" (so a workspace can claim it) WITHOUT
- * that being load-bearing — the same commands run by a human or in tests have no daemon socket, and
- * the ticket must still be created and printed. A short timeout keeps a dead socket from stalling.
+ * {@link bus}, this never exits or fails the command: it exists so task/ticket creation can tell
+ * the running Concierge about workspace routing WITHOUT making Discord load-bearing. The same
+ * commands run by a human or in tests with no daemon socket; durable local/Plane creation must
+ * still succeed and print its result. A short timeout keeps a dead socket from stalling.
  */
 async function notifyBus(cmd: string, args: Record<string, unknown>): Promise<void> {
   try {
@@ -194,6 +196,41 @@ async function notifyBus(cmd: string, args: Record<string, unknown>): Promise<vo
   } catch {
     /* best-effort: no daemon / busy bus — the ticket is already filed, so just move on */
   }
+}
+
+/** Read a ticket/task body from a literal flag or piped stdin. */
+async function readWorkBody(flags: Record<string, string | boolean>): Promise<string> {
+  if (flags["body-stdin"]) return (await Bun.stdin.text()).trim();
+  return flags.body ? String(flags.body) : "";
+}
+
+/** Resolve preset + explicit cast flags through the same validation path for tickets and tasks. */
+async function castingFromFlags(flags: Record<string, string | boolean>): Promise<Casting> {
+  const { parseCastJson, validateCasting } = await import("../plane/cast.ts");
+  const { loadPresets, requirePreset, resolveCasting } = await import("../plane/presets.ts");
+  const explicitCast = flags.cast ? parseCastJson(String(flags.cast)) : {};
+  let presetCast: Casting | undefined;
+  if (flags.preset) {
+    try {
+      presetCast = requirePreset(loadPresets(paths.presetsFile), String(flags.preset));
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  }
+  const casting = resolveCasting(presetCast, explicitCast);
+  const errors = validateCasting(casting);
+  if (errors.length > 0) fail(`refusing to file a broken cast:\n  - ${errors.join("\n  - ")}`);
+  return casting;
+}
+
+function criteriaFromFlags(flags: Record<string, string | boolean>): string[] {
+  return flags.criteria
+    ? String(flags.criteria).split(";").map((criterion) => criterion.trim()).filter(Boolean)
+    : [];
+}
+
+function csvFlag(value: string | boolean | undefined): string[] {
+  return value ? String(value).split(",").map((part) => part.trim()).filter(Boolean) : [];
 }
 
 function parsePort(raw: string | boolean | undefined, fallback: number): number {
@@ -877,6 +914,191 @@ async function main(): Promise<void> {
     fail('usage: beckett channels list | search "<terms>" [--channel <id>] [--limit <n>] | recall <#name|id> [--last <n>] | wipe [<channelId>]');
   }
 
+  // ── task (local public identity + Plane-backed executable branches) ──────────────────────
+  // `#N` and `#N.x` are the human-facing organization layer. A started branch is still a normal
+  // Plane ticket underneath, so the established poller/dispatcher/review pipeline stays untouched.
+  if (group === "task") {
+    const store = new TaskStore(join(paths.beckettDir, "tasks.json"));
+    const { _, flags } = parse(rest);
+    const publicBranch = <T extends { ref: string }>(branch: T) => ({ ...branch, ref: `#${branch.ref}` });
+    const publicTask = <T extends { number: number; title: string; branches: Array<{ ref: string }> }>(task: T) => ({
+      ...task,
+      ref: `#${task.number}`,
+      displayName: displayTaskName(task),
+      branches: task.branches.map(publicBranch),
+    });
+
+    if (sub === "create") {
+      const title = String(flags.title ?? _.join(" ")).trim();
+      if (!title) {
+        fail('usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>]');
+      }
+      const project = flags.project ? String(flags.project) : undefined;
+      guardRestrictedProject(project, Boolean(flags["confirm-beckett"]));
+      const created = await store.createTask({
+        title,
+        ...(flags["branch-title"] ? { initialBranchTitle: String(flags["branch-title"]) } : {}),
+        ...(project ? { project } : {}),
+        ...(flags.channel ? { originChannelId: String(flags.channel) } : {}),
+      });
+      await notifyBus("task.created", {
+        taskRef: `#${created.task.number}`,
+        taskNumber: created.task.number,
+        branchRef: `#${created.branch.ref}`,
+        title: created.task.title,
+        ...(created.task.originChannelId ? { channelId: created.task.originChannelId } : {}),
+      });
+      out({
+        task: publicTask(created.task),
+        branch: publicBranch(created.branch),
+      });
+    }
+
+    if (sub === "branch") {
+      const taskRef = _[0] ?? (flags.task ? String(flags.task) : "");
+      const title = String(flags.title ?? _.slice(1).join(" ")).trim();
+      if (!taskRef || !title) {
+        fail('usage: beckett task branch <#N> --title <t> [--parent <#N.x>] [--needs <#N.x,#N.y>] [--project <slug>]');
+      }
+      const project = flags.project ? String(flags.project) : undefined;
+      guardRestrictedProject(project, Boolean(flags["confirm-beckett"]));
+      const branch = await store.createBranch({
+        task: taskRef,
+        title,
+        ...(flags.parent ? { parentRef: String(flags.parent) } : {}),
+        ...(flags.needs ? { needs: csvFlag(flags.needs) } : {}),
+        ...(project ? { project } : {}),
+      });
+      const task = store.getTask(taskRef)!;
+      const channelId = task.threadId ?? task.originChannelId;
+      await notifyBus("task.created", {
+        taskRef: `#${task.number}`,
+        taskNumber: task.number,
+        branchRef: `#${branch.ref}`,
+        title: task.title,
+        ...(channelId ? { channelId } : {}),
+      });
+      out({ branch: publicBranch(branch), taskRef: `#${normalizeTaskNumber(taskRef)}` });
+    }
+
+    if (sub === "start") {
+      const requestedRef = _[0] ?? (flags.branch ? String(flags.branch) : "");
+      if (!requestedRef) {
+        fail(
+          'usage: beckett task start <#N|#N.x> [--board <name>|--intensive] [--body <b>|--body-stdin] [--project <slug>] [--state <state>] [--preset <name>] [--cast <json>] [--criteria "a;b"] [--channel <id>]',
+        );
+      }
+      const branchRef = requestedRef.includes(".")
+        ? normalizeBranchRef(requestedRef)
+        : `${normalizeTaskNumber(requestedRef)}.1`;
+      const found = store.getBranch(branchRef);
+      if (!found) fail(`no such branch: #${branchRef}`);
+      if (flags.intensive && flags.board && String(flags.board).toLowerCase() !== "int") {
+        fail("--intensive selects the INT board; do not combine it with a different --board");
+      }
+      const board = cliBoardName(flags.intensive ? "int" : flags.board);
+      const isIntBoard = board.toLowerCase() === "int";
+      const channel = flags.channel
+        ? String(flags.channel)
+        : found.task.threadId ?? found.task.originChannelId;
+      if (isIntBoard && !channel) {
+        fail("INT task branches require --channel: Review (Design) needs a channel to ask the owner for approval");
+      }
+      const project = flags.project
+        ? String(flags.project)
+        : found.branch.git?.project ?? found.task.project;
+      // An inherited task project already crossed the restricted-repo gate at `task create`.
+      // Re-confirm only a start-time override; one user confirmation covers the task's branches.
+      if (flags.project) guardRestrictedProject(project, Boolean(flags["confirm-beckett"]));
+      const casting = await castingFromFlags(flags);
+      const state = flags.state
+        ? (String(flags.state) as TicketState)
+        : isIntBoard
+          ? "design"
+          : "in_progress";
+      const { createPlaneClient } = await import("../plane/client.ts");
+      const client = createPlaneClient({ config, board, logger: quietLogger });
+      const started = await startTaskBranch(store, client, {
+        branchRef,
+        board,
+        state,
+        create: {
+          body: await readWorkBody(flags),
+          casting,
+          criteria: criteriaFromFlags(flags),
+          ...(project ? { project } : {}),
+          ...(channel ? { originChannel: channel } : {}),
+        },
+      });
+
+      // `task.created` is intentionally idempotent: repeat it at first start so a task allocated
+      // while the daemon was down still gets its Discord workspace once execution begins.
+      await notifyBus("task.created", {
+        taskRef: `#${started.task.number}`,
+        taskNumber: started.task.number,
+        branchRef: `#${started.branch.ref}`,
+        title: started.task.title,
+        ...(channel ? { channelId: channel } : {}),
+      });
+      if (channel) {
+        await notifyBus("ticket.filed", {
+          identifier: started.ticket.identifier,
+          ticketId: started.ticket.id,
+          channelId: channel,
+          title: started.branch.title,
+          taskRef: `#${started.task.number}`,
+          branchRef: `#${started.branch.ref}`,
+        });
+      }
+      out({
+        taskRef: `#${started.task.number}`,
+        branchRef: `#${started.branch.ref}`,
+        id: started.ticket.id,
+        identifier: started.ticket.identifier,
+        url: started.ticket.url,
+        state: started.ticket.state,
+      });
+    }
+
+    if (sub === "show") {
+      const ref = _[0];
+      if (!ref) fail("usage: beckett task show <#N|#N.x>");
+      if (ref.includes(".")) {
+        const found = store.getBranch(ref);
+        if (!found) fail(`no such branch: #${normalizeBranchRef(ref)}`);
+        out({
+          task: publicTask(found.task),
+          branch: publicBranch(found.branch),
+        });
+      }
+      const task = store.getTask(ref);
+      if (!task) fail(`no such task: #${normalizeTaskNumber(ref)}`);
+      out(publicTask(task));
+    }
+
+    if (sub === "list" || sub === "ls") {
+      const wanted = flags.status ? String(flags.status) : undefined;
+      const tasks = store.list().filter((task) => !wanted || task.status === wanted);
+      out(tasks.map((task) => ({
+        ref: `#${task.number}`,
+        title: task.title,
+        displayName: displayTaskName(task),
+        status: task.status,
+        project: task.project ?? null,
+        threadId: task.threadId ?? null,
+        branches: task.branches.map((branch) => ({
+          ref: `#${branch.ref}`,
+          title: branch.title,
+          status: branch.status,
+          ticket: branch.ticket?.identifier ?? null,
+        })),
+        updatedAt: task.updatedAt,
+      })));
+    }
+
+    fail("usage: beckett task create|branch|start|show|list <...>");
+  }
+
   // ── ticket (in-process: PlaneClient — the Concierge's door to Plane, v3 §8) ───────────────
   // The Concierge shells these from its Bash tool to file/inspect/steer tickets. Output is
   // JSON on stdout (the Concierge reads it). PlaneClient speaks HTTP to Plane; the secret
@@ -884,8 +1106,6 @@ async function main(): Promise<void> {
   // CLI keeps working while `src/plane/client.ts` is built in parallel.
   if (group === "ticket") {
     const { createPlaneClient } = await import("../plane/client.ts");
-    const { parseCastJson, validateCasting } = await import("../plane/cast.ts");
-    const { loadPresets, requirePreset, resolveCasting } = await import("../plane/presets.ts");
     const { _, flags } = parse(rest);
     if (flags.intensive && flags.board && String(flags.board).toLowerCase() !== "int") {
       fail("--intensive selects the INT board; do not combine it with a different --board");
@@ -894,11 +1114,6 @@ async function main(): Promise<void> {
     const isIntBoard = board.toLowerCase() === "int";
     const client = createPlaneClient({ config, board, logger: quietLogger });
 
-    /** Read --body, or --body-stdin (piped). */
-    const readBody = async (): Promise<string> => {
-      if (flags["body-stdin"]) return (await Bun.stdin.text()).trim();
-      return flags.body ? String(flags.body) : "";
-    };
     /** A hydrated ticket → the slim row the Concierge needs to reason about progress. */
     const slim = (t: Ticket) => ({
       id: t.id,
@@ -928,27 +1143,8 @@ async function main(): Promise<void> {
           'usage: beckett ticket create --title <t> [--board <name>|--intensive] [--body <b>|--body-stdin] [--project <slug>] [--state backlog|todo|design|design_review|in_progress|in_review|done|cancelled] [--preset <name>] [--cast <json>] [--criteria "a;b;c"] [--channel <discord-channel-id>]',
         );
       }
-      // Cast resolution: start from --preset (read FRESH from ~/.beckett/presets.json every call, so
-      // a just-edited preset applies with no restart), then let an explicit --cast override PER STAGE
-      // — an explicit stage replaces the preset's, the preset fills the rest. Validate the result
-      // against the roster before filing so a broken cast (blocked model / bad harness) never ships.
-      const explicitCast = flags.cast ? parseCastJson(String(flags.cast)) : {};
-      let presetCast: Casting | undefined;
-      if (flags.preset) {
-        try {
-          presetCast = requirePreset(loadPresets(paths.presetsFile), String(flags.preset));
-        } catch (err) {
-          fail((err as Error).message);
-        }
-      }
-      const casting = resolveCasting(presetCast, explicitCast);
-      const castErrors = validateCasting(casting);
-      if (castErrors.length > 0) {
-        fail(`refusing to file a broken cast:\n  - ${castErrors.join("\n  - ")}`);
-      }
-      const criteria = flags.criteria
-        ? String(flags.criteria).split(";").map((s) => s.trim()).filter(Boolean)
-        : [];
+      const casting = await castingFromFlags(flags);
+      const criteria = criteriaFromFlags(flags);
       if (isIntBoard && !flags.channel) {
         fail("INT tickets require --channel: Review (Design) needs a filing channel to ask the owner for approval");
       }
@@ -957,7 +1153,7 @@ async function main(): Promise<void> {
       guardRestrictedProject(flags.project ? String(flags.project) : undefined, !!flags["confirm-beckett"]);
       const ticket = await client.createIssue({
         title: String(flags.title),
-        body: await readBody(),
+        body: await readWorkBody(flags),
         casting,
         criteria,
         // The code project this ticket builds → its own repo at ~/Projects/<slug>, pushed to
@@ -984,7 +1180,7 @@ async function main(): Promise<void> {
       if (!id) fail("usage: beckett ticket comment <id> <text> | --body <b> | --body-stdin");
       // Accept the body as positional text (per the v3 §8 shorthand) or via --body/--body-stdin.
       const positional = _.slice(1).join(" ").trim();
-      const body = positional || (await readBody());
+      const body = positional || (await readWorkBody(flags));
       if (!body) fail("beckett ticket comment: empty body");
       out(await client.addComment(await resolveTicketId(id), body));
     }
@@ -1389,7 +1585,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | ticket create|comment|state|list|show | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] | memory recall|remember|maintain");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] | memory recall|remember|maintain");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

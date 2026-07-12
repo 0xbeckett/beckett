@@ -24,7 +24,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Logger, ThreadCreated } from "../types.ts";
+import type { Logger, TaskThreadCreated, ThreadCreated } from "../types.ts";
 import { log as rootLog } from "../log.ts";
 
 /** Ticket context attached to an inbound message from a workspace thread. */
@@ -34,6 +34,9 @@ export interface TicketWorkspaceContext {
   name: string;
   /** Ticket identifiers grounded in this workspace (possibly empty for a fresh thread). */
   ticketIdents: string[];
+  /** Numbered task and branch refs are the user-facing grounding for new workspaces. */
+  taskRef?: string;
+  branchRefs: string[];
 }
 
 export interface WorkspaceRegistryOptions {
@@ -49,6 +52,8 @@ interface StoredWorkspace {
   parentChannelId: string;
   name: string;
   ticketIdents: string[];
+  taskRef?: string;
+  branchRefs: string[];
 }
 
 /**
@@ -75,13 +80,71 @@ export class WorkspaceRegistry {
     const existing = this.byThread.get(t.threadId);
     if (existing) return; // already a workspace — a re-emitted create event changes nothing
     const ticketIdents = [...new Set(t.name.match(TICKET_IDENT_RE) ?? [])];
-    this.byThread.set(t.threadId, { parentChannelId: t.parentChannelId, name: t.name, ticketIdents });
+    this.byThread.set(t.threadId, {
+      parentChannelId: t.parentChannelId,
+      name: t.name,
+      ticketIdents,
+      branchRefs: [],
+    });
     this.log.info("workspace registered from user thread", {
       threadId: t.threadId,
       name: t.name,
       creatorId: t.creatorId,
       tickets: ticketIdents,
     });
+    this.saveState();
+  }
+
+  /** Register a task workspace Beckett deliberately created or adopted. Idempotent per thread. */
+  registerTaskThread(
+    thread: TaskThreadCreated,
+    taskRef: string,
+    branchRefs: string[] = [],
+  ): void {
+    const normalizedTask = taskRef.trim().replace(/^#/, "");
+    const normalizedBranches = [...new Set(branchRefs.map((ref) => ref.trim().replace(/^#/, "")).filter(Boolean))];
+    const replacedThreadIds: string[] = [];
+    const inheritedTickets: string[] = [];
+    const inheritedBranches: string[] = [];
+    for (const [threadId, workspace] of this.byThread) {
+      if (threadId === thread.threadId || workspace.taskRef !== normalizedTask) continue;
+      replacedThreadIds.push(threadId);
+      inheritedTickets.push(...workspace.ticketIdents);
+      inheritedBranches.push(...workspace.branchRefs);
+      this.byThread.delete(threadId);
+    }
+    const existing = this.byThread.get(thread.threadId);
+    if (existing) {
+      existing.taskRef = normalizedTask;
+      existing.parentChannelId = thread.parentChannelId;
+      existing.ticketIdents = [...new Set([...existing.ticketIdents, ...inheritedTickets])];
+      existing.branchRefs = [...new Set([...existing.branchRefs, ...inheritedBranches, ...normalizedBranches])];
+      existing.name = thread.name;
+    } else {
+      this.byThread.set(thread.threadId, {
+        parentChannelId: thread.parentChannelId,
+        name: thread.name,
+        ticketIdents: [...new Set(inheritedTickets)],
+        taskRef: normalizedTask,
+        branchRefs: [...new Set([...inheritedBranches, ...normalizedBranches])],
+      });
+    }
+    this.log.info("task workspace registered", {
+      threadId: thread.threadId,
+      task: normalizedTask,
+      branches: normalizedBranches,
+      replacedThreadIds,
+    });
+    this.saveState();
+  }
+
+  /** Add a public branch ref (and optional internal Plane identifier) to a task workspace. */
+  bindBranch(channelId: string, branchRef: string, ticketIdent?: string): void {
+    const ws = this.byThread.get(channelId);
+    if (!ws) return;
+    const normalized = branchRef.trim().replace(/^#/, "");
+    if (normalized && !ws.branchRefs.includes(normalized)) ws.branchRefs.push(normalized);
+    if (ticketIdent && !ws.ticketIdents.includes(ticketIdent)) ws.ticketIdents.push(ticketIdent);
     this.saveState();
   }
 
@@ -105,7 +168,25 @@ export class WorkspaceRegistry {
       parentChannelId: ws.parentChannelId,
       name: ws.name,
       ticketIdents: [...ws.ticketIdents].sort(),
+      ...(ws.taskRef ? { taskRef: ws.taskRef } : {}),
+      branchRefs: [...ws.branchRefs].sort(),
     };
+  }
+
+  /** Prefer the dedicated task workspace when routing an internal ticket milestone. */
+  channelForTicket(ticketIdent: string): string | null {
+    for (const [threadId, workspace] of this.byThread) {
+      if (workspace.ticketIdents.includes(ticketIdent)) return threadId;
+    }
+    return null;
+  }
+
+  channelForTask(taskRef: string): string | null {
+    const normalized = taskRef.trim().replace(/^#/, "");
+    for (const [threadId, workspace] of this.byThread) {
+      if (workspace.taskRef === normalized) return threadId;
+    }
+    return null;
   }
 
   private loadState(): void {
@@ -119,6 +200,10 @@ export class WorkspaceRegistry {
           name: typeof rec.name === "string" ? rec.name : "",
           ticketIdents: Array.isArray(rec.ticketIdents)
             ? rec.ticketIdents.filter((x): x is string => typeof x === "string")
+            : [],
+          ...(typeof rec.taskRef === "string" ? { taskRef: rec.taskRef } : {}),
+          branchRefs: Array.isArray(rec.branchRefs)
+            ? rec.branchRefs.filter((x): x is string => typeof x === "string")
             : [],
         });
       }

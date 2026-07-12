@@ -165,6 +165,30 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<Worktree
   return handle;
 }
 
+/** Whether a local or fetched ref is available as a safe worktree base. */
+export async function refExists(repoRoot: string, ref: string): Promise<boolean> {
+  return (await runGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repoRoot)).code === 0;
+}
+
+/** Compose multiple completed task branches into a dependent branch before its worker starts. */
+export async function mergeBranchesIntoWorktree(workspace: string, branches: string[]): Promise<void> {
+  for (const branch of branches) {
+    const result = await runGit(
+      ["-c", "commit.gpgsign=false", "merge", "--no-ff", "--no-edit", branch],
+      workspace,
+    );
+    if (result.code === 0) continue;
+    const conflicts = (await runGit(["diff", "--name-only", "--diff-filter=U"], workspace)).stdout
+      .split(/\r?\n/)
+      .map((path) => path.trim())
+      .filter(Boolean);
+    await runGit(["merge", "--abort"], workspace);
+    throw new Error(
+      `cannot compose dependency branch ${branch}${conflicts.length ? `; conflicts: ${conflicts.join(", ")}` : ""}`,
+    );
+  }
+}
+
 /**
  * Ensure `repoRoot` is a git repo with ≥1 commit so `git worktree add` has a base to branch from.
  * Proactive self-setup: a brand-new project (or an empty ~/projects) is initialized rather than

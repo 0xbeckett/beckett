@@ -3,12 +3,12 @@
 **A Discord-native AI engineer that lives in your server, talks like a person, and ships real code.**
 
 You @mention Beckett in Discord. It chats back in its own voice, decides how much effort your
-request actually deserves, and when there's real work to do it files a ticket and a fleet of
+request actually deserves, and when there's real work to do it starts a numbered task and a fleet of
 coding agents builds it — opening PRs, deploying sites, generating images — while it keeps you
-posted in the channel. One long-lived agent is the face; a queue and a pool of workers are the
+posted in a task workspace such as `#42 - Build voting`. One long-lived agent is the face; a queue and a pool of workers are the
 hands.
 
-This repo is the whole thing: the Discord front-of-house, the ticket queue, the worker
+This repo is the whole thing: the Discord front-of-house, the task registry, the Plane queue, the worker
 dispatcher, and the ops to run it. It's built to be **forked** — rename it, give it a new
 personality, point it at your own Discord, and you have your own Beckett.
 
@@ -34,20 +34,21 @@ personality, point it at your own Discord, and you have your own Beckett.
 Beckett has two seats:
 
 - **The Concierge** — a long-lived `claude -p` (Opus) agent that owns Discord. It's the only
-  thing that talks to people. It chats, sizes effort, and for real work **files a ticket** into
-  [Plane](https://plane.so) (self-hosted). It never writes the code itself.
+  thing that talks to people. It chats, sizes effort, and for real work creates a numbered
+  **task** (`#42`) with executable **branches** (`#42.1`, `#42.2`). It never writes the code itself.
 - **The fleet** — a poller watches the Plane queue; a **dispatcher** turns ticket state changes
   into work. A ticket moving to *In Progress* spawns a coding agent in an isolated git worktree;
   *In Review* spawns a reviewer; a new comment steers the live worker; done advances the ticket
   and posts a summary back to the channel.
 
-The workers aren't all the same model. Each ticket is **cast** per stage — implement with one
+Plane tickets are internal execution records linked to task branches. The workers aren't all the
+same model. Each branch is **cast** per stage — implement with one
 model/effort, review with another — so cheap work stays cheap and hard work gets the firepower.
 Claude is the backbone; codex and pi can be enabled as alternates.
 
-### INT intensive tickets
+### INT intensive branches
 
-Normal **OPS** tickets keep the short implementation flow. **INT** is a separate Plane board for
+Normal task branches keep the short implementation flow. **INT** is a separate internal Plane board for
 multi-stage work: **Backlog → Design → Review (Design) → In Progress → Review → Done**. `Design`,
 `In Progress`, and `Review` are live worker states. **Review (Design) is parked**: the design worker
 commits `docs/design/int-N.md`, an independent lightweight model checks it against the ticket, and
@@ -55,9 +56,10 @@ Beckett sends an automated update to the filing channel asking the owner to gree
 is just `beckett ticket state INT-N in_progress --board int`; implementation and review resume on
 the same ticket with its `design` / `implement` / `review` casts intact — no re-filing.
 
-File one with `beckett ticket create --intensive --channel <discord-channel-id> --title "…"` (or
-`--board int`); INT defaults to the live `Design` state. Use the seeded `--preset intensive` to
-select the default three-stage cast.
+Create the task normally, then start its branch with
+`beckett task start '#N.1' --intensive --preset intensive`; INT defaults to the live `Design` state. The internal `INT-N` identifier shown
+by `beckett task show '#N.1'` remains available for the approval-state command above. Quote numbered
+references in a shell because an unquoted `#` starts a comment.
 
 Beckett also has hands beyond code: it can generate images, deploy throwaway mockups to
 `<name>.your-domain`, manage its own public site, remember people and projects across
@@ -72,8 +74,8 @@ Beckett's **personality is a single editable file**, separate from how it works:
   reloads itself live, no redeploy. On a fresh install it's seeded from `DEFAULT_PERSONA` in
   [`src/concierge/index.ts`](src/concierge/index.ts) (the stock Beckett is a cocky 19-year-old
   dev who texts in lowercase).
-- **`src/concierge/concierge.md`** is the *doctrine* — how it works (sizing effort, filing
-  tickets, surfacing progress). This is fixed; don't put personality here.
+- **`src/concierge/concierge.md`** is the *doctrine* — how it works (sizing effort, starting
+  tasks, surfacing progress). This is fixed; don't put personality here.
 
 So "a bunch of Becketts, each with their own flair" is exactly the intended shape: fork the repo,
 rewrite the persona, register a new Discord bot, and run it. The engineering brain is shared; the
@@ -82,7 +84,8 @@ character is yours.
 ## Architecture in one paragraph
 
 > A **Concierge** (a long-lived `claude -p` Opus agent) owns Discord. It chats in Beckett's
-> voice, decides effort, and for real work FILES A TICKET into Plane with per-stage **casting**.
+> voice, decides effort, and for real work creates a numbered task. Starting one of its branches
+> files an internal Plane ticket with per-stage **casting**.
 > It never does the work itself. The **shell** polls the Plane REST API every `poll_secs` and
 > emits events. A **Dispatcher** consumes them: a ticket entering *in_progress* spawns the
 > implement harness as a worker (git worktree, under a scope-guard); *in_review* spawns the
@@ -124,7 +127,9 @@ Have these ready when prompted:
 
 - a Discord app installed into your server with the `bot` scope. Enable the Message Content
   privileged intent and grant View Channels, Send Messages, Read Message History, Send Messages
-  in Threads, and Attach Files. Discord's [bot quick start](https://docs.discord.com/developers/quick-start/getting-started)
+  in Threads, Create Public Threads, Manage Threads, Use Application Commands, and Attach Files.
+  Numbered task threads inherit their parent channel's visibility, so put task creation in a
+  suitably private parent when task names are sensitive. Discord's [bot quick start](https://docs.discord.com/developers/quick-start/getting-started)
   walks through creation and Guild Install;
 - a [Plane](https://plane.so) workspace plus a personal API token from Profile Settings. Plane
   Cloud is the easy default; use the workspace slug shown in `app.plane.so/<slug>/...`. Beckett
@@ -214,6 +219,22 @@ semantics) is an open design question left for a follow-up.
 
 ## Everyday commands
 
+Discord exposes the common read/create paths natively:
+
+| Slash command | What it does |
+|---|---|
+| `/task create name:<name>` | Allocates `#N`, creates `#N.1`, and opens the `#N - Name` workspace thread. |
+| `/task show number:<N>` | Shows the task and its branch states without internal Plane ids. |
+| `/task workspace number:<N>` | Repairs a task whose Discord thread could not be created earlier. |
+| `/branch reference:<N.x>` | Shows aggregate additions, deletions, files, commits, checks, review, and conversation counts. Never raw diff lines. |
+| `/stats` | Privately shows the owner's remaining Claude and Codex subscription windows and reset times. |
+
+Asking a short status question such as `what's #42.1 looking like?` returns the same branch card.
+`/stats` is ephemeral and owner-only; its probes use local subscription metadata with zero model
+turns and never include account email or raw provider output.
+
+For operator/Concierge use on the host:
+
 Run on the box as the beckett user (`bun src/cli/beckett.ts <...>`, usually aliased to `beckett`):
 
 | Command | What it does |
@@ -222,10 +243,16 @@ Run on the box as the beckett user (`bun src/cli/beckett.ts <...>`, usually alia
 | `beckett doctor` | Would Beckett work right now? Binaries, live token probes, env drift, leaked workers. Non-zero exit on any failure. |
 | `beckett discord reply --channel <id> "…"` | Post a message as Beckett into a channel. A reply-ack timeout reports `mayHaveSent`, not a retryable failure; do not resend it automatically. Set `BECKETT_DISCORD_REPLY_ACK_TIMEOUT_MS` to tune the 75s acknowledgement budget. |
 | `beckett reload` | Re-read `persona.md` and re-ground on a fresh session (live voice retune). |
-| `beckett ticket …` / `beckett plan …` | File a ticket / a multi-ticket plan into Plane. |
+| `beckett task create|branch|start|show|list …` | Create numbered work, split it into branches, start execution, and inspect progress. |
+| `beckett ticket …` | Internal Plane-ticket controls used for comments, state changes, and compatibility. |
 | `beckett eval "author/model" [--short|--full]` | Run the curated coding prompt suite against any OpenRouter model and save a readable report. |
 | `beckett memory recall "…"` / `remember …` | Query / write Beckett's cross-conversation knowledge. |
 | `beckett identity set --user <id> …` | Teach Beckett who someone is and how to address them. |
+
+`task create` allocates the durable task and its main `#N.1` branch; `task start '#N.1'` files that
+branch into Plane and queues execution. Add real separations with `task branch '#N' --title "…"`;
+use `--needs '#N.x'` for scheduling and `--parent '#N.x'` for hierarchy. Dependent branches must
+share a `--project`; they start from the completed predecessor's local Git branch, not stale `main`.
 
 (Beckett itself uses these via skills; you rarely need them by hand.)
 
@@ -250,6 +277,7 @@ src/
   discord/      gateway, message chunking, access control, federation (peer bots)
   dispatch/     turns ticket-state changes into worker/reviewer spawns
   plane/        Plane REST client + poller
+  task/         durable #N / #N.x task and branch registry
   worker/       the coding-agent harness (worktree, scope-guard, casting)
   drivers/      claude / codex / pi process drivers
   memory/       cross-conversation knowledge graph
