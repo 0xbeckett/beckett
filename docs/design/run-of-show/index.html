@@ -935,6 +935,281 @@
   <div class="rf">13 / 34</div>
 </section>
 
+<!-- ============================================================ p14 · §4 opener + components -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">New in rev 2 &middot; components &amp; contracts</div>
+  <div class="secnum">4</div>
+  <h1>Anatomy of the engine</h1>
+  <p class="lede">Rev 1 named one component &mdash; &ldquo;the stage manager&rdquo; &mdash; and waved at the
+  rest. This section pins the engine down to seven components with explicit interfaces, so the build
+  can be sized honestly and reviewed piece by piece. Everything here lives in-process with the
+  existing daemon; nothing is a service, a queue broker, or a new database. The boundaries are module
+  boundaries, chosen so each piece is testable alone.</p>
+
+  <table class="compact">
+    <tr><th style="width:17%">Component</th><th style="width:44%">One responsibility</th><th>Exists today as&hellip;</th></tr>
+    <tr><td><b>Flow Linter</b></td>
+        <td>Validate a <code>FlowSpec</code> at filing time: schema, graph shape, bounded cycles, budgets, cast doctrine (&sect;3.3). Pure function; no I/O.</td>
+        <td>new; extends <code>validateCasting</code> <span class="rcpt">presets.ts:76</span></td></tr>
+    <tr><td><b>Stage Manager</b></td>
+        <td>Per-run interpreter: fold the event log into a <code>FlowRun</code>, decide the next edge on every signal/alarm, enforce caps and budgets. The only component that understands node kinds.</td>
+        <td>replaces the state&rarr;action switch <span class="rcpt">dispatcher.ts:1003&ndash;1062</span></td></tr>
+    <tr><td><b>Run Store</b></td>
+        <td>Append-only JSONL event log per run + a folded head snapshot. Single writer, fsync&rsquo;d, crash-truncation tolerant. The source of truth.</td>
+        <td>the outbox idiom, promoted <span class="rcpt">advance-outbox.ts:49&ndash;104, spend.ts:31</span></td></tr>
+    <tr><td><b>Seat Scheduler</b></td>
+        <td>Admission control: global <code>max_workers</code>, per-run <code>maxConcurrent</code>, FIFO queueing, dedup by <code>(run, node, visit, arm)</code>.</td>
+        <td>the staffing dedup + pending queue <span class="rcpt">dispatcher.ts:1313&ndash;1379</span></td></tr>
+    <tr><td><b>Spawn Adapter</b></td>
+        <td>Turn a <code>SeatRequest</code> into a live worker: worktree, branch, scope-guard, brief, envelope, done-signal schema &mdash; plus, new, the stage manifest (&sect;6.4). Returns a <code>WorkerHandle</code>.</td>
+        <td>today&rsquo;s spawn path, verbatim <span class="rcpt">dispatcher.ts:1479&ndash;1729 &middot; spawn.ts:491</span></td></tr>
+    <tr><td><b>Sentinel</b></td>
+        <td>Liveness: consume worker events into leases, raise typed alarms (stall, overrun, silent-exit, budget), drive the escalation ladder (&sect;6.2). Never decides workflow &mdash; only reports.</td>
+        <td>generalises stall watch + hard-cap watchdog <span class="rcpt">base.ts:352&ndash;409</span></td></tr>
+    <tr><td><b>Herald</b></td>
+        <td>Announcement routing: every run event is classified <em>trace / status / page</em> and delivered to the journal, the task&rsquo;s origin channel, or ro&rsquo;s DM (&sect;6.3). Owns the &ldquo;a human hears within one minute&rdquo; invariant.</td>
+        <td>new; the gap &sect;1.6 documents</td></tr>
+  </table>
+  <p class="small">Two supporting actors keep their existing names: the <b>Concierge</b> (authors specs,
+  operates runs, answers pages) and the <b>Mirror</b> (Phase-1 write-only Plane projection, &sect;9.2 —
+  deleted in Phase 2).</p>
+  <div class="rf">14 / 34</div>
+</section>
+
+<!-- ============================================================ p15 · Fig 4 system architecture -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">4.1</span>The system, in one picture</h2>
+  <figure>
+    <svg viewBox="0 0 660 434">
+      <defs>
+        <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,1 L9,5 L0,9" fill="none" stroke="context-stroke" stroke-width="1.4"/>
+        </marker>
+      </defs>
+
+      <!-- Discord / operator -->
+      <rect class="boxDark" x="14" y="16" width="150" height="58" rx="6"/>
+      <text x="89" y="38" text-anchor="middle" font-size="9.4" font-weight="700" fill="#f2ece3">Discord</text>
+      <text x="89" y="52" text-anchor="middle" font-size="6.8" fill="#a89a88">ro &middot; origin channels &middot; DMs</text>
+      <text x="89" y="64" text-anchor="middle" font-size="6.8" fill="#c96a3c">the only human surface</text>
+
+      <!-- Concierge -->
+      <rect class="box" x="222" y="16" width="176" height="58" rx="6"/>
+      <text class="lbl" x="310" y="35" text-anchor="middle" font-size="9.4">Concierge</text>
+      <text class="lbl2" x="310" y="48" text-anchor="middle">authors flow specs &middot; operates runs</text>
+      <text class="mono" x="310" y="62" text-anchor="middle">file &middot; nudge &middot; pause &middot; resume &middot; grant</text>
+      <line class="edge" x1="164" y1="45" x2="222" y2="45" marker-end="url(#ar4)" marker-start="url(#ar4)"/>
+
+      <!-- pages up from herald -->
+      <path class="edgeRust" d="M 89 208 L 89 74" marker-end="url(#ar4)"/>
+      <text class="lbl2" x="80" y="140" text-anchor="end" fill="#b34f28">status &middot; pages</text>
+      <text class="lbl2" x="80" y="151" text-anchor="end" fill="#b34f28">&le; 60 s after the event</text>
+
+      <!-- ENGINE box -->
+      <rect x="52" y="196" width="474" height="150" rx="8" fill="none" stroke="#b34f28" stroke-width="1.2" stroke-dasharray="5 3"/>
+      <text x="64" y="188" font-family="Inter" font-size="7.4" font-weight="700" letter-spacing="2" fill="#b34f28">THE ENGINE &middot; ONE PROCESS, FIVE MODULES</text>
+
+      <rect class="box" x="68" y="212" width="96" height="52" rx="5"/>
+      <text class="lbl" x="116" y="231" text-anchor="middle">Flow Linter</text>
+      <text class="lbl2" x="116" y="243" text-anchor="middle">schema &middot; cycles</text>
+      <text class="lbl2" x="116" y="254" text-anchor="middle">budgets &middot; casts</text>
+
+      <rect class="boxRust" x="196" y="212" width="130" height="52" rx="5"/>
+      <text class="lbl" x="261" y="230" text-anchor="middle">Stage Manager</text>
+      <text class="lbl2" x="261" y="242" text-anchor="middle">fold log &rarr; FlowRun</text>
+      <text class="lbl2" x="261" y="253" text-anchor="middle">advance cursors on events</text>
+
+      <rect class="box" x="358" y="212" width="72" height="52" rx="5"/>
+      <text class="lbl" x="394" y="231" text-anchor="middle">Seat</text>
+      <text class="lbl" x="394" y="242" text-anchor="middle">Scheduler</text>
+      <text class="lbl2" x="394" y="254" text-anchor="middle">caps &middot; FIFO</text>
+
+      <rect class="boxSage" x="196" y="284" width="130" height="48" rx="5"/>
+      <text class="lbl" x="261" y="302" text-anchor="middle">Sentinel</text>
+      <text class="lbl2" x="261" y="314" text-anchor="middle">leases &middot; alarms &middot; escalation</text>
+
+      <rect class="boxSage" x="68" y="284" width="96" height="48" rx="5"/>
+      <text class="lbl" x="116" y="302" text-anchor="middle">Herald</text>
+      <text class="lbl2" x="116" y="314" text-anchor="middle">trace / status / page</text>
+
+      <rect class="box" x="358" y="284" width="72" height="48" rx="5"/>
+      <text class="lbl" x="394" y="302" text-anchor="middle">Spawn</text>
+      <text class="lbl" x="394" y="313" text-anchor="middle">Adapter</text>
+
+      <!-- concierge -> linter -->
+      <path class="edge" d="M 286 74 C 240 120, 160 160, 122 212" marker-end="url(#ar4)"/>
+      <text class="lbl2" x="176" y="132" text-anchor="middle">file(spec)</text>
+      <!-- concierge -> stage manager verbs -->
+      <path class="edge" d="M 322 74 L 276 212" marker-end="url(#ar4)"/>
+      <text class="lbl2" x="322" y="132" text-anchor="middle">nudge &middot; resume &middot; grant</text>
+      <!-- linter -> sm -->
+      <line class="edge" x1="164" y1="238" x2="196" y2="238" marker-end="url(#ar4)"/>
+      <!-- sm <-> scheduler -->
+      <line class="edge" x1="326" y1="238" x2="358" y2="238" marker-end="url(#ar4)"/>
+      <!-- scheduler -> spawn adapter -->
+      <line class="edge" x1="394" y1="264" x2="394" y2="284" marker-end="url(#ar4)"/>
+      <!-- sentinel -> sm alarms -->
+      <line class="edgeRust" x1="261" y1="284" x2="261" y2="264" marker-end="url(#ar4)"/>
+      <text class="lbl2" x="267" y="277" fill="#b34f28">alarms</text>
+      <!-- sentinel -> herald -->
+      <line class="edge" x1="196" y1="308" x2="164" y2="308" marker-end="url(#ar4)"/>
+
+      <!-- workers column -->
+      <rect class="boxRust" x="564" y="196" width="84" height="150" rx="6"/>
+      <text class="lbl" x="606" y="216" text-anchor="middle">Workers</text>
+      <text class="lbl2" x="606" y="230" text-anchor="middle">git worktrees</text>
+      <text class="lbl2" x="606" y="241" text-anchor="middle">one per live seat</text>
+      <rect x="574" y="252" width="64" height="26" rx="3" fill="#fff" stroke="#cfc7ba" stroke-width=".8"/>
+      <text class="mono" x="606" y="263" text-anchor="middle" font-size="5.6">stage-manifest</text>
+      <text class="mono" x="606" y="272" text-anchor="middle" font-size="5.6">.json  §6.4</text>
+      <rect x="574" y="284" width="64" height="26" rx="3" fill="#fff" stroke="#cfc7ba" stroke-width=".8"/>
+      <text class="mono" x="606" y="295" text-anchor="middle" font-size="5.6">done-signal</text>
+      <text class="mono" x="606" y="304" text-anchor="middle" font-size="5.6">schema</text>
+      <text class="lbl2" x="606" y="330" text-anchor="middle">claude / codex / pi</text>
+
+      <!-- spawn adapter -> workers -->
+      <line class="edgeRust" x1="430" y1="300" x2="564" y2="300" marker-end="url(#ar4)"/>
+      <text class="lbl2" x="497" y="293" text-anchor="middle" fill="#b34f28">spawn + manifest</text>
+      <!-- workers events back to sentinel -->
+      <path class="edgeMuted" d="M 564 320 C 480 340, 400 330, 326 314" marker-end="url(#ar4)"/>
+      <text class="lbl2" x="470" y="336" text-anchor="middle">events: ready &middot; turns &middot; files &middot; done-signal</text>
+
+      <!-- storage row -->
+      <rect class="boxWash" x="52" y="382" width="150" height="40" rx="5"/>
+      <text class="monoI" x="127" y="398" text-anchor="middle">~/.beckett/runs/&lt;ref&gt;.jsonl</text>
+      <text class="lbl2" x="127" y="411" text-anchor="middle">run event log &mdash; source of truth</text>
+      <rect class="boxWash" x="218" y="382" width="104" height="40" rx="5"/>
+      <text class="monoI" x="270" y="398" text-anchor="middle">tasks.json</text>
+      <text class="lbl2" x="270" y="411" text-anchor="middle">#N tree &middot; needs</text>
+      <rect class="boxWash" x="338" y="382" width="104" height="40" rx="5"/>
+      <text class="monoI" x="390" y="398" text-anchor="middle">journal/ &middot; spend.jsonl</text>
+      <text class="lbl2" x="390" y="411" text-anchor="middle">narrative &middot; ledger</text>
+      <rect class="boxWash" x="458" y="382" width="120" height="40" rx="5"/>
+      <text class="monoI" x="518" y="398" text-anchor="middle">outboxes &rarr; GitHub</text>
+      <text class="lbl2" x="518" y="411" text-anchor="middle">publish &middot; (mirror &rarr; Plane, Phase 1)</text>
+
+      <!-- sm -> run store -->
+      <line class="edgeRust" x1="180" y1="346" x2="150" y2="382" marker-end="url(#ar4)"/>
+      <text class="lbl2" x="196" y="368" text-anchor="middle" fill="#b34f28">append, fsync, fold</text>
+      <line class="edgeMuted" x1="300" y1="346" x2="286" y2="382" marker-end="url(#ar4)"/>
+      <line class="edgeMuted" x1="360" y1="346" x2="382" y2="382" marker-end="url(#ar4)"/>
+      <line class="edgeMuted" x1="440" y1="346" x2="500" y2="382" marker-end="url(#ar4)"/>
+    </svg>
+    <figcaption><b>Fig. 4 &mdash; system architecture.</b> The concierge authors and operates; the engine
+    interprets, schedules, watches and announces; workers execute in worktrees against explicit
+    contracts; all durable state is local JSONL. Discord is the single human surface &mdash; the Herald&rsquo;s
+    &le;60&nbsp;s announcement path (left edge) is the &sect;6 invariant, drawn as an arrow because it is an
+    interface, not an aspiration.</figcaption>
+  </figure>
+  <div class="rf">15 / 34</div>
+</section>
+
+<!-- ============================================================ p16 · §4.2 interfaces -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">4.2</span>The three internal contracts</h2>
+  <p>Three interfaces carry the whole design. If these signatures survive review, the components
+  behind them can be built and tested independently.</p>
+<pre><span class="c">// 1 · What the engine exposes to the concierge (and to `beckett` CLI verbs).</span>
+<span class="k">interface</span> <b>StageManager</b> {
+  open(ref: TaskRef, spec: FlowSpec): FlowRun;          <span class="c">// validate → run_opened → enter entry node</span>
+  onSignal(ref: TaskRef, node: NodeId, arm: number | null,
+           signal: DoneSignal): void;                   <span class="c">// the ONLY workflow-advancing input</span>
+  onAlarm(ref: TaskRef, alarm: Alarm): void;            <span class="c">// Sentinel input; may retry, park, or ignore</span>
+  nudge(ref: TaskRef, text: string, node?: NodeId): Receipt;
+  pause(ref): void; resume(ref, grant?: {extraVisits?: number}): void; cancel(ref): void;
+}
+
+<span class="c">// 2 · What the Stage Manager asks of the world when it wants a seat filled.</span>
+<span class="k">interface</span> <b>SeatRequest</b> {
+  ref: TaskRef; node: NodeId; visit: number; arm?: number;  <span class="c">// identity — also the dedup key</span>
+  cast: HarnessSpec;                                    <span class="c">// who sits down</span>
+  worktree: Path; branch: BranchRef; baseSha: Sha;      <span class="c">// where they sit</span>
+  briefParts: { body: string; criteria: string[]; nodeBrief?: string;
+                priorArtifacts: ArtifactRef[]; steers: Steer[] };
+  manifest: StageManifest;                              <span class="c">// §6.4 — the machine-readable handshake</span>
+  envelope: { turnCap: number; wallClockS: number };    <span class="c">// advisory, as today</span>
+}
+
+<span class="c">// 3 · What a live worker looks like from inside the engine.</span>
+<span class="k">interface</span> <b>WorkerHandle</b> {
+  events: AsyncIterable&lt;WorkerEvent&gt;;   <span class="c">// session_started · worker_ready · turn_completed ·</span>
+                                        <span class="c">// file_change · checkpoint · stalled · finished</span>
+  nudge(text: string): Receipt;         <span class="c">// delivered / queued / will-restart / dropped — as today</span>
+  abort(reason: string): Promise&lt;Sha&gt;;  <span class="c">// commits WIP first; returns the checkpoint sha</span>
+  telemetry(): { turns: number; toolCalls: number; tokens: TokenUsage; wallClockS: number };
+}</pre>
+  <p class="small">Nothing here invents transport: <code>events</code> is the driver event stream that already
+  exists <span class="rcpt">types.ts:143, base.ts:89&ndash;92</span>, <code>abort</code> is today&rsquo;s
+  commit-WIP-then-kill path <span class="rcpt">dispatcher.ts:2242&ndash;2259</span>, and <code>onSignal</code> is the
+  done-signal router with its switch deleted. The one genuinely new input is <code>onAlarm</code> &mdash; the
+  Sentinel&rsquo;s channel &mdash; and the one new field is <code>manifest</code>.</p>
+
+  <h2><span class="n">4.3</span>How an advance happens &mdash; the exact order of operations</h2>
+  <ol class="small" style="margin-bottom:2mm">
+    <li><b>Append</b> the triggering event (<code>signal_received</code>, <code>alarm_raised</code>, an operator
+    verb) to <code>runs/&lt;ref&gt;.jsonl</code>; fsync. If this write fails, nothing happened.</li>
+    <li><b>Fold</b> the log into the <code>FlowRun</code> head (&sect;5.1). Folding is pure and deterministic
+    &mdash; same log, same state, every time.</li>
+    <li><b>Decide</b>: the Stage Manager computes the edge set the new state enables (pass edge, fail
+    edge, retry, join-completion check, cap-exhaustion park, budget park).</li>
+    <li><b>Gate</b>: each intended spawn is checked against budgets and caps <em>before</em> a seat is
+    requested; a refusal becomes <code>budget_hit</code> + park, not a queued surprise.</li>
+    <li><b>Act</b>: seats are requested from the Scheduler keyed by <code>(ref, node, visit, arm)</code> &mdash;
+    the key makes replay idempotent: a crash between append and spawn re-derives the same request and
+    dedups against any seat that already started.</li>
+    <li><b>Announce</b>: the Herald classifies the appended events and delivers (&sect;6.3). Announcement
+    is after the fsync, so a page never refers to state that didn&rsquo;t commit.</li>
+  </ol>
+  <div class="rf">16 / 34</div>
+</section>
+
+<!-- ============================================================ p17 · §4.4 event vocabulary + storage -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">4.4</span>The run-event vocabulary &mdash; closed, like the node algebra</h2>
+  <p>Every durable fact about a run is one of these nineteen events. The fold (&sect;5.1), the Herald&rsquo;s
+  routing (&sect;6.3), <code>beckett status</code>, and the simulations in &sect;7 all read from this single
+  vocabulary &mdash; there is no second, informal channel.</p>
+  <table class="compact">
+    <tr><th style="width:24%">Event</th><th style="width:48%">Emitted when</th><th>Key payload</th></tr>
+    <tr><td><code>run_opened</code></td><td>spec validated, run created</td><td>frozen spec, origin channel</td></tr>
+    <tr><td><code>node_entered</code></td><td>a cursor arrives at a node (visit N)</td><td>node, visit, arm?</td></tr>
+    <tr><td><code>seat_spawned</code></td><td>Spawn Adapter launched a worker</td><td>seat key, cast, worktree, branch, baseSha</td></tr>
+    <tr><td><code>worker_ready</code></td><td>worker completed the &sect;6.4 readiness handshake</td><td>manifest hash, observed branch/sha</td></tr>
+    <tr><td><code>worker_refused</code></td><td>worker&rsquo;s environment check failed &mdash; it declined to start</td><td>expected vs observed</td></tr>
+    <tr><td><code>progress_noted</code></td><td>lease renewal rollup &mdash; at most one per minute per seat</td><td>turns, files touched, tokens</td></tr>
+    <tr><td><code>checkpoint_committed</code></td><td>periodic WIP checkpoint (OPS-125 cadence)</td><td>sha</td></tr>
+    <tr><td><code>signal_received</code></td><td>done-signal arrived (or was synthesized on crash)</td><td>status, summary, subtype</td></tr>
+    <tr><td><code>edge_taken</code></td><td>Stage Manager moved a cursor</td><td>from, to, why (pass/fail/retry)</td></tr>
+    <tr><td><code>gate_decided</code></td><td>a gate resolved</td><td>by (human/model), verdict, rubric score</td></tr>
+    <tr><td><code>arm_joined</code></td><td>an arm reached its join barrier</td><td>arm, branch, status</td></tr>
+    <tr><td><code>join_resolved</code></td><td>join strategy concluded</td><td>strategy, winner/merge order/votes</td></tr>
+    <tr><td><code>alarm_raised</code> / <code>alarm_cleared</code></td><td>Sentinel verdicts (&sect;6.2)</td><td>type, seat key, evidence</td></tr>
+    <tr><td><code>nudge_delivered</code></td><td>steering reached a seat (or its buffer)</td><td>receipt, target</td></tr>
+    <tr><td><code>parked</code> / <code>resumed</code></td><td>run handed to / taken back from a human</td><td>node, reason; grant used</td></tr>
+    <tr><td><code>budget_hit</code></td><td>a pre-spawn gate refused (&sect;4.3 step 4)</td><td>ceiling, spend so far</td></tr>
+    <tr><td><code>run_done</code> / <code>run_cancelled</code></td><td>terminal</td><td>outcome, totals (spend, seats, wall-clock)</td></tr>
+  </table>
+
+  <h2><span class="n">4.5</span>Storage layout &mdash; four files, one idiom</h2>
+<pre>~/.beckett/
+  runs/&lt;ref&gt;.jsonl        <span class="c">// the run event log — append-only, fsync'd, source of truth</span>
+  runs/&lt;ref&gt;.head.json    <span class="c">// folded FlowRun snapshot — cache only, rebuilt from the log at will</span>
+  tasks.json              <span class="c">// #N tree — unchanged (store.ts); run status projected into branch status</span>
+  journal/&lt;ticket&gt;.log    <span class="c">// human-narrative journal — unchanged, gains node context per line</span>
+  spend.jsonl             <span class="c">// SpendRecord ledger — unchanged (spend.ts), now keyed by seat, not stage</span></pre>
+  <p class="small">One idiom throughout: append-only JSONL with a tolerant reader &mdash; the exact
+  mechanics the codebase already trusts in the publish-outbox, the advance-outbox and the spend ledger
+  <span class="rcpt">publish-outbox.ts &middot; advance-outbox.ts:49&ndash;104 &middot; spend.ts:46</span>. No SQLite, no
+  daemon-owned lock server; the Run Store is a module, not a service. If a head snapshot is ever
+  corrupt or stale it is discarded and re-folded &mdash; corruption of the <em>log</em> is the only fatal
+  case, and it fails loudly at the exact line, like the outboxes do today.</p>
+  <div class="rf">17 / 34</div>
+</section>
+
 <!--@@-->
 </body>
 </html>
