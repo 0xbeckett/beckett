@@ -724,6 +724,217 @@
   <div class="rf">9 / 34</div>
 </section>
 
+<!-- ============================================================ p10 · §3 opener + principles -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">The proposal &middot; workflow as data</div>
+  <div class="secnum">3</div>
+  <h1>The proposal &mdash; a per-task flow spec</h1>
+  <p class="lede">Replace the compiled-in lifecycle with a small, validated document &mdash; the
+  <b>flow spec</b>, or <em>run of show</em> &mdash; attached to every task at filing time. The
+  dispatcher&rsquo;s hardcoded state&rarr;action table becomes a generic interpreter over exactly four
+  node kinds. Everything below the node boundary (worktrees, casting, envelopes, done-signals,
+  journal, steering, courier) is reused unchanged.</p>
+
+  <h2><span class="n">3.1</span>Design principles</h2>
+  <ul>
+    <li><b>Small algebra, closed set.</b> Four node kinds: <code>worker</code>, <code>gate</code>,
+    <code>fanout</code>, <code>join</code>. No expressions, no conditionals beyond pass/fail edges, no
+    user-defined node types. Anything fancier must arrive as a fifth kind with its own design doc &mdash;
+    that is the fence against the workflow-engine tarpit (&sect;10.1).</li>
+    <li><b>Every loop is bounded by construction.</b> A spec that could run forever does not validate.
+    Caps are per-node fields, defaulted, not global constants.</li>
+    <li><b>Today&rsquo;s behaviour is two specs.</b> The OPS and INT lifecycles must be expressible
+    byte-for-byte (Appendix A), so cutover is a no-op until the concierge starts writing new shapes.</li>
+    <li><b>The concierge composes; the engine conducts.</b> Authoring is data + presets (&sect;8);
+    execution, recovery and budget enforcement are the engine&rsquo;s (&sect;5). The worker never sees the
+    flow &mdash; it still gets a brief, a worktree, and a done-signal schema.</li>
+    <li><b>The engine narrates itself.</b> <span class="badge">NEW IN REV 2</span>&ensp;Every transition the
+    engine takes is an event some human surface hears about; every context a worker runs in is a
+    contract the worker can read back. Reliability is not a subsystem bolted on in &sect;6 &mdash; it is
+    the run record (&sect;5.1) doing double duty as the announcement stream.</li>
+  </ul>
+  <div class="rf">10 / 34</div>
+</section>
+
+<!-- ============================================================ p11 · §3.2 data model -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">3.2</span>The data model</h2>
+<pre><span class="c">// All of this validates with zod at filing time, like castings do today.</span>
+<span class="k">interface</span> <b>FlowSpec</b> {
+  version: 1;
+  entry: NodeId;                    <span class="c">// where the run starts</span>
+  nodes: Record&lt;NodeId, FlowNode&gt;;
+  budget?: {                        <span class="c">// hard ceilings for the whole run</span>
+    maxConcurrent?: number;         <span class="c">// this task's worker slots (&le; global max_workers)</span>
+    usd?: number;                   <span class="c">// spend cap across all seats</span>
+    wallClockS?: number;
+  };
+  supervise?: SuperviseSpec;        <span class="c">// rev 2: per-run alarm thresholds — §6.2, defaults apply</span>
+}
+
+<span class="k">type</span> FlowNode = WorkerNode | GateNode | FanoutNode | JoinNode;
+
+<span class="k">interface</span> <b>WorkerNode</b> {
+  kind: <span class="s">"worker"</span>;                  <span class="c">// spawn one cast seat in the task worktree</span>
+  cast: HarnessSpec;                <span class="c">// existing {harness, model, effort} — unchanged</span>
+  brief?: string;                   <span class="c">// stage instruction appended to the ticket body</span>
+  artifact?: string;                <span class="c">// expected output path, e.g. "docs/design/&lt;id&gt;.md"</span>
+  onPass: NodeId | <span class="s">"done"</span>;         <span class="c">// edge taken on done-signal "complete"</span>
+  onFail: NodeId | <span class="s">"park"</span>;         <span class="c">// edge on "blocked"/"partial"/error; park = hand to human</span>
+  maxVisits?: number;               <span class="c">// re-entry cap for THIS node (default 3; rework generalised)</span>
+  retries?: number;                 <span class="c">// same-visit crash/timeout retries (default 3)</span>
+}
+
+<span class="k">interface</span> <b>GateNode</b> {                <span class="c">// a decision point: human or cheap model check</span>
+  kind: <span class="s">"gate"</span>;
+  by: <span class="s">"human"</span>                      <span class="c">// PARKED: no worker, zero tokens, concierge pings channel</span>
+    | { cast: HarnessSpec; rubric: string }; <span class="c">// LIVE: cheap check (generalises design_check)</span>
+  onPass: NodeId | <span class="s">"done"</span>;
+  onFail: NodeId | <span class="s">"park"</span>;
+  maxFails?: number;                <span class="c">// bounces before it parks anyway (design's &le;2, per node)</span>
+}
+
+<span class="k">interface</span> <b>FanoutNode</b> {              <span class="c">// N parallel branches of THIS task</span>
+  kind: <span class="s">"fanout"</span>;
+  arms: { cast: HarnessSpec; brief?: string }[];  <span class="c">// explicit arms; or {template, n} sugar</span>
+  isolation: <span class="s">"worktree-each"</span> | <span class="s">"shared"</span>;  <span class="c">// writers isolate; read-only scouts may share</span>
+  join: NodeId;                     <span class="c">// every arm's edges converge on one JoinNode</span>
+}
+
+<span class="k">interface</span> <b>JoinNode</b> {                <span class="c">// how parallel arms become one line again</span>
+  kind: <span class="s">"join"</span>;
+  strategy: <span class="s">"all-merge"</span>            <span class="c">// merge every arm's branch (deps-merge machinery reused)</span>
+    | <span class="s">"first"</span>                      <span class="c">// first complete wins; engine aborts the rest</span>
+    | <span class="s">"quorum"</span>                     <span class="c">// k-of-n verdict nodes agree (k in `quorumK`)</span>
+    | { judge: HarnessSpec };       <span class="c">// a cast seat reads all arms' diffs, picks/synthesises</span>
+  quorumK?: number;
+  onPass: NodeId | <span class="s">"done"</span>;
+  onFail: NodeId | <span class="s">"park"</span>;
+}</pre>
+  <p class="small">The spec travels in a fenced <code>beckett-flow</code> block exactly where
+  <code>beckett-cast</code> lives today (and, after migration, as a typed field in the local task record
+  &mdash; &sect;9). Casting stays a separate concern: the flow names seats; the cast fills them. A flow
+  with no <code>beckett-flow</code> block is compiled from the cast exactly as today (effort &rarr; gate),
+  so existing filings never break.</p>
+  <div class="rf">11 / 34</div>
+</section>
+
+<!-- ============================================================ p12 · §3.3 validation + 3.4 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">3.3</span>Validation &mdash; what the linter refuses at filing time</h2>
+  <ul>
+    <li>Unknown edge targets; unreachable nodes; an <code>entry</code> that isn&rsquo;t a node; fanout arms
+    whose edges escape their join.</li>
+    <li><b>Unbounded cycles:</b> every cycle in the graph must pass through a node whose
+    <code>maxVisits</code>&nbsp;/&nbsp;<code>maxFails</code> is finite (all default finite; setting one to
+    <code>Infinity</code> is simply not representable).</li>
+    <li><b>Budget sanity:</b> <code>maxConcurrent</code> &le; global <code>max_workers</code>; a Fable seat anywhere
+    in the spec triggers the existing confirm-before-cast handshake &mdash; flow authoring does not bypass
+    the cast doctrine.</li>
+    <li>Cast validation per seat via the existing <code>validateCasting</code> (blocked models, malformed
+    efforts) <span class="rcpt">presets.ts:76&ndash;112</span>.</li>
+    <li><b>Supervision sanity</b> <span class="badge">NEW IN REV 2</span>&ensp;&mdash; a spec may relax alarm
+    thresholds (&sect;6.2) but not disable them: <code>heartbeatS</code> and <code>stallS</code> have floors, and
+    <code>alarms:&nbsp;"off"</code> is, like <code>Infinity</code>, not representable.</li>
+  </ul>
+
+  <h2><span class="n">3.4</span>What today&rsquo;s shapes look like (proof of containment)</h2>
+  <p>The default reviewed lifecycle, as a spec &mdash; this is all of it:</p>
+<pre>{ <span class="s">"version"</span>: 1, <span class="s">"entry"</span>: <span class="s">"implement"</span>, <span class="s">"nodes"</span>: {
+  <span class="s">"implement"</span>: { <span class="s">"kind"</span>:<span class="s">"worker"</span>, <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"pi"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
+                 <span class="s">"onPass"</span>:<span class="s">"review"</span>, <span class="s">"onFail"</span>:<span class="s">"park"</span>, <span class="s">"maxVisits"</span>:3, <span class="s">"retries"</span>:3 },
+  <span class="s">"review"</span>:    { <span class="s">"kind"</span>:<span class="s">"gate"</span>,
+                 <span class="s">"by"</span>: { <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-sonnet-5"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
+                         <span class="s">"rubric"</span>:<span class="s">"criteria-vs-diff"</span> },
+                 <span class="s">"onPass"</span>:<span class="s">"done"</span>, <span class="s">"onFail"</span>:<span class="s">"implement"</span>, <span class="s">"maxFails"</span>:3 }
+} }</pre>
+  <p>One-pass work is the same spec minus the gate (<code>onPass:"done"</code>). The INT design flow adds two
+  nodes in front &mdash; a design worker and a human gate &mdash; instead of two enum values, a board, and
+  five modules. All three appear in full in Appendix A.</p>
+  <div class="rf">12 / 34</div>
+</section>
+
+<!-- ============================================================ p13 · §3.5 + Fig 3 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">3.5</span>And what today cannot do at all</h2>
+  <figure style="margin-top:4mm">
+    <svg viewBox="0 0 660 216">
+      <defs>
+        <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,1 L9,5 L0,9" fill="none" stroke="context-stroke" stroke-width="1.4"/>
+        </marker>
+      </defs>
+
+      <!-- changes-requested back edge -->
+      <path class="edgeRust edgeDash" d="M 148 84 C 130 40, 70 40, 52 76" marker-end="url(#ar3)"/>
+      <text class="lbl2" x="100" y="34" text-anchor="middle" fill="#b34f28">changes requested (&le;2)</text>
+
+      <!-- design -->
+      <rect class="box" x="14" y="86" width="72" height="40" rx="5"/>
+      <text class="lbl" x="50" y="103" text-anchor="middle">design</text>
+      <text class="lbl2" x="50" y="115" text-anchor="middle">opus &middot; high</text>
+      <!-- gate -->
+      <rect class="boxSage" x="118" y="86" width="58" height="40" rx="5"/>
+      <text class="lbl" x="147" y="103" text-anchor="middle">gate</text>
+      <text class="lbl2" x="147" y="115" text-anchor="middle">human</text>
+      <line class="edge" x1="86" y1="106" x2="118" y2="106" marker-end="url(#ar3)"/>
+
+      <!-- fanout bar -->
+      <rect x="206" y="42" width="5" height="132" rx="2.5" fill="#5d7d61"/>
+      <text class="lbl2" x="208" y="34" text-anchor="middle">fan-out</text>
+      <line class="edge" x1="176" y1="106" x2="203" y2="106" marker-end="url(#ar3)"/>
+
+      <!-- three impl arms -->
+      <rect class="boxRust" x="240" y="30" width="118" height="38" rx="5"/>
+      <text class="lbl" x="299" y="46" text-anchor="middle">implement A</text>
+      <text class="lbl2" x="299" y="58" text-anchor="middle">terra &middot; high &middot; worktree A</text>
+      <rect class="boxRust" x="240" y="88" width="118" height="38" rx="5"/>
+      <text class="lbl" x="299" y="104" text-anchor="middle">implement B</text>
+      <text class="lbl2" x="299" y="116" text-anchor="middle">opus &middot; high &middot; worktree B</text>
+      <rect class="boxRust" x="240" y="146" width="118" height="38" rx="5"/>
+      <text class="lbl" x="299" y="162" text-anchor="middle">implement C</text>
+      <text class="lbl2" x="299" y="174" text-anchor="middle">codex &middot; high &middot; worktree C</text>
+      <path class="edge" d="M 211 70 C 222 58, 228 52, 240 49" marker-end="url(#ar3)"/>
+      <line class="edge" x1="211" y1="107" x2="240" y2="107" marker-end="url(#ar3)"/>
+      <path class="edge" d="M 211 142 C 222 154, 228 160, 240 163" marker-end="url(#ar3)"/>
+
+      <!-- join judge -->
+      <rect class="box" x="404" y="84" width="92" height="44" rx="5"/>
+      <text class="lbl" x="450" y="100" text-anchor="middle">join &middot; judge</text>
+      <text class="lbl2" x="450" y="112" text-anchor="middle">fable &middot; high, picks one</text>
+      <path class="edge" d="M 358 49 C 380 52, 392 70, 404 88" marker-end="url(#ar3)"/>
+      <line class="edge" x1="358" y1="107" x2="404" y2="106" marker-end="url(#ar3)"/>
+      <path class="edge" d="M 358 165 C 380 162, 392 144, 404 124" marker-end="url(#ar3)"/>
+
+      <!-- review -->
+      <rect class="box" x="530" y="86" width="72" height="40" rx="5"/>
+      <text class="lbl" x="566" y="103" text-anchor="middle">review</text>
+      <text class="lbl2" x="566" y="115" text-anchor="middle">sonnet &middot; high</text>
+      <line class="edge" x1="496" y1="106" x2="530" y2="106" marker-end="url(#ar3)"/>
+
+      <!-- done -->
+      <rect class="boxDark" x="596" y="150" width="52" height="26" rx="13"/>
+      <text x="622" y="167" text-anchor="middle" font-size="8.2" font-weight="600" fill="#f2ece3">done</text>
+      <path class="edge" d="M 578 126 C 590 140, 596 148, 604 152" marker-end="url(#ar3)"/>
+
+      <!-- onFail annotation -->
+      <text class="lbl2" x="450" y="204" text-anchor="middle">onFail &rarr; judge (&le;2 visits), then park</text>
+      <path class="edgeMuted edgeDash" d="M 560 128 C 540 160, 500 180, 462 190"/>
+    </svg>
+    <figcaption><b>Fig. 3 &mdash; a bake-off run of show.</b> Design &rarr; human gate &rarr; three isolated
+    candidate implementations &rarr; a judge join that picks (or synthesises) a winner &rarr; fresh review
+    &rarr; done. Six nodes of data. Under the current engine this is three hand-filed tickets, a human
+    doing the judging, and no joint lineage.</figcaption>
+  </figure>
+  <p>Fig. 3 is six nodes of JSON. &sect;7.2 walks its close cousin &mdash; a backend+frontend fan-out
+  &mdash; through the engine event by event; &sect;5.4 defines precisely how its arms fork and rejoin.</p>
+  <div class="rf">13 / 34</div>
+</section>
+
 <!--@@-->
 </body>
 </html>
