@@ -312,6 +312,418 @@
   <div class="rf">2 / 34</div>
 </section>
 
+<!-- ============================================================ p3 · §1 opener + Fig 1 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">What exists &middot; verified against source</div>
+  <div class="secnum">1</div>
+  <h1>Ground truth &mdash; how Plane runs Beckett today</h1>
+  <p class="lede">Beckett&rsquo;s execution backend is a self-hosted <b>Plane</b> instance
+  (<code>plane.0xbeckett.me</code>). The concierge files work as Plane issues; a poller diffs the
+  board into events; a dispatcher turns events into worker processes in git worktrees. One
+  paragraph of architecture, five subsystems of detail.</p>
+
+  <figure>
+    <svg viewBox="0 0 660 258" font-family="Inter">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,1 L9,5 L0,9" fill="none" stroke="context-stroke" stroke-width="1.4"/>
+        </marker>
+      </defs>
+
+      <!-- Discord -->
+      <rect class="box" x="14" y="70" width="78" height="40" rx="5"/>
+      <text class="lbl" x="53" y="87" text-anchor="middle">Discord</text>
+      <text class="lbl2" x="53" y="99" text-anchor="middle">owner &harr; Beckett</text>
+
+      <!-- Concierge -->
+      <rect class="box" x="126" y="64" width="96" height="52" rx="5"/>
+      <text class="lbl" x="174" y="83" text-anchor="middle">Concierge</text>
+      <text class="lbl2" x="174" y="95" text-anchor="middle">files &amp; steers tickets</text>
+      <text class="mono" x="174" y="107" text-anchor="middle">beckett-cast &middot; -deps</text>
+
+      <!-- Plane dark box -->
+      <rect class="boxDark" x="258" y="48" width="140" height="84" rx="6"/>
+      <text x="328" y="66" text-anchor="middle" font-size="9" font-weight="700" fill="#f2ece3">Plane (SaaS board)</text>
+      <text x="328" y="80" text-anchor="middle" font-size="6.6" fill="#a89a88">issues &middot; workflow states &middot; comments</text>
+      <rect x="272" y="90" width="112" height="15" rx="3" fill="#3a2f24"/>
+      <text x="328" y="100.5" text-anchor="middle" font-family="JetBrains Mono" font-size="6.2" fill="#c99a6c">beckett-cast &middot; beckett-deps</text>
+      <rect x="272" y="110" width="112" height="15" rx="3" fill="#3a2f24"/>
+      <text x="328" y="120.5" text-anchor="middle" font-family="JetBrains Mono" font-size="6.2" fill="#c99a6c">state_map per board</text>
+
+      <!-- PlanePoller -->
+      <rect class="box" x="452" y="44" width="104" height="38" rx="5"/>
+      <text class="lbl" x="504" y="61" text-anchor="middle">PlanePoller</text>
+      <text class="mono" x="504" y="73" text-anchor="middle">diff &rarr; PollEvent[]</text>
+
+      <!-- Dispatcher -->
+      <rect class="box" x="452" y="104" width="104" height="44" rx="5"/>
+      <text class="lbl" x="504" y="121" text-anchor="middle">Dispatcher</text>
+      <text class="lbl2" x="504" y="133" text-anchor="middle">state &rarr; action table</text>
+      <text class="mono" x="504" y="144" text-anchor="middle">3,200-line switch</text>
+
+      <!-- Workers -->
+      <rect class="boxRust" x="588" y="96" width="62" height="60" rx="5"/>
+      <text class="lbl" x="619" y="112" text-anchor="middle">Workers</text>
+      <text class="lbl2" x="619" y="124" text-anchor="middle">git worktrees</text>
+      <text class="lbl2" x="619" y="134" text-anchor="middle">claude / codex / pi</text>
+      <text class="mono" x="619" y="147" text-anchor="middle" font-size="5.6">done-signal JSON</text>
+
+      <!-- edges -->
+      <line class="edge" x1="92" y1="90" x2="126" y2="90" marker-end="url(#ar)" marker-start="url(#ar)"/>
+      <line class="edge" x1="222" y1="90" x2="258" y2="90" marker-end="url(#ar)"/>
+      <text class="lbl2" x="240" y="84" text-anchor="middle">REST</text>
+      <path class="edge" d="M 398 66 L 452 63" marker-end="url(#ar)"/>
+      <text class="lbl2" x="425" y="56" text-anchor="middle">poll ~5 s</text>
+      <line class="edge" x1="504" y1="82" x2="504" y2="104" marker-end="url(#ar)"/>
+      <path class="edgeRust" d="M 452 126 Q 420 150 400 132" marker-end="url(#ar)"/>
+      <text class="lbl2" x="424" y="152" text-anchor="middle" fill="#b34f28">setState / comment</text>
+      <line class="edgeRust" x1="556" y1="126" x2="588" y2="126" marker-end="url(#ar)"/>
+      <text class="lbl2" x="572" y="119" text-anchor="middle" fill="#b34f28">spawn</text>
+
+      <!-- durable local row -->
+      <rect class="boxWash" x="80" y="204" width="168" height="34" rx="5"/>
+      <text class="monoI" x="164" y="218" text-anchor="middle">task tree ~/.beckett/tasks.json</text>
+      <text class="lbl2" x="164" y="230" text-anchor="middle">#N &middot; #N.x &middot; needs</text>
+      <rect class="boxWash" x="272" y="204" width="152" height="34" rx="5"/>
+      <text class="monoI" x="348" y="218" text-anchor="middle">journal ~/.beckett/journal/*.log</text>
+      <text class="lbl2" x="348" y="230" text-anchor="middle">append-only, per ticket</text>
+      <rect class="boxWash" x="448" y="204" width="160" height="34" rx="5"/>
+      <text class="monoI" x="528" y="218" text-anchor="middle">publish-outbox &rarr; GitHub</text>
+      <text class="lbl2" x="528" y="230" text-anchor="middle">durable JSONL, retries</text>
+      <line class="edgeMuted" x1="504" y1="148" x2="520" y2="204"/>
+      <line class="edgeMuted" x1="490" y1="148" x2="352" y2="204"/>
+      <line class="edgeMuted" x1="478" y1="148" x2="180" y2="204"/>
+      <text class="lbl2" x="330" y="188" text-anchor="middle">all durable local artifacts already live outside Plane</text>
+    </svg>
+    <figcaption><b>Fig. 1 &mdash; the v3 loop.</b> The concierge writes to Plane; the poller diffs Plane into
+    events; the dispatcher spawns workers and writes state back. All durable local artifacts (task tree,
+    journal, outboxes) already live outside Plane.</figcaption>
+  </figure>
+
+  <h2><span class="n">1.1</span>The state machine and its enum</h2>
+  <p><code>TicketState</code> is a fixed eight-value union <span class="rcpt">src/plane/types.ts:26</span> &mdash;
+  <code>backlog</code>, <code>todo</code>, <code>design</code>, <code>design_review</code>, <code>in_progress</code>,
+  <code>in_review</code>, <code>done</code>, <code>cancelled</code> &mdash; with <code>done</code>/<code>cancelled</code>
+  terminal <span class="rcpt">types.ts:39</span>. Each Plane board carries a <code>state_map</code> renaming these onto
+  its columns <span class="rcpt">src/config.ts:129</span>. The dispatcher consumes poll events through one hardcoded
+  dispatch table <span class="rcpt">src/dispatch/dispatcher.ts:1003&ndash;1062</span>:</p>
+  <div class="rf">3 / 34</div>
+</section>
+
+<!-- ============================================================ p4 · §1.1 table + 1.2 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <table style="margin-top:6mm">
+    <tr><th style="width:34%">Event / state entered</th><th style="width:30%">Guard</th><th>Action</th></tr>
+    <tr><td><code>design</code></td><td>INT board only, no live worker</td><td>spawn stage <code>design</code></td></tr>
+    <tr><td><code>in_progress</code></td><td>no live worker</td><td>spawn stage <code>implement</code></td></tr>
+    <tr><td><code>in_review</code></td><td>no publish hold, no live worker</td><td>spawn stage <code>review</code></td></tr>
+    <tr><td><code>done</code></td><td>&mdash;</td><td>reap &middot; drain orphaned steers &middot; <code>promoteDependents()</code></td></tr>
+    <tr><td><code>todo</code> / <code>backlog</code> / <code>design_review</code></td><td>&mdash;</td><td>park: abort+reap, commit WIP, keep worktree</td></tr>
+    <tr><td><code>cancelled</code></td><td>&mdash;</td><td>abort &middot; reap &middot; dispose</td></tr>
+    <tr><td><code>comment_added</code></td><td>live worker, author &ne; Beckett</td><td><code>handle.nudge(body)</code> &mdash; steering</td></tr>
+  </table>
+  <p>Stage names are string literals switched on in three places: the spawn table above,
+  <code>castFor()</code> <span class="rcpt">dispatcher.ts:1998&ndash;2005</span> and the worker-done router
+  <span class="rcpt">dispatcher.ts:2152&ndash;2161</span> (<code>design</code>, <code>design_check</code>,
+  <code>implement</code>, <code>review</code>). A new stage is therefore a source change in at least three switch
+  statements plus the enum, the poller&rsquo;s recovery list, and every board&rsquo;s <code>state_map</code>.</p>
+
+  <h2><span class="n">1.2</span>Casting, effort and the review gate</h2>
+  <p>Casting is per-stage: a ticket description carries a fenced <code>beckett-cast</code> JSON block mapping
+  stage name &rarr; <code>HarnessSpec</code> (<code>{harness, model, effort, reviewTier}</code>)
+  <span class="rcpt">src/plane/cast.ts:29&ndash;59</span>. The <code>Casting</code> record is deliberately open-ended
+  &mdash; arbitrary stage names already type-check <span class="rcpt">src/plane/types.ts:71&ndash;75</span> &mdash; but
+  only the four hardcoded stage strings are ever spawned. Two consequential rules:</p>
+  <ul>
+    <li><b>The review gate is inferred from a model knob.</b> <code>reviewTierFor()</code>
+    <span class="rcpt">dispatcher.ts:2475&ndash;2479</span>: implement effort <code>low|medium</code> &rarr;
+    <em>self</em> (one pass, straight to done); <code>high|xhigh|unset</code> &rarr; <em>fresh</em> (spawn an
+    adversarial reviewer). An explicit <code>reviewTier</code> field overrides &mdash; a patch bolted on precisely
+    because effort was overloaded.</li>
+    <li><b>Effort also sets the envelope</b> &mdash; advisory turn and wall-clock estimates via
+    <code>ENVELOPE_BY_EFFORT</code> <span class="rcpt">src/dispatch/spawn.ts:217&ndash;222</span>
+    (low 15 turns/10 min &hellip; xhigh 100 turns/60 min). These are supervision <em>estimates</em>, not hard
+    kills &mdash; &sect;1.6 covers what actually happens when a worker overruns or goes quiet.</li>
+  </ul>
+  <p>Named cast presets live in <code>~/.beckett/presets.json</code>, hot-reloaded on every filing
+  <span class="rcpt">src/plane/presets.ts:76&ndash;112</span> &mdash; a precedent this proposal leans on: per-task
+  behaviour as user-editable data worked.</p>
+
+  <h2><span class="n">1.3</span>Iteration policy: four global constants</h2>
+  <table>
+    <tr><th style="width:38%">Loop</th><th style="width:33%">Cap</th><th>On exhaustion</th></tr>
+    <tr><td>review fail &rarr; re-implement (&ldquo;rework&rdquo;)</td>
+        <td><code>MAX_REWORK_CYCLES = 3</code> <span class="rcpt">dispatcher.ts:199</span></td>
+        <td>comment, park in <code>in_review</code> for a human</td></tr>
+    <tr><td>implement crash/timeout retry</td>
+        <td><code>MAX_IMPLEMENT_RETRIES = 3</code> <span class="rcpt">dispatcher.ts:209</span></td>
+        <td>publish WIP, move to <code>todo</code></td></tr>
+    <tr><td>reviewer infra failure</td>
+        <td><code>MAX_REVIEW_INFRA_RETRIES = 1</code> <span class="rcpt">dispatcher.ts:212</span></td>
+        <td>park in <code>in_review</code></td></tr>
+    <tr><td>design &harr; completeness check</td>
+        <td><code>MAX_DESIGN_CYCLES = 2</code> <span class="rcpt">dispatcher.ts:202</span></td>
+        <td>escalate to <code>design_review</code> with &#9888; note</td></tr>
+  </table>
+  <p>These are compile-time constants. No ticket can ask for one shot, or six; the concierge&rsquo;s only
+  lever over iteration is not filing the work.</p>
+  <div class="rf">4 / 34</div>
+</section>
+
+<!-- ============================================================ p5 · §1.4 + 1.5 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">1.4</span>One worker per ticket, worktrees, done-signals</h2>
+  <p>The dispatcher enforces at most one live worker per ticket (the <code>workers</code> map, staffing dedup
+  and FIFO pending queue <span class="rcpt">dispatcher.ts:450, 1313&ndash;1379</span>) under a global
+  <code>max_workers</code> cap. A spawn allocates a persistent worktree at
+  <code>&lt;repo&gt;/.beckett/worktrees/&lt;id&gt;</code> on branch <code>beckett/task-N[.x]</code>, installs the
+  scope-guard and the done-signal schema, captures the review base SHA on first implement
+  <span class="rcpt">dispatcher.ts:1573&ndash;1586</span>, and periodically checkpoint-commits live work (OPS-125)
+  <span class="rcpt">dispatcher.ts:640&ndash;709</span>.</p>
+  <p>Workers finish by emitting a structured done-signal &mdash; delivered as the harness&rsquo;s native
+  structured output, not a file or stdout convention <span class="rcpt">drivers/claude.ts:598</span>:</p>
+  <pre>{ <span class="k">status</span>: <span class="s">"complete" | "blocked" | "partial"</span>,   <span class="c">// the single edge the state machine branches on</span>
+  <span class="k">summary</span>: <span class="s">string</span>,
+  <span class="k">filesChanged</span>: <span class="s">string[]</span>,
+  <span class="k">checksRun</span>: <span class="s">string[] | null</span>,
+  <span class="k">blockedReason</span>: <span class="s">string | null</span> }              <span class="c">// spawn.ts:198–209</span></pre>
+
+  <h2><span class="n">1.5</span>Steering, journal, courier, task tree</h2>
+  <ul>
+    <li><b>Steering.</b> A human comment on an in-flight ticket becomes a live nudge (receipts:
+    delivered / queued / will-restart / dropped); with no live worker it is buffered in
+    <code>pendingSteers</code>, persisted, and folded into the next worker&rsquo;s brief
+    <span class="rcpt">dispatcher.ts:1070&ndash;1158, 1609&ndash;1635</span>. Plane comments are the transport;
+    Discord is where the human actually typed.</li>
+    <li><b>Journal.</b> An append-only per-ticket log under <code>~/.beckett/journal/&lt;ticket&gt;.log</code>,
+    fed fire-and-forget from worker events, read on demand via <code>beckett journal &lt;ticket&gt; --tail N</code>
+    <span class="rcpt">src/progress/journal.ts</span>. Already fully local; already richer than Plane&rsquo;s
+    comment trail.</li>
+    <li><b>Courier / publish.</b> Finishing a ticket publishes to GitHub via a durable JSONL outbox with
+    1&nbsp;m/5&nbsp;m/30&nbsp;m retries; <code>dispatcher.courier(id)</code> hands exclusive publish ownership to a
+    human <span class="rcpt">src/dispatch/publish-outbox.ts, dispatcher.ts:831&ndash;839</span>. Plane state writes
+    themselves go through a second durable outbox (<code>advance-outbox</code>) because remote writes fail
+    often enough to need one <span class="rcpt">src/dispatch/advance-outbox.ts</span>.</li>
+    <li><b>Task tree.</b> The user-facing <code>#N</code>&nbsp;/&nbsp;<code>#N.x</code> tree with <code>needs</code>
+    dependencies lives in <code>~/.beckett/tasks.json</code> &mdash; a local, locked, versioned registry that
+    already mirrors every Plane state into a branch status (<code>backlog&rarr;waiting, &hellip;
+    in_review&rarr;review</code>) <span class="rcpt">src/task/store.ts:141&ndash;152</span>. Cross-ticket DAG promotion
+    (<code>blockedBy</code> &rarr; promote on done) is dispatcher logic, not Plane&rsquo;s
+    <span class="rcpt">dispatcher.ts:2889&ndash;2926</span>.</li>
+  </ul>
+
+  <div class="callout">
+    <div class="ct">The load-bearing observation</div>
+    <p>Plane contributes exactly four things: issue storage, a state column per ticket,
+    comments-as-transport, and a human-viewable board. Everything Beckett actually runs on &mdash;
+    worktrees, casting, envelopes, done-signals, steering buffers, journal, outboxes, the
+    <code>#N</code> tree, DAG promotion &mdash; is already local, already durable, and already ours. The
+    migration in &sect;9 is small precisely because of this.</p>
+  </div>
+  <div class="rf">5 / 34</div>
+</section>
+
+<!-- ============================================================ p6 · §1.6 NEW failure ground truth -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">1.6</span>How failure is noticed today &mdash; mostly, it isn&rsquo;t <span class="badge">NEW IN REV 2</span></h2>
+  <p>Rev 1 catalogued what the machine does; ro&rsquo;s review asked the sharper question &mdash;
+  <em>how do we find out when it stops doing it?</em> The honest inventory, verified against source:</p>
+  <table class="compact">
+    <tr><th style="width:26%">Signal</th><th style="width:37%">What actually happens</th><th>Who finds out, and how</th></tr>
+    <tr><td>Worker overruns its effort envelope (e.g. the low tier&rsquo;s 600&nbsp;s estimate)</td>
+        <td><b>Nothing.</b> <code>ENVELOPE_BY_EFFORT</code> is advisory &mdash; &ldquo;soft supervision estimates,
+        never hard kills&rdquo; <span class="rcpt">spawn.ts:208&ndash;222</span>. The worker runs on.</td>
+        <td>Nobody, until a human asks.</td></tr>
+    <tr><td>Worker goes silent (no progress events)</td>
+        <td>Driver emits a non-terminal <code>stalled</code> signal after <code>worker_stall_s</code> (default
+        300&nbsp;s) <span class="rcpt">drivers/base.ts:367&ndash;385</span>; dispatcher escalates: strike 1 &rarr;
+        status-check nudge, strike 2 &rarr; abort + retry <span class="rcpt">dispatcher.ts:1751&ndash;1786</span>.</td>
+        <td>The log file and the private journal. No channel message, no page.</td></tr>
+    <tr><td>Hard wall-clock backstop</td>
+        <td><code>supervise.worker_hard_cap_s</code> (default 3600&nbsp;s, floor 1800&nbsp;s)
+        <span class="rcpt">config.ts:269</span>; a 5&nbsp;s watchdog kills the process tree and emits
+        <code>finished/error_wall_clock_cap</code> <span class="rcpt">drivers/base.ts:352&ndash;409</span>.</td>
+        <td>The retry ladder sees it; a Plane comment may appear. Discord stays quiet.</td></tr>
+    <tr><td>Worker process dies without a done-signal</td>
+        <td>Driver synthesizes <code>finished/error_process_exit</code> with a null done-signal and the stderr
+        tail <span class="rcpt">drivers/base.ts:327&ndash;343</span>; dispatcher commits WIP and retries up to
+        <code>MAX_IMPLEMENT_RETRIES</code>.</td>
+        <td>Same: journal + logs. Silence from the operator&rsquo;s seat.</td></tr>
+    <tr><td>Ticket parked after cap exhaustion</td>
+        <td>A Plane comment via <code>postComment()</code> <span class="rcpt">dispatcher.ts:2810&ndash;2816</span>;
+        the ticket sits in <code>in_review</code>/<code>todo</code>.</td>
+        <td>Only if a human happens to open the board.</td></tr>
+    <tr><td>Spend</td>
+        <td>Per-stage <code>SpendRecord</code> appended to a JSONL ledger (tokens, cost, duration, outcome)
+        <span class="rcpt">src/spend.ts:7&ndash;31</span>.</td>
+        <td>On-demand reads. No budget alarm exists.</td></tr>
+  </table>
+  <p>Two structural facts fall out. First, <b>detection exists but announcement does not</b>: every
+  failure mode above does emit an event, but the events terminate in a log file, a private journal, or
+  a Plane comment nobody is watching &mdash; the old user-facing Discord progress thread was
+  deliberately removed <span class="rcpt">journal.ts:5&ndash;9</span>. From the operator&rsquo;s seat a dead
+  worker and a thinking worker look identical: the practical experience behind &ldquo;workers die
+  silently at the 600&nbsp;s cap.&rdquo; Second, <b>the worker&rsquo;s own picture of its environment is
+  implicit</b>: its branch and worktree are communicated only as its <code>cwd</code>; its stage, its
+  position in any larger plan, and its remaining budget are not stated anywhere it can read
+  <span class="rcpt">spawn.ts:320&ndash;426</span>. It cannot check &ldquo;am I in the right place?&rdquo; because
+  nothing tells it what the right place is. &sect;6 designs both halves: announcement
+  (&sect;6.1&ndash;6.3) and self-orientation (&sect;6.4).</p>
+  <div class="rf">6 / 34</div>
+</section>
+
+<!-- ============================================================ p7 · §2 opener + Fig 2 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">Why change &middot; six concrete failures</div>
+  <div class="secnum">2</div>
+  <h1>The problem &mdash; one lifecycle, worn as a straitjacket</h1>
+  <p class="lede">Nothing in &sect;1 is broken code. The machine is careful, durable and observable-in-principle.
+  What it cannot do is <em>vary</em>: the shape of work is compiled in, so every task &mdash; whatever its
+  nature &mdash; is forced through the same pipe, and every new shape is a Beckett source change plus a
+  deploy.</p>
+
+  <figure>
+    <svg viewBox="0 0 660 132">
+      <defs>
+        <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,1 L9,5 L0,9" fill="none" stroke="context-stroke" stroke-width="1.4"/>
+        </marker>
+      </defs>
+      <!-- skip-review arc -->
+      <path class="edgeRust edgeDash" d="M 262 62 C 300 18, 430 18, 468 58" marker-end="url(#ar2)"/>
+      <text class="lbl2" x="365" y="24" text-anchor="middle" fill="#b34f28">effort low/medium &rarr; &ldquo;self&rdquo; gate skips review</text>
+
+      <!-- pills -->
+      <rect class="box" x="14" y="64" width="70" height="26" rx="13"/>
+      <text class="lbl" x="49" y="80.5" text-anchor="middle" font-weight="400">backlog</text>
+      <rect class="box" x="112" y="64" width="70" height="26" rx="13"/>
+      <text class="lbl" x="147" y="80.5" text-anchor="middle" font-weight="400">todo</text>
+      <rect class="boxRust" x="210" y="60" width="106" height="34" rx="17"/>
+      <text class="lbl" x="263" y="74" text-anchor="middle">in_progress</text>
+      <text class="lbl2" x="263" y="86" text-anchor="middle">stage &ldquo;implement&rdquo;</text>
+      <rect class="boxRust" x="360" y="60" width="106" height="34" rx="17"/>
+      <text class="lbl" x="413" y="74" text-anchor="middle">in_review</text>
+      <text class="lbl2" x="413" y="86" text-anchor="middle">stage &ldquo;review&rdquo; &middot; 0 or 1 seat</text>
+      <rect class="boxDark" x="500" y="62" width="64" height="30" rx="15"/>
+      <text x="532" y="81" text-anchor="middle" font-size="8.6" font-weight="600" fill="#f2ece3">done</text>
+
+      <!-- forward edges -->
+      <line class="edge" x1="84" y1="77" x2="112" y2="77" marker-end="url(#ar2)"/>
+      <line class="edge" x1="182" y1="77" x2="210" y2="77" marker-end="url(#ar2)"/>
+      <line class="edge" x1="316" y1="77" x2="360" y2="77" marker-end="url(#ar2)"/>
+      <line class="edge" x1="466" y1="77" x2="500" y2="77" marker-end="url(#ar2)"/>
+
+      <!-- rework loop -->
+      <path class="edgeRust" d="M 400 94 C 380 122, 300 122, 276 96" marker-end="url(#ar2)"/>
+      <text class="lbl2" x="340" y="124" text-anchor="middle" fill="#b34f28">rework &le; MAX_REWORK_CYCLES = 3 (global constant)</text>
+
+      <!-- annotation -->
+      <text class="lbl2" x="656" y="62" text-anchor="end">every ticket, every board</text>
+      <text class="lbl2" x="656" y="73" text-anchor="end">every kind of work &mdash;</text>
+      <text class="lbl2" x="656" y="84" text-anchor="end">same pipe, same caps,</text>
+      <text class="lbl2" x="656" y="95" text-anchor="end">one live worker at a time</text>
+    </svg>
+    <figcaption><b>Fig. 2 &mdash; the compiled-in lifecycle.</b> The only per-task levers are which models sit in
+    each of two seats and an effort knob that doubles, implicitly, as the review-gate switch.</figcaption>
+  </figure>
+
+  <h2><span class="n">2.1</span>Case study: adding one stage took a board, an enum, and five modules</h2>
+  <p>OPS-111 wanted exactly one new thing: a <em>design</em> stage with a human approval gate before
+  implementation. Because the lifecycle is compiled in, the delivered change (OPS-111 &rarr; build)
+  required: a <b>new Plane board</b> (INT) so OPS wouldn&rsquo;t grow columns; <b>two new enum values</b>
+  (<code>design</code>, <code>design_review</code>) in <code>TicketState</code>; board-guarded arms in the dispatcher
+  switch; a new <code>design_check</code> pseudo-stage with its own hardcoded cast (Haiku, low) and its own
+  constant (<code>MAX_DESIGN_CYCLES</code>); poller <code>prime()</code> changes so restarts re-staff
+  <code>design</code> but not <code>design_review</code>; and Plane-side state provisioning with the right column
+  groups and colours <span class="rcpt">docs/design/int-flow.md &middot; dispatcher.ts:2180&ndash;2239 &middot;
+  poll.ts:180</span>. That is the cost of <em>one</em> stage, designed by the book. The next shape &mdash; say,
+  a research stage, or a second reviewer &mdash; costs the same again. The lifecycle has a marginal cost
+  per variant that data should have made ~zero.</p>
+  <div class="rf">7 / 34</div>
+</section>
+
+<!-- ============================================================ p8 · §2.2–2.3 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">2.2</span>Iteration budgets are global, not per task</h2>
+  <p>A README tweak and a subtle concurrency fix both get exactly three rework cycles, three crash
+  retries, two design bounces (&sect;1.3). The concierge &mdash; the seat with actual context about stakes,
+  urgency and budget &mdash; cannot say &ldquo;one pass, no retries, this is trivial&rdquo; or &ldquo;keep
+  iterating up to six rounds against the eval, it&rsquo;s worth it.&rdquo; When a cap is wrong the options
+  are: edit a constant in <code>dispatcher.ts</code> and redeploy, or babysit manually via state flips.</p>
+
+  <h2><span class="n">2.3</span>No parallelism inside a task</h2>
+  <p>One live worker per ticket is structural <span class="rcpt">dispatcher.ts:450</span>. Things ro has wanted
+  that this forbids outright:</p>
+  <ul>
+    <li><b>Bake-offs</b> &mdash; three candidate implementations from different casts, one judge picks a
+    winner. Today that is three hand-filed tickets, no shared base management, and the judging is ro
+    reading diffs.</li>
+    <li><b>Panel review</b> &mdash; correctness, security and taste reviewers running <em>concurrently</em> on
+    one diff. Today: one reviewer seat, serial by construction.</li>
+    <li><b>Research fan-out</b> &mdash; N scouts reading different subsystems before a synthesis stage. Today
+    this only exists inside a single worker&rsquo;s subagents, invisible to the engine, unsteerable
+    per-branch, and un-cast (the worker picks its own subagents; the concierge can&rsquo;t put Fable on one
+    scout and Haiku on the rest).</li>
+  </ul>
+  <p>The only parallelism the engine knows is between tickets via <code>beckett plan --needs</code> &mdash; the
+  right tool for genuinely separate deliverables, wrong for branches of one task that share a worktree
+  lineage and must join.</p>
+
+  <h2><span class="n">2.4</span>The workflow is inferred from a model knob</h2>
+  <p>Whether a ticket gets reviewed at all is a side effect of effort (&sect;1.2) &mdash; and an omitted
+  effort silently buys the expensive fresh-review tier. <code>reviewTier</code> exists only to patch this
+  overload. The shape of the pipeline should be a first-class, visible declaration, not something
+  reverse-engineered from how hard the implement seat is thinking. (The presets doc already flags this
+  as a foot-gun: &ldquo;presets must always name an explicit effort&rdquo;
+  <span class="rcpt">docs/design/cast-presets.md &sect;1</span>.)</p>
+
+  <h2><span class="n">2.5</span>State lives in someone else&rsquo;s database, structured data in a Markdown field</h2>
+  <p>Every stage transition is a remote HTTP write to Plane &mdash; unreliable enough that a durable
+  <code>advance-outbox</code> exists solely to retry them <span class="rcpt">src/dispatch/advance-outbox.ts</span>
+  &mdash; and every reaction is gated on a ~5&nbsp;s poll diff. Meanwhile the actually-structured task data
+  (cast, dependencies, project, branch ref, start state, origin channel) is smuggled through
+  Plane&rsquo;s description field as five fenced code blocks and an HTML comment
+  <span class="rcpt">cast.ts:29&ndash;42</span>, because the board has no schema for any of it. The VID board
+  bends video production onto the same six coarse states, and the client folds any unrecognised
+  &ldquo;started&rdquo; column back to <code>in_progress</code> to survive human-added columns
+  <span class="rcpt">client.ts:574</span>. These are the classic scars of a tool being used as a database it
+  isn&rsquo;t.</p>
+  <div class="rf">8 / 34</div>
+</section>
+
+<!-- ============================================================ p9 · §2.6 + requirement -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">2.6</span>The concierge can&rsquo;t compose; it can only pick</h2>
+  <p>The concierge&rsquo;s authoring surface today is: title, body, criteria, board, entry state, and
+  which models sit in the fixed seats (<code>--cast</code>&nbsp;/&nbsp;<code>--preset</code>). It cannot add a stage,
+  split a stage, gate a stage, cap a loop, or fan anything out &mdash; the exact dimensions ro keeps
+  asking to vary per task. Every one of those requests currently becomes an OPS ticket against
+  Beckett&rsquo;s own source.</p>
+  <p>And &mdash; rev 2&rsquo;s addition to this list, from &sect;1.6 &mdash; when any stage of that fixed
+  pipeline dies, stalls or overruns, <b>the system knows and the operator doesn&rsquo;t</b>. A redesign of
+  the workflow&rsquo;s shape that did not also fix who hears about failure would be redecorating a house
+  with a broken smoke alarm.</p>
+
+  <div class="callout">
+    <div class="ct">The requirement, stated once</div>
+    <p>The concierge must be able to dictate, per task, how many stages there are, what runs in each,
+    how many iterations each loop gets, and how much parallelism to spend &mdash; at filing time, as
+    data, without touching Beckett&rsquo;s source or Plane&rsquo;s schema. And the engine that runs it must
+    hold two reliability invariants: <b>every abnormal event is announced to a human surface within one
+    minute</b>, and <b>every worker can prove to itself where it is and what it is doing</b>. Everything
+    in &sect;3&ndash;&sect;8 is the smallest design we can find that delivers exactly that and nothing
+    more.</p>
+  </div>
+  <div class="rf">9 / 34</div>
+</section>
+
 <!--@@-->
 </body>
 </html>
