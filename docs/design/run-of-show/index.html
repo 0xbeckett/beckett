@@ -309,7 +309,7 @@
     identically, cutover changes nothing until we ask it to. Revision 2 is a strict superset of revision 1 —
     sections 4, 6 and 7 are new; carried sections are extended, not rewritten.</p>
   </div>
-  <div class="rf">2 / 34</div>
+  <div class="rf">2 / 40</div>
 </section>
 
 <!-- ============================================================ p3 · §1 opener + Fig 1 -->
@@ -408,7 +408,7 @@
   terminal <span class="rcpt">types.ts:39</span>. Each Plane board carries a <code>state_map</code> renaming these onto
   its columns <span class="rcpt">src/config.ts:129</span>. The dispatcher consumes poll events through one hardcoded
   dispatch table <span class="rcpt">src/dispatch/dispatcher.ts:1003&ndash;1062</span>:</p>
-  <div class="rf">3 / 34</div>
+  <div class="rf">3 / 40</div>
 </section>
 
 <!-- ============================================================ p4 · §1.1 table + 1.2 -->
@@ -469,7 +469,7 @@
   </table>
   <p>These are compile-time constants. No ticket can ask for one shot, or six; the concierge&rsquo;s only
   lever over iteration is not filing the work.</p>
-  <div class="rf">4 / 34</div>
+  <div class="rf">4 / 40</div>
 </section>
 
 <!-- ============================================================ p5 · §1.4 + 1.5 -->
@@ -523,7 +523,7 @@
     <code>#N</code> tree, DAG promotion &mdash; is already local, already durable, and already ours. The
     migration in &sect;9 is small precisely because of this.</p>
   </div>
-  <div class="rf">5 / 34</div>
+  <div class="rf">5 / 40</div>
 </section>
 
 <!-- ============================================================ p6 · §1.6 NEW failure ground truth -->
@@ -573,7 +573,7 @@
   <span class="rcpt">spawn.ts:320&ndash;426</span>. It cannot check &ldquo;am I in the right place?&rdquo; because
   nothing tells it what the right place is. &sect;6 designs both halves: announcement
   (&sect;6.1&ndash;6.3) and self-orientation (&sect;6.4).</p>
-  <div class="rf">6 / 34</div>
+  <div class="rf">6 / 40</div>
 </section>
 
 <!-- ============================================================ p7 · §2 opener + Fig 2 -->
@@ -644,7 +644,7 @@
   poll.ts:180</span>. That is the cost of <em>one</em> stage, designed by the book. The next shape &mdash; say,
   a research stage, or a second reviewer &mdash; costs the same again. The lifecycle has a marginal cost
   per variant that data should have made ~zero.</p>
-  <div class="rf">7 / 34</div>
+  <div class="rf">7 / 40</div>
 </section>
 
 <!-- ============================================================ p8 · §2.2–2.3 -->
@@ -694,7 +694,7 @@
   &ldquo;started&rdquo; column back to <code>in_progress</code> to survive human-added columns
   <span class="rcpt">client.ts:574</span>. These are the classic scars of a tool being used as a database it
   isn&rsquo;t.</p>
-  <div class="rf">8 / 34</div>
+  <div class="rf">8 / 40</div>
 </section>
 
 <!-- ============================================================ p9 · §2.6 + requirement -->
@@ -721,7 +721,7 @@
     in &sect;3&ndash;&sect;8 is the smallest design we can find that delivers exactly that and nothing
     more.</p>
   </div>
-  <div class="rf">9 / 34</div>
+  <div class="rf">9 / 40</div>
 </section>
 
 <!-- ============================================================ p10 · §3 opener + principles -->
@@ -754,7 +754,7 @@
     contract the worker can read back. Reliability is not a subsystem bolted on in &sect;6 &mdash; it is
     the run record (&sect;5.1) doing double duty as the announcement stream.</li>
   </ul>
-  <div class="rf">10 / 34</div>
+  <div class="rf">10 / 40</div>
 </section>
 
 <!-- ============================================================ p11 · §3.2 data model -->
@@ -818,7 +818,7 @@
   &mdash; &sect;9). Casting stays a separate concern: the flow names seats; the cast fills them. A flow
   with no <code>beckett-flow</code> block is compiled from the cast exactly as today (effort &rarr; gate),
   so existing filings never break.</p>
-  <div class="rf">11 / 34</div>
+  <div class="rf">11 / 40</div>
 </section>
 
 <!-- ============================================================ p12 · §3.3 validation + 3.4 -->
@@ -854,7 +854,7 @@
   <p>One-pass work is the same spec minus the gate (<code>onPass:"done"</code>). The INT design flow adds two
   nodes in front &mdash; a design worker and a human gate &mdash; instead of two enum values, a board, and
   five modules. All three appear in full in Appendix A.</p>
-  <div class="rf">12 / 34</div>
+  <div class="rf">12 / 40</div>
 </section>
 
 <!-- ============================================================ p13 · §3.5 + Fig 3 -->
@@ -932,7 +932,7 @@
   </figure>
   <p>Fig. 3 is six nodes of JSON. &sect;7.2 walks its close cousin &mdash; a backend+frontend fan-out
   &mdash; through the engine event by event; &sect;5.4 defines precisely how its arms fork and rejoin.</p>
-  <div class="rf">13 / 34</div>
+  <div class="rf">13 / 40</div>
 </section>
 
 <!-- ============================================================ p14 · §4 opener + components -->
@@ -974,7 +974,7 @@
   <p class="small">Two supporting actors keep their existing names: the <b>Concierge</b> (authors specs,
   operates runs, answers pages) and the <b>Mirror</b> (Phase-1 write-only Plane projection, &sect;9.2 —
   deleted in Phase 2).</p>
-  <div class="rf">14 / 34</div>
+  <div class="rf">14 / 40</div>
 </section>
 
 <!-- ============================================================ p15 · Fig 4 system architecture -->
@@ -1103,7 +1103,7 @@
     &le;60&nbsp;s announcement path (left edge) is the &sect;6 invariant, drawn as an arrow because it is an
     interface, not an aspiration.</figcaption>
   </figure>
-  <div class="rf">15 / 34</div>
+  <div class="rf">15 / 40</div>
 </section>
 
 <!-- ============================================================ p16 · §4.2 interfaces -->
@@ -1163,7 +1163,7 @@
     <li><b>Announce</b>: the Herald classifies the appended events and delivers (&sect;6.3). Announcement
     is after the fsync, so a page never refers to state that didn&rsquo;t commit.</li>
   </ol>
-  <div class="rf">16 / 34</div>
+  <div class="rf">16 / 40</div>
 </section>
 
 <!-- ============================================================ p17 · §4.4 event vocabulary + storage -->
@@ -1207,7 +1207,7 @@
   daemon-owned lock server; the Run Store is a module, not a service. If a head snapshot is ever
   corrupt or stale it is discarded and re-folded &mdash; corruption of the <em>log</em> is the only fatal
   case, and it fails loudly at the exact line, like the outboxes do today.</p>
-  <div class="rf">17 / 34</div>
+  <div class="rf">17 / 40</div>
 </section>
 
 <!-- ============================================================ p18 · §5 opener + 5.1 + 5.2 -->
@@ -1253,7 +1253,7 @@
   intact: <code>worker</code> and model-<code>gate</code> nodes are LIVE; human gates and park are PARKED &mdash;
   no process, zero tokens, restart-inert, exactly the property <code>design_review</code> proved out
   <span class="rcpt">poll.ts:242&ndash;293</span>. Fig.&nbsp;5 is this paragraph, drawn.</p>
-  <div class="rf">18 / 34</div>
+  <div class="rf">18 / 40</div>
 </section>
 
 <!-- ============================================================ p19 · Fig 5 lifecycle + 5.3 -->
@@ -1354,7 +1354,7 @@
     <li><b>Statically:</b> the linter already refused any cycle not cut by a finite counter (&sect;3.3), so
     the dynamic checks are enforcement, not the proof.</li>
   </ul>
-  <div class="rf">19 / 34</div>
+  <div class="rf">19 / 40</div>
 </section>
 
 <!-- ============================================================ p20 · 5.4 fanout/join -->
@@ -1401,7 +1401,7 @@
     the conflicting arm named in the park reason. Nothing is force-pushed; recovery is a human (or a
     synthesis seat) resolving one named conflict.</li>
   </ul>
-  <div class="rf">20 / 34</div>
+  <div class="rf">20 / 40</div>
 </section>
 
 <!-- ============================================================ p21 · Fig 6 swimlane + 5.5 + 5.6 -->
@@ -1500,7 +1500,7 @@
   resumables/session-resume bridge <span class="rcpt">dispatcher.ts:583&ndash;627</span>. The one-writer-at-a-time
   discipline the ledger provides today extends per-cursor. This strengthens recovery: today&rsquo;s
   restart re-derives intent from Plane state; tomorrow&rsquo;s replays exactly what the engine was doing.</p>
-  <div class="rf">21 / 34</div>
+  <div class="rf">21 / 40</div>
 </section>
 
 <!-- ============================================================ p22 · §6 opener + 6.1 -->
@@ -1550,7 +1550,7 @@
   <p>Leases make one distinction structural, and Fig.&nbsp;6 already drew it: <b>a slow worker renews; a
   dead worker doesn&rsquo;t.</b> No amount of model-side laziness can fake a lease renewal, and no amount
   of long thinking gets punished for it &mdash; the clocks watch silence, not speed.</p>
-  <div class="rf">22 / 34</div>
+  <div class="rf">22 / 40</div>
 </section>
 
 <!-- ============================================================ p23 · 6.2 alarms + ladder -->
@@ -1590,7 +1590,7 @@
     run &mdash; keeps the path honest in production, the same way the outboxes earn trust by being
     exercised.</p>
   </div>
-  <div class="rf">23 / 34</div>
+  <div class="rf">23 / 40</div>
 </section>
 
 <!-- ============================================================ p24 · 6.3 announcement routing -->
@@ -1637,7 +1637,7 @@
   per project (runs finished / parked / spend vs. yesterday) goes out at status tier. That rollup is
   the whole &ldquo;dashboard&rdquo;: the design deliberately stops short of a metrics stack until the
   JSONL outgrows <code>jq</code>, which it has not.</p>
-  <div class="rf">24 / 34</div>
+  <div class="rf">24 / 40</div>
 </section>
 
 <!-- ============================================================ p25 · 6.4 handshakes + manifest -->
@@ -1687,7 +1687,7 @@
     resumables bridge crash recovery already uses <span class="rcpt">dispatcher.ts:583&ndash;627</span>. A
     worker&rsquo;s work is therefore never both finished and unrecorded.</li>
   </ul>
-  <div class="rf">25 / 34</div>
+  <div class="rf">25 / 40</div>
 </section>
 
 <!-- ============================================================ p26 · Fig 7 sequence + ambiguity table + 6.5 -->
@@ -1765,7 +1765,7 @@
   stop is the one you can leave running overnight. Nothing in this section is novel infrastructure;
   it is the discipline the outboxes and the journal already practise, applied to the one place it was
   missing: the moment things go wrong.</p>
-  <div class="rf">26 / 34</div>
+  <div class="rf">26 / 40</div>
 </section>
 
 <!-- ============================================================ p27 · §7 opener + sim 1 -->
@@ -1811,7 +1811,7 @@
   <code>budget.envelope: {15 turns, 600 s}</code>. Its first act was <code>beckett seat ready</code>; its last was
   the done-signal. It never needed to know a flow engine existed &mdash; the compatibility invariant of
   &sect;8.4, demonstrated.</p>
-  <div class="rf">27 / 34</div>
+  <div class="rf">27 / 40</div>
 </section>
 
 <!-- ============================================================ p28 · sim 2 spec + walk -->
@@ -1850,7 +1850,7 @@
                                                              <span class="c">design + BOTH arms, with summaries</span>
 10:01:08 gate_decided      {verdict: pass, rubric: criteria-vs-diff}
 10:01:08 run_done          {seats: 4, spend: $6.80, wallClock: 47m}</pre>
-  <div class="rf">28 / 34</div>
+  <div class="rf">28 / 40</div>
 </section>
 
 <!-- ============================================================ p29 · sim 2 outcome + sim 3 setup -->
@@ -1894,7 +1894,7 @@
 17:36:44 signal_received   {status: complete} → review(2) → 17:44:03 gate_decided {pass}
 17:44:04 run_done          {outcome: done, seats: 5, spend: $4.90, wallClock: 63m,
                             alarms: [stall&times;1], retries: 1, reworks: 1}</pre>
-  <div class="rf">29 / 34</div>
+  <div class="rf">29 / 40</div>
 </section>
 
 <!-- ============================================================ p30 · sim 3 Discord view + closing -->
@@ -1928,9 +1928,428 @@
     one cadence old. These three transcripts are the acceptance tests the Phase-0 shadow build
     (&sect;9.1) should replay verbatim.</p>
   </div>
-  <div class="rf">30 / 34</div>
+  <div class="rf">30 / 40</div>
 </section>
 
-<!--@@-->
+<!-- ============================================================ p31 · §8 opener + 8.1 + 8.2 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">Authoring &middot; what the concierge writes</div>
+  <div class="secnum">8</div>
+  <h1>The authoring surface</h1>
+  <p class="lede">Filing keeps its shape: <code>beckett task file</code> with title, body, criteria, project,
+  channel. The flow arrives three ways, cheapest first &mdash; and the cheapest way is not writing one.</p>
+
+  <h2><span class="n">8.1</span>Defaults &mdash; most filings never mention a flow</h2>
+  <p>No <code>--flow</code> &rarr; the engine compiles the spec from the cast exactly as today: effort
+  <code>low|medium</code> &rarr; one-pass; <code>high|xhigh</code> &rarr; implement + review gate;
+  <code>reviewTier</code> respected. Zero behaviour change, zero new typing for the everyday ticket. (One
+  deliberate improvement: the compiled spec is printed back on filing &mdash; the gate becomes visible
+  instead of inferred silently. Simulation A shows the echo.)</p>
+
+  <h2><span class="n">8.2</span>Flow presets &mdash; named shapes in <code>~/.beckett/flows.json</code></h2>
+  <p>The OPS-110 pattern, re-applied: hot-reloaded, user-editable, validated on load, seeded with the
+  vocabulary we already know we want:</p>
+  <table class="compact">
+    <tr><th style="width:16%">Preset</th><th style="width:47%">Shape</th><th>Replaces / enables</th></tr>
+    <tr><td><code>one-pass</code></td><td>implement &rarr; done</td><td>today&rsquo;s <em>self</em> tier, said out loud</td></tr>
+    <tr><td><code>reviewed</code></td><td>implement &rarr; review &#10227;&le;3 &rarr; done</td><td>today&rsquo;s <em>fresh</em> tier</td></tr>
+    <tr><td><code>intensive</code></td><td>design &rarr; human gate &#10227;&le;2 &rarr; implement &rarr; review &rarr; done</td><td>the whole INT board, as 4 nodes of data</td></tr>
+    <tr><td><code>bake-off</code></td><td>fanout(n candidates) &rarr; judge &rarr; review &rarr; done</td><td>Fig.&nbsp;3 &mdash; impossible today</td></tr>
+    <tr><td><code>panel-review</code></td><td>implement &rarr; fanout(correctness, security, taste) &rarr; quorum 2/3 &#10227; &rarr; done</td><td>parallel reviewers &mdash; impossible today</td></tr>
+    <tr><td><code>iterate-until</code></td><td>implement &#10227;&le;N against a model-gate rubric (eval/tests) &rarr; done</td><td>per-task iteration budgets &mdash; the constants, freed</td></tr>
+  </table>
+  <p>Invocation: <code>--flow-preset bake-off</code>, with per-node overrides via
+  <code>--flow-set judge.cast.model=claude-fable-5</code> or a partial-JSON merge &mdash; same precedence
+  story as cast presets (explicit beats preset, per stage)
+  <span class="rcpt">presets.ts:119&ndash;142</span>.</p>
+  <div class="rf">31 / 40</div>
+</section>
+
+<!-- ============================================================ p32 · 8.3 grammar + 8.4 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">8.3</span>A shorthand for composing fresh &mdash; the one-liner grammar</h2>
+  <p>For shapes worth composing on the spot, a tiny expression syntax compiled to a <code>FlowSpec</code>
+  (and echoed back as the expanded JSON before filing):</p>
+  <table class="compact">
+    <tr><th style="width:22%">Form</th><th style="width:22%">Meaning</th><th>Example</th></tr>
+    <tr><td><code>stage(cast)</code></td><td>worker node</td><td><code>design(opus:high)</code></td></tr>
+    <tr><td><code>?human</code> / <code>?cast</code></td><td>gate</td><td><code>?human</code> &middot; <code>?haiku:low(rubric=criteria)</code></td></tr>
+    <tr><td><code>a -&gt; b</code></td><td>sequence</td><td><code>implement(pi:med) -&gt; review(sonnet:high)</code></td></tr>
+    <tr><td><code>[a | b | c]</code></td><td>fanout arms</td><td><code>[impl(pi:high) | impl(claude:high) | impl(codex:high)]</code></td></tr>
+    <tr><td><code>=&gt;judge(cast)</code></td><td>join</td><td><code>=&gt;judge(fable:high)</code> &middot; <code>=&gt;merge</code> &middot; <code>=&gt;first</code> &middot; <code>=&gt;quorum:2</code></td></tr>
+    <tr><td><code>^N</code></td><td>visit cap</td><td><code>review(sonnet)^2</code> &mdash; two rework rounds, then park</td></tr>
+  </table>
+<pre><span class="c"># what I'd actually type when ro asks for a bake-off with a design gate:</span>
+beckett task file --title "…" --project foo --channel &lt;id&gt; \
+  --flow 'design(opus:high) -&gt; ?human -&gt; [impl(pi:high)|impl(claude:high)]
+          =&gt;judge(fable:high) -&gt; review(sonnet:high)^2'</pre>
+  <p>The grammar is sugar only &mdash; it must compile to the &sect;3.2 model and validate identically. If
+  it ever wants a feature the model lacks, the model wins and the feature waits for a design doc.</p>
+
+  <h2><span class="n">8.4</span>What stays exactly as it is</h2>
+  <ul>
+    <li><b><code>beckett plan</code> and the task tree.</b> Inter-task DAGs (<code>--needs</code>, <code>#N.x</code>,
+    <code>blockedBy</code> promotion) are the right tool for separate deliverables and keep working
+    unchanged; a plan node may now also carry a <code>flow</code>. Flows are intra-task; plans are
+    inter-task. The two compose and do not compete.</li>
+    <li><b>Casting doctrine.</b> Presets, the roster, effort envelopes, Fable confirm-first &mdash; all
+    untouched. A flow references seats; the cast doctrine still decides who may sit in them.</li>
+    <li><b>The worker&rsquo;s world.</b> Brief in, worktree, scope-guard, steering nudges, done-signal out
+    &mdash; now with one addition it may freely ignore: the stage manifest (&sect;6.4). A worker cannot
+    tell whether it is running under the old dispatcher or the stage manager &mdash; that is the
+    compatibility invariant the whole migration hangs on, and Simulation A exercised it.</li>
+  </ul>
+  <div class="rf">32 / 40</div>
+</section>
+
+<!-- ============================================================ p33 · §9 opener + table -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">Getting there &middot; three reversible phases</div>
+  <div class="secnum">9</div>
+  <h1>Migration off Plane</h1>
+  <p class="lede">Plane provides four things (&sect;1&rsquo;s observation): issue storage, a state column,
+  comments-as-transport, and a board humans can look at. Each gets an explicit replacement, and each
+  phase is independently shippable and reversible.</p>
+  <table class="compact">
+    <tr><th style="width:26%">Plane concept</th><th style="width:32%">Replacement</th><th>Notes</th></tr>
+    <tr><td>Issue (title/body/criteria)</td><td>Task record in <code>~/.beckett/tasks.json</code></td>
+        <td>already exists and already mirrors every ticket <span class="rcpt">store.ts</span></td></tr>
+    <tr><td>Workflow state column</td><td><code>FlowRun</code> cursor + status (&sect;5.1)</td>
+        <td>strictly more expressive; branch-status mapping <span class="rcpt">store.ts:141&ndash;152</span> becomes a projection of the run</td></tr>
+    <tr><td>Description fence blocks (<code>beckett-cast/-deps/-project/-branch/-start-state</code>)</td>
+        <td>Typed fields on the task record</td>
+        <td>ends the Markdown smuggling; <code>parseCast</code> survives only as an importer</td></tr>
+    <tr><td>Comments (steering)</td><td><code>beckett task nudge</code> + Discord origin-channel replies</td>
+        <td>transport was always Discord&rarr;concierge&rarr;Plane&rarr;poller; this deletes the middle two hops and the ~5&nbsp;s latency</td></tr>
+    <tr><td>Comments (audit trail)</td><td>Run event log + journal</td>
+        <td>both append-only, both local, journal already richer <span class="rcpt">journal.ts</span></td></tr>
+    <tr><td>Ticket IDs (<code>OPS-42</code>)</td><td>Local per-prefix sequence</td>
+        <td><code>nextTaskNumber</code> already allocates <code>#N</code> <span class="rcpt">store.ts</span>; keep the
+        OPS-N surface so journals, history and habits survive</td></tr>
+    <tr><td><code>blockedBy</code> dependencies</td><td><code>needs</code> in the task tree</td>
+        <td>already dual-recorded today; the local copy becomes primary</td></tr>
+    <tr><td>Board UI</td><td><code>beckett status</code> DAG view; optional read-only web board later</td>
+        <td>the honest loss &mdash; see &sect;10.2</td></tr>
+  </table>
+  <div class="rf">33 / 40</div>
+</section>
+
+<!-- ============================================================ p34 · Fig 8 + 9.1 + 9.2 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <figure style="margin-top:6mm">
+    <svg viewBox="0 0 660 120">
+      <defs>
+        <marker id="ar8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,1 L9,5 L0,9" fill="none" stroke="context-stroke" stroke-width="1.4"/>
+        </marker>
+      </defs>
+      <rect class="box" x="14" y="18" width="184" height="66" rx="6"/>
+      <text class="lbl" x="106" y="36" text-anchor="middle">0 &middot; Shadow</text>
+      <text class="lbl2" x="106" y="50" text-anchor="middle">engine interprets built-in flow specs;</text>
+      <text class="lbl2" x="106" y="61" text-anchor="middle">Plane still authoritative; decisions</text>
+      <text class="lbl2" x="106" y="72" text-anchor="middle">diffed engine-vs-dispatcher in logs</text>
+      <text class="mono" x="106" y="100" text-anchor="middle" fill="#5d7d61">risk &asymp; 0 &middot; pure additive</text>
+
+      <rect class="boxRust" x="238" y="18" width="184" height="66" rx="6"/>
+      <text class="lbl" x="330" y="36" text-anchor="middle" fill="#b34f28">1 &middot; Flip</text>
+      <text class="lbl2" x="330" y="50" text-anchor="middle">run store authoritative; Plane becomes a</text>
+      <text class="lbl2" x="330" y="61" text-anchor="middle">write-only mirror via advance-outbox;</text>
+      <text class="lbl2" x="330" y="72" text-anchor="middle">steering: Discord/CLI; custom flows unlock</text>
+      <text class="mono" x="330" y="100" text-anchor="middle" fill="#b34f28">reversible: point poller back</text>
+
+      <rect class="boxDark" x="462" y="18" width="184" height="66" rx="6"/>
+      <text class="lbl" x="554" y="36" text-anchor="middle" fill="#f2ece3">2 &middot; Retire</text>
+      <text x="554" y="50" text-anchor="middle" font-size="7" fill="#a89a88">delete client/poll/mirror; export Plane</text>
+      <text x="554" y="61" text-anchor="middle" font-size="7" fill="#a89a88">history to archive JSONL; decommission</text>
+      <text x="554" y="72" text-anchor="middle" font-size="7" fill="#a89a88">plane.0xbeckett.me</text>
+      <text class="mono" x="554" y="100" text-anchor="middle">only after weeks of quiet mirror-diff</text>
+
+      <line class="edge" x1="198" y1="51" x2="238" y2="51" marker-end="url(#ar8)"/>
+      <line class="edge" x1="422" y1="51" x2="462" y2="51" marker-end="url(#ar8)"/>
+    </svg>
+    <figcaption><b>Fig. 8 &mdash; migration phases.</b> Each phase ships alone, proves itself in
+    production, and can be rolled back before the next begins.</figcaption>
+  </figure>
+
+  <h2><span class="n">9.1</span>Phase 0 &mdash; shadow (engine exists, Plane rules)</h2>
+  <p>Build the interpreter + run store + linter. Compile every incoming ticket&rsquo;s cast into its
+  equivalent built-in spec (&sect;8.1) and run the engine <em>as a shadow</em>: it receives the same
+  events, folds its own run record, and logs any divergence between the edge it would take and the
+  transition the dispatcher actually performs. The dispatcher&rsquo;s switch keeps driving. This phase
+  has no behaviour change at all and produces the evidence for the flip: N days of zero-divergence on
+  live traffic &mdash; the same shadow-then-flip discipline used for the ambient classifier. The Sentinel
+  and Herald ship here too, watching <em>today&rsquo;s</em> workers: the &sect;6 alarm path earns trust on
+  the old engine before the new one depends on it, and &sect;7&rsquo;s three transcripts become the
+  shadow&rsquo;s replay fixtures.</p>
+
+  <h2><span class="n">9.2</span>Phase 1 &mdash; flip (engine rules, Plane mirrors)</h2>
+  <p>The run store becomes authoritative. The dispatcher&rsquo;s <code>onStateChanged</code> shrinks to an
+  adapter: engine edges call the spawn/steer/park/publish primitives directly; a projection maps each
+  run state onto the closest legacy Plane column and writes it through the existing
+  <code>advance-outbox</code> &mdash; Plane can lag, break or 404 without touching execution (the outbox
+  already assumes it will <span class="rcpt">advance-outbox.ts</span>). Human state-flips on the Plane UI stop
+  being inputs; the sanctioned control surface is the concierge&rsquo;s verbs
+  (<code>task nudge / pause / resume / cancel / courier</code>), which is where ro actually operates from
+  anyway &mdash; Discord. Custom flows (<code>--flow</code>, presets, the grammar) unlock in this phase.
+  Rollback is a config flag: point the poller back at Plane and re-arm the switch.</p>
+  <div class="rf">34 / 40</div>
+</section>
+
+<!-- ============================================================ p35 · 9.3 + callout -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">9.3</span>Phase 2 &mdash; retire</h2>
+  <p>After the mirror has run quiet for a few weeks: export every board to archive JSONL (issues +
+  comments, for the historical record), delete <code>src/plane/client.ts</code>&nbsp;/&nbsp;<code>poll.ts</code> and
+  the mirror projection, keep <code>cast.ts</code> parsing as a legacy importer, and decommission the Plane
+  instance. The <code>OPS-</code> prefix lives on as a local sequence so identifiers stay continuous.</p>
+
+  <div class="callout">
+    <div class="ct">What deliberately does not change, ever</div>
+    <p>Worktree and branch conventions (<code>beckett/task-N.x</code>), the scope-guard, done-signal schema,
+    effort envelopes, cast presets and the Fable handshake, the journal and its CLI, the
+    publish-outbox and courier handoff, <code>beckett plan</code> semantics, and the <code>#N</code> task tree.
+    The blast radius is confined to: who decides the next stage (engine vs. Plane-state switch), where
+    that decision is stored (local run log vs. remote column) &mdash; and, new in rev 2, who is told
+    when a decision goes wrong (the Herald vs. nobody).</p>
+  </div>
+  <div class="rf">35 / 40</div>
+</section>
+
+<!-- ============================================================ p36 · §10 opener + 10.1–10.3 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">Honesty &middot; costs and unknowns</div>
+  <div class="secnum">10</div>
+  <h1>Tradeoffs, risks, open questions</h1>
+
+  <h2><span class="n">10.1</span>We are building a workflow engine &mdash; the classic trap</h2>
+  <p>Half-built workflow engines are where codebases go to die: they grow expression languages,
+  conditionals, sub-flows, and eventually a worse programming language nobody can debug. The defence
+  here is structural, not aspirational: four node kinds, closed set; edges carry no predicates beyond
+  pass/fail; no data flows through the graph except briefs and diffs; the linter refuses anything
+  unbounded; and the bar for a fifth node kind is a design doc like this one. Rev 2 extends the same
+  fence to the new surfaces: nineteen events, ten alarms, three announcement tiers &mdash; all closed
+  vocabularies. If any algebra ever feels cramped, that pressure should produce one new member, not an
+  expression language.</p>
+
+  <h2><span class="n">10.2</span>We lose the board</h2>
+  <p>Plane&rsquo;s genuine value is a glanceable, drag-a-card UI for a human. <code>beckett status</code> plus
+  Discord updates cover the operational loop we actually use (ro files, steers and approves from
+  Discord today; the board is mostly read). But &ldquo;mostly&rdquo; is doing work in that sentence: if
+  the visual board matters, the mitigation is a small read-only web view over the run store &mdash; a
+  render of the same JSONL, no write path, no schema pressure &mdash; shipped only if its absence is
+  actually felt. This is the one place the proposal subtracts something real; it should be called out
+  to ro as such, not papered over.</p>
+
+  <h2><span class="n">10.3</span>Fan-out &times; iteration = cost explosion</h2>
+  <p>A 3-arm bake-off at implement-high is roughly 3&times; an implement ticket before the judge is paid.
+  Guards: per-run <code>budget.usd</code> (checked pre-spawn, &sect;5.3) with the <code>budget_80</code>
+  forewarning and the <code>budget_hit</code> page (&sect;6.2); fanout arms count against the concurrency
+  caps; Fable-in-any-seat keeps its confirm handshake; and the concierge&rsquo;s filing echo prints the
+  worst-case seat count (<code>nodes &times; maxVisits &times; arms</code>) so the expensive shape is priced
+  before it runs, not discovered on the spend report &mdash; Simulation B&rsquo;s echo shows the format.
+  Culturally: presets encode the cheap defaults; exotic flows are typed deliberately.</p>
+  <div class="rf">36 / 40</div>
+</section>
+
+<!-- ============================================================ p37 · 10.4–10.7 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">10.4</span>Correctness burdens move in-house</h2>
+  <p>Today Plane&rsquo;s column is a crude but externally-visible source of truth; tomorrow a local event
+  log is. Join deadlocks (an arm that never signals), park/resume races, replay determinism, and
+  cursor/ledger consistency become our bugs. Mitigations: the event log is append-only and replay is
+  pure (the same property that makes the outboxes trustworthy); the hard wall-clock backstop
+  <span class="rcpt">config.ts:269</span> and the Sentinel&rsquo;s lease (&sect;6.1) together bound every worker,
+  so a silent arm cannot block a join forever &mdash; and cannot block it <em>quietly</em> at all; and the
+  join/park state machine is small enough for exhaustive property tests. This is real engineering cost
+  &mdash; it is the price of owning the semantics, and it is the same class of machinery (ledgers,
+  outboxes, checkpoint replay) the team has already built well three times.</p>
+
+  <h2><span class="n">10.5</span>Two sources of truth during Phase 1</h2>
+  <p>The mirror is strictly one-directional by design; the moment a human edit on Plane can change
+  execution, we have split brain. Enforced by code (mirror writes only) and by doctrine (the Plane UI
+  is read-only from the flip onward). The rollback flag keeps the exit open until Phase 2 deletes the
+  question.</p>
+
+  <h2><span class="n">10.6</span>Alarms can cry wolf <span class="badge">NEW IN REV 2</span></h2>
+  <p>The failure mode of &sect;6 is not silence but noise: a lease window tuned too tight turns long
+  legitimate thinking into stall pages, and a paged human who learns to ignore pages is worse off than
+  one who was never paged. Defences: the clocks watch <em>silence, not speed</em> (a thinking harness
+  still emits turn events); thresholds are per-run data with sane defaults, so one chatty project
+  can&rsquo;t be fixed by detuning the fleet; repeats collapse into one aging message (&sect;6.3); and the
+  quarterly fire drill doubles as a false-positive audit &mdash; if the drill is the only page that
+  month, the thresholds are right. The metric that matters is the one &sect;1.6 implies: <em>time from
+  abnormal event to human awareness</em>, and it should be minutes, boring, and flat.</p>
+
+  <h2><span class="n">10.7</span>The manifest can drift from reality</h2>
+  <p>A contract file is only as honest as its writer; a bug in the Spawn Adapter could describe a world
+  that isn&rsquo;t there. This is why the readiness handshake verifies <em>independently</em> &mdash;
+  <code>seat ready</code> asks git, not the manifest, what branch and HEAD are &mdash; and why refusal pages
+  rather than retrying forever: manifest-vs-filesystem disagreement is a bookkeeping bug by
+  definition, and the design&rsquo;s posture is to halt and surface those, never to reconcile them
+  silently.</p>
+  <div class="rf">37 / 40</div>
+</section>
+
+<!-- ============================================================ p38 · open questions + recommendation -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">10.8</span>Open questions for ro</h2>
+  <ol>
+    <li><b>Board or no board?</b> Is a read-only web view a launch requirement for Phase 1, a later
+    nice-to-have, or unnecessary? (My read: later; Discord + <code>beckett status</code> is where the loop
+    actually lives.)</li>
+    <li><b>Concierge authority at parks.</b> When a run parks on cap-exhaustion, may the concierge grant
+    one extra visit on its own judgment, or is a parked run always a human decision? (I lean: human,
+    always &mdash; parks are rare and are exactly the moments you&rsquo;d want to see.)</li>
+    <li><b>Grammar vs. JSON as the primary authoring surface.</b> The one-liner (&sect;8.3) is expressive
+    but is a new mini-language to maintain; presets + JSON may be enough. Ship the grammar in v1 or
+    hold it?</li>
+    <li><b>Should <code>beckett plan</code> fold in eventually?</b> An inter-task DAG is a flow whose worker
+    nodes file sub-tasks. Unifying is elegant but risks the tarpit (&sect;10.1). I propose: not in v1,
+    revisit once flows have months of production shape.</li>
+    <li><b>Per-arm steering surface.</b> <code>--node</code> targeting (&sect;5.5) is powerful but chatty in
+    Discord. Is &ldquo;nudge the whole run&rdquo; enough for v1?</li>
+    <li><b>History.</b> Is the Phase 2 JSONL export of old Plane boards sufficient, or do you want
+    OPS/INT history queryable (e.g. imported as read-only run records)?</li>
+    <li><b>Paging boundaries.</b> <span class="badge">NEW</span>&ensp;&sect;6.3 pages on parks, budget hits,
+    hard caps, refusals and human gates. Too much, too little? And should quiet hours exist &mdash; a
+    window where pages queue and only a wedged <em>everything</em> breaks through?</li>
+  </ol>
+
+  <div class="callout">
+    <div class="ct">Recommendation</div>
+    <p>Build it in the phase order given, and hold the line on smallness: four node kinds, six seed
+    presets, nineteen events, three announcement tiers, no expression language, board UI deferred.
+    Phase 0 is almost pure addition and produces its own go/no-go evidence twice over &mdash; the
+    zero-divergence log for the interpreter, and a quarter of Sentinel/Herald service on the
+    <em>old</em> engine before anything depends on them; the flip is one config flag with a rollback;
+    Plane dies only after it has been demonstrably decorative for weeks. The payoff is the exact
+    capability requested across both reviews &mdash; stages, iterations and parallelism dictated per
+    task by the concierge at filing time, on an engine that announces its own failures and hands every
+    worker a contract it can verify &mdash; bought with machinery Beckett already trusts: JSONL ledgers,
+    worktrees, casts, and done-signals.</p>
+  </div>
+  <div class="rf">38 / 40</div>
+</section>
+
+<!-- ============================================================ p39 · Appendix A.1/A.2 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">Appendix A &middot; behavioural equivalence</div>
+  <h1 style="font-size:14pt">Today&rsquo;s lifecycles as flow specs</h1>
+  <p>These three specs are the compatibility contract: at Phase 0/1 cutover, every filing compiles to
+  one of them, and the engine must reproduce the current dispatcher&rsquo;s decisions on each &mdash; same
+  spawns, same caps, same parks. The constants shown are today&rsquo;s hardcoded values (&sect;1.3), now
+  merely defaults.</p>
+  <div style="display:flex; gap:5mm">
+    <div style="flex:1">
+      <p class="tight"><b>A.1 &mdash; one-pass</b> <span class="small">(today: effort low/medium, tier &ldquo;self&rdquo;)</span></p>
+<pre style="font-size:6.3pt">{ <span class="s">"version"</span>: 1,
+  <span class="s">"entry"</span>: <span class="s">"implement"</span>,
+  <span class="s">"nodes"</span>: {
+    <span class="s">"implement"</span>: {
+      <span class="s">"kind"</span>: <span class="s">"worker"</span>,
+      <span class="s">"cast"</span>: { <span class="s">"harness"</span>: <span class="s">"pi"</span>,
+                <span class="s">"effort"</span>: <span class="s">"medium"</span> },
+      <span class="s">"onPass"</span>: <span class="s">"done"</span>,
+      <span class="s">"onFail"</span>: <span class="s">"park"</span>,
+      <span class="s">"retries"</span>: 3
+        <span class="c">// = MAX_IMPLEMENT_RETRIES</span>
+    }
+} }</pre>
+      <p class="small">The zero-diff withhold (self-tier finish with no changes &rarr; route to review
+      instead <span class="rcpt">dispatcher.ts:2283&ndash;2293</span>) becomes a linter-inserted model gate on
+      this spec &mdash; the special case turns into visible structure.</p>
+    </div>
+    <div style="flex:1">
+      <p class="tight"><b>A.2 &mdash; reviewed</b> <span class="small">(today: effort high/xhigh, tier &ldquo;fresh&rdquo;)</span></p>
+<pre style="font-size:6.3pt">{ <span class="s">"version"</span>: 1,
+  <span class="s">"entry"</span>: <span class="s">"implement"</span>,
+  <span class="s">"nodes"</span>: {
+    <span class="s">"implement"</span>: {
+      <span class="s">"kind"</span>: <span class="s">"worker"</span>,
+      <span class="s">"cast"</span>: { <span class="s">"harness"</span>: <span class="s">"pi"</span>,
+                <span class="s">"effort"</span>: <span class="s">"high"</span> },
+      <span class="s">"onPass"</span>: <span class="s">"review"</span>,
+      <span class="s">"onFail"</span>: <span class="s">"park"</span>,
+      <span class="s">"maxVisits"</span>: 3,   <span class="c">// = MAX_REWORK_CYCLES</span>
+      <span class="s">"retries"</span>: 3
+    },
+    <span class="s">"review"</span>: {
+      <span class="s">"kind"</span>: <span class="s">"gate"</span>,
+      <span class="s">"by"</span>: {
+        <span class="s">"cast"</span>: { <span class="s">"harness"</span>: <span class="s">"claude"</span>,
+                  <span class="s">"model"</span>: <span class="s">"claude-sonnet-5"</span>,
+                  <span class="s">"effort"</span>: <span class="s">"high"</span> },
+        <span class="s">"rubric"</span>: <span class="s">"criteria-vs-diff"</span>
+      },
+      <span class="s">"onPass"</span>: <span class="s">"done"</span>,
+      <span class="s">"onFail"</span>: <span class="s">"implement"</span>,
+      <span class="s">"maxFails"</span>: 3
+    }
+} }</pre>
+    </div>
+  </div>
+  <div class="rf">39 / 40</div>
+</section>
+
+<!-- ============================================================ p40 · A.3 + sources -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <p class="tight" style="margin-top:6mm"><b>A.3 &mdash; intensive</b> <span class="small">(today: the entire INT
+  board &mdash; two enum values, five modules, one Plane project)</span></p>
+<pre>{ <span class="s">"version"</span>: 1, <span class="s">"entry"</span>: <span class="s">"design"</span>, <span class="s">"nodes"</span>: {
+  <span class="s">"design"</span>: {
+    <span class="s">"kind"</span>: <span class="s">"worker"</span>,
+    <span class="s">"cast"</span>: { <span class="s">"harness"</span>: <span class="s">"claude"</span>, <span class="s">"model"</span>: <span class="s">"claude-opus-4-8"</span>, <span class="s">"effort"</span>: <span class="s">"high"</span> },
+    <span class="s">"artifact"</span>: <span class="s">"docs/design/&lt;id&gt;.md"</span>,
+    <span class="s">"onPass"</span>: <span class="s">"completeness"</span>, <span class="s">"onFail"</span>: <span class="s">"park"</span>, <span class="s">"maxVisits"</span>: 2
+  },
+  <span class="s">"completeness"</span>: {
+    <span class="s">"kind"</span>: <span class="s">"gate"</span>,
+    <span class="s">"by"</span>: { <span class="s">"cast"</span>: { <span class="s">"harness"</span>: <span class="s">"claude"</span>, <span class="s">"model"</span>: <span class="s">"claude-haiku-4-5"</span>, <span class="s">"effort"</span>: <span class="s">"low"</span> },
+            <span class="s">"rubric"</span>: <span class="s">"design-doc completeness"</span> },
+    <span class="s">"onPass"</span>: <span class="s">"approve"</span>, <span class="s">"onFail"</span>: <span class="s">"design"</span>, <span class="s">"maxFails"</span>: 2   <span class="c">// = MAX_DESIGN_CYCLES</span>
+  },
+  <span class="s">"approve"</span>: {
+    <span class="s">"kind"</span>: <span class="s">"gate"</span>, <span class="s">"by"</span>: <span class="s">"human"</span>,                            <span class="c">// PARKED: zero tokens</span>
+    <span class="s">"onPass"</span>: <span class="s">"implement"</span>, <span class="s">"onFail"</span>: <span class="s">"design"</span>, <span class="s">"maxFails"</span>: 3
+  },
+  <span class="s">"implement"</span>: {
+    <span class="s">"kind"</span>: <span class="s">"worker"</span>, <span class="s">"cast"</span>: { <span class="s">"harness"</span>: <span class="s">"pi"</span>, <span class="s">"effort"</span>: <span class="s">"medium"</span> },
+    <span class="s">"onPass"</span>: <span class="s">"review"</span>, <span class="s">"onFail"</span>: <span class="s">"park"</span>, <span class="s">"maxVisits"</span>: 3
+  },
+  <span class="s">"review"</span>: {
+    <span class="s">"kind"</span>: <span class="s">"gate"</span>,
+    <span class="s">"by"</span>: { <span class="s">"cast"</span>: { <span class="s">"harness"</span>: <span class="s">"claude"</span>, <span class="s">"model"</span>: <span class="s">"claude-sonnet-5"</span>, <span class="s">"effort"</span>: <span class="s">"high"</span> },
+            <span class="s">"rubric"</span>: <span class="s">"criteria-vs-diff"</span> },
+    <span class="s">"onPass"</span>: <span class="s">"done"</span>, <span class="s">"onFail"</span>: <span class="s">"implement"</span>, <span class="s">"maxFails"</span>: 3
+  }
+} }</pre>
+
+  <div class="callout" style="margin-top:6mm">
+    <div class="ct">Sources &amp; verification</div>
+    <p class="small">Rev-1 ground truth verified against the working tree at commit
+    <code>6fac13d</code> (2026-07-12); rev-2 additions (&sect;1.6, &sect;4, &sect;6) verified against the same
+    lineage at <code>29e4de0</code>. Primarily: <span class="rcpt">src/plane/types.ts, cast.ts, client.ts,
+    poll.ts, presets.ts &middot; src/dispatch/dispatcher.ts, spawn.ts, advance-outbox.ts,
+    publish-outbox.ts &middot; src/drivers/base.ts, proc.ts, claude.ts &middot; src/hooks/scope-guard.ts &middot;
+    src/task/store.ts &middot; src/worker/worktree.ts &middot; src/progress/journal.ts &middot; src/spend.ts &middot;
+    src/config.ts &middot; docs/V3.md &middot; docs/design/int-flow.md (OPS-111) &middot; docs/design/cast-presets.md
+    (OPS-109/110)</span>.</p>
+    <p class="small">Authored by Beckett&rsquo;s worker seat (Claude Fable 5, high thinking): rev 1 for
+    OPS-151, rev 2 for OPS-152. Design proposal only &mdash; no code changes accompany this document.
+    Build source: <code>docs/design/run-of-show/</code> (HTML + inline SVG &rarr; headless Chrome).</p>
+  </div>
+  <div class="rf">40 / 40</div>
+</section>
+
 </body>
 </html>
