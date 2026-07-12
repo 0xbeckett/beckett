@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Run of Show — replacing Plane with a concierge-authored workflow engine</title>
+<style>
+/* ---------- fonts ---------- */
+@font-face { font-family:"Source Serif 4"; src:url("fonts/source-serif-400.woff2") format("woff2"); font-weight:400; font-style:normal; }
+@font-face { font-family:"Source Serif 4"; src:url("fonts/source-serif-400i.woff2") format("woff2"); font-weight:400; font-style:italic; }
+@font-face { font-family:"Source Serif 4"; src:url("fonts/source-serif-600.woff2") format("woff2"); font-weight:600; font-style:normal; }
+@font-face { font-family:"Source Serif 4"; src:url("fonts/source-serif-700.woff2") format("woff2"); font-weight:700; font-style:normal; }
+@font-face { font-family:"Inter"; src:url("fonts/inter-400.woff2") format("woff2"); font-weight:400; font-style:normal; }
+@font-face { font-family:"Inter"; src:url("fonts/inter-500.woff2") format("woff2"); font-weight:500; font-style:normal; }
+@font-face { font-family:"Inter"; src:url("fonts/inter-600.woff2") format("woff2"); font-weight:600; font-style:normal; }
+@font-face { font-family:"Inter"; src:url("fonts/inter-700.woff2") format("woff2"); font-weight:700; font-style:normal; }
+@font-face { font-family:"JetBrains Mono"; src:url("fonts/jetbrains-mono-400.woff2") format("woff2"); font-weight:400; font-style:normal; }
+@font-face { font-family:"JetBrains Mono"; src:url("fonts/jetbrains-mono-700.woff2") format("woff2"); font-weight:700; font-style:normal; }
+
+/* ---------- palette ---------- */
+:root {
+  --ink:      #1C1917;
+  --ink-soft: #44403A;
+  --muted:    #78716A;
+  --paper:    #FFFFFF;
+  --panel:    #F7F5F0;
+  --panel-2:  #EFEBE2;
+  --line:     #E0DBD1;
+  --accent:   #9A4B1F;   /* burnt sienna */
+  --accent-2: #2F5D50;   /* stage green  */
+  --accent-3: #8C6D1F;   /* ochre        */
+  --bad:      #8C2B2B;
+}
+
+/* ---------- page setup ---------- */
+@page {
+  size: A4;
+  margin: 21mm 18mm 19mm 18mm;
+  @top-left { content: "Beckett · Run of Show — a dynamic workflow engine"; font-family:"Inter"; font-size:6.8pt; letter-spacing:0.08em; color:#78716A; }
+  @top-right { content: "OPS-151"; font-family:"JetBrains Mono"; font-size:6.8pt; color:#78716A; }
+  @bottom-right { content: counter(page) " / " counter(pages); font-family:"Inter"; font-size:7.5pt; color:#78716A; }
+}
+@page cover { margin:0; @top-left{content:none} @top-right{content:none} @bottom-right{content:none} }
+
+* { box-sizing:border-box; margin:0; padding:0; print-color-adjust:exact; -webkit-print-color-adjust:exact; }
+html { font-size:10.1pt; }
+body { font-family:"Source Serif 4", Georgia, serif; color:var(--ink); background:var(--paper); line-height:1.58; text-rendering:optimizeLegibility; }
+
+/* ---------- cover ---------- */
+.cover { page:cover; width:210mm; height:296mm; background:#171310; color:#F5F1E8; position:relative; overflow:hidden; page-break-after:always; }
+.cover-inner { position:absolute; inset:0; padding:26mm 24mm; display:flex; flex-direction:column; }
+.cover .brand { font-family:"Inter"; font-weight:600; font-size:9.5pt; letter-spacing:0.34em; text-transform:uppercase; color:#C9BEA8; }
+.cover .kind { font-family:"JetBrains Mono"; font-size:8pt; color:#8A7F6C; margin-top:5mm; letter-spacing:0.06em; }
+.cover h1 { font-family:"Source Serif 4"; font-weight:700; font-size:34pt; line-height:1.14; margin-top:34mm; max-width:150mm; letter-spacing:-0.01em; }
+.cover h1 em { font-style:italic; color:#D98E5F; }
+.cover .sub { font-family:"Source Serif 4"; font-size:12.5pt; line-height:1.5; color:#BFB6A4; margin-top:9mm; max-width:140mm; }
+.cover .rule { width:34mm; height:1.4mm; background:#9A4B1F; margin-top:10mm; }
+.cover .meta { margin-top:auto; display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6mm; border-top:0.35mm solid #3A332B; padding-top:6mm; }
+.cover .meta div { font-family:"Inter"; font-size:7.6pt; line-height:1.7; color:#8A7F6C; }
+.cover .meta b { display:block; color:#E8E1D3; font-weight:600; font-size:8.4pt; }
+.cover .glyphs { position:absolute; right:-16mm; top:78mm; opacity:0.5; }
+
+/* ---------- structure ---------- */
+main { counter-reset: h2ctr; }
+section.sheet { page-break-before:always; }
+section.sheet.flow { page-break-before:auto; }
+
+h2 { font-family:"Inter"; font-weight:700; font-size:16.5pt; letter-spacing:-0.015em; line-height:1.2; margin:0 0 4.5mm; counter-increment:h2ctr; padding-top:1mm; }
+h2::before { content: counter(h2ctr) ; font-family:"JetBrains Mono"; font-weight:700; font-size:10pt; color:var(--accent); display:block; margin-bottom:1.6mm; }
+h2.nonum::before { content:none; } h2.nonum { counter-increment:none; }
+h3 { font-family:"Inter"; font-weight:600; font-size:10.6pt; letter-spacing:-0.005em; margin:6.5mm 0 2.2mm; break-after:avoid; }
+h3 .tag { color:var(--accent); font-family:"JetBrains Mono"; font-weight:700; font-size:8pt; margin-right:1.5mm; }
+h4 { font-family:"Inter"; font-weight:600; font-size:9pt; margin:4mm 0 1.5mm; break-after:avoid; }
+p { margin:0 0 2.8mm; }
+p.lede { font-size:11.6pt; line-height:1.6; color:var(--ink-soft); margin-bottom:5mm; }
+ul, ol { margin:0 0 3mm 4.5mm; }
+li { margin-bottom:1.4mm; }
+li > ul { margin-top:1.2mm; }
+strong { font-weight:700; }
+em { font-style:italic; }
+a { color:inherit; text-decoration:none; }
+hr.sp { border:none; height:0; margin:4mm 0 0; }
+
+/* code + refs */
+code, .m { font-family:"JetBrains Mono"; font-size:0.82em; background:var(--panel); padding:0.4mm 1.1mm; border-radius:1mm; white-space:nowrap; }
+.ref { font-family:"JetBrains Mono"; font-size:7.2pt; color:var(--muted); white-space:nowrap; }
+pre { font-family:"JetBrains Mono"; font-size:7.6pt; line-height:1.52; background:var(--panel); border:0.3mm solid var(--line); border-left:1mm solid var(--accent); border-radius:1.2mm; padding:3.2mm 3.6mm; margin:3mm 0 3.6mm; white-space:pre-wrap; break-inside:avoid; }
+pre code { background:none; padding:0; font-size:inherit; }
+pre .c { color:var(--muted); } pre .k { color:var(--accent); font-weight:700; } pre .s { color:var(--accent-2); } pre .g { color:#8C6D1F; }
+
+/* tables */
+table { width:100%; border-collapse:collapse; font-family:"Inter"; font-size:7.9pt; line-height:1.42; margin:3mm 0 4mm; break-inside:avoid; }
+th { font-weight:600; text-align:left; font-size:7.3pt; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-soft); border-bottom:0.5mm solid var(--ink); padding:1.6mm 2.4mm 1.2mm 0; }
+td { border-bottom:0.26mm solid var(--line); padding:1.7mm 2.4mm 1.7mm 0; vertical-align:top; }
+td code, th code { font-size:7.2pt; background:var(--panel); }
+tr:last-child td { border-bottom:0.4mm solid var(--line); }
+td.num { font-family:"JetBrains Mono"; }
+
+/* callouts */
+.note { background:var(--panel); border:0.3mm solid var(--line); border-radius:1.6mm; padding:3.2mm 4mm; margin:3.4mm 0 4mm; break-inside:avoid; }
+.note .nt { font-family:"Inter"; font-weight:700; font-size:7.4pt; letter-spacing:0.09em; text-transform:uppercase; color:var(--accent); display:block; margin-bottom:1.4mm; }
+.note.green .nt { color:var(--accent-2); }
+.note.red .nt { color:var(--bad); }
+.note p:last-child { margin-bottom:0; }
+.note p { font-size:9.4pt; }
+
+/* two-col utility */
+.cols { display:grid; grid-template-columns:1fr 1fr; gap:6mm; }
+
+/* figures */
+figure { margin:4mm 0 5mm; break-inside:avoid; }
+figure svg { width:100%; height:auto; display:block; }
+figcaption { font-family:"Inter"; font-size:7.5pt; color:var(--muted); margin-top:1.8mm; }
+figcaption b { color:var(--ink-soft); font-weight:600; }
+
+/* TOC */
+.toc { font-family:"Inter"; margin-top:6mm; }
+.toc .row { display:flex; align-items:baseline; gap:3mm; padding:2.1mm 0; border-bottom:0.26mm solid var(--line); }
+.toc .n { font-family:"JetBrains Mono"; font-weight:700; font-size:8.6pt; color:var(--accent); min-width:7mm; }
+.toc .t { font-weight:600; font-size:10pt; }
+.toc .d { margin-left:auto; font-size:7.8pt; color:var(--muted); text-align:right; max-width:78mm; }
+
+/* section kicker */
+.kicker { font-family:"Inter"; font-weight:600; font-size:7.4pt; letter-spacing:0.22em; text-transform:uppercase; color:var(--muted); margin-bottom:2.2mm; }
+
+.small { font-size:8.6pt; color:var(--ink-soft); }
+.keep { break-inside:avoid; }
+</style>
+</head>
+<body>
+
+<!-- ================= COVER ================= -->
+<div class="cover">
+  <div class="cover-inner">
+    <div class="brand">Beckett</div>
+    <div class="kind">DESIGN PROPOSAL · OPS-151 · --project beckett</div>
+    <svg class="glyphs" width="340" height="340" viewBox="0 0 340 340" fill="none">
+      <circle cx="170" cy="170" r="128" stroke="#2E2721" stroke-width="1.4"/>
+      <circle cx="170" cy="170" r="88" stroke="#2E2721" stroke-width="1.2"/>
+      <circle cx="170" cy="42" r="7" fill="#9A4B1F"/>
+      <circle cx="258" cy="170" r="7" fill="#4A4238"/>
+      <circle cx="170" cy="258" r="7" fill="#4A4238"/>
+      <circle cx="82" cy="170" r="7" fill="#4A4238"/>
+      <path d="M170 49 A121 121 0 0 1 251 170" stroke="#9A4B1F" stroke-width="2.4"/>
+      <circle cx="170" cy="170" r="4.5" fill="#C9BEA8"/>
+    </svg>
+    <h1>Run of Show<br><em>a workflow engine the concierge conducts</em></h1>
+    <div class="sub">A proposal to retire Plane as Beckett&rsquo;s execution backend and replace its one fixed ticket lifecycle with a per-task, concierge-authored workflow: stages, iteration budgets, parallel fan-out and gates composed at filing time — not compiled into the dispatcher.</div>
+    <div class="rule"></div>
+    <div class="meta">
+      <div><b>Author</b>Beckett — worker seat<br>Claude Fable 5 · high</div>
+      <div><b>Requested by</b>ro (owner)<br>Discord · OPS-151</div>
+      <div><b>Date</b>12 July 2026<br>rev 1</div>
+      <div><b>Status</b>Proposal — no code<br>grounded in v3.2 source</div>
+    </div>
+  </div>
+</div>
+<main>
+
+<!-- ================= TOC + TLDR ================= -->
+<section class="sheet flow">
+  <div class="kicker">In one page</div>
+  <h2 class="nonum" style="font-size:20pt">TL;DR</h2>
+  <p class="lede">Every piece of work Beckett takes on today — a copy tweak, a concurrency fix, a self-modification — marches through the same compiled-in pipeline: <code>todo → in_progress → in_review → done</code>, one implement seat, at most one review seat, three rework cycles, one live worker per ticket. That shape lives half in Plane (a remote SaaS ticket board we poll every few seconds) and half in a 3,200-line dispatcher switch statement. Changing it means changing Beckett&rsquo;s source and redeploying: adding <em>one</em> design stage cost us a new board, two new enum values, and surgery in five modules (OPS-111).</p>
+  <p class="lede" style="margin-bottom:2mm">This document proposes making the workflow itself <strong>data</strong>: a small per-task DAG — the <em>run of show</em> — that the concierge writes when it files work. Stages, iteration caps, parallel fan-out, join rules and human gates become fields in a spec, interpreted by a generic engine that keeps everything already proven: worktrees and the task/branch tree, per-stage casting, review gates, the journal, the courier, steering. Plane is first demoted to a read-only mirror, then retired.</p>
+
+  <div class="toc">
+    <div class="row"><span class="n">1</span><span class="t">Ground truth — how Plane runs Beckett today</span><span class="d">poller → dispatcher → spawn; states, casts, caps, journal, courier — with file:line receipts</span></div>
+    <div class="row"><span class="n">2</span><span class="t">The problem — one lifecycle, worn as a straitjacket</span><span class="d">six concrete places the fixed shape hurts, incl. the INT case study</span></div>
+    <div class="row"><span class="n">3</span><span class="t">The proposal — a per-task flow spec</span><span class="d">four node kinds; today&rsquo;s lifecycles fall out as two tiny specs</span></div>
+    <div class="row"><span class="n">4</span><span class="t">Execution semantics</span><span class="d">how a stage runs, how loops terminate, how parallel branches join, crash recovery</span></div>
+    <div class="row"><span class="n">5</span><span class="t">The authoring surface</span><span class="d">what the concierge writes at filing time; flow presets; what I&rsquo;d type for you</span></div>
+    <div class="row"><span class="n">6</span><span class="t">Migration off Plane</span><span class="d">three reversible phases; what replaces states, comments, IDs and the board UI</span></div>
+    <div class="row"><span class="n">7</span><span class="t">Tradeoffs, risks, open questions</span><span class="d">the workflow-engine trap, losing the board, cost blow-ups — and the honest unknowns</span></div>
+    <div class="row"><span class="n">A</span><span class="t">Appendix — today&rsquo;s lifecycles as flow specs</span><span class="d">byte-for-byte behavioural equivalence at cutover</span></div>
+  </div>
+
+  <div class="note" style="margin-top:6mm">
+    <span class="nt">How to read this</span>
+    <p>Everything in §1 is fact, verified against the working tree at commit <code>6fac13d</code> with <span class="ref">file:line</span> receipts. Everything from §3 on is proposal. The two legacy lifecycles reappear in Appendix A as flow specs, which is the backward-compatibility argument in one page: if the engine can run <em>those two specs</em> identically, cutover changes nothing until we ask it to.</p>
+  </div>
+</section>
+
+<!-- ================= 1. GROUND TRUTH ================= -->
+<section class="sheet">
+  <div class="kicker">What exists · verified against source</div>
+  <h2>Ground truth — how Plane runs Beckett today</h2>
+
+  <p>Beckett&rsquo;s execution backend is a self-hosted <strong>Plane</strong> instance (<code>plane.0xbeckett.me</code>). The concierge files work as Plane issues; a poller diffs the board into events; a dispatcher turns events into worker processes in git worktrees. One paragraph of architecture, five subsystems of detail.</p>
+
+  <figure>
+  <svg viewBox="0 0 760 236" xmlns="http://www.w3.org/2000/svg" font-family="Inter" font-size="10.5">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#44403A"/></marker>
+      <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#9A4B1F"/></marker>
+    </defs>
+    <!-- Discord -->
+    <rect x="8" y="86" width="92" height="46" rx="5" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+    <text x="54" y="106" text-anchor="middle" font-weight="600">Discord</text>
+    <text x="54" y="120" text-anchor="middle" font-size="8.5" fill="#78716A">owner ↔ Beckett</text>
+    <!-- Concierge -->
+    <rect x="138" y="86" width="104" height="46" rx="5" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+    <text x="190" y="106" text-anchor="middle" font-weight="600">Concierge</text>
+    <text x="190" y="120" text-anchor="middle" font-size="8.5" fill="#78716A">files &amp; steers tickets</text>
+    <!-- Plane -->
+    <rect x="286" y="52" width="170" height="116" rx="5" fill="#171310" stroke="#171310"/>
+    <text x="371" y="74" text-anchor="middle" font-weight="700" fill="#F5F1E8">Plane (SaaS board)</text>
+    <text x="371" y="90" text-anchor="middle" font-size="8.5" fill="#C9BEA8">issues · workflow states · comments</text>
+    <rect x="300" y="102" width="142" height="22" rx="3" fill="#2A231D"/>
+    <text x="371" y="117" text-anchor="middle" font-size="8.5" fill="#D98E5F" font-family="JetBrains Mono">beckett-cast · beckett-deps</text>
+    <rect x="300" y="130" width="142" height="22" rx="3" fill="#2A231D"/>
+    <text x="371" y="145" text-anchor="middle" font-size="8.5" fill="#D98E5F" font-family="JetBrains Mono">state_map per board</text>
+    <!-- Poller -->
+    <rect x="500" y="52" width="108" height="46" rx="5" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+    <text x="554" y="71" text-anchor="middle" font-weight="600">PlanePoller</text>
+    <text x="554" y="86" text-anchor="middle" font-size="8.5" fill="#78716A">diff → PollEvent[]</text>
+    <!-- Dispatcher -->
+    <rect x="500" y="122" width="108" height="46" rx="5" fill="#F7F5F0" stroke="#9A4B1F" stroke-width="1.6"/>
+    <text x="554" y="141" text-anchor="middle" font-weight="600">Dispatcher</text>
+    <text x="554" y="156" text-anchor="middle" font-size="8.5" fill="#78716A">state → action table</text>
+    <!-- Workers -->
+    <rect x="652" y="104" width="100" height="82" rx="5" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+    <text x="702" y="124" text-anchor="middle" font-weight="600">Workers</text>
+    <text x="702" y="139" text-anchor="middle" font-size="8.5" fill="#78716A">git worktrees</text>
+    <text x="702" y="153" text-anchor="middle" font-size="8.5" fill="#78716A">claude / codex / pi</text>
+    <text x="702" y="171" text-anchor="middle" font-size="8" font-family="JetBrains Mono" fill="#9A4B1F">done-signal JSON</text>
+    <!-- bottom rail -->
+    <rect x="286" y="196" width="150" height="32" rx="5" fill="#FFFFFF" stroke="#E0DBD1" stroke-width="1.2"/>
+    <text x="361" y="216" text-anchor="middle" font-size="9" fill="#44403A">journal  ~/.beckett/journal/*.log</text>
+    <rect x="472" y="196" width="136" height="32" rx="5" fill="#FFFFFF" stroke="#E0DBD1" stroke-width="1.2"/>
+    <text x="540" y="216" text-anchor="middle" font-size="9" fill="#44403A">publish-outbox → GitHub</text>
+    <rect x="8" y="196" width="242" height="32" rx="5" fill="#FFFFFF" stroke="#E0DBD1" stroke-width="1.2"/>
+    <text x="129" y="216" text-anchor="middle" font-size="9" fill="#44403A">task tree  ~/.beckett/tasks.json  (#N · #N.x · needs)</text>
+    <!-- arrows -->
+    <line x1="100" y1="109" x2="136" y2="109" stroke="#44403A" stroke-width="1.3" marker-end="url(#ar)"/>
+    <line x1="242" y1="102" x2="284" y2="94" stroke="#44403A" stroke-width="1.3" marker-end="url(#ar)"/>
+    <text x="258" y="88" font-size="8" fill="#78716A">REST</text>
+    <line x1="456" y1="75" x2="498" y2="75" stroke="#44403A" stroke-width="1.3" marker-end="url(#ar)"/>
+    <text x="462" y="66" font-size="8" fill="#78716A">poll ~5 s</text>
+    <line x1="554" y1="98" x2="554" y2="120" stroke="#9A4B1F" stroke-width="1.5" marker-end="url(#ar2)"/>
+    <line x1="608" y1="145" x2="650" y2="145" stroke="#9A4B1F" stroke-width="1.5" marker-end="url(#ar2)"/>
+    <text x="613" y="137" font-size="8" fill="#9A4B1F">spawn</text>
+    <path d="M500 158 Q 460 178 436 176" stroke="#44403A" stroke-width="1.2" fill="none" marker-end="url(#ar)"/>
+    <path d="M652 178 Q 630 196 610 204" stroke="#44403A" stroke-width="1.2" fill="none" marker-end="url(#ar)"/>
+    <path d="M508 122 Q 470 108 458 104" stroke="#44403A" stroke-width="1.2" fill="none" marker-end="url(#ar)"/>
+    <text x="452" y="120" font-size="8" fill="#78716A">setState / comment</text>
+  </svg>
+  <figcaption><b>Fig. 1 — the v3 loop.</b> The concierge writes to Plane; the poller diffs Plane into events; the dispatcher spawns workers and writes state back. All durable local artifacts (task tree, journal, outboxes) already live outside Plane.</figcaption>
+  </figure>
+
+  <h3><span class="tag">1.1</span>The state machine and its enum</h3>
+  <p><code>TicketState</code> is a fixed eight-value union <span class="ref">src/plane/types.ts:26</span> — <code>backlog</code>, <code>todo</code>, <code>design</code>, <code>design_review</code>, <code>in_progress</code>, <code>in_review</code>, <code>done</code>, <code>cancelled</code> — with <code>done</code>/<code>cancelled</code> terminal <span class="ref">types.ts:39</span>. Each Plane board carries a <code>state_map</code> renaming these onto its columns <span class="ref">src/config.ts:129</span>. The dispatcher consumes poll events through one hardcoded dispatch table <span class="ref">src/dispatch/dispatcher.ts:1003–1062</span>:</p>
+
+  <table>
+    <tr><th style="width:26%">Event / state entered</th><th style="width:30%">Guard</th><th>Action</th></tr>
+    <tr><td><code>design</code></td><td>INT board only, no live worker</td><td>spawn stage <code>design</code></td></tr>
+    <tr><td><code>in_progress</code></td><td>no live worker</td><td>spawn stage <code>implement</code></td></tr>
+    <tr><td><code>in_review</code></td><td>no publish hold, no live worker</td><td>spawn stage <code>review</code></td></tr>
+    <tr><td><code>done</code></td><td>—</td><td>reap · drain orphaned steers · <code>promoteDependents()</code></td></tr>
+    <tr><td><code>todo</code> / <code>backlog</code> / <code>design_review</code></td><td>—</td><td>park: abort+reap, commit WIP, keep worktree</td></tr>
+    <tr><td><code>cancelled</code></td><td>—</td><td>abort · reap · dispose</td></tr>
+    <tr><td><code>comment_added</code></td><td>live worker, author ≠ Beckett</td><td><code>handle.nudge(body)</code> — steering</td></tr>
+  </table>
+
+  <p>Stage names are string literals switched on in three places: the spawn table above, <code>castFor()</code> <span class="ref">dispatcher.ts:1998–2005</span> and the worker-done router <span class="ref">dispatcher.ts:2152–2161</span> (<code>design</code>, <code>design_check</code>, <code>implement</code>, <code>review</code>). A new stage is therefore a source change in at least three switch statements plus the enum, the poller&rsquo;s recovery list, and every board&rsquo;s <code>state_map</code>.</p>
+
+  <h3><span class="tag">1.2</span>Casting, effort and the review gate</h3>
+  <p>Casting is per-stage: a ticket description carries a fenced <code>beckett-cast</code> JSON block mapping stage name → <code>HarnessSpec</code> (<code>{harness, model, effort, reviewTier}</code>) <span class="ref">src/plane/cast.ts:29–59</span>. The <code>Casting</code> record is deliberately open-ended — arbitrary stage names already type-check <span class="ref">src/plane/types.ts:71–75</span> — but only the four hardcoded stage strings are ever spawned. Two consequential rules:</p>
+  <ul>
+    <li><strong>The review gate is inferred from a model knob.</strong> <code>reviewTierFor()</code> <span class="ref">dispatcher.ts:2475–2479</span>: implement effort <code>low|medium</code> → <code>self</code> (one pass, straight to done); <code>high|xhigh|unset</code> → <code>fresh</code> (spawn an adversarial reviewer). An explicit <code>reviewTier</code> field overrides — a patch bolted on precisely because effort was overloaded.</li>
+    <li><strong>Effort also sets the envelope</strong> — turn caps and wall-clock via <code>ENVELOPE_BY_EFFORT</code> <span class="ref">src/dispatch/spawn.ts:217–222</span> (low 15 turns/10 min … xhigh 100 turns/60 min).</li>
+  </ul>
+  <p>Named cast presets live in <code>~/.beckett/presets.json</code>, hot-reloaded on every filing <span class="ref">src/plane/presets.ts:76–112</span> — a precedent this proposal leans on: <em>per-task behaviour as user-editable data worked</em>.</p>
+
+  <h3><span class="tag">1.3</span>Iteration policy: four global constants</h3>
+  <table>
+    <tr><th>Loop</th><th style="width:22%">Cap</th><th>On exhaustion</th></tr>
+    <tr><td>review fail → re-implement (&ldquo;rework&rdquo;)</td><td class="num">MAX_REWORK_CYCLES = 3 <span class="ref">dispatcher.ts:199</span></td><td>comment, park in <code>in_review</code> for a human</td></tr>
+    <tr><td>implement crash/timeout retry</td><td class="num">MAX_IMPLEMENT_RETRIES = 3 <span class="ref">dispatcher.ts:209</span></td><td>publish WIP, move to <code>todo</code></td></tr>
+    <tr><td>reviewer infra failure</td><td class="num">MAX_REVIEW_INFRA_RETRIES = 1 <span class="ref">dispatcher.ts:212</span></td><td>park in <code>in_review</code></td></tr>
+    <tr><td>design ↔ completeness check</td><td class="num">MAX_DESIGN_CYCLES = 2 <span class="ref">dispatcher.ts:202</span></td><td>escalate to <code>design_review</code> with ⚠ note</td></tr>
+  </table>
+  <p>These are compile-time constants. No ticket can ask for one shot, or six; the concierge&rsquo;s only lever over iteration is not filing the work.</p>
+
+  <h3><span class="tag">1.4</span>One worker per ticket, worktrees, done-signals</h3>
+  <p>The dispatcher enforces <strong>at most one live worker per ticket</strong> (the <code>workers</code> map, staffing dedup and FIFO pending queue <span class="ref">dispatcher.ts:450, 1313–1379</span>) under a global <code>max_workers</code> cap. A spawn allocates a persistent worktree at <code>&lt;repo&gt;/.beckett/worktrees/&lt;id&gt;</code> on branch <code>beckett/task-N[.x]</code>, installs the scope-guard and the done-signal schema, captures the review base SHA on first implement <span class="ref">dispatcher.ts:1573–1586</span>, and periodically checkpoint-commits live work (OPS-125) <span class="ref">dispatcher.ts:640–709</span>. Workers finish by emitting a structured done-signal <code>{status: complete|blocked|partial, summary, filesChanged, checksRun, blockedReason}</code> <span class="ref">spawn.ts:198–209</span> — the single edge the state machine branches on.</p>
+
+  <h3><span class="tag">1.5</span>Steering, journal, courier, task tree</h3>
+  <ul>
+    <li><strong>Steering.</strong> A human comment on an in-flight ticket becomes a live <code>nudge</code> (receipts: delivered / queued / will-restart / dropped); with no live worker it is buffered in <code>pendingSteers</code>, persisted, and folded into the next worker&rsquo;s brief <span class="ref">dispatcher.ts:1070–1158, 1609–1635</span>. Plane comments are the transport; Discord is where the human actually typed.</li>
+    <li><strong>Journal.</strong> An append-only per-ticket log under <code>~/.beckett/journal/&lt;ticket&gt;.log</code>, fed fire-and-forget from worker events, read on demand via <code>beckett journal &lt;ticket&gt; --tail N</code> <span class="ref">src/progress/journal.ts</span>. Already fully local; already richer than Plane&rsquo;s comment trail.</li>
+    <li><strong>Courier / publish.</strong> Finishing a ticket publishes to GitHub via a durable JSONL outbox with 1 m/5 m/30 m retries; <code>dispatcher.courier(id)</code> hands exclusive publish ownership to a human <span class="ref">src/dispatch/publish-outbox.ts, dispatcher.ts:831–839</span>. Plane state writes themselves go through a second durable outbox (<code>advance-outbox</code>) because remote writes fail often enough to need one <span class="ref">src/dispatch/advance-outbox.ts</span>.</li>
+    <li><strong>Task tree.</strong> The user-facing <code>#N</code> / <code>#N.x</code> tree with <code>needs</code> dependencies lives in <code>~/.beckett/tasks.json</code> — a local, locked, versioned registry that already mirrors every Plane state into a branch status (<code>backlog→waiting, … in_review→review</code>) <span class="ref">src/task/store.ts:141–152</span>. Cross-ticket DAG promotion (<code>blockedBy</code> → promote on done) is dispatcher logic, not Plane&rsquo;s <span class="ref">dispatcher.ts:2889–2926</span>.</li>
+  </ul>
+
+  <div class="note green">
+    <span class="nt">The load-bearing observation</span>
+    <p>Plane contributes exactly four things: issue storage, a state column per ticket, comments-as-transport, and a human-viewable board. Everything Beckett actually <em>runs on</em> — worktrees, casting, envelopes, done-signals, steering buffers, journal, outboxes, the #N tree, DAG promotion — is already local, already durable, and already ours. The migration in §6 is small precisely because of this.</p>
+  </div>
+</section>
+<!-- ================= 2. PROBLEM ================= -->
+<section class="sheet">
+  <div class="kicker">Why change · six concrete failures</div>
+  <h2>The problem — one lifecycle, worn as a straitjacket</h2>
+
+  <p class="lede">Nothing in §1 is broken code. The machine is careful, durable and observable. What it cannot do is <em>vary</em>: the shape of work is compiled in, so every task — whatever its nature — is forced through the same pipe, and every new shape is a Beckett source change plus a deploy.</p>
+
+  <figure>
+  <svg viewBox="0 0 760 168" xmlns="http://www.w3.org/2000/svg" font-family="Inter" font-size="10">
+    <defs>
+      <marker id="pa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#44403A"/></marker>
+      <marker id="pb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8C2B2B"/></marker>
+    </defs>
+    <!-- states -->
+    <g font-weight="600" text-anchor="middle">
+      <rect x="10"  y="62" width="86" height="34" rx="17" fill="#FFFFFF" stroke="#E0DBD1" stroke-width="1.4"/><text x="53" y="83" fill="#78716A">backlog</text>
+      <rect x="128" y="62" width="86" height="34" rx="17" fill="#FFFFFF" stroke="#E0DBD1" stroke-width="1.4"/><text x="171" y="83" fill="#78716A">todo</text>
+      <rect x="246" y="62" width="118" height="34" rx="17" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.5"/><text x="305" y="83">in_progress</text>
+      <rect x="396" y="62" width="108" height="34" rx="17" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.5"/><text x="450" y="83">in_review</text>
+      <rect x="536" y="62" width="80" height="34" rx="17" fill="#171310"/><text x="576" y="83" fill="#F5F1E8">done</text>
+    </g>
+    <!-- arrows -->
+    <line x1="96" y1="79" x2="126" y2="79" stroke="#44403A" stroke-width="1.3" marker-end="url(#pa)"/>
+    <line x1="214" y1="79" x2="244" y2="79" stroke="#44403A" stroke-width="1.3" marker-end="url(#pa)"/>
+    <line x1="364" y1="79" x2="394" y2="79" stroke="#44403A" stroke-width="1.3" marker-end="url(#pa)"/>
+    <line x1="504" y1="79" x2="534" y2="79" stroke="#44403A" stroke-width="1.3" marker-end="url(#pa)"/>
+    <!-- self bypass -->
+    <path d="M305 62 Q 400 8 570 60" stroke="#44403A" stroke-width="1.2" fill="none" stroke-dasharray="4 3" marker-end="url(#pa)"/>
+    <text x="418" y="26" font-size="8.5" fill="#78716A">effort low/medium → &ldquo;self&rdquo; gate skips review</text>
+    <!-- rework loop -->
+    <path d="M440 96 Q 380 140 316 98" stroke="#8C2B2B" stroke-width="1.4" fill="none" marker-end="url(#pb)"/>
+    <text x="378" y="136" font-size="8.5" fill="#8C2B2B" text-anchor="middle">rework ≤ MAX_REWORK_CYCLES = 3 (global constant)</text>
+    <!-- annotations -->
+    <text x="305" y="116" font-size="8.5" fill="#78716A" text-anchor="middle">stage &ldquo;implement&rdquo;</text>
+    <text x="450" y="116" font-size="8.5" fill="#78716A" text-anchor="middle">stage &ldquo;review&rdquo; · 0 or 1 seat</text>
+    <text x="660" y="70" font-size="8.5" fill="#78716A">every ticket, every board,</text>
+    <text x="660" y="82" font-size="8.5" fill="#78716A">every kind of work —</text>
+    <text x="660" y="94" font-size="8.5" fill="#78716A">same pipe, same caps,</text>
+    <text x="660" y="106" font-size="8.5" fill="#78716A">one live worker at a time</text>
+  </svg>
+  <figcaption><b>Fig. 2 — the compiled-in lifecycle.</b> The only per-task levers are which model sits in each of two seats and an effort knob that doubles, implicitly, as the review-gate switch.</figcaption>
+  </figure>
+
+  <h3><span class="tag">2.1</span>Case study: adding one stage took a board, an enum, and five modules</h3>
+  <p>OPS-111 wanted exactly one new thing: a <em>design</em> stage with a human approval gate before implementation. Because the lifecycle is compiled in, the delivered change (OPS-111 → build) required: a <strong>new Plane board</strong> (INT) so OPS wouldn&rsquo;t grow columns; <strong>two new enum values</strong> (<code>design</code>, <code>design_review</code>) in <code>TicketState</code>; board-guarded arms in the dispatcher switch; a new <code>design_check</code> pseudo-stage with its own hardcoded cast (Haiku, low) and its own constant (<code>MAX_DESIGN_CYCLES</code>); poller <code>prime()</code> changes so restarts re-staff <code>design</code> but not <code>design_review</code>; and Plane-side state provisioning with the right column groups and colours <span class="ref">docs/design/int-flow.md · dispatcher.ts:2180–2239 · poll.ts:180</span>. That is the cost of <em>one</em> stage, designed by the book. The next shape — say, a research stage, or a second reviewer — costs the same again. The lifecycle has a marginal cost per variant that data should have made ~zero.</p>
+
+  <h3><span class="tag">2.2</span>Iteration budgets are global, not per task</h3>
+  <p>A README tweak and a subtle concurrency fix both get exactly three rework cycles, three crash retries, two design bounces (§1.3). The concierge — the seat with actual context about stakes, urgency and budget — cannot say &ldquo;one pass, no retries, this is trivial&rdquo; or &ldquo;keep iterating up to six rounds against the eval, it&rsquo;s worth it.&rdquo; When a cap is wrong the options are: edit a constant in <code>dispatcher.ts</code> and redeploy, or babysit manually via state flips.</p>
+
+  <h3><span class="tag">2.3</span>No parallelism inside a task</h3>
+  <p>One live worker per ticket is structural <span class="ref">dispatcher.ts:450</span>. Things ro has wanted that this forbids outright:</p>
+  <ul>
+    <li><strong>Bake-offs</strong> — three candidate implementations from different casts, one judge picks a winner. Today that is three hand-filed tickets, no shared base management, and the judging is ro reading diffs.</li>
+    <li><strong>Panel review</strong> — correctness, security and taste reviewers running <em>concurrently</em> on one diff. Today: one reviewer seat, serial by construction.</li>
+    <li><strong>Research fan-out</strong> — N scouts reading different subsystems before a synthesis stage. Today this only exists <em>inside</em> a single worker&rsquo;s subagents, invisible to the engine, unsteerable per-branch, and un-cast (the worker picks its own subagents; the concierge can&rsquo;t put Fable on one scout and Haiku on the rest).</li>
+  </ul>
+  <p>The only parallelism the engine knows is <em>between tickets</em> via <code>beckett plan --needs</code> — the right tool for genuinely separate deliverables, wrong for branches of one task that share a worktree lineage and must join.</p>
+
+  <h3><span class="tag">2.4</span>The workflow is inferred from a model knob</h3>
+  <p>Whether a ticket gets reviewed at all is a <em>side effect of effort</em> (§1.2) — and an <em>omitted</em> effort silently buys the expensive fresh-review tier. <code>reviewTier</code> exists only to patch this overload. The shape of the pipeline should be a first-class, visible declaration, not something reverse-engineered from how hard the implement seat is thinking. (The presets doc already flags this as a foot-gun: &ldquo;presets must always name an explicit effort&rdquo; <span class="ref">docs/design/cast-presets.md §1</span>.)</p>
+
+  <h3><span class="tag">2.5</span>State lives in someone else&rsquo;s database, structured data in a Markdown field</h3>
+  <p>Every stage transition is a remote HTTP write to Plane — unreliable enough that a durable <code>advance-outbox</code> exists solely to retry them <span class="ref">src/dispatch/advance-outbox.ts</span> — and every reaction is gated on a ~5 s poll diff. Meanwhile the actually-structured task data (cast, dependencies, project, branch ref, start state, origin channel) is smuggled through Plane&rsquo;s description field as five fenced code blocks and an HTML comment <span class="ref">cast.ts:29–42</span>, because the board has no schema for any of it. The VID board bends video production onto the same six coarse states, and the client folds any unrecognised &ldquo;started&rdquo; column back to <code>in_progress</code> to survive human-added columns <span class="ref">client.ts:574</span>. These are the classic scars of a tool being used as a database it isn&rsquo;t.</p>
+
+  <h3><span class="tag">2.6</span>The concierge can&rsquo;t compose; it can only pick</h3>
+  <p>The concierge&rsquo;s authoring surface today is: title, body, criteria, board, entry state, and which models sit in the fixed seats (<code>--cast</code>/<code>--preset</code>). It cannot add a stage, split a stage, gate a stage, cap a loop, or fan anything out — the exact dimensions ro keeps asking to vary per task. Every one of those requests currently becomes an OPS ticket against Beckett&rsquo;s own source.</p>
+
+  <div class="note red">
+    <span class="nt">The requirement, stated once</span>
+    <p>The concierge must be able to <strong>dictate, per task, how many stages there are, what runs in each, how many iterations each loop gets, and how much parallelism to spend</strong> — at filing time, as data, without touching Beckett&rsquo;s source or Plane&rsquo;s schema. Everything in §3–§5 is the smallest design we can find that delivers exactly that and nothing more.</p>
+  </div>
+</section>
+<!-- ================= 3. PROPOSAL ================= -->
+<section class="sheet">
+  <div class="kicker">The proposal · workflow as data</div>
+  <h2>The proposal — a per-task flow spec</h2>
+
+  <p class="lede">Replace the compiled-in lifecycle with a small, validated document — the <strong>flow spec</strong>, or <em>run of show</em> — attached to every task at filing time. The dispatcher&rsquo;s hardcoded state→action table becomes a generic interpreter over exactly <strong>four node kinds</strong>. Everything below the node boundary (worktrees, casting, envelopes, done-signals, journal, steering, courier) is reused unchanged.</p>
+
+  <h3><span class="tag">3.1</span>Design principles</h3>
+  <ul>
+    <li><strong>Small algebra, closed set.</strong> Four node kinds: <code>worker</code>, <code>gate</code>, <code>fanout</code>, <code>join</code>. No expressions, no conditionals beyond pass/fail edges, no user-defined node types. Anything fancier must arrive as a fifth kind with its own design doc — that is the fence against the workflow-engine tarpit (§7.1).</li>
+    <li><strong>Every loop is bounded by construction.</strong> A spec that could run forever does not validate. Caps are per-node fields, defaulted, not global constants.</li>
+    <li><strong>Today&rsquo;s behaviour is two specs.</strong> The OPS and INT lifecycles must be expressible byte-for-byte (Appendix A), so cutover is a no-op until the concierge starts writing new shapes.</li>
+    <li><strong>The concierge composes; the engine conducts.</strong> Authoring is data + presets (§5); execution, recovery and budget enforcement are the engine&rsquo;s (§4). The worker never sees the flow — it still gets a brief, a worktree, and a done-signal schema.</li>
+  </ul>
+
+  <h3><span class="tag">3.2</span>The data model</h3>
+  <pre><code><span class="c">// All of this validates with zod at filing time, like castings do today.</span>
+<span class="k">interface</span> FlowSpec {
+  version: <span class="s">1</span>;
+  entry: NodeId;                          <span class="c">// where the run starts</span>
+  nodes: Record&lt;NodeId, FlowNode&gt;;
+  budget?: {                              <span class="c">// hard ceilings for the whole run</span>
+    maxConcurrent?: <span class="k">number</span>;               <span class="c">// this task's worker slots (≤ global max_workers)</span>
+    usd?: <span class="k">number</span>;                         <span class="c">// spend cap across all seats</span>
+    wallClockS?: <span class="k">number</span>;
+  };
+}
+<span class="k">type</span> FlowNode = WorkerNode | GateNode | FanoutNode | JoinNode;
+
+<span class="k">interface</span> WorkerNode {                    <span class="c">// spawn one cast seat in the task worktree</span>
+  kind: <span class="s">"worker"</span>;
+  cast: HarnessSpec;                      <span class="c">// existing {harness, model, effort} — unchanged</span>
+  brief?: <span class="k">string</span>;                         <span class="c">// stage instruction appended to the ticket body</span>
+  artifact?: <span class="k">string</span>;                      <span class="c">// expected output path, e.g. "docs/design/&lt;id&gt;.md"</span>
+  onPass: NodeId | <span class="s">"done"</span>;                <span class="c">// edge taken on done-signal "complete"</span>
+  onFail: NodeId | <span class="s">"park"</span>;                <span class="c">// edge on "blocked"/"partial"/error; park = hand to human</span>
+  maxVisits?: <span class="k">number</span>;                     <span class="c">// re-entry cap for THIS node (default 3; rework generalised)</span>
+  retries?: <span class="k">number</span>;                       <span class="c">// same-visit crash/timeout retries (default 3)</span>
+}
+<span class="k">interface</span> GateNode {                      <span class="c">// a decision point: human or cheap model check</span>
+  kind: <span class="s">"gate"</span>;
+  by: <span class="s">"human"</span>                             <span class="c">// PARKED: no worker, zero tokens, concierge pings channel</span>
+    | { cast: HarnessSpec; rubric: <span class="k">string</span> }; <span class="c">// LIVE: cheap check (generalises design_check)</span>
+  onPass: NodeId | <span class="s">"done"</span>;
+  onFail: NodeId | <span class="s">"park"</span>;
+  maxFails?: <span class="k">number</span>;                      <span class="c">// bounces before it parks anyway (design's ≤2, per node)</span>
+}
+<span class="k">interface</span> FanoutNode {                    <span class="c">// N parallel branches of THIS task</span>
+  kind: <span class="s">"fanout"</span>;
+  arms: { cast: HarnessSpec; brief?: <span class="k">string</span> }[];   <span class="c">// explicit arms; or {template, n} sugar</span>
+  isolation: <span class="s">"worktree-each"</span> | <span class="s">"shared"</span>; <span class="c">// writers isolate; read-only scouts may share</span>
+  join: NodeId;                           <span class="c">// every arm's edges converge on one JoinNode</span>
+}
+<span class="k">interface</span> JoinNode {                      <span class="c">// how parallel arms become one line again</span>
+  kind: <span class="s">"join"</span>;
+  strategy: <span class="s">"all-merge"</span>                   <span class="c">// merge every arm's branch (deps-merge machinery reused)</span>
+          | <span class="s">"first"</span>                       <span class="c">// first complete wins; engine aborts the rest</span>
+          | <span class="s">"quorum"</span>                      <span class="c">// k-of-n verdict nodes agree (k in `quorumK`)</span>
+          | { judge: HarnessSpec };       <span class="c">// a cast seat reads all arms' diffs, picks/synthesises</span>
+  quorumK?: <span class="k">number</span>;
+  onPass: NodeId | <span class="s">"done"</span>;
+  onFail: NodeId | <span class="s">"park"</span>;
+}</code></pre>
+
+  <p>The spec travels in a fenced <code>beckett-flow</code> block exactly where <code>beckett-cast</code> lives today (and, after migration, as a typed field in the local task record — §6). Casting stays a separate concern: the flow names <em>seats</em>; the cast fills them. A flow with no <code>beckett-flow</code> block is compiled from the cast exactly as today (effort → gate), so existing filings never break.</p>
+
+  <h3><span class="tag">3.3</span>Validation — what the linter refuses at filing time</h3>
+  <ul>
+    <li>Unknown edge targets; unreachable nodes; an <code>entry</code> that isn&rsquo;t a node; fanout arms whose edges escape their join.</li>
+    <li><strong>Unbounded cycles:</strong> every cycle in the graph must pass through a node whose <code>maxVisits</code>/<code>maxFails</code> is finite (all default finite; setting one to <code>Infinity</code> is simply not representable).</li>
+    <li>Budget sanity: <code>maxConcurrent</code> ≤ global <code>max_workers</code>; a Fable seat anywhere in the spec triggers the existing confirm-before-cast handshake — flow authoring does not bypass the cast doctrine.</li>
+    <li>Cast validation per seat via the existing <code>validateCasting</code> (blocked models, malformed efforts) <span class="ref">presets.ts:76–112</span>.</li>
+  </ul>
+
+  <h3><span class="tag">3.4</span>What today&rsquo;s shapes look like (proof of containment)</h3>
+  <p>The default reviewed lifecycle, as a spec — this is <em>all</em> of it:</p>
+  <pre><code>{ <span class="s">"version"</span>: 1, <span class="s">"entry"</span>: <span class="s">"implement"</span>, <span class="s">"nodes"</span>: {
+    <span class="s">"implement"</span>: { <span class="s">"kind"</span>:<span class="s">"worker"</span>, <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"pi"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
+                   <span class="s">"onPass"</span>:<span class="s">"review"</span>, <span class="s">"onFail"</span>:<span class="s">"park"</span>, <span class="s">"maxVisits"</span>:3, <span class="s">"retries"</span>:3 },
+    <span class="s">"review"</span>:    { <span class="s">"kind"</span>:<span class="s">"gate"</span>, <span class="s">"by"</span>:{<span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-sonnet-5"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
+                   <span class="s">"rubric"</span>:<span class="s">"criteria-vs-diff"</span>}, <span class="s">"onPass"</span>:<span class="s">"done"</span>, <span class="s">"onFail"</span>:<span class="s">"implement"</span>, <span class="s">"maxFails"</span>:3 }
+} }</code></pre>
+  <p class="small">One-pass work is the same spec minus the gate (<code>onPass:"done"</code>). The INT design flow adds two nodes in front — a <code>design</code> worker and a <code>human</code> gate — instead of two enum values, a board, and five modules. All three appear in full in Appendix A.</p>
+
+  <h3><span class="tag">3.5</span>And what today cannot do at all</h3>
+  <figure>
+  <svg viewBox="0 0 760 232" xmlns="http://www.w3.org/2000/svg" font-family="Inter" font-size="9.5">
+    <defs>
+      <marker id="fa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#44403A"/></marker>
+      <marker id="fb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8C2B2B"/></marker>
+    </defs>
+    <g text-anchor="middle">
+      <!-- design -->
+      <rect x="8" y="88" width="96" height="44" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.4"/>
+      <text x="56" y="107" font-weight="600">design</text>
+      <text x="56" y="121" font-size="8" fill="#78716A">opus · high</text>
+      <!-- gate human -->
+      <g transform="translate(150,110)"><path d="M0 -26 L30 0 L0 26 L-30 0 Z" fill="#FFFFFF" stroke="#9A4B1F" stroke-width="1.6"/>
+      <text y="-2" font-weight="600" font-size="8.6" fill="#9A4B1F">gate</text><text y="10" font-size="7.6" fill="#9A4B1F">human</text></g>
+      <!-- fanout bar -->
+      <rect x="222" y="70" width="7" height="80" rx="2" fill="#2F5D50"/>
+      <text x="226" y="62" font-size="8" fill="#2F5D50" font-weight="600">fan-out</text>
+      <!-- arms -->
+      <rect x="262" y="34" width="118" height="40" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+      <text x="321" y="51" font-weight="600">implement A</text><text x="321" y="65" font-size="8" fill="#78716A">terra · high · worktree A</text>
+      <rect x="262" y="90" width="118" height="40" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+      <text x="321" y="107" font-weight="600">implement B</text><text x="321" y="121" font-size="8" fill="#78716A">opus · high · worktree B</text>
+      <rect x="262" y="146" width="118" height="40" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+      <text x="321" y="163" font-weight="600">implement C</text><text x="321" y="177" font-size="8" fill="#78716A">codex · high · worktree C</text>
+      <!-- join judge -->
+      <rect x="428" y="88" width="104" height="44" rx="6" fill="#FFFFFF" stroke="#2F5D50" stroke-width="1.7"/>
+      <text x="480" y="106" font-weight="600" fill="#2F5D50">join · judge</text>
+      <text x="480" y="120" font-size="8" fill="#2F5D50">fable · high picks one</text>
+      <!-- review -->
+      <rect x="576" y="88" width="96" height="44" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.4"/>
+      <text x="624" y="106" font-weight="600">review</text>
+      <text x="624" y="120" font-size="8" fill="#78716A">sonnet · high</text>
+      <!-- done -->
+      <rect x="704" y="93" width="50" height="34" rx="17" fill="#171310"/><text x="729" y="114" fill="#F5F1E8" font-weight="600">done</text>
+    </g>
+    <!-- arrows -->
+    <line x1="104" y1="110" x2="118" y2="110" stroke="#44403A" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="182" y1="110" x2="220" y2="110" stroke="#44403A" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="229" y1="84"  x2="260" y2="58"  stroke="#2F5D50" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="229" y1="110" x2="260" y2="110" stroke="#2F5D50" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="229" y1="136" x2="260" y2="163" stroke="#2F5D50" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="380" y1="56"  x2="426" y2="96"  stroke="#44403A" stroke-width="1.2" marker-end="url(#fa)"/>
+    <line x1="380" y1="110" x2="426" y2="110" stroke="#44403A" stroke-width="1.2" marker-end="url(#fa)"/>
+    <line x1="380" y1="165" x2="426" y2="124" stroke="#44403A" stroke-width="1.2" marker-end="url(#fa)"/>
+    <line x1="532" y1="110" x2="574" y2="110" stroke="#44403A" stroke-width="1.3" marker-end="url(#fa)"/>
+    <line x1="672" y1="110" x2="702" y2="110" stroke="#44403A" stroke-width="1.3" marker-end="url(#fa)"/>
+    <!-- fail edge review -> judge? back to winner rework -->
+    <path d="M624 132 Q 560 176 484 134" stroke="#8C2B2B" stroke-width="1.3" fill="none" marker-end="url(#fb)"/>
+    <text x="556" y="172" font-size="8" fill="#8C2B2B" text-anchor="middle">onFail → judge (≤2 visits), then park</text>
+    <!-- gate fail back to design -->
+    <path d="M150 84 Q 110 52 62 86" stroke="#8C2B2B" stroke-width="1.3" fill="none" marker-end="url(#fb)"/>
+    <text x="106" y="46" font-size="8" fill="#8C2B2B" text-anchor="middle">changes requested (≤2)</text>
+  </svg>
+  <figcaption><b>Fig. 3 — a bake-off run of show.</b> Design → human gate → three isolated candidate implementations → a judge join that picks (or synthesises) a winner → fresh review → done. Six nodes of data. Under the current engine this is three hand-filed tickets, a human doing the judging, and no joint lineage.</figcaption>
+  </figure>
+</section>
+<!-- ================= 4. EXECUTION ================= -->
+<section class="sheet">
+  <div class="kicker">Runtime · the stage manager</div>
+  <h2>Execution semantics</h2>
+
+  <p class="lede">The engine — call it the <strong>stage manager</strong> — is a per-task interpreter with one job: hold a durable <code>FlowRun</code> record, advance cursors along edges when done-signals arrive, and enforce budgets. It replaces the dispatcher&rsquo;s state-switch; it deliberately does <em>not</em> replace the spawn path, the drivers, or any durability machinery.</p>
+
+  <h3><span class="tag">4.1</span>The run record</h3>
+  <pre><code><span class="k">interface</span> FlowRun {
+  taskRef: <span class="k">string</span>;                     <span class="c">// "#42.1" — the existing tree ref stays the primary key</span>
+  spec: FlowSpec;                       <span class="c">// frozen copy at filing time (edits create a new rev)</span>
+  status: <span class="s">"running"</span> | <span class="s">"parked"</span> | <span class="s">"done"</span> | <span class="s">"cancelled"</span>;
+  cursors: Cursor[];                    <span class="c">// exactly 1, except between fanout and join</span>
+  visits: Record&lt;NodeId, <span class="k">number</span>&gt;;       <span class="c">// per-node re-entry counters (replaces reworkCount et al.)</span>
+  parked?: { node: NodeId; reason: <span class="k">string</span>; since: <span class="k">string</span> };
+  spend: { usd: <span class="k">number</span>; byNode: Record&lt;NodeId, <span class="k">number</span>&gt; };
+}
+<span class="k">interface</span> Cursor { node: NodeId; arm?: <span class="k">number</span>; workerId?: <span class="k">string</span>; branch?: <span class="k">string</span>; }</code></pre>
+  <p>Runs are <strong>event-sourced</strong>: every transition (<code>node_entered</code>, <code>signal_received</code>, <code>edge_taken</code>, <code>parked</code>, <code>budget_hit</code>…) is appended to <code>~/.beckett/runs/&lt;ref&gt;.jsonl</code> and the record above is just the fold. This is the same durability idiom the codebase already trusts — the journal, the advance-outbox and the publish-outbox are all append-only JSONL <span class="ref">journal.ts · advance-outbox.ts:49–104</span> — promoted to being the source of truth instead of a shadow of Plane&rsquo;s.</p>
+
+  <h3><span class="tag">4.2</span>How a stage runs — nothing new below the node</h3>
+  <p>Entering a <code>worker</code> node calls today&rsquo;s spawn path verbatim <span class="ref">dispatcher.ts:1479–1729 · spawn.ts:491</span>: allocate/reuse the task worktree, install scope-guard + done-signal schema, build the brief (ticket body + node <code>brief</code> + drained steers), apply the effort envelope, register checkpoint commits. The node completes when the done-signal arrives: <code>complete</code> takes <code>onPass</code>; <code>blocked</code>/<code>partial</code>/process-error takes <code>onFail</code> (after same-visit <code>retries</code> for infra failures, preserving today&rsquo;s crash/auth/rate-limit ladder <span class="ref">dispatcher.ts:1844–1930, 2356–2442</span>). The LIVE/PARKED distinction survives intact: <code>worker</code> and model-<code>gate</code> nodes are LIVE; <code>human</code> gates and <code>park</code> are PARKED — no process, zero tokens, restart-inert, exactly the property <code>design_review</code> proved out <span class="ref">poll.ts:242–293</span>.</p>
+
+  <h3><span class="tag">4.3</span>How loops terminate — always, by construction</h3>
+  <ul>
+    <li><strong>Per-node:</strong> entering a node increments <code>visits[node]</code>; exceeding <code>maxVisits</code> (or a gate&rsquo;s <code>maxFails</code>) diverts the edge to <code>park</code> with a journal note and a concierge ping — today&rsquo;s &ldquo;three strikes then leave in <code>in_review</code> for a human&rdquo; <span class="ref">dispatcher.ts:2756–2783</span>, generalised and made per-task data.</li>
+    <li><strong>Per-run:</strong> the <code>budget</code> ceilings (spend, wall-clock) are checked before every spawn; a breach parks the run with <code>budget_hit</code>. A parked run never burns another token until a human (or the concierge, with authority) resumes it.</li>
+    <li><strong>Statically:</strong> the linter already refused any cycle not cut by a finite counter (§3.3), so the dynamic checks are enforcement, not the proof.</li>
+  </ul>
+
+  <h3><span class="tag">4.4</span>How parallel branches run and join</h3>
+  <p>A <code>fanout</code> node forks the cursor: each arm gets its own worktree and branch — <code>beckett/task-42.1/arm-2</code> — via the same <code>createWorktree</code> machinery, from the same base SHA (captured exactly as the review base is today <span class="ref">dispatcher.ts:1573–1586</span>). Arms count against <code>budget.maxConcurrent</code> and the global <code>max_workers</code> cap; excess arms queue in the existing FIFO. Join strategies:</p>
+  <table>
+    <tr><th style="width:18%">Strategy</th><th>Semantics</th><th style="width:34%">Reuses</th></tr>
+    <tr><td><code>all-merge</code></td><td>Wait for every arm&rsquo;s <code>complete</code>; merge arm branches into the task branch in arm order; conflict → <code>onFail</code>.</td><td><code>mergeBranchesIntoWorktree()</code> — already merges dependency branches today <span class="ref">worktree.ts</span></td></tr>
+    <tr><td><code>first</code></td><td>First <code>complete</code> wins; engine aborts remaining arms (<code>handle.abort</code>), reaps their worktrees.</td><td>the cancel path <span class="ref">dispatcher.ts:996</span></td></tr>
+    <tr><td><code>quorum</code></td><td>For verdict-shaped arms (panel review): pass when <code>quorumK</code> arms pass; fail when impossible.</td><td>done-signal statuses as votes</td></tr>
+    <tr><td><code>judge</code></td><td>Spawn the judge cast with every arm&rsquo;s diff + summary as its brief; its done-signal names the winning arm (merged) or requests a synthesis pass.</td><td>the review-diff builder <span class="ref">dispatcher.ts:1607–1623</span></td></tr>
+  </table>
+  <p class="small">An arm that fails takes the <em>arm&rsquo;s</em> failure into the join: <code>all-merge</code> fails fast, <code>first</code> ignores it unless all arms fail, <code>quorum</code> counts it against, <code>judge</code> receives it as context. A cancelled run aborts all cursors — same semantics as today&rsquo;s single worker, mapped over the set.</p>
+
+  <h3><span class="tag">4.5</span>Steering and observability</h3>
+  <p>Steering stops being &ldquo;a Plane comment we poll for&rdquo; and becomes a first-class verb: <code>beckett task nudge &lt;ref&gt; [--node id] "text"</code>, called by the concierge when a human replies on the task&rsquo;s origin channel (the channel linkage already exists — <code>originChannel</code> is stamped on every filing <span class="ref">types.ts:114–117</span>). Un-targeted nudges go to all live cursors; targeted ones to a node&rsquo;s worker or its buffer. Delivery semantics — receipts, buffering when nothing is live, folding into the next brief, unapplied-nudge drain — are today&rsquo;s, unchanged <span class="ref">dispatcher.ts:1070–1158</span>. The journal gains node context per line; <code>beckett status</code> renders each run&rsquo;s DAG with cursor positions, visit counts and spend — which is <em>more</em> visibility than the Plane board offers now, not less.</p>
+
+  <h3><span class="tag">4.6</span>Crash recovery</h3>
+  <p>On boot the engine replays each run&rsquo;s event log (no Plane <code>prime()</code> round-trip): PARKED cursors stay parked; LIVE cursors re-staff from their checkpointed worktrees using the existing resumables/session-resume bridge <span class="ref">dispatcher.ts:583–627</span>. The one-writer-at-a-time discipline the ledger provides today extends per-cursor. This <em>strengthens</em> recovery: today&rsquo;s restart re-derives intent from Plane state; tomorrow&rsquo;s replays exactly what the engine was doing.</p>
+</section>
+
+<!-- ================= 5. AUTHORING ================= -->
+<section class="sheet">
+  <div class="kicker">Authoring · what the concierge writes</div>
+  <h2>The authoring surface</h2>
+
+  <p class="lede">Filing keeps its shape: <code>beckett task file</code> with title, body, criteria, project, channel. The flow arrives three ways, cheapest first — and the cheapest way is <em>not writing one</em>.</p>
+
+  <h3><span class="tag">5.1</span>Defaults — most filings never mention a flow</h3>
+  <p>No <code>--flow</code> → the engine compiles the spec from the cast exactly as today: effort <code>low|medium</code> → one-pass; <code>high|xhigh</code> → implement + review gate; <code>reviewTier</code> respected. Zero behaviour change, zero new typing for the everyday ticket. (One deliberate improvement: the compiled spec is <em>printed back</em> on filing — the gate becomes visible instead of inferred silently.)</p>
+
+  <h3><span class="tag">5.2</span>Flow presets — named shapes in <code>~/.beckett/flows.json</code></h3>
+  <p>The OPS-110 pattern, re-applied: hot-reloaded, user-editable, validated on load, seeded with the vocabulary we already know we want:</p>
+  <table>
+    <tr><th style="width:20%">Preset</th><th>Shape</th><th style="width:33%">Replaces / enables</th></tr>
+    <tr><td><code>one-pass</code></td><td>implement → done</td><td>today&rsquo;s self tier, said out loud</td></tr>
+    <tr><td><code>reviewed</code></td><td>implement → review ⟲≤3 → done</td><td>today&rsquo;s fresh tier</td></tr>
+    <tr><td><code>intensive</code></td><td>design → human gate ⟲≤2 → implement → review → done</td><td>the whole INT board, as 4 nodes of data</td></tr>
+    <tr><td><code>bake-off</code></td><td>fanout(n candidates) → judge → review → done</td><td>Fig. 3 — impossible today</td></tr>
+    <tr><td><code>panel-review</code></td><td>implement → fanout(correctness, security, taste) → quorum 2/3 ⟲ → done</td><td>parallel reviewers — impossible today</td></tr>
+    <tr><td><code>iterate-until</code></td><td>implement ⟲≤N against a model-gate rubric (eval/tests) → done</td><td>per-task iteration budgets — the constants, freed</td></tr>
+  </table>
+  <p>Invocation: <code>--flow-preset bake-off</code>, with per-node overrides via <code>--flow-set judge.cast.model=claude-fable-5</code> or a partial-JSON merge — same precedence story as cast presets (explicit beats preset, per stage) <span class="ref">presets.ts:119–142</span>.</p>
+
+  <h3><span class="tag">5.3</span>A shorthand for composing fresh — the one-liner grammar</h3>
+  <p>For shapes worth composing on the spot, a tiny expression syntax compiled to a <code>FlowSpec</code> (and echoed back as the expanded JSON before filing):</p>
+  <pre><code>stage(cast)        <span class="c">worker node          design(opus:high)</span>
+?human / ?cast     <span class="c">gate                 ?human  ·  ?haiku:low(rubric=criteria)</span>
+a -&gt; b             <span class="c">sequence             implement(pi:med) -&gt; review(sonnet:high)</span>
+[a | b | c]        <span class="c">fanout arms          [impl(pi:high) | impl(claude:high) | impl(codex:high)]</span>
+=&gt;judge(cast)      <span class="c">join                 =&gt;judge(fable:high)   ·   =&gt;merge   ·   =&gt;first  ·  =&gt;quorum:2</span>
+^N                 <span class="c">visit cap            review(sonnet)^2 — two rework rounds, then park</span></code></pre>
+  <pre><code><span class="c"># what I'd actually type when ro asks for a bake-off with a design gate:</span>
+beckett task file --title "…" --project foo --channel &lt;id&gt; \
+  --flow 'design(opus:high) -&gt; ?human -&gt; [impl(pi:high)|impl(claude:high)] =&gt;judge(fable:high) -&gt; review(sonnet:high)^2'</code></pre>
+  <p class="small">The grammar is sugar only — it must compile to the §3.2 model and validate identically. If it ever wants a feature the model lacks, the model wins and the feature waits for a design doc.</p>
+
+  <h3><span class="tag">5.4</span>What stays exactly as it is</h3>
+  <ul>
+    <li><strong><code>beckett plan</code> and the task tree.</strong> Inter-task DAGs (<code>--needs</code>, <code>#N.x</code>, <code>blockedBy</code> promotion) are the right tool for separate deliverables and keep working unchanged; a plan node may now also carry a <code>flow</code>. Flows are <em>intra</em>-task; plans are <em>inter</em>-task. The two compose and do not compete.</li>
+    <li><strong>Casting doctrine.</strong> Presets, the roster, effort envelopes, Fable confirm-first — all untouched. A flow references seats; the cast doctrine still decides who may sit in them.</li>
+    <li><strong>The worker&rsquo;s world.</strong> Brief in, worktree, scope-guard, steering nudges, done-signal out. A worker cannot tell whether it is running under the old dispatcher or the stage manager — that is the compatibility invariant the whole migration hangs on.</li>
+  </ul>
+</section>
+<!-- ================= 6. MIGRATION ================= -->
+<section class="sheet">
+  <div class="kicker">Getting there · three reversible phases</div>
+  <h2>Migration off Plane</h2>
+
+  <p class="lede">Plane provides four things (§1&rsquo;s observation): issue storage, a state column, comments-as-transport, and a board humans can look at. Each gets an explicit replacement, and each phase is independently shippable and reversible.</p>
+
+  <table>
+    <tr><th style="width:26%">Plane concept</th><th style="width:37%">Replacement</th><th>Notes</th></tr>
+    <tr><td>Issue (title/body/criteria)</td><td>Task record in <code>~/.beckett/tasks.json</code></td><td>already exists and already mirrors every ticket <span class="ref">store.ts</span></td></tr>
+    <tr><td>Workflow state column</td><td><code>FlowRun</code> cursor + status (§4.1)</td><td>strictly more expressive; branch-status mapping <span class="ref">store.ts:141–152</span> becomes a projection of the run</td></tr>
+    <tr><td>Description fence blocks (<code>beckett-cast/-deps/-project/-branch/-start-state</code>)</td><td>Typed fields on the task record</td><td>ends the Markdown smuggling; <code>parseCast</code> survives only as an importer</td></tr>
+    <tr><td>Comments (steering)</td><td><code>beckett task nudge</code> + Discord origin-channel replies</td><td>transport was always Discord→concierge→Plane→poller; this deletes the middle two hops and the ~5 s latency</td></tr>
+    <tr><td>Comments (audit trail)</td><td>Run event log + journal</td><td>both append-only, both local, journal already richer <span class="ref">journal.ts</span></td></tr>
+    <tr><td>Ticket IDs (<code>OPS-42</code>)</td><td>Local per-prefix sequence</td><td><code>nextTaskNumber</code> already allocates <code>#N</code> <span class="ref">store.ts</span>; keep the OPS-N surface so journals, history and habits survive</td></tr>
+    <tr><td><code>blockedBy</code> dependencies</td><td><code>needs</code> in the task tree</td><td>already dual-recorded today; the local copy becomes primary</td></tr>
+    <tr><td>Board UI</td><td><code>beckett status</code> DAG view; optional read-only web board later</td><td>the honest loss — see §7.2</td></tr>
+  </table>
+
+  <figure>
+  <svg viewBox="0 0 760 150" xmlns="http://www.w3.org/2000/svg" font-family="Inter" font-size="9.5">
+    <defs><marker id="ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#44403A"/></marker></defs>
+    <line x1="20" y1="118" x2="748" y2="118" stroke="#E0DBD1" stroke-width="1.6"/>
+    <g text-anchor="middle">
+      <rect x="24"  y="18" width="222" height="82" rx="6" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.4"/>
+      <text x="135" y="38" font-weight="700">0 · Shadow</text>
+      <text x="135" y="55" font-size="8.6" fill="#44403A">engine interprets built-in flow specs;</text>
+      <text x="135" y="68" font-size="8.6" fill="#44403A">Plane still authoritative; decisions</text>
+      <text x="135" y="81" font-size="8.6" fill="#44403A">diffed engine-vs-dispatcher in logs</text>
+      <circle cx="135" cy="118" r="5" fill="#1C1917"/>
+      <text x="135" y="140" font-size="8" fill="#78716A">risk ≈ 0 · pure additive</text>
+
+      <rect x="270" y="18" width="222" height="82" rx="6" fill="#F7F5F0" stroke="#9A4B1F" stroke-width="1.6"/>
+      <text x="381" y="38" font-weight="700" fill="#9A4B1F">1 · Flip</text>
+      <text x="381" y="55" font-size="8.6" fill="#44403A">run store authoritative; Plane becomes a</text>
+      <text x="381" y="68" font-size="8.6" fill="#44403A">write-only mirror via advance-outbox;</text>
+      <text x="381" y="81" font-size="8.6" fill="#44403A">steering: Discord/CLI; custom flows unlock</text>
+      <circle cx="381" cy="118" r="5" fill="#9A4B1F"/>
+      <text x="381" y="140" font-size="8" fill="#78716A">reversible: point poller back</text>
+
+      <rect x="516" y="18" width="222" height="82" rx="6" fill="#171310"/>
+      <text x="627" y="38" font-weight="700" fill="#F5F1E8">2 · Retire</text>
+      <text x="627" y="55" font-size="8.6" fill="#C9BEA8">delete client/poll/mirror; export Plane</text>
+      <text x="627" y="68" font-size="8.6" fill="#C9BEA8">history to archive JSONL; decommission</text>
+      <text x="627" y="81" font-size="8.6" fill="#C9BEA8">plane.0xbeckett.me</text>
+      <circle cx="627" cy="118" r="5" fill="#171310"/>
+      <text x="627" y="140" font-size="8" fill="#78716A">only after weeks of quiet mirror-diff</text>
+    </g>
+    <line x1="246" y1="59" x2="268" y2="59" stroke="#44403A" stroke-width="1.3" marker-end="url(#ma)"/>
+    <line x1="492" y1="59" x2="514" y2="59" stroke="#44403A" stroke-width="1.3" marker-end="url(#ma)"/>
+  </svg>
+  <figcaption><b>Fig. 4 — migration phases.</b> Each phase ships alone, proves itself in production, and can be rolled back before the next begins.</figcaption>
+  </figure>
+
+  <h3><span class="tag">6.1</span>Phase 0 — shadow (engine exists, Plane rules)</h3>
+  <p>Build the interpreter + run store + linter. Compile every incoming ticket&rsquo;s cast into its equivalent built-in spec (§5.1) and run the engine <em>as a shadow</em>: it receives the same events, folds its own run record, and logs any divergence between the edge it would take and the transition the dispatcher actually performs. The dispatcher&rsquo;s switch keeps driving. This phase has no behaviour change at all and produces the evidence for the flip: N days of zero-divergence on live traffic — the same shadow-then-flip discipline used for the ambient classifier.</p>
+
+  <h3><span class="tag">6.2</span>Phase 1 — flip (engine rules, Plane mirrors)</h3>
+  <p>The run store becomes authoritative. The dispatcher&rsquo;s <code>onStateChanged</code> shrinks to an adapter: engine edges call the spawn/steer/park/publish primitives directly; a projection maps each run state onto the closest legacy Plane column and writes it through the <em>existing</em> advance-outbox — Plane can lag, break or 404 without touching execution (the outbox already assumes it will <span class="ref">advance-outbox.ts</span>). Human state-flips on the Plane UI stop being inputs; the sanctioned control surface is the concierge&rsquo;s verbs (<code>task nudge / pause / resume / cancel / courier</code>), which is where ro actually operates from anyway — Discord. Custom flows (<code>--flow</code>, presets, the grammar) unlock in this phase. Rollback is a config flag: point the poller back at Plane and re-arm the switch.</p>
+
+  <h3><span class="tag">6.3</span>Phase 2 — retire</h3>
+  <p>After the mirror has run quiet for a few weeks: export every board to archive JSONL (issues + comments, for the historical record), delete <code>src/plane/client.ts</code>/<code>poll.ts</code> and the mirror projection, keep <code>cast.ts</code> parsing as a legacy importer, and decommission the Plane instance. The <code>OPS-</code> prefix lives on as a local sequence so identifiers stay continuous.</p>
+
+  <div class="note">
+    <span class="nt">What deliberately does not change, ever</span>
+    <p>Worktree and branch conventions (<code>beckett/task-N.x</code>), the scope-guard, done-signal schema, effort envelopes, cast presets and the Fable handshake, the journal and its CLI, the publish-outbox and courier handoff, <code>beckett plan</code> semantics, and the #N task tree. The blast radius is confined to: who decides the next stage (engine vs. Plane-state switch) and where that decision is stored (local run log vs. remote column).</p>
+  </div>
+</section>
+
+<!-- ================= 7. TRADEOFFS ================= -->
+<section class="sheet">
+  <div class="kicker">Honesty · costs and unknowns</div>
+  <h2>Tradeoffs, risks, open questions</h2>
+
+  <h3><span class="tag">7.1</span>We are building a workflow engine — the classic trap</h3>
+  <p>Half-built workflow engines are where codebases go to die: they grow expression languages, conditionals, sub-flows, and eventually a worse programming language nobody can debug. The defence here is structural, not aspirational: <strong>four node kinds, closed set</strong>; edges carry no predicates beyond pass/fail; no data flows through the graph except briefs and diffs; the linter refuses anything unbounded; and the bar for a fifth node kind is a design doc like this one. If the algebra ever feels cramped, that pressure should produce <em>one</em> new kind, not an expression language.</p>
+
+  <h3><span class="tag">7.2</span>We lose the board</h3>
+  <p>Plane&rsquo;s genuine value is a glanceable, drag-a-card UI for a human. <code>beckett status</code> plus Discord updates cover the operational loop we actually use (ro files, steers and approves from Discord today; the board is mostly read). But &ldquo;mostly&rdquo; is doing work in that sentence: if the visual board matters, the mitigation is a small read-only web view over the run store — a render of the same JSONL, no write path, no schema pressure — shipped only if its absence is actually felt. This is the one place the proposal subtracts something real; it should be called out to ro as such, not papered over.</p>
+
+  <h3><span class="tag">7.3</span>Fan-out × iteration = cost explosion</h3>
+  <p>A 3-arm bake-off at implement-high is roughly 3× an implement ticket before the judge is paid. Guards: per-run <code>budget.usd</code> (checked pre-spawn, §4.3); fanout arms count against the concurrency caps; Fable-in-any-seat keeps its confirm handshake; and the concierge&rsquo;s filing echo prints the worst-case seat count (<code>nodes × maxVisits × arms</code>) so the expensive shape is priced <em>before</em> it runs, not discovered on the spend report. Culturally: presets encode the cheap defaults; exotic flows are typed deliberately.</p>
+
+  <h3><span class="tag">7.4</span>Correctness burdens move in-house</h3>
+  <p>Today Plane&rsquo;s column is a crude but externally-visible source of truth; tomorrow a local event log is. Join deadlocks (an arm that never signals), park/resume races, replay determinism, and cursor/ledger consistency become our bugs. Mitigations: the event log is append-only and replay is pure (the same property that makes the outboxes trustworthy); wall-clock envelopes already bound every worker so a silent arm cannot block a join forever <span class="ref">spawn.ts:217–222</span>; and the join/park state machine is small enough for exhaustive property tests. This is real engineering cost — it is the price of owning the semantics, and it is the same class of machinery (ledgers, outboxes, checkpoint replay) the team has already built well three times.</p>
+
+  <h3><span class="tag">7.5</span>Two sources of truth during Phase 1</h3>
+  <p>The mirror is strictly one-directional by design; the moment a human edit on Plane can change execution, we have split brain. Enforced by code (mirror writes only) and by doctrine (the Plane UI is read-only from the flip onward). The rollback flag keeps the exit open until Phase 2 deletes the question.</p>
+
+  <h3><span class="tag">7.6</span>Open questions for ro</h3>
+  <ol>
+    <li><strong>Board or no board?</strong> Is a read-only web view a launch requirement for Phase 1, a later nice-to-have, or unnecessary? (My read: later; Discord + <code>beckett status</code> is where the loop actually lives.)</li>
+    <li><strong>Concierge authority at parks.</strong> When a run parks on cap-exhaustion, may the concierge grant one extra visit on its own judgment, or is a parked run always a human decision? (I lean: human, always — parks are rare and are exactly the moments you&rsquo;d want to see.)</li>
+    <li><strong>Grammar vs. JSON as the primary authoring surface.</strong> The one-liner (§5.3) is expressive but is a new mini-language to maintain; presets + JSON may be enough. Ship the grammar in v1 or hold it?</li>
+    <li><strong>Should <code>beckett plan</code> fold in eventually?</strong> An inter-task DAG is a flow whose worker nodes file sub-tasks. Unifying is elegant but risks the tarpit (§7.1). I propose: not in v1, revisit once flows have months of production shape.</li>
+    <li><strong>Per-arm steering surface.</strong> <code>--node</code> targeting (§4.5) is powerful but chatty in Discord. Is &ldquo;nudge the whole run&rdquo; enough for v1?</li>
+    <li><strong>History.</strong> Is the Phase 2 JSONL export of old Plane boards sufficient, or do you want OPS/INT history queryable (e.g. imported as read-only run records)?</li>
+  </ol>
+
+  <div class="note green">
+    <span class="nt">Recommendation</span>
+    <p>Build it in the phase order given, and hold the line on smallness: four node kinds, six seed presets, no expression language, board UI deferred. Phase 0 is almost pure addition and produces its own go/no-go evidence; the flip is one config flag with a rollback; Plane dies only after it has been demonstrably decorative for weeks. The payoff is the exact capability requested — stages, iterations and parallelism dictated per task by the concierge at filing time — bought with machinery Beckett already trusts: JSONL ledgers, worktrees, casts, and done-signals.</p>
+  </div>
+</section>
+<!-- ================= APPENDIX ================= -->
+<section class="sheet">
+  <div class="kicker">Appendix A · behavioural equivalence</div>
+  <h2 class="nonum">Today&rsquo;s lifecycles as flow specs</h2>
+  <p>These three specs are the compatibility contract: at Phase 0/1 cutover, every filing compiles to one of them, and the engine must reproduce the current dispatcher&rsquo;s decisions on each — same spawns, same caps, same parks. The constants shown are today&rsquo;s hardcoded values (§1.3), now merely <em>defaults</em>.</p>
+
+  <div class="cols">
+  <div>
+  <h4>A.1 — one-pass (today: effort low/medium, tier &ldquo;self&rdquo;)</h4>
+  <pre><code>{ <span class="s">"version"</span>: 1,
+  <span class="s">"entry"</span>: <span class="s">"implement"</span>,
+  <span class="s">"nodes"</span>: {
+    <span class="s">"implement"</span>: {
+      <span class="s">"kind"</span>: <span class="s">"worker"</span>,
+      <span class="s">"cast"</span>: { <span class="s">"harness"</span>:<span class="s">"pi"</span>, <span class="s">"effort"</span>:<span class="s">"medium"</span> },
+      <span class="s">"onPass"</span>: <span class="s">"done"</span>,
+      <span class="s">"onFail"</span>: <span class="s">"park"</span>,
+      <span class="s">"retries"</span>: 3            <span class="c">// = MAX_IMPLEMENT_RETRIES</span>
+    }
+  } }</code></pre>
+  <p class="small">The zero-diff withhold (self-tier finish with no changes → route to review instead <span class="ref">dispatcher.ts:2283–2293</span>) becomes a linter-inserted model gate on this spec — the special case turns into visible structure.</p>
+  </div>
+  <div>
+  <h4>A.2 — reviewed (today: effort high/xhigh, tier &ldquo;fresh&rdquo;)</h4>
+  <pre><code>{ <span class="s">"version"</span>: 1,
+  <span class="s">"entry"</span>: <span class="s">"implement"</span>,
+  <span class="s">"nodes"</span>: {
+    <span class="s">"implement"</span>: {
+      <span class="s">"kind"</span>: <span class="s">"worker"</span>,
+      <span class="s">"cast"</span>: { <span class="s">"harness"</span>:<span class="s">"pi"</span>, <span class="s">"effort"</span>:<span class="s">"high"</span> },
+      <span class="s">"onPass"</span>: <span class="s">"review"</span>,
+      <span class="s">"onFail"</span>: <span class="s">"park"</span>,
+      <span class="s">"maxVisits"</span>: 3,         <span class="c">// = MAX_REWORK_CYCLES</span>
+      <span class="s">"retries"</span>: 3
+    },
+    <span class="s">"review"</span>: {
+      <span class="s">"kind"</span>: <span class="s">"gate"</span>,
+      <span class="s">"by"</span>: { <span class="s">"cast"</span>: { <span class="s">"harness"</span>:<span class="s">"claude"</span>,
+              <span class="s">"model"</span>:<span class="s">"claude-sonnet-5"</span>, <span class="s">"effort"</span>:<span class="s">"high"</span> },
+              <span class="s">"rubric"</span>: <span class="s">"criteria-vs-diff"</span> },
+      <span class="s">"onPass"</span>: <span class="s">"done"</span>,
+      <span class="s">"onFail"</span>: <span class="s">"implement"</span>,
+      <span class="s">"maxFails"</span>: 3
+    }
+  } }</code></pre>
+  </div>
+  </div>
+
+  <h4>A.3 — intensive (today: the entire INT board — two enum values, five modules, one Plane project)</h4>
+  <pre><code>{ <span class="s">"version"</span>: 1, <span class="s">"entry"</span>: <span class="s">"design"</span>, <span class="s">"nodes"</span>: {
+    <span class="s">"design"</span>:       { <span class="s">"kind"</span>:<span class="s">"worker"</span>, <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-opus-4-8"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
+                      <span class="s">"artifact"</span>:<span class="s">"docs/design/&lt;id&gt;.md"</span>, <span class="s">"onPass"</span>:<span class="s">"completeness"</span>, <span class="s">"onFail"</span>:<span class="s">"park"</span>, <span class="s">"maxVisits"</span>:2 },
+    <span class="s">"completeness"</span>: { <span class="s">"kind"</span>:<span class="s">"gate"</span>, <span class="s">"by"</span>:{<span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-haiku-4-5"</span>,<span class="s">"effort"</span>:<span class="s">"low"</span>},
+                      <span class="s">"rubric"</span>:<span class="s">"design-doc completeness"</span>}, <span class="s">"onPass"</span>:<span class="s">"approve"</span>, <span class="s">"onFail"</span>:<span class="s">"design"</span>, <span class="s">"maxFails"</span>:2 },  <span class="c">// = MAX_DESIGN_CYCLES</span>
+    <span class="s">"approve"</span>:      { <span class="s">"kind"</span>:<span class="s">"gate"</span>, <span class="s">"by"</span>:<span class="s">"human"</span>, <span class="s">"onPass"</span>:<span class="s">"implement"</span>, <span class="s">"onFail"</span>:<span class="s">"design"</span>, <span class="s">"maxFails"</span>:3 },  <span class="c">// PARKED: zero tokens</span>
+    <span class="s">"implement"</span>:    { <span class="s">"kind"</span>:<span class="s">"worker"</span>, <span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"pi"</span>,<span class="s">"effort"</span>:<span class="s">"medium"</span>}, <span class="s">"onPass"</span>:<span class="s">"review"</span>, <span class="s">"onFail"</span>:<span class="s">"park"</span>, <span class="s">"maxVisits"</span>:3 },
+    <span class="s">"review"</span>:       { <span class="s">"kind"</span>:<span class="s">"gate"</span>, <span class="s">"by"</span>:{<span class="s">"cast"</span>:{<span class="s">"harness"</span>:<span class="s">"claude"</span>,<span class="s">"model"</span>:<span class="s">"claude-sonnet-5"</span>,<span class="s">"effort"</span>:<span class="s">"high"</span>},
+                      <span class="s">"rubric"</span>:<span class="s">"criteria-vs-diff"</span>}, <span class="s">"onPass"</span>:<span class="s">"done"</span>, <span class="s">"onFail"</span>:<span class="s">"implement"</span>, <span class="s">"maxFails"</span>:3 }
+} }</code></pre>
+
+  <div class="note" style="margin-top:5mm">
+    <span class="nt">Sources &amp; verification</span>
+    <p class="small" style="margin-bottom:1.5mm">All ground-truth claims verified against the working tree at commit <code>6fac13d</code> (2026-07-12), primarily: <code>src/plane/types.ts</code>, <code>cast.ts</code>, <code>client.ts</code>, <code>poll.ts</code>, <code>presets.ts</code> · <code>src/dispatch/dispatcher.ts</code>, <code>spawn.ts</code>, <code>advance-outbox.ts</code>, <code>publish-outbox.ts</code> · <code>src/task/store.ts</code> · <code>src/worker/worktree.ts</code> · <code>src/progress/journal.ts</code> · <code>docs/V3.md</code> · <code>docs/design/int-flow.md</code> (OPS-111) · <code>docs/design/cast-presets.md</code> (OPS-109/110).</p>
+    <p class="small">Authored by Beckett&rsquo;s worker seat (Claude Fable 5, high thinking) for OPS-151. Design proposal only — no code changes accompany this document.</p>
+  </div>
+</section>
+
+</main>
+</body>
+</html>
