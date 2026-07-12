@@ -183,8 +183,10 @@ export function buildBrowserEvaluatorLaunch(
     "/repo",
     "--",
     "/runtime/prlimit",
-    // V8 reserves a large virtual code range; the 256 MiB old-space flag below bounds JS heap.
-    "--as=2147483648",
+    // Node's llhttp WebAssembly can reserve roughly 10 GiB of nonresident address space. Keep a
+    // finite virtual ceiling above that reservation; the 256 MiB old-space flag below bounds the
+    // evaluator's actual JavaScript heap.
+    "--as=17179869184",
     "--nproc=256",
     "--fsize=33554432",
     `--cpu=${Math.max(2, Math.ceil(request.evalTimeoutMs / 1_000) + 2)}`,

@@ -182,7 +182,8 @@ describe("browser evaluator sandbox policy", () => {
       expect(launch.command).toContain("--cap-drop");
       expect(launch.command).not.toContain("CAP_SYS_ADMIN");
       expect(launch.command).toContain("/runtime/prlimit");
-      expect(launch.command).toContain("--as=2147483648");
+      expect(launch.command).toContain("--as=17179869184");
+      expect(launch.command).toContain("--max-old-space-size=256");
       expect(launch.command).toContain("--nproc=256");
       expect(launch.command).toContain("--fsize=33554432");
       expect(launch.command).toContain("--cpu=62");

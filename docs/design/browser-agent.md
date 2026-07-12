@@ -28,8 +28,10 @@ owns one trusted controller and Chromium process for its full run, including wai
 answer. Each tool call gets a disposable Node evaluator connected to that controller over
 Playwright/CDP. On Linux, the daemon starts the controller and every evaluator as separate sibling
 `bubblewrap` processes rather than asking one sandbox to create another. Both drop all capabilities.
-The evaluator receives a read-only evaluator plus Playwright client, bounded memory/process/file
-limits, and no profile, artifact, full repo, home, `.env`, model credential, or control-socket mount.
+The evaluator receives a read-only evaluator plus Playwright client, a 256 MiB V8 heap limit, a
+16 GiB virtual-address ceiling, and bounded process/file limits. The virtual ceiling accommodates
+Node's large nonresident WebAssembly reservation without granting a larger JavaScript heap. It gets
+no profile, artifact, full repo, home, `.env`, model credential, or control-socket mount.
 
 The production process chain is explicit: the Bun daemon supervises a Node controller host; Node
 manually starts the pinned Chromium binary with its dedicated profile and one ephemeral loopback CDP

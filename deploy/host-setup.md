@@ -23,9 +23,10 @@ worker runs with the account's privileges. Install host-level tools as an admini
 
 On Linux, the daemon starts the trusted Playwright controller and every disposable model-code
 evaluator in separate sibling `bubblewrap` sandboxes. Both drop all capabilities; the evaluator also
-uses `prlimit` from `util-linux` for memory, process, file, and CPU bounds. The installer provisions
-both tools. Verify that the dedicated Beckett account can create a fresh user namespace and that
-`prlimit` is available:
+uses `prlimit` from `util-linux` for a 16 GiB virtual-address ceiling plus process, file, and CPU
+bounds, while Node caps its V8 heap at 256 MiB. The virtual ceiling leaves room for Node's large,
+nonresident WebAssembly reservation. The installer provisions both tools. Verify that the dedicated
+Beckett account can create a fresh user namespace and that `prlimit` is available:
 
 ```bash
 command -v bwrap prlimit
