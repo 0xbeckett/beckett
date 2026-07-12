@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<!--
+  Run of Show — design proposal source (OPS-151 rev 1, OPS-152 rev 2).
+  Build: ./build.sh  (headless Chrome → ../../dynamic-workflow-design.pdf)
+  Each .sheet is one A4 page, manually paginated. Diagrams are inline SVG —
+  edit them here; there is no external diagram toolchain.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Run of Show — a workflow engine the concierge conducts</title>
+<link rel="stylesheet" href="fonts/fonts.css">
+<style>
+  :root {
+    --ink: #211c17;
+    --ink-soft: #453e37;
+    --muted: #8a8378;
+    --faint: #b5ada1;
+    --rust: #b34f28;
+    --rust-soft: #c96a3c;
+    --sage: #5d7d61;
+    --gold: #a8842e;
+    --paper: #ffffff;
+    --wash: #f7f4ef;
+    --wash-deep: #f1ece4;
+    --hairline: #e4ded4;
+    --code-bg: #f6f3ed;
+    --dark: #221b14;
+    --dark-2: #2c241c;
+    --cream: #f2ece3;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: "Source Serif 4", serif; color: var(--ink); background: #888; }
+  @page { size: A4; margin: 0; }
+
+  .sheet {
+    width: 210mm; height: 296.5mm; background: var(--paper);
+    position: relative; overflow: hidden;
+    padding: 17mm 19mm 16mm;
+    page-break-after: always;
+    font-size: 9.4pt; line-height: 1.52;
+  }
+  @media screen { .sheet { margin: 8px auto; box-shadow: 0 1px 8px rgba(0,0,0,.35); } }
+
+  /* running header / footer */
+  .rh {
+    position: absolute; top: 8.5mm; left: 19mm; right: 19mm;
+    display: flex; justify-content: space-between;
+    font-family: Inter, sans-serif; font-size: 6.4pt; letter-spacing: .04em;
+    color: var(--faint);
+    border-bottom: .5pt solid var(--hairline); padding-bottom: 2.2mm;
+  }
+  .rf {
+    position: absolute; bottom: 8mm; right: 19mm;
+    font-family: Inter, sans-serif; font-size: 6.6pt; color: var(--faint);
+  }
+
+  /* type */
+  .kicker {
+    font-family: Inter, sans-serif; font-weight: 600; font-size: 6.8pt;
+    letter-spacing: .22em; text-transform: uppercase; color: var(--muted);
+    margin-bottom: 3mm;
+  }
+  .secnum {
+    font-family: Inter, sans-serif; font-weight: 700; font-size: 10pt;
+    color: var(--rust); margin-bottom: 1mm;
+  }
+  h1 {
+    font-family: "Source Serif 4", serif; font-weight: 700; font-size: 17.5pt;
+    line-height: 1.18; letter-spacing: -.01em; margin-bottom: 4.2mm;
+  }
+  h2 {
+    font-family: "Source Serif 4", serif; font-weight: 700; font-size: 10.8pt;
+    margin: 5mm 0 2mm;
+  }
+  h2 .n { color: var(--rust); font-family: Inter, sans-serif; font-weight: 700; font-size: 8.6pt; margin-right: 1.6mm; }
+  p { margin-bottom: 2.6mm; }
+  p.tight { margin-bottom: 1.4mm; }
+  b, strong { font-weight: 600; }
+  em { font-style: italic; }
+  .small { font-size: 8.4pt; }
+
+  ul { margin: 0 0 2.6mm 4.5mm; }
+  li { margin-bottom: 1.5mm; }
+  ol { margin: 0 0 2.6mm 5mm; }
+
+  code, .m {
+    font-family: "JetBrains Mono", monospace; font-size: 82%;
+    background: var(--code-bg); padding: .5px 3px; border-radius: 2.5px;
+    white-space: nowrap;
+  }
+  .rcpt { /* file:line receipt */
+    font-family: "JetBrains Mono", monospace; font-size: 72%;
+    color: var(--muted); background: none; padding: 0; white-space: nowrap;
+  }
+  pre {
+    font-family: "JetBrains Mono", monospace; font-size: 6.9pt; line-height: 1.5;
+    background: var(--code-bg); border: .5pt solid var(--hairline); border-radius: 2mm;
+    padding: 3mm 3.5mm; margin: 2.5mm 0 3mm; overflow: hidden; white-space: pre;
+  }
+  pre .c { color: var(--muted); }        /* comment */
+  pre .k { color: var(--rust); }         /* keyword / field */
+  pre .s { color: var(--sage); }         /* string */
+  pre b  { font-weight: 700; color: var(--ink); }
+
+  /* tables */
+  table { width: 100%; border-collapse: collapse; margin: 2.5mm 0 3.5mm; }
+  th {
+    font-family: Inter, sans-serif; font-weight: 600; font-size: 6.4pt;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+    text-align: left; padding: 0 2.5mm 1.4mm 0;
+    border-bottom: .8pt solid var(--ink);
+  }
+  td {
+    font-size: 8.2pt; line-height: 1.42; vertical-align: top;
+    padding: 1.7mm 2.5mm 1.7mm 0;
+    border-bottom: .5pt solid var(--hairline);
+  }
+  td code { font-size: 78%; }
+  table.compact td { padding-top: 1.2mm; padding-bottom: 1.2mm; font-size: 7.9pt; }
+
+  /* callout */
+  .callout {
+    background: #faf6ef; border: .5pt solid #e8ddc9; border-radius: 2mm;
+    padding: 3.2mm 4mm; margin: 3.5mm 0;
+  }
+  .callout .ct {
+    font-family: Inter, sans-serif; font-weight: 700; font-size: 6.6pt;
+    letter-spacing: .18em; text-transform: uppercase; color: var(--rust);
+    margin-bottom: 1.6mm;
+  }
+  .callout p { font-size: 8.7pt; margin-bottom: 1.4mm; }
+  .callout p:last-child { margin-bottom: 0; }
+
+  /* figure */
+  figure {
+    background: var(--wash); border: .5pt solid var(--hairline); border-radius: 2mm;
+    padding: 4mm 4mm 3mm; margin: 3.5mm 0 4mm;
+  }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption {
+    font-family: Inter, sans-serif; font-size: 6.8pt; line-height: 1.5;
+    color: var(--muted); margin-top: 2.5mm; padding-top: 2mm;
+    border-top: .5pt solid var(--hairline);
+  }
+  figcaption b { color: var(--ink-soft); font-weight: 600; }
+
+  /* section-opener lede */
+  .lede { font-size: 10.2pt; line-height: 1.55; color: var(--ink-soft); margin-bottom: 4.5mm; }
+
+  /* contents rows (p2) */
+  .toc td { border-bottom: .5pt solid var(--hairline); padding: 1.9mm 0; }
+  .toc .tn { font-family: Inter, sans-serif; font-weight: 700; font-size: 8pt; color: var(--rust); width: 7mm; }
+  .toc .tt { font-family: Inter, sans-serif; font-weight: 600; font-size: 8.4pt; color: var(--ink); padding-right: 4mm; }
+  .toc .td2 { font-size: 7.6pt; color: var(--muted); text-align: right; line-height: 1.4; }
+  .toc .new .tn, .toc .new .tt .badge { color: var(--rust); }
+  .badge {
+    font-family: Inter, sans-serif; font-weight: 700; font-size: 5.6pt; letter-spacing: .14em;
+    color: var(--rust); border: .6pt solid var(--rust-soft); border-radius: 2px;
+    padding: .4px 3px; margin-left: 1.8mm; vertical-align: 1px;
+  }
+
+  /* cover */
+  .cover { background: var(--dark); color: var(--cream); padding: 0; }
+  .cover-inner { position: absolute; inset: 0; padding: 20mm 22mm; }
+  .cover .wordmark {
+    font-family: Inter, sans-serif; font-weight: 700; font-size: 8.5pt;
+    letter-spacing: .42em; color: var(--cream);
+  }
+  .cover .cover-kicker {
+    font-family: "JetBrains Mono", monospace; font-size: 6.8pt; letter-spacing: .18em;
+    color: #9c8a76; margin-top: 4mm; text-transform: uppercase;
+  }
+  .cover h1.title {
+    font-size: 30pt; font-weight: 700; color: #fdfaf5; letter-spacing: -.015em;
+    margin: 0 0 1mm;
+  }
+  .cover .subtitle {
+    font-family: "Source Serif 4", serif; font-style: italic; font-weight: 600;
+    font-size: 21pt; line-height: 1.16; color: var(--rust-soft); letter-spacing: -.01em;
+  }
+  .cover .abstract {
+    margin-top: 9mm; max-width: 118mm; font-size: 10.3pt; line-height: 1.62; color: #cfc6b8;
+  }
+  .cover .rule { width: 26mm; height: 1.1mm; background: var(--rust); margin-top: 9mm; }
+  .cover .meta {
+    position: absolute; left: 22mm; right: 22mm; bottom: 18mm;
+    display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 6mm;
+    border-top: .5pt solid #4a4036; padding-top: 4.5mm;
+  }
+  .cover .meta .h { font-family: Inter, sans-serif; font-weight: 600; font-size: 6.8pt; color: #e8e0d3; margin-bottom: 1.6mm; }
+  .cover .meta .v { font-family: Inter, sans-serif; font-size: 6.6pt; line-height: 1.7; color: #9a9082; }
+
+  /* SVG shared text styles (via classes referenced inside svg) */
+  svg text { font-family: Inter, sans-serif; }
+  svg .lbl  { font-size: 8.4px; font-weight: 600; fill: var(--ink); }
+  svg .lbl2 { font-size: 7px; fill: var(--muted); }
+  svg .mono { font-family: "JetBrains Mono", monospace; font-size: 6.4px; fill: var(--muted); }
+  svg .monoI { font-family: "JetBrains Mono", monospace; font-size: 6.4px; fill: var(--ink-soft); }
+  svg .edge { stroke: var(--ink-soft); stroke-width: 1; fill: none; }
+  svg .edgeMuted { stroke: var(--faint); stroke-width: .8; fill: none; }
+  svg .edgeRust { stroke: var(--rust); stroke-width: 1; fill: none; }
+  svg .edgeDash { stroke-dasharray: 3 2.4; }
+  svg .box { fill: #fff; stroke: #cfc7ba; stroke-width: .9; }
+  svg .boxDark { fill: var(--dark-2); stroke: none; }
+  svg .boxRust { fill: #fdf1ea; stroke: var(--rust-soft); stroke-width: .9; }
+  svg .boxSage { fill: #f0f4ef; stroke: var(--sage); stroke-width: .9; }
+  svg .boxWash { fill: var(--wash-deep); stroke: #d8d0c2; stroke-width: .8; }
+</style>
+</head>
+<body>
+
+<!-- ============================================================ p1 · COVER -->
+<section class="sheet cover">
+  <div class="cover-inner">
+    <div class="wordmark">B E C K E T T</div>
+    <div class="cover-kicker">design proposal · ops-151 → ops-152 · --project beckett</div>
+
+    <svg viewBox="0 0 200 200" style="position:absolute; right:6mm; top:52mm; width:96mm; height:96mm; opacity:.85">
+      <circle cx="100" cy="100" r="66" fill="none" stroke="#3a3128" stroke-width="1"/>
+      <circle cx="100" cy="100" r="96" fill="none" stroke="#332b23" stroke-width="1"/>
+      <path d="M 100 4 A 96 96 0 0 1 196 100" fill="none" stroke="#7a4526" stroke-width="1.6"/>
+      <circle cx="100" cy="100" r="3" fill="#5c5347"/>
+      <circle cx="100" cy="34" r="3.4" fill="#b34f28"/>
+      <circle cx="166" cy="100" r="2.6" fill="#5c5347"/>
+      <circle cx="34" cy="100" r="2.6" fill="#3f372e"/>
+      <circle cx="147" cy="26" r="2.2" fill="#7a4526"/>
+    </svg>
+
+    <div style="margin-top:34mm; position:relative">
+      <h1 class="title">Run of Show</h1>
+      <div class="subtitle">a workflow engine the<br>concierge conducts</div>
+      <p class="abstract">A proposal to retire Plane as Beckett&rsquo;s execution backend and replace
+      its one fixed ticket lifecycle with a per-task, concierge-authored workflow: stages, iteration
+      budgets, parallel fan-out and gates composed at filing time &mdash; not compiled into the
+      dispatcher. Revision&nbsp;2 adds the engine&rsquo;s internal anatomy, rendered diagrams, three
+      simulated deployments run stage-by-stage, and a reliability &amp; observability design: how the
+      system announces its own failures, and the explicit handshakes that guarantee a worker always
+      knows where it is and what it is doing.</p>
+      <div class="rule"></div>
+    </div>
+
+    <div class="meta">
+      <div><div class="h">Author</div><div class="v">Beckett &mdash; worker seat<br>Claude Fable 5 &middot; high</div></div>
+      <div><div class="h">Requested by</div><div class="v">ro (owner)<br>Discord &middot; OPS-151 &middot; OPS-152</div></div>
+      <div><div class="h">Date</div><div class="v">12 July 2026<br>rev 2</div></div>
+      <div><div class="h">Status</div><div class="v">Proposal &mdash; no code<br>grounded in v3.2 source</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ p2 · TLDR + TOC -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">In one page</div>
+  <h1>TL;DR</h1>
+  <p>Every piece of work Beckett takes on today &mdash; a copy tweak, a concurrency fix, a
+  self-modification &mdash; marches through the same compiled-in pipeline:
+  <code>todo&nbsp;&rarr;&nbsp;in_progress&nbsp;&rarr;&nbsp;in_review&nbsp;&rarr;&nbsp;done</code>, one implement seat, at most one
+  review seat, three rework cycles, one live worker per ticket. That shape lives half in Plane (a
+  remote SaaS ticket board we poll every few seconds) and half in a 3,200-line dispatcher switch
+  statement. Changing it means changing Beckett&rsquo;s source and redeploying: adding <em>one</em>
+  design stage cost us a new board, two new enum values, and surgery in five modules (OPS-111).</p>
+  <p>This document proposes making the workflow itself <b>data</b>: a small per-task DAG &mdash; the
+  <em>run of show</em> &mdash; that the concierge writes when it files work. Stages, iteration caps,
+  parallel fan-out, join rules and human gates become fields in a spec, interpreted by a generic
+  engine that keeps everything already proven: worktrees and the task/branch tree, per-stage casting,
+  review gates, the journal, the courier, steering. Plane is first demoted to a read-only mirror,
+  then retired.</p>
+  <p><b>New in revision 2</b> (ro&rsquo;s review of rev 1): the engine&rsquo;s concrete anatomy
+  &mdash; components, interfaces, the event log&rsquo;s exact vocabulary (&sect;4); rendered
+  architecture, lifecycle and fan-out diagrams throughout; three simulated deployments walked
+  end-to-end with real specs, event logs and worker manifests (&sect;7); and a reliability &amp;
+  observability design (&sect;6) built around two requirements ro stated verbatim: <em>when
+  something goes wrong we know about it</em>, and <em>the agent has clear handshakes so it always
+  understands its environment</em>.</p>
+
+  <table class="toc">
+    <tr><td class="tn">1</td><td class="tt">Ground truth &mdash; how Plane runs Beckett today</td>
+        <td class="td2">poller &rarr; dispatcher &rarr; spawn; states, casts, caps, journal, courier &mdash; and how failure is (not) noticed</td></tr>
+    <tr><td class="tn">2</td><td class="tt">The problem &mdash; one lifecycle, worn as a straitjacket</td>
+        <td class="td2">six concrete places the fixed shape hurts, incl. the INT case study</td></tr>
+    <tr><td class="tn">3</td><td class="tt">The proposal &mdash; a per-task flow spec</td>
+        <td class="td2">four node kinds; today&rsquo;s lifecycles fall out as two tiny specs</td></tr>
+    <tr class="new"><td class="tn">4</td><td class="tt">Anatomy of the engine<span class="badge">NEW</span></td>
+        <td class="td2">seven components, their interfaces, the run-event vocabulary, storage layout</td></tr>
+    <tr><td class="tn">5</td><td class="tt">Execution semantics</td>
+        <td class="td2">how a stage runs, how loops terminate, how parallel branches join, crash recovery &mdash; now with lifecycle and fan-out diagrams</td></tr>
+    <tr class="new"><td class="tn">6</td><td class="tt">Reliability &amp; observability<span class="badge">NEW</span></td>
+        <td class="td2">heartbeats, alarms, the escalation ladder, paging &mdash; and the spawn/ready/done handshakes</td></tr>
+    <tr class="new"><td class="tn">7</td><td class="tt">Three simulated deployments<span class="badge">NEW</span></td>
+        <td class="td2">a one-pass fix, a fan-out feature, and a failure that recovers &mdash; stage by stage, with data</td></tr>
+    <tr><td class="tn">8</td><td class="tt">The authoring surface</td>
+        <td class="td2">what the concierge writes at filing time; flow presets; what I&rsquo;d type for you</td></tr>
+    <tr><td class="tn">9</td><td class="tt">Migration off Plane</td>
+        <td class="td2">three reversible phases; what replaces states, comments, IDs and the board UI</td></tr>
+    <tr><td class="tn">10</td><td class="tt">Tradeoffs, risks, open questions</td>
+        <td class="td2">the workflow-engine trap, losing the board, cost blow-ups &mdash; and the honest unknowns</td></tr>
+    <tr><td class="tn">A</td><td class="tt">Appendix &mdash; today&rsquo;s lifecycles as flow specs</td>
+        <td class="td2">byte-for-byte behavioural equivalence at cutover</td></tr>
+  </table>
+
+  <div class="callout">
+    <div class="ct">How to read this</div>
+    <p>Everything in &sect;1 is fact, verified against the working tree with <span class="rcpt">file:line</span>
+    receipts. Everything from &sect;3 on is proposal. The two legacy lifecycles reappear in Appendix A as flow
+    specs, which is the backward-compatibility argument in one page: if the engine can run <em>those two specs</em>
+    identically, cutover changes nothing until we ask it to. Revision 2 is a strict superset of revision 1 —
+    sections 4, 6 and 7 are new; carried sections are extended, not rewritten.</p>
+  </div>
+  <div class="rf">2 / 34</div>
+</section>
+
+<!--@@-->
+</body>
+</html>
