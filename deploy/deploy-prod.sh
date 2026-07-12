@@ -21,6 +21,32 @@ git fetch origin
 git checkout main
 git pull --ff-only origin main
 bun install --frozen-lockfile
+bun x playwright install --no-shell chromium # pinned full Chromium; persistent computer-use profile lives outside git
+browser_smoke() {
+  bun -e 'import { chromium } from "playwright"; const browser = await chromium.launch({ headless: true, channel: "chromium" }); await browser.close();'
+}
+if ! browser_smoke; then
+  echo "Chromium is installed but cannot launch; attempting one-time Linux dependency provisioning" >&2
+  if ! sudo -n "$(command -v bun)" x playwright install-deps chromium; then
+    echo "FATAL: Chromium system libraries are missing and passwordless sudo is unavailable." >&2
+    echo "Run once as an administrator: cd /home/beckett/beckett && sudo /usr/bin/env PATH=/home/beckett/.bun/bin:/usr/local/bin:/usr/bin:/bin bun x playwright install-deps chromium" >&2
+    exit 1
+  fi
+  browser_smoke
+fi
+command -v bwrap >/dev/null || {
+  echo "FATAL: bubblewrap is required for the isolated browser host; install the bubblewrap package." >&2
+  exit 1
+}
+command -v prlimit >/dev/null || {
+  echo "FATAL: prlimit (util-linux) is required for browser evaluator resource limits." >&2
+  exit 1
+}
+bwrap --unshare-all --share-net --die-with-parent --ro-bind / / /bin/true || {
+  echo "FATAL: bubblewrap is installed but user namespaces are blocked; see deploy/host-setup.md." >&2
+  exit 1
+}
+bun run browser:smoke
 bun x tsc --noEmit                      # never restart onto broken code
 # prune the dead per-worker branches the retired flow left behind (and any new strays).
 # Two patterns because for-each-ref globs are pathname-aware: `*` stops at `/`, so nested

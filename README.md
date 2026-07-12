@@ -65,6 +65,22 @@ Beckett also has hands beyond code: it can generate images, deploy throwaway moc
 `<name>.your-domain`, manage its own public site, remember people and projects across
 conversations, and self-provision tools it doesn't have yet.
 
+Browser errands run in a dedicated, persistent headless Chromium profile rather than a disposable
+identity. The computer-use seat writes normal Playwright JavaScript through one small tool, can
+work across tabs in parallel, keeps site cookies between errands, and detaches from chat while it
+works. The Bun daemon supervises a Node controller that manually launches Chromium on one loopback
+CDP port; model code runs in disposable sibling evaluators, so a stuck script can be killed without
+losing tabs or form state. A real blocker arrives in Discord as one bounded message with its marked
+screenshot; reply to that message and the same agent session continues from the same page. Replies
+are deleted before their contents are used, including stale or unauthorized answers. Replies whose
+bot reference cannot be inspected are not retained; Beckett gives resend guidance rather than
+letting their contents enter chat memory.
+Dispatch is code-gated to Discord role
+`1520985787062030456`, and only the initiating user can answer that run. Visible completions return
+a proof screenshot automatically, or are reported unverified if fresh proof capture fails. Browser
+questions and terminal results go directly to Discord without another model or Chilltext formatting
+pass; controller-owned tab, download, and profile budgets keep the persistent identity bounded.
+
 ## Fork it and make it yours
 
 Beckett's **personality is a single editable file**, separate from how it works:
@@ -98,8 +114,9 @@ The authoritative build contract is [`docs/V3.md`](docs/V3.md). Specs live in
 
 ## Run your own Beckett
 
-Beckett runs as a set of **systemd user services**. The supported host is Ubuntu 20.04+ or
-Debian 10+ with systemd, x64/arm64, at least 4 GB RAM, and 5 GB free disk. Most VPS images log in
+Beckett runs as a set of **systemd user services**. Supported hosts are Ubuntu 22.04, 24.04, and
+26.04 or Debian 12 and 13, with systemd, x64/arm64, at least 4 GB RAM, and 5 GB free disk. Most VPS
+images log in
 as root, so the shortest install is:
 
 ```bash
@@ -127,7 +144,8 @@ Have these ready when prompted:
 
 - a Discord app installed into your server with the `bot` scope. Enable the Message Content
   privileged intent and grant View Channels, Send Messages, Read Message History, Send Messages
-  in Threads, Create Public Threads, Manage Threads, Use Application Commands, and Attach Files.
+  in Threads, Create Public Threads, Manage Threads, **Manage Messages**, Use Application Commands,
+  and Attach Files. Manage Messages lets Beckett remove password and OTP replies before using them.
   Numbered task threads inherit their parent channel's visibility, so put task creation in a
   suitably private parent when task names are sensitive. Discord's [bot quick start](https://docs.discord.com/developers/quick-start/getting-started)
   walks through creation and Guild Install;
@@ -265,7 +283,8 @@ your dev machine, after a PR merges to main:
 ./deploy/deploy-prod.sh
 ```
 
-It fetches, fast-forward-pulls, `bun install`, typechecks (never restarts onto broken code),
+It fetches, fast-forward-pulls, `bun install`, installs the lockfile-matched full Chromium build,
+typechecks (never restarts onto broken code),
 restarts `beckett-v4.service`, reads back health, and tags the deployed version. Crash alerts and
 a weekly heartbeat post to the Discord alert channel.
 

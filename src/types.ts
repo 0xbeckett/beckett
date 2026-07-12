@@ -240,12 +240,18 @@ export interface IncomingMessage {
   userId: string;
   /** The speaker's live Discord display name (guild nick → global name → username), if known. */
   authorDisplayName?: string;
+  /** Live guild role ids for code-enforced capability gates; empty/absent in DMs and legacy tests. */
+  roleIds?: string[];
   channelId: string;
   /** The channel's name at capture time (e.g. "media") — undefined for DMs, which have none. */
   channelName?: string;
   guildId: string | null;
   content: string;
   repliedToId: string | null; // the strong correlation key
+  /** The referenced bot message carries Beckett's fixed atomic browser-question marker. */
+  repliedToBrowserQuestion?: boolean;
+  /** A bot reply reference could not be inspected; privacy-sensitive routing must fail closed. */
+  repliedToBotUnverified?: boolean;
   mentionsBot: boolean;
   authorIsBot: boolean;
   createdAt: number;
@@ -273,6 +279,16 @@ export interface ReplyOptions {
   files?: string[]; // local file paths to attach (image-only posts OK)
   embeds?: DiscordEmbed[]; // rich status cards; never carry raw diffs or secret account data
   buttons?: DiscordLinkButton[]; // URL-only actions such as Open PR / Checks / Comments
+  /**
+   * Send content and attachments in exactly one Discord API message. This bypasses text
+   * transforms, human-cadence splitting, and inter-message delays; over-2000 content and
+   * `chill` are rejected instead of silently weakening the one-message guarantee.
+   */
+  singleMessage?: boolean;
+  /** Mark an atomic screenshot question so replies remain recognizable across daemon crashes. */
+  browserQuestion?: boolean;
+  /** Fail immediately instead of queueing when offline; used for expiring browser questions. */
+  queueIfOffline?: boolean;
   /**
    * Opt IN to chilltext compression (OPS-73) for this post. Only the Concierge's own
    * conversational replies set this — mechanical output (worker logs relayed into progress
@@ -773,8 +789,24 @@ export interface Config {
     hard_timeout_secs: number;
     /** Reject new runs past this many live ones ("quick lane is full — retry or file a ticket"). */
     max_concurrent: number;
-    /** Command line for the Playwright MCP server attached to `computer-use` harnesses. */
-    browser_mcp_command: string[];
+    /** Discord guild role allowed to use the shared signed-in browser identity. */
+    browser_role_id: string;
+    /** Dedicated automation profile, absolute or relative to paths.beckett_dir. */
+    browser_profile_dir: string;
+    /** The production browser is headless; false is useful only for local diagnosis. */
+    browser_headless: boolean;
+    browser_viewport_width: number;
+    browser_viewport_height: number;
+    browser_launch_timeout_ms: number;
+    browser_action_timeout_ms: number;
+    browser_navigation_timeout_ms: number;
+    browser_eval_timeout_ms: number;
+    /** Per-tool output budget before the runtime truncates noisy page data. */
+    browser_max_output_chars: number;
+    /** How long a screenshot-backed user question may remain parked before expiring. */
+    browser_question_wait_secs: number;
+    /** Deprecated migration-only Playwright MCP command. */
+    browser_mcp_command?: string[];
   };
   /**
    * Restart "what's new" announcement — instance-specific, OFF by default (empty channel), so a
@@ -897,6 +929,8 @@ export interface DiscordGateway {
   stop(): Promise<void>;
   /** Post to a channel; returns the bot message id (for reply correlation). */
   post(channelId: string, content: string, opts?: ReplyOptions): Promise<string>;
+  /** Delete one bot-authored message when a privacy-critical ledger write fails. */
+  deleteMessage(channelId: string, messageId: string): Promise<void>;
   /** Trigger the typing indicator in a channel (~10s; re-call to keep it alive). */
   sendTyping(channelId: string): Promise<void>;
   /** Register the inbound message handler (intake + awaiting-reply resolution). */

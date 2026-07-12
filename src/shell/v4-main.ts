@@ -40,6 +40,7 @@ import { parsePrUrl } from "../github/types.ts";
 import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
 import { createQuickRunner, type QuickRunner } from "../quick/index.ts";
+import { createBrowserRuntime, type BrowserRuntime } from "../browser/runtime.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createMemory } from "../memory/index.ts";
 import { startRoutineMaintenance } from "../memory/maintain.ts";
@@ -89,6 +90,7 @@ interface BootedSystem {
   dispatcher: Dispatcher;
   concierge: Concierge;
   quick: QuickRunner;
+  browser: BrowserRuntime;
   memoryMaintenance: { stop(): void };
 }
 
@@ -389,11 +391,18 @@ async function boot(): Promise<BootedSystem> {
   // Quick agents — the no-ticket lane. The runner owns the short-lived specialist
   // harnesses; a run that outlives its sync window reports back through the Concierge as an
   // update turn, exactly like a ticket milestone.
+  const browser = createBrowserRuntime({
+    config,
+    logger: logger.child("browser"),
+  });
   const quick = createQuickRunner({
     config,
     logger: logger.child("quick"),
+    browser,
     onDetachedResult: (run) => concierge.notifyQuickResult(run),
+    onQuestion: (run, question) => concierge.notifyQuickQuestion(run, question),
   });
+  concierge.setBrowserRuntime(browser);
   concierge.setQuickRunner(quick);
 
   // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
@@ -407,6 +416,7 @@ async function boot(): Promise<BootedSystem> {
     uptimeSecs: Math.round((Date.now() - bootedAt) / 1000),
     workers: dispatcher.statusWorkers(),
     quick: quick.stats(),
+    browser: browser.stats(),
     poller: {
       boards: Object.fromEntries([...pollers].map(([board, p]) => [board, p.stats()])),
       ...poller.stats(),
@@ -497,7 +507,7 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, dispatcher, concierge, quick, memoryMaintenance };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, dispatcher, concierge, quick, browser, memoryMaintenance };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -518,9 +528,14 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   // Quick agents are ephemeral by contract — kill any stragglers before the Concierge goes down
   // so their "daemon shut down" results can still route through it.
   try {
-    sys.quick.stopAll();
+    await sys.quick.stopAll();
   } catch (err) {
     sys.logger.warn("quick-runner shutdown failed", { error: (err as Error).message });
+  }
+  try {
+    await sys.browser.stop();
+  } catch (err) {
+    sys.logger.warn("browser shutdown failed", { error: (err as Error).message });
   }
   try {
     await sys.concierge.stop();

@@ -104,6 +104,7 @@ export function loadEnvFile(envFile: string): Record<string, string> {
 
 const int = z.number().int();
 const posInt = int.min(1);
+const browserOutputChars = int.min(4_096).max(1_000_000);
 const nonNegInt = int.min(0);
 const ProactivityModeSchema = z.enum(["off", "suggest", "auto"]);
 const CLAUDE_TRIAGE_MODEL = "claude-haiku-4-5";
@@ -492,12 +493,25 @@ const ConfigSchema = z
         sync_wait_secs: posInt.default(240),
         hard_timeout_secs: posInt.default(900),
         max_concurrent: posInt.default(3),
-        // Playwright MCP for `computer-use` (a11y-tree browsing, no vision loop). npx resolves
-        // it per-run; pin/replace via the box's config.toml if PATH or version needs differ.
+        browser_role_id: z.string().regex(/^\d{1,20}$/).default("1520985787062030456"),
+        // Computer-use owns one persistent Chromium identity. Hosts serialize at the lease
+        // boundary and stay warm for a task, while that task may drive many tabs concurrently.
+        browser_profile_dir: z.string().min(1).default("browser/profile"),
+        browser_headless: z.boolean().default(true),
+        browser_viewport_width: posInt.default(1440),
+        browser_viewport_height: posInt.default(900),
+        browser_launch_timeout_ms: posInt.default(30_000),
+        browser_action_timeout_ms: posInt.default(10_000),
+        browser_navigation_timeout_ms: posInt.default(30_000),
+        browser_eval_timeout_ms: posInt.default(60_000),
+        browser_max_output_chars: browserOutputChars.default(24_000),
+        browser_question_wait_secs: posInt.default(3_600),
+        // Accepted temporarily so a full older config.toml does not brick on upgrade. The custom
+        // one-tool bridge ignores it; remove after deployed instances have migrated.
         browser_mcp_command: z
           .array(z.string().min(1))
           .nonempty()
-          .default(["npx", "-y", "@playwright/mcp@latest", "--browser", "chromium", "--headless"]),
+          .optional(),
       })
       .strict()
       .default({}),

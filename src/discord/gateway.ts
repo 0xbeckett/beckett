@@ -61,6 +61,10 @@ import { loadPeers } from "./peers.ts";
 import { buildPaths } from "../paths.ts";
 import { chunkReply, delaySchedule, TOTAL_DELAY_BUDGET_MS } from "./chunk.ts";
 import { chillReply } from "./chill.ts";
+import {
+  BROWSER_QUESTION_ATTACHMENT_NAME,
+  isBrowserQuestionMessage,
+} from "../browser/question-message.ts";
 
 /** Discord's hard per-message ceiling (Spec 05 §9.1). */
 const DISCORD_MAX_CHARS = 2000;
@@ -152,6 +156,8 @@ export class DiscordJsGateway implements DiscordGateway {
   private readonly outbound: QueuedPost[] = [];
   /** Message ids posted by this process, used to recognize native no-ping replies to Beckett. */
   private readonly ownMessageIds = new Set<string>();
+  /** Privacy-critical subset of own ids, marked synchronously before `sendNow` returns. */
+  private readonly browserQuestionMessageIds = new Set<string>();
 
   /** Liveness, tracked from shard lifecycle events (more accurate than client.isReady). */
   private connected = false;
@@ -298,14 +304,30 @@ export class DiscordJsGateway implements DiscordGateway {
       } catch (err) {
         // If the drop happened mid-send, fall through to the queue; otherwise it's a real
         // failure (e.g. bad channel / permissions) the caller must handle.
-        if (this.connected) throw err;
+        if (this.connected || opts?.queueIfOffline === false) throw err;
         this.logger.warn("post failed mid-disconnect; queueing for reconnect", {
           channelId,
           error: String(err),
         });
       }
     }
+    if (opts?.queueIfOffline === false) throw new Error("discord gateway is offline");
     return this.enqueue(channelId, content, opts);
+  }
+
+  async deleteMessage(channelId: string, messageId: string): Promise<void> {
+    const client = this.client;
+    if (!client) throw new Error("discord gateway not started");
+    const channel = await client.channels.fetch(channelId);
+    if (!channel?.isTextBased()) throw new Error(`discord channel ${channelId} is not text based`);
+    try {
+      const message = await channel.messages.fetch(messageId);
+      await message.delete();
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== 10_008) throw error;
+    }
+    this.ownMessageIds.delete(messageId);
+    this.browserQuestionMessageIds.delete(messageId);
   }
 
   /** Create a dedicated task thread, or adopt/rename the current thread when already inside one. */
@@ -470,7 +492,9 @@ export class DiscordJsGateway implements DiscordGateway {
     // of Beckett's messages (the reply-ping lands in `repliedUser`, which `.users.has()` MISSES —
     // that bug silently dropped every reply-style mention). `ignoreEveryone` avoids @everyone noise.
     const directMention = botId ? msg.mentions.has(botId, { ignoreEveryone: true }) : false;
-    const replyToBot = botId ? await this.referencesBot(msg, botId) : false;
+    const reference = botId
+      ? await this.referenceInfo(msg, botId)
+      : { toBot: false, browserQuestion: false, unverified: false };
     // The human-friendly name to address the speaker by: guild nickname first (what the server
     // calls them), then their global display name, then the raw username. Threaded through so
     // each turn knows WHO is talking, not just which channel (OPS-42).
@@ -480,6 +504,7 @@ export class DiscordJsGateway implements DiscordGateway {
       messageId: msg.id,
       userId: msg.author.id,
       authorDisplayName: displayName,
+      roleIds: msg.member ? [...msg.member.roles.cache.keys()] : [],
       channelId: msg.channelId,
       // Guild channels carry a name ("media"); DM channels don't have one — the shared-context
       // store keys server-wide awareness/search off exactly this distinction.
@@ -487,7 +512,9 @@ export class DiscordJsGateway implements DiscordGateway {
       guildId: msg.guildId ?? null,
       content: msg.content,
       repliedToId: msg.reference?.messageId ?? null,
-      mentionsBot: isDM || directMention || replyToBot,
+      ...(reference.browserQuestion ? { repliedToBrowserQuestion: true } : {}),
+      ...(reference.unverified ? { repliedToBotUnverified: true } : {}),
+      mentionsBot: isDM || directMention || reference.toBot,
       authorIsBot: msg.author.bot,
       createdAt: msg.createdTimestamp,
       // Every file dragged into the message (images, txt, pdf, md, anything). The shell
@@ -503,17 +530,31 @@ export class DiscordJsGateway implements DiscordGateway {
     };
   }
 
-  private async referencesBot(msg: Message, botId: string): Promise<boolean> {
+  private async referenceInfo(
+    msg: Message,
+    botId: string,
+  ): Promise<{ toBot: boolean; browserQuestion: boolean; unverified: boolean }> {
     const refId = msg.reference?.messageId;
-    if (!refId) return false;
-    if (this.ownMessageIds.has(refId)) return true;
+    if (!refId) return { toBot: false, browserQuestion: false, unverified: false };
+    if (this.browserQuestionMessageIds.has(refId)) {
+      return { toBot: true, browserQuestion: true, unverified: false };
+    }
+    if (this.ownMessageIds.has(refId)) return { toBot: true, browserQuestion: false, unverified: false };
     const repliedUser = (msg.mentions as { repliedUser?: { id?: string } }).repliedUser;
-    if (repliedUser?.id === botId) return true;
     try {
       const ref = await msg.fetchReference();
-      return ref.author.id === botId;
+      const toBot = ref.author.id === botId;
+      return {
+        toBot,
+        browserQuestion: toBot && isBrowserQuestionMessage(
+          ref.content,
+          [...ref.attachments.values()].map((attachment) => attachment.name),
+        ),
+        unverified: false,
+      };
     } catch {
-      return false;
+      const toBot = repliedUser?.id === botId;
+      return { toBot, browserQuestion: false, unverified: toBot };
     }
   }
 
@@ -536,7 +577,7 @@ export class DiscordJsGateway implements DiscordGateway {
     }
   }
 
-  /** Actually send a message now; returns the first sent message id. Splits overlong content. */
+  /** Send now; ordinary posts may split, while `singleMessage` posts reject instead. */
   private async sendNow(
     channelId: string,
     content: string,
@@ -544,6 +585,18 @@ export class DiscordJsGateway implements DiscordGateway {
   ): Promise<string> {
     const client = this.client;
     if (!client) throw new Error("discord gateway not started");
+
+    if (opts?.singleMessage) {
+      if (opts.chill) {
+        throw new Error("single-message Discord posts cannot use chilltext");
+      }
+      if (content.length > DISCORD_MAX_CHARS) {
+        throw new Error(`single-message Discord post exceeds ${DISCORD_MAX_CHARS} characters`);
+      }
+    }
+    if (opts?.browserQuestion && (!opts.singleMessage || opts.files?.length !== 1)) {
+      throw new Error("browser questions require one atomic Discord message with one screenshot");
+    }
 
     const channel = await client.channels.fetch(channelId);
     if (!channel || !channel.isSendable()) {
@@ -586,8 +639,8 @@ export class DiscordJsGateway implements DiscordGateway {
     // section into hard 2000-char pieces Discord will actually accept. Short text ⇒ one message,
     // byte-for-byte as before. Chilled bubbles are already message-sized sections; the hard
     // 2000-char split still guards them.
-    const sections = chilled ?? chunkReply(content);
-    const chunks = sections.flatMap((section) => splitDiscordContent(section));
+    const sections = opts?.singleMessage ? (content ? [content] : []) : (chilled ?? chunkReply(content));
+    const chunks = opts?.singleMessage ? [...sections] : sections.flatMap((section) => splitDiscordContent(section));
     if (
       chunks.length === 0 &&
       (!opts?.files || opts.files.length === 0) &&
@@ -601,7 +654,7 @@ export class DiscordJsGateway implements DiscordGateway {
     // Inter-message delays make several messages read as a person typing, not one API dump. A flat
     // random 2–4s pause between consecutive bubbles (OPS-84) — the first sends immediately — with a
     // total budget so a pathological many-chunk reply can't take forever.
-    const gaps = delaySchedule(chunks.length);
+    const gaps = opts?.singleMessage ? [] : delaySchedule(chunks.length);
     let capped = false;
 
     let firstId: string | null = null;
@@ -628,13 +681,17 @@ export class DiscordJsGateway implements DiscordGateway {
         payload.reply = { messageReference: opts.replyToMessageId, failIfNotExists: false };
       }
       if (i === 0 && opts?.files && opts.files.length > 0) {
-        payload.files = opts.files.map((path) => new AttachmentBuilder(path));
+        payload.files = opts.files.map((path) => new AttachmentBuilder(
+          path,
+          opts.browserQuestion ? { name: BROWSER_QUESTION_ATTACHMENT_NAME } : undefined,
+        ));
       }
       if (i === 0 && opts?.embeds?.length) payload.embeds = opts.embeds.map((embed) => new EmbedBuilder(embed));
       if (i === 0 && opts?.buttons?.length) payload.components = [buildButtonRow(opts.buttons)];
 
       const sent = await channel.send(payload);
       this.ownMessageIds.add(sent.id);
+      if (i === 0 && opts?.browserQuestion) this.browserQuestionMessageIds.add(sent.id);
       firstId ??= sent.id;
     }
     this.lastEventTs = Date.now();

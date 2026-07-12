@@ -12,9 +12,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.13 # pinned to the loom-desk prod bun; bump deliberately
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap util-linux shellcheck
       - run: bun install --frozen-lockfile
-      - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck install.sh deploy/install.sh
-      - run: bash -n install.sh deploy/install.sh deploy/plane/install.sh
+      - run: bun x playwright install --with-deps --no-shell chromium
+      - run: bun run browser:smoke
+      - run: shellcheck install.sh deploy/install.sh deploy/deploy-prod.sh
+      - run: bash -n install.sh deploy/install.sh deploy/deploy-prod.sh deploy/plane/install.sh
       - run: bun x tsc --noEmit
       - run: bun test

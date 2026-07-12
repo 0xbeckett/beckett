@@ -89,6 +89,11 @@ class FakeGateway implements DiscordGateway {
     return id;
   }
 
+  async deleteMessage(channelId: string, messageId: string): Promise<void> {
+    const index = this.posts.findIndex((post) => post.channelId === channelId && post.id === messageId);
+    if (index >= 0) this.posts.splice(index, 1);
+  }
+
   async sendTyping(channelId: string): Promise<void> {
     this.typings.push(channelId);
   }

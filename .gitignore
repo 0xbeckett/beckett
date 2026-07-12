@@ -18,6 +18,7 @@ dist/
 
 # scratch / temp
 scratch/
+output/
 *.log
 .agents/
 .gstack/

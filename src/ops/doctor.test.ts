@@ -19,10 +19,13 @@ function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     pi: "0.80.2",
     gh: "gh version 2.62.0",
     cloudflared: "cloudflared version 2025.5.0",
+    bwrap: "bubblewrap 0.11.0",
+    prlimit: "prlimit from util-linux 2.40",
   };
   return {
     config: defaultConfig(),
     home: HOME,
+    platform: "linux",
     env: {
       PLANE_API_TOKEN: "t",
       DISCORD_TOKEN: "t",
@@ -33,6 +36,7 @@ function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     exec: async (argv) => {
       const bin = argv[0]!;
       if (argv[1] === "--version" && versions[bin]) return { code: 0, stdout: versions[bin], stderr: "" };
+      if (bin === "bwrap") return { code: 0, stdout: "", stderr: "" };
       if (bin === "cloudflared") return { code: 0, stdout: "OK", stderr: "" };
       return { code: 127, stdout: "", stderr: "not found" };
     },
@@ -55,6 +59,7 @@ function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     },
     busStatus: async () => ({ version: "3.5.0", uptimeSecs: 42 }),
     diskFreeKb: async () => 50 * 1024 * 1024, // 50 GB
+    browserProbe: async () => ({ executable: "/home/beckett/.cache/ms-playwright/chromium/chrome", launchable: true }),
     ...overrides,
   };
 }
@@ -75,6 +80,32 @@ describe("doctor — healthy box", () => {
 });
 
 describe("doctor — the issue-#30 regression checklist", () => {
+  test("an installed Chromium that cannot launch is a FAIL", async () => {
+    const report = await runDoctor(healthyDeps({
+      browserProbe: async () => ({
+        executable: "/home/beckett/.cache/ms-playwright/chromium/chrome",
+        launchable: false,
+        error: "libnss3.so: cannot open shared object file",
+      }),
+    }));
+    const browser = byName(report.checks, "browser: chromium");
+    expect(browser.level).toBe("fail");
+    expect(browser.detail).toContain("libnss3.so");
+  });
+
+  test("a Linux host that blocks bubblewrap user namespaces is a FAIL", async () => {
+    const base = healthyDeps();
+    const report = await runDoctor(healthyDeps({
+      exec: async (argv, opts) =>
+        argv[0] === "bwrap" && argv[1] === "--unshare-all"
+          ? { code: 1, stdout: "", stderr: "No permissions to create new namespace" }
+          : base.exec!(argv, opts),
+    }));
+    const sandbox = byName(report.checks, "browser: process sandbox");
+    expect(sandbox.level).toBe("fail");
+    expect(sandbox.detail).toContain("No permissions");
+  });
+
   test("node below Pi's 22.19 floor on the daemon PATH is a FAIL", async () => {
     const base = healthyDeps();
     const report = await runDoctor(

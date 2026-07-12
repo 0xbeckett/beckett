@@ -5,9 +5,9 @@ idempotently and stages the service until credentials are ready. This document k
 recovery/operator path. The long-form history of the original host lives in
 `my-docs/loom-desk-setup-log.md`.
 
-Host requirements: Ubuntu 20.04+ or Debian 10+ with systemd, x64/arm64, 4 GB RAM, and 5 GB free
-disk. The public installer also installs `sudo` so its printed operator commands work on minimal
-root-first Debian images.
+Host requirements: Ubuntu 22.04, 24.04, or 26.04, or Debian 12 or 13, with systemd, x64/arm64,
+4 GB RAM, and 5 GB free disk. The public installer also installs `sudo` so its printed operator
+commands work on minimal root-first Debian images.
 
 ## 1. OS user + lingering
 
@@ -19,16 +19,87 @@ sudo loginctl enable-linger beckett          # user units run without an open se
 Do not give this account unrestricted passwordless sudo on a public/shared host: every model
 worker runs with the account's privileges. Install host-level tools as an administrator instead.
 
-## 2. Optional kernel knob for Codex's bwrap sandbox (Ubuntu 24.04)
+## 2. Browser-process isolation (Ubuntu 24.04)
 
-The shipped Codex worker defaults to `danger-full-access` and does not need this. Only make this
-host-wide AppArmor change if you deliberately switch Codex back to `workspace-write` and accept
-the security tradeoff:
+On Linux, the daemon starts the trusted Playwright controller and every disposable model-code
+evaluator in separate sibling `bubblewrap` sandboxes. Both drop all capabilities; the evaluator also
+uses `prlimit` from `util-linux` for memory, process, file, and CPU bounds. The installer provisions
+both tools. Verify that the dedicated Beckett account can create a fresh user namespace and that
+`prlimit` is available:
+
+```bash
+command -v bwrap prlimit
+sudo -u beckett bwrap --unshare-all --share-net --die-with-parent --ro-bind / / /bin/true
+```
+
+Some Ubuntu 24.04 images block unprivileged user namespaces through AppArmor. On a dedicated
+Beckett host, enable them if the smoke command is denied, then rerun `beckett doctor`:
 
 ```bash
 echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-beckett-userns.conf
 sudo sysctl --system
 ```
+
+Then exercise the real controller-plus-evaluator production path from the checkout:
+
+```bash
+sudo -u beckett -H bash -lc 'cd ~/beckett && bun run browser:smoke'
+```
+
+The Bun daemon launches the sandboxed controller with Node. That Node host manually starts the pinned
+Chromium binary with only an ephemeral loopback debugging port and then attaches Playwright over CDP;
+it does not combine Playwright's managed WebSocket/debugging pipe with a second port. Chromium stays
+in the controller's process group so a hard supervisor kill reaps browser and renderer descendants.
+
+The controller starts with a 128 MiB per-file `RLIMIT_FSIZE`. Within that ceiling, each browser lease
+accepts at most four downloads and 100 MiB total. A CDP `Browser.downloadProgress` guard tracks both
+received bytes and the projected remainder while transfers are active, cancelling before the
+aggregate crosses the budget; artifact streaming is a second bounded copy path, not the only
+pre-completion guard. Cancellation is tried against the default and every live browser context id.
+Root download events count each GUID once, including raw/hidden-target downloads, and the controller
+restores its trusted download behavior if raw CDP redirects it. Over-budget and partial files are
+deleted. Root target inspection enforces a 32 page-target ceiling even for targets hidden from
+Playwright's page list. Browser tool results are capped as a complete serialized envelope, with a
+24,000 character default.
+
+Do not treat the model-facing `browser()`/raw-CDP wrappers as a security boundary: Playwright's
+private graph must be assumed reachable. The controller watches target creation and polls all browser
+context ids every 100 ms, forcibly disposing every non-default context, including contexts that have
+no targets yet. The integration test exercises that private-graph bypass directly.
+
+The trusted controller scans allocated profile bytes asynchronously and serially. It starts at 100 ms,
+backs off as far as 2 seconds while storage is quiet, and returns to 100 ms on rapid growth or low
+headroom. It closes Chromium and fails the lease if the profile grows by more than 100 MiB during one
+run or exceeds 512 MiB absolutely; an already-oversized profile fails before launch. The profile is
+not wiped, and a bounded mode-`0600` controller snapshot restores session-only cookies after the
+controlled Chromium restart. These limits are fixed runtime safety bounds, not host sizing guidance.
+
+Terminal browser results are written to a minimal mode-`0600` `~/.beckett/browser-results.json`
+envelope before Discord posting. A failed durable write prevents the post; transient delivery
+failures retry while the daemon is live, and pending envelopes retry after restart. The outbox stores
+run/channel/state, redacted result, and proof paths, not the original task or requester identity.
+Proof attachment failures retain both the envelope and screenshot for retry. Terminal results post
+directly to Discord without third-party Chilltext processing.
+
+Blocking-question correlation uses a separate mode-`0600` ledger. If its durable write fails after
+Discord accepts a question, Beckett deletes that visible question and aborts the wait. Restarted
+anchors are stale privacy tombstones whose Discord deletion is retried. Only a confirmed deletion
+starts the seven-day expiry clock or makes a record safe to compact. The ledger is capped at 1,000
+without dropping unconfirmed anchors, so it fails closed on new questions if none can be removed.
+Question whitespace is normalized and Discord's `singleMessage` path keeps the prompt, fixed reply
+instruction, and screenshot in one post. The screenshot is uploaded under the reserved
+`beckett-browser-question.png` attachment name; that name plus the fixed suffix is the restart-safe
+marker. This marker, not the ledger alone, covers a crash between Discord acceptance and persistence:
+recognized orphan replies are consumed, the orphan question is deleted, and the user is told to
+restart the run. An uninspectable bot reference is also consumed fail-closed with guidance to resend
+the answer as a fresh mention. Every recognized reply is deleted before its contents are used,
+including stale, wrong-user, and role-revoked answers. Grant the Discord bot Manage Messages; if
+deletion cannot be confirmed, Beckett refuses to use the answer.
+
+This is a filesystem and process boundary, not a separate-UID or network boundary. Processes already
+running as the `beckett` Unix user remain trusted, and both browser sandboxes share the host network
+namespace so the evaluator can reach Chromium over loopback CDP. Keep computer-use on a dedicated
+Beckett machine rather than a multi-tenant host.
 
 ## 3. Toolchain (as `beckett`)
 
