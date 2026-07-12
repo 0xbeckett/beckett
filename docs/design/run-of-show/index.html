@@ -1768,6 +1768,169 @@
   <div class="rf">26 / 34</div>
 </section>
 
+<!-- ============================================================ p27 · §7 opener + sim 1 -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <div class="kicker" style="margin-top:6mm">New in rev 2 &middot; the engine on paper, before it exists in code</div>
+  <div class="secnum">7</div>
+  <h1>Three simulated deployments</h1>
+  <p class="lede" style="margin-bottom:3mm">Three real-shaped tasks, walked through the engine event by
+  event: the boring case, the parallel case, and the case where things break. Timestamps, specs, event
+  logs and manifests are simulated but exact &mdash; each line is one the &sect;4.4 vocabulary can
+  actually express, which is the test that the design has no gaps a demo would hide.</p>
+
+  <h2><span class="n">7.1</span>Simulation A &mdash; a one-pass backend fix (the everyday ticket)</h2>
+  <p class="tight"><b>OPS-208 &ldquo;journal --tail N returns N&minus;1 lines.&rdquo;</b> The concierge files with no
+  <code>--flow</code>; the engine compiles the cast (<code>pi</code>, effort <code>low</code>) into the built-in
+  one-pass spec and prints it back &mdash; the gate that today is silently inferred is now visible at filing:</p>
+<pre>$ beckett task file --project beckett --title "journal --tail off-by-one" --cast implement=pi:low
+<span class="c">→ compiled flow: implement(pi:low, retries 3) → done   [no review: effort low → one-pass]</span>
+<span class="c">→ run #61 opened · runs/61.jsonl · budget: defaults · supervise: defaults (lease 90s)</span></pre>
+<pre>14:02:11 run_opened        {spec: one-pass, origin: #ops-tickets}
+14:02:11 node_entered      {node: implement, visit: 1}
+14:02:12 seat_spawned      {seat: 61/implement/1, cast: pi:low, branch: beckett/task-61,
+                            worktree: 61, baseSha: a41f2c9}          <span class="c">← manifest written first</span>
+14:02:31 worker_ready      {observed: {branch: beckett/task-61, head: a41f2c9}} <span class="c">← handshake, 19 s in</span>
+14:03:30 progress_noted    {turns: 4, files: [src/progress/journal.ts], tokens: 18k}
+14:04:30 progress_noted    {turns: 7, files: +[journal.test.ts], tokens: 41k}
+14:06:02 signal_received   {status: complete, summary: "off-by-one in tail slice; test added",
+                            checksRun: ["bun test journal"]}
+14:06:02 edge_taken        {from: implement, to: done, why: pass}
+14:06:03 run_done          {outcome: done, seats: 1, spend: $0.14, wallClock: 3m52s}
+14:06:09 <span class="k">status → #ops-tickets thread:</span> <span class="s">"#61 done in one pass — journal tail fixed, test added,
+                            $0.14. Branch beckett/task-61 queued to publish."</span></pre>
+  <p>Total: one seat, four minutes, six status-tier words of human attention. The point of Simulation A
+  is what it <em>doesn&rsquo;t</em> show: no review seat was spawned because the spec said so out loud, not
+  because a model knob implied it; and if this had been rev-1&rsquo;s engine, lines
+  <code>worker_ready</code> and both <code>progress_noted</code> rollups simply would not exist &mdash; the run
+  would have been dark from spawn to signal.</p>
+
+  <p class="small" style="margin-top:2mm">The worker&rsquo;s manifest for seat <code>61/implement/1</code>, abridged:
+  <code>node: implement</code>, <code>kind: worker</code>, <code>position: {upstream: [], downstream: ["done"]}</code>,
+  <code>visit: {n: 1, maxVisits: 3}</code>, <code>criteria: ["tail N returns N lines", "regression test"]</code>,
+  <code>budget.envelope: {15 turns, 600 s}</code>. Its first act was <code>beckett seat ready</code>; its last was
+  the done-signal. It never needed to know a flow engine existed &mdash; the compatibility invariant of
+  &sect;8.4, demonstrated.</p>
+  <div class="rf">27 / 34</div>
+</section>
+
+<!-- ============================================================ p28 · sim 2 spec + walk -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <h2 style="margin-top:6mm"><span class="n">7.2</span>Simulation B &mdash; a backend + frontend feature that fans out and rejoins</h2>
+  <p class="tight"><b>WEB-58 / run #58.1 &ldquo;spend report page&rdquo;</b> &mdash; a page over the spend ledger:
+  an API endpoint (backend) and the page itself (frontend), separable after a short design pass. The
+  concierge composes this one deliberately:</p>
+<pre>$ beckett task file --project web --title "spend report page" --channel #web \
+    --flow 'design(opus:high) -> [api(pi:high) | ui(sonnet:high)] =>merge -> review(sonnet:high)^2'
+<span class="c">→ 5 nodes · fanout isolation: worktree-each · join: all-merge, arm order [api, ui]</span>
+<span class="c">→ worst case priced at filing: 1 + 2 + 1 seats × visits ≤ 2 → echo "≤ 7 seats, est ≤ $9"</span></pre>
+  <p class="tight">The run, stage by stage &mdash; this is Fig.&nbsp;6 with real values:</p>
+<pre>09:14:02 run_opened        {nodes: 5, budget: {maxConcurrent: 2}}
+09:14:02 node_entered      {node: design, visit: 1}
+09:14:03 seat_spawned      {seat: 58.1/design/1, cast: opus:high, branch: beckett/task-58.1}
+09:14:24 worker_ready      &middot;&middot;&middot;
+09:26:40 signal_received   {status: complete, summary: "two panels; GET /api/spend?window=30d;
+                            artifact docs/design/spend-page.md"}
+09:26:40 edge_taken        {from: design, to: fanout, why: pass}
+09:26:41 node_entered      {node: fanout}   <span class="c">← base F0 = f31c09a captured from task branch HEAD</span>
+09:26:41 seat_spawned      {seat: 58.1/api/1&middot;arm1, branch: beckett/task-58.1/arm-1, baseSha: f31c09a,
+                            scope: ["src/**"]}
+09:26:42 seat_spawned      {seat: 58.1/ui/1&middot;arm2,  branch: beckett/task-58.1/arm-2, baseSha: f31c09a,
+                            scope: ["web/**"]}      <span class="c">← both manifests carry design's artifact+summary</span>
+09:27:0x worker_ready      &times;2   <span class="c">← each arm verified its OWN branch — the §6.4 check is per-seat</span>
+09:41:13 signal_received   {seat: &middot;&middot;&middot;arm1, status: complete, checksRun: ["bun test spend-api"]}
+09:41:13 arm_joined        {arm: 1, branch: arm-1}          <span class="c">← barrier holds; ui still live</span>
+09:41:19 <span class="k">status:</span> <span class="s">"#58.1 api arm done, waiting on ui (lease healthy, 34k tokens in)"</span>
+09:52:47 signal_received   {seat: &middot;&middot;&middot;arm2, status: complete}
+09:52:47 arm_joined        {arm: 2}
+09:52:49 join_resolved     {strategy: all-merge, merged: [arm-1 → M1 41bc2e0, arm-2 → M2 5580f1d],
+                            conflicts: none}
+09:52:50 node_entered      {node: review, visit: 1}         <span class="c">← reviewer's manifest: upstream =</span>
+                                                             <span class="c">design + BOTH arms, with summaries</span>
+10:01:08 gate_decided      {verdict: pass, rubric: criteria-vs-diff}
+10:01:08 run_done          {seats: 4, spend: $6.80, wallClock: 47m}</pre>
+  <div class="rf">28 / 34</div>
+</section>
+
+<!-- ============================================================ p29 · sim 2 outcome + sim 3 setup -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <p style="margin-top:6mm">What Simulation B establishes, concretely:</p>
+  <ul>
+    <li><b>The arms never raced.</b> Isolation was worktree-each; the <code>ui</code> arm&rsquo;s scope-guard
+    (<code>web/**</code>) would have denied a stray write into <code>src/</code> at the tool layer, exactly as the
+    guard works today <span class="rcpt">scope-guard.ts:180</span> &mdash; parallelism adds worktrees, not new
+    trust assumptions.</li>
+    <li><b>The join is ordinary git.</b> <code>M1</code>, <code>M2</code> are merge commits on the task branch made
+    by the same machinery that merges dependency branches today <span class="rcpt">worktree.ts</span>; a
+    conflict would have parked the join with arm-2 named, task branch resting at <code>M1</code>
+    (&sect;5.4).</li>
+    <li><b>One reviewer saw the whole.</b> Its manifest&rsquo;s <code>upstream</code> carried the design
+    artifact and both arm summaries &mdash; the fan-out is invisible in the diff but legible in the
+    contract. Under today&rsquo;s engine this task is either one serial mega-ticket or two hand-filed
+    siblings with a human doing the join in their head.</li>
+  </ul>
+
+  <h2><span class="n">7.3</span>Simulation C &mdash; a failure, detected, recovered, and paid for honestly</h2>
+  <p class="tight"><b>OPS-233 &ldquo;durable retry backoff in publish-outbox&rdquo;</b> &mdash; a
+  <code>reviewed</code> preset (implement pi:high &rarr; review sonnet:high, <code>maxVisits 3</code>), filed at
+  16:40. Everything goes wrong that quietly goes wrong today; watch what surfaces this time:</p>
+<pre>16:40:55 run_opened &middot; node_entered{implement,1} &middot; seat_spawned &middot; worker_ready   <span class="c">← nominal start</span>
+16:52:xx progress_noted    &middot;&middot;&middot; steady &middot;&middot;&middot; then nothing after 16:58:07     <span class="c">← harness wedged mid-turn</span>
+16:59:40 <span class="k">lease quiet</span>      {seat: 233/implement/1, idle: 93s} → status-check nudge   <span class="c">← strike 1</span>
+17:01:12 alarm_raised      {type: stall, idle: 185s, strikes: 2}
+17:01:12 <span class="k">status:</span> <span class="s">"#233 implement seat stalled (3 min silent); aborting to checkpoint and retrying"</span>
+17:01:13 checkpoint floor  = c99d47e (17:00:03, OPS-125 cadence)   <span class="c">← at most 60 s of work lost</span>
+17:01:14 signal_received   {status: synthesized, subtype: error_abort_stall}    <span class="c">← never silent</span>
+17:01:15 edge_taken        {implement → implement, why: retry, visit: 1, retriesLeft: 2}
+17:01:16 seat_spawned      {seat: 233/implement/1&middot;r2, resume: from c99d47e}
+17:14:59 signal_received   {status: complete}  → edge_taken {implement → review}
+17:22:30 gate_decided      {verdict: fail, reasons: ["backoff caps at 2 retries, spec says 3",
+                            "no jitter — thundering-herd note in criteria"]}
+17:22:30 edge_taken        {review → implement, why: fail, visit: 2 of 3}   <span class="c">← rework, bounded</span>
+17:22:31 seat_spawned      {&middot;&middot;&middot;/implement/2}   <span class="c">← its manifest: visit.n=2, upstream review verdict</span>
+                                                 <span class="c">inline — the worker KNOWS why it's back</span>
+17:36:44 signal_received   {status: complete} → review(2) → 17:44:03 gate_decided {pass}
+17:44:04 run_done          {outcome: done, seats: 5, spend: $4.90, wallClock: 63m,
+                            alarms: [stall&times;1], retries: 1, reworks: 1}</pre>
+  <div class="rf">29 / 34</div>
+</section>
+
+<!-- ============================================================ p30 · sim 3 Discord view + closing -->
+<section class="sheet">
+  <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
+  <p style="margin-top:6mm">And the part that answers &sect;1.6 directly &mdash; <b>what ro&rsquo;s Discord
+  actually showed</b>, in the #ops-tickets thread for #233, unprompted:</p>
+<pre><span class="k">beckett</span>  16:41  filed #233 — implement(pi:high) → review(sonnet:high), ≤3 visits, est ≤ $6
+<span class="k">beckett</span>  17:01  ⚠ implement seat went silent for 3 min — aborted to checkpoint c99d47e,
+                retrying (1 of 3). Nothing lost past 17:00.
+<span class="k">beckett</span>  17:22  review sent it back: backoff cap + missing jitter. Visit 2 of 3.
+<span class="k">beckett</span>  17:44  ✓ #233 done — 1 stall recovered, 1 rework, $4.90, 63 min. Publishing.</pre>
+  <p>Four lines, zero questions asked. Under the current system the same afternoon reads: worker goes
+  quiet at 16:58, the stall nudge and abort happen inside log files
+  <span class="rcpt">dispatcher.ts:1751&ndash;1786</span>, and the first human signal is ro noticing at 18:30 that
+  #233 is still <code>in_progress</code> and asking the concierge what happened. The failure and the
+  recovery are identical in both worlds &mdash; <b>the difference is purely who got told, and when.</b></p>
+
+  <p>Had the second retry also stalled, or the third visit failed review, the run would have
+  <b>parked and paged</b> with the decision packet (&sect;6.3): last checkpoint SHA, both review
+  verdicts, spend so far, and the applicable verbs &mdash; <code>resume --grant visits=1</code>,
+  <code>cancel</code>, or re-cast the seat. The ladder has a top, the top has a human, and the human has
+  everything needed to rule in one read.</p>
+
+  <div class="callout">
+    <div class="ct">What the three simulations prove together</div>
+    <p>Every line above is expressible in the nineteen-event vocabulary of &sect;4.4 &mdash; no simulation
+    needed an event the model lacks, which is the paper-stage equivalent of a passing integration
+    test. A: defaults stay invisible and cheap. B: parallelism is worktrees + ordinary merges, priced
+    at filing. C: failure is loud, bounded, and recoverable from a checkpoint that is never more than
+    one cadence old. These three transcripts are the acceptance tests the Phase-0 shadow build
+    (&sect;9.1) should replay verbatim.</p>
+  </div>
+  <div class="rf">30 / 34</div>
+</section>
+
 <!--@@-->
 </body>
 </html>
