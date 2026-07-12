@@ -162,9 +162,12 @@ class StdinChannel {
     const decoder = new TextDecoder();
     let buf = "";
     try {
-      // Bun.stdin is a readable file handle; .stream() yields Uint8Array chunks.
-      for await (const chunk of Bun.stdin.stream()) {
-        buf += decoder.decode(chunk as Uint8Array, { stream: true });
+      // Use the Web Streams API directly; it is portable across Bun's DOM and Node typings.
+      const reader = Bun.stdin.stream().getReader();
+      while (true) {
+        const { value: chunk, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(chunk, { stream: true });
         let nl: number;
         while ((nl = buf.indexOf("\n")) >= 0) {
           const raw = buf.slice(0, nl).trim();

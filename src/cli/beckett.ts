@@ -32,6 +32,7 @@ import { projectSlug } from "../plane/cast.ts";
 import { parseSince, readSpendLedger, summarizeSpend } from "../spend.ts";
 import { TaskStore, displayTaskName, normalizeBranchRef, normalizeTaskNumber } from "../task/store.ts";
 import { startTaskBranch } from "./task-start.ts";
+import { quickDetachedMessage } from "./quick-output.ts";
 
 const config = loadConfig();
 const paths = buildPaths(config);
@@ -1555,10 +1556,7 @@ async function main(): Promise<void> {
       if (!res.ok) fail(res.error ?? "quick run failed");
       const data = res.data as { done?: boolean; detached?: boolean; runId: string; state?: string; result?: string };
       if (data.detached) {
-        out(
-          `still working (run ${data.runId} detached after ${config.quick.sync_wait_secs}s) — the result will ` +
-            `arrive as a quick-agent update turn; tell the person it's in progress and end this turn.`,
-        );
+        out(quickDetachedMessage(agent, data.runId, config.quick.sync_wait_secs));
       }
       out(`[quick:${data.runId} state:${data.state}]\n${data.result ?? ""}`);
     } catch (err) {

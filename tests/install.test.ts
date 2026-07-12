@@ -146,15 +146,38 @@ describe("public installer input and file contracts", () => {
   test("host release gates match supported Ubuntu and Debian floors", async () => {
     const script = [
       'source "$1"',
-      'supported_release ubuntu 20.04',
+      'supported_release ubuntu 22.04',
       'supported_release ubuntu 24.04',
-      'supported_release debian 10',
+      'supported_release ubuntu 26.04',
+      'supported_release debian 12',
       'supported_release debian 13',
-      '! supported_release ubuntu 18.04',
-      '! supported_release debian 9',
+      '! supported_release ubuntu 20.04',
+      '! supported_release ubuntu 25.04',
+      '! supported_release debian 11',
+      '! supported_release debian 14',
     ].join("\n");
     const result = await run(["bash", "-c", script, "bash", INSTALLER]);
     expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  });
+
+  test("browser provisioning installs Linux deps before Chromium and typecheck", () => {
+    const installer = readFileSync(INSTALLER, "utf8");
+    const start = installer.indexOf("install_app_dependencies() {");
+    const end = installer.indexOf("\n}\n", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const block = installer.slice(start, end);
+    expect(installer).toContain("bubblewrap");
+    const dependencyInstall = block.indexOf("install --frozen-lockfile");
+    const systemDeps = block.indexOf("install-deps chromium");
+    const chromium = block.indexOf("install --no-shell chromium");
+    const typecheck = block.indexOf("run typecheck");
+    for (const marker of [dependencyInstall, systemDeps, chromium, typecheck]) {
+      expect(marker).toBeGreaterThanOrEqual(0);
+    }
+    expect(systemDeps).toBeGreaterThan(dependencyInstall);
+    expect(chromium).toBeGreaterThan(systemDeps);
+    expect(typecheck).toBeGreaterThan(chromium);
   });
 
   test("generated config is strict, private, and instance-specific", async () => {

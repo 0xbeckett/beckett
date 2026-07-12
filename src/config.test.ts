@@ -5,10 +5,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfigToml, loadConfig, validateConfig } from "./config.ts";
+import { browserHostSettings } from "./browser/runtime.ts";
 
 /** Load a config from a literal TOML body in an isolated temp beckett dir. */
 function loadToml(body: string) {
@@ -138,6 +139,41 @@ test("shared_context defaults ship enabled with the OPS-80 bounds", () => {
     inject_budget_tokens: 3000,
     roster_max: 12,
   });
+});
+
+test("computer-use defaults to one stable full-Chromium profile and bounded tool output", () => {
+  expect(validateConfig({}).quick).toMatchObject({
+    browser_role_id: "1520985787062030456",
+    browser_profile_dir: "browser/profile",
+    browser_headless: true,
+    browser_viewport_width: 1440,
+    browser_viewport_height: 900,
+    browser_eval_timeout_ms: 60_000,
+    browser_max_output_chars: 24_000,
+    browser_question_wait_secs: 3_600,
+  });
+  expect(() => validateConfig({ quick: { browser_mcp_command: ["legacy", "--accepted-during-migration"] } })).not.toThrow();
+  expect(() => validateConfig({ quick: { browser_max_output_chars: 4_095 } })).toThrow();
+  expect(() => validateConfig({ quick: { browser_max_output_chars: 1_000_001 } })).toThrow();
+});
+
+test("computer-use rejects profiles that expose Beckett state or traverse a symlink", () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-browser-profile-test-"));
+  try {
+    for (const profile of [".", "..", dir]) {
+      expect(() => browserHostSettings(validateConfig({
+        paths: { beckett_dir: dir },
+        quick: { browser_profile_dir: profile },
+      }))).toThrow("dedicated directory");
+    }
+    symlinkSync(tmpdir(), join(dir, "browser"));
+    expect(() => browserHostSettings(validateConfig({
+      paths: { beckett_dir: dir },
+      quick: { browser_profile_dir: "browser/profile" },
+    }))).toThrow("must not contain symlinks");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("proactivity runtime override merges over TOML", () => {

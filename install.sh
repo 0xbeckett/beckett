@@ -64,7 +64,8 @@ usage() {
   cat <<'EOF'
 Install Beckett on Ubuntu or Debian.
 
-Requires Ubuntu 20.04+ or Debian 10+, systemd, x64/arm64, 4 GB RAM, and 5 GB free disk.
+Requires Ubuntu 22.04, 24.04, or 26.04, or Debian 12 or 13, plus systemd, x64/arm64,
+4 GB RAM, and 5 GB free disk.
 
 Usage:
   sudo bash install.sh [options]
@@ -89,8 +90,8 @@ supported_release() {
   local id="$1"
   local version="$2"
   case "${id}" in
-    ubuntu) version_ge "${version}" "20.04" ;;
-    debian) version_ge "${version}" "10" ;;
+    ubuntu) case "${version}" in 22.04|24.04|26.04) return 0 ;; *) return 1 ;; esac ;;
+    debian) case "${version}" in 12|13) return 0 ;; *) return 1 ;; esac ;;
     *) return 1 ;;
   esac
 }
@@ -160,7 +161,7 @@ require_supported_host() {
     *) die "supported hosts are Ubuntu and Debian (found ${ID:-unknown})" ;;
   esac
   supported_release "${ID}" "${VERSION_ID:-0}" ||
-    die "supported releases are Ubuntu 20.04+ and Debian 10+ (found ${PRETTY_NAME:-unknown})"
+    die "supported releases are Ubuntu 22.04/24.04/26.04 and Debian 12/13 (found ${PRETTY_NAME:-unknown})"
 
   command -v systemctl >/dev/null || die "systemd is required"
   [ "$(ps -p 1 -o comm= | tr -d ' ')" = "systemd" ] || die "systemd must be PID 1"
@@ -194,6 +195,7 @@ install_base_packages() {
   apt-get -o DPkg::Lock::Timeout=120 update
   apt-get -o DPkg::Lock::Timeout=120 install -y \
     build-essential \
+    bubblewrap \
     ca-certificates \
     curl \
     fd-find \
@@ -204,6 +206,7 @@ install_base_packages() {
     python3-venv \
     ripgrep \
     sudo \
+    util-linux \
     unzip \
     xz-utils
 }
@@ -289,6 +292,12 @@ as_beckett_in_repo() {
     LC_ALL=C.UTF-8 \
     PATH="$(beckett_path)" \
     bash -c 'cd "$1" && shift && exec "$@"' bash "${BECKETT_REPO}" "$@"
+}
+
+verify_browser_sandbox() {
+  log "verifying browser process isolation as ${BECKETT_USER}"
+  as_beckett bwrap --unshare-all --share-net --die-with-parent --ro-bind / / /bin/true ||
+    die "bubblewrap cannot create an unprivileged user namespace; see deploy/host-setup.md"
 }
 
 version_ge() {
@@ -421,6 +430,15 @@ clone_or_update_repo() {
 install_app_dependencies() {
   log "installing locked Beckett dependencies"
   as_beckett_in_repo "${BECKETT_HOME}/.bun/bin/bun" install --frozen-lockfile
+  log "installing Chromium system dependencies"
+  (
+    cd "${BECKETT_REPO}"
+    HOME=/root "${BECKETT_HOME}/.bun/bin/bun" x playwright install-deps chromium
+  )
+  log "installing Beckett's pinned full Chromium build"
+  as_beckett_in_repo "${BECKETT_HOME}/.bun/bin/bun" x playwright install --no-shell chromium
+  log "smoke-testing the production browser sandbox and disposable evaluator"
+  as_beckett_in_repo "${BECKETT_HOME}/.bun/bin/bun" run browser:smoke
   log "typechecking Beckett before installing its service"
   as_beckett_in_repo "${BECKETT_HOME}/.bun/bin/bun" run typecheck
 }
@@ -948,6 +966,7 @@ main() {
   install_base_packages
   install_github_cli
   ensure_beckett_user
+  verify_browser_sandbox
   install_node
   install_user_toolchain
   clone_or_update_repo

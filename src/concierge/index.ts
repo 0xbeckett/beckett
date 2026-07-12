@@ -26,7 +26,7 @@
  * Import style: explicit `.ts` extensions, ESM, bun runtime.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 // ONE version source (issue #29): package.json, the same file `BECKETT_VERSION` reads. Used to
@@ -64,7 +64,9 @@ import { setChannelModeOverride, setEnabledOverride } from "./proactivity-store.
 import { readPersistedOffers } from "./ambient.ts";
 import { classify, loadAccess, resolvePending, ACCESS_CAP, type AccessLevel } from "../discord/access.ts";
 import { childEnv as strippedChildEnv } from "../env.ts";
-import type { QuickRun, QuickRunner } from "../quick/index.ts";
+import type { QuickQuestion, QuickRun, QuickRunner } from "../quick/index.ts";
+import type { BrowserRuntime } from "../browser/runtime.ts";
+import { BROWSER_QUESTION_SUFFIX } from "../browser/question-message.ts";
 import {
   createAmbientCoordinator,
   isAmbientPass,
@@ -135,9 +137,89 @@ const ACCESS_DENY_REPLY_MS = 5 * 60_000;
  * retry. This is intentionally short: a later, deliberate repeat remains possible.
  */
 const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
+export const BROWSER_OPERATOR_ROLE_ID = "1520985787062030456";
 
+interface BrowserQuestionRecord {
+  runId: string;
+  channelId: string;
+  allowedUserId: string;
+  createdAt: number;
+  stale: boolean;
+  /** Set only after Discord confirmed the visible question anchor was deleted. */
+  deletedAt?: number;
+}
+
+interface BrowserResultEnvelope {
+  runId: string;
+  channelId: string;
+  state: "done" | "error" | "timeout";
+  result: string;
+  proofFiles: string[];
+}
+
+const BROWSER_RESULT_RETRY_MS = 1_000;
+const BROWSER_QUESTION_MAX_RECORDS = 1_000;
+const BROWSER_DELETED_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60_000;
+const DISCORD_SINGLE_MESSAGE_CHARS = 2_000;
 const ACCESS_DENY_TEXT =
   "I can't run Beckett turns for you yet. Access is invite-only: the owner has to request it and approve it themselves.";
+
+export function redactBrowserSecrets(text: string): string {
+  const label = "password|passcode|one[- ]time code|otp|recovery code|backup code|api key|access token|secret|token|credentials?|login details";
+  const withoutUrlCredentials = text
+    .replace(/\b(https?:\/\/)[^\s/@:]+:[^@\s]+@/gi, "$1[redacted]@")
+    .replace(/([?&](?:password|passcode|otp|token|secret|api[_-]?key)=)[^&#\s]*/gi, "$1[redacted]");
+  const jsonValues = withoutUrlCredentials.replace(
+    new RegExp(`(["'](?:${label})["']\\s*:\\s*)(["'])(?:\\\\.|(?!\\2).)*\\2`, "gi"),
+    "$1\"[redacted]\"",
+  );
+  const lines = jsonValues.split("\n");
+  const labelOnly = new RegExp(`^(?:generated\\s+)?(?:${label})\\b\\s*(?:(?:is|was)|[:=])?\\s*$`, "i");
+  const labelledValue = new RegExp(`\\b((?:${label}))\\b(\\s*(?:(?:is|was)|[:=])\\s*).*$`, "i");
+  const generatedValue = new RegExp(`\\b(generated\\s+(?:${label}))\\b(\\s+).*$`, "i");
+  const createdCredentials = /\b(credentials?\s+created)\b(\s*:\s*).*$/i;
+  let redactNextValue = false;
+  return lines.map((line) => {
+    if (redactNextValue) {
+      if (!line.trim()) return line;
+      redactNextValue = false;
+      return `${line.match(/^\s*/)?.[0] ?? ""}[redacted]`;
+    }
+    const normalizedLabel = line
+      .trim()
+      .replace(/^(?:(?:[-+*]|\d+[.)])\s+|[>#]+\s*)+/, "")
+      .replace(/^[*_~`]+|[*_~`]+$/g, "")
+      .trim();
+    if (labelOnly.test(normalizedLabel)) {
+      redactNextValue = true;
+      return `${line.trimEnd()} [redacted]`;
+    }
+    const explicit = line.replace(
+      labelledValue,
+      (_match, credentialLabel: string, separator: string) => `${credentialLabel}${separator}[redacted]`,
+    );
+    if (explicit !== line) return explicit;
+    const generated = line.replace(
+      generatedValue,
+      (_match, credentialLabel: string, separator: string) => `${credentialLabel}${separator}[redacted]`,
+    );
+    if (generated !== line) return generated;
+    return line.replace(
+      createdCredentials,
+      (_match, credentialLabel: string, separator: string) => `${credentialLabel}${separator}[redacted]`,
+    );
+  }).join("\n");
+}
+
+function boundedBrowserQuestion(question: string): string {
+  const marker = "\n...[question truncated]";
+  const budget = DISCORD_SINGLE_MESSAGE_CHARS - BROWSER_QUESTION_SUFFIX.length;
+  const redacted = redactBrowserSecrets(question).replace(/\s+/g, " ").trim();
+  const body = redacted.length <= budget
+    ? redacted
+    : `${redacted.slice(0, Math.max(0, budget - marker.length))}${marker}`;
+  return `${body}${BROWSER_QUESTION_SUFFIX}`;
+}
 
 function journalDir(config: Config, logger: Logger): string | undefined {
   try {
@@ -1075,6 +1157,15 @@ export class Concierge {
    * "not available" error instead of half-working.
    */
   private quickRunner: QuickRunner | null = null;
+  /** The daemon-owned persistent Chromium boundary used by the one-tool browser MCP bridge. */
+  private browserRuntime: BrowserRuntime | null = null;
+  /** Native Discord reply id -> parked browser run. Answers bypass shared chat context entirely. */
+  private readonly pendingQuickQuestions = new Map<string, BrowserQuestionRecord>();
+  /** Durable minimal terminal-browser envelopes survive Discord outages and daemon restarts. */
+  private readonly pendingBrowserResults = new Map<string, BrowserResultEnvelope>();
+  private readonly browserResultDeliveries = new Map<string, Promise<void>>();
+  private browserResultRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopping = false;
   /**
    * Plane read access for milestone enrichment (issue #21): the poller stops collecting comments
    * on terminal tickets, so the `done` ping fetches the dispatcher's done comment here to carry
@@ -1091,8 +1182,11 @@ export class Concierge {
   private activeMention: {
     channelId: string;
     messageId: string;
+    userId: string;
     /** True iff the speaker on THIS turn is the owner — the code-side gate for `proactivity set … auto`. */
     isOwner: boolean;
+    /** Live Discord role gate for access to the shared signed-in browser profile. */
+    canUseBrowser: boolean;
     repliedViaCli: boolean;
     /** Id of the ack message the Concierge posted this turn (null until posted). */
     ackMessageId: string | null;
@@ -1284,13 +1378,241 @@ export class Concierge {
     this.quickRunner = runner;
   }
 
+  /** Wire the persistent browser runtime (v4-main). */
+  setBrowserRuntime(runtime: BrowserRuntime): void {
+    this.browserRuntime = runtime;
+  }
+
+  private browserQuestionsPath(): string {
+    return join(buildPaths(this.config).beckettDir, "browser-questions.json");
+  }
+
+  private persistBrowserQuestions(): void {
+    const now = Date.now();
+    for (const [messageId, record] of this.pendingQuickQuestions) {
+      if (record.deletedAt && record.deletedAt < now - BROWSER_DELETED_TOMBSTONE_TTL_MS) {
+        this.pendingQuickQuestions.delete(messageId);
+      }
+    }
+    if (this.pendingQuickQuestions.size > BROWSER_QUESTION_MAX_RECORDS) {
+      const safelyDeleted = [...this.pendingQuickQuestions.entries()]
+        .filter(([, record]) => record.deletedAt !== undefined)
+        .sort((a, b) => a[1].createdAt - b[1].createdAt);
+      while (this.pendingQuickQuestions.size > BROWSER_QUESTION_MAX_RECORDS && safelyDeleted.length > 0) {
+        this.pendingQuickQuestions.delete(safelyDeleted.shift()![0]);
+      }
+    }
+    const path = this.browserQuestionsPath();
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const temp = `${path}.${process.pid}.tmp`;
+    try {
+      const records = [...this.pendingQuickQuestions.entries()]
+        .map(([messageId, record]) => ({ messageId, ...record }));
+      writeFileSync(temp, JSON.stringify(records, null, 2) + "\n", { mode: 0o600 });
+      renameSync(temp, path);
+    } catch (error) {
+      try { unlinkSync(temp); } catch { /* absent */ }
+      this.log.warn("browser question ledger write failed", { error: String(error) });
+      throw error;
+    }
+  }
+
+  private async deleteStaleBrowserQuestions(): Promise<void> {
+    let changed = false;
+    for (const [messageId, record] of [...this.pendingQuickQuestions]) {
+      if (!record.stale) continue;
+      if (record.deletedAt) continue;
+      try {
+        await this.gateway.deleteMessage(record.channelId, messageId);
+        this.pendingQuickQuestions.set(messageId, { ...record, deletedAt: Date.now() });
+        changed = true;
+      } catch (error) {
+        this.log.warn("stale browser question deletion failed; retaining privacy tombstone", {
+          messageId,
+          error: String(error),
+        });
+      }
+    }
+    if (!changed) return;
+    try {
+      this.persistBrowserQuestions();
+    } catch {
+      // The old on-disk tombstones remain privacy-safe and are retried after restart.
+    }
+  }
+
+  private loadStaleBrowserQuestions(): void {
+    try {
+      const path = this.browserQuestionsPath();
+      if (!existsSync(path)) return;
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      if (!Array.isArray(parsed)) return;
+      for (const item of parsed) {
+        if (!item || typeof item !== "object") continue;
+        const value = item as Record<string, unknown>;
+        if (
+          typeof value.messageId !== "string" ||
+          typeof value.runId !== "string" ||
+          typeof value.channelId !== "string" ||
+          typeof value.allowedUserId !== "string" ||
+          typeof value.createdAt !== "number"
+        ) continue;
+        // Quick/Claude sessions are intentionally not recovered after a daemon restart. Keep the
+        // reply anchor only as a privacy tombstone so a late OTP/password is consumed, not stored.
+        this.pendingQuickQuestions.set(value.messageId, {
+          runId: value.runId,
+          channelId: value.channelId,
+          allowedUserId: value.allowedUserId,
+          createdAt: value.createdAt,
+          stale: true,
+          ...(typeof value.deletedAt === "number" ? { deletedAt: value.deletedAt } : {}),
+        });
+      }
+      this.persistBrowserQuestions();
+    } catch (error) {
+      this.log.warn("browser question ledger read failed", { error: String(error) });
+    }
+  }
+
+  private browserResultsPath(): string {
+    return join(buildPaths(this.config).beckettDir, "browser-results.json");
+  }
+
+  private persistBrowserResults(): void {
+    const path = this.browserResultsPath();
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const temp = `${path}.${process.pid}.tmp`;
+    try {
+      writeFileSync(temp, JSON.stringify([...this.pendingBrowserResults.values()], null, 2) + "\n", { mode: 0o600 });
+      renameSync(temp, path);
+    } catch (error) {
+      try { unlinkSync(temp); } catch { /* absent */ }
+      this.log.warn("browser result outbox write failed", { error: String(error) });
+      throw error;
+    }
+  }
+
+  private loadBrowserResults(): void {
+    try {
+      const path = this.browserResultsPath();
+      if (!existsSync(path)) return;
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      if (!Array.isArray(parsed)) return;
+      for (const item of parsed) {
+        if (!item || typeof item !== "object") continue;
+        const value = item as Record<string, unknown>;
+        if (
+          typeof value.runId !== "string"
+          || typeof value.channelId !== "string"
+          || !["done", "error", "timeout"].includes(String(value.state))
+        ) continue;
+        this.pendingBrowserResults.set(value.runId, {
+          runId: value.runId,
+          channelId: value.channelId,
+          state: value.state as BrowserResultEnvelope["state"],
+          result: redactBrowserSecrets(typeof value.result === "string" ? value.result : ""),
+          proofFiles: Array.isArray(value.proofFiles)
+            ? value.proofFiles.filter((path): path is string => typeof path === "string")
+            : [],
+        });
+      }
+    } catch (error) {
+      this.log.warn("browser result outbox read failed", { error: String(error) });
+    }
+  }
+
+  private retryBrowserResults(): void {
+    if (this.stopping) return;
+    for (const runId of this.pendingBrowserResults.keys()) {
+      void this.deliverBrowserResult(runId).catch((error) => {
+        this.log.warn("browser result outbox delivery failed", { runId, error: String(error) });
+        this.scheduleBrowserResultRetry();
+      });
+    }
+  }
+
+  private scheduleBrowserResultRetry(): void {
+    if (this.stopping || this.browserResultRetryTimer || this.pendingBrowserResults.size === 0) return;
+    this.browserResultRetryTimer = setTimeout(() => {
+      this.browserResultRetryTimer = null;
+      this.retryBrowserResults();
+    }, BROWSER_RESULT_RETRY_MS);
+  }
+
+  private deliverBrowserResult(runId: string): Promise<void> {
+    const inFlight = this.browserResultDeliveries.get(runId);
+    if (inFlight) return inFlight;
+    const delivery = this.deliverBrowserResultOnce(runId)
+      .finally(() => this.browserResultDeliveries.delete(runId));
+    this.browserResultDeliveries.set(runId, delivery);
+    return delivery;
+  }
+
+  private async deliverBrowserResultOnce(runId: string): Promise<void> {
+    const run = this.pendingBrowserResults.get(runId);
+    if (!run) return;
+    // Never post a result that has not first reached the durable outbox.
+    this.persistBrowserResults();
+    const text = run.state === "done"
+      ? run.result || "Browser task completed."
+      : `I couldn't finish that browser task. ${run.result || `It ended with ${run.state}.`}`;
+    // Proof is part of a successful browser result, not optional decoration. If Discord rejects the
+    // attachment, leave the durable envelope and screenshot in place so the normal outbox retry can
+    // deliver them together rather than silently degrading success to an unverified text post.
+    const messageId = await this.gateway.post(run.channelId, text, {
+      ...(run.proofFiles.length > 0 ? { files: run.proofFiles } : {}),
+    });
+    this.recordBeckettPost(run.channelId, text, messageId);
+    this.pendingBrowserResults.delete(runId);
+    this.persistBrowserResults();
+    for (const proof of run.proofFiles) {
+      try {
+        unlinkSync(proof);
+      } catch {
+        // Uploaded or already absent.
+      }
+    }
+  }
+
   /**
    * Deliver a DETACHED quick run's result: the dispatching `beckett quick` call already
    * returned `{detached}`, so the report arrives as an update turn — the same shape as ticket
    * milestones — instructing the Concierge to relay it to the originating channel in voice.
    * Public: v4-main wires it as the runner's `onDetachedResult`.
    */
-  notifyQuickResult(run: QuickRun): void {
+  async notifyQuickResult(run: QuickRun): Promise<void> {
+    for (const [messageId, pending] of this.pendingQuickQuestions) {
+      if (pending.runId === run.runId) this.pendingQuickQuestions.set(messageId, { ...pending, stale: true });
+    }
+    try {
+      this.persistBrowserQuestions();
+    } catch {
+      // The previously durable live anchor becomes stale on restart even if this rewrite fails.
+    }
+    void this.deleteStaleBrowserQuestions();
+    // Browser work is already asynchronous and returns a trusted runner-owned screenshot. Posting
+    // directly avoids another model turn, guarantees the proof attachment, and is much faster.
+    if (run.agent === "computer-use") {
+      if (!run.channelId) {
+        this.log.warn("browser result dropped - no origin channel", { runId: run.runId });
+        return;
+      }
+      const state = run.state === "done" ? "done" : run.state === "timeout" ? "timeout" : "error";
+      this.pendingBrowserResults.set(run.runId, {
+        runId: run.runId,
+        channelId: run.channelId,
+        state,
+        result: redactBrowserSecrets(run.result ?? ""),
+        proofFiles: [...run.proofFiles],
+      });
+      try {
+        await this.deliverBrowserResult(run.runId);
+      } catch (error) {
+        this.scheduleBrowserResultRetry();
+        throw error;
+      }
+      return;
+    }
     const where = run.channelId
       ? `Relay the outcome to the person who asked — send a short note IN YOUR VOICE by running this from your Bash tool:\n` +
         `  beckett discord reply --channel ${run.channelId} "<your message>"\n` +
@@ -1301,6 +1623,70 @@ export class Concierge {
       `The ${run.agent} quick agent you dispatched earlier (run ${run.runId}) finished with state "${run.state}".\n` +
       `Its report:\n\n${run.result ?? "(no report)"}\n\n${where}`;
     this.askUpdate(framed, `quick:${run.runId}`);
+  }
+
+  /** Post a blocking browser question with its trusted runtime screenshot and remember correlation. */
+  async notifyQuickQuestion(run: QuickRun, question: QuickQuestion): Promise<string> {
+    if (!run.channelId) throw new Error("browser question has no origin channel");
+    if (!run.requesterId) throw new Error("browser question has no authenticated requester");
+    await this.deleteStaleBrowserQuestions();
+    if (this.pendingQuickQuestions.size >= BROWSER_QUESTION_MAX_RECORDS) {
+      const oldestDeleted = [...this.pendingQuickQuestions.entries()]
+        .filter(([, record]) => record.deletedAt !== undefined)
+        .sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+      if (oldestDeleted) {
+        this.pendingQuickQuestions.delete(oldestDeleted[0]);
+        this.persistBrowserQuestions();
+      }
+    }
+    if (this.pendingQuickQuestions.size >= BROWSER_QUESTION_MAX_RECORDS) {
+      throw new Error("browser question privacy ledger is full; stale Discord anchors must be deleted first");
+    }
+    const text = boundedBrowserQuestion(question.text);
+    let messageId: string;
+    try {
+      messageId = await this.gateway.post(run.channelId, text, {
+        files: [question.screenshot],
+        singleMessage: true,
+        browserQuestion: true,
+        queueIfOffline: false,
+      });
+    } finally {
+      try {
+        unlinkSync(question.screenshot);
+      } catch {
+        // Discord uploaded it or the file was already absent.
+      }
+    }
+    this.pendingQuickQuestions.set(messageId, {
+      runId: run.runId,
+      channelId: run.channelId,
+      allowedUserId: run.requesterId,
+      createdAt: Date.now(),
+      stale: run.state !== "waiting",
+    });
+    try {
+      this.persistBrowserQuestions();
+    } catch (error) {
+      this.pendingQuickQuestions.set(messageId, {
+        ...this.pendingQuickQuestions.get(messageId)!,
+        stale: true,
+      });
+      let deleted = false;
+      try {
+        await this.gateway.deleteMessage(run.channelId, messageId);
+        deleted = true;
+      } catch (deleteError) {
+        this.log.error("browser question could not be deleted after ledger failure", {
+          messageId,
+          error: String(deleteError),
+        });
+      }
+      if (deleted) this.pendingQuickQuestions.delete(messageId);
+      throw new Error(`browser question was not made durable: ${String((error as Error).message ?? error)}`);
+    }
+    this.recordBeckettPost(run.channelId, text, messageId);
+    return messageId;
   }
 
   /**
@@ -1375,7 +1761,10 @@ export class Concierge {
 
   /** Bring the session up first (fail fast on a bad launch), then go live on Discord. */
   async start(): Promise<void> {
+    this.stopping = false;
     this.seedIdentities();
+    this.loadStaleBrowserQuestions();
+    this.loadBrowserResults();
     await this.session.start();
     this.gateway.onMessage((m) => this.onMessage(m));
     // Guarded: injected partial test gateways may predate the thread-create surface.
@@ -1384,6 +1773,8 @@ export class Concierge {
     }
     this.gateway.onCommand?.((command) => this.onCommand(command));
     await this.gateway.start();
+    void this.deleteStaleBrowserQuestions();
+    this.retryBrowserResults();
     await this.restoreTaskWorkspaces();
     this.serveControlBus();
     // Announce the boot (with the live commit) once the gateway is up. Best-effort + non-blocking:
@@ -1607,6 +1998,9 @@ export class Concierge {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    if (this.browserResultRetryTimer) clearTimeout(this.browserResultRetryTimer);
+    this.browserResultRetryTimer = null;
     try {
       this.busStop?.();
     } catch {
@@ -1801,6 +2195,22 @@ export class Concierge {
         return { ok: false, error: (err as Error).message };
       }
     }
+    if (req.cmd === "browser.eval") {
+      if (!this.browserRuntime) {
+        return { ok: false, error: "persistent browser unavailable - runtime is not wired" };
+      }
+      const runId = typeof req.args.runId === "string" ? req.args.runId.trim() : "";
+      const controlToken = typeof req.args.controlToken === "string" ? req.args.controlToken.trim() : "";
+      const code = typeof req.args.code === "string" ? req.args.code : "";
+      if (!runId || !controlToken || !code.trim()) {
+        return { ok: false, error: "browser.eval needs its run capability and JavaScript code" };
+      }
+      try {
+        return { ok: true, data: await this.browserRuntime.evaluate(runId, code, controlToken) };
+      } catch (error) {
+        return { ok: false, error: (error as Error).message };
+      }
+    }
     if (req.cmd === "quick.run") {
       // The NO-TICKET lane: spawn a short-lived specialist harness and block up to
       // `quick.sync_wait_secs` for its report. serveBus handles each connection independently,
@@ -1811,13 +2221,25 @@ export class Concierge {
       }
       const agent = typeof req.args.agent === "string" ? req.args.agent.trim() : "";
       const task = typeof req.args.task === "string" ? req.args.task.trim() : "";
-      const channelId =
+      const requestedChannelId =
         typeof req.args.channelId === "string" && req.args.channelId.trim() ? req.args.channelId.trim() : null;
       if (!agent || !task) {
         return { ok: false, error: 'usage: beckett quick <agent> "<task>" [--channel <id>]' };
       }
+      const mention = this.currentMention();
+      if (agent === "computer-use" && (!mention || !mention.canUseBrowser)) {
+        return { ok: false, error: `computer-use requires Discord role ${this.browserOperatorRoleId()}` };
+      }
+      if (agent === "computer-use" && requestedChannelId && requestedChannelId !== mention!.channelId) {
+        return { ok: false, error: "computer-use must return to the channel where the authorized request began" };
+      }
+      const channelId = agent === "computer-use" ? mention!.channelId : requestedChannelId;
+      const requesterId = mention?.userId || null;
+      if (agent === "computer-use" && !requesterId) {
+        return { ok: false, error: "computer-use needs an authenticated role-authorized request" };
+      }
       try {
-        return { ok: true, data: await this.quickRunner.run(agent, task, channelId) };
+        return { ok: true, data: await this.quickRunner.run(agent, task, channelId, requesterId) };
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
@@ -2228,6 +2650,10 @@ export class Concierge {
    * it; normal channels retain the existing mention/ambient behavior byte-for-byte.
    */
   async onMessage(m: IncomingMessage): Promise<void> {
+    // A native reply to a screenshot-backed browser question resumes that exact Claude session.
+    // Consume it before ambient/shared-context capture so passwords or other answers never leak
+    // into the Concierge transcript. Unrelated messages continue through normal routing.
+    if (await this.resumeBrowserQuestion(m)) return;
     const workspace = this.workspaces.contextFor(m.channelId);
     if (!m.mentionsBot && !workspace) {
       const level = this.accessLevelFor(m.userId);
@@ -2290,7 +2716,9 @@ export class Concierge {
     const mention = {
       channelId: m.channelId,
       messageId: m.messageId,
+      userId: m.userId,
       isOwner: this.ownerId() !== undefined && m.userId === this.ownerId(),
+      canUseBrowser: m.roleIds?.includes(this.browserOperatorRoleId()) === true,
       repliedViaCli: false,
       ackMessageId: null as string | null,
     };
@@ -2345,6 +2773,101 @@ export class Concierge {
     } finally {
       if (this.activeMention === mention) this.activeMention = null;
     }
+  }
+
+  private async resumeBrowserQuestion(m: IncomingMessage): Promise<boolean> {
+    if (m.authorIsBot || !m.repliedToId) return false;
+    const pending = this.pendingQuickQuestions.get(m.repliedToId);
+    if (!pending || pending.channelId !== m.channelId) {
+      if (!m.repliedToBrowserQuestion && !m.repliedToBotUnverified) return false;
+    }
+    // Browser answers may contain passwords, OTPs, recovery codes, or private attachments. Remove
+    // the person's message before inspecting or forwarding it, including stale and unauthorized
+    // replies. If Discord cannot confirm deletion, fail closed instead of leaving the secret visible
+    // while using it. This requires the documented Manage Messages permission.
+    try {
+      await this.gateway.deleteMessage(m.channelId, m.messageId);
+    } catch (error) {
+      this.log.warn("browser answer could not be removed from Discord", {
+        channelId: m.channelId,
+        messageId: m.messageId,
+        error: String(error),
+      });
+      await this.gateway
+        .post(
+          m.channelId,
+          "I couldn't safely remove that browser answer, so I didn't use it. Delete it manually and grant me Manage Messages before trying again.",
+        )
+        .catch(() => undefined);
+      return true;
+    }
+    if (!pending || pending.channelId !== m.channelId) {
+      if (m.repliedToBotUnverified) {
+        await this.gateway
+          .post(
+            m.channelId,
+            "I couldn't safely verify that reply target, so I didn't retain your reply. Send it again as a fresh mention.",
+          )
+          .catch(() => undefined);
+        return true;
+      }
+      // Discord accepted the atomic question but the daemon may have died before its returned
+      // message id reached the ledger. The referenced bot message is still an authoritative
+      // privacy marker, so consume its reply rather than letting a password/OTP enter chat memory.
+      await this.gateway.deleteMessage(m.channelId, m.repliedToId).catch(() => undefined);
+      await this.gateway
+        .post(m.channelId, "That browser run is no longer active. Start the task again and I'll return to the page.")
+        .catch(() => undefined);
+      return true;
+    }
+    // Consume every reply to a known browser-question anchor before shared-context capture. Even a
+    // wrong user or stale post may contain a password/OTP and must never fall through to memory.
+    if (m.userId !== pending.allowedUserId) {
+      await this.gateway
+        .post(m.channelId, "Only the person who started this browser run can answer that question.")
+        .catch(() => undefined);
+      return true;
+    }
+    if (pending.stale) {
+      await this.gateway
+        .post(m.channelId, "That browser run is no longer active. Start the task again and I'll return to the page.")
+        .catch(() => undefined);
+      return true;
+    }
+    if (m.roleIds?.includes(this.browserOperatorRoleId()) !== true) {
+      await this.gateway
+        .post(m.channelId, `That answer requires Discord role ${this.browserOperatorRoleId()}.`)
+        .catch(() => undefined);
+      return true;
+    }
+    const answer = [
+      m.content.trim(),
+      ...m.attachments.map((attachment) => `[attachment: ${attachment.name} ${attachment.url}]`),
+    ].filter(Boolean).join("\n");
+    if (!answer) return true;
+    try {
+      if (!this.quickRunner) throw new Error("quick runner is unavailable");
+      await this.quickRunner.resume(pending.runId, answer);
+    } catch (error) {
+      const text = `I couldn't resume that browser run: ${(error as Error).message}`;
+      await this.gateway.post(m.channelId, text).catch(() => undefined);
+      return true;
+    }
+    this.pendingQuickQuestions.set(m.repliedToId, { ...pending, stale: true });
+    try {
+      this.persistBrowserQuestions();
+    } catch (error) {
+      this.log.warn("browser question tombstone update failed; durable live anchor remains fail-closed", {
+        error: String(error),
+      });
+    }
+    void this.deleteStaleBrowserQuestions();
+    const text = "I have what I need. Continuing from that page now.";
+    void this.gateway
+      .post(m.channelId, text)
+      .then((messageId) => this.recordBeckettPost(m.channelId, text, messageId))
+      .catch((error) => this.log.warn("browser resume acknowledgement failed", { error: String(error) }));
+    return true;
   }
 
   /**
@@ -2429,7 +2952,13 @@ export class Concierge {
     const claim = {
       channelId: turn.channelId,
       messageId: ambientAnchorId(turn),
+      userId: turn.kind === "consent"
+        ? turn.message.userId
+        : turn.kind === "candidate"
+          ? (turn.burst.at(-1)?.userId ?? "")
+          : (turn.transcript.at(-1)?.userId ?? ""),
       isOwner: false,
+      canUseBrowser: false,
       repliedViaCli: false,
       ackMessageId: null as string | null,
       ambient: true,
@@ -2766,6 +3295,10 @@ export class Concierge {
   private ownerId(): string | undefined {
     const id = process.env.DISCORD_OWNER_ID?.trim();
     return id && /^\d{1,20}$/.test(id) ? id : undefined;
+  }
+
+  private browserOperatorRoleId(): string {
+    return this.config.quick?.browser_role_id ?? BROWSER_OPERATOR_ROLE_ID;
   }
 
   private accessLevelFor(userId: string): AccessLevel {

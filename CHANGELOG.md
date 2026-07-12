@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### Autonomous persistent computer use
+
+- **Playwright-shaped, not Playwright-prompted.** Computer-use now receives one compact
+  `playwright_eval` tool and a replacement system prompt instead of the stock multi-tool
+  Playwright MCP catalog. It writes ordinary Playwright JavaScript, batches related work, uses AI
+  ARIA refs, and can drive multiple pages concurrently. The public browser/raw-CDP wrappers reduce
+  accidental misuse but are not treated as a boundary: the controller force-disposes every
+  non-default browser context, including targetless contexts reached through Playwright internals,
+  and counts hidden page/download targets from root CDP.
+- **A real browser identity with disposable evaluator processes.** A dedicated persistent Chromium
+  profile keeps cookies, local storage, cache, and signed-in state across quick-run and daemon
+  boundaries. On Linux, the daemon starts the trusted controller and each tool call's evaluator in
+  separate sibling `bubblewrap` sandboxes; both drop all capabilities. A stuck evaluator dies
+  without losing tabs, form state, or the question/resume session. This is a filesystem/process
+  boundary, not a separate-UID or network boundary, so production remains a dedicated-host design.
+  The Bun daemon now launches a Node controller, which manually starts Chromium with one loopback CDP
+  port instead of combining Playwright's flaky managed pipe/WebSocket and port paths under Bun. An
+  asynchronous adaptive 100 ms-to-2 s allocated-byte watchdog fails leases above 100 MiB of profile
+  growth or the 512 MiB absolute ceiling without wiping persistent cookies. A bounded, atomic,
+  mode-`0600` controller snapshot also restores session-only cookies after host recycling.
+- **Questions that actually wait.** Browser work detaches immediately. A genuine blocker parks the
+  Claude session, posts the relevant page screenshot to Discord, consumes a native reply without
+  leaking it into shared chat context, then resumes the same session. Password fields and
+  agent-created credentials are allowed rather than treated as an automatic dead end. Dispatch is
+  code-gated to Discord role `1520985787062030456`, and follow-ups stay bound to their initiating
+  user. Every exact resumed answer is redacted from later questions and summaries. Question
+  correlation fails closed by deleting a visible question if its durable ledger cannot be written;
+  whitespace is normalized and Discord `singleMessage` keeps prompt, instruction, and a reserved-name
+  screenshot together. The suffix-plus-attachment marker recognizes orphan replies even if a crash
+  happened before ledger persistence, while uninspectable bot references are consumed with resend
+  guidance. Stale anchors are retained until Discord confirms deletion; only then does the seven-day
+  tombstone expiry begin. Every recognized answer is deleted from Discord before use, including
+  stale and unauthorized replies; deletion failure refuses the answer. The ledger is capped at
+  1,000 without dropping unconfirmed anchors.
+- **Evidence, not victory prose.** Visible success states are captured by the trusted runtime with
+  fail-closed sensitive-page redaction and attached directly to the final result. Chromium stays
+  warm for the full task, tool output is bounded, and the browser prompt plus tool/result schemas
+  have a tested sub-3,000-token budget. Minimal terminal-result envelopes persist before delivery,
+  retry live and after restart, retain proof screenshots after attachment failures, and bypass
+  third-party Chilltext processing.
+
 ### One-command self-host installer
 
 - **Fresh VPS to staged Beckett in one command.** The new repository-root `install.sh` supports
