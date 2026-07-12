@@ -154,7 +154,6 @@ effort = "medium"
 sync_wait_secs = 240
 hard_timeout_secs = 900
 max_concurrent = 3
-browser_role_id = "1520985787062030456"
 browser_profile_dir = "browser/profile"
 browser_headless = true
 browser_viewport_width = 1440

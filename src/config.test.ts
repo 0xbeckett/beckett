@@ -143,7 +143,6 @@ test("shared_context defaults ship enabled with the OPS-80 bounds", () => {
 
 test("computer-use defaults to one stable full-Chromium profile and bounded tool output", () => {
   expect(validateConfig({}).quick).toMatchObject({
-    browser_role_id: "1520985787062030456",
     browser_profile_dir: "browser/profile",
     browser_headless: true,
     browser_viewport_width: 1440,

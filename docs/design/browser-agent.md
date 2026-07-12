@@ -78,9 +78,8 @@ legacy `sandbox-exec` policy.
 
 Browser work detaches immediately. A real missing fact returns `needs_input`; Beckett leaves the
 relevant page active, posts a redacted screenshot, and resumes the same model and browser lease only
-from the initiating authorized user's native Discord reply. Starting computer-use requires Discord
-role `1520985787062030456` or maintainer standing (OPS-144: the bundled repo `maintainers.txt`
-plus owner-approved runtime additions); another authorized person still cannot take over an
+from the initiating authorized user's native Discord reply. Any user admitted through Beckett's
+normal access gate can start computer-use; another authorized person still cannot take over an
 existing run.
 Question text has whitespace normalized and uses Discord's `singleMessage` path, which rejects
 splitting or formatting and reserves the screenshot attachment name `beckett-browser-question.png`.
@@ -119,13 +118,10 @@ third-party Chilltext formatter.
 
 ## Trust boundary
 
-The Discord gate is role `1520985787062030456` or maintainer standing (`maintainers.txt`), and
-every run also gets an unguessable capability bound to its initiating channel and user. Processes
-already running as the same `beckett` Unix user remain part of the trusted computing base; the
-capability is defense in depth, not a separate-UID security boundary. Chromium intentionally has
-network access. Maintainers are also admitted through Beckett's outer member gate so the directed
-turn can reach computer-use without a separate access-file entry; only the owner can add a
-maintainer (two-phase request → owner-approved, like access.txt).
+Computer-use uses Beckett's normal owner/access-list gate, and every run also gets an
+unguessable capability bound to its initiating channel and user. Processes already running as the
+same `beckett` Unix user remain part of the trusted computing base; the capability is defense in
+depth, not a separate-UID security boundary. Chromium intentionally has network access.
 Evaluator code controls Chromium, and both sibling sandboxes share the host network namespace so
 the evaluator can reach Chromium's loopback CDP endpoint. The boundary therefore does not constrain
 raw network access; the host should remain a dedicated Beckett machine rather than a multi-tenant box.

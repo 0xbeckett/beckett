@@ -138,20 +138,6 @@ const ACCESS_DENY_REPLY_MS = 5 * 60_000;
  * retry. This is intentionally short: a later, deliberate repeat remains possible.
  */
 const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
-export const BROWSER_OPERATOR_ROLE_ID = "1520985787062030456";
-
-/**
- * Browser (computer-use) is operable by the configured Discord role or by any MAINTAINER
- * (OPS-144) — the owner-managed maintainers.txt union, never a hardcoded individual id.
- */
-export function browserAccessAllowed(
-  userId: string,
-  roleIds: string[] | undefined,
-  roleId: string,
-  maintainers: Set<string>,
-): boolean {
-  return maintainers.has(userId) || roleIds?.includes(roleId) === true;
-}
 
 interface BrowserQuestionRecord {
   runId: string;
@@ -1199,8 +1185,6 @@ export class Concierge {
     userId: string;
     /** True iff the speaker on THIS turn is the owner — the code-side gate for `proactivity set … auto`. */
     isOwner: boolean;
-    /** Live Discord role gate for access to the shared signed-in browser profile. */
-    canUseBrowser: boolean;
     repliedViaCli: boolean;
     /** Id of the ack message the Concierge posted this turn (null until posted). */
     ackMessageId: string | null;
@@ -2241,8 +2225,8 @@ export class Concierge {
         return { ok: false, error: 'usage: beckett quick <agent> "<task>" [--channel <id>]' };
       }
       const mention = this.currentMention();
-      if (agent === "computer-use" && (!mention || !mention.canUseBrowser)) {
-        return { ok: false, error: `computer-use requires Discord role ${this.browserOperatorRoleId()} or maintainer standing` };
+      if (agent === "computer-use" && !mention) {
+        return { ok: false, error: "computer-use needs an authenticated authorized request" };
       }
       if (agent === "computer-use" && requestedChannelId && requestedChannelId !== mention!.channelId) {
         return { ok: false, error: "computer-use must return to the channel where the authorized request began" };
@@ -2732,7 +2716,6 @@ export class Concierge {
       messageId: m.messageId,
       userId: m.userId,
       isOwner: this.ownerId() !== undefined && m.userId === this.ownerId(),
-      canUseBrowser: this.canUseBrowser(m.userId, m.roleIds),
       repliedViaCli: false,
       ackMessageId: null as string | null,
     };
@@ -2848,10 +2831,8 @@ export class Concierge {
         .catch(() => undefined);
       return true;
     }
-    if (!this.canUseBrowser(m.userId, m.roleIds)) {
-      await this.gateway
-        .post(m.channelId, `That answer requires Discord role ${this.browserOperatorRoleId()} or maintainer standing.`)
-        .catch(() => undefined);
+    if (this.accessLevelFor(m.userId) === "outsider") {
+      await this.gateway.post(m.channelId, "That answer is no longer authorized.").catch(() => undefined);
       return true;
     }
     const answer = [
@@ -3312,14 +3293,6 @@ export class Concierge {
   private ownerId(): string | undefined {
     const id = process.env.DISCORD_OWNER_ID?.trim();
     return id && /^\d{1,20}$/.test(id) ? id : undefined;
-  }
-
-  private browserOperatorRoleId(): string {
-    return this.config.quick?.browser_role_id ?? BROWSER_OPERATOR_ROLE_ID;
-  }
-
-  private canUseBrowser(userId: string, roleIds?: string[]): boolean {
-    return browserAccessAllowed(userId, roleIds, this.browserOperatorRoleId(), this.maintainers());
   }
 
   /**

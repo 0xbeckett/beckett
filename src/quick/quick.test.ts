@@ -76,7 +76,6 @@ function makeConfig(dir: string, overrides: Partial<Config["quick"]> = {}): Conf
       sync_wait_secs: 2,
       hard_timeout_secs: 5,
       max_concurrent: 2,
-      browser_role_id: "1520985787062030456",
       browser_profile_dir: "browser/profile",
       browser_headless: true,
       browser_viewport_width: 1440,

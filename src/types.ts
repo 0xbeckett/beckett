@@ -791,8 +791,6 @@ export interface Config {
     hard_timeout_secs: number;
     /** Reject new runs past this many live ones ("quick lane is full — retry or file a ticket"). */
     max_concurrent: number;
-    /** Discord guild role allowed to use the shared signed-in browser identity. */
-    browser_role_id: string;
     /** Dedicated automation profile, absolute or relative to paths.beckett_dir. */
     browser_profile_dir: string;
     /** The production browser is headless; false is useful only for local diagnosis. */

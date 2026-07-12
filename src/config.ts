@@ -493,7 +493,6 @@ const ConfigSchema = z
         sync_wait_secs: posInt.default(240),
         hard_timeout_secs: posInt.default(900),
         max_concurrent: posInt.default(3),
-        browser_role_id: z.string().regex(/^\d{1,20}$/).default("1520985787062030456"),
         // Computer-use owns one persistent Chromium identity. Hosts serialize at the lease
         // boundary and stay warm for a task, while that task may drive many tabs concurrently.
         browser_profile_dir: z.string().min(1).default("browser/profile"),
