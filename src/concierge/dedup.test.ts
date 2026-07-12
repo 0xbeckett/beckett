@@ -11,7 +11,14 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BROWSER_OPERATOR_ROLE_ID, Concierge, redactBrowserSecrets, type ConciergeSession } from "./index.ts";
+import {
+  BROWSER_OPERATOR_ROLE_ID,
+  BROWSER_OPERATOR_USER_ID,
+  browserAccessAllowed,
+  Concierge,
+  redactBrowserSecrets,
+  type ConciergeSession,
+} from "./index.ts";
 import { callBus, ControlBusTimeoutError, serveBus } from "../shell/control-bus.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
@@ -65,6 +72,7 @@ function harness(opts: {
   failFilePosts?: { remaining: number };
   failDeletes?: boolean;
   postDelayMs?: number;
+  quickOnAsk?: boolean;
 }) {
   const dir = opts.dir ?? mkdtempSync(join(tmpdir(), "beckett-dedup-"));
   if (!tmpDirs.includes(dir)) tmpDirs.push(dir);
@@ -121,6 +129,12 @@ function harness(opts: {
     async stop() {},
     ...(opts.currentMeta ? { getCurrentMeta: () => opts.currentMeta } : {}),
     ask: async (_m: string) => {
+      if (opts.quickOnAsk) {
+        await concierge.onBusRequest({
+          cmd: "quick.run",
+          args: { agent: "computer-use", task: "open inbox", channelId: CHAN },
+        });
+      }
       if (opts.replyViaCli) {
         await concierge.onBusRequest({
           cmd: "discord.reply",
@@ -196,6 +210,33 @@ test("computer-use cannot borrow the profile outside an authenticated role-beari
   expect(result.ok).toBe(false);
   expect(result.error).toContain(BROWSER_OPERATOR_ROLE_ID);
   expect(runs).toBe(0);
+});
+
+test("browser access accepts the configured role or the approved user and nothing else", () => {
+  expect(browserAccessAllowed(USER, [BROWSER_OPERATOR_ROLE_ID], BROWSER_OPERATOR_ROLE_ID)).toBe(true);
+  expect(browserAccessAllowed(BROWSER_OPERATOR_USER_ID, [], BROWSER_OPERATOR_ROLE_ID)).toBe(true);
+  expect(browserAccessAllowed(USER, [], BROWSER_OPERATOR_ROLE_ID)).toBe(false);
+});
+
+test("the approved user can start computer-use from a role-free Discord mention", async () => {
+  const { concierge } = harness({ replyViaCli: false, turnText: "", quickOnAsk: true });
+  const runs: { channelId: string | null | undefined; requesterId: string | null | undefined }[] = [];
+  concierge.setQuickRunner({
+    agents: () => [],
+    run: async (_agent, _task, channelId, requesterId) => {
+      runs.push({ channelId, requesterId });
+      return { detached: true, runId: "approved-user-run" };
+    },
+    resume: async () => {},
+    stats: () => ({ running: 0, waiting: 0, runs: [] }),
+    stopAll: async () => {},
+  });
+  await concierge.onMessage({
+    ...mention(),
+    userId: BROWSER_OPERATOR_USER_ID,
+    roleIds: [],
+  });
+  expect(runs).toEqual([{ channelId: CHAN, requesterId: BROWSER_OPERATOR_USER_ID }]);
 });
 
 test("Beckett ownership alone does not bypass the browser role", async () => {
@@ -489,6 +530,35 @@ test("the initiating user must still hold the configured browser role when answe
   expect(resumes).toBe(0);
   expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "answer-revoked" });
   expect(posts.at(-1)?.text).toContain(BROWSER_OPERATOR_ROLE_ID);
+});
+
+test("the approved browser user can answer without the browser role", async () => {
+  const { concierge, posts, deletedMessages } = harness({ replyViaCli: false, turnText: "must not run" });
+  const resumed: { runId: string; answer: string }[] = [];
+  concierge.setQuickRunner({
+    agents: () => [],
+    run: async () => ({ detached: true, runId: "unused" }),
+    resume: async (runId, answer) => { resumed.push({ runId, answer }); },
+    stats: () => ({ running: 0, waiting: 1, runs: [] }),
+    stopAll: async () => {},
+  } as QuickRunner);
+  const questionId = await concierge.notifyQuickQuestion(
+    browserRun({ requesterId: BROWSER_OPERATOR_USER_ID }),
+    { text: "Which plan?", screenshot: "/tmp/question.png" },
+  );
+  await concierge.onMessage({
+    ...mention(),
+    messageId: "approved-user-answer",
+    userId: BROWSER_OPERATOR_USER_ID,
+    roleIds: [],
+    content: "Pro",
+    mentionsBot: false,
+    repliedToId: questionId,
+    authorIsBot: false,
+  });
+  expect(resumed).toEqual([{ runId: "browser-1", answer: "Pro" }]);
+  expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "approved-user-answer" });
+  expect(posts.at(-1)?.text).toContain("Continuing from that page");
 });
 
 test("a reply to a browser question from before restart is consumed as sensitive stale input", async () => {

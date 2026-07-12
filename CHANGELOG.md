@@ -26,8 +26,9 @@
   Claude session, posts the relevant page screenshot to Discord, consumes a native reply without
   leaking it into shared chat context, then resumes the same session. Password fields and
   agent-created credentials are allowed rather than treated as an automatic dead end. Dispatch is
-  code-gated to Discord role `1520985787062030456`, and follow-ups stay bound to their initiating
-  user. Every exact resumed answer is redacted from later questions and summaries. Question
+  code-gated to Discord role `1520985787062030456` or approved user `1132125761264951339`, and
+  follow-ups stay bound to their initiating user. Every exact resumed answer is redacted from later
+  questions and summaries. Question
   correlation fails closed by deleting a visible question if its durable ledger cannot be written;
   whitespace is normalized and Discord `singleMessage` keeps prompt, instruction, and a reserved-name
   screenshot together. The suffix-plus-attachment marker recognizes orphan replies even if a crash

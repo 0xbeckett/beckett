@@ -75,8 +75,8 @@ screenshot; reply to that message and the same agent session continues from the 
 are deleted before their contents are used, including stale or unauthorized answers. Replies whose
 bot reference cannot be inspected are not retained; Beckett gives resend guidance rather than
 letting their contents enter chat memory.
-Dispatch is code-gated to Discord role
-`1520985787062030456`, and only the initiating user can answer that run. Visible completions return
+Dispatch is code-gated to Discord role `1520985787062030456` or approved user
+`1132125761264951339`, and only the initiating user can answer that run. Visible completions return
 a proof screenshot automatically, or are reported unverified if fresh proof capture fails. Browser
 questions and terminal results go directly to Discord without another model or Chilltext formatting
 pass; controller-owned tab, download, and profile budgets keep the persistent identity bounded.
