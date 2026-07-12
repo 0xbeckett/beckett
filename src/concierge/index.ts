@@ -138,6 +138,11 @@ const ACCESS_DENY_REPLY_MS = 5 * 60_000;
  */
 const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
 export const BROWSER_OPERATOR_ROLE_ID = "1520985787062030456";
+export const BROWSER_OPERATOR_USER_ID = "1132125761264951339";
+
+export function browserAccessAllowed(userId: string, roleIds: string[] | undefined, roleId: string): boolean {
+  return userId === BROWSER_OPERATOR_USER_ID || roleIds?.includes(roleId) === true;
+}
 
 interface BrowserQuestionRecord {
   runId: string;
@@ -2228,7 +2233,7 @@ export class Concierge {
       }
       const mention = this.currentMention();
       if (agent === "computer-use" && (!mention || !mention.canUseBrowser)) {
-        return { ok: false, error: `computer-use requires Discord role ${this.browserOperatorRoleId()}` };
+        return { ok: false, error: `computer-use requires Discord role ${this.browserOperatorRoleId()} or approved user access` };
       }
       if (agent === "computer-use" && requestedChannelId && requestedChannelId !== mention!.channelId) {
         return { ok: false, error: "computer-use must return to the channel where the authorized request began" };
@@ -2718,7 +2723,7 @@ export class Concierge {
       messageId: m.messageId,
       userId: m.userId,
       isOwner: this.ownerId() !== undefined && m.userId === this.ownerId(),
-      canUseBrowser: m.roleIds?.includes(this.browserOperatorRoleId()) === true,
+      canUseBrowser: this.canUseBrowser(m.userId, m.roleIds),
       repliedViaCli: false,
       ackMessageId: null as string | null,
     };
@@ -2834,9 +2839,9 @@ export class Concierge {
         .catch(() => undefined);
       return true;
     }
-    if (m.roleIds?.includes(this.browserOperatorRoleId()) !== true) {
+    if (!this.canUseBrowser(m.userId, m.roleIds)) {
       await this.gateway
-        .post(m.channelId, `That answer requires Discord role ${this.browserOperatorRoleId()}.`)
+        .post(m.channelId, `That answer requires Discord role ${this.browserOperatorRoleId()} or approved user access.`)
         .catch(() => undefined);
       return true;
     }
@@ -3301,7 +3306,14 @@ export class Concierge {
     return this.config.quick?.browser_role_id ?? BROWSER_OPERATOR_ROLE_ID;
   }
 
+  private canUseBrowser(userId: string, roleIds?: string[]): boolean {
+    return browserAccessAllowed(userId, roleIds, this.browserOperatorRoleId());
+  }
+
   private accessLevelFor(userId: string): AccessLevel {
+    // This explicit browser operator must be able to reach the directed Concierge turn that
+    // dispatches computer-use even when the instance access file has not listed them separately.
+    if (userId === BROWSER_OPERATOR_USER_ID) return "member";
     try {
       return classify(userId, this.ownerId(), loadAccess(buildPaths(this.config).accessFile));
     } catch (err) {
