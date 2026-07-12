@@ -118,6 +118,9 @@ function startupChannelId(): string | null {
  */
 const RELEASE_NOTE_CHANNEL_ID = "1523507437485948958";
 
+/** Dedicated home for task, branch, and subscription-status cards. */
+export const CARDS_CHANNEL_ID = "1525690195234521179";
+
 /** Hard ceiling on one chat turn before we give up waiting for its `result` line. */
 const TURN_TIMEOUT_MS = 240_000;
 
@@ -1407,20 +1410,21 @@ export class Concierge {
       const task = this.tasks.getTask(created.task.number)!;
       try {
         const thread = await this.ensureTaskThread(created.task.number, command.channelId);
-        return {
-          content: `Created ${displayTaskName(task)} in <#${thread.threadId}>.`,
-          embeds: [renderTaskEmbed(this.tasks.getTask(created.task.number)!)],
-        };
+        await this.postCards(
+          [renderTaskEmbed(this.tasks.getTask(created.task.number)!)],
+          `Task card for ${displayTaskName(task)}`,
+        );
+        return { content: `Created ${displayTaskName(task)} in <#${thread.threadId}>.` };
       } catch (err) {
         this.log.warn("task allocated but Discord workspace creation failed", {
           task: created.task.number,
           error: String(err),
         });
+        await this.postCards([renderTaskEmbed(task)], `Task card for ${displayTaskName(task)}`);
         return {
           content:
             `Created ${displayTaskName(task)}, but I couldn't create its workspace. ` +
             `Nothing was lost; retry with \`/task workspace number:${task.number}\`.`,
-          embeds: [renderTaskEmbed(task)],
         };
       }
     }
@@ -1429,28 +1433,29 @@ export class Concierge {
       const task = this.tasks.getTask(raw);
       if (!task) throw new Error(`no such task: ${raw}`);
       const thread = await this.ensureTaskThread(task.number, command.channelId);
-      return {
-        content: `Workspace ready for ${displayTaskName(task)}: <#${thread.threadId}>.`,
-        embeds: [renderTaskEmbed(this.tasks.getTask(task.number)!)],
-      };
+      await this.postCards(
+        [renderTaskEmbed(this.tasks.getTask(task.number)!)],
+        `Task card for ${displayTaskName(task)}`,
+      );
+      return { content: `Workspace ready for ${displayTaskName(task)}: <#${thread.threadId}>.` };
     }
     if (command.name === "task" && command.subcommand === "show") {
       const raw = String(command.options.number ?? "");
       const task = this.tasks.getTask(raw);
       if (!task) throw new Error(`no such task: ${raw}`);
-      return { embeds: [renderTaskEmbed(task)] };
+      await this.postCards([renderTaskEmbed(task)], `Task card for ${displayTaskName(task)}`);
+      return { content: `Posted ${displayTaskName(task)} card in <#${CARDS_CHANNEL_ID}>.` };
     }
     if (command.name === "branch") {
       if (!this.branchStatus) throw new Error("branch status provider is unavailable");
       const card = await this.branchStatus.read(String(command.options.reference ?? ""));
-      return {
-        embeds: [renderBranchEmbed(card)],
-        ...(card.pullRequest
-          ? { buttons: [{ label: "Open PR", url: card.pullRequest.url }] }
-          : card.publication
-            ? { buttons: [{ label: "Open repository", url: card.publication.url }] }
-          : {}),
-      };
+      const buttons = card.pullRequest
+        ? [{ label: "Open PR", url: card.pullRequest.url }]
+        : card.publication
+          ? [{ label: "Open repository", url: card.publication.url }]
+          : undefined;
+      await this.postCards([renderBranchEmbed(card)], `Branch card for #${card.ref}`, buttons);
+      return { content: `Posted branch card in <#${CARDS_CHANNEL_ID}>.` };
     }
     if (command.name === "stats") {
       const ownerId = this.ownerId();
@@ -1458,9 +1463,26 @@ export class Concierge {
         return { content: "Subscription usage is private to Beckett's owner." };
       }
       const usages = await this.subscriptionUsage.readAll();
-      return { embeds: renderSubscriptionUsageEmbeds(usages) };
+      await this.postCards(renderSubscriptionUsageEmbeds(usages), "Subscription usage cards");
+      return { content: `Posted subscription usage cards in <#${CARDS_CHANNEL_ID}>.` };
     }
     throw new Error(`unsupported Discord command: ${command.name} ${command.subcommand ?? ""}`.trim());
+  }
+
+  /** Post every rich status card in the dedicated cards channel, never the triggering channel. */
+  private async postCards(
+    embeds: NonNullable<DiscordCommandReply["embeds"]>,
+    recordText: string,
+    buttons?: DiscordCommandReply["buttons"],
+    replyToMessageId?: string,
+  ): Promise<string> {
+    const messageId = await this.gateway.post(CARDS_CHANNEL_ID, "", {
+      ...(replyToMessageId ? { replyToMessageId } : {}),
+      embeds,
+      ...(buttons?.length ? { buttons } : {}),
+    });
+    this.recordBeckettPost(CARDS_CHANNEL_ID, recordText, messageId);
+    return messageId;
   }
 
   /** Exactly-once task workspace creation across slash commands and repeated CLI bus notifications. */
@@ -2242,16 +2264,17 @@ export class Concierge {
     if (branchRef && this.branchStatus) {
       try {
         const card = await this.branchStatus.read(branchRef);
-        const messageId = await this.gateway.post(m.channelId, "", {
-          replyToMessageId: m.messageId,
-          embeds: [renderBranchEmbed(card)],
-          ...(card.pullRequest
-            ? { buttons: [{ label: "Open PR", url: card.pullRequest.url }] }
-            : card.publication
-              ? { buttons: [{ label: "Open repository", url: card.publication.url }] }
-              : {}),
-        });
-        this.recordBeckettPost(m.channelId, `Branch card for #${branchRef}`, messageId);
+        const buttons = card.pullRequest
+          ? [{ label: "Open PR", url: card.pullRequest.url }]
+          : card.publication
+            ? [{ label: "Open repository", url: card.publication.url }]
+            : undefined;
+        await this.postCards(
+          [renderBranchEmbed(card)],
+          `Branch card for #${branchRef}`,
+          buttons,
+          m.channelId === CARDS_CHANNEL_ID ? m.messageId : undefined,
+        );
         return;
       } catch (err) {
         this.log.warn("conversational branch card failed; falling back to Concierge", {

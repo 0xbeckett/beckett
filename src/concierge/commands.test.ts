@@ -8,7 +8,7 @@ import type { SubscriptionUsageReader } from "../subscription-usage.ts";
 import { TaskStore } from "../task/store.ts";
 import type { BranchStatusService } from "../task/status.ts";
 import type { WorkspaceRegistry } from "../discord/workspaces.ts";
-import { branchCardReference, Concierge, type ConciergeSession } from "./index.ts";
+import { branchCardReference, CARDS_CHANNEL_ID, Concierge, type ConciergeSession } from "./index.ts";
 
 const OWNER = "111111111111111111";
 const MEMBER = "222222222222222222";
@@ -82,8 +82,8 @@ function harness(
   return { concierge, tasks, createdNames, createdChannels, threadCalls, asks, posts, dir };
 }
 
-test("/task create allocates #N, creates its named thread once, and returns a task card", async () => {
-  const { concierge, tasks, createdNames } = harness();
+test("/task create allocates #N, creates its named thread once, and routes its card", async () => {
+  const { concierge, tasks, createdNames, posts } = harness();
   const reply = await concierge.onCommand({
     name: "task",
     subcommand: "create",
@@ -94,7 +94,11 @@ test("/task create allocates #N, creates its named thread once, and returns a ta
 
   expect(createdNames).toEqual(["#1 - Build voting"]);
   expect(reply.content).toContain("Created #1 - Build voting in <#thread-1>");
-  expect(reply.embeds?.[0]?.title).toBe("#1 - Build voting");
+  expect(reply.embeds).toBeUndefined();
+  expect(posts[0]).toMatchObject({
+    channelId: CARDS_CHANNEL_ID,
+    options: { embeds: [{ title: "#1 - Build voting" }] },
+  });
   expect(tasks.getTask(1)).toMatchObject({ number: 1, threadId: "thread-1" });
 
   const shown = await concierge.onCommand({
@@ -104,7 +108,12 @@ test("/task create allocates #N, creates its named thread once, and returns a ta
     channelId: "channel-1",
     options: { number: "#1" },
   });
-  expect(shown.embeds?.[0]?.title).toBe("#1 - Build voting");
+  expect(shown.embeds).toBeUndefined();
+  expect(shown.content).toContain(`<#${CARDS_CHANNEL_ID}>`);
+  expect(posts[1]).toMatchObject({
+    channelId: CARDS_CHANNEL_ID,
+    options: { embeds: [{ title: "#1 - Build voting" }] },
+  });
   expect(createdNames).toHaveLength(1);
 });
 
@@ -258,7 +267,7 @@ test("startup repairs a deleted task thread and restores linked-ticket routing",
   expect(workspaces.channelForTicket("OPS-321")).toBe("thread-1");
 });
 
-test("/stats is owner-only and renders every connected subscription", async () => {
+test("/stats is owner-only and routes every connected subscription card", async () => {
   let reads = 0;
   const usage: SubscriptionUsageReader = {
     readAll: async () => {
@@ -281,7 +290,7 @@ test("/stats is owner-only and renders every connected subscription", async () =
       ];
     },
   };
-  const { concierge, dir } = harness(usage);
+  const { concierge, dir, posts } = harness(usage);
   writeFileSync(join(dir, "access.txt"), `${MEMBER}\n`, "utf8");
 
   const denied = await concierge.onCommand({
@@ -300,8 +309,11 @@ test("/stats is owner-only and renders every connected subscription", async () =
     options: {},
   });
   expect(reads).toBe(1);
-  expect(reply.embeds?.map((embed) => embed.title)).toEqual(["Claude usage", "Codex usage"]);
-  expect(JSON.stringify(reply)).toContain("80% left");
+  expect(reply.embeds).toBeUndefined();
+  expect(reply.content).toContain(`<#${CARDS_CHANNEL_ID}>`);
+  expect(posts[0]).toMatchObject({ channelId: CARDS_CHANNEL_ID });
+  expect(posts[0]?.options?.embeds?.map((embed) => embed.title)).toEqual(["Claude usage", "Codex usage"]);
+  expect(JSON.stringify(posts[0]?.options?.embeds)).toContain("80% left");
 });
 
 test("a conversational branch-status reference returns the rich card without an LLM turn", async () => {
@@ -334,7 +346,23 @@ test("a conversational branch-status reference returns the rich card without an 
   });
 
   expect(asks).toHaveLength(0);
+  expect(posts).toHaveLength(1);
+  expect(posts[0]?.channelId).toBe(CARDS_CHANNEL_ID);
+  expect(posts[0]?.options?.replyToMessageId).toBeUndefined();
   expect(posts[0]?.options?.embeds?.[0]?.title).toBe("#42.1 - Voting API");
   expect(posts[0]?.options?.buttons?.[0]?.label).toBe("Open PR");
+
+  const reply = await concierge.onCommand({
+    name: "branch",
+    userId: OWNER,
+    channelId: "channel-1",
+    options: { reference: "42.1" },
+  });
+  expect(reply.embeds).toBeUndefined();
+  expect(reply.content).toContain(`<#${CARDS_CHANNEL_ID}>`);
+  expect(posts[1]).toMatchObject({
+    channelId: CARDS_CHANNEL_ID,
+    options: { embeds: [{ title: "#42.1 - Voting API" }] },
+  });
   expect(branchCardReference("please change #42.1 instead")).toBeNull();
 });
