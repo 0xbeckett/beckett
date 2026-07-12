@@ -23,6 +23,7 @@ import { CodexImageGen } from "../agency/imagegen.ts";
 import { TunnelDeployer } from "../shell/deploy.ts";
 import { mintSecretRequest, parseSecretTtlMinutes, serveSecretIntake, validateSecretEnvName } from "../secret/intake.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
+import { bundledMaintainersFile, loadMaintainers, requestMaintainerGrant, revokeMaintainer } from "../discord/maintainers.ts";
 import { loadPeers, addPeer, removePeer } from "../discord/peers.ts";
 import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
 import { readJournal, DEFAULT_TAIL_LINES } from "../progress/journal.ts";

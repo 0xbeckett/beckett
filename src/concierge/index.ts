@@ -63,6 +63,7 @@ import {
 import { setChannelModeOverride, setEnabledOverride } from "./proactivity-store.ts";
 import { readPersistedOffers } from "./ambient.ts";
 import { classify, loadAccess, resolvePending, ACCESS_CAP, type AccessLevel } from "../discord/access.ts";
+import { loadMaintainers, resolveMaintainerPending } from "../discord/maintainers.ts";
 import { childEnv as strippedChildEnv } from "../env.ts";
 import type { QuickQuestion, QuickRun, QuickRunner } from "../quick/index.ts";
 import type { BrowserRuntime } from "../browser/runtime.ts";
@@ -138,10 +139,18 @@ const ACCESS_DENY_REPLY_MS = 5 * 60_000;
  */
 const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
 export const BROWSER_OPERATOR_ROLE_ID = "1520985787062030456";
-export const BROWSER_OPERATOR_USER_ID = "1132125761264951339";
 
-export function browserAccessAllowed(userId: string, roleIds: string[] | undefined, roleId: string): boolean {
-  return userId === BROWSER_OPERATOR_USER_ID || roleIds?.includes(roleId) === true;
+/**
+ * Browser (computer-use) is operable by the configured Discord role or by any MAINTAINER
+ * (OPS-144) — the owner-managed maintainers.txt union, never a hardcoded individual id.
+ */
+export function browserAccessAllowed(
+  userId: string,
+  roleIds: string[] | undefined,
+  roleId: string,
+  maintainers: Set<string>,
+): boolean {
+  return maintainers.has(userId) || roleIds?.includes(roleId) === true;
 }
 
 interface BrowserQuestionRecord {
@@ -2233,7 +2242,7 @@ export class Concierge {
       }
       const mention = this.currentMention();
       if (agent === "computer-use" && (!mention || !mention.canUseBrowser)) {
-        return { ok: false, error: `computer-use requires Discord role ${this.browserOperatorRoleId()} or approved user access` };
+        return { ok: false, error: `computer-use requires Discord role ${this.browserOperatorRoleId()} or maintainer standing` };
       }
       if (agent === "computer-use" && requestedChannelId && requestedChannelId !== mention!.channelId) {
         return { ok: false, error: "computer-use must return to the channel where the authorized request began" };
@@ -2841,7 +2850,7 @@ export class Concierge {
     }
     if (!this.canUseBrowser(m.userId, m.roleIds)) {
       await this.gateway
-        .post(m.channelId, `That answer requires Discord role ${this.browserOperatorRoleId()} or approved user access.`)
+        .post(m.channelId, `That answer requires Discord role ${this.browserOperatorRoleId()} or maintainer standing.`)
         .catch(() => undefined);
       return true;
     }
@@ -3276,6 +3285,9 @@ export class Concierge {
    */
   private resolveSpeaker(m: IncomingMessage): SpeakerContext {
     const isOwner = this.ownerId() !== undefined && m.userId === this.ownerId();
+    // Maintainer standing comes from maintainers.txt at stamp time (code-checked, like
+    // role:owner) — the doctrine trusts the stamp, so it must never come from chat content.
+    const isMaintainer = !isOwner && this.maintainers().has(m.userId);
     let identity: UserIdentity | undefined;
     try {
       const file = buildPaths(this.config).identitiesFile;
@@ -3293,7 +3305,7 @@ export class Concierge {
         err: String(err),
       });
     }
-    return { userId: m.userId, displayName: m.authorDisplayName, identity, isOwner };
+    return { userId: m.userId, displayName: m.authorDisplayName, identity, isOwner, isMaintainer };
   }
 
   /** The env-provided owner's Discord user id, if set (binds the owner identity to one person). */
@@ -3307,15 +3319,28 @@ export class Concierge {
   }
 
   private canUseBrowser(userId: string, roleIds?: string[]): boolean {
-    return browserAccessAllowed(userId, roleIds, this.browserOperatorRoleId());
+    return browserAccessAllowed(userId, roleIds, this.browserOperatorRoleId(), this.maintainers());
+  }
+
+  /**
+   * The effective maintainer set (OPS-144): the bundled repo seed ∪ owner-approved runtime
+   * additions. Loaded fresh per check so a just-approved grant applies without a restart.
+   * Fail-safe: any load error yields the empty set (nobody silently elevated).
+   */
+  private maintainers(): Set<string> {
+    try {
+      return loadMaintainers(buildPaths(this.config).maintainersFile);
+    } catch (err) {
+      this.log.warn("maintainer list load failed; treating as empty", { err: String(err) });
+      return new Set();
+    }
   }
 
   private accessLevelFor(userId: string): AccessLevel {
-    // This explicit browser operator must be able to reach the directed Concierge turn that
-    // dispatches computer-use even when the instance access file has not listed them separately.
-    if (userId === BROWSER_OPERATOR_USER_ID) return "member";
+    // Maintainers classify above members: they pass the invite-only gate through
+    // maintainers.txt (bundled ∪ runtime), never through a hardcoded id in code.
     try {
-      return classify(userId, this.ownerId(), loadAccess(buildPaths(this.config).accessFile));
+      return classify(userId, this.ownerId(), loadAccess(buildPaths(this.config).accessFile), this.maintainers());
     } catch (err) {
       this.log.warn("access classification failed; denying by default", { userId, err: String(err) });
       return "outsider";
@@ -3363,21 +3388,48 @@ export class Concierge {
         .catch((err) => this.log.warn("approval reply failed", { channelId: m.channelId, err: String(err) }));
     };
 
-    const r = resolvePending(paths.accessPendingFile, paths.accessFile, code, m.userId, this.ownerId(), action);
+    let r = resolvePending(paths.accessPendingFile, paths.accessFile, code, m.userId, this.ownerId(), action);
+    // A code unmatched in the access queue may be a MAINTAINER grant (OPS-144) — same
+    // two-phase machinery, separate queue and list. The owner check already refused above
+    // ('not-owner' short-circuits before any lookup), so only the owner ever reaches this.
+    let queue: "access" | "maintainer" = "access";
+    if (r.status === "unknown-code") {
+      const mr = resolveMaintainerPending(
+        paths.maintainersPendingFile,
+        paths.maintainersFile,
+        code,
+        m.userId,
+        this.ownerId(),
+        action,
+      );
+      if (mr.status !== "unknown-code") {
+        r = mr;
+        queue = "maintainer";
+      }
+    }
     this.log.info("access approval attempt", {
       action,
       byUserId: m.userId,
       channelId: m.channelId,
+      queue,
       status: r.status,
       grantedId: r.id,
     });
 
     switch (r.status) {
       case "approved":
-        await reply(`done — <@${r.id}> is in (${r.count}/${ACCESS_CAP} slots used${r.locked ? ", list now locked" : ""}).`);
+        await reply(
+          queue === "maintainer"
+            ? `done — <@${r.id}> is now a maintainer (push/merge/deploy/restart on request).`
+            : `done — <@${r.id}> is in (${r.count}/${ACCESS_CAP} slots used${r.locked ? ", list now locked" : ""}).`,
+        );
         break;
       case "already-member":
-        await reply(`<@${r.id}> was already in — nothing to do.`);
+        await reply(
+          queue === "maintainer"
+            ? `<@${r.id}> was already a maintainer — nothing to do.`
+            : `<@${r.id}> was already in — nothing to do.`,
+        );
         break;
       case "denied":
         await reply(`denied — the request for <@${r.id}> is discarded.`);
@@ -3389,7 +3441,11 @@ export class Concierge {
         await reply("no pending request matches that code — codes are single-use and expire after 10 minutes. File the grant again if it's still wanted.");
         break;
       case "locked":
-        await reply(`the list is locked (${ACCESS_CAP}-member cap) — no more grants.`);
+        await reply(
+          queue === "maintainer"
+            ? `the maintainer list is locked — no more grants.`
+            : `the list is locked (${ACCESS_CAP}-member cap) — no more grants.`,
+        );
         break;
     }
     return true;
@@ -3602,6 +3658,8 @@ export interface SpeakerContext {
   identity?: UserIdentity;
   /** True only when this id is the env-provided owner — binds owner identity to ONE person. */
   isOwner: boolean;
+  /** True when this id is in maintainers.txt (bundled ∪ runtime) — OPS-144. Owner excluded (role:owner subsumes it). */
+  isMaintainer?: boolean;
 }
 
 /** Ground an unmentioned message in the user-opened workspace thread it arrived through. */
@@ -3668,6 +3726,7 @@ function frameUserTurn(
   if (display && display !== address) parts.push(`display:${stampField(display)}`);
   if (speaker.identity?.notes) parts.push(`notes:${stampField(speaker.identity.notes)}`);
   if (speaker.isOwner) parts.push("role:owner");
+  else if (speaker.isMaintainer) parts.push("role:maintainer");
   // `msg:` is the exact message being answered — carried through so a reply targets THAT message,
   // not just the channel (Jason's steer, OPS-42). The native reply already uses it; surfacing it
   // in the stamp lets the Concierge quote/`--reply-to` the precise message when it matters.

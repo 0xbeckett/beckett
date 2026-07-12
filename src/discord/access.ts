@@ -23,7 +23,7 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, chmodSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 
-export type AccessLevel = "owner" | "member" | "outsider";
+export type AccessLevel = "owner" | "maintainer" | "member" | "outsider";
 
 /** Hard cap on the access list. */
 export const ACCESS_CAP = 10;
@@ -66,15 +66,23 @@ export function loadAccess(accessFile: string): AccessList {
 }
 
 /**
- * Classify a Discord user as owner / member / outsider.
+ * Classify a Discord user as owner / maintainer / member / outsider.
  * - ownerId match => 'owner'
+ * - in the maintainer set (OPS-144) => 'maintainer' — a member with push/merge/deploy/restart
+ *   authority; strictly below the owner (no access.txt or maintainer-list management)
  * - in the access set => 'member'
  * - else => 'outsider'
  * FAIL-SAFE: if ownerId is empty/undefined, unknown users are 'outsider' (default deny),
- * but known members are still allowed.
+ * but known maintainers/members are still allowed.
  */
-export function classify(userId: string, ownerId: string | undefined, access: AccessList): AccessLevel {
+export function classify(
+  userId: string,
+  ownerId: string | undefined,
+  access: AccessList,
+  maintainers?: Set<string>,
+): AccessLevel {
   if (ownerId && userId === ownerId) return "owner";
+  if (maintainers?.has(userId)) return "maintainer";
   if (access.ids.has(userId)) return "member";
   return "outsider";
 }
