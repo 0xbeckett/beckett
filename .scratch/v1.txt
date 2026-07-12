@@ -1,0 +1,1290 @@
+BECKETT
+DESIGN PROPOSAL · OPS-151 · --project beckett
+
+Run of Show
+
+a workflow engine the
+concierge conducts
+A proposal to retire Plane as Beckett’s execution backend and
+replace its one fixed ticket lifecycle with a per-task, conciergeauthored workflow: stages, iteration budgets, parallel fan-out and
+gates composed at filing time — not compiled into the dispatcher.
+
+Author
+
+Requested by
+
+Date
+
+Status
+
+Beckett — worker seat
+
+ro (owner)
+
+12 July 2026
+
+Proposal — no code
+
+Claude Fable 5 · high
+
+Discord · OPS-151
+
+rev 1
+
+grounded in v3.2 source
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+I N O N E PAG E
+
+TL;DR
+Every piece of work Beckett takes on today — a copy tweak, a concurrency fix, a selfmodification — marches through the same compiled-in pipeline:
+todo → in_progress → in_review → done , one implement seat, at most one review seat,
+
+three rework cycles, one live worker per ticket. That shape lives half in Plane (a remote SaaS
+ticket board we poll every few seconds) and half in a 3,200-line dispatcher switch statement.
+Changing it means changing Beckett’s source and redeploying: adding one design stage cost
+us a new board, two new enum values, and surgery in five modules (OPS-111).
+This document proposes making the workflow itself data: a small per-task DAG — the run of
+show — that the concierge writes when it files work. Stages, iteration caps, parallel fan-out,
+join rules and human gates become fields in a spec, interpreted by a generic engine that
+keeps everything already proven: worktrees and the task/branch tree, per-stage casting,
+review gates, the journal, the courier, steering. Plane is first demoted to a read-only mirror,
+then retired.
+1
+
+Ground truth — how Plane runs Beckett today
+
+poller → dispatcher → spawn; states, casts, caps, journal,
+courier — with file:line receipts
+
+2
+
+The problem — one lifecycle, worn as a
+
+six concrete places the fixed shape hurts, incl. the INT case
+study
+
+straitjacket
+3
+
+The proposal — a per-task flow spec
+
+4
+
+Execution semantics
+
+four node kinds; today’s lifecycles fall out as two tiny specs
+how a stage runs, how loops terminate, how parallel
+branches join, crash recovery
+
+5
+
+The authoring surface
+
+what the concierge writes at filing time; flow presets; what
+I’d type for you
+
+6
+
+Migration off Plane
+
+three reversible phases; what replaces states, comments,
+IDs and the board UI
+
+7
+
+Tradeoffs, risks, open questions
+
+the workflow-engine trap, losing the board, cost blow-ups
+— and the honest unknowns
+
+A
+
+Appendix — today’s lifecycles as flow specs
+
+byte-for-byte behavioural equivalence at cutover
+
+HOW TO READ THIS
+
+Everything in §1 is fact, verified against the working tree at commit 6fac13d with file:line receipts.
+Everything from §3 on is proposal. The two legacy lifecycles reappear in Appendix A as flow specs, which
+is the backward-compatibility argument in one page: if the engine can run those two specs identically,
+cutover changes nothing until we ask it to.
+
+2 / 20
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+W H AT E X I S T S · V E R I F I E D A G A I N S T S O U R C E
+
+1
+
+Ground truth — how Plane runs Beckett today
+Beckett’s execution backend is a self-hosted Plane instance ( plane.0xbeckett.me ). The concierge files
+work as Plane issues; a poller diffs the board into events; a dispatcher turns events into worker
+processes in git worktrees. One paragraph of architecture, five subsystems of detail.
+
+poll ~5 s
+
+Plane (SaaS board)
+REST
+
+Discord
+
+Concierge
+
+owner ↔ Beckett
+
+files & steers tickets
+
+beckett-cast · beckett-deps
+
+PlanePoller
+diff → PollEvent[]
+
+issues · workflow states · comments
+
+setState / comment
+
+Workers
+Dispatcher
+
+state_map per board
+
+spawn
+
+state → action table
+
+git worktrees
+claude / codex / pi
+done-signal JSON
+
+task tree ~/.beckett/tasks.json (#N · #N.x · needs)
+
+journal ~/.beckett/journal/*.log
+
+publish-outbox → GitHub
+
+Fig. 1 — the v3 loop. The concierge writes to Plane; the poller diffs Plane into events; the dispatcher spawns workers and writes state back.
+All durable local artifacts (task tree, journal, outboxes) already live outside Plane.
+
+1.1 The state machine and its enum
+
+TicketState is a fixed eight-value union src/plane/types.ts:26 — backlog , todo , design , design_review ,
+in_progress , in_review , done , cancelled — with done / cancelled terminal types.ts:39. Each Plane
+
+board carries a state_map renaming these onto its columns src/config.ts:129. The dispatcher consumes
+poll events through one hardcoded dispatch table src/dispatch/dispatcher.ts:1003–1062:
+EVENT / STATE ENTERED
+
+GUARD
+
+ACTION
+
+design
+
+INT board only, no live worker
+
+spawn stage design
+
+in_progress
+
+no live worker
+
+spawn stage implement
+
+in_review
+
+no publish hold, no live worker
+
+spawn stage review
+
+done
+
+—
+
+reap · drain orphaned steers · promoteDependents()
+
+todo / backlog /
+
+—
+
+park: abort+reap, commit WIP, keep worktree
+
+cancelled
+
+—
+
+abort · reap · dispose
+
+comment_added
+
+live worker, author ≠ Beckett
+
+handle.nudge(body) — steering
+
+design_review
+
+Stage names are string literals switched on in three places: the spawn table above, castFor()
+dispatcher.ts:1998–2005 and the worker-done router dispatcher.ts:2152–2161 ( design , design_check ,
+
+implement , review ). A new stage is therefore a source change in at least three switch statements plus
+
+the enum, the poller’s recovery list, and every board’s state_map .
+
+3 / 20
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+1.2 Casting, effort and the review gate
+
+Casting is per-stage: a ticket description carries a fenced beckett-cast JSON block mapping stage name
+→ HarnessSpec ( {harness, model, effort, reviewTier} ) src/plane/cast.ts:29–59. The Casting record is
+deliberately open-ended — arbitrary stage names already type-check src/plane/types.ts:71–75 — but only
+the four hardcoded stage strings are ever spawned. Two consequential rules:
+The review gate is inferred from a model knob. reviewTierFor() dispatcher.ts:2475–2479: implement
+effort low|medium → self (one pass, straight to done); high|xhigh|unset → fresh (spawn an
+adversarial reviewer). An explicit reviewTier field overrides — a patch bolted on precisely because
+effort was overloaded.
+Effort also sets the envelope — turn caps and wall-clock via ENVELOPE_BY_EFFORT
+src/dispatch/spawn.ts:217–222 (low 15 turns/10 min … xhigh 100 turns/60 min).
+
+Named cast presets live in ~/.beckett/presets.json , hot-reloaded on every filing
+src/plane/presets.ts:76–112 — a precedent this proposal leans on: per-task behaviour as user-editable data
+
+worked.
+1.3 Iteration policy: four global constants
+LOOP
+
+CAP
+
+ON EXHAUSTION
+
+review fail → re-implement (“rework”)
+
+MAX_REWORK_CYCLES = 3
+
+comment, park in in_review for a human
+
+dispatcher.ts:199
+
+implement crash/timeout retry
+
+MAX_IMPLEMENT_RETRIES =
+3 dispatcher.ts:209
+
+publish WIP, move to todo
+
+reviewer infra failure
+
+MAX_REVIEW_INFRA_RETRIES park in in_review
+= 1 dispatcher.ts:212
+
+design ↔ completeness check
+
+MAX_DESIGN_CYCLES = 2
+
+escalate to design_review with ⚠ note
+
+dispatcher.ts:202
+
+These are compile-time constants. No ticket can ask for one shot, or six; the concierge’s only lever over
+iteration is not filing the work.
+1.4 One worker per ticket, worktrees, done-signals
+
+The dispatcher enforces at most one live worker per ticket (the workers map, staffing dedup and FIFO
+pending queue dispatcher.ts:450, 1313–1379) under a global max_workers cap. A spawn allocates a
+persistent worktree at <repo>/.beckett/worktrees/<id> on branch beckett/task-N[.x] , installs the
+scope-guard and the done-signal schema, captures the review base SHA on first implement
+dispatcher.ts:1573–1586, and periodically checkpoint-commits live work (OPS-125) dispatcher.ts:640–709.
+
+Workers finish by emitting a structured done-signal
+{status: complete|blocked|partial, summary, filesChanged, checksRun, blockedReason} spawn.ts:198–209
+
+— the single edge the state machine branches on.
+
+4 / 20
+
+Beckett · Run of Show — a dynamic workflow engine
+
+OPS-151
+
+1.5 Steering, journal, courier, task tree
+
+Steering. A human comment on an in-flight ticket becomes a live nudge (receipts: delivered /
+queued / will-restart / dropped); with no live worker it is buffered in pendingSteers , persisted, and
+folded into the next worker’s brief dispatcher.ts:1070–1158, 1609–1635. Plane comments are the
+transport; Discord is where the human actually typed.
+Journal. An append-only per-ticket log under ~/.beckett/journal/<ticket>.log , fed fire-and-forget
+from worker events, read on demand via beckett journal <ticket> --tail N src/progress/journal.ts.
+Already fully local; already richer than Plane’s comment trail.
+Courier / publish. Finishing a ticket publishes to GitHub via a durable JSONL outbox with 1 m/5
+m/30 m retries; dispatcher.courier(id) hands exclusive publish ownership to a human
+src/dispatch/publish-outbox.ts, dispatcher.ts:831–839. Plane state writes themselves go through a second
+
+durable outbox ( advance-outbox ) because remote writes fail often enough to need one
+src/dispatch/advance-outbox.ts.
+
+Task tree. The user-facing #N / #N.x tree with needs dependencies lives in ~/.beckett/tasks.json
+— a local, locked, versioned registry that already mirrors every Plane state into a branch status
+( backlog→waiting, … in_review→review ) src/task/store.ts:141–152. Cross-ticket DAG promotion
+( blockedBy → promote on done) is dispatcher logic, not Plane’s dispatcher.ts:2889–2926.
+THE LOAD-BEARING OBSERVATION
+
+Plane contributes exactly four things: issue storage, a state column per ticket, comments-as-transport,
+and a human-viewable board. Everything Beckett actually runs on — worktrees, casting, envelopes, donesignals, steering buffers, journal, outboxes, the #N tree, DAG promotion — is already local, already
+durable, and already ours. The migration in §6 is small precisely because of this.
+
+5 / 20
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+W H Y C H A N G E · S I X C O N C R E T E FA I L U R E S
+
+2
+
+The problem — one lifecycle, worn as a straitjacket
+Nothing in §1 is broken code. The machine is careful, durable and observable. What it cannot
+do is vary: the shape of work is compiled in, so every task — whatever its nature — is forced
+through the same pipe, and every new shape is a Beckett source change plus a deploy.
+effort low/medium → “self” gate skips review
+
+backlog
+
+todo
+
+in_progress
+
+in_review
+
+stage “implement”
+
+stage “review” · 0 or 1 seat
+
+done
+
+every ticket, every board
+every kind of work —
+same pipe, same caps,
+one live worker at a time
+
+rework ≤ MAX_REWORK_CYCLES = 3 (global constant)
+
+Fig. 2 — the compiled-in lifecycle. The only per-task levers are which model sits in each of two seats and an effort knob that doubles,
+implicitly, as the review-gate switch.
+
+2.1 Case study: adding one stage took a board, an enum, and five modules
+
+OPS-111 wanted exactly one new thing: a design stage with a human approval gate before
+implementation. Because the lifecycle is compiled in, the delivered change (OPS-111 → build) required:
+a new Plane board (INT) so OPS wouldn’t grow columns; two new enum values ( design ,
+design_review ) in TicketState ; board-guarded arms in the dispatcher switch; a new design_check
+
+pseudo-stage with its own hardcoded cast (Haiku, low) and its own constant ( MAX_DESIGN_CYCLES );
+poller prime() changes so restarts re-staff design but not design_review ; and Plane-side state
+provisioning with the right column groups and colours
+docs/design/int-flow.md · dispatcher.ts:2180–2239 · poll.ts:180. That is the cost of one stage, designed by the
+
+book. The next shape — say, a research stage, or a second reviewer — costs the same again. The lifecycle
+has a marginal cost per variant that data should have made ~zero.
+2.2 Iteration budgets are global, not per task
+
+A README tweak and a subtle concurrency fix both get exactly three rework cycles, three crash retries,
+two design bounces (§1.3). The concierge — the seat with actual context about stakes, urgency and
+budget — cannot say “one pass, no retries, this is trivial” or “keep iterating up to six rounds against the
+eval, it’s worth it.” When a cap is wrong the options are: edit a constant in dispatcher.ts and redeploy,
+or babysit manually via state flips.
+2.3 No parallelism inside a task
+
+One live worker per ticket is structural dispatcher.ts:450. Things ro has wanted that this forbids outright:
+Bake-offs — three candidate implementations from different casts, one judge picks a winner. Today
+that is three hand-filed tickets, no shared base management, and the judging is ro reading diffs.
+Panel review — correctness, security and taste reviewers running concurrently on one diff. Today:
+one reviewer seat, serial by construction.
+6 / 20
+
+Beckett · Run of Show — a dynamic workflow engine
+
+OPS-151
+
+Research fan-out — N scouts reading different subsystems before a synthesis stage. Today this only
+exists inside a single worker’s subagents, invisible to the engine, unsteerable per-branch, and un-cast
+(the worker picks its own subagents; the concierge can’t put Fable on one scout and Haiku on the
+rest).
+The only parallelism the engine knows is between tickets via beckett plan --needs — the right tool for
+genuinely separate deliverables, wrong for branches of one task that share a worktree lineage and must
+join.
+2.4 The workflow is inferred from a model knob
+
+Whether a ticket gets reviewed at all is a side effect of effort (§1.2) — and an omitted effort silently buys
+the expensive fresh-review tier. reviewTier exists only to patch this overload. The shape of the
+pipeline should be a first-class, visible declaration, not something reverse-engineered from how hard
+the implement seat is thinking. (The presets doc already flags this as a foot-gun: “presets must always
+name an explicit effort” docs/design/cast-presets.md §1.)
+2.5 State lives in someone else’s database, structured data in a Markdown field
+
+Every stage transition is a remote HTTP write to Plane — unreliable enough that a durable
+advance-outbox exists solely to retry them src/dispatch/advance-outbox.ts — and every reaction is gated on
+
+a ~5 s poll diff. Meanwhile the actually-structured task data (cast, dependencies, project, branch ref,
+start state, origin channel) is smuggled through Plane’s description field as five fenced code blocks and
+an HTML comment cast.ts:29–42, because the board has no schema for any of it. The VID board bends
+video production onto the same six coarse states, and the client folds any unrecognised “started”
+column back to in_progress to survive human-added columns client.ts:574. These are the classic scars
+of a tool being used as a database it isn’t.
+2.6 The concierge can’t compose; it can only pick
+
+The concierge’s authoring surface today is: title, body, criteria, board, entry state, and which models sit
+in the fixed seats ( --cast / --preset ). It cannot add a stage, split a stage, gate a stage, cap a loop, or fan
+anything out — the exact dimensions ro keeps asking to vary per task. Every one of those requests
+currently becomes an OPS ticket against Beckett’s own source.
+THE REQUIREMENT, STATED ONCE
+
+The concierge must be able to dictate, per task, how many stages there are, what runs in each, how
+many iterations each loop gets, and how much parallelism to spend — at filing time, as data, without
+touching Beckett’s source or Plane’s schema. Everything in §3–§5 is the smallest design we can find that
+delivers exactly that and nothing more.
+
+7 / 20
+
+Beckett · Run of Show — a dynamic workflow engine
+
+OPS-151
+
+T H E P R O P O S A L · W O R K F L O W A S D ATA
+
+3
+
+The proposal — a per-task flow spec
+Replace the compiled-in lifecycle with a small, validated document — the flow spec, or run of
+show — attached to every task at filing time. The dispatcher’s hardcoded state→action table
+becomes a generic interpreter over exactly four node kinds. Everything below the node
+boundary (worktrees, casting, envelopes, done-signals, journal, steering, courier) is reused
+unchanged.
+3.1 Design principles
+
+Small algebra, closed set. Four node kinds: worker , gate , fanout , join . No expressions, no
+conditionals beyond pass/fail edges, no user-defined node types. Anything fancier must arrive as a
+fifth kind with its own design doc — that is the fence against the workflow-engine tarpit (§7.1).
+Every loop is bounded by construction. A spec that could run forever does not validate. Caps are
+per-node fields, defaulted, not global constants.
+Today’s behaviour is two specs. The OPS and INT lifecycles must be expressible byte-for-byte
+(Appendix A), so cutover is a no-op until the concierge starts writing new shapes.
+The concierge composes; the engine conducts. Authoring is data + presets (§5); execution, recovery
+and budget enforcement are the engine’s (§4). The worker never sees the flow — it still gets a brief, a
+worktree, and a done-signal schema.
+
+8 / 20
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+3.2 The data model
+
+// All of this validates with zod at filing time, like castings do today.
+interface FlowSpec {
+version: 1;
+entry: NodeId;
+nodes: Record<NodeId, FlowNode>;
+
+// where the run starts
+
+budget?: {
+maxConcurrent?: number;
+
+// hard ceilings for the whole run
+// this task's worker slots (≤ global max_workers)
+
+usd?: number;
+wallClockS?: number;
+
+// spend cap across all seats
+
+};
+}
+type FlowNode = WorkerNode | GateNode | FanoutNode | JoinNode;
+interface WorkerNode {
+kind: "worker";
+
+// spawn one cast seat in the task worktree
+
+cast: HarnessSpec;
+brief?: string;
+
+// existing {harness, model, effort} — unchanged
+// stage instruction appended to the ticket body
+
+artifact?: string;
+onPass: NodeId | "done";
+onFail: NodeId | "park";
+
+// expected output path, e.g. "docs/design/<id>.md"
+// edge taken on done-signal "complete"
+// edge on "blocked"/"partial"/error; park = hand to human
+
+maxVisits?: number;
+retries?: number;
+
+// re-entry cap for THIS node (default 3; rework generalised)
+// same-visit crash/timeout retries (default 3)
+
+}
+interface GateNode {
+
+// a decision point: human or cheap model check
+
+kind: "gate";
+by: "human"
+// PARKED: no worker, zero tokens, concierge pings channel
+| { cast: HarnessSpec; rubric: string }; // LIVE: cheap check (generalises design_check)
+onPass: NodeId | "done";
+onFail: NodeId | "park";
+maxFails?: number;
+}
+interface FanoutNode {
+
+// bounces before it parks anyway (design's ≤2, per node)
+// N parallel branches of THIS task
+
+kind: "fanout";
+arms: { cast: HarnessSpec; brief?: string }[];
+
+// explicit arms; or {template, n} sugar
+
+isolation: "worktree-each" | "shared"; // writers isolate; read-only scouts may share
+join: NodeId;
+// every arm's edges converge on one JoinNode
+}
+interface JoinNode {
+kind: "join";
+
+// how parallel arms become one line again
+
+strategy: "all-merge"
+| "first"
+| "quorum"
+
+// merge every arm's branch (deps-merge machinery reused)
+// first complete wins; engine aborts the rest
+// k-of-n verdict nodes agree (k in `quorumK`)
+
+| { judge: HarnessSpec };
+quorumK?: number;
+
+// a cast seat reads all arms' diffs, picks/synthesises
+
+onPass: NodeId | "done";
+onFail: NodeId | "park";
+}
+
+The spec travels in a fenced beckett-flow block exactly where beckett-cast lives today (and, after
+migration, as a typed field in the local task record — §6). Casting stays a separate concern: the flow
+names seats; the cast fills them. A flow with no beckett-flow block is compiled from the cast exactly as
+today (effort → gate), so existing filings never break.
+
+9 / 20
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+3.3 Validation — what the linter refuses at filing time
+
+Unknown edge targets; unreachable nodes; an entry that isn’t a node; fanout arms whose edges
+escape their join.
+Unbounded cycles: every cycle in the graph must pass through a node whose maxVisits / maxFails
+is finite (all default finite; setting one to Infinity is simply not representable).
+Budget sanity: maxConcurrent ≤ global max_workers ; a Fable seat anywhere in the spec triggers the
+existing confirm-before-cast handshake — flow authoring does not bypass the cast doctrine.
+Cast validation per seat via the existing validateCasting (blocked models, malformed efforts)
+presets.ts:76–112.
+
+3.4 What today’s shapes look like (proof of containment)
+
+The default reviewed lifecycle, as a spec — this is all of it:
+{ "version": 1, "entry": "implement", "nodes": {
+"implement": { "kind":"worker", "cast":{"harness":"pi","effort":"high"},
+"onPass":"review", "onFail":"park", "maxVisits":3, "retries":3 },
+"review":
+
+{ "kind":"gate",
+"by": { "cast":{"harness":"claude","model":"claude-sonnet-5","effort":"high"},
+"rubric":"criteria-vs-diff" },
+"onPass":"done", "onFail":"implement", "maxFails":3 }
+
+} }
+
+One-pass work is the same spec minus the gate ( onPass:"done" ). The INT design flow adds two nodes in front — a design
+worker and a human gate — instead of two enum values, a board, and five modules. All three appear in full in Appendix A.
+3.5 And what today cannot do at all
+
+changes requested (≤2)
+
+implement A
+fan-out
+
+terra · high · worktree A
+
+design
+
+gate
+
+implement B
+
+join · judge
+
+review
+
+opus · high
+
+human
+
+opus · high · worktree B
+
+fable · high picks one
+
+sonnet · high
+
+implement C
+codex · high · worktree C
+
+done
+
+onFail → judge (≤2 visits), then park
+
+Fig. 3 — a bake-off run of show. Design → human gate → three isolated candidate implementations → a judge join that picks (or
+synthesises) a winner → fresh review → done. Six nodes of data. Under the current engine this is three hand-filed tickets, a human doing
+the judging, and no joint lineage.
+
+10 / 20
+
+Beckett · Run of Show — a dynamic workflow engine
+
+OPS-151
+
+R U N T I M E · T H E S TA G E M A N A G E R
+
+4
+
+Execution semantics
+The engine — call it the stage manager — is a per-task interpreter with one job: hold a
+durable FlowRun record, advance cursors along edges when done-signals arrive, and enforce
+budgets. It replaces the dispatcher’s state-switch; it deliberately does not replace the spawn
+path, the drivers, or any durability machinery.
+4.1 The run record
+
+interface FlowRun {
+taskRef: string;
+
+// "#42.1" — the existing tree ref stays the primary key
+
+spec: FlowSpec;
+// frozen copy at filing time (edits create a new rev)
+status: "running" | "parked" | "done" | "cancelled";
+cursors: Cursor[];
+// exactly 1, except between fanout and join
+visits: Record<NodeId, number>;
+// per-node re-entry counters (replaces reworkCount et al.)
+parked?: { node: NodeId; reason: string; since: string };
+spend: { usd: number; byNode: Record<NodeId, number> };
+}
+interface Cursor { node: NodeId; arm?: number; workerId?: string; branch?: string; }
+
+Runs are event-sourced: every transition ( node_entered , signal_received , edge_taken , parked ,
+budget_hit …) is appended to ~/.beckett/runs/<ref>.jsonl and the record above is just the fold. This is
+
+the same durability idiom the codebase already trusts — the journal, the advance-outbox and the
+publish-outbox are all append-only JSONL journal.ts · advance-outbox.ts:49–104 — promoted to being the
+source of truth instead of a shadow of Plane’s.
+4.2 How a stage runs — nothing new below the node
+
+Entering a worker node calls today’s spawn path verbatim dispatcher.ts:1479–1729 · spawn.ts:491:
+allocate/reuse the task worktree, install scope-guard + done-signal schema, build the brief (ticket body
++ node brief + drained steers), apply the effort envelope, register checkpoint commits. The node
+completes when the done-signal arrives: complete takes onPass ; blocked / partial /process-error
+takes onFail (after same-visit retries for infra failures, preserving today’s crash/auth/rate-limit
+ladder dispatcher.ts:1844–1930, 2356–2442). The LIVE/PARKED distinction survives intact: worker and
+model- gate nodes are LIVE; human gates and park are PARKED — no process, zero tokens, restartinert, exactly the property design_review proved out poll.ts:242–293.
+4.3 How loops terminate — always, by construction
+
+Per-node: entering a node increments visits[node] ; exceeding maxVisits (or a gate’s maxFails )
+diverts the edge to park with a journal note and a concierge ping — today’s “three strikes then leave
+in in_review for a human” dispatcher.ts:2756–2783, generalised and made per-task data.
+Per-run: the budget ceilings (spend, wall-clock) are checked before every spawn; a breach parks the
+run with budget_hit . A parked run never burns another token until a human (or the concierge, with
+authority) resumes it.
+
+11 / 20
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+Statically: the linter already refused any cycle not cut by a finite counter (§3.3), so the dynamic
+checks are enforcement, not the proof.
+4.4 How parallel branches run and join
+
+A fanout node forks the cursor: each arm gets its own worktree and branch —
+beckett/task-42.1/arm-2 — via the same createWorktree machinery, from the same base SHA
+
+(captured exactly as the review base is today dispatcher.ts:1573–1586). Arms count against
+budget.maxConcurrent and the global max_workers cap; excess arms queue in the existing FIFO. Join
+
+strategies:
+STRATEGY
+
+SEMANTICS
+
+REUSES
+
+all-merge
+
+Wait for every arm’s complete ; merge arm branches into the mergeBranchesIntoWorktree() —
+task branch in arm order; conflict → onFail .
+already merges dependency branches
+today worktree.ts
+
+first
+
+First complete wins; engine aborts remaining arms
+( handle.abort ), reaps their worktrees.
+
+the cancel path dispatcher.ts:996
+
+quorum
+
+For verdict-shaped arms (panel review): pass when
+quorumK arms pass; fail when impossible.
+
+done-signal statuses as votes
+
+judge
+
+Spawn the judge cast with every arm’s diff + summary as its
+brief; its done-signal names the winning arm (merged) or
+requests a synthesis pass.
+
+the review-diff builder
+dispatcher.ts:1607–1623
+
+An arm that fails takes the arm’s failure into the join: all-merge fails fast, first ignores it unless all arms fail, quorum
+counts it against, judge receives it as context. A cancelled run aborts all cursors — same semantics as today’s single
+worker, mapped over the set.
+4.5 Steering and observability
+
+Steering stops being “a Plane comment we poll for” and becomes a first-class verb:
+beckett task nudge <ref> [--node id] "text" , called by the concierge when a human replies on the
+
+task’s origin channel (the channel linkage already exists — originChannel is stamped on every filing
+types.ts:114–117). Un-targeted nudges go to all live cursors; targeted ones to a node’s worker or its buffer.
+
+Delivery semantics — receipts, buffering when nothing is live, folding into the next brief, unappliednudge drain — are today’s, unchanged dispatcher.ts:1070–1158. The journal gains node context per line;
+beckett status renders each run’s DAG with cursor positions, visit counts and spend — which is more
+
+visibility than the Plane board offers now, not less.
+4.6 Crash recovery
+
+On boot the engine replays each run’s event log (no Plane prime() round-trip): PARKED cursors stay
+parked; LIVE cursors re-staff from their checkpointed worktrees using the existing
+resumables/session-resume bridge dispatcher.ts:583–627. The one-writer-at-a-time discipline the ledger
+provides today extends per-cursor. This strengthens recovery: today’s restart re-derives intent from
+Plane state; tomorrow’s replays exactly what the engine was doing.
+
+12 / 20
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+A U T H O R I N G · W H AT T H E C O N C I E R G E W R I T E S
+
+5
+
+The authoring surface
+Filing keeps its shape: beckett task file with title, body, criteria, project, channel. The flow
+arrives three ways, cheapest first — and the cheapest way is not writing one.
+5.1 Defaults — most filings never mention a flow
+
+No --flow → the engine compiles the spec from the cast exactly as today: effort low|medium → onepass; high|xhigh → implement + review gate; reviewTier respected. Zero behaviour change, zero new
+typing for the everyday ticket. (One deliberate improvement: the compiled spec is printed back on filing
+— the gate becomes visible instead of inferred silently.)
+5.2 Flow presets — named shapes in ~/.beckett/flows.json
+
+The OPS-110 pattern, re-applied: hot-reloaded, user-editable, validated on load, seeded with the
+vocabulary we already know we want:
+PRESET
+
+SHAPE
+
+REPLACES / ENABLES
+
+one-pass
+
+implement → done
+
+today’s self tier, said out loud
+
+reviewed
+
+implement → review ⟲≤3 → done
+
+today’s fresh tier
+
+intensive
+
+design → human gate ⟲≤2 → implement → review → done
+
+the whole INT board, as 4 nodes of data
+
+bake-off
+
+fanout(n candidates) → judge → review → done
+
+Fig. 3 — impossible today
+
+panel-review
+
+implement → fanout(correctness, security, taste) → quorum
+2/3 ⟲ → done
+
+parallel reviewers — impossible today
+
+iterate-until
+
+implement ⟲≤N against a model-gate rubric (eval/tests) →
+done
+
+per-task iteration budgets — the
+constants, freed
+
+Invocation: --flow-preset bake-off , with per-node overrides via
+--flow-set judge.cast.model=claude-fable-5 or a partial-JSON merge — same precedence story as cast
+
+presets (explicit beats preset, per stage) presets.ts:119–142.
+5.3 A shorthand for composing fresh — the one-liner grammar
+
+For shapes worth composing on the spot, a tiny expression syntax compiled to a FlowSpec (and echoed
+back as the expanded JSON before filing):
+stage(cast)
+?human / ?cast
+
+worker node
+gate
+
+design(opus:high)
+?human · ?haiku:low(rubric=criteria)
+
+a -> b
+[a | b | c]
+=>judge(cast)
+
+sequence
+fanout arms
+join
+
+implement(pi:med) -> review(sonnet:high)
+[impl(pi:high) | impl(claude:high) | impl(codex:high)]
+=>judge(fable:high) · =>merge · =>first · =>quorum:2
+
+^N
+
+visit cap
+
+review(sonnet)^2 — two rework rounds, then park
+
+13 / 20
+
+Beckett · Run of Show — a dynamic workflow engine
+
+OPS-151
+
+# what I'd actually type when ro asks for a bake-off with a design gate:
+beckett task file --title "…" --project foo --channel <id> \
+--flow 'design(opus:high) -> ?human -> [impl(pi:high)|impl(claude:high)]
+=>judge(fable:high) -> review(sonnet:high)^2'
+
+The grammar is sugar only — it must compile to the §3.2 model and validate identically. If it ever wants a feature the
+model lacks, the model wins and the feature waits for a design doc.
+5.4 What stays exactly as it is
+
+beckett plan and the task tree. Inter-task DAGs ( --needs , #N.x , blockedBy promotion) are the
+
+right tool for separate deliverables and keep working unchanged; a plan node may now also carry a
+flow . Flows are intra-task; plans are inter-task. The two compose and do not compete.
+
+Casting doctrine. Presets, the roster, effort envelopes, Fable confirm-first — all untouched. A flow
+references seats; the cast doctrine still decides who may sit in them.
+The worker’s world. Brief in, worktree, scope-guard, steering nudges, done-signal out. A worker
+cannot tell whether it is running under the old dispatcher or the stage manager — that is the
+compatibility invariant the whole migration hangs on.
+
+14 / 20
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+GETTING THERE · THREE REVERSIBLE PHASES
+
+6
+
+Migration off Plane
+Plane provides four things (§1’s observation): issue storage, a state column, comments-astransport, and a board humans can look at. Each gets an explicit replacement, and each
+phase is independently shippable and reversible.
+PLANE CONCEPT
+
+REPLACEMENT
+
+NOTES
+
+Issue (title/body/criteria)
+
+Task record in
+
+already exists and already mirrors
+every ticket store.ts
+
+~/.beckett/tasks.json
+
+Workflow state column
+
+FlowRun cursor + status (§4.1)
+
+Description fence blocks
+Typed fields on the task record
+( beckett-cast/-deps/-project/-branch/-start-state )
+
+strictly more expressive; branchstatus mapping store.ts:141–152
+becomes a projection of the run
+ends the Markdown smuggling;
+parseCast survives only as an
+importer
+
+Comments (steering)
+
+beckett task nudge +
+Discord origin-channel replies
+
+transport was always
+Discord→concierge→Plane→poller;
+this deletes the middle two hops
+and the ~5 s latency
+
+Comments (audit trail)
+
+Run event log + journal
+
+both append-only, both local,
+journal already richer journal.ts
+
+Ticket IDs ( OPS-42 )
+
+Local per-prefix sequence
+
+nextTaskNumber already allocates
+#N store.ts; keep the OPS-N
+surface so journals, history and
+habits survive
+
+blockedBy dependencies
+
+needs in the task tree
+
+already dual-recorded today; the
+local copy becomes primary
+
+Board UI
+
+beckett status DAG view;
+optional read-only web board
+later
+
+the honest loss — see §7.2
+
+0 · Shadow
+
+1 · Flip
+
+2 · Retire
+
+engine interprets built-in flow specs;
+
+run store authoritative; Plane becomes a
+
+delete client/poll/mirror; export Plane
+
+Plane still authoritative; decisions
+
+write-only mirror via advance-outbox;
+
+history to archive JSONL; decommission
+
+diffed engine-vs-dispatcher in logs
+
+steering: Discord/CLI; custom flows unlock
+
+plane.0xbeckett.me
+
+risk ≈ 0 · pure additive
+
+reversible: point poller back
+
+only after weeks of quiet mirror-diff
+
+Fig. 4 — migration phases. Each phase ships alone, proves itself in production, and can be rolled back before the next begins.
+
+6.1 Phase 0 — shadow (engine exists, Plane rules)
+
+Build the interpreter + run store + linter. Compile every incoming ticket’s cast into its equivalent builtin spec (§5.1) and run the engine as a shadow: it receives the same events, folds its own run record, and
+logs any divergence between the edge it would take and the transition the dispatcher actually
+performs. The dispatcher’s switch keeps driving. This phase has no behaviour change at all and
+
+15 / 20
+
+Beckett · Run of Show — a dynamic workflow engine
+
+OPS-151
+
+produces the evidence for the flip: N days of zero-divergence on live traffic — the same shadow-thenflip discipline used for the ambient classifier.
+6.2 Phase 1 — flip (engine rules, Plane mirrors)
+
+The run store becomes authoritative. The dispatcher’s onStateChanged shrinks to an adapter: engine
+edges call the spawn/steer/park/publish primitives directly; a projection maps each run state onto the
+closest legacy Plane column and writes it through the existing advance-outbox — Plane can lag, break or
+404 without touching execution (the outbox already assumes it will advance-outbox.ts). Human state-flips
+on the Plane UI stop being inputs; the sanctioned control surface is the concierge’s verbs
+( task nudge / pause / resume / cancel / courier ), which is where ro actually operates from anyway —
+Discord. Custom flows ( --flow , presets, the grammar) unlock in this phase. Rollback is a config flag:
+point the poller back at Plane and re-arm the switch.
+6.3 Phase 2 — retire
+
+After the mirror has run quiet for a few weeks: export every board to archive JSONL (issues +
+comments, for the historical record), delete src/plane/client.ts / poll.ts and the mirror projection,
+keep cast.ts parsing as a legacy importer, and decommission the Plane instance. The OPS- prefix
+lives on as a local sequence so identifiers stay continuous.
+WHAT DELIBERATELY DOES NOT CHANGE, EVER
+
+Worktree and branch conventions ( beckett/task-N.x ), the scope-guard, done-signal schema, effort
+envelopes, cast presets and the Fable handshake, the journal and its CLI, the publish-outbox and courier
+handoff, beckett plan semantics, and the #N task tree. The blast radius is confined to: who decides the
+next stage (engine vs. Plane-state switch) and where that decision is stored (local run log vs. remote
+column).
+
+16 / 20
+
+Beckett · Run of Show — a dynamic workflow engine
+
+OPS-151
+
+HONESTY · COSTS AND UNKNOWNS
+
+7
+
+Tradeoffs, risks, open questions
+7.1 We are building a workflow engine — the classic trap
+
+Half-built workflow engines are where codebases go to die: they grow expression languages,
+conditionals, sub-flows, and eventually a worse programming language nobody can debug. The
+defence here is structural, not aspirational: four node kinds, closed set; edges carry no predicates
+beyond pass/fail; no data flows through the graph except briefs and diffs; the linter refuses anything
+unbounded; and the bar for a fifth node kind is a design doc like this one. If the algebra ever feels
+cramped, that pressure should produce one new kind, not an expression language.
+7.2 We lose the board
+
+Plane’s genuine value is a glanceable, drag-a-card UI for a human. beckett status plus Discord updates
+cover the operational loop we actually use (ro files, steers and approves from Discord today; the board
+is mostly read). But “mostly” is doing work in that sentence: if the visual board matters, the mitigation
+is a small read-only web view over the run store — a render of the same JSONL, no write path, no
+schema pressure — shipped only if its absence is actually felt. This is the one place the proposal
+subtracts something real; it should be called out to ro as such, not papered over.
+7.3 Fan-out × iteration = cost explosion
+
+A 3-arm bake-off at implement-high is roughly 3× an implement ticket before the judge is paid. Guards:
+per-run budget.usd (checked pre-spawn, §4.3); fanout arms count against the concurrency caps; Fablein-any-seat keeps its confirm handshake; and the concierge’s filing echo prints the worst-case seat
+count ( nodes × maxVisits × arms ) so the expensive shape is priced before it runs, not discovered on the
+spend report. Culturally: presets encode the cheap defaults; exotic flows are typed deliberately.
+7.4 Correctness burdens move in-house
+
+Today Plane’s column is a crude but externally-visible source of truth; tomorrow a local event log is.
+Join deadlocks (an arm that never signals), park/resume races, replay determinism, and cursor/ledger
+consistency become our bugs. Mitigations: the event log is append-only and replay is pure (the same
+property that makes the outboxes trustworthy); wall-clock envelopes already bound every worker so a
+silent arm cannot block a join forever spawn.ts:217–222; and the join/park state machine is small enough
+for exhaustive property tests. This is real engineering cost — it is the price of owning the semantics,
+and it is the same class of machinery (ledgers, outboxes, checkpoint replay) the team has already built
+well three times.
+7.5 Two sources of truth during Phase 1
+
+The mirror is strictly one-directional by design; the moment a human edit on Plane can change
+execution, we have split brain. Enforced by code (mirror writes only) and by doctrine (the Plane UI is
+read-only from the flip onward). The rollback flag keeps the exit open until Phase 2 deletes the
+question.
+
+17 / 20
+
+Beckett · Run of Show — a dynamic workflow engine
+
+OPS-151
+
+7.6 Open questions for ro
+
+1. Board or no board? Is a read-only web view a launch requirement for Phase 1, a later nice-to-have,
+or unnecessary? (My read: later; Discord + beckett status is where the loop actually lives.)
+2. Concierge authority at parks. When a run parks on cap-exhaustion, may the concierge grant one
+extra visit on its own judgment, or is a parked run always a human decision? (I lean: human, always
+— parks are rare and are exactly the moments you’d want to see.)
+3. Grammar vs. JSON as the primary authoring surface. The one-liner (§5.3) is expressive but is a new
+mini-language to maintain; presets + JSON may be enough. Ship the grammar in v1 or hold it?
+4. Should beckett plan fold in eventually? An inter-task DAG is a flow whose worker nodes file subtasks. Unifying is elegant but risks the tarpit (§7.1). I propose: not in v1, revisit once flows have
+months of production shape.
+5. Per-arm steering surface. --node targeting (§4.5) is powerful but chatty in Discord. Is “nudge the
+whole run” enough for v1?
+6. History. Is the Phase 2 JSONL export of old Plane boards sufficient, or do you want OPS/INT history
+queryable (e.g. imported as read-only run records)?
+RECOMMENDATION
+
+Build it in the phase order given, and hold the line on smallness: four node kinds, six seed presets, no
+expression language, board UI deferred. Phase 0 is almost pure addition and produces its own go/no-go
+evidence; the flip is one config flag with a rollback; Plane dies only after it has been demonstrably
+decorative for weeks. The payoff is the exact capability requested — stages, iterations and parallelism
+dictated per task by the concierge at filing time — bought with machinery Beckett already trusts: JSONL
+ledgers, worktrees, casts, and done-signals.
+
+18 / 20
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+A P P E N D I X A · B E H AV I O U R A L E Q U I VA L E N C E
+
+Today’s lifecycles as flow specs
+These three specs are the compatibility contract: at Phase 0/1 cutover, every filing compiles to one of
+them, and the engine must reproduce the current dispatcher’s decisions on each — same spawns, same
+caps, same parks. The constants shown are today’s hardcoded values (§1.3), now merely defaults.
+A.1 — one-pass (today: effort low/medium, tier “self”)
+{ "version": 1,
+"entry": "implement",
+"nodes": {
+"implement": {
+
+A.2 — reviewed (today: effort high/xhigh, tier “fresh”)
+{ "version": 1,
+"entry": "implement",
+"nodes": {
+"implement": {
+
+"kind": "worker",
+"cast": { "harness": "pi",
+"effort": "medium" },
+
+"kind": "worker",
+"cast": { "harness": "pi",
+"effort": "high" },
+
+"onPass": "done",
+"onFail": "park",
+
+"onPass": "review",
+"onFail": "park",
+
+"retries": 3
+// = MAX_IMPLEMENT_RETRIES
+
+"maxVisits": 3,
+// = MAX_REWORK_CYCLES
+"retries": 3
+
+}
+} }
+
+},
+"review": {
+"kind": "gate",
+"by": {
+"cast": { "harness": "claude",
+
+The zero-diff withhold (self-tier finish with no changes →
+route to review instead dispatcher.ts:2283–2293) becomes
+
+"model": "claude-sonnet-5",
+"effort": "high" },
+
+a linter-inserted model gate on this spec — the special case
+turns into visible structure.
+
+"rubric": "criteria-vs-diff"
+},
+"onPass": "done",
+"onFail": "implement",
+"maxFails": 3
+}
+} }
+
+19 / 20
+
+OPS-151
+
+Beckett · Run of Show — a dynamic workflow engine
+
+A.3 — intensive (today: the entire INT board — two enum values, five modules, one Plane project)
+{ "version": 1, "entry": "design", "nodes": {
+"design": {
+"kind": "worker",
+"cast": { "harness": "claude", "model": "claude-opus-4-8", "effort": "high" },
+"artifact": "docs/design/<id>.md",
+"onPass": "completeness", "onFail": "park", "maxVisits": 2
+},
+"completeness": {
+"kind": "gate",
+"by": { "cast": { "harness": "claude", "model": "claude-haiku-4-5", "effort": "low" },
+"rubric": "design-doc completeness" },
+"onPass": "approve", "onFail": "design", "maxFails": 2
+
+// = MAX_DESIGN_CYCLES
+
+"approve": {
+"kind": "gate", "by": "human",
+"onPass": "implement", "onFail": "design", "maxFails": 3
+
+// PARKED: zero tokens
+
+},
+
+},
+"implement": {
+"kind": "worker", "cast": { "harness": "pi", "effort": "medium" },
+"onPass": "review", "onFail": "park", "maxVisits": 3
+},
+"review": {
+"kind": "gate",
+"by": { "cast": { "harness": "claude", "model": "claude-sonnet-5", "effort": "high" },
+"rubric": "criteria-vs-diff" },
+"onPass": "done", "onFail": "implement", "maxFails": 3
+}
+} }
+
+SOURCES & VERIFICATION
+
+All ground-truth claims verified against the working tree at commit 6fac13d (2026-07-12), primarily:
+src/plane/types.ts , cast.ts , client.ts , poll.ts , presets.ts · src/dispatch/dispatcher.ts ,
+spawn.ts , advance-outbox.ts , publish-outbox.ts · src/task/store.ts · src/worker/worktree.ts ·
+src/progress/journal.ts · docs/V3.md · docs/design/int-flow.md (OPS-111) ·
+docs/design/cast-presets.md (OPS-109/110).
+
+Authored by Beckett’s worker seat (Claude Fable 5, high thinking) for OPS-151. Design proposal only — no
+code changes accompany this document.
+
+20 / 20
+
+
