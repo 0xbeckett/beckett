@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Run of Show — replacing Plane with a concierge-authored workflow engine</title>
+<style>
+/* ---------- fonts ---------- */
+@font-face { font-family:"Source Serif 4"; src:url("fonts/source-serif-400.woff2") format("woff2"); font-weight:400; font-style:normal; }
+@font-face { font-family:"Source Serif 4"; src:url("fonts/source-serif-400i.woff2") format("woff2"); font-weight:400; font-style:italic; }
+@font-face { font-family:"Source Serif 4"; src:url("fonts/source-serif-600.woff2") format("woff2"); font-weight:600; font-style:normal; }
+@font-face { font-family:"Source Serif 4"; src:url("fonts/source-serif-700.woff2") format("woff2"); font-weight:700; font-style:normal; }
+@font-face { font-family:"Inter"; src:url("fonts/inter-400.woff2") format("woff2"); font-weight:400; font-style:normal; }
+@font-face { font-family:"Inter"; src:url("fonts/inter-500.woff2") format("woff2"); font-weight:500; font-style:normal; }
+@font-face { font-family:"Inter"; src:url("fonts/inter-600.woff2") format("woff2"); font-weight:600; font-style:normal; }
+@font-face { font-family:"Inter"; src:url("fonts/inter-700.woff2") format("woff2"); font-weight:700; font-style:normal; }
+@font-face { font-family:"JetBrains Mono"; src:url("fonts/jetbrains-mono-400.woff2") format("woff2"); font-weight:400; font-style:normal; }
+@font-face { font-family:"JetBrains Mono"; src:url("fonts/jetbrains-mono-700.woff2") format("woff2"); font-weight:700; font-style:normal; }
+
+/* ---------- palette ---------- */
+:root {
+  --ink:      #1C1917;
+  --ink-soft: #44403A;
+  --muted:    #78716A;
+  --paper:    #FFFFFF;
+  --panel:    #F7F5F0;
+  --panel-2:  #EFEBE2;
+  --line:     #E0DBD1;
+  --accent:   #9A4B1F;   /* burnt sienna */
+  --accent-2: #2F5D50;   /* stage green  */
+  --accent-3: #8C6D1F;   /* ochre        */
+  --bad:      #8C2B2B;
+}
+
+/* ---------- page setup ---------- */
+@page {
+  size: A4;
+  margin: 21mm 18mm 19mm 18mm;
+  @top-left { content: "Beckett · Run of Show — a dynamic workflow engine"; font-family:"Inter"; font-size:6.8pt; letter-spacing:0.08em; color:#78716A; }
+  @top-right { content: "OPS-151"; font-family:"JetBrains Mono"; font-size:6.8pt; color:#78716A; }
+  @bottom-right { content: counter(page) " / " counter(pages); font-family:"Inter"; font-size:7.5pt; color:#78716A; }
+}
+@page cover { margin:0; @top-left{content:none} @top-right{content:none} @bottom-right{content:none} }
+
+* { box-sizing:border-box; margin:0; padding:0; print-color-adjust:exact; -webkit-print-color-adjust:exact; }
+html { font-size:10.1pt; }
+body { font-family:"Source Serif 4", Georgia, serif; color:var(--ink); background:var(--paper); line-height:1.58; text-rendering:optimizeLegibility; }
+
+/* ---------- cover ---------- */
+.cover { page:cover; width:210mm; height:296mm; background:#171310; color:#F5F1E8; position:relative; overflow:hidden; page-break-after:always; }
+.cover-inner { position:absolute; inset:0; padding:26mm 24mm; display:flex; flex-direction:column; }
+.cover .brand { font-family:"Inter"; font-weight:600; font-size:9.5pt; letter-spacing:0.34em; text-transform:uppercase; color:#C9BEA8; }
+.cover .kind { font-family:"JetBrains Mono"; font-size:8pt; color:#8A7F6C; margin-top:5mm; letter-spacing:0.06em; }
+.cover h1 { font-family:"Source Serif 4"; font-weight:700; font-size:34pt; line-height:1.14; margin-top:34mm; max-width:150mm; letter-spacing:-0.01em; }
+.cover h1 em { font-style:italic; color:#D98E5F; }
+.cover .sub { font-family:"Source Serif 4"; font-size:12.5pt; line-height:1.5; color:#BFB6A4; margin-top:9mm; max-width:140mm; }
+.cover .rule { width:34mm; height:1.4mm; background:#9A4B1F; margin-top:10mm; }
+.cover .meta { margin-top:auto; display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6mm; border-top:0.35mm solid #3A332B; padding-top:6mm; }
+.cover .meta div { font-family:"Inter"; font-size:7.6pt; line-height:1.7; color:#8A7F6C; }
+.cover .meta b { display:block; color:#E8E1D3; font-weight:600; font-size:8.4pt; }
+.cover .glyphs { position:absolute; right:-16mm; top:78mm; opacity:0.5; }
+
+/* ---------- structure ---------- */
+main { counter-reset: h2ctr; }
+section.sheet { page-break-before:always; }
+section.sheet.flow { page-break-before:auto; }
+
+h2 { font-family:"Inter"; font-weight:700; font-size:16.5pt; letter-spacing:-0.015em; line-height:1.2; margin:0 0 4.5mm; counter-increment:h2ctr; padding-top:1mm; }
+h2::before { content: counter(h2ctr) ; font-family:"JetBrains Mono"; font-weight:700; font-size:10pt; color:var(--accent); display:block; margin-bottom:1.6mm; }
+h2.nonum::before { content:none; } h2.nonum { counter-increment:none; }
+h3 { font-family:"Inter"; font-weight:600; font-size:10.6pt; letter-spacing:-0.005em; margin:6.5mm 0 2.2mm; break-after:avoid; }
+h3 .tag { color:var(--accent); font-family:"JetBrains Mono"; font-weight:700; font-size:8pt; margin-right:1.5mm; }
+h4 { font-family:"Inter"; font-weight:600; font-size:9pt; margin:4mm 0 1.5mm; break-after:avoid; }
+p { margin:0 0 2.8mm; }
+p.lede { font-size:11.6pt; line-height:1.6; color:var(--ink-soft); margin-bottom:5mm; }
+ul, ol { margin:0 0 3mm 4.5mm; }
+li { margin-bottom:1.4mm; }
+li > ul { margin-top:1.2mm; }
+strong { font-weight:700; }
+em { font-style:italic; }
+a { color:inherit; text-decoration:none; }
+hr.sp { border:none; height:0; margin:4mm 0 0; }
+
+/* code + refs */
+code, .m { font-family:"JetBrains Mono"; font-size:0.82em; background:var(--panel); padding:0.4mm 1.1mm; border-radius:1mm; white-space:nowrap; }
+.ref { font-family:"JetBrains Mono"; font-size:7.2pt; color:var(--muted); white-space:nowrap; }
+pre { font-family:"JetBrains Mono"; font-size:7.6pt; line-height:1.52; background:var(--panel); border:0.3mm solid var(--line); border-left:1mm solid var(--accent); border-radius:1.2mm; padding:3.2mm 3.6mm; margin:3mm 0 3.6mm; white-space:pre-wrap; break-inside:avoid; }
+pre code { background:none; padding:0; font-size:inherit; }
+pre .c { color:var(--muted); } pre .k { color:var(--accent); font-weight:700; } pre .s { color:var(--accent-2); } pre .g { color:#8C6D1F; }
+
+/* tables */
+table { width:100%; border-collapse:collapse; font-family:"Inter"; font-size:7.9pt; line-height:1.42; margin:3mm 0 4mm; break-inside:avoid; }
+th { font-weight:600; text-align:left; font-size:7.3pt; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-soft); border-bottom:0.5mm solid var(--ink); padding:1.6mm 2.4mm 1.2mm 0; }
+td { border-bottom:0.26mm solid var(--line); padding:1.7mm 2.4mm 1.7mm 0; vertical-align:top; }
+td code, th code { font-size:7.2pt; background:var(--panel); }
+tr:last-child td { border-bottom:0.4mm solid var(--line); }
+td.num { font-family:"JetBrains Mono"; }
+
+/* callouts */
+.note { background:var(--panel); border:0.3mm solid var(--line); border-radius:1.6mm; padding:3.2mm 4mm; margin:3.4mm 0 4mm; break-inside:avoid; }
+.note .nt { font-family:"Inter"; font-weight:700; font-size:7.4pt; letter-spacing:0.09em; text-transform:uppercase; color:var(--accent); display:block; margin-bottom:1.4mm; }
+.note.green .nt { color:var(--accent-2); }
+.note.red .nt { color:var(--bad); }
+.note p:last-child { margin-bottom:0; }
+.note p { font-size:9.4pt; }
+
+/* two-col utility */
+.cols { display:grid; grid-template-columns:1fr 1fr; gap:6mm; }
+
+/* figures */
+figure { margin:4mm 0 5mm; break-inside:avoid; }
+figure svg { width:100%; height:auto; display:block; }
+figcaption { font-family:"Inter"; font-size:7.5pt; color:var(--muted); margin-top:1.8mm; }
+figcaption b { color:var(--ink-soft); font-weight:600; }
+
+/* TOC */
+.toc { font-family:"Inter"; margin-top:6mm; }
+.toc .row { display:flex; align-items:baseline; gap:3mm; padding:2.1mm 0; border-bottom:0.26mm solid var(--line); }
+.toc .n { font-family:"JetBrains Mono"; font-weight:700; font-size:8.6pt; color:var(--accent); min-width:7mm; }
+.toc .t { font-weight:600; font-size:10pt; }
+.toc .d { margin-left:auto; font-size:7.8pt; color:var(--muted); text-align:right; max-width:78mm; }
+
+/* section kicker */
+.kicker { font-family:"Inter"; font-weight:600; font-size:7.4pt; letter-spacing:0.22em; text-transform:uppercase; color:var(--muted); margin-bottom:2.2mm; }
+
+.small { font-size:8.6pt; color:var(--ink-soft); }
+.keep { break-inside:avoid; }
+</style>
+</head>
+<body>
+
+<!-- ================= COVER ================= -->
+<div class="cover">
+  <div class="cover-inner">
+    <div class="brand">Beckett</div>
+    <div class="kind">DESIGN PROPOSAL · OPS-151 · --project beckett</div>
+    <svg class="glyphs" width="340" height="340" viewBox="0 0 340 340" fill="none">
+      <circle cx="170" cy="170" r="128" stroke="#2E2721" stroke-width="1.4"/>
+      <circle cx="170" cy="170" r="88" stroke="#2E2721" stroke-width="1.2"/>
+      <circle cx="170" cy="42" r="7" fill="#9A4B1F"/>
+      <circle cx="258" cy="170" r="7" fill="#4A4238"/>
+      <circle cx="170" cy="258" r="7" fill="#4A4238"/>
+      <circle cx="82" cy="170" r="7" fill="#4A4238"/>
+      <path d="M170 49 A121 121 0 0 1 251 170" stroke="#9A4B1F" stroke-width="2.4"/>
+      <circle cx="170" cy="170" r="4.5" fill="#C9BEA8"/>
+    </svg>
+    <h1>Run of Show<br><em>a workflow engine the concierge conducts</em></h1>
+    <div class="sub">A proposal to retire Plane as Beckett&rsquo;s execution backend and replace its one fixed ticket lifecycle with a per-task, concierge-authored workflow: stages, iteration budgets, parallel fan-out and gates composed at filing time — not compiled into the dispatcher.</div>
+    <div class="rule"></div>
+    <div class="meta">
+      <div><b>Author</b>Beckett — worker seat<br>Claude Fable 5 · high</div>
+      <div><b>Requested by</b>ro (owner)<br>Discord · OPS-151</div>
+      <div><b>Date</b>12 July 2026<br>rev 1</div>
+      <div><b>Status</b>Proposal — no code<br>grounded in v3.2 source</div>
+    </div>
+  </div>
+</div>
+<main>
+
+<!-- ================= TOC + TLDR ================= -->
+<section class="sheet flow">
+  <div class="kicker">In one page</div>
+  <h2 class="nonum" style="font-size:20pt">TL;DR</h2>
+  <p class="lede">Every piece of work Beckett takes on today — a copy tweak, a concurrency fix, a self-modification — marches through the same compiled-in pipeline: <code>todo → in_progress → in_review → done</code>, one implement seat, at most one review seat, three rework cycles, one live worker per ticket. That shape lives half in Plane (a remote SaaS ticket board we poll every few seconds) and half in a 3,200-line dispatcher switch statement. Changing it means changing Beckett&rsquo;s source and redeploying: adding <em>one</em> design stage cost us a new board, two new enum values, and surgery in five modules (OPS-111).</p>
+  <p class="lede" style="margin-bottom:2mm">This document proposes making the workflow itself <strong>data</strong>: a small per-task DAG — the <em>run of show</em> — that the concierge writes when it files work. Stages, iteration caps, parallel fan-out, join rules and human gates become fields in a spec, interpreted by a generic engine that keeps everything already proven: worktrees and the task/branch tree, per-stage casting, review gates, the journal, the courier, steering. Plane is first demoted to a read-only mirror, then retired.</p>
+
+  <div class="toc">
+    <div class="row"><span class="n">1</span><span class="t">Ground truth — how Plane runs Beckett today</span><span class="d">poller → dispatcher → spawn; states, casts, caps, journal, courier — with file:line receipts</span></div>
+    <div class="row"><span class="n">2</span><span class="t">The problem — one lifecycle, worn as a straitjacket</span><span class="d">six concrete places the fixed shape hurts, incl. the INT case study</span></div>
+    <div class="row"><span class="n">3</span><span class="t">The proposal — a per-task flow spec</span><span class="d">four node kinds; today&rsquo;s lifecycles fall out as two tiny specs</span></div>
+    <div class="row"><span class="n">4</span><span class="t">Execution semantics</span><span class="d">how a stage runs, how loops terminate, how parallel branches join, crash recovery</span></div>
+    <div class="row"><span class="n">5</span><span class="t">The authoring surface</span><span class="d">what the concierge writes at filing time; flow presets; what I&rsquo;d type for you</span></div>
+    <div class="row"><span class="n">6</span><span class="t">Migration off Plane</span><span class="d">three reversible phases; what replaces states, comments, IDs and the board UI</span></div>
+    <div class="row"><span class="n">7</span><span class="t">Tradeoffs, risks, open questions</span><span class="d">the workflow-engine trap, losing the board, cost blow-ups — and the honest unknowns</span></div>
+    <div class="row"><span class="n">A</span><span class="t">Appendix — today&rsquo;s lifecycles as flow specs</span><span class="d">byte-for-byte behavioural equivalence at cutover</span></div>
+  </div>
+
+  <div class="note" style="margin-top:6mm">
+    <span class="nt">How to read this</span>
+    <p>Everything in §1 is fact, verified against the working tree at commit <code>6fac13d</code> with <span class="ref">file:line</span> receipts. Everything from §3 on is proposal. The two legacy lifecycles reappear in Appendix A as flow specs, which is the backward-compatibility argument in one page: if the engine can run <em>those two specs</em> identically, cutover changes nothing until we ask it to.</p>
+  </div>
+</section>
+
+<!-- ================= 1. GROUND TRUTH ================= -->
+<section class="sheet">
+  <div class="kicker">What exists · verified against source</div>
+  <h2>Ground truth — how Plane runs Beckett today</h2>
+
+  <p>Beckett&rsquo;s execution backend is a self-hosted <strong>Plane</strong> instance (<code>plane.0xbeckett.me</code>). The concierge files work as Plane issues; a poller diffs the board into events; a dispatcher turns events into worker processes in git worktrees. One paragraph of architecture, five subsystems of detail.</p>
+
+  <figure>
+  <svg viewBox="0 0 760 236" xmlns="http://www.w3.org/2000/svg" font-family="Inter" font-size="10.5">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#44403A"/></marker>
+      <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#9A4B1F"/></marker>
+    </defs>
+    <!-- Discord -->
+    <rect x="8" y="86" width="92" height="46" rx="5" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+    <text x="54" y="106" text-anchor="middle" font-weight="600">Discord</text>
+    <text x="54" y="120" text-anchor="middle" font-size="8.5" fill="#78716A">owner ↔ Beckett</text>
+    <!-- Concierge -->
+    <rect x="138" y="86" width="104" height="46" rx="5" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+    <text x="190" y="106" text-anchor="middle" font-weight="600">Concierge</text>
+    <text x="190" y="120" text-anchor="middle" font-size="8.5" fill="#78716A">files &amp; steers tickets</text>
+    <!-- Plane -->
+    <rect x="286" y="52" width="170" height="116" rx="5" fill="#171310" stroke="#171310"/>
+    <text x="371" y="74" text-anchor="middle" font-weight="700" fill="#F5F1E8">Plane (SaaS board)</text>
+    <text x="371" y="90" text-anchor="middle" font-size="8.5" fill="#C9BEA8">issues · workflow states · comments</text>
+    <rect x="300" y="102" width="142" height="22" rx="3" fill="#2A231D"/>
+    <text x="371" y="117" text-anchor="middle" font-size="8.5" fill="#D98E5F" font-family="JetBrains Mono">beckett-cast · beckett-deps</text>
+    <rect x="300" y="130" width="142" height="22" rx="3" fill="#2A231D"/>
+    <text x="371" y="145" text-anchor="middle" font-size="8.5" fill="#D98E5F" font-family="JetBrains Mono">state_map per board</text>
+    <!-- Poller -->
+    <rect x="500" y="52" width="108" height="46" rx="5" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+    <text x="554" y="71" text-anchor="middle" font-weight="600">PlanePoller</text>
+    <text x="554" y="86" text-anchor="middle" font-size="8.5" fill="#78716A">diff → PollEvent[]</text>
+    <!-- Dispatcher -->
+    <rect x="500" y="122" width="108" height="46" rx="5" fill="#F7F5F0" stroke="#9A4B1F" stroke-width="1.6"/>
+    <text x="554" y="141" text-anchor="middle" font-weight="600">Dispatcher</text>
+    <text x="554" y="156" text-anchor="middle" font-size="8.5" fill="#78716A">state → action table</text>
+    <!-- Workers -->
+    <rect x="652" y="104" width="100" height="82" rx="5" fill="#F7F5F0" stroke="#1C1917" stroke-width="1.3"/>
+    <text x="702" y="124" text-anchor="middle" font-weight="600">Workers</text>
+    <text x="702" y="139" text-anchor="middle" font-size="8.5" fill="#78716A">git worktrees</text>
+    <text x="702" y="153" text-anchor="middle" font-size="8.5" fill="#78716A">claude / codex / pi</text>
+    <text x="702" y="171" text-anchor="middle" font-size="8" font-family="JetBrains Mono" fill="#9A4B1F">done-signal JSON</text>
+    <!-- bottom rail -->
+    <rect x="286" y="196" width="150" height="32" rx="5" fill="#FFFFFF" stroke="#E0DBD1" stroke-width="1.2"/>
+    <text x="361" y="216" text-anchor="middle" font-size="9" fill="#44403A">journal  ~/.beckett/journal/*.log</text>
+    <rect x="472" y="196" width="136" height="32" rx="5" fill="#FFFFFF" stroke="#E0DBD1" stroke-width="1.2"/>
+    <text x="540" y="216" text-anchor="middle" font-size="9" fill="#44403A">publish-outbox → GitHub</text>
+    <rect x="8" y="196" width="242" height="32" rx="5" fill="#FFFFFF" stroke="#E0DBD1" stroke-width="1.2"/>
+    <text x="129" y="216" text-anchor="middle" font-size="9" fill="#44403A">task tree  ~/.beckett/tasks.json  (#N · #N.x · needs)</text>
+    <!-- arrows -->
+    <line x1="100" y1="109" x2="136" y2="109" stroke="#44403A" stroke-width="1.3" marker-end="url(#ar)"/>
+    <line x1="242" y1="102" x2="284" y2="94" stroke="#44403A" stroke-width="1.3" marker-end="url(#ar)"/>
+    <text x="258" y="88" font-size="8" fill="#78716A">REST</text>
+    <line x1="456" y1="75" x2="498" y2="75" stroke="#44403A" stroke-width="1.3" marker-end="url(#ar)"/>
+    <text x="462" y="66" font-size="8" fill="#78716A">poll ~5 s</text>
+    <line x1="554" y1="98" x2="554" y2="120" stroke="#9A4B1F" stroke-width="1.5" marker-end="url(#ar2)"/>
+    <line x1="608" y1="145" x2="650" y2="145" stroke="#9A4B1F" stroke-width="1.5" marker-end="url(#ar2)"/>
+    <text x="613" y="137" font-size="8" fill="#9A4B1F">spawn</text>
+    <path d="M500 158 Q 460 178 436 176" stroke="#44403A" stroke-width="1.2" fill="none" marker-end="url(#ar)"/>
+    <path d="M652 178 Q 630 196 610 204" stroke="#44403A" stroke-width="1.2" fill="none" marker-end="url(#ar)"/>
+    <path d="M508 122 Q 470 108 458 104" stroke="#44403A" stroke-width="1.2" fill="none" marker-end="url(#ar)"/>
+    <text x="452" y="120" font-size="8" fill="#78716A">setState / comment</text>
+  </svg>
+  <figcaption><b>Fig. 1 — the v3 loop.</b> The concierge writes to Plane; the poller diffs Plane into events; the dispatcher spawns workers and writes state back. All durable local artifacts (task tree, journal, outboxes) already live outside Plane.</figcaption>
+  </figure>
+
+  <h3><span class="tag">1.1</span>The state machine and its enum</h3>
+  <p><code>TicketState</code> is a fixed eight-value union <span class="ref">src/plane/types.ts:26</span> — <code>backlog</code>, <code>todo</code>, <code>design</code>, <code>design_review</code>, <code>in_progress</code>, <code>in_review</code>, <code>done</code>, <code>cancelled</code> — with <code>done</code>/<code>cancelled</code> terminal <span class="ref">types.ts:39</span>. Each Plane board carries a <code>state_map</code> renaming these onto its columns <span class="ref">src/config.ts:129</span>. The dispatcher consumes poll events through one hardcoded dispatch table <span class="ref">src/dispatch/dispatcher.ts:1003–1062</span>:</p>
+
+  <table>
+    <tr><th style="width:26%">Event / state entered</th><th style="width:30%">Guard</th><th>Action</th></tr>
+    <tr><td><code>design</code></td><td>INT board only, no live worker</td><td>spawn stage <code>design</code></td></tr>
+    <tr><td><code>in_progress</code></td><td>no live worker</td><td>spawn stage <code>implement</code></td></tr>
+    <tr><td><code>in_review</code></td><td>no publish hold, no live worker</td><td>spawn stage <code>review</code></td></tr>
+    <tr><td><code>done</code></td><td>—</td><td>reap · drain orphaned steers · <code>promoteDependents()</code></td></tr>
+    <tr><td><code>todo</code> / <code>backlog</code> / <code>design_review</code></td><td>—</td><td>park: abort+reap, commit WIP, keep worktree</td></tr>
+    <tr><td><code>cancelled</code></td><td>—</td><td>abort · reap · dispose</td></tr>
+    <tr><td><code>comment_added</code></td><td>live worker, author ≠ Beckett</td><td><code>handle.nudge(body)</code> — steering</td></tr>
+  </table>
+
+  <p>Stage names are string literals switched on in three places: the spawn table above, <code>castFor()</code> <span class="ref">dispatcher.ts:1998–2005</span> and the worker-done router <span class="ref">dispatcher.ts:2152–2161</span> (<code>design</code>, <code>design_check</code>, <code>implement</code>, <code>review</code>). A new stage is therefore a source change in at least three switch statements plus the enum, the poller&rsquo;s recovery list, and every board&rsquo;s <code>state_map</code>.</p>
+
+  <h3><span class="tag">1.2</span>Casting, effort and the review gate</h3>
+  <p>Casting is per-stage: a ticket description carries a fenced <code>beckett-cast</code> JSON block mapping stage name → <code>HarnessSpec</code> (<code>{harness, model, effort, reviewTier}</code>) <span class="ref">src/plane/cast.ts:29–59</span>. The <code>Casting</code> record is deliberately open-ended — arbitrary stage names already type-check <span class="ref">src/plane/types.ts:71–75</span> — but only the four hardcoded stage strings are ever spawned. Two consequential rules:</p>
+  <ul>
+    <li><strong>The review gate is inferred from a model knob.</strong> <code>reviewTierFor()</code> <span class="ref">dispatcher.ts:2475–2479</span>: implement effort <code>low|medium</code> → <code>self</code> (one pass, straight to done); <code>high|xhigh|unset</code> → <code>fresh</code> (spawn an adversarial reviewer). An explicit <code>reviewTier</code> field overrides — a patch bolted on precisely because effort was overloaded.</li>
+    <li><strong>Effort also sets the envelope</strong> — turn caps and wall-clock via <code>ENVELOPE_BY_EFFORT</code> <span class="ref">src/dispatch/spawn.ts:217–222</span> (low 15 turns/10 min … xhigh 100 turns/60 min).</li>
+  </ul>
+  <p>Named cast presets live in <code>~/.beckett/presets.json</code>, hot-reloaded on every filing <span class="ref">src/plane/presets.ts:76–112</span> — a precedent this proposal leans on: <em>per-task behaviour as user-editable data worked</em>.</p>
+
+  <h3><span class="tag">1.3</span>Iteration policy: four global constants</h3>
+  <table>
+    <tr><th>Loop</th><th style="width:22%">Cap</th><th>On exhaustion</th></tr>
+    <tr><td>review fail → re-implement (&ldquo;rework&rdquo;)</td><td class="num">MAX_REWORK_CYCLES = 3 <span class="ref">dispatcher.ts:199</span></td><td>comment, park in <code>in_review</code> for a human</td></tr>
+    <tr><td>implement crash/timeout retry</td><td class="num">MAX_IMPLEMENT_RETRIES = 3 <span class="ref">dispatcher.ts:209</span></td><td>publish WIP, move to <code>todo</code></td></tr>
+    <tr><td>reviewer infra failure</td><td class="num">MAX_REVIEW_INFRA_RETRIES = 1 <span class="ref">dispatcher.ts:212</span></td><td>park in <code>in_review</code></td></tr>
+    <tr><td>design ↔ completeness check</td><td class="num">MAX_DESIGN_CYCLES = 2 <span class="ref">dispatcher.ts:202</span></td><td>escalate to <code>design_review</code> with ⚠ note</td></tr>
+  </table>
+  <p>These are compile-time constants. No ticket can ask for one shot, or six; the concierge&rsquo;s only lever over iteration is not filing the work.</p>
+
+  <h3><span class="tag">1.4</span>One worker per ticket, worktrees, done-signals</h3>
+  <p>The dispatcher enforces <strong>at most one live worker per ticket</strong> (the <code>workers</code> map, staffing dedup and FIFO pending queue <span class="ref">dispatcher.ts:450, 1313–1379</span>) under a global <code>max_workers</code> cap. A spawn allocates a persistent worktree at <code>&lt;repo&gt;/.beckett/worktrees/&lt;id&gt;</code> on branch <code>beckett/task-N[.x]</code>, installs the scope-guard and the done-signal schema, captures the review base SHA on first implement <span class="ref">dispatcher.ts:1573–1586</span>, and periodically checkpoint-commits live work (OPS-125) <span class="ref">dispatcher.ts:640–709</span>. Workers finish by emitting a structured done-signal <code>{status: complete|blocked|partial, summary, filesChanged, checksRun, blockedReason}</code> <span class="ref">spawn.ts:198–209</span> — the single edge the state machine branches on.</p>
+
+  <h3><span class="tag">1.5</span>Steering, journal, courier, task tree</h3>
+  <ul>
+    <li><strong>Steering.</strong> A human comment on an in-flight ticket becomes a live <code>nudge</code> (receipts: delivered / queued / will-restart / dropped); with no live worker it is buffered in <code>pendingSteers</code>, persisted, and folded into the next worker&rsquo;s brief <span class="ref">dispatcher.ts:1070–1158, 1609–1635</span>. Plane comments are the transport; Discord is where the human actually typed.</li>
+    <li><strong>Journal.</strong> An append-only per-ticket log under <code>~/.beckett/journal/&lt;ticket&gt;.log</code>, fed fire-and-forget from worker events, read on demand via <code>beckett journal &lt;ticket&gt; --tail N</code> <span class="ref">src/progress/journal.ts</span>. Already fully local; already richer than Plane&rsquo;s comment trail.</li>
+    <li><strong>Courier / publish.</strong> Finishing a ticket publishes to GitHub via a durable JSONL outbox with 1 m/5 m/30 m retries; <code>dispatcher.courier(id)</code> hands exclusive publish ownership to a human <span class="ref">src/dispatch/publish-outbox.ts, dispatcher.ts:831–839</span>. Plane state writes themselves go through a second durable outbox (<code>advance-outbox</code>) because remote writes fail often enough to need one <span class="ref">src/dispatch/advance-outbox.ts</span>.</li>
+    <li><strong>Task tree.</strong> The user-facing <code>#N</code> / <code>#N.x</code> tree with <code>needs</code> dependencies lives in <code>~/.beckett/tasks.json</code> — a local, locked, versioned registry that already mirrors every Plane state into a branch status (<code>backlog→waiting, … in_review→review</code>) <span class="ref">src/task/store.ts:141–152</span>. Cross-ticket DAG promotion (<code>blockedBy</code> → promote on done) is dispatcher logic, not Plane&rsquo;s <span class="ref">dispatcher.ts:2889–2926</span>.</li>
+  </ul>
+
+  <div class="note green">
+    <span class="nt">The load-bearing observation</span>
+    <p>Plane contributes exactly four things: issue storage, a state column per ticket, comments-as-transport, and a human-viewable board. Everything Beckett actually <em>runs on</em> — worktrees, casting, envelopes, done-signals, steering buffers, journal, outboxes, the #N tree, DAG promotion — is already local, already durable, and already ours. The migration in §6 is small precisely because of this.</p>
+  </div>
+</section>
+</main></body></html>
