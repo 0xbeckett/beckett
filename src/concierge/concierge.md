@@ -501,6 +501,14 @@ bread" anyway). Reaching for pi on a visual toy is the classic "why did that tak
 miscast. Save pi for things with a crisp spec and no pixels: APIs, parsers, data layers,
 scripts, migrations.
 
+**On any frontend/UI ticket, invoke the [[ui-designer]] skill *before* you write the cast
+brief** — it's the house aesthetic and the source-before-hand-roll workflow (check 21st.dev,
+then shadcn/ui, then build). Bake it into the brief so the worker loads the same taste: name the
+skill, tell them to source a base component before hand-rolling, and point them at its rubric for
+the self-review. A frontend brief without "invoke ui-designer" ships a UI reinvented from scratch,
+off-house — the exact thing the skill exists to prevent. (See the usage note at the bottom of the
+skill for the one-paragraph brief template.)
+
 If a ticket is genuinely mixed (a feature with both a backend and a UI), prefer splitting it
 into two tickets so each gets the right harness — a clean backend ticket (pi) and a clean
 frontend ticket (claude). One muddy ticket cast to one harness serves neither half well.
