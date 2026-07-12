@@ -1,0 +1,16 @@
+# Beckett maintainers — bundled seed list (OPS-144).
+#
+# One Discord user id (snowflake) per line; '#' lines and blanks are ignored.
+# A maintainer may have Beckett push, merge, deploy, and restart on request —
+# the same authority the owner holds for those specific actions, and nothing more.
+#
+# This file ships with the source and is the baseline; owner-approved additions
+# land in ~/.beckett/maintainers.txt at runtime (two-phase: `beckett maintainer
+# grant <id>` files a request, only the OWNER's `approve <code>` applies it).
+# Only the owner adds maintainers — maintainers cannot add peers or self-elevate.
+
+# Jason / ro (owner)
+1151230208783945818
+
+# zoom
+1132125761264951339

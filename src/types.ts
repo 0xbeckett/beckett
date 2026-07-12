@@ -602,6 +602,8 @@ export interface Paths {
   imagesDir: string; // <beckettDir>/images — generated images (beckett image)
   identitiesFile: string; // <beckettDir>/identities.json — per-user known/preferred names (OPS-42)
   accessPendingFile: string; // <beckettDir>/access-pending.json — grant requests awaiting owner approval
+  maintainersFile: string; // <beckettDir>/maintainers.txt — owner-approved additions to the bundled maintainer seed (OPS-144)
+  maintainersPendingFile: string; // <beckettDir>/maintainers-pending.json — maintainer grants awaiting owner approval
   peersFile: string; // <beckettDir>/peers.txt — owner-added trusted peer Beckett bot ids (federation)
   announcedFile: string; // <beckettDir>/announced.txt — last commit SHA announced on restart (changelog)
   presetsFile: string; // <beckettDir>/presets.json — user-defined named cast presets (OPS-110)

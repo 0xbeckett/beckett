@@ -84,6 +84,8 @@ export function buildPaths(config: Config, env: PathEnv = process.env): Paths {
     imagesDir: join(beckettDir, "images"),
     identitiesFile: join(beckettDir, "identities.json"),
     accessPendingFile: join(beckettDir, "access-pending.json"),
+    maintainersFile: join(beckettDir, "maintainers.txt"),
+    maintainersPendingFile: join(beckettDir, "maintainers-pending.json"),
     peersFile: join(beckettDir, "peers.txt"),
     announcedFile: join(beckettDir, "announced.txt"),
     presetsFile: join(beckettDir, "presets.json"),
