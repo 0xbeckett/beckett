@@ -219,20 +219,27 @@ test("computer-use cannot borrow the profile outside an authenticated role-beari
   expect(runs).toBe(0);
 });
 
-test("browser access accepts the configured role or the approved user and nothing else", () => {
-  expect(browserAccessAllowed(USER, [BROWSER_OPERATOR_ROLE_ID], BROWSER_OPERATOR_ROLE_ID)).toBe(true);
-  expect(browserAccessAllowed(BROWSER_OPERATOR_USER_ID, [], BROWSER_OPERATOR_ROLE_ID)).toBe(true);
-  expect(browserAccessAllowed(USER, [], BROWSER_OPERATOR_ROLE_ID)).toBe(false);
+test("browser access accepts the configured role or a maintainer and nothing else", () => {
+  const maintainers = new Set([MAINTAINER]);
+  expect(browserAccessAllowed(USER, [BROWSER_OPERATOR_ROLE_ID], BROWSER_OPERATOR_ROLE_ID, maintainers)).toBe(true);
+  expect(browserAccessAllowed(MAINTAINER, [], BROWSER_OPERATOR_ROLE_ID, maintainers)).toBe(true);
+  expect(browserAccessAllowed(USER, [], BROWSER_OPERATOR_ROLE_ID, maintainers)).toBe(false);
+  expect(browserAccessAllowed(MAINTAINER, [], BROWSER_OPERATOR_ROLE_ID, new Set())).toBe(false);
 });
 
-test("the approved user can start computer-use from a role-free Discord mention", async () => {
-  const { concierge } = harness({ replyViaCli: false, turnText: "", quickOnAsk: true });
+test("a maintainer can start computer-use from a role-free Discord mention", async () => {
+  const { concierge } = harness({
+    replyViaCli: false,
+    turnText: "",
+    quickOnAsk: true,
+    dir: dirWithMaintainer(MAINTAINER),
+  });
   const runs: { channelId: string | null | undefined; requesterId: string | null | undefined }[] = [];
   concierge.setQuickRunner({
     agents: () => [],
     run: async (_agent, _task, channelId, requesterId) => {
       runs.push({ channelId, requesterId });
-      return { detached: true, runId: "approved-user-run" };
+      return { detached: true, runId: "maintainer-run" };
     },
     resume: async () => {},
     stats: () => ({ running: 0, waiting: 0, runs: [] }),
@@ -240,10 +247,10 @@ test("the approved user can start computer-use from a role-free Discord mention"
   });
   await concierge.onMessage({
     ...mention(),
-    userId: BROWSER_OPERATOR_USER_ID,
+    userId: MAINTAINER,
     roleIds: [],
   });
-  expect(runs).toEqual([{ channelId: CHAN, requesterId: BROWSER_OPERATOR_USER_ID }]);
+  expect(runs).toEqual([{ channelId: CHAN, requesterId: MAINTAINER }]);
 });
 
 test("Beckett ownership alone does not bypass the browser role", async () => {
@@ -539,8 +546,12 @@ test("the initiating user must still hold the configured browser role when answe
   expect(posts.at(-1)?.text).toContain(BROWSER_OPERATOR_ROLE_ID);
 });
 
-test("the approved browser user can answer without the browser role", async () => {
-  const { concierge, posts, deletedMessages } = harness({ replyViaCli: false, turnText: "must not run" });
+test("a maintainer can answer without the browser role", async () => {
+  const { concierge, posts, deletedMessages } = harness({
+    replyViaCli: false,
+    turnText: "must not run",
+    dir: dirWithMaintainer(MAINTAINER),
+  });
   const resumed: { runId: string; answer: string }[] = [];
   concierge.setQuickRunner({
     agents: () => [],
@@ -550,13 +561,13 @@ test("the approved browser user can answer without the browser role", async () =
     stopAll: async () => {},
   } as QuickRunner);
   const questionId = await concierge.notifyQuickQuestion(
-    browserRun({ requesterId: BROWSER_OPERATOR_USER_ID }),
+    browserRun({ requesterId: MAINTAINER }),
     { text: "Which plan?", screenshot: "/tmp/question.png" },
   );
   await concierge.onMessage({
     ...mention(),
-    messageId: "approved-user-answer",
-    userId: BROWSER_OPERATOR_USER_ID,
+    messageId: "maintainer-answer",
+    userId: MAINTAINER,
     roleIds: [],
     content: "Pro",
     mentionsBot: false,
@@ -564,7 +575,7 @@ test("the approved browser user can answer without the browser role", async () =
     authorIsBot: false,
   });
   expect(resumed).toEqual([{ runId: "browser-1", answer: "Pro" }]);
-  expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "approved-user-answer" });
+  expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "maintainer-answer" });
   expect(posts.at(-1)?.text).toContain("Continuing from that page");
 });
 
