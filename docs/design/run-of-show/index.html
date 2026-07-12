@@ -1170,7 +1170,7 @@
 <section class="sheet">
   <div class="rh"><span>Beckett &middot; Run of Show &mdash; a dynamic workflow engine</span><span>OPS-152</span></div>
   <h2 style="margin-top:6mm"><span class="n">4.4</span>The run-event vocabulary &mdash; closed, like the node algebra</h2>
-  <p>Every durable fact about a run is one of these nineteen events. The fold (&sect;5.1), the Herald&rsquo;s
+  <p>Every durable fact about a run is one of these twenty events. The fold (&sect;5.1), the Herald&rsquo;s
   routing (&sect;6.3), <code>beckett status</code>, and the simulations in &sect;7 all read from this single
   vocabulary &mdash; there is no second, informal channel.</p>
   <table class="compact">
@@ -1799,7 +1799,7 @@
 14:06:03 run_done          {outcome: done, seats: 1, spend: $0.14, wallClock: 3m52s}
 14:06:09 <span class="k">status → #ops-tickets thread:</span> <span class="s">"#61 done in one pass — journal tail fixed, test added,
                             $0.14. Branch beckett/task-61 queued to publish."</span></pre>
-  <p>Total: one seat, four minutes, six status-tier words of human attention. The point of Simulation A
+  <p>Total: one seat, four minutes, one status-tier sentence of human attention. The point of Simulation A
   is what it <em>doesn&rsquo;t</em> show: no review seat was spawned because the spec said so out loud, not
   because a model knob implied it; and if this had been rev-1&rsquo;s engine, lines
   <code>worker_ready</code> and both <code>progress_noted</code> rollups simply would not exist &mdash; the run
@@ -1921,7 +1921,7 @@
 
   <div class="callout">
     <div class="ct">What the three simulations prove together</div>
-    <p>Every line above is expressible in the nineteen-event vocabulary of &sect;4.4 &mdash; no simulation
+    <p>Every line above is expressible in the twenty-event vocabulary of &sect;4.4 &mdash; no simulation
     needed an event the model lacks, which is the paper-stage equivalent of a passing integration
     test. A: defaults stay invisible and cheap. B: parallelism is worktrees + ordinary merges, priced
     at filing. C: failure is loud, bounded, and recoverable from a checkpoint that is never more than
@@ -2133,7 +2133,7 @@ beckett task file --title "…" --project foo --channel &lt;id&gt; \
   here is structural, not aspirational: four node kinds, closed set; edges carry no predicates beyond
   pass/fail; no data flows through the graph except briefs and diffs; the linter refuses anything
   unbounded; and the bar for a fifth node kind is a design doc like this one. Rev 2 extends the same
-  fence to the new surfaces: nineteen events, ten alarms, three announcement tiers &mdash; all closed
+  fence to the new surfaces: twenty events, ten alarms, three announcement tiers &mdash; all closed
   vocabularies. If any algebra ever feels cramped, that pressure should produce one new member, not an
   expression language.</p>
 
@@ -2226,7 +2226,7 @@ beckett task file --title "…" --project foo --channel &lt;id&gt; \
   <div class="callout">
     <div class="ct">Recommendation</div>
     <p>Build it in the phase order given, and hold the line on smallness: four node kinds, six seed
-    presets, nineteen events, three announcement tiers, no expression language, board UI deferred.
+    presets, twenty events, three announcement tiers, no expression language, board UI deferred.
     Phase 0 is almost pure addition and produces its own go/no-go evidence twice over &mdash; the
     zero-divergence log for the interpreter, and a quarter of Sentinel/Herald service on the
     <em>old</em> engine before anything depends on them; the flip is one config flag with a rollback;
