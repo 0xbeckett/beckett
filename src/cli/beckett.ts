@@ -34,6 +34,7 @@ import { parseSince, readSpendLedger, summarizeSpend } from "../spend.ts";
 import { TaskStore, displayTaskName, normalizeBranchRef, normalizeTaskNumber } from "../task/store.ts";
 import { startTaskBranch } from "./task-start.ts";
 import { quickDetachedMessage } from "./quick-output.ts";
+import { formatDispatchTrace, readDispatchEvents } from "../dispatch/events.ts";
 
 const config = loadConfig();
 const paths = buildPaths(config);
@@ -1158,8 +1159,16 @@ async function main(): Promise<void> {
   // PLANE_API_TOKEN rides process.env, never config. Imported dynamically so the rest of the
   // CLI keeps working while `src/plane/client.ts` is built in parallel.
   if (group === "ticket") {
-    const { createPlaneClient } = await import("../plane/client.ts");
     const { _, flags } = parse(rest);
+    // OPS-167: forensic trace is intentionally a direct local JSONL read, not a daemon/Plane
+    // request — it remains available while the dispatcher is wedged or after a restart.
+    if (sub === "trace") {
+      const id = _[0];
+      if (!id) fail("usage: beckett ticket trace <id>");
+      const path = flags.path ? String(flags.path) : join(paths.eventsDir, "dispatch.jsonl");
+      out(formatDispatchTrace(readDispatchEvents(path, id), id));
+    }
+    const { createPlaneClient } = await import("../plane/client.ts");
     if (flags.intensive && flags.board && String(flags.board).toLowerCase() !== "int") {
       fail("--intensive selects the INT board; do not combine it with a different --board");
     }
@@ -1274,7 +1283,7 @@ async function main(): Promise<void> {
       if (!ticket) fail(`no such ticket: ${id}`);
       out(ticket);
     }
-    fail("usage: beckett ticket create|comment|state|list|show|restaff|courier <...> (use --board int or --intensive for intensive tickets)");
+    fail("usage: beckett ticket create|comment|state|list|show|trace|restaff|courier <...> (use --board int or --intensive for intensive tickets)");
   }
 
   // ── preset (in-process: inspect the user-defined cast presets in ~/.beckett/presets.json) ──
@@ -1635,7 +1644,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] | memory recall|remember|maintain");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] | memory recall|remember|maintain");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

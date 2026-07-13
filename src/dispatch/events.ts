@@ -75,7 +75,8 @@ export class DispatchEventBus {
     }
     if (this.options.liveSink) {
       queueMicrotask(() => {
-        Promise.resolve(this.options.liveSink!(event)).catch((error) => this.options.onSinkError?.(error));
+        // Start with a resolved promise so a synchronously throwing sink is also contained.
+        Promise.resolve().then(() => this.options.liveSink!(event)).catch((error) => this.options.onSinkError?.(error));
       });
     }
     return event;

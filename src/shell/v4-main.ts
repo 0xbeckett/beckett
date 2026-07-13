@@ -297,6 +297,10 @@ async function boot(): Promise<BootedSystem> {
     progress: concierge.progressSink(),
     advanceOutboxPath: join(beckettDir, "advance-outbox.jsonl"),
     publishOutboxPath: join(beckettDir, "publish-outbox.jsonl"),
+    // OPS-167: append before relaying to Discord. `postDispatchEvent` is deliberately not awaited
+    // by the bus, so gateway outages degrade to an on-disk timeline rather than blocking dispatch.
+    dispatchEventsPath: join(paths.eventsDir, "dispatch.jsonl"),
+    dispatchLiveSink: (event) => concierge.postDispatchEvent(event),
     runtimeStatePath: join(beckettDir, "dispatcher-state.json"),
     spendLedgerPath: paths.spend,
     // Harness health probe (issue #17): a dead harness (binary gone, login expired) becomes one

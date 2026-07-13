@@ -1365,7 +1365,12 @@ export class Concierge {
    * awaits this promise, so a disconnected Discord gateway cannot stall workers or Plane writes.
    */
   async postDispatchEvent(event: DispatchEvent): Promise<void> {
-    await this.gateway.post(DISPATCH_EVENT_CHANNEL_ID, formatDispatchEvent(event), { singleMessage: true });
+    await this.gateway.post(DISPATCH_EVENT_CHANNEL_ID, formatDispatchEvent(event), {
+      singleMessage: true,
+      // Timeline durability is the event bus's JSONL; don't accumulate an unbounded Discord
+      // queue during an outage or make the sink a recovery dependency.
+      queueIfOffline: false,
+    });
   }
 
   /** Wire the dispatcher levers (v4-main, after the dispatcher exists). See {@link dispatcherOps}. */

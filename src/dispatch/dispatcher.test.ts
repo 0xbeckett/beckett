@@ -262,6 +262,7 @@ function newDispatcher(
     advanceOutboxPath?: string;
     publishOutboxPath?: string;
     runtimeStatePath?: string;
+    dispatchEventsPath?: string;
     preflight?: (harness: string) => Promise<{ ok: boolean; problems: string[] }>;
   } = {},
 ) {
@@ -293,6 +294,26 @@ beforeEach(() => {
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────────────────
+describe("dispatch event feed (OPS-167)", () => {
+  test("persists stage transitions before a worker can finish", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-events-"));
+    try {
+      const path = join(dir, "dispatch.jsonl");
+      const { d } = newDispatcher(2, { dispatchEventsPath: path });
+      const ticket = makeTicket();
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      const rows = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(rows.every((row) => row.ticketId === ticket.id && typeof row.branchRef === "string" && typeof row.elapsedMs === "number")).toBe(true);
+      expect(rows.some((row) => row.stage === "repo" && row.outcome === "passed")).toBe(true);
+      expect(rows.some((row) => row.stage === "worktree" && row.outcome === "passed")).toBe(true);
+      expect(rows.some((row) => row.stage === "implement" && row.outcome === "started")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("INT intensive flow", () => {
   test("Design spawns its cast, checks the document, then parks at Review (Design)", async () => {
     const { d, client } = newDispatcher();
