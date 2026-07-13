@@ -421,6 +421,14 @@ test("root CDP counts raw-target downloads once, caps their files, and restores 
       }
     `);
     expect(attempted.events.join("\n")).toContain("download count exceeded 2");
+    // Tiny transfers can complete before Browser.cancelDownload lands; the guard then deletes
+    // the landed file on the completion event, ~100ms deferred. Wait for that cleanup rather
+    // than racing it — the invariant is that excess files do not PERSIST, not that the cancel
+    // RPC always outruns a 16-byte download.
+    const cleanupDeadline = Date.now() + 5_000;
+    while (readdirSync(redirectDir).length > 2 && Date.now() < cleanupDeadline) {
+      await Bun.sleep(100);
+    }
     expect(readdirSync(redirectDir).length).toBeLessThanOrEqual(2);
     await runtime.release("raw-downloads", false);
 
