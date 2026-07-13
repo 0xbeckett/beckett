@@ -67,7 +67,15 @@ import type {
   ScoredNode,
 } from "../types.ts";
 import { log as rootLog } from "../log.ts";
-import { corpusStats, DEDUP_THRESHOLD, nodeSimilarity, scoreNode } from "./search.ts";
+import {
+  type Audience,
+  canView,
+  corpusStats,
+  DEDUP_THRESHOLD,
+  nodeSimilarity,
+  provenanceOf,
+  scoreNode,
+} from "./search.ts";
 import { planMaintenance, type MaintainReport } from "./maintain.ts";
 
 // =======================================================================================
@@ -122,8 +130,16 @@ const META_ORDER = [
   // decision
   "decided", "supersedes",
 ];
-/** Provenance fields rendered last (Spec 08 §1.2). */
-const META_TAIL = ["created", "updated", "source", "confidence", "ttl", "archived", "archived_reason"];
+/** Provenance fields rendered last (Spec 08 §1.2; visibility/provenance from multiplayer §7). */
+const META_TAIL = [
+  "visibility", "dm_with",
+  "created", "updated", "source", "source_user", "source_name",
+  "confidence", "ttl", "archived", "archived_reason",
+];
+
+/** Metadata keys whose values are Discord ids — always serialized quoted so the YAML parser
+ *  round-trips them as exact strings (a bare 18–20 digit id would coerce to a lossy Number). */
+const QUOTED_ID_KEYS = new Set(["dm_with", "source_user"]);
 
 // =======================================================================================
 // Construction
@@ -165,7 +181,7 @@ export class MemoryStore implements Memory {
 
   // ── recall (Spec 08 §3) ────────────────────────────────────────────────────────────
 
-  async recall(q: RecallQuery): Promise<RecallResult> {
+  async recall(q: RecallQuery & { audience?: Audience }): Promise<RecallResult> {
     const g = this.buildGraph();
     return recallOver(q, g);
   }
@@ -543,10 +559,17 @@ export class MemoryStore implements Memory {
 // Recall (pure over the graph — Spec 08 §3.2)
 // =======================================================================================
 
-/** Score + expand a query against a built graph. Exported for testing/Spec 06 reuse. */
-export function recallOver(q: RecallQuery, g: MemoryGraph): RecallResult {
+/**
+ * Score + expand a query against a built graph. Exported for testing/Spec 06 reuse.
+ *
+ * `q.audience` is the hard, fail-closed visibility gate (multiplayer §9.1): it is applied to
+ * every seed AND every one-hop expansion target, so a scoped fact never appears — not even as
+ * a backlink/expansion stub. No audience (or no viewer id) ⇒ only public nodes are returned.
+ */
+export function recallOver(q: RecallQuery & { audience?: Audience }, g: MemoryGraph): RecallResult {
   const k = q.k ?? DEFAULT_K;
   const hops = q.hops ?? DEFAULT_HOPS;
+  const audience = q.audience;
   const now = Date.now();
 
   // Targeted retrieval (OPS-121): --type / --name narrow the candidate set BEFORE scoring,
@@ -568,6 +591,7 @@ export function recallOver(q: RecallQuery, g: MemoryGraph): RecallResult {
     .map((line): ScoredNode | null => {
       const node = g.nodes.get(line.name);
       if (!node) return null;
+      if (!canView(node, audience)) return null; // hard, fail-closed audience gate
       if (!hasText) {
         if (!typeFilter && !nameFilter) return null;
         return { node, score: recency(node, now), via: "match", reason: "filter match" };
@@ -601,10 +625,11 @@ export function recallOver(q: RecallQuery, g: MemoryGraph): RecallResult {
         // For an out-edge we hop to `to`; for a high-value backlink we hop to the linker `from`.
         const target = outE.includes(e) ? e.to : e.from;
         if (seen.has(target)) continue;
+        const node = g.nodes.get(target);
+        // A hidden node is never traversed or stubbed — the same fail-closed gate as seeds.
+        if (!node || !canView(node, audience)) continue;
         seen.add(target);
         next.push(target);
-        const node = g.nodes.get(target);
-        if (!node) continue;
         if (node.phantom) phantomsSeen.add(node.name);
         expanded.push({
           node,
@@ -623,7 +648,12 @@ export function recallOver(q: RecallQuery, g: MemoryGraph): RecallResult {
   }
 
   return {
-    index: g.index,
+    // The index rides along on every recall — filter it under the SAME gate as hits/expansions:
+    // even a scoped node's name + description is a leak to the wrong audience (multiplayer §9.1).
+    index: g.index.filter((line) => {
+      const node = g.nodes.get(line.name);
+      return node ? canView(node, audience) : false; // unknown ⇒ fail closed, like everything here
+    }),
     hits: seeds,
     expanded: expanded.sort((a, b) => b.score - a.score),
     phantoms: [...phantomsSeen],
@@ -819,7 +849,8 @@ export function renderNode(node: MemoryNode, g: MemoryGraph): string {
   fm += `description: >\n  ${node.description.replace(/\s+/g, " ").trim()}\n`;
   fm += "metadata:\n";
   for (const [key, value] of orderedMeta(node.metadata)) {
-    fm += `  ${key}: ${serializeMeta(value)}\n`;
+    const rendered = QUOTED_ID_KEYS.has(key) ? JSON.stringify(String(value)) : serializeMeta(value);
+    fm += `  ${key}: ${rendered}\n`;
   }
   fm += "---\n";
   return fm + "\n" + composeBody(node.body.trim(), backlinkLines(g, node.name));
@@ -871,7 +902,12 @@ export function renderIndex(g: MemoryGraph): string {
       out += `\n## ${line.type}\n`;
       lastType = String(line.type);
     }
-    out += `- [[${line.name}]] — ${line.description}\n`;
+    // Non-public entries stay in the index (they aren't excluded) but are marked so a reader
+    // knows the fact is scoped — the recall filter, not the index, is what enforces access.
+    const node = g.nodes.get(line.name);
+    const visibility = node ? provenanceOf(node).visibility : "public";
+    const tag = visibility === "public" ? "" : ` [${visibility}]`;
+    out += `- [[${line.name}]] — ${line.description}${tag}\n`;
   }
   return out;
 }

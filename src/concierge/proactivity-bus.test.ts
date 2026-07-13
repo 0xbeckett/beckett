@@ -50,14 +50,14 @@ function harness(): { concierge: Concierge; dir: string; config: Config } {
 
 /** Fake a live owner (or non-owner) turn so the code-side gate has a speaker to check. */
 function setActiveTurn(concierge: Concierge, isOwner: boolean): void {
-  (concierge as unknown as { activeMention: unknown }).activeMention = {
+  (concierge as unknown as { activeMentions: Map<string, unknown> }).activeMentions.set("999", {
     channelId: "999",
     messageId: "m-1",
     isOwner,
     repliedViaCli: false,
     ackMessageId: null,
     pendingTickets: [],
-  };
+  });
 }
 
 test("status reports enabled=false by default, the default mode, caps, and configured channels", async () => {

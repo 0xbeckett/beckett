@@ -26,7 +26,7 @@
  */
 
 import type { Logger, MemoryGraph, MemoryNode } from "../types.ts";
-import { DEDUP_THRESHOLD, MERGE_THRESHOLD, nodeSimilarity } from "./search.ts";
+import { DEDUP_THRESHOLD, MERGE_THRESHOLD, nodeSimilarity, provenanceOf } from "./search.ts";
 
 /** How long past its `ttl` a node survives before the pass archives it. */
 export const TTL_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -121,6 +121,11 @@ export function planMaintenance(
       const a = survivors[i]!;
       const b = survivors[j]!;
       if (a.type !== b.type) continue;
+      // Never merge (or even flag) across a visibility boundary: a public fact and an owner/dm
+      // fact are different facts, and folding one into the other would leak or lose scope.
+      const pa = provenanceOf(a);
+      const pb = provenanceOf(b);
+      if (pa.visibility !== pb.visibility || pa.dmWith !== pb.dmWith) continue;
       if (merging.has(a.name) || merging.has(b.name)) continue;
       const sim = nodeSimilarity(a, b);
       if (sim >= MERGE_THRESHOLD) {

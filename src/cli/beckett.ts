@@ -17,6 +17,7 @@ import { loadConfig, resolvePlaneBoardName } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus, ControlBusTimeoutError } from "../shell/control-bus.ts";
 import { createMemory } from "../memory/index.ts";
+import { type Audience, provenanceOf, renderProvenance } from "../memory/search.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { CfDns } from "../agency/cloudflare.ts";
 import { CodexImageGen } from "../agency/imagegen.ts";
@@ -284,9 +285,63 @@ async function ensureSecretService(port: number): Promise<void> {
  * hits (with file paths, so an entry can be read/edited directly) before the always-loaded
  * global index.
  */
+/**
+ * Resolve the recall audience (multiplayer §9.1) from CLI flags. Fail-closed by construction:
+ * `--viewer` absent leaves `viewerId` undefined, so the engine returns only public nodes. The
+ * concierge passes these on behalf of the live speaker; a human debugging recall passes their
+ * own id. `--viewer-role` defaults to `member` and `--context` to `guild` (the safe side).
+ */
+function audienceFromFlags(flags: Record<string, string | boolean>): Audience {
+  const role = flags["viewer-role"] ? String(flags["viewer-role"]) : "member";
+  if (role !== "owner" && role !== "maintainer" && role !== "member") {
+    fail("--viewer-role must be one of: owner, maintainer, member");
+  }
+  const context = flags.context ? String(flags.context) : "guild";
+  if (context !== "guild" && context !== "dm") fail("--context must be one of: guild, dm");
+  return {
+    viewerId: flags.viewer ? String(flags.viewer) : undefined,
+    viewerRole: role,
+    context,
+  };
+}
+
+/**
+ * Build the provenance/visibility metadata a `remember` write carries (multiplayer §7), from
+ * CLI flags. Only flags actually passed produce keys — an absent flag writes nothing, so the
+ * engine merge preserves existing scope on an update. Fails fast on a bad visibility value or
+ * a `dm` scope with no partner (`--visibility dm` is meaningless without `--dm-with`).
+ */
+function provenanceMetadataFromFlags(flags: Record<string, string | boolean>): Record<string, unknown> {
+  const meta: Record<string, unknown> = {};
+  const isId = (v: string) => /^\d{1,20}$/.test(v);
+  if (flags.visibility !== undefined) {
+    const v = String(flags.visibility);
+    if (v !== "public" && v !== "owner" && v !== "dm") {
+      fail("--visibility must be one of: public, owner, dm");
+    }
+    if (v === "dm" && flags["dm-with"] === undefined) {
+      fail("--visibility dm requires --dm-with <discordUserId>");
+    }
+    meta.visibility = v;
+  }
+  if (flags["dm-with"] !== undefined) {
+    const id = String(flags["dm-with"]);
+    if (!isId(id)) fail("--dm-with must be a Discord user id (1–20 digits)");
+    meta.dm_with = id;
+  }
+  if (flags.by !== undefined) {
+    const id = String(flags.by);
+    if (!isId(id)) fail("--by must be a Discord user id (1–20 digits)");
+    meta.source_user = id;
+  }
+  if (flags["by-name"] !== undefined) meta.source_name = String(flags["by-name"]);
+  return meta;
+}
+
 async function runRecall(argv: string[]): Promise<never> {
   const usage =
-    'usage: beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] [--json]';
+    'usage: beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] ' +
+    "[--viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] [--json]";
   const { _, flags } = parse(argv);
   const text = _.join(" ");
   const csv = (v: string | boolean | undefined) =>
@@ -295,12 +350,15 @@ async function runRecall(argv: string[]): Promise<never> {
   const names = csv(flags.name);
   if (!text && !types && !names) fail(usage);
 
+  const audience = audienceFromFlags(flags);
+
   const memory = createMemory({ memoryDir: paths.memoryDir, logger: undefined, git: false });
   const r = await memory.recall({
     text,
     filter: types || names ? { types, names } : undefined,
     k: flags.k ? Number(flags.k) : undefined,
     hops: flags.hops ? Number(flags.hops) : undefined,
+    audience,
   });
 
   if (flags.json) {
@@ -311,9 +369,11 @@ async function runRecall(argv: string[]): Promise<never> {
         score: Number(h.score.toFixed(2)),
         path: h.node.path,
         description: h.node.description,
+        visibility: provenanceOf(h.node).visibility,
+        provenance: renderProvenance(h.node),
         body: h.node.body,
       })),
-      related: r.expanded.map((e) => ({ name: e.node.name, type: e.node.type, description: e.node.description, reason: e.reason })),
+      related: r.expanded.map((e) => ({ name: e.node.name, type: e.node.type, description: e.node.description, visibility: provenanceOf(e.node).visibility, reason: e.reason })),
       phantoms: r.phantoms,
       notes: r.notes,
     });
@@ -322,9 +382,11 @@ async function runRecall(argv: string[]): Promise<never> {
   const lines: string[] = ["# hits"];
   if (r.hits.length === 0) lines.push("(none — see the index below for everything on file)");
   for (const h of r.hits) {
+    const prov = renderProvenance(h.node);
     lines.push(
       `\n## ${h.node.name} (${h.node.type}, score ${h.score.toFixed(2)})`,
       `path: ${h.node.path}`,
+      `visibility: ${provenanceOf(h.node).visibility}${prov ? ` · ${prov}` : ""}`,
       h.node.description,
       ...(h.node.body ? ["", h.node.body] : []),
     );
@@ -372,11 +434,34 @@ async function main(): Promise<void> {
       const report = await memory.maintain({ dryRun: Boolean(flags["dry-run"]) });
       out(report);
     }
+    if (sub === "show") {
+      const { flags, _ } = parse(rest);
+      const nodeName = (flags.name ? String(flags.name) : _[0] ?? "").trim();
+      if (!nodeName) fail("usage: beckett memory show <name>");
+      // No audience filter here — `show` is an owner-side inspection tool; it surfaces the
+      // node's visibility + provenance so a caller can SEE the scope, not enforce it.
+      const g = memory.buildGraph();
+      const node = g.nodes.get(nodeName);
+      if (!node || node.phantom) fail(`memory show: no node named '${nodeName}'`);
+      const prov = provenanceOf(node!);
+      out({
+        name: node!.name,
+        type: node!.type,
+        path: node!.path,
+        visibility: prov.visibility,
+        dm_with: prov.dmWith ?? null,
+        source_user: prov.sourceUser ?? null,
+        source_name: prov.sourceName ?? null,
+        provenance: renderProvenance(node!),
+        description: node!.description,
+        body: node!.body,
+      });
+    }
     if (sub === "remember") {
       const { flags } = parse(rest);
       const op = (flags.op as RememberIntent["op"]) ?? "create";
       const name = flags.name as string;
-      if (!name) fail("usage: beckett memory remember --name <n> [--op create] [--type t] [--desc d] [--reason r] [--body <text>] [--link to:field,...]");
+      if (!name) fail("usage: beckett memory remember --name <n> [--op create] [--type t] [--desc d] [--reason r] [--body <text>] [--link to:field,...] [--visibility public|owner|dm] [--dm-with <id>] [--by <userId>] [--by-name <name>]");
       let body = flags.body as string | undefined;
       if (flags["body-stdin"]) body = await Bun.stdin.text();
       const links = flags.link
@@ -385,6 +470,10 @@ async function main(): Promise<void> {
             return { to: to!, field: field ?? "body" };
           })
         : undefined;
+      // Provenance + visibility (multiplayer §7) ride in metadata. Absent flags write nothing,
+      // so on an update the engine's `{ ...existing, ...intent }` merge preserves the prior
+      // scope — never silently broadening it; an explicit flag is the only way to change it.
+      const metadata = provenanceMetadataFromFlags(flags);
       const node = await memory.remember({
         op,
         name,
@@ -392,12 +481,13 @@ async function main(): Promise<void> {
         description: flags.desc ? String(flags.desc) : undefined,
         body,
         links,
+        metadata: Object.keys(metadata).length ? metadata : undefined,
         source: (flags.source as RememberIntent["source"]) ?? "conversation",
         reason: flags.reason ? String(flags.reason) : "remember via CLI",
       });
-      out({ remembered: node.name, type: node.type });
+      out({ remembered: node.name, type: node.type, visibility: provenanceOf(node).visibility });
     }
-    fail(`unknown: beckett memory ${sub ?? ""} (recall | remember | maintain)`);
+    fail(`unknown: beckett memory ${sub ?? ""} (recall | remember | show | maintain)`);
   }
 
   // ── journal (in-process: the private per-ticket worker progress log) ────────────────────────
@@ -1567,7 +1657,10 @@ async function main(): Promise<void> {
   // post NOTHING — "on reflection this wasn't for me." Only valid mid-ambient-turn; the bus rejects
   // it on a direct @mention/DM (those are never declined) or once you've already replied.
   if (group === "discord" && sub === "decline") {
-    await bus("discord.decline", {});
+    // `--channel` disambiguates when several ambient turns are live at once (OPS-80 §9.3).
+    const { flags } = parse(rest);
+    const channelId = flags.channel ? String(flags.channel).trim() : "";
+    await bus("discord.decline", channelId ? { channelId } : {});
   }
 
   // ── proactivity (control bus: ambient-interjection posture) ─────────────────────────────
@@ -1644,7 +1737,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] | memory recall|remember|maintain");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] [--viewer id] | memory recall|remember|show|maintain");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

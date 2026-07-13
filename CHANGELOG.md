@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Concurrent conversations — per-channel concierge sessions (OPS-80 §9.3)
+
+- **Beckett is no longer single-threaded across Discord.** The Concierge used to run ONE
+  `claude -p` session for the entire surface, so every turn — every user, channel, and DM —
+  queued behind a single pump ("On it — you're next in line"). Sessions are now keyed to the
+  channel (a DM is its own channel): conversations in different channels run truly concurrently,
+  bounded by a shared turn gate (`[concierge] max_concurrent_turns`, default 3). Same-channel
+  turns stay strictly ordered, and person mentions still jump queued update turns.
+- **Structural DM partition.** A DM's transcript now lives in its own session — guild turns and DM
+  turns no longer share one model context, closing the model-side DM↔guild bleed that doctrine
+  alone used to hold (multiplayer design §6.1 residual).
+- **Process economics.** Live `claude` children are capped (`max_live_sessions`, default 6): the
+  least-recently-used idle session's child is recycled and resumes on demand (`--resume`, context
+  intact), and an idle timer (`idle_recycle_minutes`, default 30) reclaims quiet ones. Each
+  channel's session persists under `~/.beckett/concierge-sessions/` and survives restarts
+  independently; rotation, crash-loop alarms, and handoffs are all per-session.
+- **Correlation under concurrency.** Reply claims, `proactivity set … auto`'s owner gate,
+  computer-use authorization, and `discord decline` now resolve channel-first against the live
+  turns' metas and refuse to guess when ambiguous (`discord decline` gained `--channel`). Ticket,
+  PR, and quick-agent updates route to their origin channel's session, grouped per channel.
+- **Kill switch.** `[concierge] session_scope = "global"` restores the single-session behavior
+  exactly. `beckett status` now reports per-scope session stats plus the turn-gate readout.
+
+### Multiplayer memory — provenance and visibility scoping
+
+- Knowledge-graph memory now records structured provenance (who taught a fact, `--by`/`--by-name`)
+  and a `visibility` scope (`public` / `owner` / `dm` with `--dm-with`); recall applies a
+  fail-closed audience filter (`--viewer`, `--viewer-role`, `--context`), so a fact learned in a
+  DM can no longer leak into guild answers and owner-private facts stay with the owner.
+
 ### Autonomous persistent computer use
 
 - **Playwright-shaped, not Playwright-prompted.** Computer-use now receives one compact

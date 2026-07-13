@@ -84,6 +84,8 @@ import {
   type ChannelEntry,
 } from "./channel-context.ts";
 import { createChannelProfiler, type ChannelProfiler } from "./channel-profiles.ts";
+import { TurnGate } from "./turn-gate.ts";
+import { SessionPool, GLOBAL_SCOPE } from "./session-pool.ts";
 import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
 import type { DiscordCommand, DiscordCommandReply, TaskThreadCreated } from "../types.ts";
 import { TaskStore, displayTaskName, type WorkTask } from "../task/store.ts";
@@ -353,6 +355,14 @@ export interface ConciergeSessionOptions {
   systemPrompt?: string;
   /** Fired when the child has crashed {@link CRASH_LOOP_THRESHOLD}+ times in a row (issue #24). */
   onCrashLoop?: (info: { count: number; code: number }) => void;
+  /**
+   * Pool scope key (OPS-80 §9.3). Absent/"global" keeps the legacy single state file
+   * (`concierge-session.json`); any other scope persists under `concierge-sessions/<scope>.json`
+   * so every channel's session survives restarts independently.
+   */
+  scope?: string;
+  /** Shared cross-session concurrency gate — bounds turns EXECUTING at once across the pool. */
+  gate?: TurnGate;
 }
 
 /**
@@ -369,6 +379,12 @@ export class ConciergeSession {
   private readonly model: string;
   /** Summed-input-token ceiling that triggers auto-compaction (from config; issue #5). */
   private readonly rotateAtTokens: number;
+  /** Pool scope key ("global" = the legacy single session). Drives state-file placement. */
+  private readonly scope: string;
+  /** Shared cross-session turn gate (null = unmetered, the legacy single-session behavior). */
+  private readonly gate: TurnGate | null;
+  /** Wall-clock of the last completed turn — the pool's idle-recycle signal. */
+  private lastTurnAt = Date.now();
   /** Mutable: rotation (auto-compaction) mints a fresh id and relaunches under it (issue #5). */
   private sessionId: string;
 
@@ -424,6 +440,8 @@ export class ConciergeSession {
     this.model = opts.config.concierge.model;
     this.rotateAtTokens = opts.config.concierge.rotate_at_tokens ?? DEFAULT_ROTATE_AT_TOKENS;
     this.onCrashLoop = opts.onCrashLoop;
+    this.scope = opts.scope?.trim() || GLOBAL_SCOPE;
+    this.gate = opts.gate ?? null;
     this.sessionId = crypto.randomUUID();
   }
 
@@ -471,20 +489,32 @@ export class ConciergeSession {
 
   /**
    * Drain the turn queue one turn at a time. Rotation (auto-compaction / persona reload) runs
-   * between turns — never mid-turn. A rejected turn never wedges the pump.
+   * between turns — never mid-turn. A rejected turn never wedges the pump. With a pool {@link gate}
+   * each turn (plus its boundary rotation check) occupies one cross-session slot, so a busy pool
+   * queues here rather than fanning out unbounded parallel `claude` turns.
    */
   private async pump(): Promise<void> {
     if (this.pumping) return;
     this.pumping = true;
     try {
       while (this.turnQueue.length > 0) {
-        const entry = this.turnQueue.shift()!;
+        const release = this.gate ? await this.gate.acquire() : null;
+        // A stop() during the gate wait drained the queue — release the slot and bail.
+        const entry = this.turnQueue.shift();
+        if (!entry) {
+          release?.();
+          break;
+        }
         try {
           entry.resolve(await this.runTurn(entry.message, entry.meta));
         } catch (err) {
           entry.reject(err instanceof Error ? err : new Error(String(err)));
         }
-        await this.maybeRotate();
+        try {
+          await this.maybeRotate();
+        } finally {
+          release?.();
+        }
       }
     } finally {
       this.pumping = false;
@@ -567,8 +597,26 @@ export class ConciergeSession {
       }
     });
     return turn.finally(() => {
+      this.lastTurnAt = Date.now();
       if (this.currentMeta === meta) this.currentMeta = null;
     });
+  }
+
+  // ── pool surface (OPS-80 §9.3) ─────────────────────────────────────────────────────────
+
+  /** Kill the child to reclaim memory; the session survives (`--resume` on the next turn). */
+  recycle(reason: string): void {
+    this.recycleChild(reason);
+  }
+
+  /** Milliseconds since the last completed turn (the pool's idle-recycle signal). */
+  idleMs(): number {
+    return Date.now() - this.lastTurnAt;
+  }
+
+  /** Whether a `claude` child process is currently alive for this session. */
+  hasLiveChild(): boolean {
+    return this.child !== null;
   }
 
   /**
@@ -897,7 +945,12 @@ export class ConciergeSession {
     if (this.pumping) return;
     this.pumping = true;
     try {
-      await this.maybeRotate();
+      const release = this.gate ? await this.gate.acquire() : null;
+      try {
+        await this.maybeRotate();
+      } finally {
+        release?.();
+      }
     } finally {
       this.pumping = false;
     }
@@ -998,20 +1051,30 @@ export class ConciergeSession {
   stats(): Record<string, unknown> {
     return {
       sessionId: this.sessionId,
+      scope: this.scope,
       model: this.model,
       contextTokens: this.lastContextTokens,
       rotateAtTokens: this.rotateAtTokens,
       rotations: this.rotations,
       queueDepth: this.queueDepth(),
       consecutiveCrashes: this.consecutiveCrashes,
+      liveChild: this.hasLiveChild(),
+      idleMs: this.idleMs(),
     };
   }
 
   // ── restart persistence (issue #24) ─────────────────────────────────────────────────────
 
-  /** Where the session identity + last handoff live (`~/.beckett/concierge-session.json`). */
+  /**
+   * Where the session identity + last handoff live. The legacy global session keeps its historic
+   * `concierge-session.json`; pool scopes get their own file under `concierge-sessions/` so every
+   * channel's conversation resumes independently across restarts.
+   */
   private sessionStateFile(): string {
-    return join(buildPaths(this.config).beckettDir, "concierge-session.json");
+    const dir = buildPaths(this.config).beckettDir;
+    if (this.scope === GLOBAL_SCOPE) return join(dir, "concierge-session.json");
+    const safe = this.scope.replace(/[^a-zA-Z0-9_-]/g, "_");
+    return join(dir, "concierge-sessions", `${safe}.json`);
   }
 
   private loadSessionState(): { sessionId: string; handoff: string } | null {
@@ -1072,8 +1135,13 @@ export interface ConciergeOptions {
   logger?: Logger;
   /** Inject a gateway (tests); defaults to the real discord.js gateway. */
   gateway?: DiscordGateway;
-  /** Inject a session (tests); defaults to a real ConciergeSession. */
+  /**
+   * Inject ONE fixed session (tests / legacy single-session mode): every channel's turns route to
+   * it, restoring the v4.0 single-flight behavior exactly.
+   */
   session?: ConciergeSession;
+  /** Inject a per-scope session factory (pool tests); defaults to real ConciergeSessions. */
+  sessionFactory?: (scope: string) => ConciergeSession;
   /** Plane read access for milestone enrichment (issue #21) — the shared PlaneClient in prod. */
   plane?: { listComments(ticketId: string): Promise<PlaneComment[]> };
   /** Inject the ambient triage classifier (tests); defaults to the real one-shot Haiku classifier. */
@@ -1101,11 +1169,50 @@ export interface ConciergeOptions {
 /** Dedicated operations channel for the live dispatch/deploy timeline (OPS-167). */
 export const DISPATCH_EVENT_CHANNEL_ID = "1520658476974735490";
 
+/**
+ * The correlation record a turn carries while it executes (rides as the session turn's meta):
+ * WHO asked, WHERE, and whether the turn already answered itself via `beckett discord reply`.
+ */
+interface MentionClaim {
+  channelId: string;
+  messageId: string;
+  userId: string;
+  /** True iff the speaker on THIS turn is the owner — the code-side gate for `proactivity set … auto`. */
+  isOwner: boolean;
+  repliedViaCli: boolean;
+  /** Id of the ack message the Concierge posted this turn (null until posted). */
+  ackMessageId: string | null;
+  /** True for an ambient (un-addressed) turn: a CLI reply posts plainly, never as a native reply. */
+  ambient?: boolean;
+  /**
+   * OPS-101 hold-and-cancel backstop (OPS-99 §5.3): set when the concierge runs
+   * `beckett discord decline` on an AMBIENT turn — "on reflection this wasn't for me." The turn
+   * then posts nothing (degrades to a synthetic PASS). Only ever honoured for ambient turns; a
+   * real @mention/DM can never be declined (§6), so this stays a no-op on the mention path.
+   */
+  declined?: boolean;
+  canUseBrowser?: boolean;
+}
+
+/** A framed automated ticket-update turn, addressed to its origin channel's session (§9.3). */
+interface TicketUpdate {
+  channel: string;
+  text: string;
+  ident: string;
+}
+
 export class Concierge {
   private readonly config: Config;
   private readonly log: Logger;
   private readonly gateway: DiscordGateway;
-  private readonly session: ConciergeSession;
+  /**
+   * The per-channel session pool (OPS-80 §9.3): conversations in different channels run
+   * concurrently, each on its own persistent `claude -p` session, bounded by {@link turnGate}.
+   * A test-injected fixed session collapses the pool to the legacy single-session behavior.
+   */
+  private readonly pool: SessionPool;
+  /** Cross-session cap on turns executing at once (the fast-ack "will wait" signal, too). */
+  private readonly turnGate: TurnGate;
   /**
    * The private ticket journal: each ticket's worker-event firehose appends to a ticket-keyed
    * file under `<beckettDir>/journal/` instead of a user-facing Discord thread. The dispatcher
@@ -1177,31 +1284,16 @@ export class Concierge {
    */
   private readonly plane: { listComments(ticketId: string): Promise<PlaneComment[]> } | null;
   /**
-   * The @mention turn currently in flight, if any. Tracked so the two posting paths can't BOTH
-   * fire for one turn (the duplicate-message bug): if the Concierge answers a live @mention by
-   * running `beckett discord reply` from its Bash tool, that bus post becomes THE reply (a native
-   * reply to the same message) and {@link onMessage} skips auto-posting the turn text. Exactly one
-   * message either way. Single-flight: the session serializes turns, so at most one is live.
+   * The @mention turns currently in flight, keyed by channel (at most one live turn per channel —
+   * a channel's session serializes its own turns; different channels run concurrently, OPS-80
+   * §9.3). Tracked so the two posting paths can't BOTH fire for one turn (the duplicate-message
+   * bug): if the Concierge answers a live @mention by running `beckett discord reply` from its
+   * Bash tool, that bus post becomes THE reply (a native reply to the same message) and
+   * {@link onMessage} skips auto-posting the turn text. Exactly one message either way. Real
+   * correlation rides each session's turn meta; this map is the fallback for injected fake
+   * sessions that don't track meta.
    */
-  private activeMention: {
-    channelId: string;
-    messageId: string;
-    userId: string;
-    /** True iff the speaker on THIS turn is the owner — the code-side gate for `proactivity set … auto`. */
-    isOwner: boolean;
-    repliedViaCli: boolean;
-    /** Id of the ack message the Concierge posted this turn (null until posted). */
-    ackMessageId: string | null;
-    /** True for an ambient (un-addressed) turn: a CLI reply posts plainly, never as a native reply. */
-    ambient?: boolean;
-    /**
-     * OPS-101 hold-and-cancel backstop (OPS-99 §5.3): set when the concierge runs
-     * `beckett discord decline` on an AMBIENT turn — "on reflection this wasn't for me." The turn
-     * then posts nothing (degrades to a synthetic PASS). Only ever honoured for ambient turns; a
-     * real @mention/DM can never be declined (§6), so this stays a no-op on the mention path.
-     */
-    declined?: boolean;
-  } | null = null;
+  private readonly activeMentions = new Map<string, MentionClaim>();
   /** Last static denial by channel+user, so denied DMs/mentions cannot spam Discord. */
   private readonly accessDenyAt = new Map<string, number>();
   /**
@@ -1229,11 +1321,11 @@ export class Concierge {
    */
   private readonly profiler: ChannelProfiler | null = null;
   /**
-   * Change suppression for the cross-channel awareness footer: the last activity signature this
-   * session was shown. Re-showing an unchanged footer every mention would only burn tokens; a
-   * rotation (new sessionId) naturally re-arms it.
+   * Change suppression for the cross-channel awareness footer, per session scope: the last
+   * activity signature each session was shown. Re-showing an unchanged footer every mention would
+   * only burn tokens; a rotation (new sessionId) naturally re-arms it.
    */
-  private awarenessSeen: { sessionId: string; signature: string } | null = null;
+  private readonly awarenessSeen = new Map<string, { sessionId: string; signature: string }>();
   /** Clock for shared-record timestamps: the injected ambient clock (tests) or Date.now. */
   private readonly nowMs: () => number;
 
@@ -1244,25 +1336,38 @@ export class Concierge {
     this.tasks = opts.tasks ?? new TaskStore(tasksStateFile(this.config, this.log));
     this.branchStatus = opts.branchStatus ?? null;
     this.subscriptionUsage = opts.subscriptionUsage ?? createSubscriptionUsageReader(this.config);
-    this.session =
-      opts.session ??
-      new ConciergeSession({
-        config: this.config,
-        logger: this.log,
-        // Crash-loop alarm (issue #24): a repeating child crash (bad auth/config) pings the ops
-        // channel instead of surfacing only as per-message "something broke" replies.
-        onCrashLoop: (info) => {
-          const channelId = startupChannelId();
-          if (!channelId) return;
-          void this.gateway
-            .post(
-              channelId,
-              `⚠️ My chat session has crashed ${info.count}× in a row (last exit code ${info.code}). ` +
-                `Probably auth or config — check \`journalctl --user -u beckett-v4\`.`,
-            )
-            .catch(() => undefined);
-        },
-      });
+    this.turnGate = new TurnGate(Math.max(1, this.config.concierge?.max_concurrent_turns ?? 3));
+    const makeSession =
+      opts.sessionFactory ??
+      ((scope: string) =>
+        new ConciergeSession({
+          config: this.config,
+          logger: this.log,
+          scope,
+          gate: this.turnGate,
+          // Crash-loop alarm (issue #24): a repeating child crash (bad auth/config) pings the ops
+          // channel instead of surfacing only as per-message "something broke" replies.
+          onCrashLoop: (info) => {
+            const channelId = startupChannelId();
+            if (!channelId) return;
+            const where = scope !== GLOBAL_SCOPE ? ` for <#${scope}>` : "";
+            void this.gateway
+              .post(
+                channelId,
+                `⚠️ My chat session${where} has crashed ${info.count}× in a row (last exit code ${info.code}). ` +
+                  `Probably auth or config — check \`journalctl --user -u beckett-v4\`.`,
+              )
+              .catch(() => undefined);
+          },
+        }));
+    this.pool = new SessionPool({
+      scope: this.config.concierge?.session_scope ?? "channel",
+      maxLiveSessions: Math.max(1, this.config.concierge?.max_live_sessions ?? 6),
+      idleRecycleMs: Math.max(0, (this.config.concierge?.idle_recycle_minutes ?? 30) * 60_000),
+      makeSession,
+      ...(opts.session ? { fixedSession: opts.session } : {}),
+      logger: this.log,
+    });
     this.plane = opts.plane ?? null;
     this.journal = createTicketJournal({
       dir: journalDir(this.config, this.log),
@@ -1637,7 +1742,9 @@ export class Concierge {
       `SYSTEM (quick-agent result — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
       `The ${run.agent} quick agent you dispatched earlier (run ${run.runId}) finished with state "${run.state}".\n` +
       `Its report:\n\n${run.result ?? "(no report)"}\n\n${where}`;
-    this.askUpdate(framed, `quick:${run.runId}`);
+    // Route to the session that dispatched it (the origin channel); an unstamped run folds into
+    // the home-scope session, which is where the dispatching turn ran in that case.
+    this.askUpdate(run.channelId ?? this.homeChannelId(), framed, `quick:${run.runId}`);
   }
 
   /** Post a blocking browser question with its trusted runtime screenshot and remember correlation. */
@@ -1755,7 +1862,7 @@ export class Concierge {
         `Paraphrase — don't dump the raw status. A CI failure or requested changes is worth a ping; ` +
         `routine green CI usually isn't. You OBSERVE and RELAY only — do NOT reply to the review on ` +
         `GitHub and do NOT merge the PR; a merge stays the person's call.`;
-      this.askUpdate(framed, `pr:${[...new Set(bucket.refs)].join(",")}`);
+      this.askUpdate(channel, framed, `pr:${[...new Set(bucket.refs)].join(",")}`);
     }
   }
 
@@ -1780,7 +1887,9 @@ export class Concierge {
     this.seedIdentities();
     this.loadStaleBrowserQuestions();
     this.loadBrowserResults();
-    await this.session.start();
+    // Fail fast on a bad launch (auth/bin/config) by bringing up the home-scope session eagerly;
+    // per-channel sessions come up lazily on their first turn.
+    await this.pool.warm(this.homeChannelId());
     this.gateway.onMessage((m) => this.onMessage(m));
     // Guarded: injected partial test gateways may predate the thread-create surface.
     if (typeof this.gateway.onThreadCreate === "function") {
@@ -2003,8 +2112,8 @@ export class Concierge {
       writeAnnouncedSha(announcedFile, head);
       if (subjects.length === 0) return;
       // `channelId` (config) gates whether we announce; the post itself always lands in #general.
-      void this.session
-        .ask(buildReleaseNote(RELEASE_NOTE_CHANNEL_ID, subjects))
+      void this.pool
+        .ask(RELEASE_NOTE_CHANNEL_ID, buildReleaseNote(RELEASE_NOTE_CHANNEL_ID, subjects))
         .catch((err) => this.log.warn("changes announcement turn failed (continuing)", { err: String(err) }));
       this.log.info("queued changes announcement", { channelId: RELEASE_NOTE_CHANNEL_ID, commits: subjects.length });
     } catch (err) {
@@ -2024,7 +2133,15 @@ export class Concierge {
     this.busStop = null;
     this.ambient?.stop();
     await this.gateway.stop();
-    await this.session.stop();
+    await this.pool.stopAll();
+  }
+
+  /**
+   * The scope that hosts non-channel turns (boot warmup, updates for tickets with no origin
+   * channel): the ops/startup channel when configured, else a stable synthetic scope.
+   */
+  private homeChannelId(): string {
+    return startupChannelId() ?? RELEASE_NOTE_CHANNEL_ID;
   }
 
   // ── ticket ↔ workspace grounding (Coworker-as-a-Service: no bot threads are spawned) ─────────
@@ -2048,18 +2165,52 @@ export class Concierge {
   }
 
   /**
-   * The mention whose session turn is EXECUTING RIGHT NOW (issue #24): CLI replies and
-   * `ticket.filed` signals are correlated to the turn that issued them, not to whichever mention
-   * most recently overwrote a shared slot. Sourced from the session's turn meta; falls back to
-   * {@link activeMention} for injected fake sessions that don't track meta.
+   * The mention whose session turn is EXECUTING RIGHT NOW (issue #24), under concurrency (OPS-80
+   * §9.3): several channels' turns can be live at once, so correlation is channel-first. With a
+   * `channelId`, the live turn IN that channel wins; without one (or with no match), the SOLE live
+   * turn is an unambiguous fallback — two-plus live turns resolve to null rather than guess, so an
+   * owner-gated bus op can never be claimed by the wrong turn. Sourced from each session's turn
+   * meta; falls back to {@link activeMentions} for injected fake sessions that don't track meta.
    */
-  private currentMention(): NonNullable<Concierge["activeMention"]> | null {
-    const meta = this.session.getCurrentMeta?.() as Concierge["activeMention"] | undefined;
-    if (meta && typeof meta.channelId === "string" && typeof meta.messageId === "string") {
-      return meta;
+  private currentMention(channelId?: string): MentionClaim | null {
+    const metas = this.pool
+      .currentMetas()
+      .filter(
+        (meta): meta is MentionClaim =>
+          !!meta &&
+          typeof (meta as MentionClaim).channelId === "string" &&
+          typeof (meta as MentionClaim).messageId === "string",
+      );
+    if (channelId) {
+      const hit = metas.find((m) => m.channelId === channelId);
+      if (hit) return hit;
     }
-    if (typeof this.session.getCurrentMeta === "function") return null; // real session, no mention turn running
-    return this.activeMention;
+    if (metas.length === 1) return metas[0]!;
+    if (this.pool.tracksMeta()) return null; // real sessions, no (unambiguous) mention turn running
+    if (channelId && this.activeMentions.has(channelId)) return this.activeMentions.get(channelId)!;
+    const fallbacks = [...this.activeMentions.values()];
+    return fallbacks.length > 0 ? fallbacks[fallbacks.length - 1]! : null;
+  }
+
+  /**
+   * The AMBIENT turn a `beckett discord decline` refers to: the live ambient turn in `channelId`
+   * when given, else the SOLE live ambient turn. Ambiguity (two-plus live ambient turns, no
+   * channel) resolves to null — the decline errors with guidance rather than declining the wrong
+   * channel's turn.
+   */
+  private declinableMention(channelId?: string): MentionClaim | null {
+    const ambient = this.pool
+      .currentMetas()
+      .filter(
+        (meta): meta is MentionClaim =>
+          !!meta && (meta as MentionClaim).ambient === true && typeof (meta as MentionClaim).channelId === "string",
+      );
+    if (channelId) return ambient.find((m) => m.channelId === channelId) ?? null;
+    if (ambient.length === 1) return ambient[0]!;
+    if (ambient.length > 1) return null;
+    if (this.pool.tracksMeta()) return null;
+    const fallback = this.currentMention(channelId);
+    return fallback?.ambient ? fallback : null;
   }
 
   // ── closing the agent loop: Plane updates → Discord (issue: ticket updates never surfaced) ──
@@ -2117,13 +2268,13 @@ export class Concierge {
    *  is an external entrypoint (the bus calls it) and is exercised directly in tests. */
   async onBusRequest(req: BusRequest): Promise<BusResponse> {
     if (req.cmd === "reload") {
-      // Live persona/voice retune: re-read persona.md and re-ground at the next turn boundary.
-      this.session.requestReload();
+      // Live persona/voice retune: every session re-reads persona.md at its next turn boundary.
+      this.pool.requestReloadAll();
       return { ok: true, data: { reloading: true } };
     }
     if (req.cmd === "persona") {
       // Show where the editable voice lives + its current contents (for `beckett persona`).
-      const path = this.session.personaFilePath();
+      const path = join(buildPaths(this.config).beckettDir, "persona.md");
       const contents = existsSync(path) ? readFileSync(path, "utf8") : "(not yet seeded)";
       return { ok: true, data: { path, contents } };
     }
@@ -2173,7 +2324,7 @@ export class Concierge {
               connected: this.gateway.isConnected(),
               lastEventAgeMs: this.gateway.lastEventAgeMs(),
             },
-            concierge: this.session.stats(),
+            concierge: { ...this.pool.stats(), turnGate: this.turnGate.stats() },
           },
         };
       } catch (err) {
@@ -2241,7 +2392,7 @@ export class Concierge {
       if (!agent || !task) {
         return { ok: false, error: 'usage: beckett quick <agent> "<task>" [--channel <id>]' };
       }
-      const mention = this.currentMention();
+      const mention = this.currentMention(requestedChannelId ?? undefined);
       if (agent === "computer-use" && !mention) {
         return { ok: false, error: "computer-use needs an authenticated authorized request" };
       }
@@ -2337,8 +2488,10 @@ export class Concierge {
       }
       // Owner gate on `auto` (proceed-on-silence) — enforced HERE in code, never left to the model
       // (§4.6). It requires the speaker on the requesting turn to be the owner; a turn issued by
-      // anyone else (or a manual CLI call with no live turn) can flip a channel off/suggest but not auto.
-      if (mode === "auto" && !this.currentMention()?.isOwner) {
+      // anyone else (or a manual CLI call with no live turn) can flip a channel off/suggest but not
+      // auto. Under concurrency the claimant is the live turn in the TARGET channel, else the sole
+      // live turn — two-plus live turns with no channel match deny rather than guess (§9.3).
+      if (mode === "auto" && !this.currentMention(channelId)?.isOwner) {
         return {
           ok: false,
           error: "auto (proceed-on-silence) is owner-only — only the owner can arm it on a channel",
@@ -2371,7 +2524,10 @@ export class Concierge {
       // burst wasn't for it after all (a classifier addressee false-positive) and aborts BEFORE any
       // user-facing output. This posts nothing — it just flags the active turn so `runAmbientTurn`
       // degrades it to a synthetic PASS (no message, no cooldown consumed, engaged window untouched).
-      const active = this.currentMention();
+      // Under concurrency `--channel` disambiguates; without it the sole live ambient turn is used.
+      const declineChannel =
+        typeof req.args.channelId === "string" && req.args.channelId.trim() ? req.args.channelId.trim() : undefined;
+      const active = this.declinableMention(declineChannel);
       if (!active || !active.ambient) {
         // Hard-exempt the mention/DM path (§6): a directed message is NEVER declined — that would be
         // the exact ghosting bug this feature is meant to prevent. Nothing to decline off-turn either.
@@ -2402,8 +2558,9 @@ export class Concierge {
         // If this reply is issued BY the @mention turn it's answering, claim that turn: post it as a
         // native reply to the originating message and mark the turn handled so onMessage won't also
         // auto-post the turn text (the duplicate-message bug). Correlated to the turn EXECUTING now
-        // (issue #24) — a queued second mention or a notify() update turn can never steal the claim.
-        const active = this.currentMention();
+        // (issue #24) — channel-first under concurrency (§9.3), so a live turn in ANOTHER channel
+        // (or a queued second mention, or a notify() update turn) can never steal the claim.
+        const active = this.currentMention(channelId);
         const claimsActiveTurn = !!active && active.channelId === channelId;
         if (claimsActiveTurn && active!.declined) {
           // OPS-101 hold-and-cancel backstop (OPS-99 §5.3): decline is TERMINAL. If the concierge
@@ -2497,10 +2654,10 @@ export class Concierge {
   notify(events: PollEvent | PollEvent[]): void {
     const batch = Array.isArray(events) ? events : [events];
     // Frame every worth-surfacing event first (`done` frames async — it fetches the artifact
-    // link, issue #21), then fold the whole poll batch into ONE session turn (issue #25): a DAG
-    // wave of milestones costs one full-context turn, not one per event.
-    const frames: Promise<string | null>[] = [];
-    const idents: string[] = [];
+    // link, issue #21), then fold the poll batch into ONE session turn PER CHANNEL (issue #25 +
+    // OPS-80 §9.3): a DAG wave of milestones costs one full-context turn per origin channel — each
+    // routed to that channel's own session — not one per event.
+    const frames: Promise<TicketUpdate | null>[] = [];
     for (const event of batch) {
       if (event.kind === "state_changed" && event.to === "done") {
         frames.push(
@@ -2509,30 +2666,37 @@ export class Concierge {
             return null;
           }),
         );
-        idents.push(event.ticket.identifier);
         continue;
       }
       const framed = this.frameUpdate(event);
       if (!framed) continue; // not worth surfacing, or no channel to route back to
       frames.push(Promise.resolve(framed));
-      idents.push(event.ticket.identifier);
     }
     if (frames.length === 0) return;
     void Promise.all(frames).then((resolved) => {
-      const updates = resolved.filter((u): u is string => Boolean(u));
-      if (updates.length === 0) return;
-      const combined = updates.length === 1 ? updates[0]! : combineUpdateTurns(updates);
-      this.askUpdate(combined, idents.join(","));
+      const byChannel = new Map<string, { texts: string[]; idents: string[] }>();
+      for (const update of resolved) {
+        if (!update) continue;
+        const bucket = byChannel.get(update.channel) ?? { texts: [], idents: [] };
+        bucket.texts.push(update.text);
+        bucket.idents.push(update.ident);
+        byChannel.set(update.channel, bucket);
+      }
+      for (const [channel, bucket] of byChannel) {
+        const combined = bucket.texts.length === 1 ? bucket.texts[0]! : combineUpdateTurns(bucket.texts);
+        this.askUpdate(channel, combined, bucket.idents.join(","));
+      }
     });
   }
 
   /**
-   * Run one update turn without blocking the poll loop; retry ONCE on failure, then log loudly
-   * with the ticket id (issue #24 — a silently dropped milestone breaks the closed loop).
+   * Run one update turn on the origin channel's session without blocking the poll loop; retry
+   * ONCE on failure, then log loudly with the ticket id (issue #24 — a silently dropped milestone
+   * breaks the closed loop).
    */
-  private askUpdate(framed: string, ticketIdent: string): void {
-    void this.session.ask(framed).catch(() =>
-      this.session.ask(framed).catch((err) =>
+  private askUpdate(channelId: string, framed: string, ticketIdent: string): void {
+    void this.pool.ask(channelId, framed).catch(() =>
+      this.pool.ask(channelId, framed).catch((err) =>
         this.log.warn("concierge update turn dropped after retry", {
           ticket: ticketIdent,
           err: String(err),
@@ -2548,7 +2712,7 @@ export class Concierge {
    * message of the whole pipeline is "done: <link>", not a bare "done". Best-effort: without a
    * Plane client (tests) or a parseable link, degrade to the plain done ping + ticket URL.
    */
-  private async buildDoneUpdate(ticket: Ticket): Promise<string | null> {
+  private async buildDoneUpdate(ticket: Ticket): Promise<TicketUpdate | null> {
     let detail = `Review passed — ticket is **done**.`;
     try {
       const comments = (await this.plane?.listComments(ticket.id)) ?? [];
@@ -2569,7 +2733,7 @@ export class Concierge {
    * Milestones + errors only: the dispatcher posts a `<!-- beckett… -->`-tagged comment on every
    * outcome (advance / error / verdict / rework), so those comments ARE the milestone feed.
    */
-  private frameUpdate(event: PollEvent): string | null {
+  private frameUpdate(event: PollEvent): TicketUpdate | null {
     if (event.kind === "comment_added") {
       if (!isDispatcherComment(event.comment)) return null; // human/worker chatter — not ours to echo
       const body = stripCommentMarker(event.comment.body);
@@ -2638,7 +2802,7 @@ export class Concierge {
   }
 
   /** Build the synthetic update turn (or null when the ticket can't be routed back to a channel). */
-  private updateTurn(ticket: Ticket, detail: string): string | null {
+  private updateTurn(ticket: Ticket, detail: string): TicketUpdate | null {
     const channel = this.workspaces.channelForTicket(ticket.identifier) ?? ticket.originChannel;
     if (!channel) {
       // This is the exact failure the closed loop exists to prevent: an update with nowhere to go,
@@ -2648,14 +2812,14 @@ export class Concierge {
       });
       return null;
     }
-    return (
+    const text =
       `SYSTEM (automated ticket update — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
       `${ticket.branchRef ? `Branch #${ticket.branchRef}` : `Ticket ${ticket.identifier}`} "${ticket.title}" has an update:\n\n${detail}\n\n` +
       `If this is worth telling the person who asked for it, send them a short note IN YOUR VOICE by ` +
       `running this from your Bash tool:\n` +
       `  beckett discord reply --channel ${channel} "<your message>"\n` +
-      `Paraphrase — don't dump the raw status. If it's routine or not worth a ping, do nothing.`
-    );
+      `Paraphrase — don't dump the raw status. If it's routine or not worth a ping, do nothing.`;
+    return { channel, text, ident: ticket.identifier };
   }
 
   /**
@@ -2736,7 +2900,7 @@ export class Concierge {
       repliedViaCli: false,
       ackMessageId: null as string | null,
     };
-    this.activeMention = mention;
+    this.activeMentions.set(m.channelId, mention);
 
     let keepTyping = true;
     const typing = setInterval(() => {
@@ -2744,10 +2908,11 @@ export class Concierge {
     }, TYPING_INTERVAL_MS);
     void this.gateway.sendTyping(m.channelId);
 
-    // Fast ack (issue #24): the session is single-flight, so a mention landing while a turn is
-    // running (or queued) would sit for minutes behind only a typing indicator. Acknowledge
-    // within seconds — code-level, no model turn.
-    if ((this.session.queueDepth?.() ?? 0) > 0) {
+    // Fast ack (issue #24): a channel's session is single-flight, so a mention landing while that
+    // channel already has a turn running (or queued), or while the pool's turn gate is saturated,
+    // would sit for minutes behind only a typing indicator. Acknowledge within seconds —
+    // code-level, no model turn.
+    if ((this.pool.sessionFor(m.channelId).queueDepth?.() ?? 0) > 0 || this.turnGate.saturated()) {
       void this.gateway
         .post(m.channelId, FAST_ACK_TEXT, { replyToMessageId: m.messageId })
         .catch(() => undefined);
@@ -2757,7 +2922,7 @@ export class Concierge {
       const turn = await this.buildTurn(m, content, workspace);
       // The mention rides as the turn's meta so CLI replies correlate to THIS turn (issue #24);
       // person turns take PRIORITY over queued ticket-update turns (issue #25).
-      const reply = await this.session.ask(turn, mention, { priority: true });
+      const reply = await this.pool.ask(m.channelId, turn, mention, { priority: true });
       keepTyping = false;
       clearInterval(typing);
       const text = reply.trim();
@@ -2785,7 +2950,7 @@ export class Concierge {
         })
         .catch(() => undefined);
     } finally {
-      if (this.activeMention === mention) this.activeMention = null;
+      if (this.activeMentions.get(m.channelId) === mention) this.activeMentions.delete(m.channelId);
     }
   }
 
@@ -2976,9 +3141,9 @@ export class Concierge {
       ambient: true,
       declined: false,
     };
-    this.activeMention = claim;
+    this.activeMentions.set(turn.channelId, claim);
     try {
-      const reply = (await this.session.ask(framed, claim, { priority: false })).trim();
+      const reply = (await this.pool.ask(turn.channelId, framed, claim, { priority: false })).trim();
       // OPS-101 hold-and-cancel backstop (OPS-99 §5.3): if the concierge ran `beckett discord
       // decline` this turn, it judged the burst wasn't for it (a classifier false-positive). Abort
       // exactly like a PASS: post nothing, consume no cooldown. This wins over any drafted reply
@@ -3012,7 +3177,7 @@ export class Concierge {
       }
       return reply;
     } finally {
-      if (this.activeMention === claim) this.activeMention = null;
+      if (this.activeMentions.get(turn.channelId) === claim) this.activeMentions.delete(turn.channelId);
     }
   }
 
@@ -3139,7 +3304,7 @@ export class Concierge {
   /** The current channel's unseen-window block of {@link sharedContextPrefix} ("" when caught up). */
   private sharedTranscriptBlock(channelId: string, excludeMessageId?: string): string {
     if (!this.channelStore) return "";
-    const sessionId = this.session.currentSessionId?.() ?? "";
+    const sessionId = this.pool.sessionIdFor(channelId);
     const unseen = this.channelStore
       .takeUnseen(channelId, sessionId)
       .filter((e) => e.messageId !== excludeMessageId);
@@ -3189,14 +3354,16 @@ export class Concierge {
       .slice(0, Math.max(1, sc.awareness_max_channels ?? 5));
     if (infos.length === 0) return "";
 
-    const sessionId = this.session.currentSessionId?.() ?? "";
+    const sessionId = this.pool.sessionIdFor(channelId);
     const signature = infos
       .map((c) => `${c.channelId}:${c.lastTs}:${c.profile?.updatedAt ?? 0}`)
       .join("|");
-    if (this.awarenessSeen?.sessionId === sessionId && this.awarenessSeen.signature === signature) {
+    const scope = this.pool.scopeKey(channelId);
+    const seen = this.awarenessSeen.get(scope);
+    if (seen?.sessionId === sessionId && seen.signature === signature) {
       return "";
     }
-    this.awarenessSeen = { sessionId, signature };
+    this.awarenessSeen.set(scope, { sessionId, signature });
 
     const lines = infos.map((c) => {
       const label = c.name ? `#${c.name}` : "(unnamed)";
@@ -3850,8 +4017,9 @@ function frameAmbientCandidate(
     `Reply with exactly PASS when a human already answered, the plan is settled, the moment closed,\n` +
     `someone is upset, or your reply would only agree, restate, nitpick, or add a generic quip.\n` +
     `If on reflection this turn belongs to someone else (triage can misread the addressee), run\n` +
-    `\`beckett discord decline\` BEFORE you write anything — that quietly drops the turn, posting\n` +
-    `nothing. Prefer it over posting a reply into a conversation that wasn't yours.\n` +
+    `\`beckett discord decline --channel ${channelId}\` BEFORE you write anything — that quietly\n` +
+    `drops the turn, posting nothing. Prefer it over posting a reply into a conversation that\n` +
+    `wasn't yours.\n` +
     `Do not file a ticket yet. An offer is a question, not a commitment.`
   );
 }

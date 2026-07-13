@@ -69,7 +69,10 @@ function resolveRepoRoot(ticket: Ticket): string {
 /**
  * Beckett version. v4.0 — the multiplayer release (OPS-80): channel-scoped shared context, so
  * everyone in a Discord channel collaborates with the same Beckett instead of getting isolated
- * per-user sessions. See CHANGELOG.md.
+ * per-user sessions. v4.2 adds per-CHANNEL sessions (OPS-80 §9.3): conversations in different
+ * channels run concurrently through a bounded turn gate instead of queueing behind one global
+ * session, and a DM's transcript is structurally partitioned from every guild channel's.
+ * See CHANGELOG.md.
  */
 // ONE version source (issue #29): package.json. The old hand-maintained constant drifted three
 // ways (package.json 3.1.1 / this file 3.3.0 / CHANGELOG 3.3). Read at module load; the file

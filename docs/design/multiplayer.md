@@ -354,12 +354,19 @@ one sitting; no schema migrations; no dispatcher, gateway, or memory-engine chan
 1. **Memory visibility scoping** — `visibility: public|owner|dm` frontmatter, recall
    audience filter, save-time defaults for DM-learned facts. Engine change with its
    own test surface; soft boundary anyway (one brain). File as its own ticket.
+   *→ Shipped (v4.2): structured provenance (`source_user`/`source_name`) + `visibility`
+   frontmatter with a fail-closed `canView` audience filter on recall (`--viewer`,
+   `--viewer-role`, `--context`); dm facts bind to `dm_with` and never render in guild turns.*
 2. **Per-guild digest** — a rotating summary block ("what's happening on this
    server") generated from channel windows, never sourced from or delivered to DMs.
    Evaluate only after telemetry from this PR shows token headroom.
 3. **Per-scope sessions** (DM vs guild, or per-channel pools) — the real fix for
    model-side DM bleed and single-flight contention (`pump()`, index.ts:305). Big
    architectural change; decide after multiplayer usage is real.
+   *→ Shipped (v4.2): a per-channel `SessionPool` (`src/concierge/session-pool.ts`) with a
+   shared `TurnGate` bounding concurrent turns, LRU/idle child recycling with `--resume`,
+   per-scope state files, channel-first reply-claim correlation, and a `session_scope =
+   "global"` kill switch. DMs get structurally separate sessions.*
 4. **`session.stats()` injected-token metrics** — this PR logs a debug line; wiring
    it into `beckett status` can ride any later ops ticket.
 5. **Attachment re-inlining in windows** — windows keep `[file: name]` placeholders;

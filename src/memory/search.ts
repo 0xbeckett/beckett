@@ -23,6 +23,7 @@
  * Everything here is pure over parsed nodes — no filesystem access.
  */
 
+import { z } from "zod";
 import type { MemoryNode } from "../types.ts";
 
 /** Tiny English stopword set (moved from index.ts; lexical, not embeddings). */
@@ -251,4 +252,100 @@ function dice(a: Set<string>, b: Set<string>): number {
   let inter = 0;
   for (const x of a) if (b.has(x)) inter++;
   return (2 * inter) / (a.size + b.size);
+}
+
+// =======================================================================================
+// Visibility + provenance (multiplayer §7/§9.1)
+// =======================================================================================
+// Provenance ("who taught me this") and visibility ("who may recall it") are structural,
+// not prose convention. All four frontmatter fields are OPTIONAL — a file without them is a
+// plain public node, so every pre-existing memory keeps its meaning unchanged. This is the
+// single validation boundary: read-time, zod-checked, and FAIL-CLOSED — an unparseable
+// scope never widens access, and a `dm` node missing its partner degrades to `owner`.
+
+/** Effective node scope. Absent frontmatter ⇒ `public` (open beta default). */
+export type Visibility = "public" | "owner" | "dm";
+
+/** Who is asking, resolved by the caller (concierge/CLI) from the live turn — never stored. */
+export interface Audience {
+  /** The viewer's Discord id. Absent ⇒ fail-closed: only public nodes are returned. */
+  viewerId?: string;
+  /** The viewer's authority. Only `owner` unlocks owner-scoped facts. */
+  viewerRole: "owner" | "maintainer" | "member";
+  /** Whether the live turn is a DM or a guild channel — DM facts never surface in guilds. */
+  context: "guild" | "dm";
+}
+
+/** The parsed, effective provenance of a node (post fail-closed coercion). */
+export interface Provenance {
+  visibility: Visibility;
+  /** The DM partner id — meaningful only for `dm` visibility. */
+  dmWith?: string;
+  /** Discord id of who taught the fact. */
+  sourceUser?: string;
+  /** Display label for {@link sourceUser}. */
+  sourceName?: string;
+}
+
+/** A Discord snowflake as it appears in frontmatter: 1–20 digits. */
+const DISCORD_ID = /^\d{1,20}$/;
+const VisibilitySchema = z.enum(["public", "owner", "dm"]);
+/** Ids can round-trip through the YAML parser as numbers; coerce then shape-check with zod. */
+const IdSchema = z.coerce.string().regex(DISCORD_ID);
+
+function idOrUndefined(v: unknown): string | undefined {
+  if (typeof v !== "string" && typeof v !== "number") return undefined;
+  const parsed = IdSchema.safeParse(v);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * Read a node's effective visibility + provenance, validating each field independently so one
+ * malformed field never poisons the rest. Fail-closed: a present-but-invalid `visibility`
+ * becomes `owner` (never public), and `dm` without a valid `dm_with` degrades to `owner`.
+ */
+export function provenanceOf(node: Pick<MemoryNode, "metadata">): Provenance {
+  const m = node.metadata ?? {};
+  const raw = m.visibility;
+  const vis = VisibilitySchema.safeParse(raw);
+  let visibility: Visibility;
+  if (raw == null) visibility = "public";
+  else visibility = vis.success ? vis.data : "owner";
+
+  const dmWith = idOrUndefined(m.dm_with);
+  if (visibility === "dm" && !dmWith) visibility = "owner";
+
+  const sourceName =
+    typeof m.source_name === "string" && m.source_name.trim() ? m.source_name.trim() : undefined;
+  return { visibility, dmWith, sourceUser: idOrUndefined(m.source_user), sourceName };
+}
+
+/**
+ * The audience gate applied to EVERY recalled node (seeds and one-hop expansions alike):
+ *   - public → always visible.
+ *   - owner  → visible iff the viewer's role is owner.
+ *   - dm     → visible iff the turn is a DM AND the viewer is the node's `dm_with`
+ *              (a DM fact stays in that DM — not even the owner sees it in a guild).
+ * No viewer id ⇒ only public passes, so a forgotten `--viewer` can never leak a scoped fact.
+ */
+export function canView(node: MemoryNode, audience?: Audience): boolean {
+  const { visibility, dmWith } = provenanceOf(node);
+  if (visibility === "public") return true;
+  if (!audience?.viewerId) return false;
+  if (visibility === "owner") return audience.viewerRole === "owner";
+  return audience.context === "dm" && audience.viewerId === dmWith;
+}
+
+/** `8812…` — a recognizable but non-echoing id fragment for human-readable output. */
+export function shortId(id: string): string {
+  return id.length > 4 ? `${id.slice(0, 4)}…` : id;
+}
+
+/** Render provenance as `from zoomx64 (user:8812…)` when source fields exist, else null. */
+export function renderProvenance(node: Pick<MemoryNode, "metadata">): string | null {
+  const { sourceUser, sourceName } = provenanceOf(node);
+  if (sourceName && sourceUser) return `from ${sourceName} (user:${shortId(sourceUser)})`;
+  if (sourceName) return `from ${sourceName}`;
+  if (sourceUser) return `from user:${shortId(sourceUser)}`;
+  return null;
 }

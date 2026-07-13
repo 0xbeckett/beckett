@@ -309,9 +309,11 @@ test("BECKETT_STARTUP_CHANNEL_ID=disabled suppresses startup and crash-loop post
     expect(posts).toHaveLength(0);
 
     const crashConcierge = new Concierge({ config: config(tmpBeckettDir()), gateway });
+    // Sessions are pool-built now (OPS-80 §9.3): mint one via the pool's factory WITHOUT starting
+    // it (no child process in a unit test) and poke its crash-loop alarm directly.
     const session = (crashConcierge as unknown as {
-      session: { onCrashLoop?: (info: { count: number; code: number }) => void };
-    }).session;
+      pool: { opts: { makeSession(scope: string): { onCrashLoop?: (info: { count: number; code: number }) => void } } };
+    }).pool.opts.makeSession("chan-crash");
     expect(typeof session.onCrashLoop).toBe("function");
     session.onCrashLoop!({ count: 3, code: 1 });
     await Promise.resolve();
