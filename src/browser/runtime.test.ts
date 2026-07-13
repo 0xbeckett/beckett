@@ -481,7 +481,7 @@ test("profile growth watchdog stops web-storage abuse while preserving persisten
   // measured right after launch, and on a slow runner Chromium's first-run writes (shader
   // caches, LevelDBs) land after it. A 512 KiB budget let those writes trip the watchdog
   // before the eval ran — Chromium died and the evaluator's CDP connect was refused (the
-  // recurring CI flake). 16 MiB is far above first-run noise, far below the 48 MiB hog.
+  // recurring CI flake). 16 MiB is far above first-run noise, far below the 24 MiB hog.
   const runtime = createLocalBrowserRuntime({
     settings: browserHostSettings(config),
     logger: quietLog,
@@ -498,7 +498,7 @@ test("profile growth watchdog stops web-storage abuse while preserving persisten
       await page.goto(${JSON.stringify(`${baseUrl}/storage`)})
       await page.evaluate(async () => {
         document.cookie = 'profile_budget_cookie=kept; path=/; max-age=3600';
-        const bytes = new Uint8Array(48 * 1024 * 1024);
+        const bytes = new Uint8Array(24 * 1024 * 1024);
         for (let offset = 0; offset < bytes.length; offset += 65536) {
           crypto.getRandomValues(bytes.subarray(offset, Math.min(bytes.length, offset + 65536)));
         }
@@ -648,7 +648,9 @@ test("the controller closes excess tabs and force-disposes raw browser contexts"
     await runtime.stop();
     rmSync(dir, { recursive: true, force: true });
   }
-}, 30_000);
+  // 60s like the other Chromium-heavy tests: six sequential evals (each bracketed by profile
+  // scans) run ~10s on a healthy runner but cleared 30s on a loaded one.
+}, 60_000);
 
 test("a timed-out evaluator marks the outcome uncertain and leaves the lease inspectable", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-timeout-test-"));
