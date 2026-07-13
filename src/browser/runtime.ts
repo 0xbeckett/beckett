@@ -1001,6 +1001,11 @@ export function createLocalBrowserRuntime(deps: CreateLocalBrowserRuntimeDeps): 
     evaluated: BrowserEvaluatorOutput,
   ): Promise<BrowserEvalResult> {
     if (!evaluated || (evaluated.ok !== true && evaluated.recoverable !== true)) {
+      // The profile watchdog can race an in-flight evaluation: it sets profileBudgetError and
+      // closes Chromium, and the evaluator then dies with a transport error (connect
+      // ECONNREFUSED). The budget breach is the root cause — surface it, not the fallout.
+      await enforceProfileBudget(lease).catch(() => undefined);
+      assertProfileHealthy();
       throw new Error(evaluated?.error ?? "browser evaluator did not complete successfully");
     }
     const succeeded = evaluated.ok === true;

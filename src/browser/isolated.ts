@@ -700,9 +700,10 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
               parentEnv: process.env,
             },
           );
-          if (!evaluated.ok && evaluated.recoverable !== true) {
-            throw new Error(evaluated.error ?? "browser evaluator failed before producing recoverable state");
-          }
+          // A non-recoverable failure still goes through applyEvaluation: the host refuses to
+          // apply its state and throws — but with the ROOT CAUSE. When the profile watchdog
+          // killed Chromium mid-eval, the evaluator only sees the fallout (a CDP transport
+          // error); the host knows the budget breach that caused it and reports that instead.
           const result = await rpc(
             "applyEvaluation",
             { runId, evaluated: evaluated as BrowserEvaluatorOutput },

@@ -477,10 +477,15 @@ test("an oversized persistent profile is rejected before Chromium starts", async
 test("profile growth watchdog stops web-storage abuse while preserving persistent cookies", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-profile-budget-test-"));
   const config = validateConfig({ paths: { beckett_dir: dir }, quick: { browser_profile_dir: "browser/profile" } });
+  // The growth budget needs headroom above Chromium's OWN profile writes: the baseline is
+  // measured right after launch, and on a slow runner Chromium's first-run writes (shader
+  // caches, LevelDBs) land after it. A 512 KiB budget let those writes trip the watchdog
+  // before the eval ran — Chromium died and the evaluator's CDP connect was refused (the
+  // recurring CI flake). 16 MiB is far above first-run noise, far below the 48 MiB hog.
   const runtime = createLocalBrowserRuntime({
     settings: browserHostSettings(config),
     logger: quietLog,
-    maxProfileGrowthBytes: 512 * 1024,
+    maxProfileGrowthBytes: 16 * 1024 * 1024,
   });
   try {
     await runtime.acquire({
@@ -493,7 +498,7 @@ test("profile growth watchdog stops web-storage abuse while preserving persisten
       await page.goto(${JSON.stringify(`${baseUrl}/storage`)})
       await page.evaluate(async () => {
         document.cookie = 'profile_budget_cookie=kept; path=/; max-age=3600';
-        const bytes = new Uint8Array(3 * 1024 * 1024);
+        const bytes = new Uint8Array(48 * 1024 * 1024);
         for (let offset = 0; offset < bytes.length; offset += 65536) {
           crypto.getRandomValues(bytes.subarray(offset, Math.min(bytes.length, offset + 65536)));
         }
@@ -519,6 +524,42 @@ test("profile growth watchdog stops web-storage abuse while preserving persisten
   } finally {
     if (runtime.hasLease("storage-hog")) await runtime.release("storage-hog", false).catch(() => undefined);
     if (runtime.hasLease("after-storage-hog")) await runtime.release("after-storage-hog", false).catch(() => undefined);
+    await runtime.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("a budget breach outranks the evaluator's transport error when the watchdog kills Chromium mid-eval", async () => {
+  // The race behind the recurring CI flake: the watchdog detects a breach, sets the budget
+  // error, and closes Chromium in the window between prepareEvaluation's health checks and
+  // the evaluator's CDP connect — so the evaluator dies with a bare transport error (connect
+  // ECONNREFUSED) and no recoverable state, and applyEvaluation used to throw that fallout
+  // verbatim. Reproduced at the deterministic seam: breach the budget on disk, then hand
+  // applyEvaluation exactly what the orphaned evaluator reports. The surfaced error must be
+  // the budget breach, never the transport fallout.
+  const dir = mkdtempSync(join(tmpdir(), "beckett-browser-budget-attribution-test-"));
+  const config = validateConfig({ paths: { beckett_dir: dir }, quick: { browser_profile_dir: "browser/profile" } });
+  const settings = browserHostSettings(config);
+  const runtime = createInjectedLocalBrowserRuntime({
+    settings,
+    logger: quietLog,
+    maxProfileGrowthBytes: 1024 * 1024,
+    launchPersistentContext: chromium.launchPersistentContext.bind(chromium),
+  });
+  try {
+    await runtime.acquire({
+      runId: "budget-attribution",
+      channelId: null,
+      artifactsDir: join(dir, "quick", "budget-attribution", "artifacts"),
+      controlToken: CONTROL_TOKEN,
+    });
+    writeFileSync(join(settings.profileDir, "mid-eval-growth.bin"), randomBytes(4 * 1024 * 1024));
+    await expect(runtime.applyEvaluation("budget-attribution", {
+      ok: false,
+      error: "browserType.connectOverCDP: connect ECONNREFUSED 127.0.0.1:1",
+    })).rejects.toThrow(/profile storage budget exceeded/);
+  } finally {
+    if (runtime.hasLease("budget-attribution")) await runtime.release("budget-attribution", false).catch(() => undefined);
     await runtime.stop();
     rmSync(dir, { recursive: true, force: true });
   }
