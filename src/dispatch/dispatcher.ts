@@ -76,6 +76,7 @@ import {
 } from "./publish-outbox.ts";
 import { resolveGitHubOwner } from "../github/owner.ts";
 import { gitBranchForTicket } from "../git/branch-name.ts";
+import { DispatchEventBus, type DispatchEventBusOptions, type DispatchOutcome } from "./events.ts";
 
 // =======================================================================================
 // Collaborators
@@ -149,6 +150,12 @@ export interface DispatcherDeps {
   advanceOutboxPath?: string;
   /** JSONL path for durable GitHub publish retries. The queued row exclusively owns its worktree. */
   publishOutboxPath?: string;
+  /** Append-only dispatch/deploy timeline. Every stage transition is persisted here before live relay. */
+  dispatchEventsPath?: string;
+  /** Optional central telemetry bus (injected by the daemon; useful for tests too). */
+  dispatchEvents?: DispatchEventBus;
+  /** Best-effort Discord/live sink. Never awaited by the dispatcher. */
+  dispatchLiveSink?: DispatchEventBusOptions["liveSink"];
   /** JSON path for restart-surviving dispatcher ticket memory (base SHA + retry/rework counters). */
   runtimeStatePath?: string;
   /** Append-only per-stage telemetry JSONL path; defaults to config `[paths].spend`. */
@@ -446,6 +453,8 @@ export class Dispatcher {
   private readonly publishOutbox?: PublishOutbox;
   private readonly runtimeStatePath?: string;
   private readonly spendLedgerPath: string;
+  /** OPS-167's only transition telemetry chokepoint; persistence happens inside `emit`. */
+  private readonly dispatchEvents: DispatchEventBus;
 
   /** At most one live worker per ticket (implement OR review). */
   private readonly workers = new Map<string, TicketWorkerHandle>();
@@ -568,6 +577,11 @@ export class Dispatcher {
     this.sweepOrphan =
       deps.sweepOrphan ?? ((pid, expectedBin) => sweepLedgeredWorker(pid, expectedBin, this.logger));
     this.preflight = deps.preflight;
+    this.dispatchEvents = deps.dispatchEvents ?? new DispatchEventBus({
+      path: deps.dispatchEventsPath,
+      liveSink: deps.dispatchLiveSink,
+      onSinkError: (error) => this.logger.warn("dispatch live event sink failed (persisted timeline is intact)", { error: String(error) }),
+    });
     this.loadRuntimeState();
   }
 
@@ -715,6 +729,19 @@ export class Dispatcher {
     return h?.[harness]?.bin || harness;
   }
 
+  /** Emit one persisted-before-live stage transition. No dispatch path writes telemetry directly. */
+  private trace(ticket: Ticket, stage: string, outcome: DispatchOutcome, message?: string, error?: string): void {
+    this.dispatchEvents.emit({
+      ticketId: ticket.id,
+      ticketRef: ticket.branchRef ? `#${ticket.branchRef}` : ticket.identifier,
+      branchRef: gitBranchForTicket(ticket),
+      stage,
+      outcome,
+      message,
+      error,
+    });
+  }
+
   private rememberTicket(ticket: Ticket | null | undefined): void {
     if (ticket?.id && ticket.projectId) this.projectIdByTicketId.set(ticket.id, ticket.projectId);
   }
@@ -763,6 +790,7 @@ export class Dispatcher {
       try {
         await this.handleOne(e);
       } catch (err) {
+        this.trace(e.ticket, "dispatch", "failed", `handling ${e.kind}`, (err as Error).message);
         this.logger.error("event handling failed — continuing with the rest of the batch", {
           kind: e.kind,
           ticket: e.ticket.identifier,
@@ -1005,6 +1033,7 @@ export class Dispatcher {
     from: TicketState | null,
     to: TicketState,
   ): Promise<void> {
+    this.trace(ticket, `state:${to}`, to === "cancelled" ? "cancelled" : to === "backlog" || to === "todo" || to === "design_review" ? "held" : "info", from ? `${from} → ${to}` : `entered ${to}`);
     this.logger.info("ticket state changed", { ticket: ticket.identifier, from, to });
     // A queued operation owns the checkout while it holds the ticket in_review. Any human move
     // away from that hold is an explicit courier/intervention handoff, never a race to a second PR.
@@ -1168,6 +1197,7 @@ export class Dispatcher {
   }
 
   private async onCancelled(ticket: Ticket): Promise<void> {
+    this.trace(ticket, "cancel", "cancelled", "ticket cancellation received");
     this.publishOutbox?.cancel(ticket.id);
     const handle = this.workers.get(ticket.id);
     // Cancelled = the work is not wanted; held steering dies with it (deliberate, issue #22).
@@ -1197,6 +1227,7 @@ export class Dispatcher {
   }
 
   private async onParked(ticket: Ticket, state: "todo" | "backlog" | "design_review"): Promise<void> {
+    this.trace(ticket, "park", "held", `held in ${state}`);
     this.publishOutbox?.cancel(ticket.id);
     const handle = this.workers.get(ticket.id);
     this.clearTicketMemory(ticket.id);
@@ -1253,6 +1284,7 @@ export class Dispatcher {
     }
 
     const handle = this.workers.get(ticket.id);
+    this.trace(ticket, "restaff", "started", "operator requested re-staff");
     this.cancelSpawnRetry(ticket.id);
     this.dropPending(ticket.id);
     this.staffing.delete(ticket.id);
