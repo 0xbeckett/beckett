@@ -59,8 +59,11 @@ test("status merges the provider's daemon half with the Concierge's own", async 
   expect(data.version).toBe("3.5.0");
   expect(data.workers).toEqual([{ state: "live", ticket: "OPS-9" }]);
   expect(data.discord).toEqual({ connected: true, lastEventAgeMs: 1234 });
-  expect(data.concierge.sessionId).toBe("s-1");
-  expect(data.concierge.rotations).toBe(2);
+  // The concierge half is now the session POOL's shape (OPS-80 §9.3): per-scope session stats
+  // under `perSession`, plus the shared turn-gate readout.
+  expect(data.concierge.perSession.global.sessionId).toBe("s-1");
+  expect(data.concierge.perSession.global.rotations).toBe(2);
+  expect(data.concierge.turnGate.limit).toBeGreaterThanOrEqual(1);
 });
 
 test("status without a wired provider still answers with the Concierge-local half", async () => {
@@ -69,7 +72,7 @@ test("status without a wired provider still answers with the Concierge-local hal
   expect(res.ok).toBeTrue();
   const data = res.data as Record<string, any>;
   expect(data.discord.connected).toBeTrue();
-  expect(data.concierge.contextTokens).toBe(55_000);
+  expect(data.concierge.perSession.global.contextTokens).toBe(55_000);
 });
 
 test("a throwing provider is an honest error, not a crash", async () => {

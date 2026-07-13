@@ -481,6 +481,18 @@ const ConfigSchema = z
         // Reasoning effort for the chat seat (issue #25): acks/triage rarely need max reasoning.
         // Empty = the claude CLI's own default. A knob, not a hardcode — the voice is the product.
         effort: z.enum(["", "low", "medium", "high", "xhigh"]).default(""),
+        // Multi-session concierge (OPS-80 §9.3): "channel" runs one session per Discord channel
+        // (DMs included — a DM is its own channel), so conversations in different channels no
+        // longer queue behind one global turn. "global" restores the single-session v4.0 behavior.
+        session_scope: z.enum(["channel", "global"]).default("channel"),
+        // Cap on turns EXECUTING at once across all sessions (each is a full claude turn — this is
+        // a spend/QPS lever, not a correctness one; queued turns wait for a slot).
+        max_concurrent_turns: posInt.default(3),
+        // Cap on live `claude` child PROCESSES. Beyond it the least-recently-used idle session's
+        // child is recycled (killed); its transcript survives — the next turn resumes it.
+        max_live_sessions: posInt.default(6),
+        // Recycle a session's child after this much idle time (same resume-on-demand semantics).
+        idle_recycle_minutes: posInt.default(30),
       })
       .default({}),
     // Quick agents — the no-ticket lane. Sonnet at medium: these are errands where

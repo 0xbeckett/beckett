@@ -67,7 +67,15 @@ import type {
   ScoredNode,
 } from "../types.ts";
 import { log as rootLog } from "../log.ts";
-import { corpusStats, DEDUP_THRESHOLD, nodeSimilarity, scoreNode } from "./search.ts";
+import {
+  type Audience,
+  canView,
+  corpusStats,
+  DEDUP_THRESHOLD,
+  nodeSimilarity,
+  provenanceOf,
+  scoreNode,
+} from "./search.ts";
 import { planMaintenance, type MaintainReport } from "./maintain.ts";
 
 // =======================================================================================
@@ -122,8 +130,12 @@ const META_ORDER = [
   // decision
   "decided", "supersedes",
 ];
-/** Provenance fields rendered last (Spec 08 §1.2). */
-const META_TAIL = ["created", "updated", "source", "confidence", "ttl", "archived", "archived_reason"];
+/** Provenance fields rendered last (Spec 08 §1.2; visibility/provenance from multiplayer §7). */
+const META_TAIL = [
+  "visibility", "dm_with",
+  "created", "updated", "source", "source_user", "source_name",
+  "confidence", "ttl", "archived", "archived_reason",
+];
 
 // =======================================================================================
 // Construction
@@ -165,7 +177,7 @@ export class MemoryStore implements Memory {
 
   // ── recall (Spec 08 §3) ────────────────────────────────────────────────────────────
 
-  async recall(q: RecallQuery): Promise<RecallResult> {
+  async recall(q: RecallQuery & { audience?: Audience }): Promise<RecallResult> {
     const g = this.buildGraph();
     return recallOver(q, g);
   }
@@ -543,11 +555,31 @@ export class MemoryStore implements Memory {
 // Recall (pure over the graph — Spec 08 §3.2)
 // =======================================================================================
 
-/** Score + expand a query against a built graph. Exported for testing/Spec 06 reuse. */
-export function recallOver(q: RecallQuery, g: MemoryGraph): RecallResult {
+/**
+ * Score + expand a query against a built graph. Exported for testing/Spec 06 reuse.
+ *
+ * `q.audience` is the hard, fail-closed visibility gate (multiplayer §9.1): it is applied to
+ * every seed AND every one-hop expansion target, so a scoped fact never appears — not even as
+ * a backlink/expansion stub. No audience (or no viewer id) ⇒ only public nodes are returned.
+ */
+export function recallOver(q: RecallQuery & { audience?: Audience }, g: MemoryGraph): RecallResult {
   const k = q.k ?? DEFAULT_K;
   const hops = q.hops ?? DEFAULT_HOPS;
+  const audience = q.audience;
   const now = Date.now();
+
+  // The single fail-closed visibility chokepoint: canView re-parses a node's provenance on
+  // every call, and every node is gated up to three times per recall (seed, expansion, index).
+  // Memoize the verdict per node name so provenanceOf runs at most once per node per recall.
+  const verdicts = new Map<string, boolean>();
+  const visible = (node: MemoryNode): boolean => {
+    let v = verdicts.get(node.name);
+    if (v === undefined) {
+      v = canView(node, audience);
+      verdicts.set(node.name, v);
+    }
+    return v;
+  };
 
   // Targeted retrieval (OPS-121): --type / --name narrow the candidate set BEFORE scoring,
   // so `beckett recall --type person` is a precise fetch, not a fuzzy ranking.
@@ -568,6 +600,7 @@ export function recallOver(q: RecallQuery, g: MemoryGraph): RecallResult {
     .map((line): ScoredNode | null => {
       const node = g.nodes.get(line.name);
       if (!node) return null;
+      if (!visible(node)) return null; // hard, fail-closed audience gate
       if (!hasText) {
         if (!typeFilter && !nameFilter) return null;
         return { node, score: recency(node, now), via: "match", reason: "filter match" };
@@ -601,10 +634,11 @@ export function recallOver(q: RecallQuery, g: MemoryGraph): RecallResult {
         // For an out-edge we hop to `to`; for a high-value backlink we hop to the linker `from`.
         const target = outE.includes(e) ? e.to : e.from;
         if (seen.has(target)) continue;
+        const node = g.nodes.get(target);
+        // A hidden node is never traversed or stubbed — the same fail-closed gate as seeds.
+        if (!node || !visible(node)) continue;
         seen.add(target);
         next.push(target);
-        const node = g.nodes.get(target);
-        if (!node) continue;
         if (node.phantom) phantomsSeen.add(node.name);
         expanded.push({
           node,
@@ -623,7 +657,12 @@ export function recallOver(q: RecallQuery, g: MemoryGraph): RecallResult {
   }
 
   return {
-    index: g.index,
+    // The index rides along on every recall — filter it under the SAME gate as hits/expansions:
+    // even a scoped node's name + description is a leak to the wrong audience (multiplayer §9.1).
+    index: g.index.filter((line) => {
+      const node = g.nodes.get(line.name);
+      return node ? visible(node) : false; // unknown ⇒ fail closed, like everything here
+    }),
     hits: seeds,
     expanded: expanded.sort((a, b) => b.score - a.score),
     phantoms: [...phantomsSeen],
@@ -671,11 +710,20 @@ function findExisting(intent: RememberIntent, g: MemoryGraph): MemoryNode | null
 
   // 4. High-similarity description/name match of the SAME type → likely the same fact.
   //    Stemmed similarity (search.ts), so "deploying the docs" collides with "deploy docs".
+  //    But a similarity (non-exact-name) match must NOT cross a visibility boundary: the
+  //    metadata merge would rewrite scope, so a dm-scoped save could swallow/flip a public
+  //    node (and vice versa). Only match a node whose effective visibility+dm_with equals the
+  //    intended save's — the same provenanceOf rule the maintenance pass uses (maintain.ts).
+  //    (Exact name/alias/phantom hits above are identity, not similarity, so they still merge
+  //    with the explicit-flag-wins scope rule regardless of the prior scope.)
   if (!intent.description) return null;
+  const intended = provenanceOf({ metadata: intent.metadata ?? {} });
   let best: { node: MemoryNode; sim: number } | null = null;
   for (const n of g.nodes.values()) {
     if (n.phantom) continue;
     if (intent.type && n.type !== intent.type) continue;
+    const p = provenanceOf(n);
+    if (p.visibility !== intended.visibility || p.dmWith !== intended.dmWith) continue;
     const sim = nodeSimilarity({ name: intent.name, description: intent.description }, n);
     if (!best || sim > best.sim) best = { node: n, sim };
   }
@@ -860,13 +908,21 @@ function buildIndex(nodes: Map<string, MemoryNode>): IndexLine[] {
   );
 }
 
-/** Render `MEMORY.md` deterministically so a single-fact change is a single-line diff (§4.5). */
+/** Render `MEMORY.md` deterministically so a single-fact change is a single-line diff (§4.5).
+ *  PUBLIC nodes only: MEMORY.md is the always-loaded convenience materialization, read into
+ *  arbitrary sessions (including ones serving non-owners), so even a scoped node's name +
+ *  one-line description landing in it would leak past the fail-closed recall gate (multiplayer
+ *  §9.1). Scoped facts are reachable only through `recall` with a proper audience. */
 export function renderIndex(g: MemoryGraph): string {
-  const realCount = [...g.nodes.values()].filter((n) => !n.phantom).length;
+  // Fail closed like recall: a line whose node is missing (or unparseable) is omitted too.
+  const lines = g.index.filter((line) => {
+    const node = g.nodes.get(line.name);
+    return node ? provenanceOf(node).visibility === "public" : false;
+  });
   let out = "# Beckett Memory Index\n";
-  out += `<!-- GENERATED. Do not edit. Regenerated on every memory write. last: ${nowIso()}, ${realCount} nodes -->\n`;
+  out += `<!-- GENERATED. Do not edit. Regenerated on every memory write. last: ${nowIso()}, ${lines.length} public nodes (scoped nodes are omitted — recall with an audience) -->\n`;
   let lastType: string | null = null;
-  for (const line of g.index) {
+  for (const line of lines) {
     if (line.type !== lastType) {
       out += `\n## ${line.type}\n`;
       lastType = String(line.type);
@@ -1236,6 +1292,12 @@ function serializeFlowItem(v: unknown): string {
 
 function serializeMaybeQuoted(s: string): string {
   if (s === "") return '""';
+  // An all-digit STRING value must always be quoted: a bare scalar round-trips through the YAML
+  // parser as a Number, silently corrupting any id past 2^53 (Discord snowflakes are 17–20
+  // digits). This generalizes the former per-key id allowlist so ANY future digit-valued key
+  // (dm_with, source_user, a not-yet-invented one) survives as an exact string. (Numeric-typed
+  // metadata never reaches here — serializeMeta renders `number`s directly.)
+  if (/^\d+$/.test(s)) return JSON.stringify(s);
   // Plain scalar is safe only for simple, comment/flow-free tokens (dates, slugs, paths, emails).
   const safe = /^[A-Za-z0-9][A-Za-z0-9 _.\-:/@+]*$/.test(s) && !/:\s/.test(s) && !/\s#/.test(s);
   return safe ? s : JSON.stringify(s);

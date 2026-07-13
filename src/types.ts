@@ -773,6 +773,14 @@ export interface Config {
     rotate_at_tokens: number;
     /** Reasoning effort for the chat seat ("" = the claude CLI default; issue #25). */
     effort: "" | "low" | "medium" | "high" | "xhigh";
+    /** "channel" = one session per Discord channel (concurrent conversations); "global" = the legacy single session. */
+    session_scope: "channel" | "global";
+    /** Turns executing at once across all concierge sessions (queued turns wait for a slot). */
+    max_concurrent_turns: number;
+    /** Live `claude` child processes; beyond it idle sessions are recycled (resume-on-demand). */
+    max_live_sessions: number;
+    /** Idle minutes before a session's child is recycled (transcript survives via --resume). */
+    idle_recycle_minutes: number;
   };
   /**
    * Quick agents — the NO-TICKET lane: short-lived specialist `claude -p` harnesses

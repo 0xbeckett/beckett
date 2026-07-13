@@ -36,6 +36,9 @@ Beckett has two seats:
 - **The Concierge** — a long-lived `claude -p` (Opus) agent that owns Discord. It's the only
   thing that talks to people. It chats, sizes effort, and for real work creates a numbered
   **task** (`#42`) with executable **branches** (`#42.1`, `#42.2`). It never writes the code itself.
+  It's not single-threaded: each channel (and each DM) gets its own persistent session, so
+  conversations in different channels run concurrently under a bounded turn gate — being deep in a
+  task in one room never queues everyone else behind it.
 - **The fleet** — a poller watches the Plane queue; a **dispatcher** turns ticket state changes
   into work. A ticket moving to *In Progress* spawns a coding agent in an isolated git worktree;
   *In Review* spawns a reviewer; a new comment steers the live worker; done advances the ticket
