@@ -40,6 +40,7 @@ import { resolveGitHubOwner } from "../github/owner.ts";
 import { log as rootLog } from "../log.ts";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
+import { formatDispatchEvent, type DispatchEvent } from "../dispatch/events.ts";
 import { serveBus, type BusRequest, type BusResponse } from "../shell/control-bus.ts";
 import { createDiscordGateway, type DiscordGateway } from "../discord/gateway.ts";
 import {
@@ -1097,6 +1098,9 @@ export interface ConciergeOptions {
  * `@beckett` mention (and every DM) becomes one session turn whose reply is posted back to
  * the originating channel as a native reply.
  */
+/** Dedicated operations channel for the live dispatch/deploy timeline (OPS-167). */
+export const DISPATCH_EVENT_CHANNEL_ID = "1520658476974735490";
+
 export class Concierge {
   private readonly config: Config;
   private readonly log: Logger;
@@ -1354,6 +1358,14 @@ export class Concierge {
       repliedToId: e.repliedToId,
       isBeckett: e.kind === "beckett",
     }));
+  }
+
+  /**
+   * Best-effort live sink for the central dispatch event bus. The bus persists first and never
+   * awaits this promise, so a disconnected Discord gateway cannot stall workers or Plane writes.
+   */
+  async postDispatchEvent(event: DispatchEvent): Promise<void> {
+    await this.gateway.post(DISPATCH_EVENT_CHANNEL_ID, formatDispatchEvent(event), { singleMessage: true });
   }
 
   /** Wire the dispatcher levers (v4-main, after the dispatcher exists). See {@link dispatcherOps}. */

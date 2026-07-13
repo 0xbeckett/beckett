@@ -604,6 +604,7 @@ export class Dispatcher {
 
     let swept = 0;
     for (const [ticketId, w] of entries) {
+      this.traceRecovered(ticketId, w, "started", "recovering interrupted worker; re-staff will resume only if ticket remains active");
       if (w.pid > 0) {
         try {
           if (this.sweepOrphan(w.pid, this.harnessBin(w.harness))) swept++;
@@ -634,6 +635,7 @@ export class Dispatcher {
       }
     }
     this.persistRuntimeState(); // liveLedger is empty now — clears the on-disk ledger
+    for (const [ticketId, w] of entries) this.traceRecovered(ticketId, w, "passed", "restart recovery complete");
     this.logger.info("crash recovery complete", {
       interrupted: entries.length,
       sweptOrphans: swept,
@@ -736,6 +738,18 @@ export class Dispatcher {
       ticketRef: ticket.branchRef ? `#${ticket.branchRef}` : ticket.identifier,
       branchRef: gitBranchForTicket(ticket),
       stage,
+      outcome,
+      message,
+      error,
+    });
+  }
+
+  private traceRecovered(ticketId: string, worker: LedgeredWorker, outcome: DispatchOutcome, message?: string, error?: string): void {
+    this.dispatchEvents.emit({
+      ticketId,
+      ticketRef: worker.identifier,
+      branchRef: "",
+      stage: "restart-restaff",
       outcome,
       message,
       error,
@@ -1357,6 +1371,7 @@ export class Dispatcher {
     const repoRoot = this.resolveRepoRoot(ticket);
     if (this.atCap()) {
       this.pending.push({ ticket, stage, repoRoot });
+      this.trace(ticket, `${stage}:staff`, "held", "queued at concurrency cap");
       this.logger.info("spawn queued (concurrency cap reached)", {
         ticket: ticket.identifier,
         stage,
@@ -1396,6 +1411,7 @@ export class Dispatcher {
    */
   private launchSpawn(ticket: Ticket, stage: string, repoRoot: string): void {
     this.staffing.add(ticket.id);
+    this.trace(ticket, `${stage}:staff`, "started", "staffing admitted");
     // v3.2: no per-repo reservation — each ticket gets its own worktree, so same-repo tickets run
     // concurrently under the global cap. Only the `staffing` dedup + `atCap()` gate admission.
     this.repoByTicket.set(ticket.id, repoRoot);
@@ -1428,6 +1444,7 @@ export class Dispatcher {
   private async allocateTicketWorktree(ticket: Ticket, repoRoot: string): Promise<string> {
     const firstTouch = !this.workspaceByTicket.has(ticket.id);
     const workspace = this.workspaceByTicket.get(ticket.id) ?? join(repoRoot, SCAFFOLDING_DIR, "worktrees", ticket.id);
+    this.trace(ticket, "worktree", "started", firstTouch ? "creating isolated worktree" : "reusing isolated worktree");
     // Fresh base only when first cutting the tree; a reused tree keeps its in-progress commits.
     if (firstTouch) await this.git.fetchRemote(repoRoot);
     const branch = gitBranchForTicket(ticket);
@@ -1448,6 +1465,7 @@ export class Dispatcher {
       await this.git.mergeBranchesIntoWorktree(workspace, dependencyRefs.slice(1));
     }
     this.workspaceByTicket.set(ticket.id, workspace);
+    this.trace(ticket, "worktree", "passed", workspace);
     return workspace;
   }
 
@@ -1559,13 +1577,16 @@ export class Dispatcher {
     // `<configured-owner>/<slug>` if it is already on GitHub (a continuing project, or Beckett's
     // source for a self-improvement ticket), else `git init` a fresh one. A worker never touches Beckett's live
     // source. A provisioning failure leaves the ticket for a human rather than spawning blind.
+    this.trace(ticket, "repo", "started", "provisioning/cloning project repository");
     try {
       await this.git.ensureProjectRepo(
         repoRoot,
         projectSlug(ticket.project || ticket.identifier),
         this.githubOwner,
       );
+      this.trace(ticket, "repo", "passed", "repository ready (cloned or initialized)");
     } catch (err) {
+      this.trace(ticket, "repo", "failed", undefined, (err as Error).message);
       this.logger.error("project repo provisioning failed", {
         ticket: ticket.identifier,
         repoRoot,
@@ -1585,6 +1606,7 @@ export class Dispatcher {
     try {
       workspace = await this.prepareWorktree(ticket, repoRoot);
     } catch (err) {
+      this.trace(ticket, "worktree", "failed", undefined, (err as Error).message);
       this.logger.error("worktree allocation failed", {
         ticket: ticket.identifier,
         repoRoot,
@@ -1752,6 +1774,7 @@ export class Dispatcher {
           this.logger.warn("late-steer flush failed", { ticket: ticket.identifier, err: String(err) }),
         );
     }
+    this.trace(ticket, stage, "started", `worker ${handle.id} on ${spec.harness}`);
     this.logger.info("worker spawned for ticket", {
       ticket: ticket.identifier,
       stage,
@@ -1780,6 +1803,7 @@ export class Dispatcher {
     const idleMin = Math.max(1, Math.round(idleMs / 60_000));
 
     if (strikes <= 1) {
+      this.trace(ticket, `${stage}:wedge`, "failed", `worker silent for ${idleMin}m; status check sent`, "silent worker alert");
       this.logger.warn("worker stalled — sending status-check nudge (strike 1)", {
         ticket: ticket.identifier,
         stage,
@@ -1800,6 +1824,7 @@ export class Dispatcher {
       return;
     }
 
+    this.trace(ticket, `${stage}:wedge`, "failed", `worker remained silent for ${idleMin}m; aborting`, "silent worker alert");
     this.logger.warn("worker stalled through its status check — aborting for retry (strike 2)", {
       ticket: ticket.identifier,
       stage,
@@ -1828,6 +1853,7 @@ export class Dispatcher {
    * re-staffed until a human moves them back.
    */
   private async onSpawnFailure(ticket: Ticket, stage: string, err: Error): Promise<void> {
+    this.trace(ticket, `${stage}:staff`, "failed", "worker could not start", err.message);
     this.logger.error("spawn failed", { ticket: ticket.identifier, stage, error: err.message });
 
     if (stage === "review") {
@@ -2155,6 +2181,13 @@ export class Dispatcher {
     summary: string,
     spendMeta?: SpendStageMeta,
   ): Promise<void> {
+    this.trace(
+      ticket,
+      stage,
+      status === "success" ? "passed" : "failed",
+      status === "success" ? "worker finished" : "worker exited with error",
+      status === "success" ? undefined : summary,
+    );
     this.recordSpend(ticket, stage, handle, status, spendMeta ?? this.spendMetaByWorker.get(handle.id));
     this.spendMetaByWorker.delete(handle.id);
     // Free the slot first so a queued spawn can take it.
@@ -2394,6 +2427,7 @@ export class Dispatcher {
     const reason = timedOut
       ? `hit the ${Math.round(hardCapSeconds(this.config) / 60)}-minute safety cap`
       : `stopped without finishing (crash or harness error)`;
+    if (timedOut) this.trace(ticket, "implement:timeout", "failed", reason, "worker hard-cap timeout");
 
     // 1. Safety-net commit so the WIP survives for the retry AND the human (the worker may have
     //    already committed; this captures anything still in the working tree).
@@ -2518,6 +2552,7 @@ export class Dispatcher {
    * done ticket whose work never left the box is the false-done this fixes — see OPS-30).
    */
   private async publishProject(ticket: Ticket): Promise<PublishOutcome> {
+    this.trace(ticket, "publish", "started", "git push/publish starting");
     // Owned-repo publication rebases this branch onto the latest remote default. Capture the
     // branch's own contribution first or a parallel branch already on main contaminates its card.
     if (this.onBeforePublish) {
@@ -2530,7 +2565,20 @@ export class Dispatcher {
         });
       }
     }
-    if (!this.publishRepo) return { status: "skipped" };
+    if (!this.publishRepo) {
+      this.trace(ticket, "publish", "passed", "publishing unavailable; local-only completion");
+      return { status: "skipped" };
+    }
+    const workspace = this.workspaceByTicket.get(ticket.id);
+    if (workspace) {
+      try {
+        if (!await this.git.hasDiffSince(workspace, this.baseShaForTicket.get(ticket.id) ?? null)) {
+          this.trace(ticket, "publish:empty", "failed", "publish source has no ticket diff", "EMPTY DEPLOY ALERT");
+        }
+      } catch (err) {
+        this.trace(ticket, "publish:verify", "failed", "could not verify publish source", (err as Error).message);
+      }
+    }
     const slug = projectSlug(ticket.project || ticket.identifier);
     // Publish FROM the ticket's worktree (its work lives on `beckett/<ticket>`, not repoRoot's
     // main). Because that tree was cut from a fresh origin/main, the push/rebase is clean — this
@@ -2545,6 +2593,7 @@ export class Dispatcher {
       });
       return await this.recordPublication(ticket, r);
     } catch (err) {
+      this.trace(ticket, "publish", "failed", "push/publish failed", (err as Error).message);
       this.logger.warn("github publish failed", {
         ticket: ticket.identifier,
         error: (err as Error).message,
@@ -2650,6 +2699,7 @@ export class Dispatcher {
     // The durable row carries public task metadata that older Plane payloads may not hydrate.
     // Prefer live lifecycle fields without discarding that restart-critical branch identity.
     const ticket: Ticket = current ? { ...op.ticket, ...current } : op.ticket;
+    this.trace(ticket, "publish-retry", "started", `durable publish attempt ${op.attempt}`);
     // Reloaded daemons do not have the in-memory workspace map; restore the outbox owner's path
     // solely so a successful publish can tear down exactly this worktree.
     this.workspaceByTicket.set(ticket.id, op.repoRoot);
@@ -2698,7 +2748,10 @@ export class Dispatcher {
   }
 
   private async publishQueuedProject(op: PublishOperation, ticket: Ticket): Promise<PublishOutcome> {
-    if (!this.publishRepo) return { status: "skipped" };
+    if (!this.publishRepo) {
+      this.trace(ticket, "publish-retry", "passed", "publishing unavailable; local-only completion");
+      return { status: "skipped" };
+    }
     try {
       const r = await this.publishRepo({
         slug: op.slug,
@@ -2708,6 +2761,7 @@ export class Dispatcher {
       });
       return await this.recordPublication(ticket, r);
     } catch (err) {
+      this.trace(ticket, "publish-retry", "failed", "durable publish retry failed", (err as Error).message);
       return { status: "failed", error: (err as Error).message };
     }
   }
@@ -2721,6 +2775,7 @@ export class Dispatcher {
     ticket: Ticket,
     publication: { url: string; kind: "pushed" | "pr"; prUrl?: string },
   ): Promise<PublishOutcome> {
+    this.trace(ticket, publication.kind === "pr" ? "pr" : "git-push", "passed", publication.prUrl ?? publication.url);
     this.logger.info("project published to github", {
       ticket: ticket.identifier,
       url: publication.url,
@@ -2780,6 +2835,7 @@ export class Dispatcher {
     this.reviewInfraRetries.delete(ticket.id);
     this.persistRuntimeState();
     if (signal.status === "complete") {
+      this.trace(ticket, "review:verdict", "passed", "review passed");
       const done = await this.finishTicketAsDone(ticket, "Review passed → **done**.", summary);
       if (done) this.logger.info("ticket advanced to done", { ticket: ticket.identifier });
       return;
@@ -2787,6 +2843,7 @@ export class Dispatcher {
 
     // Review failed — bound the implement↔review loop so it can't churn forever.
     const cycles = (this.reworkCount.get(ticket.id) ?? 0) + 1;
+    this.trace(ticket, "review:verdict", "bounced", `review requested rework (cycle ${cycles}/${MAX_REWORK_CYCLES})`);
     this.reworkCount.set(ticket.id, cycles);
     this.persistRuntimeState();
     if (cycles >= MAX_REWORK_CYCLES) {
@@ -2964,26 +3021,19 @@ export class Dispatcher {
       after,
     });
     try {
-      await this.clientForTicket(ticket).setState(ticket.id, nextState);
+      return await this.advanceTicket(
+        ticket,
+        nextState,
+        `All blockers done (${ticket.blockedBy.join(", ")}) → moving to **${nextState}**.`,
+      );
     } catch (err) {
+      this.trace(ticket, "dependency-promotion", "failed", undefined, (err as Error).message);
       this.logger.warn("promote: setState failed", {
         ticket: ticket.identifier,
         error: (err as Error).message,
       });
       return false;
     }
-    try {
-      await this.postComment(
-        ticket.id,
-        `All blockers done (${ticket.blockedBy.join(", ")}) → moving to **${nextState}**.`,
-      );
-    } catch (err) {
-      this.logger.warn("promote: comment failed after state advance", {
-        ticket: ticket.identifier,
-        error: (err as Error).message,
-      });
-    }
-    return true;
   }
 
   private async advanceTicket(
@@ -2995,6 +3045,7 @@ export class Dispatcher {
     // Any dispatcher-driven move out of a running state invalidates a scheduled backed-off
     // respawn — a timer firing on a parked/done ticket would staff work nobody asked for.
     if (state !== "design" && state !== "in_progress" && state !== "in_review") this.cancelSpawnRetry(ticket.id);
+    this.trace(ticket, `state:${state}`, "started", `dispatcher transition requested → ${state}`);
     const op: AdvanceOperation = {
       id: randomUUID(),
       ticketId: ticket.id,
@@ -3018,6 +3069,7 @@ export class Dispatcher {
       else if (state === "in_progress") this.spawnGuarded(ticket, "implement");
       return true;
     } catch (err) {
+      this.trace(ticket, `state:${state}`, "failed", "Plane state transition failed", (err as Error).message);
       if (this.advanceOutbox) {
         this.advanceOutbox.append(op);
         return false;
@@ -3040,6 +3092,7 @@ export class Dispatcher {
       return;
     }
     await client.setState(op.ticketId, state);
+    if (current) this.trace(current, `state:${state}`, "passed", `${current.state} → ${state}`);
     await this.addMarkedComment(op.ticketId, op.comment, op.projectId ?? current?.projectId);
     // Instant milestone path (issue #33): hand the transition to v4-main NOW, in the exact shape
     // the poller would emit ≤5s later. Best-effort — a throwing listener must not fail the advance.
