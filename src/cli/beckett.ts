@@ -600,6 +600,14 @@ async function main(): Promise<void> {
       }));
     }
 
+    if (sub === "repo" && (_[0] === "star" || _[0] === "unstar")) {
+      const repo = _[1];
+      if (!repo) fail(`usage: beckett gh repo ${_[0]} <owner/name>`);
+      const starred = _[0] === "star";
+      await gh.setRepoStar(repo, starred);
+      out({ starred, repo });
+    }
+
     if (sub === "pr") {
       const action = _[0];
       const repo = flags.repo ? String(flags.repo) : "";
@@ -639,7 +647,7 @@ async function main(): Promise<void> {
       out({ pushed: true, repo: String(flags.repo), branch: String(flags.branch) });
     }
 
-    fail("usage: beckett gh repo create | pr create|merge|close|status|review | push");
+    fail("usage: beckett gh repo create|star|unstar | pr create|merge|close|status|review | push");
   }
 
   // ── dns (in-process: zone-scoped Cloudflare DNS, token from env) ──────────────────────────

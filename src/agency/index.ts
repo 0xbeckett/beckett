@@ -317,6 +317,8 @@ export interface GitHubClientOptions {
   /** Subprocess runner — injectable so the publish decision tree is unit-testable (defaults to the
    *  real {@link run}). Tests pass a fake that matches on argv and returns canned `gh`/`git` output. */
   run?: (cmd: string[], opts?: { cwd?: string; env?: Record<string, string | undefined> }) => Promise<RunResult>;
+  /** Injectable authenticated REST transport (defaults to the global fetch). */
+  fetchImpl?: typeof fetch;
 }
 
 /** The outcome of {@link GitHubCli.ensurePublished} — carries HOW the work shipped so callers can
@@ -343,9 +345,11 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     cmd: string[],
     opts?: { cwd?: string; env?: Record<string, string | undefined> },
   ) => Promise<RunResult>;
+  private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly opts: GitHubClientOptions) {
     this.runner = opts.run ?? run;
+    this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
   /** Whether GitHub agency is usable (a PAT is configured). */
@@ -475,6 +479,33 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     const nameWithOwner = owned ? owned[0].replace(/\.git$/, "") : p.name;
     this.opts.logger.info("repo created", { repo: nameWithOwner, url });
     return { nameWithOwner, url };
+  }
+
+  /**
+   * Star or unstar an explicitly named GitHub repository through the authenticated REST API.
+   * This intentionally uses the same PAT as the rest of this client, rather than depending on
+   * a separately logged-in `gh` installation.
+   */
+  async setRepoStar(repo: string, starred: boolean): Promise<void> {
+    this.requireCreds(starred ? "star repo" : "unstar repo");
+    const match = repo.match(/^([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,99})$/);
+    if (!match) throw new Error("repo must be in owner/name form");
+    const owner = match[1]!;
+    const name = match[2]!;
+    const apiBase = this.opts.apiBase.replace(/\/$/, "");
+    const url = `${apiBase}/user/starred/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+    const response = await this.fetchImpl(url, {
+      method: starred ? "PUT" : "DELETE",
+      headers: {
+        Authorization: `Bearer ${this.opts.pat}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
+    if (response.status !== 204) {
+      const detail = (await response.text()).trim();
+      throw new Error(`GitHub ${starred ? "star" : "unstar"} repo failed (${response.status})${detail ? `: ${detail}` : ""}`);
+    }
+    this.opts.logger.info(starred ? "repo starred" : "repo unstarred", { repo });
   }
 
   /** Whether `owner/name` (or `name` under the account) already exists on GitHub. FREE: a read. */
