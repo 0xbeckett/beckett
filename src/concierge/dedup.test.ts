@@ -15,7 +15,6 @@ import { Concierge, redactBrowserSecrets, type ConciergeSession } from "./index.
 import { callBus, ControlBusTimeoutError, serveBus } from "../shell/control-bus.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
-import { chunkReply } from "../discord/chunk.ts";
 import type { QuickRun, QuickRunner } from "../quick/index.ts";
 
 const CHAN = "1097283746520174592";
@@ -387,9 +386,14 @@ test("browser question instructions stay in the one ledgered Discord message", a
   expect(posts[0]!.text).toStartWith("Page context before the question. Which password should I use?");
   expect(posts[0]!.text).toEndWith("Reply directly to this message and I'll continue from the same page.");
   expect(posts[0]!.files).toEqual(["/tmp/question.png"]);
+  // Atomicity is the GATEWAY's guarantee, not the chunker's: `singleMessage: true` bypasses
+  // chunkReply/chilltext entirely (and `browserQuestion` posts require it — gateway throws
+  // otherwise), so the suffix can never be split away from the question. The old
+  // `chunkReply(text) has length 1` assertion here only held because the pre-fix sentence
+  // splitter silently DROPPED the long "context…" run; the lossless splitter would pack this
+  // text into 2 chunks — correctly — on the (unused) non-atomic path.
   expect(posts[0]!.singleMessage).toBe(true);
   expect(posts[0]!.browserQuestion).toBe(true);
-  expect(chunkReply(posts[0]!.text)).toHaveLength(1);
   await concierge.stop();
 });
 

@@ -28,7 +28,7 @@ import {
 } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   chromium,
@@ -621,7 +621,7 @@ export function createLocalBrowserRuntime(deps: CreateLocalBrowserRuntimeDeps): 
       }
     });
     session.on("Browser.downloadProgress", (raw: unknown) => {
-      const event = raw as { guid?: unknown; receivedBytes?: unknown; totalBytes?: unknown; state?: unknown };
+      const event = raw as { guid?: unknown; receivedBytes?: unknown; totalBytes?: unknown; state?: unknown; filePath?: unknown };
       if (typeof event.guid !== "string") return;
       const guarded = guardedDownloads.get(event.guid);
       if (!guarded) return;
@@ -639,12 +639,28 @@ export function createLocalBrowserRuntime(deps: CreateLocalBrowserRuntimeDeps): 
         void cancelGuardedDownload(guarded, `aggregate budget exceeded ${maxDownloadBytes} bytes`);
       }
       if (event.state === "completed" || event.state === "canceled") {
+        // Where the bytes actually landed, per Chromium. A cancel can lose the race against a
+        // small transfer — the file completes into the (possibly attacker-redirected) download
+        // dir before Browser.cancelDownload arrives — so a canceled download's landed file must
+        // be deleted too. Only trust the reported path when its basename is the Chromium-chosen
+        // download guid (allowAndName naming): the guid is unguessable, so the path can't be
+        // steered at a pre-existing file.
+        const landedPath = typeof event.filePath === "string" && basename(event.filePath) === guarded.guid
+          ? event.filePath
+          : null;
         const cleanup = sleep(100).then(() => {
           if (!guarded.claimed && validTargetId(guarded.guid)) {
             try {
               unlinkSync(join(downloadsDir, guarded.guid));
             } catch {
               // A canceled transfer or Playwright-owned download may already be gone.
+            }
+            if (guarded.canceled && landedPath) {
+              try {
+                unlinkSync(landedPath);
+              } catch {
+                // The cancel won the race after all, or Chromium already removed the partial.
+              }
             }
           }
           guardedDownloads.delete(guarded.guid);
@@ -1001,6 +1017,11 @@ export function createLocalBrowserRuntime(deps: CreateLocalBrowserRuntimeDeps): 
     evaluated: BrowserEvaluatorOutput,
   ): Promise<BrowserEvalResult> {
     if (!evaluated || (evaluated.ok !== true && evaluated.recoverable !== true)) {
+      // The profile watchdog can race an in-flight evaluation: it sets profileBudgetError and
+      // closes Chromium, and the evaluator then dies with a transport error (connect
+      // ECONNREFUSED). The budget breach is the root cause — surface it, not the fallout.
+      await enforceProfileBudget(lease).catch(() => undefined);
+      assertProfileHealthy();
       throw new Error(evaluated?.error ?? "browser evaluator did not complete successfully");
     }
     const succeeded = evaluated.ok === true;

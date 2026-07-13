@@ -177,11 +177,26 @@ function toBlocks(content: string): Block[] {
   return blocks;
 }
 
-/** Split prose into sentences, keeping terminal punctuation. Never cuts inside a sentence. */
+/**
+ * Split prose into sentences, keeping terminal punctuation. Never cuts inside a sentence — and
+ * never loses a character: the text is sliced AT boundary positions (terminator + optional
+ * closing quotes/brackets + whitespace), so every slice together covers the whole input. A `.`
+ * with no whitespace after it (a URL, `$4,099.99`, `v1.2.3`) is never a boundary. The old
+ * `match(/g)`-based splitter silently DROPPED any run the sentence pattern couldn't match —
+ * a long paragraph containing a bare URL went to Discord with the URL's head deleted.
+ */
 function splitSentences(text: string): string[] {
-  const parts = text.match(/[^.!?]+(?:[.!?]+["')\]]*|$)(?:\s+|$)/g);
-  if (!parts) return [text.trim()];
-  return parts.map((s) => s.trim()).filter(Boolean);
+  const boundary = /[.!?]+["')\]]*\s+/g;
+  const out: string[] = [];
+  let start = 0;
+  for (let m = boundary.exec(text); m !== null; m = boundary.exec(text)) {
+    const piece = text.slice(start, m.index + m[0].length).trim();
+    if (piece) out.push(piece);
+    start = m.index + m[0].length;
+  }
+  const tail = text.slice(start).trim();
+  if (tail) out.push(tail);
+  return out.length > 0 ? out : [text.trim()];
 }
 
 /**

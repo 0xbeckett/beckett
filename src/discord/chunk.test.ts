@@ -96,6 +96,53 @@ describe("chunkReply — natural boundaries + ordering", () => {
   });
 });
 
+describe("chunkReply — sentence split never loses text (URL / decimal regression)", () => {
+  // The old match(/g)-based splitSentences silently DROPPED any run its sentence pattern
+  // couldn't consume: a '.' not followed by whitespace (URLs, $4,099.99) made it discard
+  // everything scanned since the previous boundary. A real reply lost "https://www.newegg."
+  // and "($4,099." on the way to Discord. Splits may only ever rearrange whitespace.
+  const strip = (s: string) => s.replace(/\s+/g, "");
+
+  test("a long paragraph containing a bare URL keeps the URL intact and loses nothing", () => {
+    const url =
+      "https://www.newegg.com/msi-rtx-5090-32g-suprim-liquid-soc-geforce-rtx-5090-32gb-graphics-card-liquid-cooler/p/N82E16814137916";
+    const para =
+      `Found an in-stock, buyable NVIDIA RTX 5090 graphics card on Newegg: ${url} — the MSI Suprim ` +
+      `Liquid SOC with a live listed price ($4,099.99), and an active "Add to cart" buy button as proof ` +
+      `of real availability (not just an out-of-stock product page). Several other RTX 5090 cards were ` +
+      `also confirmed in stock on Newegg in the $4,099–$4,330 range if this one runs out.`;
+    expect(para.length).toBeGreaterThan(CHUNK_THRESHOLD);
+    const out = chunkReply(para);
+    // The URL survives, whole, inside exactly one message.
+    expect(out.filter((m) => m.includes(url))).toHaveLength(1);
+    // The decimal price survives, undismembered.
+    expect(out.some((m) => m.includes("($4,099.99)"))).toBe(true);
+    // Nothing was dropped anywhere: the messages re-concatenate to the input (modulo whitespace).
+    expect(strip(out.join(" "))).toBe(strip(para));
+  });
+
+  test("splitting is lossless for punctuation-dense prose (decimals, abbreviations, versions)", () => {
+    const para =
+      `Upgraded to v2.13.4 today. The p95 latency dropped from 412.7ms to 96.3ms (i.e. a 4.3x win) ` +
+      `after the fix landed in commit abc123... but watch the e.g. cases in config.toml, ` +
+      `notably retry.max=3 and timeout=35.5s! ` +
+      `See https://example.com/changelog#v2.13.4 for details. ` +
+      `${"More filler prose to push this paragraph well past the sentence-split threshold. ".repeat(3)}`.trim();
+    expect(para.length).toBeGreaterThan(CHUNK_THRESHOLD);
+    const out = chunkReply(para);
+    expect(strip(out.join(" "))).toBe(strip(para));
+  });
+
+  test("a paragraph whose only periods are inside a URL is returned whole, not shredded", () => {
+    const longUrl = `https://example.com/${"segment.with.dots/".repeat(25)}end`;
+    const para = `grab it here ${longUrl} before it goes down`;
+    expect(para.length).toBeGreaterThan(CHUNK_THRESHOLD);
+    const out = chunkReply(para);
+    expect(out.some((m) => m.includes(longUrl))).toBe(true);
+    expect(strip(out.join(" "))).toBe(strip(para));
+  });
+});
+
 describe("chunkReply — code-fence preservation", () => {
   test("a fenced code block is never split and stays one contiguous message", () => {
     const intro = "here's the fix:";
