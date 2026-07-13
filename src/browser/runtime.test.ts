@@ -536,15 +536,32 @@ test("a budget breach outranks the evaluator's transport error when the watchdog
   // ECONNREFUSED) and no recoverable state, and applyEvaluation used to throw that fallout
   // verbatim. Reproduced at the deterministic seam: breach the budget on disk, then hand
   // applyEvaluation exactly what the orphaned evaluator reports. The surfaced error must be
-  // the budget breach, never the transport fallout.
+  // the budget breach, never the transport fallout. No real Chromium: the failure path must
+  // throw before ever touching the context again, so a stub context is all acquire needs.
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-budget-attribution-test-"));
   const config = validateConfig({ paths: { beckett_dir: dir }, quick: { browser_profile_dir: "browser/profile" } });
   const settings = browserHostSettings(config);
+  const fakePage = {
+    setViewportSize: async () => {},
+    on: () => {},
+    isClosed: () => false,
+    url: () => "about:blank",
+    goto: async () => null,
+  };
+  const fakeContext = {
+    pages: () => [fakePage],
+    newPage: async () => fakePage,
+    on: () => {},
+    cookies: async () => [],
+    setDefaultTimeout: () => {},
+    setDefaultNavigationTimeout: () => {},
+    close: async () => {},
+  } as unknown as BrowserContext;
   const runtime = createInjectedLocalBrowserRuntime({
     settings,
     logger: quietLog,
     maxProfileGrowthBytes: 1024 * 1024,
-    launchPersistentContext: chromium.launchPersistentContext.bind(chromium),
+    launchPersistentContext: (async () => fakeContext) as unknown as typeof chromium.launchPersistentContext,
   });
   try {
     await runtime.acquire({
