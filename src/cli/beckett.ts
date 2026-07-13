@@ -17,7 +17,15 @@ import { loadConfig, resolvePlaneBoardName } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus, ControlBusTimeoutError } from "../shell/control-bus.ts";
 import { createMemory } from "../memory/index.ts";
-import { type Audience, provenanceOf, renderProvenance } from "../memory/search.ts";
+import {
+  type Audience,
+  IdSchema,
+  provenanceOf,
+  renderProvenanceFrom,
+  SELF_AUDIENCE,
+  ViewerRoleSchema,
+  VisibilitySchema,
+} from "../memory/search.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { CfDns } from "../agency/cloudflare.ts";
 import { CodexImageGen } from "../agency/imagegen.ts";
@@ -290,17 +298,28 @@ async function ensureSecretService(port: number): Promise<void> {
  * `--viewer` absent leaves `viewerId` undefined, so the engine returns only public nodes. The
  * concierge passes these on behalf of the live speaker; a human debugging recall passes their
  * own id. `--viewer-role` defaults to `member` and `--context` to `guild` (the safe side).
+ *
+ * `--as-self` is the one shorthand: Beckett recalling for its OWN reasoning (planning,
+ * staffing) — owner-scoped facts included, dm-scoped facts never (see SELF_AUDIENCE in
+ * search.ts). It answers "whose eyes?" by itself, so combining it with per-viewer flags is
+ * ambiguous and rejected.
  */
 function audienceFromFlags(flags: Record<string, string | boolean>): Audience {
-  const role = flags["viewer-role"] ? String(flags["viewer-role"]) : "member";
-  if (role !== "owner" && role !== "maintainer" && role !== "member") {
-    fail("--viewer-role must be one of: owner, maintainer, member");
+  if (flags["as-self"] !== undefined) {
+    if (flags.viewer !== undefined || flags["viewer-role"] !== undefined || flags.context !== undefined) {
+      fail("--as-self cannot be combined with --viewer/--viewer-role/--context");
+    }
+    return SELF_AUDIENCE;
   }
+  // Reuse the memory module's schemas (search.ts) so the CLI and the engine agree on the exact
+  // set of legal roles/visibilities rather than re-listing them here.
+  const role = ViewerRoleSchema.safeParse(flags["viewer-role"] ? String(flags["viewer-role"]) : "member");
+  if (!role.success) fail("--viewer-role must be one of: owner, maintainer, member");
   const context = flags.context ? String(flags.context) : "guild";
   if (context !== "guild" && context !== "dm") fail("--context must be one of: guild, dm");
   return {
     viewerId: flags.viewer ? String(flags.viewer) : undefined,
-    viewerRole: role,
+    viewerRole: role.data,
     context,
   };
 }
@@ -313,27 +332,23 @@ function audienceFromFlags(flags: Record<string, string | boolean>): Audience {
  */
 function provenanceMetadataFromFlags(flags: Record<string, string | boolean>): Record<string, unknown> {
   const meta: Record<string, unknown> = {};
-  const isId = (v: string) => /^\d{1,20}$/.test(v);
+  // Same id/visibility shapes the engine enforces (search.ts) — validate against them, don't
+  // re-hand-roll the regex/enum here.
+  const asId = (flag: string, raw: string): string => {
+    const parsed = IdSchema.safeParse(raw);
+    if (!parsed.success) fail(`--${flag} must be a Discord user id (1–20 digits)`);
+    return parsed.data;
+  };
   if (flags.visibility !== undefined) {
-    const v = String(flags.visibility);
-    if (v !== "public" && v !== "owner" && v !== "dm") {
-      fail("--visibility must be one of: public, owner, dm");
-    }
-    if (v === "dm" && flags["dm-with"] === undefined) {
+    const vis = VisibilitySchema.safeParse(String(flags.visibility));
+    if (!vis.success) fail("--visibility must be one of: public, owner, dm");
+    if (vis.data === "dm" && flags["dm-with"] === undefined) {
       fail("--visibility dm requires --dm-with <discordUserId>");
     }
-    meta.visibility = v;
+    meta.visibility = vis.data;
   }
-  if (flags["dm-with"] !== undefined) {
-    const id = String(flags["dm-with"]);
-    if (!isId(id)) fail("--dm-with must be a Discord user id (1–20 digits)");
-    meta.dm_with = id;
-  }
-  if (flags.by !== undefined) {
-    const id = String(flags.by);
-    if (!isId(id)) fail("--by must be a Discord user id (1–20 digits)");
-    meta.source_user = id;
-  }
+  if (flags["dm-with"] !== undefined) meta.dm_with = asId("dm-with", String(flags["dm-with"]));
+  if (flags.by !== undefined) meta.source_user = asId("by", String(flags.by));
   if (flags["by-name"] !== undefined) meta.source_name = String(flags["by-name"]);
   return meta;
 }
@@ -341,7 +356,7 @@ function provenanceMetadataFromFlags(flags: Record<string, string | boolean>): R
 async function runRecall(argv: string[]): Promise<never> {
   const usage =
     'usage: beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] ' +
-    "[--viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] [--json]";
+    "[--as-self | --viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] [--json]";
   const { _, flags } = parse(argv);
   const text = _.join(" ");
   const csv = (v: string | boolean | undefined) =>
@@ -363,16 +378,20 @@ async function runRecall(argv: string[]): Promise<never> {
 
   if (flags.json) {
     out({
-      hits: r.hits.map((h) => ({
-        name: h.node.name,
-        type: h.node.type,
-        score: Number(h.score.toFixed(2)),
-        path: h.node.path,
-        description: h.node.description,
-        visibility: provenanceOf(h.node).visibility,
-        provenance: renderProvenance(h.node),
-        body: h.node.body,
-      })),
+      hits: r.hits.map((h) => {
+        // One parse per hit: read visibility and render the source line off the same Provenance.
+        const prov = provenanceOf(h.node);
+        return {
+          name: h.node.name,
+          type: h.node.type,
+          score: Number(h.score.toFixed(2)),
+          path: h.node.path,
+          description: h.node.description,
+          visibility: prov.visibility,
+          provenance: renderProvenanceFrom(prov),
+          body: h.node.body,
+        };
+      }),
       related: r.expanded.map((e) => ({ name: e.node.name, type: e.node.type, description: e.node.description, visibility: provenanceOf(e.node).visibility, reason: e.reason })),
       phantoms: r.phantoms,
       notes: r.notes,
@@ -382,11 +401,12 @@ async function runRecall(argv: string[]): Promise<never> {
   const lines: string[] = ["# hits"];
   if (r.hits.length === 0) lines.push("(none — see the index below for everything on file)");
   for (const h of r.hits) {
-    const prov = renderProvenance(h.node);
+    const prov = provenanceOf(h.node); // parse once; both the visibility tag and source line use it
+    const source = renderProvenanceFrom(prov);
     lines.push(
       `\n## ${h.node.name} (${h.node.type}, score ${h.score.toFixed(2)})`,
       `path: ${h.node.path}`,
-      `visibility: ${provenanceOf(h.node).visibility}${prov ? ` · ${prov}` : ""}`,
+      `visibility: ${prov.visibility}${source ? ` · ${source}` : ""}`,
       h.node.description,
       ...(h.node.body ? ["", h.node.body] : []),
     );
@@ -452,7 +472,7 @@ async function main(): Promise<void> {
         dm_with: prov.dmWith ?? null,
         source_user: prov.sourceUser ?? null,
         source_name: prov.sourceName ?? null,
-        provenance: renderProvenance(node!),
+        provenance: renderProvenanceFrom(prov),
         description: node!.description,
         body: node!.body,
       });
@@ -1601,10 +1621,20 @@ async function main(): Promise<void> {
     const pl = data.plane ?? {};
     lines.push(`plane:     last HTTP ${pl.lastHttpStatus ?? "-"}${pl.lastError ? ` (last error: ${pl.lastError})` : ""}`);
     const c = data.concierge ?? {};
+    const gate = c.turnGate ?? {};
     lines.push(
-      `concierge: ${c.contextTokens ?? "?"} ctx tokens (ceiling ${c.rotateAtTokens ?? "?"}), ` +
-        `${c.rotations ?? 0} rotations, queue ${c.queueDepth ?? 0}, crashes ${c.consecutiveCrashes ?? 0}`,
+      `concierge: ${c.sessions ?? 0} session(s) [scope ${c.scope ?? "?"}], ` +
+        `${c.liveChildren ?? 0}/${c.maxLiveSessions ?? "?"} live children, ` +
+        `turns ${gate.active ?? 0}/${gate.limit ?? "?"} active (${gate.waiting ?? 0} waiting)`,
     );
+    const perSession = (c.perSession ?? {}) as Record<string, any>;
+    for (const [scope, s] of Object.entries(perSession)) {
+      lines.push(
+        `  ${scope}: ${s.contextTokens ?? "?"} ctx tokens (ceiling ${s.rotateAtTokens ?? "?"}), ` +
+          `${s.rotations ?? 0} rotations, queue ${s.queueDepth ?? 0}, crashes ${s.consecutiveCrashes ?? 0}` +
+          `${s.liveChild ? "" : " [child recycled]"}`,
+      );
+    }
     const workers = Array.isArray(data.workers) ? data.workers : [];
     lines.push(`workers:   ${workers.length === 0 ? "none" : workers.length}`);
     for (const w of workers) {
@@ -1737,7 +1767,7 @@ async function main(): Promise<void> {
   if (group === "persona") await bus("persona", {}); // print the persona path + current contents
 
   fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] [--viewer id] | memory recall|remember|show|maintain");
+    "commands: status [--pretty] | doctor [--json] | reload | persona | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall \"<query>\" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain");
 }
 
 /** "3742" → "1h 2m 22s" (status rendering only). */

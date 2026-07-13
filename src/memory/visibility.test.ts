@@ -18,7 +18,13 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemory, recallOver, type MemoryStore } from "./index.ts";
-import { type Audience, canView, provenanceOf, renderProvenance } from "./search.ts";
+import {
+  type Audience,
+  canView,
+  provenanceOf,
+  renderProvenance,
+  SELF_AUDIENCE,
+} from "./search.ts";
 import { planMaintenance } from "./maintain.ts";
 import type { Logger, MemoryNode } from "../types.ts";
 
@@ -59,7 +65,15 @@ test("all new frontmatter fields round-trip; ids survive as exact strings", asyn
     name: "dm-secret",
     type: "preference",
     description: "Prefers dark mode in DMs",
-    metadata: { visibility: "dm", dm_with: PARTNER, source_user: PARTNER, source_name: "zoomx64" },
+    // `ticket_id` is an arbitrary, NON-allowlisted digit-valued key: the serializer must quote
+    // ANY all-digit string (not just known id keys) so a future id field can't corrupt to a Number.
+    metadata: {
+      visibility: "dm",
+      dm_with: PARTNER,
+      source_user: PARTNER,
+      source_name: "zoomx64",
+      ticket_id: "123456789012345678",
+    },
     source: "conversation",
     reason: "test",
   });
@@ -74,6 +88,9 @@ test("all new frontmatter fields round-trip; ids survive as exact strings", asyn
   expect(p.sourceUser).toBe(PARTNER);
   expect(p.sourceName).toBe("zoomx64");
   expect(renderProvenance(node)).toBe("from zoomx64 (user:8811…)");
+  // The arbitrary digit-valued key survives as an exact string, not a precision-lossy Number.
+  expect(typeof node.metadata.ticket_id).toBe("string");
+  expect(node.metadata.ticket_id).toBe("123456789012345678");
 });
 
 test("a legacy node with no visibility/provenance fields parses as public", async () => {
@@ -145,6 +162,15 @@ test("an unparseable visibility value fails closed to owner, never public", () =
   expect(provenanceOf(node({ visibility: "everyone" })).visibility).toBe("owner");
 });
 
+test("SELF_AUDIENCE (Beckett for itself) sees public + owner but NEVER dm", () => {
+  expect(canView(node({}), SELF_AUDIENCE)).toBe(true);
+  expect(canView(node({ visibility: "owner" }), SELF_AUDIENCE)).toBe(true);
+  // dm facts belong to one conversation: the sentinel viewer id is not a snowflake, so the
+  // dm arm can never match it — even a dm-context variant of self stays fail-closed.
+  expect(canView(node({ visibility: "dm", dm_with: PARTNER }), SELF_AUDIENCE)).toBe(false);
+  expect(canView(node({ visibility: "dm", dm_with: PARTNER }), { ...SELF_AUDIENCE, context: "dm" })).toBe(false);
+});
+
 // ── recall filter (engine, over a built graph) ───────────────────────────────────────────
 
 async function seedScoped(store: MemoryStore): Promise<void> {
@@ -205,6 +231,19 @@ test("the recall INDEX obeys the filter too — a scoped node's name/description
   // The owner sees owner-scoped entries; the DM partner sees their dm entry in the DM.
   expect(indexNames(viewer("owner", "guild", OTHER))).toEqual(["deploy-owner", "deploy-public"]);
   expect(indexNames(viewer("member", "dm", PARTNER))).toEqual(["deploy-dm", "deploy-public"]);
+});
+
+test("the on-disk MEMORY.md lists PUBLIC nodes only — scoped names/descriptions never land in it", async () => {
+  const { store, dir } = tempStore();
+  await seedScoped(store);
+  // MEMORY.md is loaded into arbitrary sessions (including ones serving non-owners), so unlike
+  // the graph it cannot be gated per-viewer — scoped entries must simply not be materialized.
+  const index = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(index).toContain("[[deploy-public]]");
+  expect(index).not.toContain("deploy-owner");
+  expect(index).not.toContain("owner-only deploy secret"); // the description must not leak either
+  expect(index).not.toContain("deploy-dm");
+  expect(index).not.toContain("dm-scoped deploy note");
 });
 
 test("one-hop wikilink expansion obeys the filter — no hidden stubs", async () => {
@@ -270,6 +309,70 @@ test("an explicit visibility flag on update wins (the caller acts for the owner)
     metadata: { visibility: "public" }, source: "conversation", reason: "t",
   });
   expect(provenanceOf(updated).visibility).toBe("public");
+});
+
+// ── write-path dedup never crosses a visibility boundary ─────────────────────────────────
+// A similarity (non-exact-name) dedup match is only valid when the intended save's effective
+// visibility + dm_with equals the existing node's — the same provenanceOf rule maintenance uses.
+// Otherwise the metadata merge would rewrite scope: a dm save could swallow/flip a public node.
+
+test("write-path dedup: a dm save similar to a public node creates a NEW node, not a merge", async () => {
+  const { store } = tempStore();
+  await store.remember({
+    op: "create", name: "tunnel-runbook-public", type: "reference",
+    description: "cloudflare tunnel token rotation runbook",
+    source: "manual", reason: "t",
+  });
+  // Same description, different name (so no exact-name identity hit) but dm-scoped. Similarity
+  // clears DEDUP_THRESHOLD, so pre-fix this would coerce into the public node and rewrite its scope.
+  const dm = await store.remember({
+    op: "create", name: "tunnel-runbook-dm", type: "reference",
+    description: "cloudflare tunnel token rotation runbook",
+    metadata: { visibility: "dm", dm_with: PARTNER }, source: "conversation", reason: "t",
+  });
+  const g = store.buildGraph();
+  expect(g.nodes.has("tunnel-runbook-public")).toBe(true);
+  expect(g.nodes.has("tunnel-runbook-dm")).toBe(true); // a distinct node, not merged away
+  expect(provenanceOf(g.nodes.get("tunnel-runbook-public")!).visibility).toBe("public"); // not flipped
+  expect(provenanceOf(dm).visibility).toBe("dm");
+});
+
+test("write-path dedup: a public save similar to an owner node creates a NEW node, not a merge", async () => {
+  const { store } = tempStore();
+  await store.remember({
+    op: "create", name: "cf-tunnel-owner", type: "reference",
+    description: "cloudflare tunnel token rotation runbook",
+    metadata: { visibility: "owner" }, source: "manual", reason: "t",
+  });
+  const pub = await store.remember({
+    op: "create", name: "cf-tunnel-public", type: "reference",
+    description: "cloudflare tunnel token rotation runbook",
+    source: "manual", reason: "t",
+  });
+  const g = store.buildGraph();
+  expect(g.nodes.has("cf-tunnel-owner")).toBe(true);
+  expect(g.nodes.has("cf-tunnel-public")).toBe(true);
+  expect(provenanceOf(g.nodes.get("cf-tunnel-owner")!).visibility).toBe("owner"); // not swallowed
+  expect(provenanceOf(pub).visibility).toBe("public");
+});
+
+test("write-path dedup: an exact-name re-remember still updates in place across scope (identity wins)", async () => {
+  const { store } = tempStore();
+  await store.remember({
+    op: "create", name: "same-name", type: "reference",
+    description: "first version, public", source: "manual", reason: "t",
+  });
+  // Exact name = identity, not similarity — it still coerces to an update, and the explicit
+  // visibility flag wins (the caller acts for the owner). No new node is created.
+  const updated = await store.remember({
+    op: "update", name: "same-name", type: "reference",
+    description: "second version, now owner-scoped",
+    metadata: { visibility: "owner" }, source: "manual", reason: "t",
+  });
+  const g = store.buildGraph();
+  expect([...g.nodes.values()].filter((n) => !n.phantom).length).toBe(1); // updated, not duplicated
+  expect(provenanceOf(updated).visibility).toBe("owner");
+  expect(updated.description).toBe("second version, now owner-scoped");
 });
 
 // ── maintenance never crosses a visibility boundary ──────────────────────────────────────
@@ -388,4 +491,87 @@ test("CLI: remember → show → recall carries visibility, provenance, and exac
   ]);
   const hit = JSON.parse(seen.stdout).hits.find((h: { name: string }) => h.name === "dm-fact");
   expect(hit).toMatchObject({ visibility: "dm", provenance: "from zoomx64 (user:8811…)" });
+});
+
+test("CLI: remember --by/--by-name persists source_user/source_name (id quoted on disk)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-cli-vis-"));
+  tmpDirs.push(dir);
+
+  const wrote = await cli(dir, [
+    "memory", "remember", "--name", "taught-fact", "--type", "person",
+    "--desc", "a person someone taught me about", "--by", PARTNER, "--by-name", "zoomx64",
+  ]);
+  expect(wrote.code).toBe(0);
+
+  // Persisted provenance is readable back through `memory show`.
+  const shown = await cli(dir, ["memory", "show", "taught-fact"]);
+  expect(JSON.parse(shown.stdout)).toMatchObject({
+    source_user: PARTNER,
+    source_name: "zoomx64",
+    provenance: "from zoomx64 (user:8811…)",
+  });
+  // And on disk the id is quoted so it round-trips as an exact string (not a lossy Number).
+  const file = readFileSync(join(dir, "memory", "people", "taught-fact.md"), "utf8");
+  expect(file).toContain(`source_user: "${PARTNER}"`);
+  expect(file).toContain("source_name: zoomx64");
+});
+
+test("CLI: recall --viewer-role hides owner-scoped nodes from a member but shows them to an owner", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-cli-vis-"));
+  tmpDirs.push(dir);
+
+  await cli(dir, [
+    "memory", "remember", "--name", "owner-roadmap", "--type", "preference",
+    "--desc", "an owner-only roadmap note about the cloudflare tunnel", "--visibility", "owner",
+  ]);
+
+  // As a member (the default role): the owner-scoped node is withheld.
+  const asMember = await cli(dir, [
+    "recall", "cloudflare tunnel roadmap", "--viewer", OTHER, "--viewer-role", "member", "--json",
+  ]);
+  expect(JSON.parse(asMember.stdout).hits.map((h: { name: string }) => h.name)).not.toContain(
+    "owner-roadmap",
+  );
+
+  // As an owner: the same node surfaces.
+  const asOwner = await cli(dir, [
+    "recall", "cloudflare tunnel roadmap", "--viewer", OTHER, "--viewer-role", "owner", "--json",
+  ]);
+  expect(JSON.parse(asOwner.stdout).hits.map((h: { name: string }) => h.name)).toContain(
+    "owner-roadmap",
+  );
+});
+
+test("CLI: recall --as-self surfaces owner-scoped nodes but never dm-scoped ones", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-cli-vis-"));
+  tmpDirs.push(dir);
+
+  await cli(dir, [
+    "memory", "remember", "--name", "self-owner-note", "--type", "preference",
+    "--desc", "an owner-only staffing note about the cloudflare tunnel", "--visibility", "owner",
+  ]);
+  await cli(dir, [
+    "memory", "remember", "--name", "self-dm-note", "--type", "preference",
+    "--desc", "a dm-scoped staffing note about the cloudflare tunnel",
+    "--visibility", "dm", "--dm-with", PARTNER,
+  ]);
+
+  // Beckett recalling for its own planning: owner facts are its working knowledge...
+  const self = await cli(dir, ["recall", "cloudflare tunnel staffing", "--as-self", "--json"]);
+  expect(self.code).toBe(0);
+  const names = JSON.parse(self.stdout).hits.map((h: { name: string }) => h.name);
+  expect(names).toContain("self-owner-note");
+  // ...but a dm fact belongs to one conversation and never rides into planning context.
+  expect(names).not.toContain("self-dm-note");
+
+  // Without --as-self the same recall fail-closes to public-only (the bug this flag fixes).
+  const blind = await cli(dir, ["recall", "cloudflare tunnel staffing", "--json"]);
+  expect(JSON.parse(blind.stdout).hits.map((h: { name: string }) => h.name)).not.toContain(
+    "self-owner-note",
+  );
+
+  // --as-self answers "whose eyes?" by itself — combining it with per-viewer flags is an error.
+  const mixed = await cli(dir, ["recall", "x", "--as-self", "--viewer", OTHER, "--json"]);
+  expect(mixed.code).toBe(1);
+  expect(mixed.stderr).toContain("--as-self");
 });

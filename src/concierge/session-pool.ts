@@ -39,8 +39,9 @@ export interface PoolSession {
   stats?(): Record<string, unknown>;
   /** Kill the child process, keep the session (`--resume` on the next turn). */
   recycle?(reason: string): void;
-  idleMs?(): number;
   hasLiveChild?(): boolean;
+  /** Per-process issuer credential exported into the child env (bus-op correlation, §9.3). */
+  busToken?(): string;
 }
 
 export interface SessionPoolOptions {
@@ -50,6 +51,12 @@ export interface SessionPoolOptions {
   maxLiveSessions: number;
   /** Recycle a session's child after this much idle time (0/negative disables the timer). */
   idleRecycleMs: number;
+  /**
+   * Called when an idle, child-less entry is evicted from the pool (its per-scope state persists
+   * on disk, so the scope resumes on its next turn). Lets the owner drop per-scope caches — e.g.
+   * the Concierge's awareness-suppression map — so neither side grows without bound.
+   */
+  onEvict?: (scopeKey: string) => void;
   /** Build a real session for a scope key. Unused when {@link fixedSession} is set. */
   makeSession: (scopeKey: string) => PoolSession;
   /**
@@ -132,6 +139,10 @@ export class SessionPool {
         throw err instanceof Error ? err : new Error(String(err));
       },
     );
+    // Mark the rejection handled: the synchronous sessionFor() path (the fast-ack queue-depth
+    // check) may never await `ready` — a failed launch must surface to the next ask(), not as an
+    // unhandled rejection that can take down the daemon.
+    entry.ready.catch(() => undefined);
     this.entries.set(key, entry);
     this.enforceLiveCap(key);
     this.armIdleTimer();
@@ -191,6 +202,20 @@ export class SessionPool {
     return true;
   }
 
+  /**
+   * Exact bus-op correlation (OPS-80 §9.3): resolve an issuer token — the secret a session exports
+   * into its child's env — to the meta of the turn EXECUTING on that session right now. Returns
+   * null for an unknown/stale token or a token whose session is between turns: the caller must
+   * deny rather than fall back to guessing by channel.
+   */
+  metaForToken(token: string): unknown {
+    if (!token) return null;
+    for (const { session } of this.entries.values()) {
+      if (session.busToken?.() === token) return session.getCurrentMeta?.() ?? null;
+    }
+    return null;
+  }
+
   /** The live sessionId for a channel's scope (watermarks + awareness suppression are keyed to it). */
   sessionIdFor(channelId: string): string {
     return this.sessionFor(channelId).currentSessionId?.() ?? "";
@@ -237,7 +262,10 @@ export class SessionPool {
   /** Over the live-children cap? Recycle LRU idle sessions' children (never the busy, never `keep`). */
   private enforceLiveCap(keep: string): void {
     const live = [...this.entries.entries()].filter(([, e]) => e.session.hasLiveChild?.() === true);
-    let excess = live.length - Math.max(1, this.opts.maxLiveSessions);
+    // The `keep` scope was just created and is ABOUT to spawn a child — count it now, or the pool
+    // would run one child over the cap until the next creation.
+    const pending = live.some(([key]) => key === keep) ? 0 : 1;
+    let excess = live.length + pending - Math.max(1, this.opts.maxLiveSessions);
     if (excess <= 0) return;
     const victims = live
       .filter(([key, e]) => key !== keep && (e.session.queueDepth?.() ?? 0) === 0)
@@ -255,18 +283,32 @@ export class SessionPool {
     const idleMs = this.opts.idleRecycleMs;
     if (!(idleMs > 0)) return;
     const tick = Math.max(30_000, Math.min(idleMs, 5 * 60_000));
-    this.idleTimer = setInterval(() => {
-      const now = Date.now();
-      for (const [key, entry] of this.entries) {
-        if (entry.session.hasLiveChild?.() !== true) continue;
-        if ((entry.session.queueDepth?.() ?? 0) > 0) continue;
-        if (now - entry.lastUsedAt < idleMs) continue;
-        entry.session.recycle?.("idle session recycle");
-        this.log.info("recycled idle concierge session child (idle timer)", { scope: key });
-      }
-    }, tick);
+    this.idleTimer = setInterval(() => this.idleSweep(Date.now()), tick);
     // Never keep the process alive just for housekeeping (bun timers support unref).
     (this.idleTimer as unknown as { unref?: () => void }).unref?.();
+  }
+
+  /** One idle-housekeeping pass: recycle long-idle children; evict long-idle child-less entries. */
+  private idleSweep(now: number): void {
+    const idleMs = this.opts.idleRecycleMs;
+    for (const [key, entry] of this.entries) {
+      if ((entry.session.queueDepth?.() ?? 0) > 0) continue;
+      if (now - entry.lastUsedAt < idleMs) continue;
+      if (entry.session.hasLiveChild?.() === true) {
+        entry.session.recycle?.("idle session recycle");
+        this.log.info("recycled idle concierge session child (idle timer)", { scope: key });
+      } else {
+        // Long-idle and child-less: drop the entry entirely so the pool (and the owner's
+        // per-scope caches) can't grow one entry per channel forever. The scope's session state
+        // is on disk — its next turn recreates the entry and resumes the same conversation.
+        this.entries.delete(key);
+        this.opts.onEvict?.(key);
+        void entry.session
+          .stop()
+          .catch((err) => this.log.warn("evicted session stop failed", { err: String(err) }));
+        this.log.info("evicted idle concierge session entry", { scope: key });
+      }
+    }
   }
 }
 

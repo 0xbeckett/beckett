@@ -18,12 +18,18 @@
   intact), and an idle timer (`idle_recycle_minutes`, default 30) reclaims quiet ones. Each
   channel's session persists under `~/.beckett/concierge-sessions/` and survives restarts
   independently; rotation, crash-loop alarms, and handoffs are all per-session.
-- **Correlation under concurrency.** Reply claims, `proactivity set … auto`'s owner gate,
-  computer-use authorization, and `discord decline` now resolve channel-first against the live
-  turns' metas and refuse to guess when ambiguous (`discord decline` gained `--channel`). Ticket,
-  PR, and quick-agent updates route to their origin channel's session, grouped per channel.
-- **Kill switch.** `[concierge] session_scope = "global"` restores the single-session behavior
-  exactly. `beckett status` now reports per-scope session stats plus the turn-gate readout.
+- **Exact issuer correlation.** Every concierge session exports an unforgeable per-session token
+  into its child's env (`BECKETT_SESSION_TOKEN`); the CLI echoes it on each control-bus call, so
+  reply claims, `proactivity set … auto`'s owner gate, computer-use authorization, and
+  `discord decline` resolve to the turn that actually ISSUED the command — a turn in one channel
+  can never claim, or be authorized by, a concurrent live turn in another. Tokenless (human CLI)
+  calls fall back to unambiguous-only matching and refuse to guess (`discord decline` gained
+  `--channel`). Ticket, PR, and quick-agent updates route to their origin channel's session,
+  grouped per channel.
+- **Kill switch + upgrade shim.** `[concierge] session_scope = "global"` restores the
+  single-session behavior exactly. On the first per-channel boot the legacy
+  `concierge-session.json` migrates to the home scope, so yesterday's conversation still resumes.
+  `beckett status` now reports per-scope session stats plus the turn-gate readout.
 
 ### Multiplayer memory — provenance and visibility scoping
 

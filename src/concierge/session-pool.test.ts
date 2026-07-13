@@ -55,6 +55,7 @@ function fakeSession(scope: string, opts: { deferAsks?: boolean } = {}): FakeSes
       s.live = false;
     },
     hasLiveChild: () => s.live,
+    busToken: () => `tok-${scope}`,
   };
   return s;
 }
@@ -163,6 +164,110 @@ test("currentMetas reports every executing turn; tracksMeta spots meta-blind fak
   delete (blind as Partial<FakeSession>).getCurrentMeta;
   const p2 = pool({ fixed: blind });
   expect(p2.tracksMeta()).toBeFalse();
+});
+
+test("metaForToken resolves an issuer token to ITS session's executing turn, never another's", async () => {
+  const made: FakeSession[] = [];
+  const p = pool({ made });
+  await p.ask("chan-a", "x");
+  await p.ask("chan-b", "y");
+  const metaA = { channelId: "chan-a", messageId: "m1" };
+  made.find((s) => s.scope === "chan-a")!.meta = metaA;
+  made.find((s) => s.scope === "chan-b")!.meta = { channelId: "chan-b", messageId: "m2" };
+  expect(p.metaForToken("tok-chan-a")).toBe(metaA);
+  // A token whose session is between turns resolves to null — not to the OTHER live turn.
+  made.find((s) => s.scope === "chan-a")!.meta = null;
+  expect(p.metaForToken("tok-chan-a")).toBeNull();
+  // Unknown/stale token: deny, never guess.
+  expect(p.metaForToken("tok-forged")).toBeNull();
+  expect(p.metaForToken("")).toBeNull();
+});
+
+test("live-child cap counts the just-created session before its child spawns", async () => {
+  const made: FakeSession[] = [];
+  const p = new SessionPool({
+    scope: "channel",
+    maxLiveSessions: 2,
+    idleRecycleMs: 0,
+    makeSession: (scope) => {
+      // Like a real session: no child until the first turn actually launches one.
+      const s = fakeSession(scope);
+      s.live = false;
+      const inner = s.ask;
+      s.ask = (m) => {
+        s.live = true;
+        return inner(m);
+      };
+      made.push(s);
+      return s;
+    },
+  });
+  await p.ask("chan-a", "a");
+  await p.ask("chan-b", "b");
+  // Creating chan-c means a third child is imminent — the LRU idle child must recycle NOW,
+  // not one creation later.
+  await p.ask("chan-c", "c");
+  expect(made.find((s) => s.scope === "chan-a")!.recycles).toHaveLength(1);
+  expect(made.find((s) => s.scope === "chan-b")!.recycles).toHaveLength(0);
+});
+
+test("idle sweep recycles idle children and evicts child-less entries (with onEvict)", async () => {
+  const made: FakeSession[] = [];
+  const evicted: string[] = [];
+  const p = new SessionPool({
+    scope: "channel",
+    maxLiveSessions: 6,
+    idleRecycleMs: 60_000,
+    makeSession: (scope) => {
+      const s = fakeSession(scope);
+      made.push(s);
+      return s;
+    },
+    onEvict: (scope) => evicted.push(scope),
+  });
+  await p.ask("chan-live", "a");
+  await p.ask("chan-dead", "b");
+  const dead = made.find((s) => s.scope === "chan-dead")!;
+  dead.live = false; // its child was already recycled on a previous sweep
+  const entries = (p as unknown as { entries: Map<string, { lastUsedAt: number }> }).entries;
+  const now = Date.now();
+  for (const e of entries.values()) e.lastUsedAt = now - 120_000;
+  (p as unknown as { idleSweep(now: number): void }).idleSweep(now);
+  // The idle live child recycles (session survives); the child-less entry evicts entirely.
+  expect(made.find((s) => s.scope === "chan-live")!.recycles).toEqual(["idle session recycle"]);
+  expect(evicted).toEqual(["chan-dead"]);
+  expect(dead.stopCalls).toBe(1);
+  expect((p.stats() as { sessions: number }).sessions).toBe(1);
+  // The evicted scope is not poisoned: its next turn recreates a fresh entry.
+  expect(await p.ask("chan-dead", "again")).toBe("reply:chan-dead");
+});
+
+test("a launch failure on the synchronous sessionFor path never becomes an unhandled rejection", async () => {
+  let rejections = 0;
+  const onUnhandled = () => {
+    rejections += 1;
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const p = new SessionPool({
+      scope: "channel",
+      maxLiveSessions: 6,
+      idleRecycleMs: 0,
+      makeSession: (scope) => {
+        const s = fakeSession(scope);
+        s.start = async () => Promise.reject(new Error("spawn failed"));
+        return s;
+      },
+    });
+    // The fast-ack path creates the entry without awaiting readiness…
+    p.sessionFor("chan-a");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(rejections).toBe(0);
+    // …and the failure still surfaces to the next ask (fresh retry, not a poisoned scope).
+    await expect(p.ask("chan-a", "hi")).rejects.toThrow("spawn failed");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
 });
 
 test("live-child cap recycles the least-recently-used idle session, never a busy one", async () => {

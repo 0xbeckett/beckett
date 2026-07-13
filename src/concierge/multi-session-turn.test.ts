@@ -10,7 +10,7 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Concierge, type ConciergeSession, type TurnMessage } from "./index.ts";
@@ -103,8 +103,8 @@ function harness(opts: { deferAsks?: boolean } = {}) {
       stats: () => ({ scope }),
       requestReload: () => {},
       recycle: () => {},
-      idleMs: () => 0,
       hasLiveChild: () => true,
+      busToken: () => `tok-${scope}`,
     };
     return fake as unknown as ConciergeSession;
   };
@@ -212,6 +212,84 @@ test("proactivity set auto stays owner-gated when several turns are live (no cha
   h.sessionFor(CHAN_B)!.finish("");
 });
 
+test("a cross-channel reply carrying its issuer token never claims the target channel's live turn", async () => {
+  const h = harness({ deferAsks: true });
+  const turnA = h.concierge.onMessage(msg("m-a", "channel a asks", { channelId: CHAN_A }));
+  const turnB = h.concierge.onMessage(msg("m-b", "channel b asks", { channelId: CHAN_B }));
+  await tick();
+
+  // A's turn cross-posts into B ("let #b know…") while B's own mention turn is live. The issuer
+  // token resolves the op to A's turn — B's turn is untouched.
+  const res = await h.concierge.onBusRequest({
+    cmd: "discord.reply",
+    args: { channelId: CHAN_B, text: "fyi from a's turn" },
+    token: `tok-${CHAN_A}`,
+  });
+  expect(res.ok).toBeTrue();
+  // Posted plainly — NOT as a native reply to B's mention (that would read as B's answer).
+  expect(h.posts[0]!.channelId).toBe(CHAN_B);
+  expect(h.posts[0]!.replyTo).toBeUndefined();
+
+  // B's turn was not marked replied: its real answer still auto-posts when it finishes.
+  h.sessionFor(CHAN_B)!.finish("b's real answer");
+  await turnB;
+  const bPost = h.posts.find((p) => p.text === "b's real answer");
+  expect(bPost).toEqual({ channelId: CHAN_B, text: "b's real answer", replyTo: "m-b" });
+  h.sessionFor(CHAN_A)!.finish("");
+  await turnA;
+});
+
+test("owner-gated ops are authorized by the ISSUING turn's speaker, not the target channel's", async () => {
+  const h = harness({ deferAsks: true });
+  void h.concierge.onMessage(msg("m-a", "owner here", { channelId: CHAN_A, userId: OWNER }));
+  void h.concierge.onMessage(msg("m-b", "member here", { channelId: CHAN_B }));
+  await tick();
+
+  // The member's turn (in B) targets the owner's channel A: pre-token, channel-first correlation
+  // let A's live owner turn authorize it — the confused deputy. The token pins it to B's turn.
+  const denied = await h.concierge.onBusRequest({
+    cmd: "proactivity.set",
+    args: { channelId: CHAN_A, mode: "auto" },
+    token: `tok-${CHAN_B}`,
+  });
+  expect(denied.ok).toBeFalse();
+  expect(denied.error).toContain("owner-only");
+
+  // The owner's own turn can arm ANY channel — authority rides the issuer, not the target.
+  const allowed = await h.concierge.onBusRequest({
+    cmd: "proactivity.set",
+    args: { channelId: "424242424242424242", mode: "auto" },
+    token: `tok-${CHAN_A}`,
+  });
+  expect(allowed.ok).toBeTrue();
+
+  // A forged/stale token authorizes nothing.
+  const forged = await h.concierge.onBusRequest({
+    cmd: "proactivity.set",
+    args: { channelId: CHAN_A, mode: "auto" },
+    token: "tok-not-a-session",
+  });
+  expect(forged.ok).toBeFalse();
+  h.sessionFor(CHAN_A)!.finish("");
+  h.sessionFor(CHAN_B)!.finish("");
+});
+
+test("tokenless correlation never falls back to a live turn in a DIFFERENT channel", async () => {
+  const h = harness({ deferAsks: true });
+  void h.concierge.onMessage(msg("m-a", "owner speaking", { channelId: CHAN_A, userId: OWNER }));
+  await tick();
+
+  // Sole live turn is the owner's in A, but the target is another channel: deny, never guess —
+  // pre-fix the sole-live-turn fallback would have let A's owner turn authorize this.
+  const denied = await h.concierge.onBusRequest({
+    cmd: "proactivity.set",
+    args: { channelId: "424242424242424242", mode: "auto" },
+  });
+  expect(denied.ok).toBeFalse();
+  expect(denied.error).toContain("owner-only");
+  h.sessionFor(CHAN_A)!.finish("");
+});
+
 test("ticket updates route to their origin channel's session, grouped per channel", async () => {
   const h = harness();
   const ticket = (id: string, channel: string): Ticket =>
@@ -244,6 +322,37 @@ test("ticket updates route to their origin channel's session, grouped per channe
   expect(String(a.asks[0]!.message)).toContain("OPS-2");
   expect(b.asks).toHaveLength(1);
   expect(String(b.asks[0]!.message)).toContain("OPS-3");
+});
+
+test("first per-channel boot migrates the legacy global session file to the home scope", () => {
+  const h = harness();
+  const migrate = (scope: string) =>
+    (h.concierge as unknown as { migrateLegacySessionState(s: string): void }).migrateLegacySessionState(scope);
+  const home = "1520658476974735490";
+  writeFileSync(
+    join(h.dir, "concierge-session.json"),
+    JSON.stringify({ sessionId: "legacy-sid", handoff: "old note" }),
+    "utf8",
+  );
+
+  migrate(home);
+  // Yesterday's all-channels conversation resumes as the HOME scope's session…
+  const migrated = JSON.parse(readFileSync(join(h.dir, "concierge-sessions", `${home}.json`), "utf8"));
+  expect(migrated.sessionId).toBe("legacy-sid");
+  expect(migrated.handoff).toBe("old note");
+  // …and the legacy file is gone, so the shim can never run twice.
+  expect(existsSync(join(h.dir, "concierge-session.json"))).toBeFalse();
+});
+
+test("migration is a no-op once the per-scope state dir exists (already-migrated boot)", () => {
+  const h = harness();
+  mkdirSync(join(h.dir, "concierge-sessions"), { recursive: true });
+  writeFileSync(join(h.dir, "concierge-session.json"), JSON.stringify({ sessionId: "stale" }), "utf8");
+  (h.concierge as unknown as { migrateLegacySessionState(s: string): void }).migrateLegacySessionState(
+    "1520658476974735490",
+  );
+  expect(existsSync(join(h.dir, "concierge-session.json"))).toBeTrue();
+  expect(existsSync(join(h.dir, "concierge-sessions", "1520658476974735490.json"))).toBeFalse();
 });
 
 test("each channel's shared-context watermark keys to that channel's own sessionId", async () => {

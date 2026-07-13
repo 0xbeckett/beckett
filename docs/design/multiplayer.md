@@ -365,8 +365,10 @@ one sitting; no schema migrations; no dispatcher, gateway, or memory-engine chan
    architectural change; decide after multiplayer usage is real.
    *→ Shipped (v4.2): a per-channel `SessionPool` (`src/concierge/session-pool.ts`) with a
    shared `TurnGate` bounding concurrent turns, LRU/idle child recycling with `--resume`,
-   per-scope state files, channel-first reply-claim correlation, and a `session_scope =
-   "global"` kill switch. DMs get structurally separate sessions.*
+   per-scope state files, exact issuer correlation for bus ops (a per-session
+   `BECKETT_SESSION_TOKEN` echoed by the CLI resolves each op to the turn that issued it;
+   tokenless calls match unambiguously or deny), and a `session_scope = "global"` kill
+   switch. DMs get structurally separate sessions.*
 4. **`session.stats()` injected-token metrics** — this PR logs a debug line; wiring
    it into `beckett status` can ride any later ops ticket.
 5. **Attachment re-inlining in windows** — windows keep `[file: name]` placeholders;

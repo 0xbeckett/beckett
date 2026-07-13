@@ -276,6 +276,19 @@ export interface Audience {
   context: "guild" | "dm";
 }
 
+/**
+ * The audience for Beckett acting on ITS OWN behalf (planning, staffing) rather than relaying
+ * to a person: owner-scoped facts are its own working knowledge, but dm-scoped facts belong to
+ * one conversation and must never be injected elsewhere. The sentinel viewer id is not a
+ * Discord snowflake (`dm_with` is always 1–20 digits), so the dm arm of {@link canView} can
+ * never match it — dm stays fail-closed by construction, in any context.
+ */
+export const SELF_AUDIENCE: Audience = Object.freeze({
+  viewerId: "beckett-self",
+  viewerRole: "owner",
+  context: "guild",
+} as const);
+
 /** The parsed, effective provenance of a node (post fail-closed coercion). */
 export interface Provenance {
   visibility: Visibility;
@@ -287,11 +300,17 @@ export interface Provenance {
   sourceName?: string;
 }
 
-/** A Discord snowflake as it appears in frontmatter: 1–20 digits. */
-const DISCORD_ID = /^\d{1,20}$/;
-const VisibilitySchema = z.enum(["public", "owner", "dm"]);
+/** A Discord snowflake as it appears in frontmatter: 1–20 digits. Shared with the CLI flag
+ *  layer (src/cli/beckett.ts) so `--dm-with`/`--by` validate against the exact same shape. */
+export const DISCORD_ID = /^\d{1,20}$/;
+/** The three effective node scopes — the single source of truth for both the read-time
+ *  provenance check here and the CLI's `--visibility` flag validation. */
+export const VisibilitySchema = z.enum(["public", "owner", "dm"]);
 /** Ids can round-trip through the YAML parser as numbers; coerce then shape-check with zod. */
-const IdSchema = z.coerce.string().regex(DISCORD_ID);
+export const IdSchema = z.coerce.string().regex(DISCORD_ID);
+/** The viewer authority levels (see {@link Audience.viewerRole}); shared with the CLI's
+ *  `--viewer-role` flag so both reject the same set. */
+export const ViewerRoleSchema = z.enum(["owner", "maintainer", "member"]);
 
 function idOrUndefined(v: unknown): string | undefined {
   if (typeof v !== "string" && typeof v !== "number") return undefined;
@@ -341,11 +360,18 @@ export function shortId(id: string): string {
   return id.length > 4 ? `${id.slice(0, 4)}…` : id;
 }
 
-/** Render provenance as `from zoomx64 (user:8812…)` when source fields exist, else null. */
-export function renderProvenance(node: Pick<MemoryNode, "metadata">): string | null {
-  const { sourceUser, sourceName } = provenanceOf(node);
+/** Render an already-parsed provenance as `from zoomx64 (user:8812…)`, else null. Split out of
+ *  {@link renderProvenance} so a caller that has already run {@link provenanceOf} (e.g. to read
+ *  `visibility`) can render the source line without parsing the metadata a second time. */
+export function renderProvenanceFrom(prov: Provenance): string | null {
+  const { sourceUser, sourceName } = prov;
   if (sourceName && sourceUser) return `from ${sourceName} (user:${shortId(sourceUser)})`;
   if (sourceName) return `from ${sourceName}`;
   if (sourceUser) return `from user:${shortId(sourceUser)}`;
   return null;
+}
+
+/** Render provenance as `from zoomx64 (user:8812…)` when source fields exist, else null. */
+export function renderProvenance(node: Pick<MemoryNode, "metadata">): string | null {
+  return renderProvenanceFrom(provenanceOf(node));
 }

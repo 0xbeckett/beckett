@@ -20,6 +20,13 @@ const dec = new TextDecoder();
 export interface BusRequest {
   cmd: string;
   args: Record<string, unknown>;
+  /**
+   * Issuer credential (OPS-80 §9.3): the concierge exports a per-session secret into each child's
+   * env as `BECKETT_SESSION_TOKEN`; `callBus` echoes it back here so the daemon can correlate a
+   * bus op to the exact session whose turn issued it — never to whichever turn happens to be live
+   * in the op's target channel. Absent for human/operator CLI use.
+   */
+  token?: string;
 }
 export interface BusResponse {
   ok: boolean;
@@ -130,11 +137,13 @@ export function callBus(
       () => done(() => reject(new ControlBusTimeoutError(timeoutMs))),
       timeoutMs,
     );
+    // Stamp the issuer credential when running inside a concierge session's child (see BusRequest).
+    const token = process.env.BECKETT_SESSION_TOKEN || undefined;
     Bun.connect({
       unix: socketPath,
       socket: {
         open(sock) {
-          sock.write(frame({ cmd, args }));
+          sock.write(frame(token ? { cmd, args, token } : { cmd, args }));
         },
         data(sock, data) {
           const msg = fd.push(data);

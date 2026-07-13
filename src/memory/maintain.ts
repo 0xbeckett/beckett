@@ -116,6 +116,9 @@ export function planMaintenance(
   const flagged: FlaggedPair[] = [];
   const merging = new Set<string>();
   const survivors = real.filter((n) => !archiving.has(n.name));
+  // provenanceOf re-parses a node's metadata; derive each survivor's provenance once so the
+  // O(n²) pair scan below reads it from the map instead of recomputing it per comparison.
+  const prov = new Map(survivors.map((n) => [n.name, provenanceOf(n)]));
   for (let i = 0; i < survivors.length; i++) {
     for (let j = i + 1; j < survivors.length; j++) {
       const a = survivors[i]!;
@@ -123,8 +126,8 @@ export function planMaintenance(
       if (a.type !== b.type) continue;
       // Never merge (or even flag) across a visibility boundary: a public fact and an owner/dm
       // fact are different facts, and folding one into the other would leak or lose scope.
-      const pa = provenanceOf(a);
-      const pb = provenanceOf(b);
+      const pa = prov.get(a.name)!;
+      const pb = prov.get(b.name)!;
       if (pa.visibility !== pb.visibility || pa.dmWith !== pb.dmWith) continue;
       if (merging.has(a.name) || merging.has(b.name)) continue;
       const sim = nodeSimilarity(a, b);
