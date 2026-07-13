@@ -2280,6 +2280,7 @@ export class Dispatcher {
     }
 
     const gaps = signal ? doneSignalSummary(signal, summary) : summary || "The completeness checker did not return a valid verdict.";
+    this.trace(ticket, "design-check:verdict", "bounced", "design completeness check found gaps");
     const cycle = (this.designCycles.get(ticket.id) ?? 0) + 1;
     this.designCycles.set(ticket.id, cycle);
     this.persistRuntimeState();
@@ -2372,6 +2373,7 @@ export class Dispatcher {
     summary: string,
   ): Promise<void> {
     const reason = doneSignalSummary(signal, summary);
+    this.trace(ticket, "implement:verdict", "bounced", `implement reported ${signal.status}`);
     if (this.reviewTierFor(ticket) === "self") {
       const sha = await this.commitWip(ticket, handle);
       const at = sha ? ` at \`${sha.slice(0, 9)}\`` : "";
@@ -2873,6 +2875,7 @@ export class Dispatcher {
   }
 
   private async onReviewInfraFailure(ticket: Ticket, reason: string, summary: string): Promise<void> {
+    this.trace(ticket, "review:verdict", "failed", "review infrastructure/schema failure", reason);
     const attempts = (this.reviewInfraRetries.get(ticket.id) ?? 0) + 1;
     this.reviewInfraRetries.set(ticket.id, attempts);
     this.persistRuntimeState();
