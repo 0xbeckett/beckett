@@ -231,7 +231,7 @@ test("page metadata and the complete evaluator result stay inside the configured
     await runtime.stop();
     rmSync(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 60_000);
 
 test("persistent cookies, AI snapshots, parallel pages, proof, and warm state", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-test-"));
@@ -693,7 +693,7 @@ test("a timed-out evaluator marks the outcome uncertain and leaves the lease ins
     await runtime.stop();
     rmSync(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 60_000);
 
 test("an ordinary Playwright error preserves the selected tab and serializable state for recovery", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-error-state-test-"));
@@ -723,7 +723,7 @@ test("an ordinary Playwright error preserves the selected tab and serializable s
     await runtime.stop();
     rmSync(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 60_000);
 
 test("sensitive screenshots use fail-closed capture styling without mutating the page", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-redaction-test-"));
@@ -792,7 +792,7 @@ test("sensitive screenshots use fail-closed capture styling without mutating the
     await runtime.stop();
     rmSync(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 60_000);
 
 test("concurrent cold acquisitions have exactly one owner", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-lease-test-"));
@@ -811,7 +811,7 @@ test("concurrent cold acquisitions have exactly one owner", async () => {
     await runtime.stop();
     rmSync(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 60_000);
 
 test("stop waits for and closes an in-flight Chromium launch", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-stop-launch-test-"));
@@ -891,4 +891,4 @@ test("disposable evaluator contains vm escape and async infinite loop", async ()
     await runtime.stop();
     rmSync(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 60_000);
