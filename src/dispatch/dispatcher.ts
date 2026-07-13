@@ -817,7 +817,7 @@ export class Dispatcher {
   /** Replay durable Plane advances left by previous write failures. Safe to call on every tick. */
   async replayAdvances(): Promise<void> {
     if (!this.advanceOutbox) return;
-    const applied = await this.advanceOutbox.drain((op) => this.applyAdvance(op));
+    const applied = await this.advanceOutbox.drain(async (op) => { await this.applyAdvance(op); });
     if (applied > 0) this.logger.info("replayed queued Plane advances", { count: applied });
   }
 
@@ -3059,7 +3059,11 @@ export class Dispatcher {
       createdAt: new Date().toISOString(),
     };
     try {
-      await this.applyAdvance(op);
+      const advanced = await this.applyAdvance(op);
+      // A human terminal move won while this operation was queued. It is deliberately treated as
+      // consumed (the outbox may remove it), but MUST NOT fall through and re-staff a cancelled
+      // ticket after restart.
+      if (!advanced) return false;
       // A dispatcher-driven move INTO a running state must staff its own worker here (issue #33
       // regression): applyAdvance's instant-milestone path (onAdvance → poller.observe) syncs the
       // poll snapshot so the poller will NOT re-emit this transition, which means the
@@ -3081,18 +3085,19 @@ export class Dispatcher {
     }
   }
 
-  private async applyAdvance(op: AdvanceOperation): Promise<void> {
+  private async applyAdvance(op: AdvanceOperation): Promise<boolean> {
     const state = op.state as TicketState;
     const client = this.clientForTicketId(op.ticketId, op.projectId);
     const current = await client.getIssue?.(op.ticketId);
     this.rememberTicket(current);
     if (current && this.humanTerminalMoveWins(current, state)) {
+      this.trace(current, `state:${state}`, "bounced", `human terminal state ${current.state} won over queued ${state}`);
       this.logger.warn("skipping queued Plane advance because ticket is terminal", {
         ticket: current.identifier,
         current: current.state,
         requested: state,
       });
-      return;
+      return false;
     }
     await client.setState(op.ticketId, state);
     if (current) this.trace(current, `state:${state}`, "passed", `${current.state} → ${state}`);
@@ -3116,6 +3121,7 @@ export class Dispatcher {
       if (doneTicket) await this.promoteDependents(doneTicket);
     }
     if (state === "done") this.clearTicketMemory(op.ticketId);
+    return true;
   }
 
   private humanTerminalMoveWins(current: Ticket, requested: TicketState): boolean {
