@@ -67,6 +67,23 @@ test("relays a dispatcher milestone comment as one turn carrying the right --cha
   expect(asks[0]).not.toContain("beckett:dispatcher"); // marker stripped before the concierge sees it
 });
 
+test("incoming email is delivered through the automated-update turn queue with readable fields", async () => {
+  const { concierge, asks } = harness();
+  await concierge.notifyIncomingEmail({
+    from: "sender@example.com",
+    subject: "Please review",
+    snippet: "The short body preview.",
+    messageId: "agentmail-message-1",
+  });
+  expect(asks).toHaveLength(1);
+  expect(asks[0]).toContain("SYSTEM (incoming email");
+  expect(asks[0]).toContain("sender@example.com");
+  expect(asks[0]).toContain("Please review");
+  expect(asks[0]).toContain("The short body preview.");
+  expect(asks[0]).toContain("agentmail-message-1");
+  expect(asks[0]).toContain("beckett mail read");
+});
+
 test("does NOT ping for the intermediate `→ in_review` advance (avoids the double-message)", () => {
   const { concierge, asks } = harness();
   // The person already has an ack; the `done` ping lands after review. This intermediate advance is

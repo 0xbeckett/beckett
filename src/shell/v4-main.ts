@@ -48,6 +48,8 @@ import { TaskStore } from "../task/store.ts";
 import { createBranchStatusService } from "../task/status.ts";
 import { readLocalBranchStats } from "../git/branch-stats.ts";
 import { reconcileTaskTickets } from "../task/reconcile.ts";
+import { createAgentMailApi, defaultMailStateFile, safeMailError } from "../mail/index.ts";
+import { createAgentMailPoller, defaultMailListenerStateFile, type AgentMailPoller } from "../mail/listener.ts";
 
 /**
  * Root under which every ticket builds its OWN project repo — one directory per code project,
@@ -90,6 +92,7 @@ interface BootedSystem {
   pollers: Map<string, PlanePoller>;
   prPoller: GitHubPrPoller | null;
   activityPoller: GitHubActivityPoller | null;
+  mailPoller: AgentMailPoller | null;
   dispatcher: Dispatcher;
   concierge: Concierge;
   quick: QuickRunner;
@@ -499,6 +502,34 @@ async function boot(): Promise<BootedSystem> {
     await activityPoller.start((events) => concierge.relayGitHubActivity(events, activityConfig.channel_id));
   }
 
+  // OPS-173: AgentMail has no public daemon endpoint to register against (this service exposes
+  // only its local Unix control socket), so use the durable polling fallback. The first poll is a
+  // silent watermark; later IDs produce one queued SYSTEM turn through Concierge.notifyIncomingEmail.
+  let mailPoller: AgentMailPoller | null = null;
+  const agentMailApiKey = process.env.AGENTMAIL_API_KEY?.trim();
+  if (agentMailApiKey) {
+    try {
+      mailPoller = createAgentMailPoller({
+        api: createAgentMailApi(agentMailApiKey),
+        inboxStateFile: defaultMailStateFile(beckettDir),
+        stateFile: defaultMailListenerStateFile(beckettDir),
+        onIncomingEmail: (email) => concierge.notifyIncomingEmail(email),
+      });
+      await mailPoller.start();
+      logger.info("AgentMail incoming-email poller online");
+    } catch (err) {
+      // Email notify is additive: a transient AgentMail outage must not prevent Discord/tickets
+      // from coming up. Keep SDK errors redacted just as the mail CLI does.
+      logger.warn("AgentMail incoming-email poller failed to start", {
+        error: safeMailError(err, agentMailApiKey),
+      });
+      mailPoller?.stop();
+      mailPoller = null;
+    }
+  } else {
+    logger.info("AgentMail incoming-email poller disabled (AGENTMAIL_API_KEY is not set)");
+  }
+
   // Memory self-healing (OPS-121): one maintenance pass shortly after boot, then daily —
   // archives expired/superseded facts and merges near-duplicates so the knowledge graph
   // doesn't rot between deploys. Failures log and never affect the rest of the daemon.
@@ -514,7 +545,7 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, dispatcher, concierge, quick, browser, memoryMaintenance };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browser, memoryMaintenance };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -523,6 +554,7 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   sys.memoryMaintenance.stop();
   sys.prPoller?.stop();
   sys.activityPoller?.stop();
+  sys.mailPoller?.stop();
   for (const p of sys.pollers.values()) p.stop();
   try {
     const drain = await sys.dispatcher.drainForShutdown(signal, 20_000);

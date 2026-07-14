@@ -49,7 +49,7 @@ function loadState(file: string): MailListenerState | null {
       typeof (parsed as Record<string, unknown>).inboxId !== "string" ||
       typeof (parsed as Record<string, unknown>).initialized !== "boolean" ||
       !Array.isArray((parsed as Record<string, unknown>).seenMessageIds) ||
-      !(parsed as Record<string, unknown>).seenMessageIds.every((id) => typeof id === "string")
+      !((parsed as Record<string, unknown>).seenMessageIds as unknown[]).every((id: unknown) => typeof id === "string")
     ) throw new Error("invalid shape");
     return parsed as MailListenerState;
   } catch (err) {
@@ -104,7 +104,9 @@ export class AgentMailPoller {
     }
     await this.pollNow();
     const intervalMs = this.opts.intervalMs ?? 30_000;
-    if (intervalMs > 0) this.timer = setInterval(() => void this.pollNow(), intervalMs);
+    // A transient AgentMail failure must not become an unhandled timer rejection; the next tick
+    // retries the same unseen ID because it was never entered in the durable ledger.
+    if (intervalMs > 0) this.timer = setInterval(() => void this.pollNow().catch(() => undefined), intervalMs);
   }
 
   stop(): void {

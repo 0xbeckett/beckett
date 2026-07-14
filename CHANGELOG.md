@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Incoming AgentMail notifications (OPS-173)
+
+- **Chosen delivery: durable polling fallback, not a webhook.** The daemon has no public HTTP
+  surface (only its local Unix control socket), so registering an AgentMail webhook would require
+  exposing a new public service. When `AGENTMAIL_API_KEY` is available, it instead polls the existing
+  `0xbeckett@agentmail.to` inbox every 30 seconds through the same SDK used by `beckett mail`.
+  Startup establishes a silent watermark, and `~/.beckett/mail-listener.json` permanently dedupes
+  message IDs before redelivery/restart can create another turn. Each new inbound message is a
+  queued `SYSTEM (incoming email …)` Concierge turn carrying sender, subject, snippet, and ID;
+  outgoing mail and pre-existing mail stay silent. No mail secret is stored in source or state.
+
 ### Concurrent conversations — per-channel concierge sessions (OPS-80 §9.3)
 
 - **Beckett is no longer single-threaded across Discord.** The Concierge used to run ONE
