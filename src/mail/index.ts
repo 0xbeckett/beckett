@@ -127,17 +127,20 @@ function tableCell(value: string, width: number): string {
 
 /** Render the compact inbox view requested by the CLI. */
 export function renderMessageTable(messages: MailMessageItem[]): string {
-  const columns = [
-    ["ID", 18],
+  // AgentMail message IDs are deliberately long RFC-style identifiers. Never truncate them:
+  // `ls` is where a caller obtains the exact ID needed by `mail read`.
+  const idWidth = Math.max(18, ...messages.map((message) => message.messageId.length));
+  const columns: Array<[string, number]> = [
+    ["ID", idWidth],
     ["FROM", 26],
     ["SUBJECT", 38],
     ["DATE", 20],
     ["UNREAD", 6],
-  ] as const;
+  ];
   const header = columns.map(([name, width]) => tableCell(name, width)).join("  ");
   const rule = columns.map(([, width]) => "-".repeat(width)).join("  ");
   const rows = messages.map((message) => [
-    tableCell(message.messageId, 18),
+    tableCell(message.messageId, idWidth),
     tableCell(message.from, 26),
     tableCell(message.subject || "(no subject)", 38),
     tableCell(formatDate(message.timestamp), 20),
@@ -177,6 +180,7 @@ export function renderMessage(message: MailMessage): string {
     ["From", message.from],
     ["To", message.to.join(", ")],
     ["Cc", message.cc?.join(", ")],
+    ["Bcc", message.bcc?.join(", ")],
     ["Reply-To", message.replyTo?.join(", ")],
     ["Subject", message.subject],
   ];

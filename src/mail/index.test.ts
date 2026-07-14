@@ -65,13 +65,19 @@ test("message output is compact and read output prefers text", () => {
   }]);
   expect(table).toContain("FROM");
   expect(table).toContain("yes");
+  const longId = "<0100019f626fd7de-very-long-id@agentmail.to>";
+  expect(renderMessageTable([{
+    messageId: longId, threadId: "t-1", labels: [], timestamp: "2026-01-01T00:00:00Z",
+    from: "sender@example.com", to: ["agent@example.com"], subject: "Long ID",
+  }])).toContain(longId);
 
   const rendered = renderMessage({
     messageId: "m-1", threadId: "t-1", labels: [], timestamp: "2026-01-01T00:00:00Z",
-    from: "sender@example.com", to: ["agent@example.com"], subject: "Hi",
+    from: "sender@example.com", to: ["agent@example.com"], cc: ["cc@example.com"], bcc: ["bcc@example.com"], subject: "Hi",
     text: "plain text", html: "<p>html text</p>", headers: { "X-Test": "value" },
   });
   expect(rendered).toContain("X-Test: value");
+  expect(rendered).toContain("Bcc: bcc@example.com");
   expect(rendered).toEndWith("plain text");
   expect(stripHtml("<p>Hello<br>world</p><script>bad()</script>")).toBe("Hello\nworld");
 });
