@@ -4,6 +4,7 @@ import { AgentMailClient } from "agentmail";
 
 const MAIL_STATE_VERSION = 1;
 const BECKETT_MAIL_CLIENT_ID = "beckett-mail-v1";
+const BECKETT_MAIL_ADDRESS = "0xbeckett@agentmail.to";
 
 export interface MailInbox {
   inboxId: string;
@@ -98,7 +99,10 @@ export async function bootstrapInbox(api: AgentMailApi, stateFile: string): Prom
   const marked = listed.inboxes.find(
     (inbox) => inbox.clientId === BECKETT_MAIL_CLIENT_ID || inbox.metadata?.beckett_mail === true,
   );
-  const discovered = marked ?? (listed.inboxes.length === 1 ? listed.inboxes[0] : undefined);
+  // AgentMail onboarding provisioned this address before the CLI existed. Prefer it even when
+  // another unrelated inbox is present, rather than accidentally creating a second mailbox.
+  const configured = listed.inboxes.find((inbox) => inbox.email.toLowerCase() === BECKETT_MAIL_ADDRESS);
+  const discovered = marked ?? configured ?? (listed.inboxes.length === 1 ? listed.inboxes[0] : undefined);
   const inbox = discovered ?? await api.inboxes.create({
     clientId: BECKETT_MAIL_CLIENT_ID,
     displayName: "Beckett",
