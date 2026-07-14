@@ -56,6 +56,14 @@ describe("AgentMail inbox bootstrap", () => {
     const state = await bootstrapInbox(fakeApi([{ inboxId: "onboarded", email: "agent@agentmail.to" }]), file);
     expect(state).toEqual({ version: 1, inboxId: "onboarded", address: "agent@agentmail.to" });
   });
+
+  test("prefers the existing 0xbeckett inbox when AgentMail has multiple inboxes", async () => {
+    const state = await bootstrapInbox(fakeApi([
+      { inboxId: "other", email: "other@agentmail.to" },
+      { inboxId: "beckett", email: "0xbeckett@agentmail.to" },
+    ]), stateFile());
+    expect(state).toEqual({ version: 1, inboxId: "beckett", address: "0xbeckett@agentmail.to" });
+  });
 });
 
 test("message output is compact and read output prefers text", () => {
