@@ -1508,6 +1508,10 @@ max_workers = 2
 worker_hard_cap_s = 3600
 worker_stall_s = 300
 worker_checkpoint_s = 120
+max_rework_cycles = 3
+max_design_cycles = 2
+max_implement_retries = 3
+max_review_infra_retries = 1
 
 [models]
 reviewer = "claude-sonnet-5"
