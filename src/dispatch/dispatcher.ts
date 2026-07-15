@@ -139,6 +139,12 @@ export interface DispatcherDeps {
     repoRoot: string;
     description: string;
     ticket?: string;
+    /**
+     * Non-main integration/target branch to publish onto (the ticket's ```beckett-target-branch```).
+     * When set, the publisher ships to THIS branch and never advances the repo's default branch
+     * (`main`). Absent ⇒ publish to the repo default exactly as before (OPS-185).
+     */
+    targetBranch?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   /**
    * Optional progress feed: the dispatcher forwards each worker's granular {@link WorkerEvent}

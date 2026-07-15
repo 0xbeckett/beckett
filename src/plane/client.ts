@@ -58,6 +58,8 @@ export interface CreateTicketInput {
   project?: string;
   /** User-facing task branch reference, e.g. `42.2`. */
   branchRef?: string;
+  /** Non-main integration/target branch to publish onto (see {@link Ticket.targetBranch}). */
+  targetBranch?: string;
   /** Native Plane parent work-item id for nested task branches. */
   parentId?: string;
   /** State to enter after dependencies clear; defaults to the requested initial state. */
@@ -375,6 +377,7 @@ export class PlaneClient {
         input.project,
         input.branchRef,
         input.branchRef ? (input.startState ?? input.state) : undefined,
+        input.targetBranch,
       ),
       input.originChannel,
     );
@@ -502,6 +505,7 @@ export class PlaneClient {
       project,
       branchRef: taskBranchRef,
       startState,
+      targetBranch,
       body,
     } = parseCast(rawDescription);
     const state = this.reverseState(issue.state ?? null);
@@ -523,6 +527,7 @@ export class PlaneClient {
       blockedBy,
       ...(project ? { project } : {}),
       ...(taskBranchRef ? { branchRef: taskBranchRef } : {}),
+      ...(targetBranch ? { targetBranch } : {}),
       ...(issue.parent ? { parentId: issue.parent } : {}),
       ...(startState ? { startState } : {}),
       projectId,
