@@ -15,6 +15,7 @@
 import { ActionClass, type Capability, type CapabilityDeps } from "../index.ts";
 import { GitHubCli, loadIdentity } from "../../agency/index.ts";
 import { fail, out, parse } from "../../cli/io.ts";
+import { buildGitHubPublishingGuidance } from "../../dispatch/publishing-guidance.ts";
 import type { Logger, MergeStrategy, ReviewParams } from "../../types.ts";
 
 export function createGithubCapability({ config }: CapabilityDeps): Capability {
@@ -113,5 +114,14 @@ export function createGithubCapability({ config }: CapabilityDeps): Capability {
     ],
     busCommands: [],
     skillDoc: ".claude/skills/github/SKILL.md",
+    // The GitHub ownership contract in every worker persona (Phase 4: composed into the
+    // system append by `stages.ts::workerSystemAppend`). Priority 10 keeps the historical
+    // persona order: guidance → stage extras (20) → the deploy recipe (30).
+    promptBlock: {
+      id: "github",
+      priority: 10,
+      render: ({ config: liveConfig, slug, env }) =>
+        slug ? buildGitHubPublishingGuidance(slug, liveConfig, env ?? process.env) : "",
+    },
   };
 }

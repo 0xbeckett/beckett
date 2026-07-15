@@ -200,7 +200,7 @@ test("composeCliHelp joins cliHelp tokens in registration order, skipping unlist
   expect(registry.composeCliHelp()).toBe("status [--pretty] | discord reply|decline");
 });
 
-test("composePrompt sorts by priority then id, drops empty renders, joins with blank lines", () => {
+test("composePrompt sorts by priority then id, drops empty renders, joins with single newlines", () => {
   const config = validateConfig({});
   const registry = new CapabilityRegistry();
   registry.register(cap({ id: "z-first", promptBlock: { id: "z-first", priority: -1, render: () => "FIRST" } }));
@@ -208,7 +208,16 @@ test("composePrompt sorts by priority then id, drops empty renders, joins with b
   registry.register(cap({ id: "a", promptBlock: { id: "a", render: () => "  A-BLOCK  " } }));
   registry.register(cap({ id: "empty", promptBlock: { id: "empty", render: () => "   " } }));
   registry.register(cap({ id: "silent" })); // no block at all
-  expect(registry.composePrompt({ config })).toBe("FIRST\n\nA-BLOCK\n\nB-BLOCK");
+  expect(registry.composePrompt({ config })).toBe("FIRST\nA-BLOCK\nB-BLOCK");
+});
+
+test("composePrompt interleaves caller-supplied extra blocks by the same priority order", () => {
+  const config = validateConfig({});
+  const registry = new CapabilityRegistry();
+  registry.register(cap({ id: "gh", promptBlock: { id: "gh", priority: 10, render: () => "GUIDANCE" } }));
+  registry.register(cap({ id: "dep", promptBlock: { id: "dep", priority: 30, render: () => "RECIPE" } }));
+  const stageLine = { id: "stage:design-only", priority: 20, render: () => "DESIGN-ONLY" };
+  expect(registry.composePrompt({ config }, [stageLine])).toBe("GUIDANCE\nDESIGN-ONLY\nRECIPE");
 });
 
 test("composePrompt renders with the live config", () => {
