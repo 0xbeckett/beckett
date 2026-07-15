@@ -629,6 +629,18 @@ export interface Config {
      *  crash loses at most one window of on-disk WIP, not the whole session. 0 disables. Default
      *  120 (OPS-125). */
     worker_checkpoint_s: number;
+    /** Max implement↔review round-trips before auto-rework stops and waits for a human.
+     *  Default 3 (was the dispatcher's MAX_REWORK_CYCLES constant; OPS-180). */
+    max_rework_cycles: number;
+    /** Total design-completeness passes before the design is escalated to its owner anyway.
+     *  Default 2 (was MAX_DESIGN_CYCLES; OPS-180). */
+    max_design_cycles: number;
+    /** Max auto-respawns of an implement worker that ended without a clean finish (OPS-50)
+     *  before the ticket is parked in todo. Default 3 (was MAX_IMPLEMENT_RETRIES; OPS-180). */
+    max_implement_retries: number;
+    /** Max review infra/schema retries before the ticket is left in_review for a human.
+     *  Default 1 (was MAX_REVIEW_INFRA_RETRIES; OPS-180). */
+    max_review_infra_retries: number;
   };
   models: {
     /** Default review-stage model (issue #27); per-ticket casts override. */

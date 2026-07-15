@@ -39,7 +39,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { Config, Harness, Logger, WorkerEvent, DoneSignal } from "../types.ts";
+import type { Config, Harness, Logger, WorkerEvent } from "../types.ts";
 import type {
   Ticket,
   TicketState,
@@ -77,6 +77,16 @@ import {
 import { resolveGitHubOwner } from "../github/owner.ts";
 import { gitBranchForTicket } from "../git/branch-name.ts";
 import { DispatchEventBus, type DispatchEventBusOptions, type DispatchOutcome } from "./events.ts";
+import {
+  defaultEffortFor,
+  isIntTicket,
+  parseDoneSignal,
+  retryCapsFor,
+  stageRegistry,
+  StageRegistry,
+  type RetryCaps,
+  type StageOps,
+} from "./stages.ts";
 
 // =======================================================================================
 // Collaborators
@@ -125,6 +135,8 @@ export interface DispatcherDeps {
   /** Resolve the board-scoped client for a Plane project id. Falls back to client. */
   clientForProjectId?: (projectId: string) => PlaneClientLike | undefined;
   config: Config;
+  /** Stage registry override (tests / embedders); defaults to the shared built-in registry. */
+  stages?: StageRegistry;
   /** Override any git op (tests inject fakes here); unset ops use the real worktree.ts impl. */
   gitOps?: Partial<GitOps>;
   /** Resolve the absolute path of a ticket's own project repo (`~/Projects/<slug>`). */
@@ -203,21 +215,9 @@ export interface DispatcherDeps {
  */
 export const BECKETT_COMMENT_MARKER = "<!-- beckett:dispatcher -->";
 
-/** Max implement↔review round-trips before the dispatcher stops auto-reworking and waits for a human. */
-const MAX_REWORK_CYCLES = 3;
-
-/** The completeness checker may send an incomplete design back once before escalating to its owner. */
-const MAX_DESIGN_CYCLES = 2;
-
-/**
- * Max times an implement worker that ended WITHOUT a clean finish (hit the backstop wall-clock cap,
- * crashed, or errored) is auto-respawned to continue from its committed WIP before the dispatcher
- * stops retrying and returns the ticket to a ready state (OPS-50).
- */
-const MAX_IMPLEMENT_RETRIES = 3;
-
-/** Max review infra/schema retries before the dispatcher stops and waits for a human verdict. */
-const MAX_REVIEW_INFRA_RETRIES = 1;
+// Retry/rework caps are CONFIG now (`[supervise] max_*`, OPS-180): resolved once per
+// dispatcher via `retryCapsFor` in ./stages.ts, with defaults equal to the old constants
+// (rework 3, design 2, implement retries 3, review infra retries 1).
 
 /**
  * Backoff before re-attempting a failed SPAWN (issue #17): a harness that would not even start
@@ -311,38 +311,6 @@ type PublishOutcome =
   | { status: "skipped" } // no publisher wired (tests / no PAT) — nothing to gate on
   | { status: "published"; url: string; kind: "pushed" | "pr"; prUrl?: string }
   | { status: "failed"; error: string };
-
-function parseDoneSignal(structured: unknown): DoneSignal | null {
-  if (!structured || typeof structured !== "object" || Array.isArray(structured)) return null;
-  const o = structured as Record<string, unknown>;
-  const allowed = new Set(["status", "summary", "filesChanged", "checksRun", "blockedReason"]);
-  if (Object.keys(o).some((key) => !allowed.has(key))) return null;
-  const status = o.status;
-  if (status !== "complete" && status !== "blocked" && status !== "partial") return null;
-  if (typeof o.summary !== "string") return null;
-  if (!Array.isArray(o.filesChanged) || !o.filesChanged.every((f) => typeof f === "string")) return null;
-  if (
-    o.checksRun !== null &&
-    (!Array.isArray(o.checksRun) || !o.checksRun.every((c) => typeof c === "string"))
-  ) {
-    return null;
-  }
-  if (o.blockedReason !== null && typeof o.blockedReason !== "string") return null;
-
-  return {
-    status,
-    summary: o.summary,
-    filesChanged: o.filesChanged,
-    ...(Array.isArray(o.checksRun) ? { checksRun: o.checksRun } : {}),
-    ...(typeof o.blockedReason === "string" ? { blockedReason: o.blockedReason } : {}),
-  };
-}
-
-function doneSignalSummary(signal: DoneSignal, fallback: string): string {
-  const blockedReason = signal.blockedReason ? `\n\nBlocked reason:\n${signal.blockedReason}` : "";
-  const summary = signal.summary || fallback;
-  return `${summary}${blockedReason}`;
-}
 
 function parseStringRecord(value: unknown, field: string): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -455,6 +423,12 @@ export class Dispatcher {
   private readonly spendLedgerPath: string;
   /** OPS-167's only transition telemetry chokepoint; persistence happens inside `emit`. */
   private readonly dispatchEvents: DispatchEventBus;
+  /** The stage lookup (OPS-180): staffing, casting, done-parsing, and finish handling all resolve here. */
+  private readonly stages: StageRegistry;
+  /** Config-resolved retry/rework bounds (`[supervise] max_*`; defaults = the old constants). */
+  private readonly caps: RetryCaps;
+  /** The narrow dispatcher surface stage finish handlers run against (see stages.ts#StageOps). */
+  private readonly stageOps: StageOps;
 
   /** At most one live worker per ticket (implement OR review). */
   private readonly workers = new Map<string, TicketWorkerHandle>();
@@ -504,7 +478,7 @@ export class Dispatcher {
   private readonly implementRetries = new Map<string, number>();
   /** Per-ticket count of review crashes or malformed verdicts; separate from real rework cycles. */
   private readonly reviewInfraRetries = new Map<string, number>();
-  /** Per-ticket incomplete design-check count, bounded by MAX_DESIGN_CYCLES. */
+  /** Per-ticket incomplete design-check count, bounded by the configured design-cycle cap. */
   private readonly designCycles = new Map<string, number>();
   /** Crash-recovery ledger for CURRENTLY live workers (persisted; see {@link LedgeredWorker}). */
   private readonly liveLedger = new Map<string, LedgeredWorker>();
@@ -582,6 +556,30 @@ export class Dispatcher {
       liveSink: deps.dispatchLiveSink,
       onSinkError: (error) => this.logger.warn("dispatch live event sink failed (persisted timeline is intact)", { error: String(error) }),
     });
+    this.stages = deps.stages ?? stageRegistry;
+    this.caps = retryCapsFor(this.config);
+    this.stageOps = {
+      config: this.config,
+      logger: this.logger,
+      caps: this.caps,
+      trace: (ticket, stage, outcome, message, error) => this.trace(ticket, stage, outcome, message, error),
+      postComment: (ticketId, body) => this.postComment(ticketId, body),
+      advanceTicket: (ticket, state, comment) => this.advanceTicket(ticket, state, comment),
+      commitWip: (ticket, handle) => this.commitWip(ticket, handle),
+      commitContribution: (ticket, handle) => this.commitContribution(ticket, handle),
+      spawnStage: (ticket, stage) => this.spawnGuarded(ticket, stage),
+      finishTicketAsDone: (ticket, messagePrefix, summary) => this.finishTicketAsDone(ticket, messagePrefix, summary),
+      reviewTierFor: (ticket) => this.reviewTierFor(ticket),
+      hasTicketContribution: (ticket, handle, committed) => this.hasTicketContribution(ticket, handle, committed),
+      implementIncomplete: (ticket, handle, summary) => this.onImplementIncomplete(ticket, handle, summary),
+      reviewInfraFailure: (ticket, reason, summary) => this.onReviewInfraFailure(ticket, reason, summary),
+      persistRuntimeState: () => this.persistRuntimeState(),
+      counters: {
+        rework: this.reworkCount,
+        reviewInfra: this.reviewInfraRetries,
+        designCycles: this.designCycles,
+      },
+    };
     this.loadRuntimeState();
   }
 
@@ -1055,25 +1053,21 @@ export class Dispatcher {
     if (courierTookPublish) {
       await this.postComment(ticket.id, "Publish retry cancelled — a human/concierge state change took courier ownership.");
     }
+    // A state a registered stage staffs from (design → design, in_progress → implement,
+    // in_review → review) spawns that stage's worker; terminal/held states fall through below.
+    const staffs = this.stages.forState(to);
+    if (staffs) {
+      // Stage admission gate (design is INT-only: the guard keeps a malformed non-INT board
+      // state from accidentally spending a design worker).
+      if (staffs.entryGuard && !staffs.entryGuard(ticket)) return;
+      // Publish retries deliberately hold completed work in_review; it is not an unstaffed
+      // review gate and must not burn a new reviewer on every poll/restart.
+      if (to === "in_review" && this.publishOutbox?.has(ticket.id)) return;
+      if (this.workers.has(ticket.id)) return; // already staffed
+      this.spawnGuarded(ticket, staffs.name);
+      return;
+    }
     switch (to) {
-      case "design":
-        // `design` is INT-only. The identifier guard keeps a malformed non-INT board state
-        // from accidentally spending a design worker.
-        if (!this.isIntTicket(ticket)) return;
-        if (this.workers.has(ticket.id)) return;
-        this.spawnGuarded(ticket, "design");
-        return;
-      case "in_progress":
-        if (this.workers.has(ticket.id)) return; // already staffed
-        this.spawnGuarded(ticket, "implement");
-        return;
-      case "in_review":
-        // Publish retries deliberately hold completed work in_review; it is not an unstaffed
-        // review gate and must not burn a new reviewer on every poll/restart.
-        if (this.publishOutbox?.has(ticket.id)) return;
-        if (this.workers.has(ticket.id)) return; // already has a reviewer
-        this.spawnGuarded(ticket, "review");
-        return;
       case "done": {
         // Unapplied steering on a finished ticket must not vanish (issue #22): tell the human
         // how to act on it before the ticket's memory is cleared.
@@ -1289,8 +1283,8 @@ export class Dispatcher {
   ): Promise<{ ticket: string; stage: string; harness?: Harness }> {
     const ticket = await this.findTicket(idOrIdentifier);
     if (!ticket) throw new Error(`no such ticket: ${idOrIdentifier}`);
-    const stage = ticket.state === "design" ? "design" : ticket.state === "in_review" ? "review" : "implement";
-    if (ticket.state !== "design" && ticket.state !== "in_progress" && ticket.state !== "in_review") {
+    const stage = this.stages.forState(ticket.state)?.name;
+    if (!stage) {
       throw new Error(
         `ticket ${ticket.identifier} is in "${ticket.state}" — move it to in_progress/in_review ` +
           `(or INT Design) to (re)staff it`,
@@ -1348,11 +1342,6 @@ export class Dispatcher {
     }
     const all = await this.listAllIssues();
     return all.find((t) => t.id === key || t.identifier.toLowerCase() === key.toLowerCase()) ?? null;
-  }
-
-  /** INT is a separate Plane board; its identifiers are minted as INT-N. */
-  private isIntTicket(ticket: Ticket): boolean {
-    return ticket.identifier.toUpperCase().startsWith("INT-") || ticket.projectId.toUpperCase() === "INT";
   }
 
   /** True if a worker is live, OR a spawn is mid-flight, for this ticket (airtight dedup). */
@@ -1528,6 +1517,7 @@ export class Dispatcher {
   /** The real spawn path (cap already checked). Registers the finish handler. */
   private async doSpawn(ticket: Ticket, stage: string, repoRoot: string): Promise<void> {
     const stageStartedAt = Date.now();
+    const stageDef = this.stages.get(stage);
     let spec = this.castFor(ticket, stage);
 
     // A classed-failure recovery (auth/rate-limit substitution) pinned a one-shot cast override
@@ -1624,7 +1614,7 @@ export class Dispatcher {
     // Capture the diff base the first time a ticket implements: HEAD-before-any-new-work is how a
     // later REVIEW sees this branch's own contribution, whether the base is main or composed task
     // dependencies. A git hiccup here must never block the spawn — review falls back to diffing HEAD.
-    if (stage === "implement" && !this.baseShaForTicket.has(ticket.id)) {
+    if (stageDef?.capturesBaseSha && !this.baseShaForTicket.has(ticket.id)) {
       try {
         const sha = await this.git.headSha(workspace);
         if (sha) {
@@ -1665,7 +1655,7 @@ export class Dispatcher {
     // first N tool round trips rediscovering it. Best-effort — a git failure just means the
     // reviewer falls back to running the diff itself, exactly as before.
     let reviewDiff: string | undefined;
-    if (stage === "review") {
+    if (stageDef?.preloadsDiff) {
       try {
         reviewDiff = await this.git.readDiff(workspace, baseRef);
       } catch (err) {
@@ -1746,7 +1736,7 @@ export class Dispatcher {
     const spendMeta: SpendStageMeta = {
       harness: spec.harness,
       model: this.modelFor(spec),
-      effort: spec.effort ?? this.defaultEffortFor(spec.harness),
+      effort: spec.effort ?? defaultEffortFor(spec.harness, this.config),
       startedAt: stageStartedAt,
     };
     this.spendMetaByWorker.set(handle.id, spendMeta);
@@ -1856,8 +1846,11 @@ export class Dispatcher {
     this.trace(ticket, `${stage}:staff`, "failed", "worker could not start", err.message);
     this.logger.error("spawn failed", { ticket: ticket.identifier, stage, error: err.message });
 
-    if (stage === "review") {
-      await this.onReviewInfraFailure(ticket, `Could not start the review worker: ${err.message}.`, "");
+    // A stage may plug in its own spawn-failure policy (review rides the review-infra retry
+    // gate instead of the implement respawn backoff below).
+    const spawnFailure = this.stages.get(stage)?.spawnFailure;
+    if (spawnFailure) {
+      await spawnFailure(this.stageOps, ticket, err);
       return;
     }
 
@@ -1865,12 +1858,12 @@ export class Dispatcher {
     this.implementRetries.set(ticket.id, attempts);
     this.persistRuntimeState();
 
-    if (attempts <= MAX_IMPLEMENT_RETRIES) {
+    if (attempts <= this.caps.implementRetries) {
       const delayMs = SPAWN_RETRY_DELAYS_MS[Math.min(attempts - 1, SPAWN_RETRY_DELAYS_MS.length - 1)]!;
       await this.postComment(
         ticket.id,
         `Could not start the ${stage} worker: ${err.message}\n\nRetrying in ` +
-          `${Math.round(delayMs / 1000)}s (attempt ${attempts}/${MAX_IMPLEMENT_RETRIES}).`,
+          `${Math.round(delayMs / 1000)}s (attempt ${attempts}/${this.caps.implementRetries}).`,
       );
       const timer = setTimeout(() => {
         this.spawnRetryTimers.delete(ticket.id);
@@ -1885,7 +1878,7 @@ export class Dispatcher {
     await this.advanceTicket(
       ticket,
       "todo",
-      `Could not start a ${stage} worker after ${MAX_IMPLEMENT_RETRIES} attempts ` +
+      `Could not start a ${stage} worker after ${this.caps.implementRetries} attempts ` +
         `(${err.message}). Parking this in **todo** — nothing is running and nothing will ` +
         `auto-retry; move it back to **in_progress** once the cause is fixed.`,
     );
@@ -1923,12 +1916,12 @@ export class Dispatcher {
         const attempts = (this.implementRetries.get(ticket.id) ?? 0) + 1;
         this.implementRetries.set(ticket.id, attempts);
         this.persistRuntimeState();
-        if (attempts > MAX_IMPLEMENT_RETRIES) break; // fall through to park below
+        if (attempts > this.caps.implementRetries) break; // fall through to park below
         this.castOverrides.set(ticket.id, { stage: "implement", spec: { harness: candidate } });
         await this.postComment(
           ticket.id,
           `${cause}, so I'm continuing this ticket on **${candidate}** instead (WIP committed${at}, ` +
-            `attempt ${attempts}/${MAX_IMPLEMENT_RETRIES}).\n\nWhere it stopped:\n${summary}`,
+            `attempt ${attempts}/${this.caps.implementRetries}).\n\nWhere it stopped:\n${summary}`,
         );
         this.logger.warn("classed failure — substituting harness", {
           ticket: ticket.identifier,
@@ -1962,12 +1955,12 @@ export class Dispatcher {
     const attempts = (this.implementRetries.get(ticket.id) ?? 0) + 1;
     this.implementRetries.set(ticket.id, attempts);
     this.persistRuntimeState();
-    if (attempts <= MAX_IMPLEMENT_RETRIES) {
+    if (attempts <= this.caps.implementRetries) {
       const delayMs = SPAWN_RETRY_DELAYS_MS[Math.min(attempts - 1, SPAWN_RETRY_DELAYS_MS.length - 1)]!;
       await this.postComment(
         ticket.id,
         `${cause} — backing off ${Math.round(delayMs / 1000)}s before retrying (attempt ` +
-          `${attempts}/${MAX_IMPLEMENT_RETRIES}). WIP committed${at}.`,
+          `${attempts}/${this.caps.implementRetries}). WIP committed${at}.`,
       );
       const timer = setTimeout(() => {
         this.spawnRetryTimers.delete(ticket.id);
@@ -1981,7 +1974,7 @@ export class Dispatcher {
     await this.advanceTicket(
       ticket,
       "todo",
-      `${cause} and it hasn't cleared after ${MAX_IMPLEMENT_RETRIES} backed-off retries. Parking ` +
+      `${cause} and it hasn't cleared after ${this.caps.implementRetries} backed-off retries. Parking ` +
         `in **todo**; move it back to **in_progress** when capacity returns. WIP committed${at}.`,
     );
     this.logger.warn("rate-limit retries exhausted — parked ticket", { ticket: ticket.identifier });
@@ -2044,28 +2037,14 @@ export class Dispatcher {
   }
 
   /**
-   * Resolve the casting entry for a stage, applying defaults (docs/V3.md §5). A cast naming a
+   * Resolve the casting entry for a stage: the stage's own default cast (registry, OPS-180)
+   * when the ticket casts nothing, then the shared disabled-harness fallback. A cast naming a
    * harness that is disabled in config (`harness.<h>.enabled = false`) falls back to claude —
    * the enabled keys are real switches, not decoration. The cast's model is dropped on fallback
    * (model ids are harness-specific); its effort survives (shared vocabulary).
    */
   private castFor(ticket: Ticket, stage: string): HarnessSpec {
-    const explicit = ticket.casting[stage];
-    let spec: HarnessSpec =
-      explicit ??
-      (stage === "design"
-        ? { harness: "claude", model: "claude-opus-4-8", effort: "high" }
-        : stage === "design_check"
-          // Separate, inexpensive model: it must not mark the design author's own homework.
-          ? { harness: "claude", model: "claude-haiku-4-5", effort: "low" }
-          : stage === "review"
-            ? { harness: "claude", model: this.config.models.reviewer, effort: this.reviewEffortFor(ticket) }
-            : { harness: "claude" });
-    // An explicit review cast that names no effort still gets the SCALED default (issue #27) —
-    // otherwise it silently falls through to the harness default (xhigh), the priciest tier.
-    if (stage === "review" && explicit && !explicit.effort) {
-      spec = { ...explicit, effort: this.reviewEffortFor(ticket) };
-    }
+    const spec = this.stages.resolveCast(stage, ticket.casting[stage], ticket, this.config);
     if (spec.harness !== "claude" && this.config.harness?.[spec.harness]?.enabled === false) {
       this.logger.warn("cast harness is disabled in config — falling back to claude", {
         ticket: ticket.identifier,
@@ -2075,30 +2054,6 @@ export class Dispatcher {
       return { harness: "claude", effort: spec.effort };
     }
     return spec;
-  }
-
-  /**
-   * Review effort scaled from the implement cast (issue #27): a `low`-effort implement doesn't
-   * need an `xhigh` review. Defaults to `high` — the review's job is judging a diff against
-   * criteria, not re-deriving the implementation.
-   */
-  private reviewEffortFor(ticket: Ticket): NonNullable<HarnessSpec["effort"]> {
-    switch (ticket.casting.implement?.effort) {
-      case "low":
-        return "medium";
-      case "xhigh":
-        return "xhigh";
-      default:
-        return "high";
-    }
-  }
-
-  private defaultEffortFor(harness: HarnessSpec["harness"]): string {
-    switch (harness) {
-      case "claude": return this.config.harness.claude.default_effort;
-      case "codex": return this.config.harness.codex.default_effort;
-      case "pi": return this.config.harness.pi.thinking;
-    }
   }
 
   private modelFor(spec: HarnessSpec): string {
@@ -2214,14 +2169,11 @@ export class Dispatcher {
     if (spend) summary = summary ? `${summary}\n\n${spend}` : spend;
 
     try {
-      if (stage === "design") {
-        await this.onDesignDone(ticket, handle, status, summary);
-      } else if (stage === "design_check") {
-        await this.onDesignCheckDone(ticket, handle, status, summary);
-      } else if (stage === "implement") {
-        await this.onImplementDone(ticket, handle, status, summary);
-      } else if (stage === "review") {
-        await this.onReviewDone(ticket, handle, status, summary);
+      // The stage's own finish handler advances the ticket (registry, OPS-180); a worker on an
+      // unregistered stage gets the old generic status comment.
+      const stageDef = this.stages.get(stage);
+      if (stageDef) {
+        await stageDef.finish(this.stageOps, { ticket, handle, status, summary });
       } else {
         await this.postComment(ticket.id, `${stage} ${status}.\n\n${summary}`);
       }
@@ -2238,101 +2190,25 @@ export class Dispatcher {
     }
   }
 
+  // Stage-specific finish handling (design draft→check chaining, the design_check verdict, the
+  // implement self/fresh review gate, and the review verdict/rework loop) lives in the stage
+  // registry (`./stages.ts`, OPS-180). The methods below are the SHARED machinery those
+  // handlers reach through StageOps: WIP/contribution commits, bounded failure policy,
+  // publish-gated done, and the self-review contribution check.
+
   /**
-   * Design is a real worker stage, followed by an independent cheap completeness pass. The
-   * checker gets its own model/session so the author cannot approve its own document.
+   * Safety-net commit of a finished implementation (the worker may have committed already);
+   * true when this call actually committed something new. Never throws.
    */
-  private async onDesignDone(
-    ticket: Ticket,
-    handle: TicketWorkerHandle,
-    status: "success" | "error",
-    summary: string,
-  ): Promise<void> {
-    const sha = await this.commitWip(ticket, handle);
-    const at = sha ? ` (committed as \`${sha.slice(0, 9)}\`)` : "";
-    await this.postComment(
-      ticket.id,
-      status === "success"
-        ? `Design draft complete${at}; running an independent completeness check.`
-        : `Design worker ended early${at}; running the completeness check on the saved draft.`,
-    );
-    this.spawnGuarded(ticket, "design_check");
-  }
-
-  private async onDesignCheckDone(
-    ticket: Ticket,
-    handle: TicketWorkerHandle,
-    status: "success" | "error",
-    summary: string,
-  ): Promise<void> {
-    const signal = status === "success" ? parseDoneSignal(handle.result?.structured) : null;
-    if (signal?.status === "complete") {
-      this.designCycles.delete(ticket.id);
-      this.persistRuntimeState();
-      await this.advanceTicket(
-        ticket,
-        "design_review",
-        `Design completeness check passed. Design document: \`docs/design/${ticket.identifier.toLowerCase()}.md\`\n\n` +
-          `**Here's the design — good to build?** Reply with approval to start implementation, or ` +
-          `send changes and move this ticket back to **Design**.\n\n${summary}`,
-      );
-      return;
-    }
-
-    const gaps = signal ? doneSignalSummary(signal, summary) : summary || "The completeness checker did not return a valid verdict.";
-    this.trace(ticket, "design-check:verdict", "bounced", "design completeness check found gaps");
-    const cycle = (this.designCycles.get(ticket.id) ?? 0) + 1;
-    this.designCycles.set(ticket.id, cycle);
-    this.persistRuntimeState();
-    if (cycle < MAX_DESIGN_CYCLES) {
-      await this.advanceTicket(
-        ticket,
-        "design",
-        `Design completeness check found gaps; returning to **Design** (pass ${cycle}/${MAX_DESIGN_CYCLES}). ` +
-          `Please address these before the human review:\n\n${gaps}`,
-      );
-      return;
-    }
-
-    this.designCycles.delete(ticket.id);
-    this.persistRuntimeState();
-    await this.advanceTicket(
-      ticket,
-      "design_review",
-      `⚠ Design completeness check still flagged gaps after ${MAX_DESIGN_CYCLES} passes:\n\n${gaps}\n\n` +
-        `Design document: \`docs/design/${ticket.identifier.toLowerCase()}.md\`\n\n` +
-        `**Here's the design — good to build?** Please approve it, or send changes and move this ticket back to **Design**.`,
-    );
-  }
-
-  private async onImplementDone(
-    ticket: Ticket,
-    handle: TicketWorkerHandle,
-    status: "success" | "error",
-    summary: string,
-  ): Promise<void> {
-    if (status !== "success") {
-      await this.onImplementIncomplete(ticket, handle, summary);
-      return;
-    }
-
-    const signal = parseDoneSignal(handle.result?.structured);
-    if (signal && (signal.status === "blocked" || signal.status === "partial")) {
-      await this.onImplementReportedIncomplete(ticket, handle, signal, summary);
-      return;
-    }
-
-    // Capture any uncommitted work the worker left in the checkout so review/rework (and the
-    // human) can see it. The worker may have committed already; this is the safety net.
-    let committedContribution = false;
+  private async commitContribution(ticket: Ticket, handle: TicketWorkerHandle): Promise<boolean> {
     try {
       const commit = await this.git.commitWorktree(
         handle.workspace,
         `beckett: ${ticket.identifier} implement (${handle.workerId})`,
       );
       if (commit.committed) {
-        committedContribution = true;
         this.logger.info("committed implementation", { ticket: ticket.identifier, sha: commit.sha });
+        return true;
       }
     } catch (err) {
       this.logger.warn("commit of implementation failed", {
@@ -2340,57 +2216,7 @@ export class Dispatcher {
         error: (err as Error).message,
       });
     }
-
-    // v3.1 effort-scaled review. `self` (low/medium-risk work) → the worker self-verified inline,
-    // so go straight to done in ONE pass — no separate cold reviewer, no relay. `fresh` →
-    // a separate adversarial reviewer (the in_review stage), as before. Done tickets promote DAG
-    // dependents immediately here; the later poller state_changed(done) is only a restart backstop.
-    if (this.reviewTierFor(ticket) === "self") {
-      if (!(await this.hasTicketContribution(ticket, handle, committedContribution))) {
-        await this.advanceTicket(
-          ticket,
-          "in_review",
-          `Self-review withheld → **in_review** because the implement worker finished with no diff against the ticket base.\n\n${summary}`,
-        );
-        this.logger.warn("self-review withheld: zero-diff implementation", {
-          ticket: ticket.identifier,
-        });
-        return;
-      }
-      const done = await this.finishTicketAsDone(ticket, "Self-reviewed → **done** (one pass).", summary);
-      if (done) this.logger.info("ticket self-reviewed → done", { ticket: ticket.identifier });
-      return;
-    }
-
-    await this.advanceTicket(ticket, "in_review", `Implementation complete → **in_review**.\n\n${summary}`);
-    this.logger.info("ticket advanced to in_review", { ticket: ticket.identifier });
-  }
-
-  private async onImplementReportedIncomplete(
-    ticket: Ticket,
-    handle: TicketWorkerHandle,
-    signal: DoneSignal,
-    summary: string,
-  ): Promise<void> {
-    const reason = doneSignalSummary(signal, summary);
-    this.trace(ticket, "implement:verdict", "bounced", `implement reported ${signal.status}`);
-    if (this.reviewTierFor(ticket) === "self") {
-      const sha = await this.commitWip(ticket, handle);
-      const at = sha ? ` at \`${sha.slice(0, 9)}\`` : "";
-      await this.advanceTicket(
-        ticket,
-        "in_review",
-        `The implement worker reported **${signal.status}**, so self-review is disabled and this ` +
-          `is going to a fresh review instead of being marked done. I committed any WIP${at}.\n\n${reason}`,
-      );
-      this.logger.warn("self-tier implement reported incomplete — sent to review", {
-        ticket: ticket.identifier,
-        status: signal.status,
-      });
-      return;
-    }
-
-    await this.onImplementIncomplete(ticket, handle, reason);
+    return false;
   }
 
   private async hasTicketContribution(
@@ -2415,7 +2241,7 @@ export class Dispatcher {
    * cap, crashed, or the harness errored. The fix for the OPS-50 "silent wedge": never leave the
    * ticket sitting in in_progress with nothing running. We (1) commit whatever WIP is in the
    * checkout so it's never lost, then (2) either retry — re-spawn an implement worker that continues
-   * from that committed WIP (bounded by {@link MAX_IMPLEMENT_RETRIES}) — or, once retries are spent,
+   * from that committed WIP (bounded by the configured implement-retry cap) — or, once retries are spent,
    * push the WIP to GitHub if we can and return the ticket to a ready state (`todo`) with a loud
    * comment so a human can pick it up. Both paths post a status comment saying what happened and
    * where the worker stopped.
@@ -2450,11 +2276,11 @@ export class Dispatcher {
     this.implementRetries.set(ticket.id, attempts);
     this.persistRuntimeState();
 
-    if (attempts <= MAX_IMPLEMENT_RETRIES) {
+    if (attempts <= this.caps.implementRetries) {
       await this.postComment(
         ticket.id,
         `The worker ${reason} before finishing. I committed its work-in-progress${at} and am ` +
-          `retrying (attempt ${attempts}/${MAX_IMPLEMENT_RETRIES}), continuing from the committed ` +
+          `retrying (attempt ${attempts}/${this.caps.implementRetries}), continuing from the committed ` +
           `work.\n\nWhere it stopped:\n${summary}`,
       );
       this.logger.warn("implement incomplete — retrying", {
@@ -2494,7 +2320,7 @@ export class Dispatcher {
       await this.advanceTicket(
         ticket,
         "todo",
-        `The worker ${reason} again — that's ${MAX_IMPLEMENT_RETRIES} retries with no clean finish, ` +
+        `The worker ${reason} again — that's ${this.caps.implementRetries} retries with no clean finish, ` +
           `so I'm stopping automatic retries and moving this back to **todo** so it isn't stuck in ` +
           `progress. Its WIP is committed${at}.${link}\n\nWhere it stopped:\n${summary}`,
       );
@@ -2813,77 +2639,16 @@ export class Dispatcher {
     };
   }
 
-  private async onReviewDone(
-    ticket: Ticket,
-    handle: TicketWorkerHandle,
-    status: "success" | "error",
-    summary: string,
-  ): Promise<void> {
-    if (status !== "success") {
-      await this.onReviewInfraFailure(ticket, `Reviewer exited with ${status}.`, summary);
-      return;
-    }
-
-    const signal = parseDoneSignal(handle.result?.structured);
-    if (!signal) {
-      await this.onReviewInfraFailure(
-        ticket,
-        "Reviewer finished without a schema-valid structured verdict.",
-        summary,
-      );
-      return;
-    }
-
-    this.reviewInfraRetries.delete(ticket.id);
-    this.persistRuntimeState();
-    if (signal.status === "complete") {
-      this.trace(ticket, "review:verdict", "passed", "review passed");
-      const done = await this.finishTicketAsDone(ticket, "Review passed → **done**.", summary);
-      if (done) this.logger.info("ticket advanced to done", { ticket: ticket.identifier });
-      return;
-    }
-
-    // Review failed — bound the implement↔review loop so it can't churn forever.
-    const cycles = (this.reworkCount.get(ticket.id) ?? 0) + 1;
-    this.trace(ticket, "review:verdict", "bounced", `review requested rework (cycle ${cycles}/${MAX_REWORK_CYCLES})`);
-    this.reworkCount.set(ticket.id, cycles);
-    this.persistRuntimeState();
-    if (cycles >= MAX_REWORK_CYCLES) {
-      await this.postComment(
-        ticket.id,
-        `Review found issues, and this is rework cycle ${cycles}/${MAX_REWORK_CYCLES} — stopping ` +
-          `automatic rework and leaving this in **in_review** for a human to take over.\n\n${summary}`,
-      );
-      this.reworkCount.delete(ticket.id);
-      this.persistRuntimeState();
-      this.logger.warn("rework cap reached — leaving for human", {
-        ticket: ticket.identifier,
-        cycles,
-      });
-      return; // no setState → no new event → loop stops, ticket awaits a human
-    }
-
-    await this.advanceTicket(
-      ticket,
-      "in_progress",
-      `Review found issues → back to **in_progress** for re-work (cycle ${cycles}/${MAX_REWORK_CYCLES}).\n\n${summary}`,
-    );
-    this.logger.info("ticket sent back to in_progress (review fail)", {
-      ticket: ticket.identifier,
-      cycle: cycles,
-    });
-  }
-
   private async onReviewInfraFailure(ticket: Ticket, reason: string, summary: string): Promise<void> {
     this.trace(ticket, "review:verdict", "failed", "review infrastructure/schema failure", reason);
     const attempts = (this.reviewInfraRetries.get(ticket.id) ?? 0) + 1;
     this.reviewInfraRetries.set(ticket.id, attempts);
     this.persistRuntimeState();
 
-    if (attempts <= MAX_REVIEW_INFRA_RETRIES) {
+    if (attempts <= this.caps.reviewInfraRetries) {
       await this.postComment(
         ticket.id,
-        `${reason} Retrying the review gate (attempt ${attempts}/${MAX_REVIEW_INFRA_RETRIES}); ` +
+        `${reason} Retrying the review gate (attempt ${attempts}/${this.caps.reviewInfraRetries}); ` +
           `this does not count as a rework cycle.\n\n${summary}`,
       );
       this.logger.warn("review infra/schema failure — retrying review", {
@@ -2899,7 +2664,7 @@ export class Dispatcher {
     this.persistRuntimeState();
     await this.postComment(
       ticket.id,
-      `${reason} Review still did not produce a reliable verdict after ${MAX_REVIEW_INFRA_RETRIES} ` +
+      `${reason} Review still did not produce a reliable verdict after ${this.caps.reviewInfraRetries} ` +
         `retry, so I'm leaving this in **in_review** for a human instead of marking it done or ` +
         `sending it back as failed work.\n\n${summary}`,
     );
@@ -3014,7 +2779,7 @@ export class Dispatcher {
 
   private dependentStartState(ticket: Ticket): TicketState {
     if (!ticket.branchRef) return "in_progress";
-    return ticket.startState ?? (this.isIntTicket(ticket) ? "design" : "in_progress");
+    return ticket.startState ?? (isIntTicket(ticket) ? "design" : "in_progress");
   }
 
   private async promoteHeldDependent(ticket: Ticket, after: string): Promise<boolean> {
@@ -3047,7 +2812,7 @@ export class Dispatcher {
   ): Promise<boolean> {
     // Any dispatcher-driven move out of a running state invalidates a scheduled backed-off
     // respawn — a timer firing on a parked/done ticket would staff work nobody asked for.
-    if (state !== "design" && state !== "in_progress" && state !== "in_review") this.cancelSpawnRetry(ticket.id);
+    if (!this.stages.forState(state)) this.cancelSpawnRetry(ticket.id);
     this.trace(ticket, `state:${state}`, "started", `dispatcher transition requested → ${state}`);
     const op: AdvanceOperation = {
       id: randomUUID(),
@@ -3071,9 +2836,14 @@ export class Dispatcher {
       // / human / promoteDependents moves still flow client.setState → poller → onStateChanged, so
       // those spawn as before; spawnGuarded's isStaffed dedup makes a double-trigger a no-op, and a
       // still-held repo (finishing worker not yet reaped) just queues the spawn until pump().
-      if (state === "design" && this.isIntTicket(ticket)) this.spawnGuarded(ticket, "design");
-      else if (state === "in_review" && !this.publishOutbox?.has(ticket.id)) this.spawnGuarded(ticket, "review");
-      else if (state === "in_progress") this.spawnGuarded(ticket, "implement");
+      const staffs = this.stages.forState(state);
+      if (
+        staffs &&
+        (!staffs.entryGuard || staffs.entryGuard(ticket)) &&
+        !(state === "in_review" && this.publishOutbox?.has(ticket.id))
+      ) {
+        this.spawnGuarded(ticket, staffs.name);
+      }
       return true;
     } catch (err) {
       this.trace(ticket, `state:${state}`, "failed", "Plane state transition failed", (err as Error).message);
