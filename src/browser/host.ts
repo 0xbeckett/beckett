@@ -139,7 +139,7 @@ async function handle(runtime: BrowserRuntime, request: BrowserHostRequest): Pro
       if (!checkpoint || typeof checkpoint !== "object") throw new Error("checkpoint must be an object");
       await runtime.restore(
         requireString(request.params, "runId"),
-        checkpoint as Awaited<ReturnType<BrowserControllerRuntime["checkpoint"]>>,
+        checkpoint as Awaited<ReturnType<BrowserRuntime["checkpoint"]>>,
       );
       return null;
     }

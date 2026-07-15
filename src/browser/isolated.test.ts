@@ -231,7 +231,7 @@ test("isolated leases require the exact high-entropy control capability", async 
   }
 }, 30_000);
 
-test("evaluator never receives a screenshot path and daemon delivers a trusted PNG", async () => {
+test("BetterWright returns a screenshot that Beckett validates and delivers as a trusted PNG", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-nofollow-test-"));
   const config = validateConfig({ paths: { beckett_dir: dir }, quick: { browser_profile_dir: "browser/profile" } });
   const runtime = createIsolatedBrowserRuntime({
@@ -250,7 +250,7 @@ test("evaluator never receives a screenshot path and daemon delivers a trusted P
       await page.setContent('<main>trusted screenshot</main>');
       return await screenshot('shot-link');
     `, CONTROL_TOKEN);
-    expect(evaluated.value).toBe("[screenshot queued: shot-link]");
+    expect(evaluated.value).toMatchObject({ kind: "debug" });
     expect(evaluated.screenshots).toHaveLength(1);
     expect(evaluated.screenshots[0]).not.toContain(join("nofollow", "artifacts"));
     expect(readFileSync(evaluated.screenshots[0]!).subarray(0, 8)).toEqual(

@@ -44,7 +44,7 @@ describe("browser MCP", () => {
         jsonrpc: "2.0",
         id: 3,
         method: "tools/call",
-        params: { name: "playwright_eval", arguments: { code: "return await observe()" } },
+        params: { name: "betterwright_browser", arguments: { code: "return await observe()" } },
       },
       {
         evaluate: async (value) => {
@@ -67,7 +67,7 @@ describe("browser MCP", () => {
       jsonrpc: "2.0",
       id: 9,
       method: "tools/call",
-      params: { name: "playwright_eval", arguments: { code: "x".repeat(100_001) } },
+      params: { name: "betterwright_browser", arguments: { code: "x".repeat(100_001) } },
     }, { evaluate: async () => emptyEval });
     expect(response).toMatchObject({ error: { code: -32602 } });
   });
@@ -87,7 +87,7 @@ describe("browser MCP", () => {
       jsonrpc: "2.0",
       id: 10,
       method: "tools/call",
-      params: { name: "playwright_eval", arguments: { code: "return 1" } },
+      params: { name: "betterwright_browser", arguments: { code: "return 1" } },
     }, {
       maxOutputChars: 4_096,
       evaluate: async () => ({ ...emptyEval, value: "x".repeat(10_000) }),
@@ -100,7 +100,7 @@ describe("browser MCP", () => {
       jsonrpc: "2.0",
       id: 11,
       method: "tools/call",
-      params: { name: "playwright_eval", arguments: { code: "throw new Error()" } },
+      params: { name: "betterwright_browser", arguments: { code: "throw new Error()" } },
     }, {
       maxOutputChars: 4_096,
       evaluate: async () => { throw new Error("e".repeat(10_000)); },

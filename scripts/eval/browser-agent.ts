@@ -44,7 +44,7 @@ interface Scenario {
     initialOutput?: BrowserOutput,
     questionInspection?: PageInspection[],
   ) => string[];
-  expectedTool?: "playwright_eval" | "reference_lookup";
+  expectedTool?: "betterwright_browser" | "reference_lookup";
   resumeAnswer?: string;
   timeoutMs?: number;
 }
@@ -465,9 +465,9 @@ async function main(): Promise<void> {
       }
       const modelWallMs = Date.now() - modelStartedAt;
       const events = parseTrace(traceText);
-      const expectedTool = scenario.expectedTool ?? "playwright_eval";
+      const expectedTool = scenario.expectedTool ?? "betterwright_browser";
       let pages: PageInspection[] = [];
-      if (expectedTool === "playwright_eval") {
+      if (expectedTool === "betterwright_browser") {
         try {
           const inspection = await runtime.evaluate(runId, `
             return await Promise.all(context.pages().filter(p => !p.isClosed()).map(async p => ({
@@ -488,7 +488,7 @@ async function main(): Promise<void> {
       );
       const toolNames = mcpCalls.map((item) => String(item.tool ?? ""));
       const commandCalls = toolItems.filter((item) => item.type === "command_execution");
-      const playwrightCalls = mcpCalls.filter((item) => item.tool === "playwright_eval");
+      const playwrightCalls = mcpCalls.filter((item) => item.tool === "betterwright_browser");
       const codes = playwrightCalls.map(extractCode).filter(Boolean);
       const failures = [...preFailures, ...scenario.score(
         output,

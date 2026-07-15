@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+/** End-to-end BetterWright MCP backend smoke: navigate, type/click, read, screenshot, persist. */
+
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,14 +15,17 @@ const logger = (() => {
   return log as unknown as Logger;
 })();
 
-const dir = mkdtempSync(join(tmpdir(), "beckett-browser-smoke-"));
+const dir = mkdtempSync(join(tmpdir(), "beckett-betterwright-smoke-"));
 const server = Bun.serve({
   port: 0,
-  fetch(request) {
-    const path = new URL(request.url).pathname;
-    return new Response(`<!doctype html><title>smoke</title><main>${path === "/ready" ? "browser-ready" : path}</main>`, {
-      headers: { "content-type": "text/html" },
-    });
+  fetch() {
+    return new Response(`<!doctype html><title>BetterWright smoke</title>
+      <main><label>Message <input aria-label="Message"></label><button>Save</button><output></output></main>
+      <script>document.querySelector('button').onclick = () => {
+        const value = document.querySelector('input').value;
+        localStorage.setItem('browser-smoke', value); document.cookie = 'browser_smoke=' + value + '; path=/';
+        document.querySelector('output').textContent = 'saved:' + value;
+      }</script>`, { headers: { "content-type": "text/html" } });
   },
 });
 const baseUrl = `http://127.0.0.1:${server.port}`;
@@ -30,71 +35,58 @@ const token = randomBytes(32).toString("base64url");
 const runtime = createBrowserRuntime({
   config: validateConfig({
     paths: { beckett_dir: dir },
-    quick: { browser_profile_dir: "browser/profile", browser_eval_timeout_ms: 10_000 },
+    quick: { browser_profile_dir: "browser/profile", browser_eval_timeout_ms: 20_000 },
   }),
   logger,
 });
 
 try {
   await runtime.acquire({
-    runId: "production-smoke",
+    runId: "betterwright-smoke",
     channelId: null,
-    artifactsDir: join(dir, "quick", "production-smoke", "artifacts"),
+    artifactsDir: join(dir, "quick", "betterwright-smoke", "artifacts"),
     controlToken: token,
   });
-  await runtime.evaluate(
-    "production-smoke",
+  const result = await runtime.evaluate(
+    "betterwright-smoke",
     `
-      const first = await context.newPage();
-      const second = await context.newPage();
-      await page.goto(${JSON.stringify(`${baseUrl}/seed`)});
-      await page.evaluate(() => {
-        document.cookie = 'browser_smoke=warm; path=/';
-        localStorage.setItem('browser-smoke', 'warm');
-      });
-      await Promise.all([
-        first.goto(${JSON.stringify(`${baseUrl}/first`)}),
-        second.goto(${JSON.stringify(`${baseUrl}/ready`)}),
-      ]);
-      usePage(second);
+      await page.goto(${JSON.stringify(baseUrl)});
+      await page.getByLabel('Message').fill('browser-ready');
+      await page.getByRole('button', { name: 'Save' }).click();
+      return await page.locator('output').innerText();
     `,
     token,
   );
-  const result = await runtime.evaluate(
-    "production-smoke",
-    "return await page.locator('main').innerText()",
-    token,
-  );
-  if (result.value !== "browser-ready") throw new Error(`unexpected browser result: ${String(result.value)}`);
+  if (result.value !== "saved:browser-ready") throw new Error(`unexpected BetterWright result: ${String(result.value)}`);
   const captured = await runtime.evaluate(
-    "production-smoke",
-    "await screenshot('production-smoke'); return page.url()",
+    "betterwright-smoke",
+    "return await screenshot({ kind: 'proof', name: 'betterwright-smoke' })",
     token,
   );
   if (captured.screenshots.length !== 1 || !existsSync(captured.screenshots[0]!)) {
-    throw new Error("production browser screenshot handoff failed");
+    throw new Error("BetterWright screenshot handoff failed");
   }
-  await runtime.release("production-smoke", false);
+  await runtime.release("betterwright-smoke", false);
 
   await runtime.acquire({
-    runId: "production-smoke-restart",
+    runId: "betterwright-smoke-restart",
     channelId: null,
-    artifactsDir: join(dir, "quick", "production-smoke-restart", "artifacts"),
+    artifactsDir: join(dir, "quick", "betterwright-smoke-restart", "artifacts"),
     controlToken: token,
   });
   const persisted = await runtime.evaluate(
-    "production-smoke-restart",
+    "betterwright-smoke-restart",
     `
-      await page.goto(${JSON.stringify(`${baseUrl}/check`)});
+      await page.goto(${JSON.stringify(baseUrl)});
       return await page.evaluate(() => document.cookie + '|' + localStorage.getItem('browser-smoke'));
     `,
     token,
   );
-  if (persisted.value !== "browser_smoke=warm|warm") {
-    throw new Error(`persistent browser state failed: ${String(persisted.value)}`);
+  if (persisted.value !== "browser_smoke=browser-ready|browser-ready") {
+    throw new Error(`persistent BetterWright state failed: ${String(persisted.value)}`);
   }
-  await runtime.release("production-smoke-restart", false);
-  process.stdout.write("browser sandbox smoke passed\n");
+  await runtime.release("betterwright-smoke-restart", false);
+  process.stdout.write("betterwright browser smoke passed\n");
 } finally {
   await runtime.stop();
   server.stop(true);

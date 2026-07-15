@@ -2,10 +2,10 @@
 /**
  * Tiny stdio MCP bridge for the computer-use seat.
  *
- * The model sees one code-as-action tool rather than Playwright MCP's large click/type/snapshot
- * vocabulary. Chromium stays in a trusted controller and each script runs in a disposable
- * evaluator; this process only forwards JavaScript over the local control socket and returns
- * compact data plus controller-owned images.
+ * The model sees one BetterWright code-as-action tool rather than a large click/type/snapshot
+ * catalog. BetterWright keeps the persistent, policy-guarded browser in the isolated host;
+ * this process only forwards JavaScript over the local control socket and returns compact data
+ * plus controller-owned images.
  */
 
 import { readFileSync, unlinkSync } from "node:fs";
@@ -13,7 +13,7 @@ import { createInterface } from "node:readline";
 import { callBus } from "../shell/control-bus.ts";
 import type { BrowserEvalResult } from "./runtime.ts";
 
-const TOOL_NAME = "playwright_eval";
+const TOOL_NAME = "betterwright_browser";
 const MAX_CODE_CHARS = 100_000;
 const MAX_BATCH_REQUESTS = 8;
 const LATEST_PROTOCOL_VERSION = "2025-11-25";
@@ -27,13 +27,13 @@ const SUPPORTED_PROTOCOL_VERSIONS = new Set([
 export const BROWSER_TOOL_DEFINITION = {
   name: TOOL_NAME,
   description:
-    "Run JavaScript in Beckett's warm Playwright session. Top-level await works. Globals: page, context, pages, state, observe/snapshot, usePage, screenshot. Return plain data from the script.",
+    "Run JavaScript in Beckett's warm BetterWright session. Top-level await works. Globals include page, pages, openPage, usePage, snapshot, screenshot, human, dialogs, and captcha. Return plain data from the script.",
   inputSchema: {
     type: "object",
     properties: {
       code: {
         type: "string",
-        description: "Playwright JavaScript body. Use return to send useful data back.",
+        description: "BetterWright browser JavaScript body. Use return to send useful data back.",
         maxLength: MAX_CODE_CHARS,
       },
     },

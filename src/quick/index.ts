@@ -302,7 +302,7 @@ export function createQuickRunner(deps: CreateQuickRunnerDeps): QuickRunner {
         "--strict-mcp-config",
         "--no-chrome",
         "--tools",
-        "mcp__browser__playwright_eval",
+        "mcp__browser__betterwright_browser",
       );
       if (resume) args.push("--resume", run.sessionId!);
       else args.push("--session-id", run.sessionId!);

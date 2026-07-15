@@ -207,7 +207,7 @@ describe("browser run", () => {
     expect(args).not.toContain("--append-system-prompt");
     expect(args).toContain("--strict-mcp-config");
     expect(args).toContain("--no-chrome");
-    expect(args).toContain("mcp__browser__playwright_eval");
+    expect(args).toContain("mcp__browser__betterwright_browser");
     const mcp = JSON.parse(readFileSync(join(runDir, "mcp.json"), "utf8"));
     expect(mcp.mcpServers.browser.args[0]).toEndWith("/src/browser/mcp.ts");
     expect(mcp.mcpServers.browser.env.BECKETT_BROWSER_RUN_ID).toBe(outcome.runId);

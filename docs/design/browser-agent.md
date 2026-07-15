@@ -7,7 +7,7 @@ maintained Playwright library rather than depending on an unavailable runtime.
 
 ## Model surface
 
-The model receives one tool, `playwright_eval`. Its JavaScript has ordinary Playwright `page` and
+The model receives one tool, `betterwright_browser`. Its JavaScript has ordinary Playwright `page` and
 `context` objects plus small helpers for AI ARIA snapshots, active-page selection, safe artifacts,
 and redacted screenshots. Related steps belong in one call; independent tabs can use
 `context.newPage()` and `Promise.all`.

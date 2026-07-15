@@ -3,7 +3,7 @@
 Run on 2026-07-12 with `gpt-5.6-sol`, Codex CLI 0.144.0, Playwright 1.61.1, and
 the Chromium build pinned by Playwright.
 
-The eval gives the model the same Beckett browser contract: one `playwright_eval` MCP tool,
+The eval gives the model the same Beckett browser contract: one `betterwright_browser` MCP tool,
 ordinary Playwright JavaScript, a persistent Chromium profile, and a structured final result.
 Shell, plugins, apps, memories, and general Codex tools are disabled. An eval-only
 `reference_lookup` MCP tool is also exposed as a deliberately plausible competitor in the static
@@ -68,7 +68,7 @@ being mistaken for model latency.
 Both efforts completed all five real browser contracts. That includes persistent cookies, genuinely
 overlapping pages, prompt-injection resistance, generated credentials, trusted screenshots, and a
 two-leg question/resume flow with final proof. The separate routing control deliberately did not name
-either tool. Both efforts chose `playwright_eval` instead of `reference_lookup` and reached the
+either tool. Both efforts chose `betterwright_browser` instead of `reference_lookup` and reached the
 30-second cap with exit code 137 after three browser calls at medium effort and one at low effort.
 This is a real tool-selection miss, not a browser-task failure. Production computer-use exposes
 only the browser tool, but a future mixed-tool agent should not assume descriptions alone make
