@@ -10,8 +10,10 @@ import {
   serializeCast,
   parseCastJson,
   projectSlug,
+  targetBranch,
   CAST_FENCE,
   CRITERIA_HEADING,
+  TARGET_BRANCH_FENCE,
 } from "./cast.ts";
 import type { Casting } from "./types.ts";
 
@@ -72,6 +74,43 @@ describe("cast round-trip", () => {
     expect(branchRef("#7.3.1")).toBe("7.3.1");
     expect(branchRef("42")).toBeUndefined();
     expect(branchRef("OPS-7")).toBeUndefined();
+  });
+
+  test("non-main target branch round-trips (the OPS-185 publish funnel)", () => {
+    const out = serializeCast(
+      { implement: { harness: "codex" } },
+      ["ships to v5-daemon"],
+      "implement it",
+      [],
+      "beckett",
+      undefined,
+      undefined,
+      "v5-daemon",
+    );
+    expect(out).toContain("```" + TARGET_BRANCH_FENCE + "\nv5-daemon\n```");
+    const parsed = parseCast(out);
+    expect(parsed.targetBranch).toBe("v5-daemon");
+    expect(parsed.project).toBe("beckett");
+    expect(parsed.body.trim()).toBe("implement it"); // the funnel block never leaks into the worker body
+  });
+
+  test("no target branch → no block, and parse yields undefined (normal main-targeted ticket)", () => {
+    const out = serializeCast({}, [], "just prose");
+    expect(out).not.toContain(TARGET_BRANCH_FENCE);
+    expect(parseCast(out).targetBranch).toBeUndefined();
+  });
+
+  test("target-branch names are validated — unsafe refs are dropped, safe ones kept", () => {
+    expect(targetBranch("v5-daemon")).toBe("v5-daemon");
+    expect(targetBranch("  release/1.2  ")).toBe("release/1.2");
+    expect(targetBranch("main")).toBe("main"); // valid name; the publisher treats it as the default
+    expect(targetBranch("")).toBeUndefined();
+    expect(targetBranch("bad ref")).toBeUndefined(); // no spaces
+    expect(targetBranch("/leading")).toBeUndefined();
+    expect(targetBranch("trailing/")).toBeUndefined();
+    expect(targetBranch("..")).toBeUndefined();
+    expect(targetBranch("a..b")).toBeUndefined();
+    expect(targetBranch("$(rm -rf)")).toBeUndefined(); // shell-metachar injection near a git refspec
   });
 
   test("serialized form contains the fence and the criteria heading", () => {

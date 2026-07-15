@@ -160,6 +160,59 @@ test("case 2 — repo we already own: integrate remote (fetch+rebase) then push 
   expect(calls.some((c) => c.startsWith("gh pr create"))).toBe(false); // owned repo → no PR
 });
 
+test("case 2 — a non-main target branch publishes to THAT branch and never touches main (OPS-185)", async () => {
+  const { gh, calls } = cli((j) => {
+    if (j.startsWith("git remote get-url origin")) return fail("no origin");
+    if (j.startsWith("gh repo view 0xbeckett/beckett --json name")) return ok('{"name":"beckett"}'); // exists
+    if (j.includes("api --method PATCH")) return ok(); // setPublic
+    if (j.includes("--json defaultBranchRef")) return ok("main"); // MUST NOT be consulted for a non-main target
+    if (j.startsWith("git fetch")) return ok(); // integration branch tip present
+    if (j.startsWith("git rebase")) return ok(); // clean rebase onto v5-daemon
+    if (j.startsWith("git push")) return ok();
+    return undefined;
+  });
+  const r = await gh.ensurePublished({
+    slug: "beckett",
+    sourceDir: "/src",
+    ticket: "OPS-180",
+    targetBranch: "v5-daemon",
+  });
+  expect(r.kind).toBe("pushed");
+  // Integrated + pushed the INTEGRATION branch, not main.
+  const fetch = calls.find((c) => c.startsWith("git fetch"))!;
+  expect(fetch).toContain("v5-daemon");
+  expect(calls.some((c) => c.startsWith("git rebase FETCH_HEAD"))).toBe(true);
+  const push = calls.find((c) => c.startsWith("git push"))!;
+  expect(push).toContain("HEAD:refs/heads/v5-daemon");
+  // The load-bearing guarantee: NOTHING in the whole publish references `main`. No push, no fetch,
+  // no rebase advances the default branch, so origin/main is provably untouched. The repo default
+  // is never even queried — the target is authoritative.
+  expect(calls.some((c) => c.includes("refs/heads/main"))).toBe(false);
+  expect(calls.some((c) => c.startsWith("git fetch") && /\bmain\b/.test(c))).toBe(false);
+  expect(calls.some((c) => c.includes("--json defaultBranchRef"))).toBe(false);
+  expect(calls.some((c) => c.startsWith("gh pr create"))).toBe(false); // funnel is a push, not a PR
+});
+
+test("case 2 — an explicit `main` target keeps the default-branch publish byte-for-byte", async () => {
+  // A ticket that explicitly targets `main` (or none at all) is a normal main-targeted ticket: it
+  // must consult the repo default and push HEAD→main exactly as before — the guard is inert here.
+  const { gh, calls } = cli((j) => {
+    if (j.startsWith("git remote get-url origin")) return fail("no origin");
+    if (j.startsWith("gh repo view 0xbeckett/beckett --json name")) return ok('{"name":"beckett"}');
+    if (j.includes("api --method PATCH")) return ok();
+    if (j.includes("--json defaultBranchRef")) return ok("main");
+    if (j.startsWith("git fetch")) return ok();
+    if (j.startsWith("git rebase")) return ok();
+    if (j.startsWith("git push")) return ok();
+    return undefined;
+  });
+  const r = await gh.ensurePublished({ slug: "beckett", sourceDir: "/src", ticket: "OPS-25", targetBranch: "main" });
+  expect(r.kind).toBe("pushed");
+  expect(calls.some((c) => c.includes("--json defaultBranchRef"))).toBe(true); // default branch resolved as usual
+  const push = calls.find((c) => c.startsWith("git push"))!;
+  expect(push).toContain("HEAD:refs/heads/main");
+});
+
 test("case 2 — a rebase CONFLICT aborts and throws (dispatcher then holds the ticket, no force-push)", async () => {
   const { gh, calls } = cli((j) => {
     if (j.startsWith("git remote get-url origin")) return fail("no origin");
