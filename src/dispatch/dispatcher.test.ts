@@ -1439,6 +1439,26 @@ describe("rework cap", () => {
     expect(client.comments.some((c) => c.body.includes("stopping"))).toBe(true);
   });
 
+  test("rework cap is config-driven ([supervise] max_rework_cycles, OPS-180)", async () => {
+    const client = new FakeClient();
+    const config = { ...cfg(5), supervise: { max_rework_cycles: 1 } } as unknown as Config;
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config,
+      resolveRepoRoot: (t: Ticket) => `/tmp/repo/${t.project ?? t.identifier}`,
+    });
+    const ticket = makeTicket({ state: "in_review" });
+    await d.handle(stateChanged(ticket, "in_review"));
+    await tick();
+    created.at(-1)!.finish("success", "still broken", doneSignal("blocked"));
+    await tick();
+    // Cap of 1 → the FIRST failed review already stops auto-rework (no in_progress bounce).
+    expect(client.setStateCalls.filter((c) => c.state === "in_progress")).toHaveLength(0);
+    expect(client.comments.some((c) => c.body.includes("rework cycle 1/1"))).toBe(true);
+    expect(client.comments.some((c) => c.body.includes("stopping"))).toBe(true);
+  });
+
   test("rework count survives dispatcher restart", async () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-state-"));
     try {

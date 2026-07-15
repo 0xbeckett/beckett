@@ -44,15 +44,14 @@ import type {
   HarnessDriver,
 } from "../types.ts";
 import type { HarnessSpec, Ticket } from "../plane/types.ts";
-import { projectSlug } from "../plane/cast.ts";
 import { createDriver } from "../drivers/index.ts";
 import { workerId as mintWorkerId } from "../ids.ts";
 import { log } from "../log.ts";
 import { excludeFromGit, installScaffoldingGuardHook, SCAFFOLDING_DIR } from "../worker/worktree.ts";
 import { scopeGuardSpec } from "../hooks/scope-guard.ts";
 import { renderClaudeSettings } from "../hooks/registry.ts";
-import { buildResumeBrief, steeringBlock } from "./resume-brief.ts";
-import { buildGitHubPublishingGuidance } from "./publishing-guidance.ts";
+import { buildResumeBrief } from "./resume-brief.ts";
+import { defaultEffortFor, stageRegistry } from "./stages.ts";
 
 // =======================================================================================
 // Handle contract
@@ -224,205 +223,12 @@ const ENVELOPE_BY_EFFORT: Record<Effort, { turnCap: number; wallClockS: number }
 /** Max chars of fallback assistant text used as a summary. */
 const SUMMARY_MAX = 1200;
 
-/**
- * Durable-deploy guidance baked into every implement worker's system prompt (v3.1 robustness).
- * The recurring footgun (OPS-15, OPS-17, OPS-19): workers improvise their own deploy — a
- * foreground server that dies on session end, a server bound somewhere the tunnel can't reach, or
- * a hand-edited ingress with no DNS record — so the URL 404s / never resolves and burns review
- * cycles. The fix is to give ONE exact path and forbid every improvised alternative, then make the
- * worker prove the public URL responds before it may call the ticket done. Slug-parameterized so
- * the recipe names the worker's real hostname (`<slug>.0xbeckett.me`).
- */
-function deployDurabilityNote(slug: string): string {
-  return (
-    `DEPLOY DURABLY (only if the ticket needs a public URL): there is exactly ONE supported path, ` +
-    `and improvising your own is the #1 cause of dead links here. Do these three steps, nothing else:\n` +
-    `  1. Serve the build on a local port with a server that SURVIVES your session: write a ` +
-    `\`systemd --user\` unit and \`systemctl --user enable --now <unit>\`. Bind it to 127.0.0.1 (the ` +
-    `tunnel reaches localhost). A foreground process (\`python -m http.server\`, \`vite\`, ` +
-    `\`bun run dev\`) or a bare \`&\`/\`nohup\` job is FORBIDDEN — it dies when you exit and the link 404s.\n` +
-    `  2. Run \`beckett deploy ${slug} --port <thePort>\`. That command (and ONLY that command) ` +
-    `creates BOTH the Cloudflare tunnel ingress AND the public DNS record for ` +
-    `\`${slug}.0xbeckett.me\`. NEVER hand-edit \`~/.cloudflared/config.yml\` or touch DNS yourself — ` +
-    `that leaves a half-deploy with an ingress but no DNS, which never resolves.\n` +
-    `  3. VERIFY before you call the ticket done: ` +
-    `\`curl -fsS -o /dev/null -w '%{http_code}' https://${slug}.0xbeckett.me\` must print 200. If it ` +
-    `can't resolve or returns 502, the deploy is NOT done (your unit isn't running, or ` +
-    `\`beckett deploy\` didn't run) — fix it and re-check. Never report a URL you haven't curled.`
-  );
-}
-
-// =======================================================================================
-// Prompt + system-append builders (stage-aware)
-// =======================================================================================
-
-/** The criteria bullet block, or a placeholder when none were authored. */
-function criteriaBlock(criteria: string[]): string {
-  return criteria.length ? criteria.map((c) => `- ${c}`).join("\n") : "- (none specified)";
-}
-
-/** The diff command a reviewer runs to see the ticket's whole contribution on its branch. */
-function diffHint(baseRef?: string): string {
-  return baseRef && baseRef !== "HEAD"
-    ? `\`git diff ${baseRef}..HEAD\` (plus \`git status\` for anything uncommitted)`
-    : "`git diff HEAD` and `git log`";
-}
-
-/** Above this size the review prompt carries a changed-file summary instead of the raw diff. */
-const REVIEW_DIFF_INLINE_MAX = 30_000;
-
-/**
- * The diff section of a review prompt (issue #27): the whole diff inline when it fits, else a
- * changed-file list + instructions to read selectively. Empty string when no diff was pre-read
- * (the reviewer then diffs for itself, as before).
- */
-function reviewDiffBlock(diff: string | undefined, baseRef?: string): string {
-  const trimmed = diff?.trim();
-  if (!trimmed) return "";
-  if (trimmed.length <= REVIEW_DIFF_INLINE_MAX) {
-    return (
-      `\n\n<context>\nThe FULL diff of the contribution is inlined below — judge from it directly; only ` +
-      `open files when you need surrounding context.\n\n\`\`\`diff\n${trimmed}\n\`\`\`\n</context>`
-    );
-  }
-  const files = [...trimmed.matchAll(/^diff --git a\/(\S+) /gm)].map((m) => m[1]!);
-  const list = files.length ? files.map((f) => `- ${f}`).join("\n") : "(could not list files)";
-  return (
-    `\n\n<context>\nThe contribution is large (~${Math.round(trimmed.length / 1024)}KB across ` +
-    `${files.length || "several"} files) — too big to inline. Changed files:\n${list}\n` +
-    `Inspect selectively with ${diffHint(baseRef)}.\n</context>`
-  );
-}
-
-/** The initial task brief (first user turn) handed to the worker. */
-function buildPrompt(
-  ticket: Ticket,
-  stage: string,
-  baseRef?: string,
-  steering?: string[],
-  reviewDiff?: string,
-): string {
-  const header = `[${ticket.identifier}] ${ticket.title}`;
-  const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";
-  const crit = `\n\n<criteria>\nAcceptance criteria:\n${criteriaBlock(ticket.criteria)}\n</criteria>`;
-  const steer = steeringBlock(steering);
-  if (stage === "design") {
-    const path = `docs/design/${ticket.identifier.toLowerCase()}.md`;
-    return (
-      `<task>\nWrite the implementation design document for ticket ${header}.${body}\n</task>${crit}${steer}\n\n` +
-      `This is the INT **Design** stage: do not implement the ticket yet. Read the repository, make ` +
-      `the chosen approach concrete, and write the artifact at \`${path}\`. It must state the problem ` +
-      `and chosen approach, cover every acceptance criterion, identify file-level touch-points/interfaces ` +
-      `or data shapes, and end with a recommendation plus open questions. Commit the document before ` +
-      `finishing; an independent model and then the owner will review it.`
-    );
-  }
-  if (stage === "design_check") {
-    const path = `docs/design/${ticket.identifier.toLowerCase()}.md`;
-    return (
-      `<task>\nSanity-check the INT design document for ticket ${header}.\n</task>${crit}${steer}\n\n` +
-      `Read \`${path}\` (and relevant repository context). Do not edit implementation or author the ` +
-      `design yourself. Decide whether it is complete: it must state the problem and a chosen approach, ` +
-      `cover every acceptance criterion, give concrete file-level touch-points/interfaces or data shapes, ` +
-      `and end with a recommendation and open questions. Emit status \`complete\` only if all hold. ` +
-      `Otherwise emit \`blocked\` and list every specific gap in summary/blockedReason.`
-    );
-  }
-  if (stage === "review") {
-    const diffBlock = reviewDiffBlock(reviewDiff, baseRef);
-    const inspect = diffBlock
-      ? "" // the diff (or its file list) is already in hand
-      : `The implementation is committed in the repo you're in (your cwd). Inspect it with ` +
-        `${diffHint(baseRef)}, then `;
-    return (
-      `<task>\nReview the implementation for ticket ${header}.${body}\n</task>${crit}${steer}${diffBlock}\n\n` +
-      `${inspect}verify it against EVERY acceptance criterion above. Do not ` +
-      `modify the implementation — your job is to judge it.`
-    );
-  }
-  return `<task>\n${header}${body}\n</task>${crit}${steer}`;
-}
-
-/**
- * True when the ticket's text suggests it needs a public URL/deploy — gates the ~300-token
- * deploy-durability recipe so pure-code tickets don't carry it in every brief (issue #25).
- */
-function ticketMentionsDeploy(ticket: Ticket): boolean {
-  const text = `${ticket.title}\n${ticket.body}\n${ticket.criteria.join("\n")}`;
-  return /deploy|url|site|website|host|serve|public|page|frontend|dashboard|http|tunnel|dns/i.test(text);
-}
-
-/**
- * The businesslike worker persona + scope system append (stage-aware). The acceptance criteria
- * live ONCE, in the task brief (the prompt) — duplicating them here doubled every worker's
- * criteria tokens for nothing (issue #25).
- */
-export function buildSystemAppend(
-  ticket: Ticket,
-  stage: string,
-  config: Config,
-  baseRef?: string,
-  env: Record<string, string | undefined> = process.env,
-): string {
-  if (stage === "review") {
-    return (
-      `<persona>\n` +
-      `You are an autonomous REVIEWER. The implementation under review is committed in the repo ` +
-      `at your cwd. Inspect it with ${diffHint(baseRef)} and judge it against the acceptance ` +
-      `criteria listed in your task brief — do NOT edit the implementation.\n` +
-      `When finished, emit the structured done-signal matching the provided schema:\n` +
-      `  - status "complete"  → the work PASSES review (all criteria met).\n` +
-      `  - status "blocked"   → the work FAILS review; put the specific reasons in summary + ` +
-      `blockedReason so the next implement pass can fix them.\n` +
-      `Put your one-line verdict in summary.\n` +
-      `</persona>`
-    );
-  }
-  if (stage === "design_check") {
-    return (
-      `<persona>\n` +
-      `You are an independent design-document completeness checker. Do not edit files. Apply the ` +
-      `rubric in the task exactly and finish with the structured done-signal: \"complete\" only for a ` +
-      `complete design; otherwise \"blocked\" with actionable gaps.\n</persona>`
-    );
-  }
-  const slug = projectSlug(ticket.project || ticket.identifier);
-  const githubGuidance = buildGitHubPublishingGuidance(slug, config, env);
-  const deployNote = ticketMentionsDeploy(ticket) ? `${deployDurabilityNote(slug)}\n` : "";
-  const designOnly = stage === "design"
-    ? `This is a DESIGN stage: write and commit the design document only; do not implement the requested change.\n`
-    : "";
-  return (
-    `<persona>\n` +
-    `You are an autonomous worker implementing a ticket. Your cwd is THIS PROJECT'S OWN git repo ` +
-    `(\`~/Projects/${slug}\`) — it is yours to build in. Edit freely and commit your work; treat ` +
-    `anything outside it (especially Beckett's own source) as read-only.\n` +
-    `You are done when ALL the acceptance criteria in your task brief hold.\n` +
-    `SELF-REVIEW before you finish: re-read your own diff and CHECK each acceptance criterion ` +
-    `holds — there may be no separate reviewer after you. Run the check commands; fix what fails.\n` +
-    `${githubGuidance}\n` +
-    `${designOnly}${deployNote}` +
-    `When finished, emit the structured done-signal matching the provided schema (status ` +
-    `"complete" when all criteria hold AND your self-review passed, "blocked"/"partial" ` +
-    `otherwise with a reason).\n` +
-    `</persona>`
-  );
-}
+// Prompt + system-append builders live in the stage registry (`./stages.ts`, OPS-180): each
+// stage plugs in its own task brief and persona there, so spawning needs no stage branching.
 
 /** Resolve the worker's write scope. A ticket worker owns its whole project repo. */
 function buildScope(ticket: Ticket): FileScope {
   return { ownedGlobs: [], readGlobs: null, description: `${ticket.identifier}: ${ticket.title}` };
-}
-
-function defaultEffortFor(harness: HarnessSpec["harness"], config: Config): Effort {
-  switch (harness) {
-    case "codex":
-      return config.harness.codex.default_effort;
-    case "pi":
-      return config.harness.pi.thinking;
-    case "claude":
-      return config.harness.claude.default_effort;
-  }
 }
 
 /** Build the resource envelope from the casting effort (defaults to the configured harness effort). */
@@ -597,8 +403,8 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
       workerId: id,
       prompt: resumeSessionId
         ? buildResumeBrief(ticket, stage, baseRef, steering)
-        : buildPrompt(ticket, stage, baseRef, steering, reviewDiff),
-      systemAppend: buildSystemAppend(ticket, stage, config, baseRef),
+        : stageRegistry.prompt(stage, { ticket, baseRef, steering, reviewDiff }),
+      systemAppend: stageRegistry.systemAppend(stage, { ticket, config, baseRef }),
       workspace,
       scope,
       envelope,
