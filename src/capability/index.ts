@@ -16,12 +16,12 @@
  *     `buildSystemAppend`,
  *   - its own config-schema fragment — today: one monolithic zod block in `config.ts`.
  *
- * IMPORTANT (Phase 0 contract): this module is DEFINED AND TESTED but NOT yet wired into any
- * dispatch path. `cli/beckett.ts` and `onBusRequest` behave byte-for-byte as before; the
- * characterization suites (`src/cli/characterization.test.ts`,
- * `src/concierge/bus-characterization.test.ts`) snapshot that behavior as the contract later
- * phases must keep green. Phases 1–2 re-express each existing command as a registered
- * capability and turn the cascades into registry walks.
+ * Wiring status: the CLI dispatches through this registry (Phase 1a — `cli/beckett.ts::main`
+ * walks the capabilities `buildCliCapabilities` registers, and the `beckett` command list is
+ * composed from it via {@link CapabilityRegistry.composeCliHelp}); `Concierge.onBusRequest`
+ * still behaves byte-for-byte as before pending its own migration. The characterization
+ * suites (`src/cli/characterization.test.ts`, `src/concierge/bus-characterization.test.ts`)
+ * snapshot the observable behavior as the contract every phase must keep green.
  */
 
 import type { z } from "zod";
@@ -46,10 +46,10 @@ export interface CliContext {
 
 /**
  * One `beckett <group> [sub]` verb. `name` is the space-joined path ("ticket create",
- * "status") — the registry indexes on it, help text is generated from `summary`/`usage`,
- * and `args` (a zod schema over {@link CliArgs}) replaces each verb's hand-rolled flag
- * validation. `run` is optional in Phase 0: declaring a verb must be possible before its
- * body migrates out of the cascade (Phase 1 wires dispatch through it).
+ * "status") — the registry indexes on it, help text is generated from the registry, and
+ * `args` (a zod schema over {@link CliArgs}) replaces each verb's hand-rolled flag
+ * validation. `run` is optional on the spine: declaring a verb must be possible before its
+ * body migrates out of a cascade.
  */
 export interface CliVerb {
   name: string;
@@ -60,7 +60,13 @@ export interface CliVerb {
   args?: z.ZodTypeAny;
   /** Per-verb override of the capability's default action-class. */
   actionClass?: ActionClass;
-  run?: (args: CliArgs, ctx: CliContext) => Promise<unknown>;
+  /**
+   * The verb's body. Receives the RAW argv tail after the matched verb name (the CLI analog
+   * of a bus handler receiving the raw {@link BusRequestLike}): the Phase 1a migration is
+   * behavior-preserving, so every verb keeps its own historical `parse` of that tail —
+   * per-verb `args` schema validation is the Phase 2 tightening.
+   */
+  run?: (argv: string[], ctx: CliContext) => Promise<unknown>;
 }
 
 /** The control-bus request/response shapes (`shell/control-bus.ts` — kept structural here so
@@ -112,6 +118,12 @@ export interface Capability {
   actionClass: ActionClass;
   cliVerbs: CliVerb[];
   busCommands: BusCommand[];
+  /**
+   * The token this capability contributes to the auto-generated `beckett` command list
+   * (e.g. "task create|branch|start|show|list"). Omitted → the capability's verbs work but
+   * stay unadvertised (some operational verbs are deliberately not listed).
+   */
+  cliHelp?: string;
   /** Optional pointer to the capability's SKILL.md (stays a plain file — zero coupling). */
   skillDoc?: string;
   /** Optional composable system-prompt contribution. */
@@ -267,6 +279,18 @@ export class CapabilityRegistry {
       fragments.set(key, capability.configSchema);
     }
     return fragments;
+  }
+
+  /**
+   * The auto-generated `beckett` command list (Phase 1a): every registered capability's
+   * `cliHelp` token, in registration order, " | "-joined. Adding a capability with a token
+   * extends the list; the CLI never hand-maintains a help string again.
+   */
+  composeCliHelp(): string {
+    return [...this.byId.values()]
+      .map((capability) => capability.cliHelp?.trim())
+      .filter((token): token is string => !!token)
+      .join(" | ");
   }
 
   /**
