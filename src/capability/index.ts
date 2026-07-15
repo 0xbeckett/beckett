@@ -26,10 +26,29 @@
  */
 
 import type { z } from "zod";
-import type { Config, Logger } from "../types.ts";
+import type { Config, Logger, Paths } from "../types.ts";
 import { ActionClass } from "../types.ts";
 
 export { ActionClass };
+
+/**
+ * What a capability factory gets to build its module (V5 Phase 2) — the same posture as
+ * `DriverFactory` in `drivers/index.ts`: the caller threads the resolved runtime context in,
+ * the module never loads config or resolves paths itself.
+ */
+export interface CapabilityDeps {
+  config: Config;
+  paths: Paths;
+  logger: Logger;
+}
+
+/**
+ * The common factory shape (V5 Phase 2): every normalized capability module (github,
+ * dns+deploy, image, memory, mail, secret — `src/capability/modules/`) exports one of these,
+ * and the surfaces register the built {@link Capability} through the registry instead of
+ * hand-wiring the feature across files.
+ */
+export type CapabilityFactory = (deps: CapabilityDeps) => Capability;
 
 /** The parsed shape of a CLI invocation (what `cli/beckett.ts::parse` produces today). */
 export interface CliArgs {
