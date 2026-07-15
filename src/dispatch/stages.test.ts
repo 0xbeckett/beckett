@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Config } from "../types.ts";
 import type { Ticket } from "../plane/types.ts";
+import { validateConfig } from "../config.ts";
 import {
   StageRegistry,
   stageRegistry,
@@ -35,7 +36,10 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
   };
 }
 
-const config = {
+// A REAL validated config (not a partial cast): Phase 4's workerSystemAppend builds the
+// capability modules to compose their prompt blocks, so the append path needs the full
+// config shape (paths defaults included), exactly like production.
+const config: Config = validateConfig({
   models: { reviewer: "claude-sonnet-5" },
   harness: {
     claude: { default_effort: "xhigh" },
@@ -43,7 +47,7 @@ const config = {
     pi: { thinking: "medium" },
   },
   identity: { github_user: "0xbeckett" },
-} as unknown as Config;
+});
 
 describe("StageRegistry", () => {
   test("built-ins are registered and map their entry states", () => {
@@ -141,6 +145,49 @@ describe("prompt + system-append fallbacks", () => {
     expect(stageRegistry.systemAppend("design_check", { ticket, config, env: {} })).toContain(
       "design-document completeness checker",
     );
+  });
+});
+
+describe("worker persona composition (Phase 4)", () => {
+  // The worker system append is COMPOSED from the capability modules' registered prompt
+  // blocks (github guidance at priority 10, the deploy recipe at 30) with the design stage's
+  // extra line interleaving at 20. These snapshots pin the composed output byte-for-byte —
+  // it was proven identical to the pre-V5 concatenation when Phase 4 landed, and any future
+  // drift in a block, its gating, or the ordering shows up here as a snapshot diff.
+  test("implement persona: github guidance always, deploy recipe only when the ticket mentions deploy", () => {
+    const plain = stageRegistry.systemAppend("implement", { ticket: makeTicket(), config, env: {} });
+    expect(plain).toContain("GITHUB: don't push anything yourself.");
+    expect(plain).not.toContain("DEPLOY DURABLY");
+    expect(plain).toMatchSnapshot();
+
+    const deploy = stageRegistry.systemAppend("implement", {
+      ticket: makeTicket({ title: "Build a public dashboard site" }),
+      config,
+      env: {},
+    });
+    expect(deploy).toContain("DEPLOY DURABLY");
+    expect(deploy).toMatchSnapshot();
+  });
+
+  test("design persona: the design-only line rides between the github guidance and the deploy recipe", () => {
+    const append = stageRegistry.systemAppend("design", {
+      ticket: makeTicket({ title: "Design the public dashboard site" }),
+      config,
+      env: {},
+    });
+    const guidance = append.indexOf("GITHUB:");
+    const designLine = append.indexOf("This is a DESIGN stage");
+    const recipe = append.indexOf("DEPLOY DURABLY");
+    expect(guidance).toBeGreaterThan(-1);
+    expect(designLine).toBeGreaterThan(guidance);
+    expect(recipe).toBeGreaterThan(designLine);
+    expect(append).toMatchSnapshot();
+  });
+
+  test("the composed guidance names the configured github owner", () => {
+    const owned = validateConfig({ identity: { github_user: "someone-else" } });
+    const append = stageRegistry.systemAppend("implement", { ticket: makeTicket(), config: owned, env: {} });
+    expect(append).toContain("someone-else/ops-1");
   });
 });
 

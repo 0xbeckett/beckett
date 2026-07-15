@@ -37,7 +37,9 @@ import type { DispatchOutcome } from "./events.ts";
 import type { TicketWorkerHandle } from "./spawn.ts";
 import { projectSlug } from "../plane/cast.ts";
 import { steeringBlock } from "./resume-brief.ts";
-import { buildGitHubPublishingGuidance } from "./publishing-guidance.ts";
+import { CapabilityRegistry, type CapabilityDeps, type PromptBlock } from "../capability/index.ts";
+import { availableCapabilityModules, createCapability } from "../capability/modules/index.ts";
+import { buildPaths } from "../paths.ts";
 
 // =======================================================================================
 // Shared vocabulary: caps, effort, done-signal parsing
@@ -378,58 +380,53 @@ function genericTaskPrompt({ ticket, steering }: StagePromptArgs): string {
 }
 
 /**
- * Durable-deploy guidance baked into every implement worker's system prompt (v3.1 robustness).
- * The recurring footgun (OPS-15, OPS-17, OPS-19): workers improvise their own deploy — a
- * foreground server that dies on session end, a server bound somewhere the tunnel can't reach, or
- * a hand-edited ingress with no DNS record — so the URL 404s / never resolves and burns review
- * cycles. The fix is to give ONE exact path and forbid every improvised alternative, then make the
- * worker prove the public URL responds before it may call the ticket done. Slug-parameterized so
- * the recipe names the worker's real hostname (`<slug>.0xbeckett.me`).
+ * The capability registry a worker system append composes its prompt blocks from: every
+ * normalized capability module (Phase 2), registered exactly as the CLI registers them. Only
+ * each module's `promptBlock` matters here — verbs and handlers ride along unused, and the
+ * factories are pure closure-builders (no IO), so building fresh per append is cheap and
+ * keeps this path stateless for tests. Adding a `promptBlock` to any capability module puts
+ * its contribution into every worker persona with NO edit here.
  */
-function deployDurabilityNote(slug: string): string {
-  return (
-    `DEPLOY DURABLY (only if the ticket needs a public URL): there is exactly ONE supported path, ` +
-    `and improvising your own is the #1 cause of dead links here. Do these three steps, nothing else:\n` +
-    `  1. Serve the build on a local port with a server that SURVIVES your session: write a ` +
-    `\`systemd --user\` unit and \`systemctl --user enable --now <unit>\`. Bind it to 127.0.0.1 (the ` +
-    `tunnel reaches localhost). A foreground process (\`python -m http.server\`, \`vite\`, ` +
-    `\`bun run dev\`) or a bare \`&\`/\`nohup\` job is FORBIDDEN — it dies when you exit and the link 404s.\n` +
-    `  2. Run \`beckett deploy ${slug} --port <thePort>\`. That command (and ONLY that command) ` +
-    `creates BOTH the Cloudflare tunnel ingress AND the public DNS record for ` +
-    `\`${slug}.0xbeckett.me\`. NEVER hand-edit \`~/.cloudflared/config.yml\` or touch DNS yourself — ` +
-    `that leaves a half-deploy with an ingress but no DNS, which never resolves.\n` +
-    `  3. VERIFY before you call the ticket done: ` +
-    `\`curl -fsS -o /dev/null -w '%{http_code}' https://${slug}.0xbeckett.me\` must print 200. If it ` +
-    `can't resolve or returns 502, the deploy is NOT done (your unit isn't running, or ` +
-    `\`beckett deploy\` didn't run) — fix it and re-check. Never report a URL you haven't curled.`
-  );
+function workerPromptCapabilities(config: Config): CapabilityRegistry {
+  const quiet = { info() {}, warn() {}, debug() {}, error() {}, child() { return quiet; } } as unknown as Logger;
+  const deps: CapabilityDeps = { config, paths: buildPaths(config), logger: quiet };
+  const registry = new CapabilityRegistry();
+  for (const id of availableCapabilityModules()) registry.register(createCapability(id, deps));
+  return registry;
 }
 
 /**
- * True when the ticket's text suggests it needs a public URL/deploy — gates the ~300-token
- * deploy-durability recipe so pure-code tickets don't carry it in every brief (issue #25).
+ * The design stage's extra persona line — stage-owned, not a capability's, so it rides into
+ * the composition as a caller-supplied block. Priority 20 keeps the historical persona
+ * order: github guidance (10) → this line → the deploy recipe (30).
  */
-function ticketMentionsDeploy(ticket: Ticket): boolean {
-  const text = `${ticket.title}\n${ticket.body}\n${ticket.criteria.join("\n")}`;
-  return /deploy|url|site|website|host|serve|public|page|frontend|dashboard|http|tunnel|dns/i.test(text);
-}
+const designStageBlock: PromptBlock = {
+  id: "stage:design-only",
+  priority: 20,
+  render: () =>
+    "This is a DESIGN stage: write and commit the design document only; do not implement the requested change.",
+};
 
 /**
  * The businesslike worker persona + scope system append shared by the implement and design
  * stages (design adds a design-only line) — and the unknown-stage fallback. The acceptance
  * criteria live ONCE, in the task brief (the prompt) — duplicating them here doubled every
  * worker's criteria tokens for nothing (issue #25).
+ *
+ * Phase 4 (#N.7): the capability-owned content between the persona opener and the done-signal
+ * closer — the GitHub publishing contract, the deploy-durability recipe — is COMPOSED from
+ * the modules' registered {@link PromptBlock}s ({@link CapabilityRegistry.composePrompt}),
+ * not concatenated here. The composed output is byte-identical to the pre-V5 append.
  */
 function workerSystemAppend(
   { ticket, config, env = process.env }: StageAppendArgs,
   opts: { designOnly?: boolean } = {},
 ): string {
   const slug = projectSlug(ticket.project || ticket.identifier);
-  const githubGuidance = buildGitHubPublishingGuidance(slug, config, env);
-  const deployNote = ticketMentionsDeploy(ticket) ? `${deployDurabilityNote(slug)}\n` : "";
-  const designOnly = opts.designOnly
-    ? `This is a DESIGN stage: write and commit the design document only; do not implement the requested change.\n`
-    : "";
+  const contributions = workerPromptCapabilities(config).composePrompt(
+    { config, ticket, slug, env },
+    opts.designOnly ? [designStageBlock] : [],
+  );
   return (
     `<persona>\n` +
     `You are an autonomous worker implementing a ticket. Your cwd is THIS PROJECT'S OWN git repo ` +
@@ -438,8 +435,7 @@ function workerSystemAppend(
     `You are done when ALL the acceptance criteria in your task brief hold.\n` +
     `SELF-REVIEW before you finish: re-read your own diff and CHECK each acceptance criterion ` +
     `holds — there may be no separate reviewer after you. Run the check commands; fix what fails.\n` +
-    `${githubGuidance}\n` +
-    `${designOnly}${deployNote}` +
+    `${contributions ? `${contributions}\n` : ""}` +
     `When finished, emit the structured done-signal matching the provided schema (status ` +
     `"complete" when all criteria hold AND your self-review passed, "blocked"/"partial" ` +
     `otherwise with a reason).\n` +

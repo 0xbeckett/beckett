@@ -116,14 +116,41 @@ export interface BusCommand {
 }
 
 /**
- * A composable system-prompt block. `buildSystemAppend` (Phase 4) sorts registered blocks by
- * `priority` (lower first, ties by id) and joins what `render` returns; a block rendering the
- * empty string contributes nothing that turn.
+ * The ticket shape a prompt block may inspect — kept STRUCTURAL (like {@link BusRequestLike})
+ * so the spine has no dependency on the Plane types.
+ */
+export interface PromptTicketLike {
+  identifier: string;
+  title: string;
+  body: string;
+  criteria: string[];
+  project?: string;
+}
+
+/**
+ * What a prompt block gets to render with. `config` is always present; the ticket fields ride
+ * along when the composition target is a worker system append (Phase 4: `stages.ts`'s
+ * `workerSystemAppend` composes the capability contributions into the worker persona).
+ */
+export interface PromptContext {
+  config: Config;
+  /** The ticket being staffed, when composing a worker system append. */
+  ticket?: PromptTicketLike;
+  /** The ticket's project slug (the worker's repo / public-hostname name). */
+  slug?: string;
+  /** Env source (tests inject; the append call site defaults it to process.env). */
+  env?: Record<string, string | undefined>;
+}
+
+/**
+ * A composable system-prompt block. The worker system append (Phase 4) sorts registered
+ * blocks by `priority` (lower first, ties by id) and joins what `render` returns; a block
+ * rendering the empty string contributes nothing that turn.
  */
 export interface PromptBlock {
   id: string;
   priority?: number;
-  render: (ctx: { config: Config }) => string;
+  render: (ctx: PromptContext) => string;
 }
 
 /**
@@ -315,17 +342,20 @@ export class CapabilityRegistry {
 
   /**
    * Compose the registered system-prompt blocks: sort by priority (lower first, ties by id),
-   * render each, drop empties, join with blank lines. Phase 4 replaces `buildSystemAppend`'s
-   * string concatenation with this.
+   * render each, drop empties, join with single newlines — the worker persona's historical
+   * line layout, which Phase 4 keeps byte-identical. `extra` lets the caller interleave
+   * ad-hoc blocks that aren't a capability's to own (the design stage's design-only line
+   * rides between the github guidance and the deploy recipe this way).
    */
-  composePrompt(ctx: { config: Config }): string {
+  composePrompt(ctx: PromptContext, extra: PromptBlock[] = []): string {
     const blocks = [...this.byId.values()]
       .map((capability) => capability.promptBlock)
       .filter((block): block is PromptBlock => block !== undefined)
+      .concat(extra)
       .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || a.id.localeCompare(b.id));
     return blocks
       .map((block) => block.render(ctx).trim())
       .filter((text) => text.length > 0)
-      .join("\n\n");
+      .join("\n");
   }
 }
