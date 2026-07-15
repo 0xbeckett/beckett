@@ -29,11 +29,14 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import type { Logger } from "../types.ts";
+import { runBrowserEvaluator } from "./evaluator-runner.ts";
 import type { BrowserHostRequest, BrowserHostResponse, BrowserHostMethod } from "./host.ts";
 import type {
   BrowserEvalResult,
   BrowserCheckpoint,
   BrowserBudgetOverrides,
+  BrowserEvaluatorOutput,
+  BrowserEvaluatorSession,
   BrowserHostSettings,
   BrowserLease,
   BrowserRuntime,
@@ -72,6 +75,8 @@ export interface CreateIsolatedBrowserRuntimeDeps {
   nodePath?: string;
   prlimitPath?: string;
   evaluatorPath?: string;
+  /** Browser backend. Legacy callers retain the direct controller for focused tests. */
+  backend?: "playwright" | "betterwright";
   /** Focused integration-test reductions; runtime hard limits cannot be raised. */
   hostBudgetOverrides?: BrowserBudgetOverrides;
 }
@@ -97,6 +102,7 @@ interface BuildBrowserHostLaunchOptions {
   prlimitPath?: string;
   parentEnv?: NodeJS.ProcessEnv;
   budgetOverrides?: BrowserBudgetOverrides;
+  backend?: "playwright" | "betterwright";
 }
 
 /** Pure command builder, exported so Linux/macOS sandbox policy remains unit-testable. */
@@ -128,6 +134,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
     LANG: "C.UTF-8",
     PLAYWRIGHT_BROWSERS_PATH: browserRoot,
     BECKETT_BROWSER_HOST_SETTINGS: encodedSettings,
+    BECKETT_BROWSER_BACKEND: options.backend ?? "playwright",
     ...(encodedBudgets ? { BECKETT_BROWSER_HOST_BUDGETS: encodedBudgets } : {}),
   };
   if (options.sandbox === "none") {
@@ -179,6 +186,9 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
       "--setenv",
       "BECKETT_BROWSER_HOST_SETTINGS",
       encodedSettings,
+      "--setenv",
+      "BECKETT_BROWSER_BACKEND",
+      options.backend ?? "playwright",
     ];
     if (encodedBudgets) args.push("--setenv", "BECKETT_BROWSER_HOST_BUDGETS", encodedBudgets);
     args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
@@ -305,6 +315,7 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
   const spawn = deps.spawn ?? Bun.spawn;
   const platform = deps.platform ?? process.platform;
   const sandbox = deps.sandbox ?? "auto";
+  const backend = deps.backend ?? "playwright";
   const execPath = deps.execPath ?? process.execPath;
   const nodePath = deps.nodePath ?? findExecutable("node", process.env.PATH);
   if (!nodePath) throw new Error("computer-use browser host requires Node.js");
@@ -487,6 +498,7 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
       prlimitPath: deps.prlimitPath,
       parentEnv: process.env,
       budgetOverrides: deps.hostBudgetOverrides,
+      backend,
     });
     if (launch.isolation === "process") {
       logger.warn("browser host has process isolation only; filesystem sandboxing is unavailable", { platform });
@@ -662,23 +674,66 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
     async evaluate(runId, code, controlToken) {
       const current = requireLease(runId);
       requireControlToken(current, controlToken);
-      if (!code.trim()) throw new Error("betterwright browser needs non-empty JavaScript");
-      if (code.length > MAX_CODE_CHARS) throw new Error(`betterwright browser code exceeds ${MAX_CODE_CHARS} characters`);
+      if (!code.trim()) throw new Error(`${backend} browser needs non-empty JavaScript`);
+      if (code.length > MAX_CODE_CHARS) throw new Error(`${backend} browser code exceeds ${MAX_CODE_CHARS} characters`);
       try {
         return await serializeEvaluation(async () => {
           if (stopped) throw new Error("browser runtime is stopped");
           await acquireInHost(current);
-          // BetterWright owns the sandboxed snippet worker and persistent
-          // browser session inside the isolated host. No Playwright/CDP session
-          // crosses back into Beckett's evaluator process.
+          if (backend === "betterwright") {
+            // BetterWright owns the sandboxed snippet worker and persistent
+            // browser session inside the isolated host. No Playwright/CDP
+            // session crosses back into Beckett's evaluator process.
+            const result = await rpc(
+              "evaluate",
+              { runId, code },
+              settings.evalTimeoutMs + settings.actionTimeoutMs + 5_000,
+            ) as BrowserEvalResult;
+            evaluations++;
+            totalEvalMs += result.elapsedMs;
+            pages = result.pages.length;
+            return deliverEvaluation(result, current);
+          }
+          const session = await rpc(
+            "prepareEvaluation",
+            { runId },
+            settings.actionTimeoutMs + 2_000,
+          ) as BrowserEvaluatorSession;
+          const isolation = hostIsolation === "bubblewrap"
+            ? "bubblewrap"
+            : hostIsolation === "sandbox-exec"
+              ? "sandbox-exec"
+              : "none";
+          const evaluated = await runBrowserEvaluator(
+            {
+              ...session,
+              code,
+              actionTimeoutMs: settings.actionTimeoutMs,
+              navigationTimeoutMs: settings.navigationTimeoutMs,
+              evalTimeoutMs: settings.evalTimeoutMs,
+              maxOutputChars: settings.maxOutputChars,
+            },
+            {
+              isolation,
+              repoRoot,
+              spawn,
+              nodePath: deps.nodePath,
+              bwrapPath: deps.bwrapPath,
+              sandboxExecPath: deps.sandboxExecPath,
+              prlimitPath: deps.prlimitPath,
+              evaluatorPath: deps.evaluatorPath,
+              parentEnv: process.env,
+            },
+          );
           const result = await rpc(
-            "evaluate",
-            { runId, code },
-            settings.evalTimeoutMs + settings.actionTimeoutMs + 5_000,
+            "applyEvaluation",
+            { runId, evaluated: evaluated as BrowserEvaluatorOutput },
+            settings.actionTimeoutMs * 3 + 5_000,
           ) as BrowserEvalResult;
           evaluations++;
           totalEvalMs += result.elapsedMs;
           pages = result.pages.length;
+          if (!evaluated.ok) throw new Error(evaluated.error ?? "browser evaluation failed");
           return deliverEvaluation(result, current);
         });
       } catch (error) {

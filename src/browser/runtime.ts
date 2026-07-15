@@ -239,7 +239,7 @@ export function browserHostSettings(config: Config): BrowserHostSettings {
 
 /** The production runtime always crosses an OS process and sandbox boundary. */
 export function createBrowserRuntime(deps: CreateBrowserRuntimeDeps): BrowserRuntime {
-  return createIsolatedBrowserRuntime({ settings: browserHostSettings(deps.config), logger: deps.logger });
+  return createIsolatedBrowserRuntime({ settings: browserHostSettings(deps.config), logger: deps.logger, backend: "betterwright" });
 }
 
 /** Keep filenames boring and force every artifact below the trusted per-run directory. */
