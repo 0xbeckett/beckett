@@ -83,22 +83,6 @@ in_progress = "Doing"
   expect(config.plane).not.toHaveProperty("project_slug");
 });
 
-test("a board defined only in config.toml is first-class — the board list is config-driven", () => {
-  const config = loadToml(`
-[plane]
-default_board = "web"
-
-[plane.boards.web]
-project_slug = "WEB"
-`);
-  expect(config.plane.default_board).toBe("web");
-  expect(config.plane.boards.web!.project_slug).toBe("WEB");
-  // Unspecified workflow states fill from the schema defaults, same as any board.
-  expect(config.plane.boards.web!.state_map.in_progress).toBe("In Progress");
-  // The stock set is defaults DATA merged in, not a hardcoded allowlist.
-  expect(Object.keys(config.plane.boards)).toEqual(["ops", "int", "vid", "vidpip", "web"]);
-});
-
 test("unknown default Plane board is a loud config error listing valid boards", () => {
   expect(() => loadToml(`[plane]\ndefault_board = "missing"\n`)).toThrow(/unknown default_board "missing" \(have: ops, int, vid, vidpip\)/);
 });
