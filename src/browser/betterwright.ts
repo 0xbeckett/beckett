@@ -9,7 +9,7 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { BetterWright, NetworkPolicy } from "betterwright";
-import { chromium } from "playwright-core";
+import { chromium } from "playwright";
 import type { Logger } from "../types.ts";
 import type {
   BrowserCheckpoint,

@@ -2,8 +2,8 @@
 
 Beckett's computer-use lane follows the useful part of Aside's published approach: give a strong
 model a normal code-shaped browser surface instead of teaching it a large vocabulary of synthetic
-click, type, wait, and snapshot tools. Asidewright itself is proprietary, so Beckett builds on the
-maintained Playwright library rather than depending on an unavailable runtime.
+click, type, wait, and snapshot tools. Asidewright itself is proprietary, so Beckett uses the
+maintained BetterWright runtime for its guarded, persistent browser backend.
 
 ## Model surface
 
