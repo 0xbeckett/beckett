@@ -191,6 +191,15 @@ test("configFragments maps configKey (default: id) → fragment and refuses key 
   );
 });
 
+test("composeCliHelp joins cliHelp tokens in registration order, skipping unlisted capabilities", () => {
+  const registry = new CapabilityRegistry();
+  registry.register(cap({ id: "status", cliHelp: "status [--pretty]" }));
+  registry.register(cap({ id: "journal" })); // no token → the verb works but is unadvertised
+  registry.register(cap({ id: "discord", cliHelp: "discord reply|decline" }));
+  registry.register(cap({ id: "blank", cliHelp: "   " })); // whitespace-only → unlisted too
+  expect(registry.composeCliHelp()).toBe("status [--pretty] | discord reply|decline");
+});
+
 test("composePrompt sorts by priority then id, drops empty renders, joins with blank lines", () => {
   const config = validateConfig({});
   const registry = new CapabilityRegistry();
