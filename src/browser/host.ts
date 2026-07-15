@@ -11,13 +11,12 @@ import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../types.ts";
-import {
-  createLocalBrowserRuntime,
-  type BrowserBudgetOverrides,
-  type BrowserControllerRuntime,
-  type BrowserEvaluatorOutput,
-  type BrowserHostSettings,
-  type BrowserLease,
+import { createBetterWrightRuntime } from "./betterwright.ts";
+import type {
+  BrowserBudgetOverrides,
+  BrowserHostSettings,
+  BrowserLease,
+  BrowserRuntime,
 } from "./runtime.ts";
 
 const MAX_REQUEST_CHARS = 1_100_000;
@@ -25,8 +24,7 @@ const MAX_REQUEST_CHARS = 1_100_000;
 export type BrowserHostMethod =
   | "stats"
   | "acquire"
-  | "prepareEvaluation"
-  | "applyEvaluation"
+  | "evaluate"
   | "capture"
   | "checkpoint"
   | "restore"
@@ -123,23 +121,15 @@ function parseLease(params: Record<string, unknown> | undefined): BrowserLease {
   };
 }
 
-async function handle(runtime: BrowserControllerRuntime, request: BrowserHostRequest): Promise<unknown> {
+async function handle(runtime: BrowserRuntime, request: BrowserHostRequest): Promise<unknown> {
   switch (request.method) {
     case "stats":
       return runtime.stats();
     case "acquire":
       await runtime.acquire(parseLease(request.params));
       return runtime.stats();
-    case "prepareEvaluation":
-      return runtime.prepareEvaluation(requireString(request.params, "runId"));
-    case "applyEvaluation": {
-      const evaluated = request.params?.evaluated;
-      if (!evaluated || typeof evaluated !== "object") throw new Error("evaluated must be an object");
-      return runtime.applyEvaluation(
-        requireString(request.params, "runId"),
-        evaluated as BrowserEvaluatorOutput,
-      );
-    }
+    case "evaluate":
+      return runtime.evaluate(requireString(request.params, "runId"), requireString(request.params, "code"));
     case "capture":
       return runtime.capture(requireString(request.params, "runId"), requireString(request.params, "name"));
     case "checkpoint":
@@ -164,11 +154,11 @@ async function handle(runtime: BrowserControllerRuntime, request: BrowserHostReq
 }
 
 async function main(): Promise<void> {
-  const runtime = createLocalBrowserRuntime({
-    settings: decodeSettings(),
-    logger: hostLogger,
-    ...decodeBudgetOverrides(),
-  });
+  // BetterWright enforces its own persistent-session and policy boundaries.
+  // Keep parsing the legacy test-only budgets so old host launch envelopes stay
+  // forward compatible, but do not hand a raw Playwright controller to models.
+  decodeBudgetOverrides();
+  const runtime = createBetterWrightRuntime(decodeSettings(), hostLogger);
   const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
   try {
     for await (const line of input) {

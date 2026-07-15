@@ -29,14 +29,11 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import type { Logger } from "../types.ts";
-import { runBrowserEvaluator } from "./evaluator-runner.ts";
 import type { BrowserHostRequest, BrowserHostResponse, BrowserHostMethod } from "./host.ts";
 import type {
   BrowserEvalResult,
   BrowserCheckpoint,
   BrowserBudgetOverrides,
-  BrowserEvaluatorOutput,
-  BrowserEvaluatorSession,
   BrowserHostSettings,
   BrowserLease,
   BrowserRuntime,
@@ -286,7 +283,9 @@ async function buildBrowserHostBundle(repoRoot: string): Promise<string> {
       naming: "host.mjs",
       target: "node",
       format: "esm",
-      external: ["playwright", "playwright-core"],
+      // BetterWright starts its packaged worker by path, so it must remain an
+      // external module rather than being folded into this host bundle.
+      external: ["betterwright", "playwright", "playwright-core"],
     });
     if (!result.success || result.outputs.length !== 1) {
       const diagnostics = result.logs.map((log) => String(log)).join("\n");
@@ -669,50 +668,17 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
         return await serializeEvaluation(async () => {
           if (stopped) throw new Error("browser runtime is stopped");
           await acquireInHost(current);
-          const session = await rpc(
-            "prepareEvaluation",
-            { runId },
-            settings.actionTimeoutMs + 2_000,
-          ) as BrowserEvaluatorSession;
-          const isolation = hostIsolation === "bubblewrap"
-            ? "bubblewrap"
-            : hostIsolation === "sandbox-exec"
-              ? "sandbox-exec"
-              : "none";
-          const evaluated = await runBrowserEvaluator(
-            {
-              ...session,
-              code,
-              actionTimeoutMs: settings.actionTimeoutMs,
-              navigationTimeoutMs: settings.navigationTimeoutMs,
-              evalTimeoutMs: settings.evalTimeoutMs,
-              maxOutputChars: settings.maxOutputChars,
-            },
-            {
-              isolation,
-              repoRoot,
-              spawn,
-              nodePath: deps.nodePath,
-              bwrapPath: deps.bwrapPath,
-              sandboxExecPath: deps.sandboxExecPath,
-              prlimitPath: deps.prlimitPath,
-              evaluatorPath: deps.evaluatorPath,
-              parentEnv: process.env,
-            },
-          );
-          // A non-recoverable failure still goes through applyEvaluation: the host refuses to
-          // apply its state and throws — but with the ROOT CAUSE. When the profile watchdog
-          // killed Chromium mid-eval, the evaluator only sees the fallout (a CDP transport
-          // error); the host knows the budget breach that caused it and reports that instead.
+          // BetterWright owns the sandboxed snippet worker and persistent
+          // browser session inside the isolated host. No Playwright/CDP session
+          // crosses back into Beckett's evaluator process.
           const result = await rpc(
-            "applyEvaluation",
-            { runId, evaluated: evaluated as BrowserEvaluatorOutput },
-            settings.actionTimeoutMs * 3 + 5_000,
+            "evaluate",
+            { runId, code },
+            settings.evalTimeoutMs + settings.actionTimeoutMs + 5_000,
           ) as BrowserEvalResult;
           evaluations++;
           totalEvalMs += result.elapsedMs;
           pages = result.pages.length;
-          if (!evaluated.ok) throw new Error(evaluated.error ?? "playwright_eval failed");
           return deliverEvaluation(result, current);
         });
       } catch (error) {
@@ -833,7 +799,7 @@ function addBrowserRuntimeMounts(args: string[], repoRoot: string, hostPath: str
     hostPath,
     "/repo/node_modules/.cache/beckett-browser/host.mjs",
   );
-  for (const packageName of ["playwright", "playwright-core"]) {
+  for (const packageName of ["betterwright", "cloakbrowser", "playwright", "playwright-core"]) {
     args.push(
       "--ro-bind",
       join(repoRoot, "node_modules", packageName),
