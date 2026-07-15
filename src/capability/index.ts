@@ -16,12 +16,12 @@
  *     `buildSystemAppend`,
  *   - its own config-schema fragment — today: one monolithic zod block in `config.ts`.
  *
- * IMPORTANT (Phase 0 contract): this module is DEFINED AND TESTED but NOT yet wired into any
- * dispatch path. `cli/beckett.ts` and `onBusRequest` behave byte-for-byte as before; the
+ * Wiring status: the CONTROL BUS dispatches through this registry (Phase 1b —
+ * `Concierge.onBusRequest` walks the capabilities `buildBusCapabilities` registers);
+ * `cli/beckett.ts` still behaves byte-for-byte as before pending its own migration. The
  * characterization suites (`src/cli/characterization.test.ts`,
- * `src/concierge/bus-characterization.test.ts`) snapshot that behavior as the contract later
- * phases must keep green. Phases 1–2 re-express each existing command as a registered
- * capability and turn the cascades into registry walks.
+ * `src/concierge/bus-characterization.test.ts`) snapshot the observable behavior as the
+ * contract every phase must keep green.
  */
 
 import type { z } from "zod";
