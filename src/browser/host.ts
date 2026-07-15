@@ -12,11 +12,14 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../types.ts";
 import { createBetterWrightRuntime } from "./betterwright.ts";
+import { createLocalBrowserRuntime } from "./runtime.ts";
 import type {
   BrowserBudgetOverrides,
   BrowserHostSettings,
   BrowserLease,
   BrowserRuntime,
+  BrowserControllerRuntime,
+  BrowserEvaluatorOutput,
 } from "./runtime.ts";
 
 const MAX_REQUEST_CHARS = 1_100_000;
@@ -25,6 +28,8 @@ export type BrowserHostMethod =
   | "stats"
   | "acquire"
   | "evaluate"
+  | "prepareEvaluation"
+  | "applyEvaluation"
   | "capture"
   | "checkpoint"
   | "restore"
@@ -130,6 +135,17 @@ async function handle(runtime: BrowserRuntime, request: BrowserHostRequest): Pro
       return runtime.stats();
     case "evaluate":
       return runtime.evaluate(requireString(request.params, "runId"), requireString(request.params, "code"));
+    case "prepareEvaluation":
+      if (!("prepareEvaluation" in runtime)) throw new Error("BetterWright host does not expose evaluator sessions");
+      return (runtime as BrowserControllerRuntime).prepareEvaluation(requireString(request.params, "runId"));
+    case "applyEvaluation": {
+      if (!("applyEvaluation" in runtime)) throw new Error("BetterWright host does not accept evaluator output");
+      const evaluated = request.params?.evaluated;
+      if (!evaluated || typeof evaluated !== "object") throw new Error("evaluated must be an object");
+      return (runtime as BrowserControllerRuntime).applyEvaluation(
+        requireString(request.params, "runId"), evaluated as BrowserEvaluatorOutput,
+      );
+    }
     case "capture":
       return runtime.capture(requireString(request.params, "runId"), requireString(request.params, "name"));
     case "checkpoint":
@@ -154,11 +170,11 @@ async function handle(runtime: BrowserRuntime, request: BrowserHostRequest): Pro
 }
 
 async function main(): Promise<void> {
-  // BetterWright enforces its own persistent-session and policy boundaries.
-  // Keep parsing the legacy test-only budgets so old host launch envelopes stay
-  // forward compatible, but do not hand a raw Playwright controller to models.
-  decodeBudgetOverrides();
-  const runtime = createBetterWrightRuntime(decodeSettings(), hostLogger);
+  const settings = decodeSettings();
+  const backend = process.env.BECKETT_BROWSER_BACKEND === "betterwright" ? "betterwright" : "playwright";
+  const runtime: BrowserRuntime = backend === "betterwright"
+    ? createBetterWrightRuntime(settings, hostLogger)
+    : createLocalBrowserRuntime({ settings, logger: hostLogger, ...decodeBudgetOverrides() });
   const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
   try {
     for await (const line of input) {
