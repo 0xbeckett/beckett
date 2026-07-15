@@ -48,9 +48,9 @@ export function createBetterWrightRuntime(settings: BrowserHostSettings, logger:
     executablePath: chromium.executablePath(),
     headless: settings.headless,
     defaultTimeout: Math.max(5, Math.ceil(settings.evalTimeoutMs / 1_000)),
-    // Local pages are needed for the deterministic smoke test and are still
-    // constrained by BetterWright's policy for all non-loopback traffic.
-    policy: new NetworkPolicy({ allowLoopback: true }),
+    // BetterWright 0.5 opens private-network access by default. Keep Beckett's
+    // existing boundary: local smoke pages work, but other private hosts do not.
+    policy: new NetworkPolicy({ allowLoopback: true, allowPrivateNetwork: false }),
     downloadPolicy: "deny",
     publicSearchPolicy: "block",
   });
