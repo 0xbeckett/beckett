@@ -48,9 +48,8 @@ export function createBetterWrightRuntime(settings: BrowserHostSettings, logger:
     executablePath: chromium.executablePath(),
     headless: settings.headless,
     defaultTimeout: Math.max(5, Math.ceil(settings.evalTimeoutMs / 1_000)),
-    // BetterWright 0.5 opens private-network access by default. Keep Beckett's
-    // existing boundary: local smoke pages work, but other private hosts do not.
-    policy: new NetworkPolicy({ allowLoopback: true, allowPrivateNetwork: false }),
+    // Preserve BetterWright 0.5's default private-network access policy.
+    policy: new NetworkPolicy({ allowLoopback: true, allowPrivateNetwork: true }),
     downloadPolicy: "deny",
     publicSearchPolicy: "block",
   });
