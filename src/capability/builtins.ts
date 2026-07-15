@@ -394,6 +394,16 @@ export const configFragments = {
       // work instead of the whole session. Best-effort and side-effect-free beyond the worktree
       // (never touches Plane / the advance- or publish-outbox). 0 disables periodic checkpointing.
       worker_checkpoint_s: nonNegInt.default(120),
+      // Dispatcher retry/rework bounds (OPS-180) — previously hardcoded dispatcher constants,
+      // now real knobs. Defaults are the old constants exactly; see stages.ts#retryCapsFor.
+      // Max implement↔review round-trips before auto-rework stops and waits for a human.
+      max_rework_cycles: posInt.default(3),
+      // Total design-completeness passes before the design escalates to its owner anyway.
+      max_design_cycles: posInt.default(2),
+      // Max auto-respawns of an implement worker that ended without a clean finish (OPS-50).
+      max_implement_retries: posInt.default(3),
+      // Max review infra/schema retries before the ticket is left in_review for a human.
+      max_review_infra_retries: posInt.default(1),
     })
     .default({}),
   models: z
