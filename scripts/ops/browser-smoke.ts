@@ -23,7 +23,7 @@ const server = Bun.serve({
       <main><label>Message <input aria-label="Message"></label><button>Save</button><output></output></main>
       <script>document.querySelector('button').onclick = () => {
         const value = document.querySelector('input').value;
-        localStorage.setItem('browser-smoke', value); document.cookie = 'browser_smoke=' + value + '; path=/';
+        localStorage.setItem('browser-smoke', value); document.cookie = 'browser_smoke=' + value + '; path=/; max-age=3600';
         document.querySelector('output').textContent = 'saved:' + value;
       }</script>`, { headers: { "content-type": "text/html" } });
   },

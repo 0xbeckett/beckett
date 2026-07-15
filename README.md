@@ -68,16 +68,15 @@ Beckett also has hands beyond code: it can generate images, deploy throwaway moc
 `<name>.your-domain`, manage its own public site, remember people and projects across
 conversations, and self-provision tools it doesn't have yet.
 
-Browser errands run in a dedicated, persistent headless Chromium profile rather than a disposable
-identity. The computer-use seat writes normal Playwright JavaScript through one small tool, can
-work across tabs in parallel, keeps site cookies between errands, and detaches from chat while it
-works. The Bun daemon supervises a Node controller that manually launches Chromium on one loopback
-CDP port; model code runs in disposable sibling evaluators, so a stuck script can be killed without
-losing tabs or form state. A real blocker arrives in Discord as one bounded message with its marked
-screenshot; reply to that message and the same agent session continues from the same page. Replies
-are deleted before their contents are used, including stale or unauthorized answers. Replies whose
-bot reference cannot be inspected are not retained; Beckett gives resend guidance rather than
-letting their contents enter chat memory.
+Browser errands run through [BetterWright](https://www.npmjs.com/package/betterwright), a dedicated,
+persistent, policy-guarded Chromium backend rather than a disposable identity. The computer-use seat
+writes Playwright-style JavaScript through one small MCP tool, can work across tabs in parallel,
+keeps site cookies between errands, and detaches from chat while it works. BetterWright's sandboxed
+worker owns browser actions while Beckett's isolated host owns the lease and proof artifacts. A real
+blocker arrives in Discord as one bounded message with its marked screenshot; reply to that message
+and the same agent session continues from the same page. Replies are deleted before their contents
+are used, including stale or unauthorized answers. Replies whose bot reference cannot be inspected
+are not retained; Beckett gives resend guidance rather than letting their contents enter chat memory.
 Computer-use is available to every user admitted through Beckett's normal owner/access-list gate,
 and only the initiating user can answer that run. Visible completions return a proof screenshot
 automatically, or are reported unverified if fresh proof capture fails. Browser

@@ -21,7 +21,7 @@ git fetch origin
 git checkout main
 git pull --ff-only origin main
 bun install --frozen-lockfile
-bun x playwright install --no-shell chromium # pinned full Chromium; persistent computer-use profile lives outside git
+bun x betterwright setup --chromium # BetterWright's managed runtime plus its explicit Chromium fallback
 browser_smoke() {
   bun -e 'import { chromium } from "playwright"; const browser = await chromium.launch({ headless: true, channel: "chromium" }); await browser.close();'
 }

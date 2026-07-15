@@ -662,8 +662,8 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
     async evaluate(runId, code, controlToken) {
       const current = requireLease(runId);
       requireControlToken(current, controlToken);
-      if (!code.trim()) throw new Error("playwright_eval needs non-empty JavaScript");
-      if (code.length > MAX_CODE_CHARS) throw new Error(`playwright_eval code exceeds ${MAX_CODE_CHARS} characters`);
+      if (!code.trim()) throw new Error("betterwright browser needs non-empty JavaScript");
+      if (code.length > MAX_CODE_CHARS) throw new Error(`betterwright browser code exceeds ${MAX_CODE_CHARS} characters`);
       try {
         return await serializeEvaluation(async () => {
           if (stopped) throw new Error("browser runtime is stopped");

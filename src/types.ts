@@ -813,8 +813,6 @@ export interface Config {
     browser_max_output_chars: number;
     /** How long a screenshot-backed user question may remain parked before expiring. */
     browser_question_wait_secs: number;
-    /** Deprecated migration-only Playwright MCP command. */
-    browser_mcp_command?: string[];
   };
   /**
    * Restart "what's new" announcement — instance-specific, OFF by default (empty channel), so a

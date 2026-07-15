@@ -151,7 +151,6 @@ test("computer-use defaults to one stable full-Chromium profile and bounded tool
     browser_max_output_chars: 24_000,
     browser_question_wait_secs: 3_600,
   });
-  expect(() => validateConfig({ quick: { browser_mcp_command: ["legacy", "--accepted-during-migration"] } })).not.toThrow();
   expect(() => validateConfig({ quick: { browser_max_output_chars: 4_095 } })).toThrow();
   expect(() => validateConfig({ quick: { browser_max_output_chars: 1_000_001 } })).toThrow();
 });

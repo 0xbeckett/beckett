@@ -7,72 +7,32 @@ maintained Playwright library rather than depending on an unavailable runtime.
 
 ## Model surface
 
-The model receives one tool, `betterwright_browser`. Its JavaScript has ordinary Playwright `page` and
-`context` objects plus small helpers for AI ARIA snapshots, active-page selection, safe artifacts,
-and redacted screenshots. Related steps belong in one call; independent tabs can use
-`context.newPage()` and `Promise.all`.
+The model receives one tool, `betterwright_browser`. It runs BetterWright’s guarded,
+persistent Playwright-style facade: `page`, `pages`, `openPage`, `usePage`, `snapshot`,
+`screenshot`, `human`, `dialogs`, and `captcha`. Related steps belong in one call and
+`screenshot({ kind, name })` returns a controller-validated image artifact.
 
-The supported facade makes `context.browser()` and `page.context().browser()` return `null` and
-rejects direct raw-CDP creation, which prevents accidental misuse. This is not a security boundary:
-Playwright's private object graph and a raw CDP session must be assumed reachable from evaluator
-JavaScript. Enforcement therefore lives in the trusted controller, not in those JavaScript facades.
-
-The replacement browser prompt, result schema, and tool definition are regression-tested together.
-They currently total 2,705 characters, or a deliberately conservative 902-token estimate at three
-characters per token. This is below the hard 3,000-token ceiling.
+The replacement browser prompt, result schema, and tool definition are regression-tested
+together and remain below the 3,000-token browser-tool budget.
 
 ## Runtime boundary
 
-Model JavaScript never runs in the Beckett daemon or its browser controller. A computer-use task
-owns one trusted controller and Chromium process for its full run, including waits for a Discord
-answer. Each tool call gets a disposable Node evaluator connected to that controller over
-Playwright/CDP. On Linux, the daemon starts the controller and every evaluator as separate sibling
-`bubblewrap` processes rather than asking one sandbox to create another. Both drop all capabilities.
-The evaluator receives a read-only evaluator plus Playwright client, a 256 MiB V8 heap limit, a
-16 GiB virtual-address ceiling, and bounded process/file limits. The virtual ceiling accommodates
-Node's large nonresident WebAssembly reservation without granting a larger JavaScript heap. It gets
-no profile, artifact, full repo, home, `.env`, model credential, or control-socket mount.
+The daemon still owns the computer-use lease, capability token, Discord question flow, and
+proof delivery, but BetterWright is the browser backend. The isolated Node host creates one
+BetterWright instance for a lease; BetterWright owns the persistent profile, policy-guarded
+browser worker, sandboxed model snippets, artifact generation, and network controls. Raw
+Playwright/CDP handles never cross into model-authored JavaScript.
 
-The production process chain is explicit: the Bun daemon supervises a Node controller host; Node
-manually starts the pinned Chromium binary with its dedicated profile and one ephemeral loopback CDP
-port; Playwright then attaches with `connectOverCDP`. Chromium has no Playwright-managed debugging
-pipe, and it remains in the Node host's process group so the Bun supervisor can reap the full tree.
-This replaced the flaky combination of Playwright-managed WebSocket/pipe-plus-port launch behavior
-under Bun without changing the persistent browser identity.
+On Linux the host runs in the existing `bubblewrap` boundary with only the dedicated browser
+profile and run artifacts writable; macOS uses the existing fail-closed `sandbox-exec` path.
+BetterWright’s Chromium fallback is explicitly selected and uses the pinned Playwright
+Chromium executable. The profile persists cookies and local storage across leases while the
+host is recycled after a run. BetterWright blocks private-network targets by default while
+loopback is enabled for Beckett’s deterministic local-page smoke test.
 
-The daemon and controller enforce outer deadlines. A stuck or escaped evaluator is killed as a
-process group without closing Chromium, so tabs, unsaved form values, cookies, and SPA state remain
-available for a question reply or the next action. Browser-side work already initiated before a
-timeout may still complete, so timeouts are reported as uncertain and current state must be inspected
-before retrying a non-idempotent action. The configured output budget covers the complete serialized
-tool result, not just its returned value; the default is 24,000 characters.
-
-A lease may create at most four downloads and persist at most 100 MiB across them. Root CDP
-`Browser.downloadWillBegin` events count each download GUID once, including downloads created by raw
-or hidden targets. `Browser.downloadProgress` counts received bytes and the projected remainder of
-concurrent transfers, cancelling while a download is still in flight when the aggregate would cross
-the budget. The controller periodically restores its trusted download behavior if raw CDP changed it.
-The later artifact stream is not the pre-completion guard; it copies within the same budget and
-deletes failed or over-budget partials plus Chromium's temporary copies. The controller's 128 MiB
-`RLIMIT_FSIZE` is an earlier per-file backstop. Cancellation is attempted against the default and
-every currently live browser context id so a context-id mismatch cannot silently bypass the guard.
-
-The controller enforces a 32 page-target ceiling from root CDP, including hidden targets that may not
-appear in Playwright's page list and independently of the result-envelope page cap. It watches target
-creation and polls Chromium's complete browser-context list every 100 ms, forcibly disposing every
-non-default context. The poll covers contexts with no targets, and the regression suite creates one
-through Playwright's private graph/raw CDP to verify that the controller removes it.
-
-Profile accounting uses serialized asynchronous allocated-byte scans rather than blocking the Node
-controller. A lease starts at a 100 ms scan cadence; quiet profiles back off adaptively to 2 seconds,
-while rapid growth or low headroom returns the cadence to 100 ms. More than 100 MiB of growth during
-one lease or 512 MiB total closes Chromium and fails the lease; a profile already above the absolute
-ceiling fails before launch. The profile is not erased, and a bounded mode-`0600` controller snapshot
-restores session-only cookies that Chromium would otherwise discard on exit, so login state survives
-the controlled restart. The controller is otherwise recycled between tasks. Linux fails closed if
-either sibling sandbox cannot start. macOS production also fails closed; the benchmark opts into
-explicitly labelled process-only development mode because current Chromium is incompatible with the
-legacy `sandbox-exec` policy.
+Downloads are denied for this MCP surface. Browser output remains bounded by Beckett before it
+is returned to the model, and proof/question screenshots are copied into the run artifact
+directory and PNG-validated before Discord can consume them.
 
 ## Human loop and evidence
 

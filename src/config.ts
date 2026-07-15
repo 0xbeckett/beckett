@@ -517,12 +517,6 @@ const ConfigSchema = z
         browser_eval_timeout_ms: posInt.default(60_000),
         browser_max_output_chars: browserOutputChars.default(24_000),
         browser_question_wait_secs: posInt.default(3_600),
-        // Accepted temporarily so a full older config.toml does not brick on upgrade. The custom
-        // one-tool bridge ignores it; remove after deployed instances have migrated.
-        browser_mcp_command: z
-          .array(z.string().min(1))
-          .nonempty()
-          .optional(),
       })
       .strict()
       .default({}),
