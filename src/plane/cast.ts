@@ -41,6 +41,15 @@ export const BRANCH_FENCE = "beckett-branch";
 /** Desired lifecycle state after a task branch's dependencies clear. */
 export const START_STATE_FENCE = "beckett-start-state";
 
+/**
+ * The fenced-block language tag that names the non-main integration/target branch a ticket
+ * publishes onto (a bare branch name, e.g. `v5-daemon`). Absent ⇒ the publisher ships to the
+ * repo's default branch (`main`) exactly as before. This is the funnel that keeps a body of work
+ * (e.g. the V5 daemon rewrite) off `main` until one final human-merged integration→main PR
+ * (OPS-185).
+ */
+export const TARGET_BRANCH_FENCE = "beckett-target-branch";
+
 /** The markdown heading that introduces the acceptance-criteria bullet list. */
 export const CRITERIA_HEADING = "## Acceptance criteria";
 
@@ -141,11 +150,32 @@ const START_STATE_RE = new RegExp(
   "i",
 );
 
+const TARGET_BRANCH_RE = new RegExp(
+  "```" + TARGET_BRANCH_FENCE + "\\s*\\n([\\s\\S]*?)\\n?```",
+  "i",
+);
+
 const BRANCH_REF_RE = /^#?(\d+(?:\.\d+)+)$/;
 
 /** Canonicalize `#42.2`/`42.2` to `42.2`; invalid external values are ignored. */
 export function branchRef(raw: string): string | undefined {
   return raw.trim().match(BRANCH_REF_RE)?.[1];
+}
+
+/**
+ * Canonicalize a publish/integration branch name from external input (a ticket description block),
+ * or `undefined` when it is empty or unsafe. This value flows straight into a `git push` refspec,
+ * so it is validated conservatively: letters/digits and `._-/` only, no leading/trailing slash,
+ * no leading dot, no `..`, length-capped — anything else is dropped rather than trusted.
+ */
+export function targetBranch(raw: string): string | undefined {
+  const value = raw.trim();
+  if (!value || value.length > 100) return undefined;
+  if (!/^[A-Za-z0-9._/-]+$/.test(value)) return undefined;
+  if (value.startsWith("/") || value.endsWith("/") || value.startsWith(".") || value.includes("..")) {
+    return undefined;
+  }
+  return value;
 }
 
 const TICKET_STATES = new Set<TicketState>([
@@ -222,6 +252,11 @@ export function parseCast(description: string): ParsedCast {
   const parsedStartState = startStateMatch ? startState(startStateMatch[1] ?? "") : undefined;
   if (startStateMatch) rest = rest.replace(startStateMatch[0], "");
 
+  // 1e. non-main integration/target branch (the publish funnel — OPS-185)
+  const targetBranchMatch = rest.match(TARGET_BRANCH_RE);
+  const parsedTargetBranch = targetBranchMatch ? targetBranch(targetBranchMatch[1] ?? "") : undefined;
+  if (targetBranchMatch) rest = rest.replace(targetBranchMatch[0], "");
+
   // 2. acceptance-criteria section (heading → end-of-string or next h2)
   const criteria: string[] = [];
   const headingIdx = indexOfHeading(rest);
@@ -251,6 +286,7 @@ export function parseCast(description: string): ParsedCast {
     project,
     branchRef: parsedBranchRef,
     startState: parsedStartState,
+    targetBranch: parsedTargetBranch,
     body: rest.trim(),
   };
 }
@@ -282,6 +318,7 @@ export function serializeCast(
   project?: string,
   taskBranchRef?: string,
   desiredStartState?: TicketState,
+  ticketTargetBranch?: string,
 ): string {
   const parts: string[] = [];
   const trimmedBody = (body ?? "").trim();
@@ -296,6 +333,9 @@ export function serializeCast(
   if (desiredStartState && TICKET_STATES.has(desiredStartState)) {
     parts.push("```" + START_STATE_FENCE + "\n" + desiredStartState + "\n```");
   }
+
+  const cleanTargetBranch = ticketTargetBranch ? targetBranch(ticketTargetBranch) : undefined;
+  if (cleanTargetBranch) parts.push("```" + TARGET_BRANCH_FENCE + "\n" + cleanTargetBranch + "\n```");
 
   const castEntries = Object.entries(casting ?? {}).filter(([, v]) => v !== undefined);
   if (castEntries.length > 0) {

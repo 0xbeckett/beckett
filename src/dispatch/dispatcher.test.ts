@@ -220,6 +220,7 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
     blockedBy: over.blockedBy ?? [],
     ...(over.project ? { project: over.project } : {}),
     ...(over.branchRef ? { branchRef: over.branchRef } : {}),
+    ...(over.targetBranch ? { targetBranch: over.targetBranch } : {}),
     ...(over.startState ? { startState: over.startState } : {}),
     projectId: over.projectId ?? "proj-1",
     url: "http://x",
@@ -662,6 +663,34 @@ describe("advance on finish", () => {
       ticket: "OPS-1",
     }]);
     expect(client.comments.at(-1)!.body).toContain("https://github.com/0xbeckett/balloons-game");
+  });
+
+  test("OPS-185: a ticket's non-main target branch is threaded to the publisher (funnel, main untouched)", async () => {
+    const client = new FakeClient();
+    const calls: Array<{ slug: string; targetBranch?: string }> = [];
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/home/beckett/Projects/beckett",
+      publishRepo: async (a) => {
+        calls.push({ slug: a.slug, targetBranch: a.targetBranch });
+        return { url: "https://github.com/0xbeckett/beckett", kind: "pushed" as const };
+      },
+    });
+    const ticket = makeTicket({
+      project: "beckett",
+      title: "V5 phase",
+      targetBranch: "v5-daemon",
+      casting: { implement: { harness: "claude", effort: "low" } },
+    });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "phase done");
+    await tick();
+    // The publisher is told to funnel onto the integration branch — where the guard keeps main safe.
+    expect(calls).toEqual([{ slug: "beckett", targetBranch: "v5-daemon" }]);
+    expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
   });
 
   test("snapshots a branch contribution before direct publication can rebase onto newer main", async () => {

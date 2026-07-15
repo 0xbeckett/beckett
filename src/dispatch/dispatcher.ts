@@ -151,6 +151,12 @@ export interface DispatcherDeps {
     repoRoot: string;
     description: string;
     ticket?: string;
+    /**
+     * Non-main integration/target branch to publish onto (the ticket's ```beckett-target-branch```).
+     * When set, the publisher ships to THIS branch and never advances the repo's default branch
+     * (`main`). Absent ⇒ publish to the repo default exactly as before (OPS-185).
+     */
+    targetBranch?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   /**
    * Optional progress feed: the dispatcher forwards each worker's granular {@link WorkerEvent}
@@ -409,6 +415,7 @@ export class Dispatcher {
     repoRoot: string;
     description: string;
     ticket?: string;
+    targetBranch?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   private readonly progress?: ProgressSink;
   private readonly onAdvance?: DispatcherDeps["onAdvance"];
@@ -2418,6 +2425,8 @@ export class Dispatcher {
         repoRoot,
         description: ticket.title,
         ticket: this.publicPublishTicket(ticket),
+        // A ticket cast onto a non-main integration branch funnels there; `main` stays untouched.
+        ...(ticket.targetBranch ? { targetBranch: ticket.targetBranch } : {}),
       });
       return await this.recordPublication(ticket, r);
     } catch (err) {
@@ -2485,7 +2494,9 @@ export class Dispatcher {
 
   private compareLink(op: PublishOperation): string {
     const branch = gitBranchForTicket(op.ticket);
-    return `https://github.com/${this.githubOwner}/${op.slug}/compare/main...${branch}`;
+    // Compare against the ticket's own integration base so a non-main funnel's courier link is right.
+    const base = op.ticket.targetBranch || "main";
+    return `https://github.com/${this.githubOwner}/${op.slug}/compare/${base}...${branch}`;
   }
 
   /**
@@ -2586,6 +2597,8 @@ export class Dispatcher {
         repoRoot: op.repoRoot,
         description: ticket.title,
         ticket: this.publicPublishTicket(ticket),
+        // Preserve the non-main funnel across a durable retry: never advance `main` on replay.
+        ...(ticket.targetBranch ? { targetBranch: ticket.targetBranch } : {}),
       });
       return await this.recordPublication(ticket, r);
     } catch (err) {

@@ -111,6 +111,14 @@ export interface Ticket {
   project?: string;
   /** Stable user-facing task-branch reference, for example `42.2`. */
   branchRef?: string;
+  /**
+   * Non-main integration/target branch this ticket publishes onto (```beckett-target-branch``` block,
+   * e.g. `v5-daemon`). When set, the publisher ships the finished work to THIS branch on the code
+   * repo and never advances the repo's default branch (`main`) — the funnel that keeps a campaign
+   * off `main` until one final human-merged integration→main PR (OPS-185). Absent ⇒ publish to the
+   * repo default exactly as a normal ticket does.
+   */
+  targetBranch?: string;
   /** Native Plane parent work-item id when this branch is nested under another started branch. */
   parentId?: string;
   /** Lifecycle state a held task branch should enter once its dependencies finish. */
@@ -165,5 +173,6 @@ export interface ParsedCast {
   project?: string; // code-project slug (```beckett-project``` block) — see Ticket.project
   branchRef?: string; // user-facing task branch (```beckett-branch``` block), e.g. `42.2`
   startState?: TicketState; // desired post-dependency state (```beckett-start-state``` block)
+  targetBranch?: string; // non-main publish/integration branch (```beckett-target-branch```) — see Ticket.targetBranch
   body: string; // prose with the cast/deps/project blocks + criteria section removed
 }

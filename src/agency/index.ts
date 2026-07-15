@@ -554,6 +554,14 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     description?: string;
     /** Ticket identifier — names the PR branch (`beckett/<ticket>`) + the PR body. Defaults to slug. */
     ticket?: string;
+    /**
+     * Non-main integration/target branch to publish onto (e.g. `v5-daemon`). When set to a branch
+     * other than `main`, an owned-repo publish (Case 2) ships to THIS branch and NEVER touches the
+     * repo's default branch (`main`): no fetch, no rebase, no push against it. Absent (or `main`) ⇒
+     * publish to the repo default exactly as before, so a normal ticket is byte-for-byte unchanged
+     * (OPS-185).
+     */
+    targetBranch?: string;
   }): Promise<PublishResult> {
     this.requireCreds("publish repo");
     // Clean the source tree once up front (OPS-61) so NO publish path — including the brand-new-repo
@@ -594,8 +602,14 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     // holds the ticket for a human (never a silent false-done).
     if (await this.repoExists(repo)) {
       await this.setPublicSafe(repo);
-      await this.pushToDefaultBranch(p.sourceDir, repo);
-      this.opts.logger.info("published via push to default branch", { repo });
+      // A ticket cast onto a non-main integration branch (the V5 `v5-daemon` funnel — OPS-185) ships
+      // THERE and must never advance `main`. When an integration target is present we push to it and
+      // only it (integrating that branch's own tip first, exactly like the default path integrates
+      // main's), so no fetch/rebase/push ever references the default branch. Absent ⇒ the default
+      // branch, byte-for-byte as before.
+      const target = this.integrationTarget(p.targetBranch);
+      await this.pushToBranch(p.sourceDir, repo, target ?? undefined);
+      this.opts.logger.info("published via push to branch", { repo, branch: target ?? "(default)" });
       return { nameWithOwner: repo, url: `${this.gitHost()}/${repo}`, kind: "pushed" };
     }
 
@@ -613,14 +627,29 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
   }
 
   /**
-   * Push the checkout's HEAD to a repo we own, on its default branch, WITHOUT a non-fast-forward
-   * reject: fetch the remote tip and rebase local commits onto it first, then push. If the remote
-   * branch doesn't exist yet (a just-created/empty repo) the fetch fails harmlessly and the push
-   * creates it. A rebase conflict aborts and throws — the caller turns that into a "needs a human"
-   * hold rather than force-pushing over someone's (or a parallel worker's) commits.
+   * The explicit non-default branch an owned-repo publish should land on, or `null` to use the repo
+   * default. A ticket cast onto an integration branch (e.g. `v5-daemon`) funnels there; an unset
+   * value or an explicit `main` both mean "the default branch", so a normal ticket's publish is
+   * byte-for-byte unchanged (OPS-185).
    */
-  private async pushToDefaultBranch(cwd: string, repo: string): Promise<void> {
-    const base = await this.defaultBranch(repo);
+  private integrationTarget(targetBranch?: string): string | null {
+    const b = targetBranch?.trim();
+    if (!b || b.toLowerCase() === "main") return null;
+    return b;
+  }
+
+  /**
+   * Push the checkout's HEAD to a repo we own, on a branch, WITHOUT a non-fast-forward reject: fetch
+   * that branch's remote tip and rebase local commits onto it first, then push. `branch` defaults to
+   * the repo's default branch (`main` for the self-repo) — a ticket cast onto a non-main integration
+   * branch passes it explicitly so `main` is never fetched, rebased, or pushed. If the remote branch
+   * doesn't exist yet (a just-created/empty repo, or a fresh integration branch) the fetch fails
+   * harmlessly and the push creates it. A rebase conflict aborts and throws — the caller turns that
+   * into a "needs a human" hold rather than force-pushing over someone's (or a parallel worker's)
+   * commits.
+   */
+  private async pushToBranch(cwd: string, repo: string, branch?: string): Promise<void> {
+    const base = branch ?? await this.defaultBranch(repo);
     const url = `${this.gitHost()}/${repo}.git`;
     const fetch = await this.runner(["git", "fetch", url, base], { cwd, env: this.gitEnv() });
     if (fetch.code === 0) {
