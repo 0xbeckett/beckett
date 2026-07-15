@@ -3,7 +3,7 @@
  *
  * Browser work is deliberately different from the other one-shot errands: it detaches
  * immediately, leases the warm persistent browser, may park for a screenshot-backed human
- * answer, then resumes the same Claude session. The model sees one Playwright code tool.
+ * answer, then resumes the same Claude session. The model sees one BetterWright code tool.
  */
 
 import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
