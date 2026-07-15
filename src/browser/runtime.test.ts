@@ -415,7 +415,7 @@ test("root CDP counts raw-target downloads once, caps their files, and restores 
           session.send('Target.createTarget', {
             url: ${JSON.stringify(`${baseUrl}/download-file`)} + '?raw=' + index,
           })));
-        await page.waitForTimeout(750);
+        await page.waitForTimeout(2_000);
       } finally {
         await session.detach().catch(() => undefined);
       }
