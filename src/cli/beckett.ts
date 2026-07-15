@@ -22,27 +22,13 @@ import { ActionClass, CapabilityRegistry, type Capability } from "../capability/
 import { loadConfig, resolvePlaneBoardName } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus, ControlBusTimeoutError } from "../shell/control-bus.ts";
-import { createMemory } from "../memory/index.ts";
-import {
-  type Audience,
-  IdSchema,
-  provenanceOf,
-  renderProvenanceFrom,
-  SELF_AUDIENCE,
-  ViewerRoleSchema,
-  VisibilitySchema,
-} from "../memory/search.ts";
-import { GitHubCli, loadIdentity } from "../agency/index.ts";
-import { CfDns } from "../agency/cloudflare.ts";
-import { CodexImageGen } from "../agency/imagegen.ts";
-import { TunnelDeployer } from "../shell/deploy.ts";
-import { mintSecretRequest, parseSecretTtlMinutes, serveSecretIntake, validateSecretEnvName } from "../secret/intake.ts";
+import { createCapability } from "../capability/modules/index.ts";
+import { fail, out, parse, quietLogger } from "./io.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
 import { bundledMaintainersFile, loadMaintainers, requestMaintainerGrant, revokeMaintainer } from "../discord/maintainers.ts";
 import { loadPeers, addPeer, removePeer } from "../discord/peers.ts";
 import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
 import { readJournal, DEFAULT_TAIL_LINES } from "../progress/journal.ts";
-import type { RememberIntent, NodeType, Logger, MergeStrategy, ReviewParams } from "../types.ts";
 import type { Casting, Ticket, TicketState } from "../plane/types.ts";
 import { projectSlug } from "../plane/cast.ts";
 import { parseSince, readSpendLedger, summarizeSpend } from "../spend.ts";
@@ -50,14 +36,6 @@ import { TaskStore, displayTaskName, normalizeBranchRef, normalizeTaskNumber } f
 import { startTaskBranch } from "./task-start.ts";
 import { quickDetachedMessage } from "./quick-output.ts";
 import { formatDispatchTrace, readDispatchEvents } from "../dispatch/events.ts";
-import {
-  bootstrapInbox,
-  createAgentMailApi,
-  defaultMailStateFile,
-  renderMessage,
-  renderMessageTable,
-  safeMailError,
-} from "../mail/index.ts";
 
 const config = loadConfig();
 const paths = buildPaths(config);
@@ -78,14 +56,8 @@ function discordReplyAckTimeoutMs(): number {
   return value;
 }
 
-function out(data: unknown): never {
-  process.stdout.write(typeof data === "string" ? data + "\n" : JSON.stringify(data, null, 2) + "\n");
-  process.exit(0);
-}
-function fail(msg: string): never {
-  process.stderr.write(`error: ${msg}\n`);
-  process.exit(1);
-}
+/** What the normalized capability modules get to build themselves (V5 Phase 2). */
+const capabilityDeps = { config, paths, logger: quietLogger };
 
 /**
  * The one code-project slug that targets Beckett's OWN source repo (`0xbeckett/beckett`). Filing work
@@ -121,28 +93,6 @@ function cliBoardName(board: unknown): string {
   }
 }
 
-/** Minimal flag parser: returns { _: positional[], flags: {k:v|true} }. */
-function parse(argv: string[]): { _: string[]; flags: Record<string, string | boolean> } {
-  const _: string[] = [];
-  const flags: Record<string, string | boolean> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const t = argv[i]!;
-    if (t.startsWith("--")) {
-      const key = t.slice(2);
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith("--")) flags[key] = true;
-      else {
-        flags[key] = next;
-        i++;
-      }
-    } else _.push(t);
-  }
-  return { _, flags };
-}
-
-const SECRET_TUNNEL_NAME = "secret";
-const DEFAULT_SECRET_PORT = 8799;
-
 function parseEvalArgs(args: string[]): { model: string; mode: "short" | "full" } {
   let mode: "short" | "full" = "short";
   let seenMode: "short" | "full" | null = null;
@@ -167,12 +117,6 @@ function parseEvalArgs(args: string[]): { model: string; mode: "short" | "full" 
   }
   return { model: positional[0].trim(), mode };
 }
-
-/** A no-op logger: CLI invocations are short-lived and emit JSON, not log lines. */
-const quietLogger = (() => {
-  const q = { info() {}, warn() {}, debug() {}, error() {}, child() { return q; } };
-  return q as unknown as Logger;
-})();
 
 async function bus(cmd: string, args: Record<string, unknown>): Promise<never> {
   try {
@@ -259,237 +203,7 @@ function csvFlag(value: string | boolean | undefined): string[] {
   return value ? String(value).split(",").map((part) => part.trim()).filter(Boolean) : [];
 }
 
-function parsePort(raw: string | boolean | undefined, fallback: number): number {
-  if (raw === undefined || raw === false) return fallback;
-  if (raw === true) fail("port flag needs a value");
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1 || n > 65_535) fail("port must be an integer from 1 to 65535");
-  return n;
-}
-
-function systemdQuote(value: string): string {
-  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-}
-
-async function runQuiet(cmd: string[]): Promise<void> {
-  const proc = Bun.spawn(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  const code = await proc.exited;
-  if (code !== 0) {
-    const tail = `${stdout}\n${stderr}`.trim().split("\n").slice(-8).join("\n");
-    fail(`${cmd.join(" ")} failed (${code})${tail ? `:\n${tail}` : ""}`);
-  }
-}
-
-async function ensureSecretService(port: number): Promise<void> {
-  const { mkdirSync, writeFileSync } = await import("node:fs");
-  const home = process.env.HOME ?? paths.home;
-  const unitDir = join(home, ".config", "systemd", "user");
-  const unitPath = join(unitDir, "beckett-secret.service");
-  const cliPath = join(import.meta.dir, "beckett.ts");
-  const repoRoot = join(import.meta.dir, "..", "..");
-  const envLines = [
-    `Environment=${systemdQuote(`BECKETT_SECRET_PORT=${String(port)}`)}`,
-    ...(process.env.BECKETT_DIR ? [`Environment=${systemdQuote(`BECKETT_DIR=${process.env.BECKETT_DIR}`)}`] : []),
-    ...(process.env.BECKETT_HOME ? [`Environment=${systemdQuote(`BECKETT_HOME=${process.env.BECKETT_HOME}`)}`] : []),
-  ];
-  const unit = `[Unit]\nDescription=Beckett one-time secret intake\n\n[Service]\nType=simple\nWorkingDirectory=${repoRoot}\nExecStart=${process.execPath} ${cliPath} secret serve --port ${port}\nRestart=on-failure\nRestartSec=2\n${envLines.join("\n")}\n\n[Install]\nWantedBy=default.target\n`;
-  mkdirSync(unitDir, { recursive: true });
-  writeFileSync(unitPath, unit, { mode: 0o600 });
-  await runQuiet(["systemctl", "--user", "daemon-reload"]);
-  await runQuiet(["systemctl", "--user", "enable", "--now", "beckett-secret.service"]);
-}
-
-/**
- * The shared recall handler behind BOTH `beckett recall …` (the first-class targeted tool,
- * OPS-121) and `beckett memory recall …` (the original spelling — kept working). Accepts a
- * free-text query, hard `--type`/`--name` filters, or any combination; prints the ranked
- * hits (with file paths, so an entry can be read/edited directly) before the always-loaded
- * global index.
- */
-/**
- * Resolve the recall audience (multiplayer §9.1) from CLI flags. Fail-closed by construction:
- * `--viewer` absent leaves `viewerId` undefined, so the engine returns only public nodes. The
- * concierge passes these on behalf of the live speaker; a human debugging recall passes their
- * own id. `--viewer-role` defaults to `member` and `--context` to `guild` (the safe side).
- *
- * `--as-self` is the one shorthand: Beckett recalling for its OWN reasoning (planning,
- * staffing) — owner-scoped facts included, dm-scoped facts never (see SELF_AUDIENCE in
- * search.ts). It answers "whose eyes?" by itself, so combining it with per-viewer flags is
- * ambiguous and rejected.
- */
-function audienceFromFlags(flags: Record<string, string | boolean>): Audience {
-  if (flags["as-self"] !== undefined) {
-    if (flags.viewer !== undefined || flags["viewer-role"] !== undefined || flags.context !== undefined) {
-      fail("--as-self cannot be combined with --viewer/--viewer-role/--context");
-    }
-    return SELF_AUDIENCE;
-  }
-  // Reuse the memory module's schemas (search.ts) so the CLI and the engine agree on the exact
-  // set of legal roles/visibilities rather than re-listing them here.
-  const role = ViewerRoleSchema.safeParse(flags["viewer-role"] ? String(flags["viewer-role"]) : "member");
-  if (!role.success) fail("--viewer-role must be one of: owner, maintainer, member");
-  const context = flags.context ? String(flags.context) : "guild";
-  if (context !== "guild" && context !== "dm") fail("--context must be one of: guild, dm");
-  return {
-    viewerId: flags.viewer ? String(flags.viewer) : undefined,
-    viewerRole: role.data,
-    context,
-  };
-}
-
-/**
- * Build the provenance/visibility metadata a `remember` write carries (multiplayer §7), from
- * CLI flags. Only flags actually passed produce keys — an absent flag writes nothing, so the
- * engine merge preserves existing scope on an update. Fails fast on a bad visibility value or
- * a `dm` scope with no partner (`--visibility dm` is meaningless without `--dm-with`).
- */
-function provenanceMetadataFromFlags(flags: Record<string, string | boolean>): Record<string, unknown> {
-  const meta: Record<string, unknown> = {};
-  // Same id/visibility shapes the engine enforces (search.ts) — validate against them, don't
-  // re-hand-roll the regex/enum here.
-  const asId = (flag: string, raw: string): string => {
-    const parsed = IdSchema.safeParse(raw);
-    if (!parsed.success) fail(`--${flag} must be a Discord user id (1–20 digits)`);
-    return parsed.data;
-  };
-  if (flags.visibility !== undefined) {
-    const vis = VisibilitySchema.safeParse(String(flags.visibility));
-    if (!vis.success) fail("--visibility must be one of: public, owner, dm");
-    if (vis.data === "dm" && flags["dm-with"] === undefined) {
-      fail("--visibility dm requires --dm-with <discordUserId>");
-    }
-    meta.visibility = vis.data;
-  }
-  if (flags["dm-with"] !== undefined) meta.dm_with = asId("dm-with", String(flags["dm-with"]));
-  if (flags.by !== undefined) meta.source_user = asId("by", String(flags.by));
-  if (flags["by-name"] !== undefined) meta.source_name = String(flags["by-name"]);
-  return meta;
-}
-
-async function runRecall(argv: string[]): Promise<never> {
-  const usage =
-    'usage: beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] ' +
-    "[--as-self | --viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] [--json]";
-  const { _, flags } = parse(argv);
-  const text = _.join(" ");
-  const csv = (v: string | boolean | undefined) =>
-    v ? String(v).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
-  const types = csv(flags.type);
-  const names = csv(flags.name);
-  if (!text && !types && !names) fail(usage);
-
-  const audience = audienceFromFlags(flags);
-
-  const memory = createMemory({ memoryDir: paths.memoryDir, logger: undefined, git: false });
-  const r = await memory.recall({
-    text,
-    filter: types || names ? { types, names } : undefined,
-    k: flags.k ? Number(flags.k) : undefined,
-    hops: flags.hops ? Number(flags.hops) : undefined,
-    audience,
-  });
-
-  if (flags.json) {
-    out({
-      hits: r.hits.map((h) => {
-        // One parse per hit: read visibility and render the source line off the same Provenance.
-        const prov = provenanceOf(h.node);
-        return {
-          name: h.node.name,
-          type: h.node.type,
-          score: Number(h.score.toFixed(2)),
-          path: h.node.path,
-          description: h.node.description,
-          visibility: prov.visibility,
-          provenance: renderProvenanceFrom(prov),
-          body: h.node.body,
-        };
-      }),
-      related: r.expanded.map((e) => ({ name: e.node.name, type: e.node.type, description: e.node.description, visibility: provenanceOf(e.node).visibility, reason: e.reason })),
-      phantoms: r.phantoms,
-      notes: r.notes,
-    });
-  }
-
-  const lines: string[] = ["# hits"];
-  if (r.hits.length === 0) lines.push("(none — see the index below for everything on file)");
-  for (const h of r.hits) {
-    const prov = provenanceOf(h.node); // parse once; both the visibility tag and source line use it
-    const source = renderProvenanceFrom(prov);
-    lines.push(
-      `\n## ${h.node.name} (${h.node.type}, score ${h.score.toFixed(2)})`,
-      `path: ${h.node.path}`,
-      `visibility: ${prov.visibility}${source ? ` · ${source}` : ""}`,
-      h.node.description,
-      ...(h.node.body ? ["", h.node.body] : []),
-    );
-  }
-  if (r.expanded.length) lines.push("\n# related (linked)\n" + r.expanded.map((e) => `- ${e.node.name}: ${e.node.description} [${e.reason}]`).join("\n"));
-  if (r.phantoms.length) lines.push("\n# phantoms: " + r.phantoms.join(", "));
-  if (r.notes.length) lines.push("\n# notes: " + r.notes.join("; "));
-  lines.push("\n# index");
-  for (const il of r.index) lines.push(`- ${il.name} (${il.type}): ${il.description}`);
-  out(lines.join("\n"));
-}
-
-async function runMail(sub: string | undefined, argv: string[]): Promise<never> {
-  const help = [
-    "usage: beckett mail <inbox|send|ls|read> [options]",
-    "",
-    "Manage Beckett's persistent AgentMail inbox.",
-    "  inbox                              create or show the persistent inbox",
-    "  send --to <addr> --subject <s> --body <b> [--body-stdin]",
-    "                                     send from the persistent inbox",
-    "  ls [--limit N] [--unread]          list recent messages",
-    "  read <messageId>                   print headers and text-first body",
-  ].join("\n");
-  if (!sub || sub === "--help" || sub === "help" || sub === "-h") out(help);
-
-  const apiKey = process.env.AGENTMAIL_API_KEY?.trim();
-  if (!apiKey) fail("AGENTMAIL_API_KEY is not set — AgentMail mail commands require it in the runtime environment");
-
-  const { _, flags } = parse(argv);
-  try {
-    const api = createAgentMailApi(apiKey);
-    const inbox = await bootstrapInbox(api, defaultMailStateFile(paths.beckettDir));
-
-    if (sub === "inbox") out({ inboxId: inbox.inboxId, address: inbox.address });
-
-    if (sub === "send") {
-      const to = typeof flags.to === "string" ? flags.to.trim() : "";
-      const subject = typeof flags.subject === "string" ? flags.subject : "";
-      if (!to || !subject) fail("usage: beckett mail send --to <addr> --subject <s> --body <b> [--body-stdin]");
-      if (flags.body !== undefined && flags["body-stdin"] !== undefined) fail("use either --body or --body-stdin, not both");
-      const body = flags["body-stdin"] ? await Bun.stdin.text() : typeof flags.body === "string" ? flags.body : "";
-      if (!body) fail("mail send requires --body <text> or --body-stdin");
-      const sent = await api.inboxes.messages.send(inbox.inboxId, { to, subject, text: body });
-      out({ messageId: sent.messageId, threadId: sent.threadId });
-    }
-
-    if (sub === "ls") {
-      const rawLimit = flags.limit === undefined ? 20 : Number(flags.limit);
-      if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 100) fail("--limit must be an integer from 1 to 100");
-      const messages = await api.inboxes.messages.list(inbox.inboxId, {
-        limit: rawLimit,
-        ...(flags.unread ? { labels: ["unread"] } : {}),
-      });
-      out(renderMessageTable(messages.messages));
-    }
-
-    if (sub === "read") {
-      const messageId = _[0]?.trim();
-      if (!messageId) fail("usage: beckett mail read <messageId>");
-      out(renderMessage(await api.inboxes.messages.get(inbox.inboxId, messageId)));
-    }
-
-    fail(`unknown: beckett mail ${sub} (use inbox | send | ls | read)`);
-  } catch (err) {
-    fail(safeMailError(err, apiKey));
-  }
-}
-
-// ── memory (in-process) ────────────────────────────────────────────────────────────────
+// ── spend (in-process: the local spend ledger) ─────────────────────────────────────────
 async function runSpend(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { flags } = parse([sub, ...rest].filter((v): v is string => v !== undefined));
@@ -501,77 +215,6 @@ async function runSpend(argv: string[]): Promise<void> {
   }
   const rows = readSpendLedger(paths.spend).filter((row) => since === undefined || Date.parse(row.ts) >= since);
   out({ path: paths.spend, since: since === undefined ? null : new Date(since).toISOString(), ...summarizeSpend(rows) });
-}
-
-async function runMemory(argv: string[]): Promise<void> {
-  const [sub, ...rest] = argv;
-  const memory = createMemory({
-    memoryDir: paths.memoryDir,
-    logger: undefined,
-    git: sub === "remember" || sub === "maintain",
-  });
-  if (sub === "recall") await runRecall(rest);
-  if (sub === "maintain") {
-    // The routine staleness/dedup pass (OPS-121). The daemon runs this daily on its own;
-    // the command is for on-demand runs and inspection. `--dry-run` plans without writing.
-    const { flags } = parse(rest);
-    const report = await memory.maintain({ dryRun: Boolean(flags["dry-run"]) });
-    out(report);
-  }
-  if (sub === "show") {
-    const { flags, _ } = parse(rest);
-    const nodeName = (flags.name ? String(flags.name) : _[0] ?? "").trim();
-    if (!nodeName) fail("usage: beckett memory show <name>");
-    // No audience filter here — `show` is an owner-side inspection tool; it surfaces the
-    // node's visibility + provenance so a caller can SEE the scope, not enforce it.
-    const g = memory.buildGraph();
-    const node = g.nodes.get(nodeName);
-    if (!node || node.phantom) fail(`memory show: no node named '${nodeName}'`);
-    const prov = provenanceOf(node!);
-    out({
-      name: node!.name,
-      type: node!.type,
-      path: node!.path,
-      visibility: prov.visibility,
-      dm_with: prov.dmWith ?? null,
-      source_user: prov.sourceUser ?? null,
-      source_name: prov.sourceName ?? null,
-      provenance: renderProvenanceFrom(prov),
-      description: node!.description,
-      body: node!.body,
-    });
-  }
-  if (sub === "remember") {
-    const { flags } = parse(rest);
-    const op = (flags.op as RememberIntent["op"]) ?? "create";
-    const name = flags.name as string;
-    if (!name) fail("usage: beckett memory remember --name <n> [--op create] [--type t] [--desc d] [--reason r] [--body <text>] [--link to:field,...] [--visibility public|owner|dm] [--dm-with <id>] [--by <userId>] [--by-name <name>]");
-    let body = flags.body as string | undefined;
-    if (flags["body-stdin"]) body = await Bun.stdin.text();
-    const links = flags.link
-      ? String(flags.link).split(",").map((s) => {
-          const [to, field] = s.split(":");
-          return { to: to!, field: field ?? "body" };
-        })
-      : undefined;
-    // Provenance + visibility (multiplayer §7) ride in metadata. Absent flags write nothing,
-    // so on an update the engine's `{ ...existing, ...intent }` merge preserves the prior
-    // scope — never silently broadening it; an explicit flag is the only way to change it.
-    const metadata = provenanceMetadataFromFlags(flags);
-    const node = await memory.remember({
-      op,
-      name,
-      type: flags.type ? (String(flags.type) as NodeType) : undefined,
-      description: flags.desc ? String(flags.desc) : undefined,
-      body,
-      links,
-      metadata: Object.keys(metadata).length ? metadata : undefined,
-      source: (flags.source as RememberIntent["source"]) ?? "conversation",
-      reason: flags.reason ? String(flags.reason) : "remember via CLI",
-    });
-    out({ remembered: node.name, type: node.type, visibility: provenanceOf(node).visibility });
-  }
-  fail(`unknown: beckett memory ${sub ?? ""} (recall | remember | show | maintain)`);
 }
 
 // ── journal (in-process: the private per-ticket worker progress log) ────────────────────────
@@ -635,233 +278,6 @@ async function runIdentity(argv: string[]): Promise<void> {
 // `worker ...` is LIVE control over the running shell's registry; `work ...` reads the durable
 // ~/.beckett/workers/<id>/ records straight off disk, so it answers "what was I doing / did any
 // work get interrupted?" even after a restart, with the shell down, before spinning up anything.
-
-// ── gh (in-process: stateless `gh`/`git` subprocesses, token from env) ────────────────────
-// The token rides GH_TOKEN/the git credential helper per-invocation, so the parent NEVER
-// needs `gh auth login`/`gh auth status` — it just calls `beckett gh ...`. (Spec 07 §3.2)
-async function runGh(argv: string[]): Promise<void> {
-  const [sub, ...rest] = argv;
-  const identity = loadIdentity(config);
-  if (!identity.github.pat) fail("no GITHUB_PAT in ~/.beckett/.env — GitHub is unavailable");
-  const { _, flags } = parse(rest);
-  const dir = flags.dir ? String(flags.dir) : process.cwd();
-  const quiet = { info() {}, warn() {}, debug() {}, error() {}, child() { return quiet; } } as unknown as Logger;
-  const gh = new GitHubCli({
-    pat: identity.github.pat,
-    account: identity.github.account,
-    owner: identity.github.owner,
-    apiBase: identity.github.apiBase,
-    resolveRepoDir: () => dir,
-    logger: quiet,
-  });
-
-  if (sub === "repo" && _[0] === "create") {
-    const name = _[1];
-    if (!name) fail("usage: beckett gh repo create <name> [--public] [--desc <d>] [--source <dir>] [--push]");
-    out(await gh.createRepo({
-      name,
-      private: !flags.public,
-      description: flags.desc ? String(flags.desc) : undefined,
-      sourceDir: flags.source ? String(flags.source) : undefined,
-      push: Boolean(flags.push),
-    }));
-  }
-
-  if (sub === "repo" && (_[0] === "star" || _[0] === "unstar")) {
-    const repo = _[1];
-    if (!repo) fail(`usage: beckett gh repo ${_[0]} <owner/name>`);
-    const starred = _[0] === "star";
-    await gh.setRepoStar(repo, starred);
-    out({ starred, repo });
-  }
-
-  if (sub === "pr") {
-    const action = _[0];
-    const repo = flags.repo ? String(flags.repo) : "";
-    const n = Number(_[1]);
-    if (action === "create") {
-      for (const k of ["repo", "base", "head", "title", "body"]) if (!flags[k]) fail(`gh pr create needs --${k}`);
-      out(await gh.openPR({
-        repo, base: String(flags.base), head: String(flags.head),
-        title: String(flags.title), body: String(flags.body), draft: Boolean(flags.draft),
-      }));
-    }
-    if (action === "merge") {
-      if (!repo || !n) fail("usage: beckett gh pr merge <num> --repo <owner/name> [--strategy squash|merge|rebase]");
-      const strategy = (flags.strategy ? String(flags.strategy) : "squash") as MergeStrategy;
-      await gh.mergePR(repo, n, strategy);
-      out({ merged: true, repo, number: n, strategy });
-    }
-    if (action === "close") {
-      if (!n) fail("usage: beckett gh pr close <num> [--repo <owner/name>]");
-      out(await gh.closePR(repo, n));
-    }
-    if (action === "status") {
-      if (!repo || !n) fail("usage: beckett gh pr status <num> --repo <owner/name>");
-      out({ repo, number: n, green: await gh.isGreen(repo, n) });
-    }
-    if (action === "review") {
-      if (!repo || !n) fail("usage: beckett gh pr review <num> --repo <r> --event APPROVE|REQUEST_CHANGES|COMMENT --body <b>");
-      await gh.reviewPR(repo, n, { event: String(flags.event ?? "COMMENT") as ReviewParams["event"], body: String(flags.body ?? "") });
-      out({ reviewed: true, repo, number: n });
-    }
-    fail("usage: beckett gh pr create|merge|close|status|review <num> --repo <owner/name> ...");
-  }
-
-  if (sub === "push") {
-    if (!flags.repo || !flags.branch) fail("usage: beckett gh push --repo <owner/name> --branch <remoteBranch> [--ref <localRef>] [--dir <d>]");
-    await gh.pushBranch(String(flags.repo), flags.ref ? String(flags.ref) : "HEAD", String(flags.branch));
-    out({ pushed: true, repo: String(flags.repo), branch: String(flags.branch) });
-  }
-
-  fail("usage: beckett gh repo create|star|unstar | pr create|merge|close|status|review | push");
-}
-
-// ── dns (in-process: zone-scoped Cloudflare DNS, token from env) ──────────────────────────
-// Reads CLOUDFLARE_API_TOKEN + CLOUDFLARE_ZONE_ID from ~/.beckett/.env (via loadConfig). DNS
-// is FREE: a record is a reversible proposal you can delete. Short names expand to the zone
-// apex (e.g. `x-tool` → `x-tool.0xbeckett.me`). Output is JSON. (See the `deploy` skill.)
-async function runDns(argv: string[]): Promise<void> {
-  const [sub, ...rest] = argv;
-  const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
-  const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
-  if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare DNS is unavailable");
-  if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to the 0xbeckett.me zone id");
-  const dns = new CfDns({ token, zoneId, logger: quietLogger });
-  const { _, flags } = parse(rest);
-
-  if (sub === "ls") {
-    out(await dns.list({
-      name: flags.name ? String(flags.name) : undefined,
-      type: flags.type ? String(flags.type) : undefined,
-    }));
-  }
-  if (sub === "add") {
-    const name = _[0];
-    if (!name || !flags.content) {
-      fail("usage: beckett dns add <name> --content <c> [--type CNAME] [--proxied|--no-proxied] [--ttl N]");
-    }
-    // proxied defaults to true; --no-proxied or --proxied=false turns it off.
-    const proxied = flags["no-proxied"] ? false : flags.proxied === "false" ? false : true;
-    out(await dns.upsert({
-      name,
-      type: flags.type ? String(flags.type) : "CNAME",
-      content: String(flags.content),
-      proxied,
-      ttl: flags.ttl ? Number(flags.ttl) : undefined,
-    }));
-  }
-  if (sub === "rm") {
-    const name = _[0];
-    if (!name) fail("usage: beckett dns rm <name> [--type T]");
-    out(await dns.remove(name, flags.type ? String(flags.type) : undefined));
-  }
-  fail("usage: beckett dns ls [--name N] [--type T] | add <name> --content <c> [...] | rm <name> [--type T]");
-}
-
-// ── secret (in-process token mint + tiny HTTP endpoint behind the existing tunnel) ──────────
-async function runSecret(argv: string[]): Promise<void> {
-  const [sub, ...rest] = argv;
-  const { flags } = parse(rest);
-  if (sub === "serve") {
-    const port = parsePort(flags.port ?? process.env.BECKETT_SECRET_PORT, DEFAULT_SECRET_PORT);
-    serveSecretIntake({ paths, port, hostname: "127.0.0.1" });
-    process.stderr.write(`beckett secret intake listening on 127.0.0.1:${port}\n`);
-    await new Promise(() => {});
-    return;
-  }
-  if (sub === "request") {
-    if (typeof flags.name !== "string" || !flags.name.trim()) fail("usage: beckett secret request --name <ENV_KEY> [--ttl <minutes>]");
-    const name = validateSecretEnvName(flags.name);
-    const ttlMinutes = parseSecretTtlMinutes(flags.ttl);
-    const port = parsePort(flags.port ?? process.env.BECKETT_SECRET_PORT, DEFAULT_SECRET_PORT);
-    const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
-    const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
-    if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare is unavailable");
-    if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to the 0xbeckett.me zone id");
-    if (!process.env.CLOUDFLARE_TUNNEL_ID) fail("no CLOUDFLARE_TUNNEL_ID in ~/.beckett/.env — the existing named tunnel is unavailable");
-
-    await ensureSecretService(port);
-    const dns = new CfDns({ token, zoneId, logger: quietLogger });
-    const deployer = new TunnelDeployer({
-      tunnelId: process.env.CLOUDFLARE_TUNNEL_ID,
-      dns,
-      logger: quietLogger,
-    });
-    const deployed = await deployer.deploy({ name: SECRET_TUNNEL_NAME, service: `http://localhost:${port}` });
-    const minted = mintSecretRequest({ paths, name, ttlMinutes, baseUrl: deployed.url });
-    out(minted.url);
-  }
-  fail("usage: beckett secret request --name <ENV_KEY> [--ttl <minutes>] | secret serve --port <port>");
-}
-
-// ── deploy (in-process: cloudflared named-tunnel ingress + a CNAME via CfDns) ──────────────
-// Throws a locally-running app up at <name>.0xbeckett.me. Reversible/FREE (a record + ingress
-// rule you can delete) but outward — announce the URL in voice. Requires CLOUDFLARE_TUNNEL_ID
-// (a one-time human prereq); fails clearly if absent. (See the `deploy` skill.)
-async function runDeploy(argv: string[]): Promise<void> {
-  const [sub, ...rest] = argv;
-  const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
-  const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
-  if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare is unavailable");
-  if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to the 0xbeckett.me zone id");
-  const dns = new CfDns({ token, zoneId, logger: quietLogger });
-  const deployer = new TunnelDeployer({
-    tunnelId: process.env.CLOUDFLARE_TUNNEL_ID,
-    dns,
-    logger: quietLogger,
-  });
-  const { _, flags } = parse(rest);
-
-  if (sub === "ls") {
-    out(deployer.list());
-  }
-  if (sub === "rm") {
-    const name = _[0];
-    if (!name) fail("usage: beckett deploy rm <name>");
-    out(await deployer.remove(name));
-  }
-  // `beckett deploy <name> --port <p>` | `--service <url>`  (sub is the name here)
-  if (sub && sub !== "ls" && sub !== "rm") {
-    const name = sub;
-    const service = flags.service
-      ? String(flags.service)
-      : flags.port
-        ? `http://localhost:${Number(flags.port)}`
-        : "";
-    if (!service) fail("usage: beckett deploy <name> --port <p> | --service http://localhost:<p>");
-    out(await deployer.deploy({ name, service }));
-  }
-  fail("usage: beckett deploy <name> --port <p> | deploy ls | deploy rm <name>");
-}
-
-// ── image (in-process: Codex by default; `--model fal-ai/...` routes to fal.ai queue) ─────
-async function runImage(argv: string[]): Promise<void> {
-  const [sub, ...rest] = argv;
-  const video = sub === "video";
-  const { _, flags } = parse((video ? rest : [sub, ...rest]).filter(Boolean) as string[]);
-  const prompt = _.join(" ").trim();
-  if (!prompt)
-    fail(
-      'usage: beckett image [video] "<prompt>" [--out <path>] [--size 1024x1024|1536x1024|1024x1536|auto] [--ref <file[,file]>] [--transparent] [--model <codex-model|fal-ai/...>]',
-    );
-  if (video && !String(flags.model ?? "").startsWith("fal-ai/")) {
-    fail('beckett image video requires a fal video model, e.g. --model "fal-ai/bytedance/seedance/..."');
-  }
-  const refs = flags.ref ? String(flags.ref).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
-  const gen = new CodexImageGen({ imagesDir: paths.imagesDir, logger: quietLogger });
-  out(
-    await gen.generate({
-      prompt,
-      out: flags.out ? String(flags.out) : undefined,
-      size: flags.size ? String(flags.size) : undefined,
-      refs,
-      transparent: flags.transparent === true || flags.transparent === "true",
-      model: flags.model ? String(flags.model) : undefined,
-      media: video ? "video" : undefined,
-    }),
-  );
-}
 
 // ── eval (in-process: provider-agnostic model evals through OpenRouter; no daemon path) ───
 async function runEval(argv: string[]): Promise<void> {
@@ -1863,9 +1279,11 @@ async function runRpc(argv: string[]): Promise<void> {
  * main() served, declared as a registered capability and dispatched with a registry walk.
  * Handler bodies are that cascade's branches moved verbatim into the run functions above —
  * each still owns its historical `parse` of the raw argv tail, so behavior is byte-for-byte
- * identical (the CLI characterization suite pins it). The declared action-classes are
- * metadata only at this layer: the CLI carries no agency gate today, exactly as before —
- * Phase 2 refines them when the capability modules are normalized.
+ * identical (the CLI characterization suite pins it). The formerly-bespoke modules — github,
+ * dns+deploy, image, memory, mail, secret — are normalized onto the common factory shape
+ * (V5 Phase 2, `src/capability/modules/`) and built here by id; their declared action-classes
+ * stay FREE at this layer because the CLI carries no agency gate, exactly as before — the
+ * fine-grained per-action classification lives in `classifyAction` (`agency/index.ts`).
  *
  * Registration order IS the help order: the `beckett` command list is composed from the
  * registry ({@link CapabilityRegistry.composeCliHelp}), never hand-maintained. Capabilities
@@ -1926,22 +1344,7 @@ function buildCliCapabilities(): Capability[] {
       ],
       busCommands: [],
     },
-    {
-      // in-process: AgentMail SDK + ~/.beckett/mail.json durable inbox state
-      id: "mail",
-      summary: "Beckett's persistent AgentMail inbox",
-      actionClass: ActionClass.FREE,
-      cliHelp: "mail inbox|send|ls|read",
-      cliVerbs: [
-        {
-          name: "mail",
-          summary: "create/show the inbox, send, list, and read messages",
-          usage: "beckett mail <inbox|send|ls|read> [options]",
-          run: (argv) => runMail(argv[0], argv.slice(1)),
-        },
-      ],
-      busCommands: [],
-    },
+    createCapability("mail", capabilityDeps),
     {
       id: "access",
       summary: "whitelist inspection + owner-approved grant requests",
@@ -2069,22 +1472,7 @@ function buildCliCapabilities(): Capability[] {
       ],
       busCommands: [],
     },
-    {
-      id: "image",
-      summary: "in-process image/video generation (Codex by default; fal-ai/... routes to fal)",
-      actionClass: ActionClass.FREE,
-      cliHelp: "image",
-      cliVerbs: [
-        {
-          name: "image",
-          summary: "generate or edit a raster image (or a fal video)",
-          usage:
-            'beckett image [video] "<prompt>" [--out <path>] [--size 1024x1024|1536x1024|1024x1536|auto] [--ref <file[,file]>] [--transparent] [--model <codex-model|fal-ai/...>]',
-          run: runImage,
-        },
-      ],
-      busCommands: [],
-    },
+    createCapability("image", capabilityDeps),
     {
       id: "eval",
       summary: "provider-agnostic model evals through OpenRouter; no daemon path",
@@ -2175,90 +1563,11 @@ function buildCliCapabilities(): Capability[] {
       ],
       busCommands: [],
     },
-    {
-      id: "github",
-      summary: "stateless gh/git subprocesses, token from env (Spec 07 §3.2)",
-      actionClass: ActionClass.FREE,
-      cliHelp: "gh repo|pr|push",
-      cliVerbs: [
-        {
-          name: "gh",
-          summary: "repo create/star, PR create/merge/close/status/review, branch push",
-          usage: "beckett gh repo create|star|unstar | pr create|merge|close|status|review | push",
-          run: runGh,
-        },
-      ],
-      busCommands: [],
-    },
-    {
-      id: "dns",
-      summary: "zone-scoped Cloudflare DNS, token from env (see the deploy skill)",
-      actionClass: ActionClass.FREE,
-      cliHelp: "dns ls|add|rm",
-      cliVerbs: [
-        {
-          name: "dns",
-          summary: "list/upsert/remove records on the 0xbeckett.me zone",
-          usage: "beckett dns ls [--name N] [--type T] | add <name> --content <c> [...] | rm <name> [--type T]",
-          run: runDns,
-        },
-      ],
-      busCommands: [],
-    },
-    {
-      id: "deploy",
-      summary: "cloudflared named-tunnel ingress + a CNAME via CfDns (see the deploy skill)",
-      actionClass: ActionClass.FREE,
-      cliHelp: "deploy <name>|ls|rm",
-      cliVerbs: [
-        {
-          name: "deploy",
-          summary: "throw a locally-running app up at <name>.0xbeckett.me",
-          usage: "beckett deploy <name> --port <p> | deploy ls | deploy rm <name>",
-          run: runDeploy,
-        },
-      ],
-      busCommands: [],
-    },
-    {
-      id: "secret",
-      summary: "one-time secret intake: token mint + tiny HTTP endpoint behind the tunnel",
-      actionClass: ActionClass.FREE,
-      cliHelp: "secret request",
-      cliVerbs: [
-        {
-          name: "secret",
-          summary: "mint a one-time secret-intake URL (serve runs the endpoint)",
-          usage: "beckett secret request --name <ENV_KEY> [--ttl <minutes>] | secret serve --port <port>",
-          run: runSecret,
-        },
-      ],
-      busCommands: [],
-    },
-    {
-      id: "memory",
-      summary: "the in-process markdown memory graph",
-      actionClass: ActionClass.FREE,
-      cliHelp:
-        'recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain',
-      cliVerbs: [
-        {
-          // first-class targeted memory retrieval — OPS-121
-          name: "recall",
-          summary: "ranked memory recall for a query, with audience scoping",
-          usage:
-            'beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] [--as-self | --viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] [--json]',
-          run: runRecall,
-        },
-        {
-          name: "memory",
-          summary: "recall | remember | show | maintain over the markdown graph",
-          usage: "beckett memory recall|remember|show|maintain <...>",
-          run: runMemory,
-        },
-      ],
-      busCommands: [],
-    },
+    createCapability("github", capabilityDeps),
+    createCapability("dns", capabilityDeps),
+    createCapability("deploy", capabilityDeps),
+    createCapability("secret", capabilityDeps),
+    createCapability("memory", capabilityDeps),
     {
       id: "spend",
       summary: "summarize the local spend ledger",

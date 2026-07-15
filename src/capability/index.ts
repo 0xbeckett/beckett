@@ -16,19 +16,39 @@
  *     `buildSystemAppend`,
  *   - its own config-schema fragment — today: one monolithic zod block in `config.ts`.
  *
- * Wiring status: the CLI dispatches through this registry (Phase 1a — `cli/beckett.ts::main`
- * walks the capabilities `buildCliCapabilities` registers, and the `beckett` command list is
- * composed from it via {@link CapabilityRegistry.composeCliHelp}); `Concierge.onBusRequest`
- * still behaves byte-for-byte as before pending its own migration. The characterization
- * suites (`src/cli/characterization.test.ts`, `src/concierge/bus-characterization.test.ts`)
+ * Wiring status: BOTH command surfaces dispatch through this registry — the CLI (Phase 1a —
+ * `cli/beckett.ts::main` walks the capabilities `buildCliCapabilities` registers, and the
+ * `beckett` command list is composed from it via {@link CapabilityRegistry.composeCliHelp})
+ * and the control bus (Phase 1b — `Concierge.onBusRequest` walks the capabilities
+ * `buildBusCapabilities` registers). The characterization suites
+ * (`src/cli/characterization.test.ts`, `src/concierge/bus-characterization.test.ts`)
  * snapshot the observable behavior as the contract every phase must keep green.
  */
 
 import type { z } from "zod";
-import type { Config, Logger } from "../types.ts";
+import type { Config, Logger, Paths } from "../types.ts";
 import { ActionClass } from "../types.ts";
 
 export { ActionClass };
+
+/**
+ * What a capability factory gets to build its module (V5 Phase 2) — the same posture as
+ * `DriverFactory` in `drivers/index.ts`: the caller threads the resolved runtime context in,
+ * the module never loads config or resolves paths itself.
+ */
+export interface CapabilityDeps {
+  config: Config;
+  paths: Paths;
+  logger: Logger;
+}
+
+/**
+ * The common factory shape (V5 Phase 2): every normalized capability module (github,
+ * dns+deploy, image, memory, mail, secret — `src/capability/modules/`) exports one of these,
+ * and the surfaces register the built {@link Capability} through the registry instead of
+ * hand-wiring the feature across files.
+ */
+export type CapabilityFactory = (deps: CapabilityDeps) => Capability;
 
 /** The parsed shape of a CLI invocation (what `cli/beckett.ts::parse` produces today). */
 export interface CliArgs {
