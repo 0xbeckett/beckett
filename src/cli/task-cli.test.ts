@@ -69,40 +69,41 @@ test("task create, branch, show, and list share one durable public namespace", a
   ]);
 });
 
-test("task start files the public branch marker into Plane and links the internal ticket", async () => {
+test("task start files the public branch marker into the tracker and links the internal ticket", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-task-cli-start-"));
   dirs.push(dir);
   const createPayloads: Array<Record<string, unknown>> = [];
-  const issues: Array<Record<string, unknown>> = [];
-  const states = ["Backlog", "Todo", "In Progress", "In Review", "Done", "Cancelled"]
-    .map((name, index) => ({ id: `state-${index}`, name }));
+  const tickets: Array<Record<string, unknown>> = [];
+  // A minimal fake of bored's HTTP surface: create files as `todo`; a staff call opens the run.
   const server = Bun.serve({
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
-      if (url.pathname.endsWith("/projects/") && request.method === "GET") {
-        return Response.json({ results: [{ id: "plane-project", name: "beckett", identifier: "OPS" }] });
+      if (url.pathname === "/tickets" && request.method === "GET") {
+        return Response.json({ tickets });
       }
-      if (url.pathname.endsWith("/projects/plane-project/states/") && request.method === "GET") {
-        return Response.json({ results: states });
-      }
-      if (url.pathname.endsWith("/projects/plane-project/work-items/") && request.method === "POST") {
+      if (url.pathname === "/tickets" && request.method === "POST") {
         const createPayload = await request.json() as Record<string, unknown>;
         createPayloads.push(createPayload);
-        const issue = {
-          id: "ticket-uuid",
-          name: createPayload.name,
-          state: createPayload.state,
-          sequence_id: 77,
-          project: "plane-project",
-          description_html: createPayload.description_html,
-          updated_at: "2026-07-12T00:00:00.000Z",
+        const ticket = {
+          ref: "OPS-77",
+          title: createPayload.title,
+          body: createPayload.body,
+          criteria: createPayload.criteria ?? [],
+          state: "todo",
+          needs: createPayload.needs ?? [],
+          createdAt: "2026-07-12T00:00:00.000Z",
+          updatedAt: "2026-07-12T00:00:00.000Z",
         };
-        issues.push(issue);
-        return Response.json(issue);
+        tickets.push(ticket);
+        return Response.json({ ticket });
       }
-      if (url.pathname.endsWith("/projects/plane-project/work-items/") && request.method === "GET") {
-        return Response.json({ results: issues });
+      if (url.pathname === "/tickets/OPS-77" && request.method === "GET") {
+        return Response.json({ ticket: tickets[0] });
+      }
+      if (url.pathname === "/tickets/OPS-77/staff" && request.method === "POST") {
+        tickets[0]!.state = "in_progress";
+        return Response.json({ ok: true });
       }
       return new Response(`unexpected ${request.method} ${url.pathname}`, { status: 404 });
     },
@@ -118,7 +119,7 @@ test("task start files the public branch marker into Plane and links the interna
         "--criteria", "works;tested",
         "--cast", '{"implement":{"harness":"pi","effort":"medium"}}',
       ],
-      { PLANE_INTERNAL_URL: server.url.origin, PLANE_API_TOKEN: "test-token" },
+      { BECKETT_BORED_URL: server.url.origin },
     ) as any;
 
     expect(started).toMatchObject({
@@ -127,12 +128,12 @@ test("task start files the public branch marker into Plane and links the interna
       identifier: "OPS-77",
       state: "in_progress",
     });
-    expect(String(createPayloads[0]?.description_html)).toContain("```beckett-branch\n1.1\n```");
+    expect(String(createPayloads[0]?.body)).toContain("```beckett-branch\n1.1\n```");
     const shown = await cli(dir, ["task", "show", "#1.1"]) as any;
     expect(shown.branch).toMatchObject({
       ref: "#1.1",
       status: "running",
-      ticket: { id: "ticket-uuid", identifier: "OPS-77", board: "ops" },
+      ticket: { id: "OPS-77", identifier: "OPS-77", board: "ops" },
     });
   } finally {
     server.stop(true);
