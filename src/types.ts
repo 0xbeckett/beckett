@@ -694,31 +694,15 @@ export interface Config {
     github_user: string;
     gmail_address: string;
   };
-  /** v3 — Plane ticket-queue config (Spec v3). Secret PLANE_API_TOKEN lives in env, not here. */
-  plane: {
-    base_url: string;
-    workspace_slug: string;
+  /**
+   * Ticket-queue (bored) config. bored's loopback URL rides BECKETT_BORED_URL in env, not here.
+   * A legacy `[plane]` section in config.toml is still accepted and folded into this shape at
+   * load time (the Plane backend itself was removed in OPS-191).
+   */
+  tracker: {
     poll_secs: number;
-    /** Named Plane boards; each scopes one Plane project + its workflow-state name map. */
-    boards: Record<
-      string,
-      {
-        project_slug: string;
-        /** Each Beckett TicketState → its Plane workflow state NAME (client resolves name→UUID). */
-        state_map: {
-          backlog: string;
-          todo: string;
-          /** INT-only live design stage; mapped only on the INT board. */
-          design?: string;
-          /** INT-only parked human design-approval gate; mapped only on the INT board. */
-          design_review?: string;
-          in_progress: string;
-          in_review: string;
-          done: string;
-          cancelled: string;
-        };
-      }
-    >;
+    /** Known board names (`--board` values). bored serves one managed board per instance. */
+    boards: string[];
     /** Board name used when a caller omits --board. */
     default_board: string;
   };

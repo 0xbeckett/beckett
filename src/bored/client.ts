@@ -1,9 +1,9 @@
 /**
  * HTTP adapter for bored's loopback tracker API.
  *
- * bored deliberately exposes a smaller, workflow-oriented API than Plane. This adapter keeps
- * Beckett's dispatch-facing Ticket contract stable: Bored refs become ticket ids, and the
- * serialized cast remains in the ticket body just as it did in Plane descriptions.
+ * bored exposes a small, workflow-oriented API. This adapter keeps Beckett's dispatch-facing
+ * Ticket contract stable: Bored refs are the ticket ids, and the serialized cast lives in the
+ * ticket body (the same fenced-block format the cast module has always used).
  */
 import { z } from "zod";
 import { log } from "../log.ts";
@@ -141,9 +141,9 @@ export class BoredClient {
       autoStaff: false,
     }) as { ticket?: unknown };
     const ticket = this.hydrate(BoredTicketSchema.parse(response.ticket));
-    // Bored files ready tickets as `todo`; unlike Plane it has no mutable backlog column.
-    // Do not turn Plane's omitted/default backlog into a failing write; explicit transitions
-    // still go through the supported workflow verbs below.
+    // Bored files ready tickets as `todo`; it has no mutable backlog column. Do not turn an
+    // omitted/default backlog request into a failing write; explicit transitions still go
+    // through the supported workflow verbs below.
     if (input.state && input.state !== ticket.state) {
       // A direct filing may request a later lifecycle state. Walk the bridge in order so Bored
       // has opened the run before a gate is decided.

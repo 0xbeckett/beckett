@@ -1,8 +1,8 @@
 /**
- * Beckett v3 — cast-block parse/serialize (`src/tracker/cast.ts`)
+ * Beckett — cast-block parse/serialize (`src/tracker/cast.ts`)
  * =======================================================================================
- * Per-stage casting + acceptance criteria are stored INSIDE the Plane issue description so
- * Plane stays the single source of truth (no sidecar DB). The format is:
+ * Per-stage casting + acceptance criteria are stored INSIDE the ticket description so the
+ * tracker stays the single source of truth (no sidecar DB). The format is:
  *
  *   <human prose body…>
  *
@@ -16,7 +16,7 @@
  *   - second criterion
  *
  * {@link parseCast} is the READER (poller/dispatcher hydrating a Ticket); {@link serializeCast}
- * is the WRITER (Concierge filing a ticket via the PlaneClient). They round-trip: parse∘
+ * is the WRITER (Concierge filing a ticket via the tracker client). They round-trip: parse∘
  * serialize preserves casting + criteria + body. External input (the JSON inside the fence)
  * is validated with zod — a malformed block degrades to empty casting, never throws.
  *
@@ -217,7 +217,7 @@ export function parseDepsJson(raw: string): string[] {
 }
 
 /**
- * Split a Plane issue description into its structured halves + prose body.
+ * Split a ticket description into its structured halves + prose body.
  *   - `casting`  — parsed from the first ```beckett-cast``` fenced block (zod-validated).
  *   - `criteria` — the bullet lines under the `## Acceptance criteria` heading.
  *   - `body`     — the description with BOTH the cast block and the criteria section removed,
@@ -305,7 +305,7 @@ function indexOfHeading(text: string): number {
 // =======================================================================================
 
 /**
- * Compose a Plane issue description from prose + structured casting + criteria + deps. Inverse of
+ * Compose a ticket description from prose + structured casting + criteria + deps. Inverse of
  * {@link parseCast}: `parseCast(serializeCast(c, cr, b, d))` recovers `c`, `cr`, `d`, and `b.trim()`.
  * The cast block is omitted when `casting` is empty, the deps block when `blockedBy` is empty, and
  * the criteria section when `criteria` is empty — so a trivial ticket serializes to just its prose.
