@@ -155,7 +155,7 @@ test("an unmentioned message in a user-opened thread is a ticket-grounded direct
 
   expect(turns).toHaveLength(1);
   expect(turns[0]).toContain("SYSTEM (ticket workspace");
-  expect(turns[0]).toContain('Plane ticket(s): "OPS-40"');
+  expect(turns[0]).toContain('tracker ticket(s): "OPS-40"');
   expect(turns[0]).toContain("directed to you even without an @mention");
   expect(turns[0]).toContain("beckett journal"); // the frame points at the private detail pull
   const reply = rec.posts.find((p) => p.content.includes("pass that constraint"));
@@ -221,7 +221,7 @@ test("a ticket filed from inside a workspace grounds that workspace", async () =
     content: "how's it coming?",
     mentionsBot: false,
   });
-  expect(turns[1]).toContain('Plane ticket(s): "OPS-41"');
+  expect(turns[1]).toContain('tracker ticket(s): "OPS-41"');
 });
 
 test("workspace routing survives a Concierge restart", async () => {
@@ -254,7 +254,7 @@ test("workspace routing survives a Concierge restart", async () => {
   });
 
   expect(turns).toHaveLength(1);
-  expect(turns[0]).toContain('Plane ticket(s): "OPS-50"');
+  expect(turns[0]).toContain('tracker ticket(s): "OPS-50"');
 });
 
 test("no legacy migration fabricates threads: old progress-threads.json is simply ignored", async () => {
