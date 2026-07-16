@@ -242,7 +242,12 @@ const ProactivityConfigSchema = z
     // name a model the chosen provider serves.
     triage_provider: z.enum(["claude", "cerebras"]).default("claude"),
     triage_model: z.string().min(1).optional(),
-    triage_threshold: z.number().min(0).max(1).default(0.45),
+    // The cold-interjection bar. Set conservative on purpose: a cold coin-flip should stay
+    // silent, so only a clear, welcome contribution (the classifier's `0.55-0.74` band and up)
+    // gets Beckett to speak into chatter it isn't already part of. Live continuations — people
+    // answering something Beckett just said — never pass through this gate (the engaged lane in
+    // ambient.ts bypasses it), so raising the bar tightens over-interjection without ghosting them.
+    triage_threshold: z.number().min(0).max(1).default(0.55),
     burst_quiet_secs: posInt.default(20),
     // Mid-conversation, waiting out the full cold debounce reads as wandering off — a short
     // lull IS a turn boundary when people are talking WITH Beckett (v4.1.2).

@@ -40,7 +40,7 @@ describe("parseVerdict", () => {
 
   test("parses a clean verdict inside the claude --output-format json envelope", () => {
     const stdout = JSON.stringify({ type: "result", result: VERDICT });
-    expect(calibrateTriageVerdict(parseVerdict(stdout), 0.45).interject).toBe(true);
+    expect(calibrateTriageVerdict(parseVerdict(stdout), 0.55).interject).toBe(true);
   });
 
   test("parses Claude's structured_output envelope when present", () => {
@@ -68,27 +68,43 @@ describe("triage calibration", () => {
   test("derives the boolean and kind from the thresholded score", () => {
     const high = calibrateTriageVerdict(
       { kind: "social", confidence: 0.8, reason: "valuable", addressee: "group" },
-      0.45,
+      0.55,
     );
     expect(high).toMatchObject({ interject: true, kind: "social" });
 
     const low = calibrateTriageVerdict(
-      { kind: "question", confidence: 0.44, reason: "weak", addressee: "group" },
-      0.45,
+      { kind: "question", confidence: 0.54, reason: "weak", addressee: "group" },
+      0.55,
     );
     expect(low).toMatchObject({ interject: false, kind: "none" });
 
     const inconsistent = calibrateTriageVerdict(
       { kind: "none", confidence: 0.9, reason: "no live contribution", addressee: "group" },
-      0.45,
+      0.55,
     );
     expect(inconsistent).toMatchObject({ interject: false, kind: "none" });
   });
 
+  test("the conservative default silences a cold coin-flip but still speaks on clear value-add", () => {
+    // The tightened bar: a borderline welcome contribution (an old `0.45-0.54` speak) now stays
+    // quiet, while a clear, welcome beat at the `0.55` floor still lands.
+    const coinFlip = calibrateTriageVerdict(
+      { kind: "social", confidence: 0.5, reason: "could chime in", addressee: "group" },
+      0.55,
+    );
+    expect(coinFlip).toMatchObject({ interject: false, kind: "none" });
+
+    const welcome = calibrateTriageVerdict(
+      { kind: "question", confidence: 0.55, reason: "specific useful answer", addressee: "group" },
+      0.55,
+    );
+    expect(welcome).toMatchObject({ interject: true, kind: "question" });
+  });
+
   test("production gate rejects other addressees even above threshold", () => {
     const verdict = { interject: true, kind: "question", confidence: 1, reason: "other", addressee: "other" } as const;
-    expect(passesTriageGate(verdict, 0.45)).toBe(false);
-    expect(passesTriageGate({ ...verdict, addressee: "group" }, 0.45)).toBe(true);
+    expect(passesTriageGate(verdict, 0.55)).toBe(false);
+    expect(passesTriageGate({ ...verdict, addressee: "group" }, 0.55)).toBe(true);
   });
 });
 
@@ -232,6 +248,31 @@ describe("OPS-116 addressee granularity — real-transcript regression cases", (
     const prompt = buildTriagePrompt(rubric, burst, []);
     expect(prompt).toContain('"latestSpeaker":{"role":"human","name":"ro"}');
     expect(prompt).toContain("@ssh what's the staging port?");
+  });
+});
+
+describe("OPS-193 tightened cold-interjection bar", () => {
+  // Haiku can't run deterministically in a unit test, so pin the rubric text that teaches the
+  // fast scorer to raise the bar for cold interjections while keeping live continuations answered.
+  const rubric = readFileSync(join(import.meta.dir, "triage.md"), "utf8");
+
+  test("the score bands moved conservative — the welcome floor is 0.55 and the silence band widened", () => {
+    expect(rubric).toContain("`0.55-0.74`");
+    expect(rubric).toContain("`0.30-0.54`: weak, optional, or a cold coin-flip");
+    // The old permissive `0.45-0.69` welcome floor must be gone so borderline cold beats stay quiet.
+    expect(rubric).not.toContain("`0.45-0.69`");
+  });
+
+  test("the rubric names the cold-interjection bar and keeps continuations on the lower bar", () => {
+    expect(rubric).toContain("cold interjection");
+    expect(rubric).toContain("cold coin-flip belongs in the silence band");
+    expect(rubric).toContain("live Beckett thread");
+    expect(rubric).toContain("do not go quiet on a continuation");
+  });
+
+  test("a genuinely funny beat that fits is still a speak signal; a mere opportunity is not", () => {
+    expect(rubric).toContain("genuinely funny, on-point line");
+    expect(rubric).toContain("not the mere opportunity");
   });
 });
 

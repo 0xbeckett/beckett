@@ -355,7 +355,7 @@ export function createTriageClassifier(opts: CreateTriageClassifierOptions): Tri
   const timeoutMs = opts.timeoutMs ?? (opts.provider === "cerebras" ? 15_000 : 30_000);
   const promptPath = opts.promptPath ?? join(import.meta.dir, "triage.md");
   const provider = opts.provider ?? "claude";
-  const threshold = opts.threshold ?? 0.45;
+  const threshold = opts.threshold ?? 0.55;
   let cachedPrompt: string | undefined;
 
   return async (burst, transcript, meta = {}) => {

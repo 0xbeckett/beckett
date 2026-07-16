@@ -196,7 +196,7 @@ if (providerArg !== "claude" && providerArg !== "cerebras") {
 }
 const provider = providerArg;
 const model = arg("model") ?? (provider === "cerebras" ? "gemma-4-31b" : "claude-haiku-4-5");
-const thresholdRaw = arg("threshold") ?? "0.45";
+const thresholdRaw = arg("threshold") ?? "0.55";
 const threshold = Number(thresholdRaw);
 if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
   throw new Error(`triage threshold must be between 0 and 1, got ${JSON.stringify(arg("threshold"))}`);

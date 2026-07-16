@@ -122,7 +122,7 @@ test("proactivity defaults ship disabled and off", () => {
     default_mode: "off",
     triage_provider: "claude",
     triage_model: "claude-haiku-4-5",
-    triage_threshold: 0.45,
+    triage_threshold: 0.55,
     burst_quiet_secs: 20,
     engaged_quiet_secs: 4,
     channel_cooldown_secs: 60,

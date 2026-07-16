@@ -67,7 +67,7 @@ test("status reports enabled=false by default, the default mode, caps, and confi
   const data = res.data as Record<string, any>;
   expect(data.enabled).toBeFalse(); // ships OFF
   expect(data.defaultMode).toBe("suggest");
-  expect(data.caps.triageThreshold).toBe(0.45);
+  expect(data.caps.triageThreshold).toBe(0.55);
   expect(data.caps.maxInterjectionsPerHour).toBe(0); // 0 = disabled: the classifier is the gate
   expect(data.caps.engagedWindowSecs).toBe(180);
   expect(data.caps.engagedQuietSecs).toBe(4);
