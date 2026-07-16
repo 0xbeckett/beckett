@@ -1,6 +1,0 @@
-async function runDiscordDecline(argv: string[]): Promise<void> {
-  // `--channel` disambiguates when several ambient turns are live at once (OPS-80 §9.3).
-  const { flags } = parse(argv);
-  const channelId = flags.channel ? String(flags.channel).trim() : "";
-  await bus("discord.decline", channelId ? { channelId } : {});
-}

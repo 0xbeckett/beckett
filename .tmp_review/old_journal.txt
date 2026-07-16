@@ -1,9 +1,0 @@
-  if (group === "journal") {
-    if (!sub) fail("usage: beckett journal <ticket> [--tail N]");
-    const { flags } = parse(rest);
-    const tail = flags.tail ? Number(flags.tail) : DEFAULT_TAIL_LINES;
-    if (!Number.isInteger(tail) || tail < 0) fail("--tail must be a non-negative integer");
-    const body = readJournal(paths.journalDir, sub, tail);
-    if (body === null) out(`(no journal for ${sub} — no worker has run for it on this host)`);
-    out(body);
-  }
