@@ -73,7 +73,6 @@ function harness(opts: {
   const posts: Post[] = [];
   const deletedMessages: { channelId: string; messageId: string }[] = [];
   let postAttempts = 0;
-  let chilledPosts = 0;
   const gateway = {
     onMessage() {},
     async start() {},
@@ -82,12 +81,10 @@ function harness(opts: {
     async post(channelId: string, text: string, o?: {
       replyToMessageId?: string;
       files?: string[];
-      chill?: boolean;
       singleMessage?: boolean;
       browserQuestion?: boolean;
     }) {
       postAttempts++;
-      if (o?.chill) chilledPosts++;
       if (opts.postDelayMs) await Bun.sleep(opts.postDelayMs);
       if (o?.files?.length && opts.failFilePosts && opts.failFilePosts.remaining > 0) {
         opts.failFilePosts.remaining--;
@@ -138,7 +135,7 @@ function harness(opts: {
   } as unknown as ConciergeSession;
 
   concierge = new Concierge({ config, session, gateway });
-  return { concierge, posts, deletedMessages, dir, postAttempts: () => postAttempts, chilledPosts: () => chilledPosts };
+  return { concierge, posts, deletedMessages, dir, postAttempts: () => postAttempts };
 }
 
 function mention(): IncomingMessage {
@@ -387,7 +384,7 @@ test("browser question instructions stay in the one ledgered Discord message", a
   expect(posts[0]!.text).toEndWith("Reply directly to this message and I'll continue from the same page.");
   expect(posts[0]!.files).toEqual(["/tmp/question.png"]);
   // Atomicity is the GATEWAY's guarantee, not the chunker's: `singleMessage: true` bypasses
-  // chunkReply/chilltext entirely (and `browserQuestion` posts require it — gateway throws
+  // chunkReply entirely (and `browserQuestion` posts require it — gateway throws
   // otherwise), so the suffix can never be split away from the question. The old
   // `chunkReply(text) has length 1` assertion here only held because the pre-fix sentence
   // splitter silently DROPPED the long "context…" run; the lossless splitter would pack this
@@ -551,7 +548,7 @@ test("an unverified bot-reference reply fails closed instead of entering chat co
 });
 
 test("browser completion posts the trusted proof directly without another Concierge turn", async () => {
-  const { concierge, posts, chilledPosts } = harness({ replyViaCli: false, turnText: "must not run" });
+  const { concierge, posts } = harness({ replyViaCli: false, turnText: "must not run" });
   await concierge.notifyQuickResult(browserRun({
     state: "done",
     result: "The account is ready at https://example.test/account.",
@@ -564,7 +561,6 @@ test("browser completion posts the trusted proof directly without another Concie
     replyTo: undefined,
     files: ["/tmp/proof.png"],
   }]);
-  expect(chilledPosts()).toBe(0);
 });
 
 test("browser terminal results survive an offline shutdown and retry after restart", async () => {

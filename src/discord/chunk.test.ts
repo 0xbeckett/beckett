@@ -241,7 +241,7 @@ describe("bubbleGapMs / delaySchedule — flat 2–4s inter-bubble jitter (OPS-8
 
   test("a 4-bubble reply at max jitter is NOT truncated by the budget", () => {
     // 4 bubbles ⇒ 3 gaps ⇒ 12s even at the 4s ceiling: comfortably under the budget, every gap
-    // survives at full 4s (no budget-reached path for a normal chilled reply).
+    // survives at full 4s (no budget-reached path for a normal multi-message reply).
     const gaps = delaySchedule(4, { rand: () => 1 });
     expect(gaps).toEqual([4000, 4000, 4000]);
     expect(gaps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(TOTAL_DELAY_BUDGET_MS);

@@ -50,9 +50,9 @@ const config = loadConfig();
 const paths = buildPaths(config);
 const SOCK = join(paths.beckettDir, "control.sock");
 
-// A chilled reply deliberately waits up to 35s for the optional formatter before falling back to
-// raw Discord text. Keep the acknowledgement budget comfortably beyond that fallback + a gateway
-// reconnect. Operators can tune it for a slow host without changing the generic bus timeout.
+// A Discord reply can wait for native chunk cadence or a gateway reconnect. Keep the
+// acknowledgement budget comfortably beyond that delivery time; operators can tune it for a slow
+// host without changing the generic bus timeout.
 const DEFAULT_DISCORD_REPLY_ACK_TIMEOUT_MS = 75_000;
 
 function discordReplyAckTimeoutMs(): number {

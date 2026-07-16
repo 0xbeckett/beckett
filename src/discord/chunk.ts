@@ -39,7 +39,7 @@ export const MAX_GAP_MS = 4_000;
  * Total added latency ceiling: a pathological many-chunk reply can never take longer than this to
  * finish. Sized well above a normal multi-bubble reply (4 bubbles ⇒ 3 gaps ⇒ ≤12s even when every
  * gap hits the 4s ceiling) so the budget only ever bites a genuinely over-fragmented reply, never
- * an ordinary chilled one.
+ * an ordinary multi-message reply.
  */
 export const TOTAL_DELAY_BUDGET_MS = 16_000;
 

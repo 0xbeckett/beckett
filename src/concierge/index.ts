@@ -2315,7 +2315,7 @@ export class Concierge {
 
   /**
    * Run one Discord reply at most once per payload during the retry window. In-flight work never
-   * expires: while a gateway reconnect or the optional chill formatter is pending, every retry
+   * expires: while a gateway reconnect or native chunked send is pending, every retry
    * waits for the original send. Failed sends are deliberately not retained, so a real failure can
    * be retried normally.
    */
@@ -2817,16 +2817,16 @@ export class Concierge {
                   const opts = {
                     // A native reply is right for an @mention (answering THAT message), but an ambient turn
                     // posts plainly — replying-to an un-addressed message reads as surveillance (§4.4).
-                    ...(claimsActiveTurn && !active!.ambient ? { replyToMessageId: active!.messageId } : {}),
+                    ...(claimsActiveTurn && !active!.ambient
+                      ? { replyToMessageId: active!.messageId, replyToUserId: active!.userId }
+                      : {}),
                     ...(files.length > 0 ? { files } : {}),
-                    // `beckett discord reply` is the Concierge speaking in a channel — chilltext applies.
-                    chill: true,
                   };
                   // A long reply may land as several human-cadence messages (OPS-62); `post` returns the FIRST
                   // message id (the reply-correlation anchor), so `data.messageId` keeps its single-id contract.
                   const messageId = await this.gateway.post(channelId, text, opts);
                   // OPS-80: a CLI reply is Beckett speaking in a channel — into the shared record it goes
-                  // (one entry with the full text, whatever chilltext split it into).
+                  // as one logical entry even when the native chunker sends several messages.
                   this.recordBeckettPost(channelId, text, messageId);
                   if (claimsActiveTurn && active) {
                     active.repliedViaCli = true;
@@ -3201,7 +3201,7 @@ export class Concierge {
     // code-level, no model turn.
     if ((this.pool.sessionFor(m.channelId).queueDepth?.() ?? 0) > 0 || this.turnGate.saturated()) {
       void this.gateway
-        .post(m.channelId, FAST_ACK_TEXT, { replyToMessageId: m.messageId })
+        .post(m.channelId, FAST_ACK_TEXT, { replyToMessageId: m.messageId, replyToUserId: m.userId })
         .catch(() => undefined);
     }
 
@@ -3217,10 +3217,10 @@ export class Concierge {
       // only if the Concierge already answered this turn itself via `beckett discord reply` (then
       // that bus post was the reply, and posting again would duplicate it).
       if (text && !mention.repliedViaCli) {
-        // The Concierge's conversational reply — the one send that opts INTO chilltext (OPS-73).
+        // The Concierge's conversational reply is a native reply, which notifies only its author.
         const ackId = await this.gateway.post(m.channelId, text, {
           replyToMessageId: m.messageId,
-          chill: true,
+          replyToUserId: m.userId,
         });
         // OPS-80: our own reply joins the shared record (a CLI reply was already recorded on the
         // bus path — this covers the auto-post half, so exactly one entry either way).
@@ -3234,6 +3234,7 @@ export class Concierge {
       await this.gateway
         .post(m.channelId, "Something broke on my end — try me again in a sec.", {
           replyToMessageId: m.messageId,
+          replyToUserId: m.userId,
         })
         .catch(() => undefined);
     } finally {
@@ -3444,7 +3445,7 @@ export class Concierge {
       if (claim.repliedViaCli) {
         postedId = claim.ackMessageId; // the bus path already recorded this post (OPS-80)
       } else if (reply) {
-        postedId = await this.gateway.post(turn.channelId, reply, { chill: true });
+        postedId = await this.gateway.post(turn.channelId, reply);
         // OPS-80: an ambient interjection is a real Beckett post in the channel — record it.
         this.recordBeckettPost(turn.channelId, reply, postedId);
       } else {
@@ -3551,8 +3552,8 @@ export class Concierge {
    * exchange the old ring buffer omitted entirely. Called from the three meaningful post sites
    * (mention auto-post, `discord.reply` bus path, ambient post); fast-acks, denials, and error
    * apologies are deliberately NOT recorded (noise — and the session already knows it said them).
-   * Chilltext may split a post into several Discord bubbles; the record keeps ONE entry with the
-   * full text — it is a model-facing record, not a Discord mirror (§8).
+   * The native chunker may split a post into several Discord messages; the record keeps ONE entry
+   * with the full text — it is a model-facing record, not a Discord mirror (§8).
    */
   private recordBeckettPost(channelId: string, text: string, messageId: string | null): void {
     const content = text.trim();
@@ -3803,7 +3804,7 @@ export class Concierge {
     if (now - last < ACCESS_DENY_REPLY_MS) return;
     this.accessDenyAt.set(key, now);
     await this.gateway
-      .post(m.channelId, ACCESS_DENY_TEXT, { replyToMessageId: m.messageId })
+      .post(m.channelId, ACCESS_DENY_TEXT, { replyToMessageId: m.messageId, replyToUserId: m.userId })
       .catch((err) =>
         this.log.warn("access denial reply failed", { userId: m.userId, channelId: m.channelId, err: String(err) }),
       );
@@ -3827,7 +3828,7 @@ export class Concierge {
     const paths = buildPaths(this.config);
     const reply = async (text: string) => {
       await this.gateway
-        .post(m.channelId, text, { replyToMessageId: m.messageId })
+        .post(m.channelId, text, { replyToMessageId: m.messageId, replyToUserId: m.userId })
         .catch((err) => this.log.warn("approval reply failed", { channelId: m.channelId, err: String(err) }));
     };
 

@@ -60,7 +60,6 @@ import { isFederatedPeer, PeerBurstLimiter } from "./federation.ts";
 import { loadPeers } from "./peers.ts";
 import { buildPaths } from "../paths.ts";
 import { chunkReply, delaySchedule, TOTAL_DELAY_BUDGET_MS } from "./chunk.ts";
-import { chillReply } from "./chill.ts";
 import {
   BROWSER_QUESTION_ATTACHMENT_NAME,
   isBrowserQuestionMessage,
@@ -587,9 +586,6 @@ export class DiscordJsGateway implements DiscordGateway {
     if (!client) throw new Error("discord gateway not started");
 
     if (opts?.singleMessage) {
-      if (opts.chill) {
-        throw new Error("single-message Discord posts cannot use chilltext");
-      }
       if (content.length > DISCORD_MAX_CHARS) {
         throw new Error(`single-message Discord post exceeds ${DISCORD_MAX_CHARS} characters`);
       }
@@ -613,33 +609,11 @@ export class DiscordJsGateway implements DiscordGateway {
       }
     }
 
-    // Chilltext compression (OPS-73): collapse the outgoing text into one short casual bubble
-    // via the collector API — but ONLY when the caller opted in with `opts.chill` (the Concierge's
-    // own conversational replies). Everything else — startup banners, fixed acks, mechanical
-    // output — must reach Discord verbatim, so the default is raw. On ANY
-    // failure (unreachable, error, ~35s timeout, overlong text) `chillReply` returns null and the
-    // ORIGINAL text flows through the existing two-stage split unchanged — a transform-in-the-middle
-    // with a hard passthrough; no message is ever dropped. Only the text payload is touched:
-    // reply-to, files, and targeting are applied below as before.
-    const chilled = opts?.chill ? await chillReply(content) : null;
-    if (opts?.chill && content.trim().length > 0) {
-      // Log BOTH outcomes: silent success made "is chilltext even on?" undiagnosable from prod.
-      if (chilled === null) {
-        this.logger.info("chilltext unavailable or skipped; sending original text", { channelId });
-      } else {
-        this.logger.info("chilltext reformatted reply", {
-          channelId,
-          bubbles: chilled.length,
-          rawChars: content.length,
-        });
-      }
-    }
     // Two-stage split: first into natural, human-cadence sections (OPS-62 — paragraph/sentence
     // boundaries, code fences kept whole; a short reply stays ONE section, unchanged), then each
-    // section into hard 2000-char pieces Discord will actually accept. Short text ⇒ one message,
-    // byte-for-byte as before. Chilled bubbles are already message-sized sections; the hard
-    // 2000-char split still guards them.
-    const sections = opts?.singleMessage ? (content ? [content] : []) : (chilled ?? chunkReply(content));
+    // section into hard 2000-char pieces Discord will actually accept. `chunkReply` is the sole
+    // outgoing text shaper; the hard 2000-char split still guards every section.
+    const sections = opts?.singleMessage ? (content ? [content] : []) : chunkReply(content);
     const chunks = opts?.singleMessage ? [...sections] : sections.flatMap((section) => splitDiscordContent(section));
     if (
       chunks.length === 0 &&
@@ -674,7 +648,18 @@ export class DiscordJsGateway implements DiscordGateway {
           });
         }
       }
-      const payload: MessageCreateOptions = chunks[i] ? { content: chunks[i]! } : {};
+      const replyUserId = i === 0 ? discordUserId(opts?.replyToUserId) : undefined;
+      // A native reply already notifies its author. Strip a model-authored duplicate mention so
+      // the same person never gets both an explicit ping and the reply notification.
+      const messageContent = replyUserId ? stripUserMention(chunks[i]!, replyUserId) : chunks[i]!;
+      const payload: MessageCreateOptions = messageContent ? { content: messageContent } : {};
+      // Every outgoing message disables Discord's implicit parsing. A direct reply opts back into
+      // exactly its author's native-reply notification — never roles, @here, @everyone, or another
+      // user named in model text. If the author id is unavailable, the reply stays visually native
+      // but deliberately sends no notification.
+      payload.allowedMentions = replyUserId
+        ? { parse: [], users: [replyUserId], repliedUser: true }
+        : { parse: [] };
       if (i === 0 && opts?.replyToMessageId) {
         // Native reply-to: visual threading without threads + the strong correlation key
         // (Spec 05 §4.2). failIfNotExists=false so a deleted ask doesn't reject the post.
@@ -809,6 +794,16 @@ export function splitDiscordContent(content: string, limit = DISCORD_MAX_CHARS):
   }
   if (rest.length > 0) chunks.push(rest);
   return chunks;
+}
+
+/** Only a real Discord snowflake may become an allowed-mentions user whitelist entry. */
+function discordUserId(value: string | undefined): string | undefined {
+  return value && /^\d{1,20}$/.test(value) ? value : undefined;
+}
+
+/** Avoid a redundant explicit ping when Discord's native reply already notifies this user. */
+function stripUserMention(content: string, userId: string): string {
+  return content.replace(new RegExp(`<@!?${userId}>`, "g"), "").replace(/ {2,}/g, " ").trim();
 }
 
 /** Discord channel/thread names are 1-100 characters. Keep task names stable and single-line. */

@@ -221,11 +221,7 @@ test("a user-created thread is normalized to the onThreadCreate handler; bot/rep
   ]);
 });
 
-/**
- * Chilltext (OPS-73) is strictly OPT-IN per post. The regression this guards: wiring it
- * unconditionally into sendNow chilled the worker logs relayed into progress threads, so the
- * models supervising a ticket saw a one-line casual summary instead of the actual logs.
- */
+/** Capture sendNow payloads without a live Discord connection. */
 function fakeSendableGateway() {
   const sent: string[] = [];
   const payloads: Array<Record<string, unknown>> = [];
@@ -250,39 +246,28 @@ function fakeSendableGateway() {
   return { sent, payloads, callSendNow };
 }
 
-test("sendNow without opts.chill never calls the chilltext API — logs pass through verbatim", async () => {
-  const { sent, callSendNow } = fakeSendableGateway();
-  const realFetch = globalThis.fetch;
-  let fetchCalls = 0;
-  globalThis.fetch = (async () => {
-    fetchCalls++;
-    return new Response(JSON.stringify({ messages: ["chilled"] }), { status: 200 });
-  }) as unknown as typeof fetch;
-  try {
-    const logLine = "[worker wk_1] stage build: 42 tests passed, pushing branch ops-73";
-    await callSendNow(logLine);
-    expect(fetchCalls).toBe(0);
-    expect(sent).toEqual([logLine]);
-  } finally {
-    globalThis.fetch = realFetch;
-  }
+test("direct replies use a native reply and whitelist only its author", async () => {
+  const { payloads, callSendNow } = fakeSendableGateway();
+  const userId = "1151230208783945818";
+  await callSendNow(`@everyone @here <@&987654321> <@${userId}> got it`, {
+    replyToMessageId: "message-1",
+    replyToUserId: userId,
+  });
+
+  expect(payloads).toHaveLength(1);
+  expect(payloads[0]?.reply).toEqual({ messageReference: "message-1", failIfNotExists: false });
+  expect(payloads[0]?.allowedMentions).toEqual({ parse: [], users: [userId], repliedUser: true });
+  // The native reply is the one notification: a model-authored duplicate <@user> is removed.
+  expect(payloads[0]?.content).toBe("@everyone @here <@&987654321> got it");
 });
 
-test("sendNow with opts.chill sends the collector's bubbles instead of the raw text", async () => {
-  const { sent, callSendNow } = fakeSendableGateway();
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
-    new Response(JSON.stringify({ messages: ["short casual version"] }), {
-      status: 200,
-    })) as unknown as typeof fetch;
-  try {
-    await callSendNow("A long formal multi-sentence reply that should be compressed.", {
-      chill: true,
-    });
-    expect(sent).toEqual(["short casual version"]);
-  } finally {
-    globalThis.fetch = realFetch;
-  }
+test("ambient one-liners have no reply or ping, and all implicit mention parsing is disabled", async () => {
+  const { payloads, callSendNow } = fakeSendableGateway();
+  await callSendNow("@everyone @here <@&987654321> <@1151230208783945818> nice");
+
+  expect(payloads).toHaveLength(1);
+  expect(payloads[0]).not.toHaveProperty("reply");
+  expect(payloads[0]?.allowedMentions).toEqual({ parse: [] });
 });
 
 test("sendNow singleMessage keeps a long browser question and screenshot in one API message", async () => {
@@ -317,13 +302,10 @@ test("sendNow singleMessage keeps a long browser question and screenshot in one 
   }
 });
 
-test("sendNow singleMessage rejects transforms and content Discord cannot accept atomically", async () => {
+test("sendNow singleMessage rejects content Discord cannot accept atomically", async () => {
   const { payloads, callSendNow } = fakeSendableGateway();
   await expect(callSendNow("x".repeat(2_001), { singleMessage: true })).rejects.toThrow(
     "exceeds 2000 characters",
-  );
-  await expect(callSendNow("privacy-critical question", { chill: true, singleMessage: true })).rejects.toThrow(
-    "cannot use chilltext",
   );
   await expect(callSendNow("privacy-critical question", { browserQuestion: true })).rejects.toThrow(
     "one atomic Discord message",

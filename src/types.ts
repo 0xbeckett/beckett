@@ -276,25 +276,21 @@ export interface ThreadCreated {
 /** Options for posting a reply (ambient model — always the origin channel, Spec 05 §3). */
 export interface ReplyOptions {
   replyToMessageId?: string; // native reply-to for correlation
+  /** Discord author id of replyToMessageId; enables only that person's native-reply notification. */
+  replyToUserId?: string;
   files?: string[]; // local file paths to attach (image-only posts OK)
   embeds?: DiscordEmbed[]; // rich status cards; never carry raw diffs or secret account data
   buttons?: DiscordLinkButton[]; // URL-only actions such as Open PR / Checks / Comments
   /**
    * Send content and attachments in exactly one Discord API message. This bypasses text
-   * transforms, human-cadence splitting, and inter-message delays; over-2000 content and
-   * `chill` are rejected instead of silently weakening the one-message guarantee.
+   * transforms, human-cadence splitting, and inter-message delays; over-2000 content is
+   * rejected instead of silently weakening the one-message guarantee.
    */
   singleMessage?: boolean;
   /** Mark an atomic screenshot question so replies remain recognizable across daemon crashes. */
   browserQuestion?: boolean;
   /** Fail immediately instead of queueing when offline; used for expiring browser questions. */
   queueIfOffline?: boolean;
-  /**
-   * Opt IN to chilltext compression (OPS-73) for this post. Only the Concierge's own
-   * conversational replies set this — mechanical output (worker logs relayed into progress
-   * threads, startup banners, fixed acks) must reach Discord verbatim, so the default is raw.
-   */
-  chill?: boolean;
 }
 
 export interface DiscordEmbedField {
