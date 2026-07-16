@@ -111,7 +111,7 @@ if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
   }
   echo "== annotated tag ${VERSION} already exists =="
 else
-  git tag -a "${VERSION}" -m "beckett: release ${VERSION}"
+  git -c tag.gpgSign=false tag -a "${VERSION}" -m "beckett: release ${VERSION}"
   echo "== created annotated tag ${VERSION} =="
 fi
 # The fully-qualified refspec is accepted by git/GitHub and guarantees the release tag reaches
