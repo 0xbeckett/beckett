@@ -85,8 +85,10 @@ export async function lastDeployedVersion(repoRoot: string = defaultRepoRoot()):
 
 /**
  * Commit subjects merged on HEAD since version `base` (its `vX.Y.Z` tag), newest first, capped at
- * `max`. When the tag is absent (never deployed / history rewrite) this degrades to the full recent
- * history so the classifier still has something to look at, rather than throwing or going blank.
+ * `max`. With a `base` tag, an EMPTY result is meaningful — it means nothing new since the last
+ * deploy — so it's returned as-is (the caller no-ops rather than re-bumping). Only when there's no
+ * base tag at all (a first-ever deploy) does this degrade to the recent history so the classifier
+ * has something to look at instead of going blank.
  */
 export async function commitsSinceVersion(
   repoRoot: string,
@@ -95,11 +97,9 @@ export async function commitsSinceVersion(
 ): Promise<string[]> {
   const toList = (out: string): string[] => out.split("\n").map((s) => s.trim()).filter(Boolean);
   if (base) {
-    const ranged = await runGit(repoRoot, ["log", `v${base}..HEAD`, "--pretty=%s", "-n", String(max)]);
-    const subjects = toList(ranged);
-    if (subjects.length > 0) return subjects;
+    return toList(await runGit(repoRoot, ["log", `v${base}..HEAD`, "--pretty=%s", "-n", String(max)]));
   }
-  // No tag / bad range / nothing since it: fall back to the most recent history.
+  // No tag (first deploy): everything on HEAD is "new" — take the most recent history.
   return toList(await runGit(repoRoot, ["log", "--pretty=%s", "-n", String(max)]));
 }
 

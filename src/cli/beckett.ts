@@ -250,12 +250,21 @@ async function runVersion(argv: string[]): Promise<void> {
   const { flags } = parse(rest);
   const s = await computeBumpSuggestion(repoRoot);
 
+  const levelFlags = (["major", "minor", "patch"] as const).filter((l) => flags[l] === true);
+  if (levelFlags.length > 1) fail("pick at most one of --major / --minor / --patch");
+  const explicit = typeof flags.set === "string" || levelFlags.length > 0;
+
+  // Nothing merged since the last deployed tag and no explicit override → clean no-op. A redeploy of
+  // the same code must not spuriously bump. An explicit level/version still goes through (that's the
+  // owner deliberately re-versioning, e.g. a manual major).
+  if (!explicit && s.fromTag && s.commits.length === 0) {
+    out({ previous: s.base, version: s.base, level: "none", committed: false, note: `no new commits since v${s.base} — nothing to bump` });
+  }
+
   // Resolve the owner's choice. Explicit level/version flags are an override (and the ONLY path to a
   // major); `--yes` accepts the auto suggestion; otherwise, on a TTY, prompt; off a TTY, refuse to
   // silently ship (the deploy step passes a flag or --yes).
   let override: BumpLevel | string | undefined;
-  const levelFlags = (["major", "minor", "patch"] as const).filter((l) => flags[l] === true);
-  if (levelFlags.length > 1) fail("pick at most one of --major / --minor / --patch");
   if (typeof flags.set === "string") override = flags.set;
   else if (levelFlags[0]) override = levelFlags[0];
   else if (flags.yes === true) override = undefined; // accept the suggestion

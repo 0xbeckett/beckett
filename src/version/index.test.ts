@@ -116,6 +116,17 @@ describe("git-backed base + commits + suggestion", () => {
     ]);
   });
 
+  test("no new commits since the tag → empty list (a redeploy must not re-bump)", async () => {
+    const redeploy = mkdtempSync(join(tmpdir(), "beckett-verrepo3-"));
+    mkdirSync(redeploy, { recursive: true });
+    await initRepo(redeploy);
+    writeFileSync(join(redeploy, "package.json"), `{\n  "version": "4.2.0"\n}\n`);
+    await git(["add", "-A"], redeploy);
+    await git(["commit", "-q", "-m", "release v4.2.0"], redeploy);
+    await tag(redeploy, "v4.2.0"); // HEAD === the tag: nothing merged since
+    expect(await commitsSinceVersion(redeploy, "4.2.0")).toEqual([]);
+  });
+
   test("computeBumpSuggestion → MINOR from the feature commit, base = the tag", async () => {
     const s = await computeBumpSuggestion(repo);
     expect(s.base).toBe("4.1.2");
