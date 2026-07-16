@@ -26,16 +26,12 @@ DOWNLOADED_INSTALLER=""
 INPUT_DISCORD_TOKEN="${BECKETT_DISCORD_TOKEN:-}"
 INPUT_DISCORD_OWNER_ID="${BECKETT_DISCORD_OWNER_ID:-}"
 INPUT_DISCORD_OWNER_NAME="${BECKETT_DISCORD_OWNER_NAME:-}"
-INPUT_PLANE_API_TOKEN="${BECKETT_PLANE_API_TOKEN:-}"
 INPUT_GITHUB_PAT="${BECKETT_GITHUB_PAT:-}"
 INPUT_GITHUB_USER="${BECKETT_GITHUB_USER:-}"
-INPUT_PLANE_URL="${BECKETT_PLANE_URL:-}"
-INPUT_PLANE_WORKSPACE="${BECKETT_PLANE_WORKSPACE:-}"
 INPUT_ENABLE_PI="${BECKETT_ENABLE_PI:-}"
 INPUT_ENABLE_CODEX="${BECKETT_ENABLE_CODEX:-}"
 unset BECKETT_DISCORD_TOKEN BECKETT_DISCORD_OWNER_ID BECKETT_DISCORD_OWNER_NAME
-unset BECKETT_PLANE_API_TOKEN BECKETT_GITHUB_PAT
-unset BECKETT_GITHUB_USER BECKETT_PLANE_URL BECKETT_PLANE_WORKSPACE
+unset BECKETT_GITHUB_PAT BECKETT_GITHUB_USER
 unset BECKETT_ENABLE_PI BECKETT_ENABLE_CODEX
 
 log() {
@@ -78,9 +74,8 @@ Options:
   -h, --help          Show this help
 
 Non-interactive configuration can be supplied with:
-  BECKETT_DISCORD_TOKEN, BECKETT_DISCORD_OWNER_ID, BECKETT_PLANE_API_TOKEN,
-  BECKETT_DISCORD_OWNER_NAME, BECKETT_GITHUB_PAT, BECKETT_GITHUB_USER, BECKETT_PLANE_URL,
-  BECKETT_PLANE_WORKSPACE, BECKETT_ENABLE_PI, and BECKETT_ENABLE_CODEX.
+  BECKETT_DISCORD_TOKEN, BECKETT_DISCORD_OWNER_ID, BECKETT_DISCORD_OWNER_NAME,
+  BECKETT_GITHUB_PAT, BECKETT_GITHUB_USER, BECKETT_ENABLE_PI, and BECKETT_ENABLE_CODEX.
 
 Secrets are never accepted as command-line flags.
 EOF
@@ -493,11 +488,7 @@ prompt_bool() {
 }
 
 validate_instance_config() {
-  local plane_url="$1"
-  local workspace="$2"
-  local github_user="$3"
-  [[ "${plane_url}" =~ ^https?://[A-Za-z0-9._:/-]+$ ]] || die "Plane URL must be an http(s) URL"
-  [[ "${workspace}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || die "Plane workspace slug is invalid"
+  local github_user="$1"
   if [ "${github_user}" != "CHANGE_ME" ]; then
     [[ "${github_user}" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || die "GitHub username is invalid"
   fi
@@ -505,11 +496,9 @@ validate_instance_config() {
 
 write_initial_config() {
   local path="$1"
-  local plane_url="$2"
-  local workspace="$3"
-  local github_user="$4"
-  local enable_pi="$5"
-  local enable_codex="$6"
+  local github_user="$2"
+  local enable_pi="$3"
+  local enable_codex="$4"
   local tmp
   tmp="$(mktemp)"
   TEMP_PATHS+=("${tmp}")
@@ -527,9 +516,6 @@ write_initial_config() {
     printf 'spend = "%s/spend.jsonl"\n\n' "${BECKETT_STATE}"
     printf '[identity]\n'
     printf 'github_user = "%s"\n\n' "${github_user}"
-    printf '[plane]\n'
-    printf 'base_url = "%s"\n' "${plane_url%/}"
-    printf 'workspace_slug = "%s"\n\n' "${workspace}"
     printf '[github.activity]\n'
     printf 'enabled = false\n\n'
     printf '[harness.pi]\n'
@@ -700,19 +686,6 @@ sync_github_org() {
   fi
 }
 
-sync_plane_internal_url() {
-  local env_path="$1"
-  local config_path="$2"
-  local web_url internal_url
-  web_url="$(toml_string_value "${config_path}" plane base_url)"
-  internal_url="$(env_value "${env_path}" PLANE_INTERNAL_URL)"
-  if [ "${web_url%/}" = "https://app.plane.so" ] && [ -z "${internal_url}" ]; then
-    upsert_env "${env_path}" PLANE_INTERNAL_URL "https://api.plane.so"
-  elif [ "${web_url%/}" != "https://app.plane.so" ] && [ "${internal_url%/}" = "https://api.plane.so" ]; then
-    upsert_env "${env_path}" PLANE_INTERNAL_URL ""
-  fi
-}
-
 config_bool() {
   local section="$1"
   local fallback="$2"
@@ -724,19 +697,11 @@ config_bool() {
 
 update_existing_config() {
   local path="$1"
-  local plane_url workspace github_user enable_pi enable_codex
-  plane_url="$(toml_string_value "${path}" plane base_url)"
-  workspace="$(toml_string_value "${path}" plane workspace_slug)"
+  local github_user enable_pi enable_codex
   github_user="$(toml_string_value "${path}" identity github_user)"
   enable_pi="$(config_bool harness.pi true "${path}")"
   enable_codex="$(config_bool harness.codex false "${path}")"
 
-  if [ -z "${INPUT_PLANE_URL}" ] && installer_managed_file "${path}" &&
-    [ "${plane_url%/}" = "https://api.plane.so" ]; then
-    plane_url="https://app.plane.so"
-  fi
-  plane_url="${INPUT_PLANE_URL:-${plane_url:-https://app.plane.so}}"
-  workspace="${INPUT_PLANE_WORKSPACE:-${workspace:-beckett}}"
   github_user="${INPUT_GITHUB_USER:-${github_user:-CHANGE_ME}}"
   if [ "${github_user}" = "CHANGE_ME" ]; then
     github_user="$(prompt_value "GitHub username" "CHANGE_ME")"
@@ -748,9 +713,7 @@ update_existing_config() {
     enable_codex="$(normalize_bool "${INPUT_ENABLE_CODEX}" || die "BECKETT_ENABLE_CODEX must be true or false")"
   fi
 
-  validate_instance_config "${plane_url}" "${workspace}" "${github_user}"
-  upsert_toml_literal "${path}" plane base_url "\"${plane_url%/}\""
-  upsert_toml_literal "${path}" plane workspace_slug "\"${workspace}\""
+  validate_instance_config "${github_user}"
   upsert_toml_literal "${path}" identity github_user "\"${github_user}\""
   upsert_toml_literal "${path}" harness.pi enabled "${enable_pi}"
   upsert_toml_literal "${path}" harness.codex enabled "${enable_codex}"
@@ -770,15 +733,11 @@ configure_instance() {
 
   if [ ! -f "${config_path}" ]; then
     log "creating instance configuration"
-    local plane_url workspace github_user enable_pi enable_codex
-    plane_url="${INPUT_PLANE_URL}"
-    workspace="${INPUT_PLANE_WORKSPACE}"
+    local github_user enable_pi enable_codex
     github_user="${INPUT_GITHUB_USER}"
     enable_pi="$(normalize_bool "${INPUT_ENABLE_PI:-true}" || die "BECKETT_ENABLE_PI must be true or false")"
     enable_codex="$(normalize_bool "${INPUT_ENABLE_CODEX:-false}" || die "BECKETT_ENABLE_CODEX must be true or false")"
 
-    [ -n "${plane_url}" ] || plane_url="$(prompt_value "Plane web URL" "https://app.plane.so")"
-    [ -n "${workspace}" ] || workspace="$(prompt_value "Plane workspace slug" "beckett")"
     [ -n "${github_user}" ] || github_user="$(prompt_value "GitHub username" "CHANGE_ME")"
     if [ -z "${INPUT_ENABLE_PI}" ]; then
       enable_pi="$(prompt_bool "Enable the Pi worker" "true")"
@@ -787,8 +746,8 @@ configure_instance() {
       enable_codex="$(prompt_bool "Enable the Codex worker" "false")"
     fi
 
-    validate_instance_config "${plane_url}" "${workspace}" "${github_user}"
-    write_initial_config "${config_path}" "${plane_url}" "${workspace}" "${github_user}" "${enable_pi}" "${enable_codex}"
+    validate_instance_config "${github_user}"
+    write_initial_config "${config_path}" "${github_user}" "${enable_pi}" "${enable_codex}"
   else
     as_beckett chmod 0600 "${config_path}"
     previous_github_user="$(toml_string_value "${config_path}" identity github_user)"
@@ -800,7 +759,7 @@ configure_instance() {
     local env_tmp
     env_tmp="$(mktemp)"
     TEMP_PATHS+=("${env_tmp}")
-    printf '# Created by the Beckett installer. Keep this file private.\nDISCORD_TOKEN=\nDISCORD_OWNER_ID=\nDISCORD_OWNER_NAME=\nPLANE_API_TOKEN=\nGITHUB_PAT=\nBECKETT_GH_ORG=\nPLANE_INTERNAL_URL=\nBECKETT_STARTUP_CHANNEL_ID=disabled\n' > "${env_tmp}"
+    printf '# Created by the Beckett installer. Keep this file private.\nDISCORD_TOKEN=\nDISCORD_OWNER_ID=\nDISCORD_OWNER_NAME=\nGITHUB_PAT=\nBECKETT_GH_ORG=\nBECKETT_BORED_URL=\nBECKETT_STARTUP_CHANNEL_ID=disabled\n' > "${env_tmp}"
     chown "${BECKETT_USER}:${BECKETT_USER}" "${env_tmp}"
     as_beckett install -m 0600 "${env_tmp}" "${env_path}"
   else
@@ -811,11 +770,10 @@ configure_instance() {
   fi
 
   local key supplied existing
-  for key in DISCORD_TOKEN DISCORD_OWNER_ID PLANE_API_TOKEN GITHUB_PAT; do
+  for key in DISCORD_TOKEN DISCORD_OWNER_ID GITHUB_PAT; do
     case "${key}" in
       DISCORD_TOKEN) supplied="${INPUT_DISCORD_TOKEN}" ;;
       DISCORD_OWNER_ID) supplied="${INPUT_DISCORD_OWNER_ID}" ;;
-      PLANE_API_TOKEN) supplied="${INPUT_PLANE_API_TOKEN}" ;;
       GITHUB_PAT) supplied="${INPUT_GITHUB_PAT}" ;;
     esac
     existing="$(env_value "${env_path}" "${key}")"
@@ -842,7 +800,6 @@ configure_instance() {
   # Project checkouts use this value independently from identity.github_user. Without the
   # portable override, a third-party install would still try to publish into the 0xbeckett org.
   sync_github_org "${env_path}" "${config_path}" "${previous_github_user}"
-  sync_plane_internal_url "${env_path}" "${config_path}"
 }
 
 install_cli_shim() {
@@ -858,7 +815,7 @@ install_cli_shim() {
 readiness_problems() {
   local env_path="${BECKETT_STATE}/.env"
   local key value
-  for key in DISCORD_TOKEN DISCORD_OWNER_ID PLANE_API_TOKEN GITHUB_PAT; do
+  for key in DISCORD_TOKEN DISCORD_OWNER_ID GITHUB_PAT; do
     value="$(env_value "${env_path}" "${key}")"
     [ -n "${value}" ] || printf '%s\n' "missing ${key} in ${env_path}"
   done
@@ -883,18 +840,15 @@ readiness_problems() {
   fi
 }
 
-preflight_plane() {
-  log "provisioning and validating every configured Plane board"
-  local boards board
-  boards="$(as_beckett_in_repo "${BECKETT_HOME}/.bun/bin/bun" -e \
-    'const { loadConfig } = await import("./src/config.ts"); console.log(Object.keys(loadConfig().plane.boards).join("\\n"));')"
-  [ -n "${boards}" ] || die "no Plane boards are configured"
-  while IFS= read -r board; do
-    [ -n "${board}" ] || continue
-    if ! as_beckett "${BECKETT_HOME}/.local/bin/beckett" ticket list --board "${board}" >/dev/null; then
-      die "Plane board '${board}' could not be provisioned; check ${BECKETT_STATE}/config.toml and PLANE_API_TOKEN, then rerun the installer"
-    fi
-  done <<< "${boards}"
+preflight_tracker() {
+  log "validating the bored tracker connection"
+  local board
+  board="$(as_beckett_in_repo "${BECKETT_HOME}/.bun/bin/bun" -e \
+    'const { loadConfig } = await import("./src/config.ts"); console.log(loadConfig().tracker.default_board);')"
+  [ -n "${board}" ] || die "no tracker board is configured"
+  if ! as_beckett "${BECKETT_HOME}/.local/bin/beckett" ticket list --board "${board}" >/dev/null; then
+    die "the bored tracker is unreachable; ensure the bored service is running (BECKETT_BORED_URL, default http://127.0.0.1:7770), then rerun the installer"
+  fi
 }
 
 install_units() {
@@ -919,7 +873,7 @@ install_units() {
     return
   fi
 
-  preflight_plane
+  preflight_tracker
   log "configuration is complete; enabling and starting Beckett"
   as_beckett env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
     "${BECKETT_REPO}/deploy/install.sh"
