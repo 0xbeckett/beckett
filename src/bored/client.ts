@@ -70,7 +70,7 @@ function dispatcherBridgeFlow(): Record<string, unknown> {
         kind: "gate", by: "human", onPass: "beckett_review", onFail: "park", maxFails: 1, maxVisits: 1,
       },
       beckett_review: {
-        kind: "gate", by: "human", onPass: "done", onFail: "park", maxFails: 1, maxVisits: 1,
+        kind: "gate", by: "human", onPass: "done", onFail: "beckett_implement", maxFails: 3, maxVisits: 3,
       },
     },
   };
@@ -161,9 +161,17 @@ export class BoredClient {
     // Bored's state is a workflow projection, not a mutable column. The bridge flow above
     // translates the dispatcher's lifecycle writes into Bored's documented workflow verbs.
     switch (state) {
-      case "in_progress":
-        await this.req("POST", `${this.ticketPath(id)}/staff`, {});
+      case "in_progress": {
+        // A reviewer sending work back for rework is Bored's `fail` edge, while an unstaffed
+        // todo ticket starts at the entry gate. Read once to choose the documented verb.
+        const current = await this.getIssue(id);
+        if (current?.state === "in_review") {
+          await this.req("POST", `${this.ticketPath(id)}/gate`, { node: "beckett_review", verdict: "fail" });
+        } else {
+          await this.req("POST", `${this.ticketPath(id)}/staff`, {});
+        }
         break;
+      }
       case "in_review":
         await this.req("POST", `${this.ticketPath(id)}/gate`, { node: "beckett_implement", verdict: "pass" });
         break;
