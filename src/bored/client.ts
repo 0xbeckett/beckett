@@ -114,8 +114,10 @@ export class BoredClient {
       needs: input.blockedBy ?? [],
       ...(input.parentId ? { parent: input.parentId } : {}),
       ...(input.originChannel ? { originChannel: input.originChannel } : {}),
-      // Beckett's dispatcher owns staffing while this additive adapter is selected. Letting
-      // bored auto-staff would launch a second worker for the same ticket.
+      // The bridge flow makes bored's projected state follow the existing dispatcher without
+      // launching a second worker. Each human gate is advanced by setState below.
+      flow: dispatcherBridgeFlow(),
+      stateMap: { beckett_implement: "in_progress", beckett_review: "in_review" },
       autoStaff: false,
     }) as { ticket?: unknown };
     const ticket = this.hydrate(BoredTicketSchema.parse(response.ticket));
@@ -134,7 +136,10 @@ export class BoredClient {
         await this.req("POST", `${this.ticketPath(id)}/staff`, {});
         break;
       case "in_review":
-        await this.req("POST", `${this.ticketPath(id)}/pause`, {});
+        await this.req("POST", `${this.ticketPath(id)}/gate`, { node: "beckett_implement", verdict: "pass" });
+        break;
+      case "done":
+        await this.req("POST", `${this.ticketPath(id)}/gate`, { node: "beckett_review", verdict: "pass" });
         break;
       case "cancelled":
         await this.req("POST", `${this.ticketPath(id)}/cancel`, {});
