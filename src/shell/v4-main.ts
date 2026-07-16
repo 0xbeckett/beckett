@@ -31,8 +31,8 @@ import { log as rootLog } from "../log.ts";
 import type { Config, Harness, Logger } from "../types.ts";
 import type { Ticket } from "../plane/types.ts";
 import { projectSlug } from "../plane/cast.ts";
-import { createPlaneClient, type PlaneClient } from "../plane/client.ts";
-import { createPlanePoller, type PlanePoller } from "../plane/poll.ts";
+import { createTrackerClient, trackerKind, type TrackerClient } from "../tracker/client.ts";
+import { createTrackerPoller, type TrackerPoller } from "../tracker/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
 import { createGitHubPrPoller, type GitHubPrPoller } from "../github/poll.ts";
 import { createGitHubActivityPoller, type GitHubActivityPoller } from "../github/activity.ts";
@@ -86,10 +86,10 @@ export const BECKETT_VERSION: string = (pkg as { version: string }).version;
 interface BootedSystem {
   config: Config;
   logger: Logger;
-  client: PlaneClient;
-  clients: Map<string, PlaneClient>;
-  poller: PlanePoller;
-  pollers: Map<string, PlanePoller>;
+  client: TrackerClient;
+  clients: Map<string, TrackerClient>;
+  poller: TrackerPoller;
+  pollers: Map<string, TrackerPoller>;
   prPoller: GitHubPrPoller | null;
   activityPoller: GitHubActivityPoller | null;
   mailPoller: AgentMailPoller | null;
@@ -120,18 +120,20 @@ async function boot(): Promise<BootedSystem> {
     projectsRoot: PROJECTS_ROOT,
   });
 
-  if (!process.env.PLANE_API_TOKEN) {
+  const activeTracker = trackerKind();
+  if (activeTracker === "plane" && !process.env.PLANE_API_TOKEN) {
     logger.warn("PLANE_API_TOKEN is not set — Plane API calls will fail until it is provided");
   }
 
-  // 2. PlaneClient — one board-scoped HTTP boundary per configured Plane board.
-  const clients = new Map<string, PlaneClient>();
-  for (const board of Object.keys(config.plane.boards)) {
-    clients.set(board, createPlaneClient({ config, board, logger: logger.child(`plane.client.${board}`) }));
+  // Bored has one managed tracker board; Plane retains its exact per-board setup by default.
+  const activeBoards = activeTracker === "bored" ? [config.plane.default_board] : Object.keys(config.plane.boards);
+  const clients = new Map<string, TrackerClient>();
+  for (const board of activeBoards) {
+    clients.set(board, createTrackerClient({ config, board, logger: logger.child(`${activeTracker}.client.${board}`) }));
   }
   const client = clients.get(config.plane.default_board) ?? clients.values().next().value!;
-  const clientByProjectId = new Map<string, PlaneClient>();
-  const pollerByProjectId = new Map<string, PlanePoller>();
+  const clientByProjectId = new Map<string, TrackerClient>();
+  const pollerByProjectId = new Map<string, TrackerPoller>();
 
   // Deterministic GitHub publishing: when a ticket reaches done, its project repo is pushed to
   // `0xbeckett/<slug>` (public) so the links Beckett hands out actually resolve — instead of
@@ -241,13 +243,13 @@ async function boot(): Promise<BootedSystem> {
   //    snapshot first (so we don't replay history) then self-schedules every poll_secs.
   //    Constructed BEFORE the dispatcher so the dispatcher's instant-advance path (issue #33)
   //    can reference the correct board poller.
-  const pollers = new Map<string, PlanePoller>();
+  const pollers = new Map<string, TrackerPoller>();
   for (const [board, boardClient] of clients) {
     pollers.set(
       board,
-      createPlanePoller({
+      createTrackerPoller({
         client: boardClient,
-        logger: logger.child(`plane.poll.${board}`),
+        logger: logger.child(`${activeTracker}.poll.${board}`),
         pollSecs: config.plane.poll_secs,
         commentCursorPath: join(
           beckettDir,

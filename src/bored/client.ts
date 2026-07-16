@@ -119,8 +119,10 @@ export class BoredClient {
       autoStaff: false,
     }) as { ticket?: unknown };
     const ticket = this.hydrate(BoredTicketSchema.parse(response.ticket));
-    const requested = input.state ?? "backlog";
-    if (requested !== ticket.state) await this.setState(ticket.id, requested);
+    // Bored files ready tickets as `todo`; unlike Plane it has no mutable backlog column.
+    // Do not turn Plane's omitted/default backlog into a failing write; explicit transitions
+    // still go through the supported workflow verbs below.
+    if (input.state && input.state !== ticket.state) await this.setState(ticket.id, input.state);
     return (await this.getIssue(ticket.id)) ?? ticket;
   }
 

@@ -789,8 +789,8 @@ async function runTask(argv: string[]): Promise<void> {
       : isIntBoard
         ? "design"
         : "in_progress";
-    const { createPlaneClient } = await import("../plane/client.ts");
-    const client = createPlaneClient({ config, board, logger: quietLogger });
+    const { createTrackerClient } = await import("../tracker/client.ts");
+    const client = createTrackerClient({ config, board, logger: quietLogger });
     const started = await startTaskBranch(store, client, {
       branchRef,
       board,
@@ -888,13 +888,13 @@ async function runTicket(argv: string[]): Promise<void> {
     const path = flags.path ? String(flags.path) : join(paths.eventsDir, "dispatch.jsonl");
     out(formatDispatchTrace(readDispatchEvents(path, id), id));
   }
-  const { createPlaneClient } = await import("../plane/client.ts");
+  const { createTrackerClient } = await import("../tracker/client.ts");
   if (flags.intensive && flags.board && String(flags.board).toLowerCase() !== "int") {
     fail("--intensive selects the INT board; do not combine it with a different --board");
   }
   const board = cliBoardName(flags.intensive ? "int" : flags.board);
   const isIntBoard = board.toLowerCase() === "int";
-  const client = createPlaneClient({ config, board, logger: quietLogger });
+  const client = createTrackerClient({ config, board, logger: quietLogger });
 
   /** A hydrated ticket → the slim row the Concierge needs to reason about progress. */
   const slim = (t: Ticket) => ({
@@ -1147,12 +1147,12 @@ async function runPlan(argv: string[]): Promise<void> {
   }
 
   // 3. file in order, mapping each key → its created identifier so dependents can reference it
-  const { createPlaneClient } = await import("../plane/client.ts");
-  const clientsByBoard = new Map<string, ReturnType<typeof createPlaneClient>>();
+  const { createTrackerClient } = await import("../tracker/client.ts");
+  const clientsByBoard = new Map<string, ReturnType<typeof createTrackerClient>>();
   const clientForBoard = (board: string) => {
     let client = clientsByBoard.get(board);
     if (!client) {
-      client = createPlaneClient({ config, board, logger: quietLogger });
+      client = createTrackerClient({ config, board, logger: quietLogger });
       clientsByBoard.set(board, client);
     }
     return client;
