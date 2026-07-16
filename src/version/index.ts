@@ -76,17 +76,17 @@ async function runGit(repoRoot: string, args: string[]): Promise<string> {
   }
 }
 
-/**
 /** The newest valid `vX.Y.Z` tag, or `null` when this is a first deploy. */
 async function newestTaggedVersion(repoRoot: string): Promise<string | null> {
   const out = await runGit(repoRoot, ["tag", "--list", "v[0-9]*.[0-9]*.[0-9]*", "--sort=-v:refname"]);
-  const newest = out.split("\n").map((s) => s.trim()).filter(Boolean)[0];
-  if (!newest) return null;
-  try {
-    return formatSemver(parseSemver(newest));
-  } catch {
-    return null;
+  for (const tag of out.split("\n").map((s) => s.trim()).filter(Boolean)) {
+    try {
+      return formatSemver(parseSemver(tag));
+    } catch {
+      // The glob is intentionally broad; ignore a malformed lookalike and keep searching.
+    }
   }
+  return null;
 }
 
 /**
@@ -101,11 +101,11 @@ export async function lastDeployedVersion(repoRoot: string = defaultRepoRoot()):
 }
 
 /**
- * Commit subjects merged on HEAD since version `base` (its `vX.Y.Z` tag), newest first, capped at
- * `max`. With a `base` tag, an EMPTY result is meaningful — it means nothing new since the last
- * deploy — so it's returned as-is (the caller no-ops rather than re-bumping). Only when there's no
- * base tag at all (a first-ever deploy) does this degrade to the recent history so the classifier
- * has something to look at instead of going blank.
+ * Commit subjects merged on HEAD since tagged version `base`, newest first, capped at `max`. With
+ * a tag, an EMPTY result is meaningful — it means nothing new since the last deploy — so it's
+ * returned as-is (the caller no-ops rather than re-bumping). Only when there is no tag at all (a
+ * first-ever deploy) does this degrade to recent history so the classifier has something to look
+ * at instead of going blank.
  */
 export async function commitsSinceVersion(
   repoRoot: string,
@@ -121,7 +121,7 @@ export async function commitsSinceVersion(
 }
 
 /**
- * The top-level `src/<area>` directories touched since `base`, deduped and sorted. Not used to pick
+ * The top-level `src/<area>` directories touched since tagged version `base`, deduped and sorted. Not used to pick
  * the level — the subject classifier does that — but handy colour for the "why" the deploy prints.
  */
 export async function areasChangedSince(repoRoot: string, base: string | null): Promise<string[]> {
