@@ -1,4 +1,4 @@
-/** Durable user-facing task and branch registry. Plane tickets remain an execution detail. */
+/** Durable user-facing task and branch registry. Tracker tickets remain an execution detail. */
 import {
   mkdirSync,
   readFileSync,

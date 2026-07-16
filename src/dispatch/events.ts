@@ -8,7 +8,7 @@ export type DispatchOutcome = "started" | "passed" | "bounced" | "cancelled" | "
 export interface DispatchEvent {
   ts: string;
   ticketId: string;
-  /** Human-facing Plane identifier or public task branch reference. */
+  /** Human-facing ticket identifier or public task branch reference. */
   ticketRef: string;
   /** Git branch ref, when known. Never omitted so trace consumers have a stable shape. */
   branchRef: string;

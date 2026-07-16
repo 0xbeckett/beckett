@@ -10,7 +10,7 @@
  * What "observable behavior" means here: each command is exercised up to its hermetic
  * boundary — full output for the in-process commands (memory, task, plan validation, config,
  * rpc, federation, …), and the exact usage/refusal/dead-daemon message for commands whose
- * happy path needs a live daemon, Discord, Plane, GitHub, or Cloudflare. Those boundary
+ * happy path needs a live daemon, Discord, the tracker, GitHub, or Cloudflare. Those boundary
  * messages are load-bearing: the Concierge pattern-matches on them, so they are part of the
  * contract too. Dummy credentials (never real ones) are injected only to get PAST an env
  * gate to the command's own argument validation, never far enough to touch a network.
@@ -230,7 +230,7 @@ const CASES: Case[] = [
   { name: "task: list on an empty store", argv: ["task", "list"] },
   { name: "task: unknown sub prints usage", argv: ["task", "bogus"] },
 
-  // ── ticket (validation layer only — everything past it needs Plane) ─────────────────────
+  // ── ticket (validation layer only — everything past it needs the tracker) ───────────────
   { name: "ticket: trace without an id prints usage", argv: ["ticket", "trace"] },
   { name: "ticket: trace with no events file", argv: ["ticket", "trace", "OPS-1"] },
   { name: "ticket: create without a title prints usage", argv: ["ticket", "create"] },
@@ -251,7 +251,7 @@ const CASES: Case[] = [
   { name: "preset: show of an unknown preset fails", argv: ["preset", "show", "nope"] },
   { name: "preset: unknown sub prints usage", argv: ["preset", "bogus"] },
 
-  // ── plan (full validation layer runs before any Plane call) ─────────────────────────────
+  // ── plan (full validation layer runs before any tracker call) ───────────────────────────
   { name: "plan: non-JSON stdin is rejected", argv: ["plan"], stdin: "not json" },
   { name: "plan: empty ticket list prints usage", argv: ["plan"], stdin: "{}" },
   { name: "plan: a ticket without a key is rejected", argv: ["plan"], stdin: '{"tickets":[{"title":"x"}]}' },

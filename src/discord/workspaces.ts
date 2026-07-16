@@ -138,7 +138,7 @@ export class WorkspaceRegistry {
     this.saveState();
   }
 
-  /** Add a public branch ref (and optional internal Plane identifier) to a task workspace. */
+  /** Add a public branch ref (and optional internal ticket identifier) to a task workspace. */
   bindBranch(channelId: string, branchRef: string, ticketIdent?: string): void {
     const ws = this.byThread.get(channelId);
     if (!ws) return;

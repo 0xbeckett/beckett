@@ -1,7 +1,7 @@
 import type { Ticket } from "../tracker/types.ts";
 import type { TaskStore } from "./store.ts";
 
-/** Reconcile a complete Plane board snapshot, including states the event poller intentionally omits. */
+/** Reconcile a complete tracker board snapshot, including states the event poller intentionally omits. */
 export async function reconcileTaskTickets(
   store: TaskStore,
   tickets: Ticket[],

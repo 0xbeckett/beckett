@@ -1,7 +1,7 @@
 /**
  * Durable dispatcher advance outbox.
  * =======================================================================================
- * When a worker has finished but Plane is temporarily unavailable, losing the final
+ * When a worker has finished but the tracker is temporarily unavailable, losing the final
  * `setState + comment` write wedges the ticket forever. This tiny JSONL file records the intended
  * advance so the poll loop can replay it on the next tick or after a daemon restart.
  */
@@ -20,7 +20,7 @@ import type { Logger } from "../types.ts";
 export interface AdvanceOperation {
   id: string;
   ticketId: string;
-  /** Plane project id for board-scoped replay/routing. Missing on pre-OPS-97 outbox rows. */
+  /** tracker board id for board-scoped replay/routing. Missing on pre-OPS-97 outbox rows. */
   projectId?: string;
   state: string;
   comment: string;
@@ -39,7 +39,7 @@ export class AdvanceOutbox {
   append(op: AdvanceOperation): void {
     mkdirSync(dirname(this.path), { recursive: true });
     writeFileSync(this.path, JSON.stringify(op) + "\n", { flag: "a", encoding: "utf8" });
-    this.logger.warn("queued Plane advance for retry", {
+    this.logger.warn("queued tracker advance for retry", {
       id: op.id,
       ticketId: op.ticketId,
       state: op.state,
@@ -59,7 +59,7 @@ export class AdvanceOutbox {
     const drainingPath = `${this.path}.draining`;
     mkdirSync(dirname(this.path), { recursive: true });
 
-    // Atomically detach the rows being replayed. Appends during the awaited Plane calls now land
+    // Atomically detach the rows being replayed. Appends during the awaited tracker calls now land
     // in a fresh active file instead of being overwritten by the drain's stale snapshot. A
     // leftover sidecar is an interrupted prior drain and takes precedence on the next boot.
     if (!existsSync(drainingPath)) {
@@ -82,7 +82,7 @@ export class AdvanceOutbox {
         appliedIds.add(op.id);
       } catch (err) {
         kept.push(op);
-        this.logger.warn("queued Plane advance still failing", {
+        this.logger.warn("queued tracker advance still failing", {
           id: op.id,
           ticketId: op.ticketId,
           state: op.state,
@@ -128,7 +128,7 @@ export class AdvanceOutbox {
           });
         }
       } catch (err) {
-        this.logger.warn("discarding malformed Plane advance outbox line", {
+        this.logger.warn("discarding malformed tracker advance outbox line", {
           error: (err as Error).message,
         });
       }

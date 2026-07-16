@@ -170,7 +170,7 @@ const gitFakes: Partial<GitOps> = {
 
 const { Dispatcher, BECKETT_COMMENT_MARKER } = await import("./dispatcher.ts");
 
-// ── fake Plane client ─────────────────────────────────────────────────────────────────────
+// ── fake tracker client ─────────────────────────────────────────────────────────────────────
 class FakeClient {
   setStateCalls: { id: string; state: TicketState }[] = [];
   comments: { ticketId: string; body: string }[] = [];
@@ -184,7 +184,7 @@ class FakeClient {
   async setState(id: string, state: TicketState) {
     if (this.failSetState > 0) {
       this.failSetState--;
-      throw new Error("Plane state write failed");
+      throw new Error("ticket state write failed");
     }
     this.setStateCalls.push({ id, state });
     const t = this.board.find((b) => b.id === id);
@@ -193,7 +193,7 @@ class FakeClient {
   async addComment(ticketId: string, body: string): Promise<TicketComment> {
     if (this.failAddComment > 0) {
       this.failAddComment--;
-      throw new Error("Plane comment write failed");
+      throw new Error("ticket comment write failed");
     }
     this.comments.push({ ticketId, body });
     return { id: `c${this.comments.length}`, ticketId, author: "beckett", body, createdAt: "now" };
@@ -471,7 +471,7 @@ describe("advance on finish", () => {
     expect(client.comments[0]!.body.startsWith(BECKETT_COMMENT_MARKER)).toBe(true);
   });
 
-  test("Plane write failure after finish is queued and replayed from the advance outbox", async () => {
+  test("tracker write failure after finish is queued and replayed from the advance outbox", async () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-advance-outbox-"));
     try {
       const outbox = join(dir, "advance.jsonl");
@@ -898,7 +898,7 @@ describe("advance on finish", () => {
       client.board = [ticket];
       await d.handle(stateChanged(ticket, "in_progress"));
       await tick();
-      // The row is written before this Plane hold. Simulate a crash/failure in that tiny window.
+      // The row is written before this tracker hold. Simulate a crash/failure in that tiny window.
       client.failSetState = 1;
       created[0].finish("success", "shipped it");
       await tick();

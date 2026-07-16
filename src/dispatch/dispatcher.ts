@@ -1,10 +1,10 @@
 /**
  * Beckett v3 — Dispatcher (`src/dispatch/dispatcher.ts`)
  * =======================================================================================
- * The single consumer of {@link PollEvent}s (emitted by the Plane poller, `docs/V3.md` §4).
+ * The single consumer of {@link PollEvent}s (emitted by the tracker poller, `docs/V3.md` §4).
  * It is the v3 state machine: it spawns workers when tickets enter `in_progress`/`in_review`,
  * steers live workers from new ticket comments, aborts on `cancelled`, and — when a worker
- * finishes — advances the ticket's Plane state and posts a summary comment. It NEVER does the
+ * finishes — advances the ticket's ticket state and posts a summary comment. It NEVER does the
  * work itself and NEVER routes through the retired v2 `WorkerManager`/`Store` — it composes
  * the focused {@link spawnWorker} helper (`./spawn.ts`) directly (`docs/V3.md` §5/§6).
  *
@@ -93,12 +93,12 @@ import {
 // =======================================================================================
 
 /**
- * The subset of the Plane REST client (`docs/V3.md` §3, `src/tracker/client.ts`) the dispatcher
+ * The subset of the tracker client (`docs/V3.md` §3, `src/tracker/client.ts`) the dispatcher
  * uses. Declared structurally so this module does not hard-depend on the parallel-built client
- * — the concrete `PlaneClient` satisfies it.
+ * — the concrete `BoredClient` satisfies it.
  */
 export interface TrackerClientLike {
-  /** Move a ticket to a new lifecycle state (resolves state_map name → Plane state UUID). */
+  /** Move a ticket to a new lifecycle state (resolves state_map name → ticket state UUID). */
   setState(id: string, state: TicketState): Promise<void>;
   /** Fetch a ticket before dispatcher-initiated state changes, so human terminal moves win. */
   getIssue?(id: string): Promise<Ticket | null>;
@@ -128,11 +128,11 @@ export interface GitOps {
 }
 
 export interface DispatcherDeps {
-  /** Default Plane client (normally config.plane.default_board). */
+  /** Default tracker client (normally config.tracker.default_board). */
   client: TrackerClientLike;
   /** All board-scoped clients the daemon polls; used for identifier lookup and cross-board deps. */
   clients?: TrackerClientLike[];
-  /** Resolve the board-scoped client for a Plane project id. Falls back to client. */
+  /** Resolve the board-scoped client for a tracker board id. Falls back to client. */
   clientForProjectId?: (projectId: string) => TrackerClientLike | undefined;
   config: Config;
   /** Stage registry override (tests / embedders); defaults to the shared built-in registry. */
@@ -164,7 +164,7 @@ export interface DispatcherDeps {
    * `src/progress/journal.ts`). Injected from the Concierge in `v4-main.ts`; omitted in tests.
    */
   progress?: ProgressSink;
-  /** JSONL path for durable post-finish Plane advances. Omitted in tests unless needed. */
+  /** JSONL path for durable post-finish tracker advances. Omitted in tests unless needed. */
   advanceOutboxPath?: string;
   /** JSONL path for durable GitHub publish retries. The queued row exclusively owns its worktree. */
   publishOutboxPath?: string;
@@ -187,7 +187,7 @@ export interface DispatcherDeps {
    */
   preflight?: (harness: Harness) => Promise<{ ok: boolean; problems: string[] }>;
   /**
-   * Fired the moment the dispatcher writes a state advance to Plane (issue #33), with the same
+   * Fired the moment the dispatcher writes a state advance to the tracker (issue #33), with the same
    * {@link PollEvent} shape the poller would emit ≤5s later. v4-main routes it straight into
    * `concierge.notify` (an instant done ping instead of a poll-gap-delayed one) AND into
    * `poller.observe` (so the next tick doesn't re-emit the transition as a duplicate).
@@ -215,9 +215,9 @@ export interface DispatcherDeps {
 }
 
 /**
- * Marker prepended to every dispatcher-authored Plane comment so STEERING never treats one of
+ * Marker prepended to every dispatcher-authored ticket comment so STEERING never treats one of
  * its own summaries as a human nudge (avoids a self-nudge loop, docs/V3.md §5). Rendered as an
- * invisible HTML comment in Plane's markdown.
+ * invisible HTML comment in the tracker's markdown.
  */
 export const BECKETT_COMMENT_MARKER = "<!-- beckett:dispatcher -->";
 
@@ -655,7 +655,7 @@ export class Dispatcher {
    * where {@link drainForShutdown} never runs — loses at most one checkpoint window of on-disk work
    * instead of the whole session's in-flight edits. This EXTENDS the issue #20 recovery machinery
    * (same {@link commitWorktree} the boot ghost-WIP sweep and the finish path already use, same
-   * persisted ledger); it never touches Plane, the advance-outbox, or the publish-outbox, so it
+   * persisted ledger); it never touches the tracker, the advance-outbox, or the publish-outbox, so it
    * cannot affect finish-path idempotency. `worker_checkpoint_s = 0` disables it. Idempotent — a
    * second call is a no-op while a timer is already armed.
    */
@@ -819,11 +819,11 @@ export class Dispatcher {
     }
   }
 
-  /** Replay durable Plane advances left by previous write failures. Safe to call on every tick. */
+  /** Replay durable tracker advances left by previous write failures. Safe to call on every tick. */
   async replayAdvances(): Promise<void> {
     if (!this.advanceOutbox) return;
     const applied = await this.advanceOutbox.drain(async (op) => { await this.applyAdvance(op); });
-    if (applied > 0) this.logger.info("replayed queued Plane advances", { count: applied });
+    if (applied > 0) this.logger.info("replayed queued tracker advances", { count: applied });
   }
 
   /** Drain due GitHub publishes on every poll and once during boot. */
@@ -1282,7 +1282,7 @@ export class Dispatcher {
    * Operator lever (issue #21): abort whatever worker a ticket has (committing its WIP) and
    * spawn a fresh one for the ticket's current stage — optionally pinned to a different harness.
    * Exposed to the Concierge as `beckett ticket restaff <id> [--harness h]` via the control bus.
-   * Accepts a Plane uuid OR a human identifier ("OPS-42").
+   * Accepts a ticket id OR a human identifier ("OPS-42").
    */
   async restaff(
     idOrIdentifier: string,
@@ -1328,7 +1328,7 @@ export class Dispatcher {
     return { ticket: ticket.identifier, stage, harness };
   }
 
-  /** Resolve a ticket by Plane uuid or human identifier ("OPS-42"), else null. */
+  /** Resolve a ticket by ticket id or human identifier ("OPS-42"), else null. */
   private async findTicket(idOrIdentifier: string): Promise<Ticket | null> {
     const key = idOrIdentifier.trim();
     if (!key) return null;
@@ -1473,7 +1473,7 @@ export class Dispatcher {
     const project = projectSlug(ticket.project || ticket.identifier);
     return ticket.blockedBy.map((identifier) => {
       const dependency = byIdentifier.get(identifier);
-      if (!dependency) throw new Error(`dependency ${identifier} is missing from Plane`);
+      if (!dependency) throw new Error(`dependency ${identifier} is missing from the tracker`);
       if (dependency.state !== "done") throw new Error(`dependency ${identifier} is not done`);
       if (!dependency.branchRef) throw new Error(`dependency ${identifier} is not a numbered task branch`);
       if (projectSlug(dependency.project || dependency.identifier) !== project) {
@@ -2472,7 +2472,7 @@ export class Dispatcher {
     await this.holdForPublish(ticket, op, error, PUBLISH_RETRY_DELAYS_MS[0]);
   }
 
-  /** Visible state for the board: comments are durable across Plane versions, including label text. */
+  /** Visible state for the board: comments are durable across tracker versions, including label text. */
   private async holdForPublish(ticket: Ticket, op: PublishOperation, error: string, delayMs: number): Promise<void> {
     const retry = Math.round(delayMs / 60_000);
     const body =
@@ -2500,7 +2500,7 @@ export class Dispatcher {
   }
 
   /**
-   * Repair the append-before-Plane-write crash window without running a retry ahead of schedule.
+   * Repair the append-before-tracker-write crash window without running a retry ahead of schedule.
    * A state other than the expected hold is a human intervention and relinquishes the row.
    */
   private async reconcileQueuedPublishHold(op: PublishOperation): Promise<
@@ -2535,7 +2535,7 @@ export class Dispatcher {
       // pass (the original backoff still applies).
       return reconciled ?? { action: "keep", operation: op };
     }
-    // The durable row carries public task metadata that older Plane payloads may not hydrate.
+    // The durable row carries public task metadata that older ticket payloads may not hydrate.
     // Prefer live lifecycle fields without discarding that restart-critical branch identity.
     const ticket: Ticket = current ? { ...op.ticket, ...current } : op.ticket;
     this.trace(ticket, "publish-retry", "started", `durable publish attempt ${op.attempt}`);
@@ -2751,7 +2751,7 @@ export class Dispatcher {
 
   /**
    * When a ticket reaches `done`, promote any dependent whose blockers are ALL now `done` from its
-   * held `backlog`/`todo` slot to `in_progress` (which staffs it). The DAG lives entirely in Plane
+   * held `backlog`/`todo` slot to `in_progress` (which staffs it). The DAG lives entirely in the tracker
    * (each ticket's ```beckett-deps``` block), so this is stateless and restart-proof: we re-read
    * the board and recompute readiness rather than track edges in memory. A dependent with a still
    * unresolved blocker (or a cancelled one) is left held and logged — never force-started.
@@ -2859,7 +2859,7 @@ export class Dispatcher {
       }
       return true;
     } catch (err) {
-      this.trace(ticket, `state:${state}`, "failed", "Plane state transition failed", (err as Error).message);
+      this.trace(ticket, `state:${state}`, "failed", "ticket state transition failed", (err as Error).message);
       if (this.advanceOutbox) {
         this.advanceOutbox.append(op);
         return false;
@@ -2875,7 +2875,7 @@ export class Dispatcher {
     this.rememberTicket(current);
     if (current && this.humanTerminalMoveWins(current, state)) {
       this.trace(current, `state:${state}`, "bounced", `human terminal state ${current.state} won over queued ${state}`);
-      this.logger.warn("skipping queued Plane advance because ticket is terminal", {
+      this.logger.warn("skipping queued tracker advance because ticket is terminal", {
         ticket: current.identifier,
         current: current.state,
         requested: state,
@@ -2974,7 +2974,7 @@ export class Dispatcher {
 
   private async addMarkedComment(ticketId: string, body: string, projectId?: string): Promise<void> {
     const posted = await this.clientForTicketId(ticketId, projectId).addComment(ticketId, `${BECKETT_COMMENT_MARKER}\n${body}`);
-    // Record the id so we recognise our own comment even if Plane mangles the HTML marker.
+    // Record the id so we recognise our own comment even if the tracker mangles the HTML marker.
     if (posted?.id) this.ownCommentIds.add(posted.id);
   }
 

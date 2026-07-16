@@ -1,4 +1,4 @@
-/** Assemble user-facing task/branch status without exposing Plane ticket identifiers or patches. */
+/** Assemble user-facing task/branch status without exposing tracker ticket identifiers or patches. */
 import { existsSync } from "node:fs";
 import type { GitHubBranchCardReader, BranchCardCheckSummary, PrLifecycle } from "../github/types.ts";
 import { readLocalBranchStats, type LocalBranchStats } from "../git/branch-stats.ts";

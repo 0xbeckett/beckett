@@ -1,7 +1,7 @@
 /**
  * Tests for the cast block parse/serialize round-trip (`src/tracker/cast.ts`).
  * The cast block is how per-stage harness assignment + acceptance criteria are stored inside
- * a Plane issue description — its round-trip integrity is load-bearing for the whole queue.
+ * a ticket description — its round-trip integrity is load-bearing for the whole queue.
  */
 import { describe, expect, test } from "bun:test";
 import {

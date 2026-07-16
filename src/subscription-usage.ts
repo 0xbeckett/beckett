@@ -84,7 +84,7 @@ const USAGE_ENV_KEYS = [
   "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
 ] as const;
 
-/** Provider probes get auth/config paths, never the daemon's Discord/Plane/GitHub/Gmail secrets. */
+/** Provider probes get auth/config paths, never the daemon's Discord/GitHub/Gmail secrets. */
 export function usageProbeEnv(env: Record<string, string | undefined> = childEnv()): Record<string, string | undefined> {
   return Object.fromEntries(USAGE_ENV_KEYS.flatMap((key) => env[key] === undefined ? [] : [[key, env[key]]]));
 }

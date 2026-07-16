@@ -892,7 +892,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * The full signal read the PR poller diffs (OPS-124): lifecycle, draft flag, head sha, reviews,
    * conversation comments, and the rolled-up CI conclusion — in ONE `gh pr view` round-trip. Read
    * only (no state change), so it's FREE. Throws with a clear message on an unreadable/missing PR
-   * so the poller can skip it for the tick and retry, exactly like the Plane poller's read failures.
+   * so the poller can skip it for the tick and retry, exactly like the tracker poller's read failures.
    */
   /**
    * Recent commits on one branch for the external activity relay. This stays behind GitHubCli so

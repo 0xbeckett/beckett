@@ -112,7 +112,7 @@ export class PublishOutbox {
     let applied = 0;
     for (const op of ops) {
       if (op.nextAttemptAt > now) {
-        // A row can survive a crash after it is appended but before Plane is moved to in_review.
+        // A row can survive a crash after it is appended but before the tracker is moved to in_review.
         // Reconcile that ownership immediately; never turn a scheduled retry into an early GitHub
         // call merely to repair its visible hold.
         try {
@@ -132,14 +132,14 @@ export class PublishOutbox {
         if (result.action === "keep") kept.push(result.operation);
         else applied++;
       } catch (err) {
-        // A dispatcher crash/Plane-comment failure must not erase the ownership row.
+        // A dispatcher crash/ticket-comment failure must not erase the ownership row.
         kept.push(op);
         this.logger.warn("queued GitHub publish still failing", {
           id: op.id, ticket: op.ticket.identifier, error: (err as Error).message,
         });
       }
     }
-    // `cancel()` is allowed while apply() awaits Plane/GitHub. Do not resurrect a row the
+    // `cancel()` is allowed while apply() awaits the tracker/GitHub. Do not resurrect a row the
     // concierge just relinquished to a human courier. Likewise preserve a newly appended row:
     // its synchronous append may have happened while this async drain held an old snapshot.
     const newlyAppended = this.read().filter((current) => !ops.some((original) => original.id === current.id));

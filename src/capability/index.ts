@@ -117,7 +117,7 @@ export interface BusCommand {
 
 /**
  * The ticket shape a prompt block may inspect — kept STRUCTURAL (like {@link BusRequestLike})
- * so the spine has no dependency on the Plane types.
+ * so the spine has no dependency on the tracker types.
  */
 export interface PromptTicketLike {
   identifier: string;

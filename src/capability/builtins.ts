@@ -305,7 +305,7 @@ export const configFragments = {
       // worker's worktree as a WIP checkpoint, so a HARD daemon crash (SIGKILL/OOM/power) — where
       // the graceful shutdown drain never runs — loses at most one checkpoint window of on-disk
       // work instead of the whole session. Best-effort and side-effect-free beyond the worktree
-      // (never touches Plane / the advance- or publish-outbox). 0 disables periodic checkpointing.
+      // (never touches the tracker / the advance- or publish-outbox). 0 disables periodic checkpointing.
       worker_checkpoint_s: nonNegInt.default(120),
       // Dispatcher retry/rework bounds (OPS-180) — previously hardcoded dispatcher constants,
       // now real knobs. Defaults are the old constants exactly; see stages.ts#retryCapsFor.

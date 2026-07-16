@@ -3,7 +3,7 @@
  * =======================================================================================
  * OPS-124 — watches the PRs Beckett opened on the 0xbeckett org and turns "what changed on my
  * PR" into a stream of material {@link PrPollEvent}s the Concierge relays in voice ("ro left 2
- * comments on #96", "CI failed on the memory branch", "#96 merged"). It mirrors the Plane poller
+ * comments on #96", "CI failed on the memory branch", "#96 merged"). It mirrors the tracker poller
  * (`src/tracker/poll.ts`): an in-memory snapshot per PR, diffed against a fresh read each tick, with
  * the diff persisted so a daemon restart never re-fires an old notification (the "notify re-fire
  * loop" hazard).
@@ -341,7 +341,7 @@ export class GitHubPrPoller {
     }
   }
 
-  /** Poll-loop health for `beckett status`, mirroring the Plane poller's `stats()`. */
+  /** Poll-loop health for `beckett status`, mirroring the tracker poller's `stats()`. */
   stats(): { lastPollAt: number | null; lastPollAgeMs: number | null; consecutiveFailures: number; watching: number } {
     return {
       lastPollAt: this.lastPollAt,

@@ -166,7 +166,7 @@ async function discordReplyBus(args: Record<string, unknown>): Promise<never> {
  * Fire a NON-fatal notification at the control bus and return regardless of outcome. Unlike
  * {@link bus}, this never exits or fails the command: it exists so task/ticket creation can tell
  * the running Concierge about workspace routing WITHOUT making Discord load-bearing. The same
- * commands run by a human or in tests with no daemon socket; durable local/Plane creation must
+ * commands run by a human or in tests with no daemon socket; durable local/tracker creation must
  * still succeed and print its result. A short timeout keeps a dead socket from stalling.
  */
 async function notifyBus(cmd: string, args: Record<string, unknown>): Promise<void> {
@@ -686,9 +686,9 @@ async function runChannels(argv: string[]): Promise<void> {
   fail('usage: beckett channels list | search "<terms>" [--channel <id>] [--limit <n>] | recall <#name|id> [--last <n>] | wipe [<channelId>]');
 }
 
-// ── task (local public identity + Plane-backed executable branches) ──────────────────────
+// ── task (local public identity + tracker-backed executable branches) ────────────────────
 // `#N` and `#N.x` are the human-facing organization layer. A started branch is still a normal
-// Plane ticket underneath, so the established poller/dispatcher/review pipeline stays untouched.
+// tracker ticket underneath, so the established poller/dispatcher/review pipeline stays untouched.
 async function runTask(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const store = new TaskStore(join(paths.beckettDir, "tasks.json"));
@@ -872,15 +872,14 @@ async function runTask(argv: string[]): Promise<void> {
   fail("usage: beckett task create|branch|start|show|list <...>");
 }
 
-// ── ticket (in-process: PlaneClient — the Concierge's door to Plane, v3 §8) ───────────────
+// ── ticket (in-process: the tracker client — the Concierge's door to the queue) ───────────
 // The Concierge shells these from its Bash tool to file/inspect/steer tickets. Output is
-// JSON on stdout (the Concierge reads it). PlaneClient speaks HTTP to Plane; the secret
-// PLANE_API_TOKEN rides process.env, never config. Imported dynamically so the rest of the
-// CLI keeps working while `src/tracker/client.ts` is built in parallel.
+// JSON on stdout (the Concierge reads it). The bored client speaks HTTP to the loopback
+// tracker (BECKETT_BORED_URL). Imported dynamically so the rest of the CLI stays cheap.
 async function runTicket(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { _, flags } = parse(rest);
-  // OPS-167: forensic trace is intentionally a direct local JSONL read, not a daemon/Plane
+  // OPS-167: forensic trace is intentionally a direct local JSONL read, not a daemon/tracker
   // request — it remains available while the dispatcher is wedged or after a restart.
   if (sub === "trace") {
     const id = _[0];
@@ -907,7 +906,7 @@ async function runTicket(argv: string[]): Promise<void> {
     updatedAt: t.updatedAt,
   });
   /**
-   * Accept a Plane uuid OR a human identifier ("OPS-42") everywhere a ticket id is expected —
+   * Accept a raw ticket id OR a human identifier ("OPS-42") everywhere a ticket id is expected —
    * the Concierge reasons in identifiers, and forcing uuids produced spurious "no such ticket"
    * dead ends when it stepped in (issue #21).
    */
@@ -941,7 +940,7 @@ async function runTicket(argv: string[]): Promise<void> {
       // The code project this ticket builds → its own repo at ~/Projects/<slug>, pushed to
       // 0xbeckett/<slug>. Decoupled from Beckett's own source repo.
       project: flags.project ? String(flags.project) : undefined,
-      // INT starts in its live Design stage by default; OPS keeps PlaneClient's backlog default.
+      // INT starts in its live Design stage by default; OPS keeps the tracker's ready default.
       state: flags.state ? (String(flags.state) as TicketState) : isIntBoard ? "design" : undefined,
       // Stamp the originating Discord channel so updates route back to the conversation (closed loop).
       originChannel: flags.channel ? String(flags.channel) : undefined,
@@ -1231,8 +1230,8 @@ async function runStatus(argv: string[]): Promise<void> {
     `poller:    last poll ${p.lastPollAgeMs != null ? `${Math.round(p.lastPollAgeMs / 1000)}s ago` : "never"}` +
       (p.consecutiveFailures ? `, ${p.consecutiveFailures} CONSECUTIVE FAILURES` : ""),
   );
-  const pl = data.plane ?? {};
-  lines.push(`plane:     last HTTP ${pl.lastHttpStatus ?? "-"}${pl.lastError ? ` (last error: ${pl.lastError})` : ""}`);
+  const tr = data.tracker ?? {};
+  lines.push(`tracker:   last HTTP ${tr.lastHttpStatus ?? "-"}${tr.lastError ? ` (last error: ${tr.lastError})` : ""}`);
   const c = data.concierge ?? {};
   const gate = c.turnGate ?? {};
   lines.push(
@@ -1627,13 +1626,13 @@ function buildCliCapabilities(): Capability[] {
     },
     {
       id: "task",
-      summary: "local public identity + Plane-backed executable branches (#N / #N.x)",
+      summary: "local public identity + tracker-backed executable branches (#N / #N.x)",
       actionClass: ActionClass.FREE,
       cliHelp: "task create|branch|start|show|list",
       cliVerbs: [
         {
           name: "task",
-          summary: "allocate numbered tasks/branches and start them as Plane tickets",
+          summary: "allocate numbered tasks/branches and start them as tracker tickets",
           usage: "beckett task create|branch|start|show|list <...>",
           run: runTask,
         },
@@ -1642,7 +1641,7 @@ function buildCliCapabilities(): Capability[] {
     },
     {
       id: "ticket",
-      summary: "the Concierge's door to Plane (v3 §8)",
+      summary: "the Concierge's door to the ticket tracker",
       actionClass: ActionClass.FREE,
       cliHelp: "ticket create|comment|state|list|show|trace",
       cliVerbs: [

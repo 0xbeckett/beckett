@@ -121,7 +121,7 @@ export function doneSignalSummary(signal: DoneSignal, fallback: string): string 
   return `${summary}${blockedReason}`;
 }
 
-/** INT is a separate Plane board; its identifiers are minted as INT-N. */
+/** INT is a separate tracker board; its identifiers are minted as INT-N. */
 export function isIntTicket(ticket: Ticket): boolean {
   return ticket.identifier.toUpperCase().startsWith("INT-") || ticket.projectId.toUpperCase() === "INT";
 }
@@ -177,7 +177,7 @@ export interface StageFinishArgs {
 
 /**
  * The dispatcher operations a stage finish handler may perform — the narrow, explicit
- * surface between pluggable stage logic and the dispatcher's shared machinery (Plane
+ * surface between pluggable stage logic and the dispatcher's shared machinery (tracker
  * writes, publish gating, bounded failure policy, persisted counters). Implemented by the
  * {@link Dispatcher}; a stage never reaches into dispatcher internals beyond this.
  */
@@ -190,7 +190,7 @@ export interface StageOps {
   trace(ticket: Ticket, stage: string, outcome: DispatchOutcome, message?: string, error?: string): void;
   /** Post a dispatcher-marked ticket comment (never read back as steering). Best-effort. */
   postComment(ticketId: string, body: string): Promise<void>;
-  /** Move the ticket's Plane state with a comment; false when a human terminal move won. */
+  /** Move the ticket's ticket state with a comment; false when a human terminal move won. */
   advanceTicket(ticket: Ticket, state: TicketState, comment: string): Promise<boolean>;
   /** Commit whatever is in the ticket's checkout as a WIP snapshot; sha or null. Never throws. */
   commitWip(ticket: Ticket, handle: TicketWorkerHandle): Promise<string | null>;
