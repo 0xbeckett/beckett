@@ -2039,9 +2039,11 @@ export class Concierge {
     recordText: string,
     buttons?: DiscordCommandReply["buttons"],
     replyToMessageId?: string,
+    replyToUserId?: string,
   ): Promise<string> {
     const messageId = await this.gateway.post(CARDS_CHANNEL_ID, "", {
       ...(replyToMessageId ? { replyToMessageId } : {}),
+      ...(replyToUserId ? { replyToUserId } : {}),
       embeds,
       ...(buttons?.length ? { buttons } : {}),
     });
@@ -3167,6 +3169,7 @@ export class Concierge {
           `Branch card for #${branchRef}`,
           buttons,
           m.channelId === CARDS_CHANNEL_ID ? m.messageId : undefined,
+          m.channelId === CARDS_CHANNEL_ID ? m.userId : undefined,
         );
         return;
       } catch (err) {
