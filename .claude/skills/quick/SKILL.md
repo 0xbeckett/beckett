@@ -5,7 +5,7 @@ description: Use for errands BETWEEN "answer inline" and "file a ticket" — a w
 
 # quick — the no-ticket lane
 
-Some asks are too heavy to answer from your own head but far too light for a Plane ticket:
+Some asks are too heavy to answer from your own head but far too light for a tracker ticket:
 checking a price on a live site, writing a 40-line conversion script, telling someone what's
 in a GitHub repo. Filing a ticket for these wastes a worker and makes a 2-minute answer take
 ten. Doing them yourself bloats your context with browsing or a whole codebase. Instead,

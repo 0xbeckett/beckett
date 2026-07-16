@@ -113,7 +113,7 @@ SHA256 before extraction. Cloudflared is optional.
 
 | File | What |
 |---|---|
-| `~/.beckett/.env` | `DISCORD_TOKEN`, `PLANE_API_TOKEN`, `GITHUB_PAT`, `DISCORD_ALERT_WEBHOOK_URL`, … — the committed `.env.example` is the full inventory with per-key mint/scope notes (`beckett doctor` flags drift) |
+| `~/.beckett/.env` | `DISCORD_TOKEN`, `GITHUB_PAT`, `DISCORD_ALERT_WEBHOOK_URL`, … — the committed `.env.example` is the full inventory with per-key mint/scope notes (`beckett doctor` flags drift) |
 | `~/.claude/.credentials.json` | claude subscription login |
 | `~/.codex/auth.json` | codex ChatGPT login |
 | `~/.pi/agent/auth.json` | pi OAuth login |

@@ -12,8 +12,8 @@ You're working in the Beckett repo. Read this before touching anything.
 WHAT IT IS
 Beckett is a Discord-native AI engineer. A long-lived `claude -p` (Opus) agent called the
 Concierge owns Discord: it chats in its own voice, sizes how much effort a request deserves, and
-for real work FILES A TICKET into a self-hosted Plane queue — it never writes the code itself. A
-poller watches Plane; a dispatcher turns ticket-state changes into work: a ticket moving to
+for real work FILES A TICKET into the local bored queue — it never writes the code itself. A
+poller watches the tracker; a dispatcher turns ticket-state changes into work: a ticket moving to
 In Progress spawns a coding agent in an isolated git worktree, In Review spawns a reviewer, a new
 comment steers the live worker, done advances the ticket and posts a summary back to Discord.
 Workers are "cast" per stage (different model/effort for implement vs review).
@@ -27,7 +27,8 @@ REPO MAP
                     persona/voice is a separate editable file (DEFAULT_PERSONA seed in index.ts).
 - src/discord/    — gateway, human-cadence message chunking, access control, federation (peer bots)
 - src/dispatch/   — ticket-state → worker/reviewer spawns
-- src/plane/      — Plane REST client + poller
+- src/bored/      — bored tracker HTTP client
+- src/tracker/    — shared ticket contract + poller
 - src/worker/     — the coding-agent harness (worktree, scope-guard, casting)
 - src/drivers/    — claude / codex / pi process drivers
 - src/memory/     — cross-conversation knowledge graph

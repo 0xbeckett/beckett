@@ -23,6 +23,6 @@ jobs:
       - run: bun x playwright install --with-deps --no-shell chromium
       - run: bun run browser:smoke
       - run: shellcheck install.sh deploy/install.sh deploy/deploy-prod.sh
-      - run: bash -n install.sh deploy/install.sh deploy/deploy-prod.sh deploy/plane/install.sh
+      - run: bash -n install.sh deploy/install.sh deploy/deploy-prod.sh
       - run: bun x tsc --noEmit
       - run: bun test

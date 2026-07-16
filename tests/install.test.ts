@@ -189,7 +189,7 @@ describe("public installer input and file contracts", () => {
     const script = [
       'source "$1"',
       ...TEST_AS_BECKETT,
-      'write_initial_config "$2" "https://app.plane.so/" "my-workspace" "octocat" "true" "false"',
+      'write_initial_config "$2" "octocat" "true" "false"',
     ].join("\n");
     const result = await run(["bash", "-c", script, "bash", INSTALLER, config], {
       env: installerTestEnv(binDir),
@@ -199,8 +199,6 @@ describe("public installer input and file contracts", () => {
     const body = readFileSync(config, "utf8");
     expect(body).toContain('home = "/home/beckett"');
     expect(body).toContain('github_user = "octocat"');
-    expect(body).toContain('base_url = "https://app.plane.so"');
-    expect(body).toContain('workspace_slug = "my-workspace"');
     expect(body).toContain("[harness.pi]\nenabled = true");
     expect(body).toContain("[harness.codex]\nenabled = false");
     expect(body).toContain("[github.activity]\nenabled = false");
@@ -241,7 +239,7 @@ describe("public installer input and file contracts", () => {
     fakeInstall(binDir);
     writeFileSync(
       config,
-      '[identity]\ngithub_user = "octocat"\n\n[plane]\nworkspace_slug = "beckett"\n',
+      '[identity]\ngithub_user = "octocat"\n',
       "utf8",
     );
     writeFileSync(envFile, "BECKETT_GH_ORG=\n", "utf8");
@@ -257,27 +255,6 @@ describe("public installer input and file contracts", () => {
     expect(readFileSync(envFile, "utf8")).toBe("BECKETT_GH_ORG=octocat\n");
   });
 
-  test("Plane Cloud keeps separate browser and API origins", async () => {
-    const dir = tempDir("beckett-install-plane-origin-");
-    const binDir = join(dir, "bin");
-    const config = join(dir, "config.toml");
-    const envFile = join(dir, ".env");
-    mkdirSync(binDir);
-    fakeInstall(binDir);
-    writeFileSync(config, '[plane]\nbase_url = "https://app.plane.so"\n', "utf8");
-    writeFileSync(envFile, "PLANE_INTERNAL_URL=\n", "utf8");
-    const script = [
-      'source "$1"',
-      ...TEST_AS_BECKETT,
-      'sync_plane_internal_url "$2" "$3"',
-    ].join("\n");
-    const result = await run(["bash", "-c", script, "bash", INSTALLER, envFile, config], {
-      env: installerTestEnv(binDir),
-    });
-    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
-    expect(readFileSync(envFile, "utf8")).toBe("PLANE_INTERNAL_URL=https://api.plane.so\n");
-  });
-
   test("explicit rerun inputs update installer-owned fields without dropping custom config", async () => {
     const dir = tempDir("beckett-install-rerun-");
     const binDir = join(dir, "bin");
@@ -290,9 +267,6 @@ describe("public installer input and file contracts", () => {
         "# Created by Beckett installer v1.",
         "[identity]",
         'github_user = "CHANGE_ME"',
-        "[plane]",
-        'base_url = "https://api.plane.so"',
-        'workspace_slug = "beckett"',
         "[custom]",
         'keep = "yes"',
         "",
@@ -303,7 +277,6 @@ describe("public installer input and file contracts", () => {
       'source "$1"',
       ...TEST_AS_BECKETT,
       'INPUT_GITHUB_USER="octocat"',
-      'INPUT_PLANE_WORKSPACE="my-team"',
       'INPUT_ENABLE_PI="false"',
       'update_existing_config "$2"',
     ].join("\n");
@@ -314,8 +287,6 @@ describe("public installer input and file contracts", () => {
     expect(result.code).toBe(0);
     const body = readFileSync(config, "utf8");
     expect(body).toContain('github_user = "octocat"');
-    expect(body).toContain('base_url = "https://app.plane.so"');
-    expect(body).toContain('workspace_slug = "my-team"');
     expect(body).toContain("[harness.pi]\nenabled = false");
     expect(body).toContain("[github.activity]\nenabled = false");
     expect(body).toContain('[custom]\nkeep = "yes"');
@@ -333,9 +304,8 @@ describe("public installer input and file contracts", () => {
         "# Created by Beckett installer v1.",
         "  [identity] # account identity",
         '    github_user = "existing-user" # keep this account',
-        "  [plane] # self-hosted Plane",
-        '    base_url = "https://plane.example.com" # keep this origin',
-        '    workspace_slug = "existing-team" # keep this workspace',
+        "  [tracker] # ticket queue",
+        '    default_board = "ops" # keep this board',
         "  [harness.pi] # optional worker",
         "    enabled = false # intentionally disabled",
         "  [harness.codex] # optional worker",
@@ -359,8 +329,7 @@ describe("public installer input and file contracts", () => {
 
     const parsed = Bun.TOML.parse(readFileSync(config, "utf8")) as Record<string, any>;
     expect(parsed.identity.github_user).toBe("existing-user");
-    expect(parsed.plane.base_url).toBe("https://plane.example.com");
-    expect(parsed.plane.workspace_slug).toBe("existing-team");
+    expect(parsed.tracker.default_board).toBe("ops");
     expect(parsed.harness.pi.enabled).toBeFalse();
     expect(parsed.harness.codex.enabled).toBeTrue();
     expect(parsed.custom.keep).toBe("yes");
@@ -379,9 +348,6 @@ describe("public installer input and file contracts", () => {
         "# Created by Beckett installer v1.",
         "[identity]",
         'github_user = "old-user"',
-        "[plane]",
-        'base_url = "https://app.plane.so"',
-        'workspace_slug = "team"',
         "[harness.pi]",
         "enabled = true",
         "[harness.codex]",
@@ -420,9 +386,6 @@ describe("public installer input and file contracts", () => {
         "# Created by Beckett installer v1.",
         "[identity]",
         'github_user = "old-user"',
-        "[plane]",
-        'base_url = "https://app.plane.so"',
-        'workspace_slug = "team"',
         "[harness.pi]",
         "enabled = true",
         "[harness.codex]",
@@ -467,14 +430,14 @@ describe("public installer input and file contracts", () => {
     expect(result.stdout.match(/\/usr\/sbin\/runuser/g)?.length).toBe(2);
   });
 
-  test("Plane preflight exercises every configured board", async () => {
-    const dir = tempDir("beckett-install-plane-preflight-");
+  test("tracker preflight exercises the configured default board", async () => {
+    const dir = tempDir("beckett-install-tracker-preflight-");
     const calls = join(dir, "calls");
     const script = [
       'source "$1"',
-      'as_beckett_in_repo() { printf "ops\\nint\\n"; }',
+      'as_beckett_in_repo() { printf "ops\\n"; }',
       'as_beckett() { local IFS=" "; printf "%s\\n" "$*" >> "$PREFLIGHT_CALLS"; }',
-      'preflight_plane',
+      'preflight_tracker',
     ].join("\n");
     const result = await run(["bash", "-c", script, "bash", INSTALLER], {
       env: { PREFLIGHT_CALLS: calls },
@@ -482,7 +445,6 @@ describe("public installer input and file contracts", () => {
     expect(result.code).toBe(0);
     const log = readFileSync(calls, "utf8");
     expect(log).toContain("ticket list --board ops");
-    expect(log).toContain("ticket list --board int");
   });
 });
 
@@ -549,7 +511,6 @@ describe("systemd unit installer staging", () => {
       [
         "DISCORD_TOKEN=discord",
         `DISCORD_OWNER_ID=${VALID_DISCORD_ID}`,
-        "PLANE_API_TOKEN=plane",
         "GITHUB_PAT=github",
         "",
       ].join("\n"),
@@ -587,7 +548,7 @@ describe("systemd unit installer staging", () => {
     fakeSystemctl(binDir);
     writeFileSync(
       join(home, ".beckett/.env"),
-      `DISCORD_TOKEN=x\nDISCORD_OWNER_ID=${VALID_DISCORD_ID}\nPLANE_API_TOKEN=x\nGITHUB_PAT=x\n`,
+      `DISCORD_TOKEN=x\nDISCORD_OWNER_ID=${VALID_DISCORD_ID}\nGITHUB_PAT=x\n`,
       { mode: 0o600 },
     );
     writeFileSync(join(home, ".claude/.credentials.json"), "{}\n", { mode: 0o600 });

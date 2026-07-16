@@ -1,5 +1,5 @@
 [Unit]
-Description=Beckett v4 — multiplayer Plane ticket-queue (channel-scoped shared context; Opus concierge + poller + dispatcher)
+Description=Beckett v4 — multiplayer ticket-queue on bored (channel-scoped shared context; Opus concierge + poller + dispatcher)
 After=network-online.target
 Wants=network-online.target
 # Crash-loop alerting (issue #30): 30 starts inside 10 minutes means something is wrong at boot —
@@ -23,7 +23,7 @@ RestartSec=3
 # Pair with the dispatcher's graceful shutdown drain (20s budget): give SIGTERM time to commit
 # WIP and persist the resume ledger before systemd escalates to SIGKILL.
 TimeoutStopSec=30
-# Secrets (DISCORD_TOKEN, PLANE_API_TOKEN, GITHUB_PAT, …) live in ~/.beckett/.env — loaded by
+# Secrets (DISCORD_TOKEN, GITHUB_PAT, …) live in ~/.beckett/.env — loaded by
 # the daemon itself too, but exporting here keeps child tooling consistent. `-` = optional.
 EnvironmentFile=-%h/.beckett/.env
 # The concierge + claude/pi/codex workers must resolve on PATH (a systemd unit does not inherit

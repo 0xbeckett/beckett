@@ -8,7 +8,7 @@ coding agents builds it — opening PRs, deploying sites, generating images — 
 posted in a task workspace such as `#42 - Build voting`. One long-lived agent is the face; a queue and a pool of workers are the
 hands.
 
-This repo is the whole thing: the Discord front-of-house, the task registry, the Plane queue, the worker
+This repo is the whole thing: the Discord front-of-house, the task registry, the ticket queue, the worker
 dispatcher, and the ops to run it. It's built to be **forked** — rename it, give it a new
 personality, point it at your own Discord, and you have your own Beckett.
 
@@ -39,19 +39,19 @@ Beckett has two seats:
   It's not single-threaded: each channel (and each DM) gets its own persistent session, so
   conversations in different channels run concurrently under a bounded turn gate — being deep in a
   task in one room never queues everyone else behind it.
-- **The fleet** — a poller watches the Plane queue; a **dispatcher** turns ticket state changes
+- **The fleet** — a poller watches the [bored](https://github.com/frgmt0/bored) ticket queue; a **dispatcher** turns ticket state changes
   into work. A ticket moving to *In Progress* spawns a coding agent in an isolated git worktree;
   *In Review* spawns a reviewer; a new comment steers the live worker; done advances the ticket
   and posts a summary back to the channel.
 
-Plane tickets are internal execution records linked to task branches. The workers aren't all the
+Tracker tickets are internal execution records linked to task branches. The workers aren't all the
 same model. Each branch is **cast** per stage — implement with one
 model/effort, review with another — so cheap work stays cheap and hard work gets the firepower.
 Claude is the backbone; codex and pi can be enabled as alternates.
 
 ### INT intensive branches
 
-Normal task branches keep the short implementation flow. **INT** is a separate internal Plane board for
+Normal task branches keep the short implementation flow. **INT** is a separate internal board for
 multi-stage work: **Backlog → Design → Review (Design) → In Progress → Review → Done**. `Design`,
 `In Progress`, and `Review` are live worker states. **Review (Design) is parked**: the design worker
 commits `docs/design/int-N.md`, an independent lightweight model checks it against the ticket, and
@@ -103,8 +103,8 @@ character is yours.
 
 > A **Concierge** (a long-lived `claude -p` Opus agent) owns Discord. It chats in Beckett's
 > voice, decides effort, and for real work creates a numbered task. Starting one of its branches
-> files an internal Plane ticket with per-stage **casting**.
-> It never does the work itself. The **shell** polls the Plane REST API every `poll_secs` and
+> files an internal tracker ticket with per-stage **casting**.
+> It never does the work itself. The **shell** polls the bored HTTP API every `poll_secs` and
 > emits events. A **Dispatcher** consumes them: a ticket entering *in_progress* spawns the
 > implement harness as a worker (git worktree, under a scope-guard); *in_review* spawns the
 > review harness; a new comment on an in-flight ticket is injected as a steering nudge to the
@@ -151,10 +151,9 @@ Have these ready when prompted:
   Numbered task threads inherit their parent channel's visibility, so put task creation in a
   suitably private parent when task names are sensitive. Discord's [bot quick start](https://docs.discord.com/developers/quick-start/getting-started)
   walks through creation and Guild Install;
-- a [Plane](https://plane.so) workspace plus a personal API token from Profile Settings. Plane
-  Cloud is the easy default; use the workspace slug shown in `app.plane.so/<slug>/...`. Beckett
-  creates its four project boards and workflow states automatically. Plane
-  [self-hosting](https://developers.plane.so/self-hosting/methods/docker-compose) also works;
+- a running [bored](https://github.com/frgmt0/bored) tracker service on the same box (loopback;
+  `BECKETT_BORED_URL`, default `http://127.0.0.1:7770`) — Beckett files, steers, and completes
+  every ticket through it;
 - a GitHub PAT and the matching GitHub username;
 - a Claude Code subscription login. Pi and Codex logins are needed only when those workers are
   enabled.
@@ -162,7 +161,7 @@ Have these ready when prompted:
 Browser/device authentication cannot be completed on someone else's behalf, so a fresh install
 stays safely staged instead of crash-looping. The installer prints the exact login commands and
 one rerun command; that rerun starts Beckett only after required secrets and enabled harness
-credentials exist. Before startup it provisions every Plane board, validates the GitHub PAT belongs
+credentials exist. Before startup it checks the bored tracker is reachable, validates the GitHub PAT belongs
 to the configured account, and then runs `beckett doctor`. Every rerun is idempotent, preserves
 custom config/secrets, and explicitly restarts an already-running daemon onto the new code.
 
@@ -186,7 +185,7 @@ API keys from `.env` (see [`src/env.ts`](src/env.ts)). Log those CLIs in as thei
 
 Two files, both under `~/.beckett/` on the box (never in git):
 
-- **`.env`** — secrets: `DISCORD_TOKEN`, `PLANE_API_TOKEN`, `GITHUB_PAT`,
+- **`.env`** — secrets: `DISCORD_TOKEN`, `GITHUB_PAT`,
   `DISCORD_ALERT_WEBHOOK_URL`, … The committed `.env.example` is the full inventory with per-key
   mint/scope notes.
 - **`config.toml`** — runtime overrides. Validation is **strict**: every key is defaulted, so a
@@ -244,7 +243,7 @@ Discord exposes the common read/create paths natively:
 | Slash command | What it does |
 |---|---|
 | `/task create name:<name>` | Allocates `#N`, creates `#N.1`, and opens the `#N - Name` workspace thread. |
-| `/task show number:<N>` | Shows the task and its branch states without internal Plane ids. |
+| `/task show number:<N>` | Shows the task and its branch states without internal ticket ids. |
 | `/task workspace number:<N>` | Repairs a task whose Discord thread could not be created earlier. |
 | `/branch reference:<N.x>` | Shows aggregate additions, deletions, files, commits, checks, review, and conversation counts. Never raw diff lines. |
 | `/stats` | Privately shows the owner's remaining Claude and Codex subscription windows and reset times. |
@@ -264,13 +263,13 @@ Run on the box as the beckett user (`bun src/cli/beckett.ts <...>`, usually alia
 | `beckett discord reply --channel <id> "…"` | Post a message as Beckett into a channel. A reply-ack timeout reports `mayHaveSent`, not a retryable failure; do not resend it automatically. Set `BECKETT_DISCORD_REPLY_ACK_TIMEOUT_MS` to tune the 75s acknowledgement budget. |
 | `beckett reload` | Re-read `persona.md` and re-ground on a fresh session (live voice retune). |
 | `beckett task create|branch|start|show|list …` | Create numbered work, split it into branches, start execution, and inspect progress. |
-| `beckett ticket …` | Internal Plane-ticket controls used for comments, state changes, and compatibility. |
+| `beckett ticket …` | Internal tracker-ticket controls used for comments, state changes, and compatibility. |
 | `beckett eval "author/model" [--short|--full]` | Run the curated coding prompt suite against any OpenRouter model and save a readable report. |
 | `beckett memory recall "…"` / `remember …` | Query / write Beckett's cross-conversation knowledge. |
 | `beckett identity set --user <id> …` | Teach Beckett who someone is and how to address them. |
 
 `task create` allocates the durable task and its main `#N.1` branch; `task start '#N.1'` files that
-branch into Plane and queues execution. Add real separations with `task branch '#N' --title "…"`;
+branch into the tracker and queues execution. Add real separations with `task branch '#N' --title "…"`;
 use `--needs '#N.x'` for scheduling and `--parent '#N.x'` for hierarchy. Dependent branches must
 share a `--project`; they start from the completed predecessor's local Git branch, not stale `main`.
 
@@ -297,7 +296,8 @@ src/
   concierge/    the Discord-facing Opus agent — concierge.md (doctrine) + persona seed
   discord/      gateway, message chunking, access control, federation (peer bots)
   dispatch/     turns ticket-state changes into worker/reviewer spawns
-  plane/        Plane REST client + poller
+  bored/        bored tracker HTTP client
+  tracker/      shared ticket contract, cast blocks, poller
   task/         durable #N / #N.x task and branch registry
   worker/       the coding-agent harness (worktree, scope-guard, casting)
   drivers/      claude / codex / pi process drivers

@@ -18,7 +18,7 @@ person honestly what's going on, and using your levers when a different path is 
 2. `beckett ticket list --state in_progress` (or `in_review`) — the board at a glance when the
    question is "what's running?"
 3. `beckett status` — the live daemon in one JSON blob: every worker (ticket, stage, harness, pid,
-   elapsed, last-event age), poller health, Plane API health, your own session stats. The fastest
+   elapsed, last-event age), poller health, tracker API health, your own session stats. The fastest
    answer to "is anything actually moving?"
 4. The ticket's Discord progress thread mirrors the worker's play-by-play if you need finer grain.
 

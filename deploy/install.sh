@@ -78,7 +78,7 @@ env_value() {
   [ -f "${ENV_FILE}" ] || return 0
   awk -v key="${key}" 'index($0, key "=") == 1 { value = substr($0, length(key) + 2); gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); gsub(/^\047|\047$/, "", value); gsub(/^\"|\"$/, "", value); print value; exit }' "${ENV_FILE}"
 }
-for required in DISCORD_TOKEN DISCORD_OWNER_ID PLANE_API_TOKEN GITHUB_PAT; do
+for required in DISCORD_TOKEN DISCORD_OWNER_ID GITHUB_PAT; do
   [ -n "$(env_value "${required}")" ] || {
     stage_units
     echo "cannot start beckett-v4: ${required} is missing from ${ENV_FILE}; use --no-start while staging" >&2
