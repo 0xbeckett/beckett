@@ -49,8 +49,15 @@ export function writeVersion(newVersion: string, repoRoot: string = defaultRepoR
   const next = formatSemver(parseSemver(newVersion)); // normalize + validate
   const path = packageJsonPath(repoRoot);
   const raw = readFileSync(path, "utf8");
-  const replaced = raw.replace(/("version"\s*:\s*")(\d+\.\d+\.\d+)(")/, `$1${next}$3`);
-  if (replaced === raw) throw new Error("could not locate a version field to update in package.json");
+  const versionField = /("version"\s*:\s*")(\d+\.\d+\.\d+)(")/;
+  // Match presence EXPLICITLY — never infer "field missing" from `replaced === raw`. When the target
+  // already equals what's on disk (e.g. a redeploy where the classifier lands on the current
+  // version), `.replace()` is a valid no-op that leaves the string identical; that is NOT a failure.
+  // Only a genuinely absent version field is an error.
+  if (!versionField.test(raw)) {
+    throw new Error("could not locate a version field to update in package.json");
+  }
+  const replaced = raw.replace(versionField, `$1${next}$3`);
   writeFileSync(path, replaced);
   return next;
 }

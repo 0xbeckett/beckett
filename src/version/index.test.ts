@@ -54,6 +54,26 @@ describe("readVersion / writeVersion (source of truth)", () => {
     expect(after).toBe(`{\n  "name": "x",\n  "version": "4.2.0",\n  "type": "module"\n}\n`);
   });
 
+  test("writing the version already on disk is a valid no-op, not a 'field not found' error", () => {
+    // Regression (OPS-188): writeVersion used to infer match-failure from `replaced === raw`, so
+    // when the target equalled what was on disk the no-op replace looked identical and it wrongly
+    // threw 'version field not found', hard-aborting the deploy. Reproduces the real case: the
+    // classifier lands on the version package.json already carries (stale tag vs already-bumped pkg).
+    const dir = mkdtempSync(join(tmpdir(), "beckett-ver-"));
+    const original = `{\n  "name": "x",\n  "version": "4.2.0",\n  "type": "module"\n}\n`;
+    writeFileSync(join(dir, "package.json"), original);
+    expect(() => writeVersion("4.2.0", dir)).not.toThrow();
+    expect(readVersion(dir)).toBe("4.2.0");
+    // The file is untouched (byte-for-byte) — a no-op write must not reflow or corrupt it.
+    expect(readFileSync(join(dir, "package.json"), "utf8")).toBe(original);
+  });
+
+  test("genuinely missing version field still throws", () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-ver-"));
+    writeFileSync(join(dir, "package.json"), `{\n  "name": "x"\n}\n`);
+    expect(() => writeVersion("1.0.0", dir)).toThrow(/version field/);
+  });
+
   test("rejects a non-semver version on write", () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-ver-"));
     writeFileSync(join(dir, "package.json"), `{\n  "version": "1.0.0"\n}\n`);
