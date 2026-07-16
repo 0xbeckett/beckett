@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { log } from "../log.ts";
 import type { Logger } from "../types.ts";
-import type { PlaneClient } from "./client.ts";
+import type { TrackerClient } from "../tracker/client.ts";
 import { TICKET_TERMINAL } from "./types.ts";
 import type { PollEvent, Ticket, TicketState } from "./types.ts";
 
@@ -55,7 +55,7 @@ const COMMENT_CURSOR_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 /** Constructor dependencies for {@link PlanePoller}. */
 export interface PlanePollerDeps {
-  client: PlaneClient;
+  client: Pick<TrackerClient, "listIssueHeads" | "getIssue" | "listIssues" | "listComments">;
   logger?: Logger;
   /** Self-schedule interval for {@link PlanePoller.start} (seconds). Defaults to 5. */
   pollSecs?: number;
@@ -69,7 +69,7 @@ export interface PlanePollerDeps {
 export type PollEventSink = (events: PollEvent[]) => void | Promise<void>;
 
 export class PlanePoller {
-  private readonly client: PlaneClient;
+  private readonly client: Pick<TrackerClient, "listIssueHeads" | "getIssue" | "listIssues" | "listComments">;
   private readonly logger: Logger;
   private readonly pollSecs: number;
   private readonly now: () => number;
