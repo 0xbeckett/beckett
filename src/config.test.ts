@@ -43,47 +43,42 @@ test("per-harness default efforts land where they should", () => {
   expect(config.harness.claude.default_effort).toBe("xhigh"); // untouched default
 });
 
-test("plane nested board config parses with default board and registered VID boards", () => {
+test("tracker config parses with defaults and a custom board list", () => {
   const config = loadToml(`
-[plane]
+[tracker]
 default_board = "vid"
-
-[plane.boards.vid]
-project_slug = "VID"
-[plane.boards.vid.state_map]
-backlog = "Ideas"
-todo = "Scripting"
-in_progress = "Production"
-in_review = "Review"
-done = "Published"
-cancelled = "Shelved"
+boards = ["ops", "vid"]
 `);
-  expect(config.plane.default_board).toBe("vid");
-  expect(config.plane.boards.ops!.project_slug).toBe("beckett");
-  expect(config.plane.boards.int!.project_slug).toBe("INT");
-  expect(config.plane.boards.int!.state_map.design_review).toBe("Review (Design)");
-  expect(config.plane.boards.vid!.project_slug).toBe("VID");
-  expect(config.plane.boards.vid!.state_map.in_progress).toBe("Production");
-  expect(config.plane.boards.vidpip!.project_slug).toBe("VIDPIP");
+  expect(config.tracker.default_board).toBe("vid");
+  expect(config.tracker.boards).toEqual(["ops", "vid"]);
+  expect(config.tracker.poll_secs).toBe(5);
 });
 
-test("legacy flat plane config normalizes into the ops board", () => {
+test("an empty config yields the stock board set with ops as default", () => {
+  const config = loadToml("");
+  expect(config.tracker.default_board).toBe("ops");
+  expect(config.tracker.boards).toEqual(["ops", "int", "vid", "vidpip"]);
+});
+
+test("legacy [plane] section folds into [tracker] — an existing box keeps booting (OPS-191)", () => {
+  // The exact shape of a pre-cutover host config: flat [plane] with Plane-only keys.
   const config = loadToml(`
 [plane]
-project_slug = "legacy-ops"
+project_slug = "ops"
+base_url = "https://plane.0xbeckett.me"
+workspace_slug = "beckett"
+poll_secs = 3
 
 [plane.state_map]
 in_progress = "Doing"
 `);
-  expect(config.plane.default_board).toBe("ops");
-  expect(config.plane.boards.ops!.project_slug).toBe("legacy-ops");
-  expect(config.plane.boards.ops!.state_map.in_progress).toBe("Doing");
-  expect(config.plane.boards.int!.project_slug).toBe("INT");
-  expect(config.plane.boards.vid!.project_slug).toBe("VID");
-  expect(config.plane).not.toHaveProperty("project_slug");
+  expect(config).not.toHaveProperty("plane");
+  expect(config.tracker.poll_secs).toBe(3);
+  expect(config.tracker.default_board).toBe("ops");
+  expect(config.tracker.boards).toEqual(["ops", "int", "vid", "vidpip"]);
 });
 
-test("a board defined only in config.toml is first-class — the board list is config-driven", () => {
+test("legacy [plane.boards.<name>] tables collapse to their names", () => {
   const config = loadToml(`
 [plane]
 default_board = "web"
@@ -91,16 +86,23 @@ default_board = "web"
 [plane.boards.web]
 project_slug = "WEB"
 `);
-  expect(config.plane.default_board).toBe("web");
-  expect(config.plane.boards.web!.project_slug).toBe("WEB");
-  // Unspecified workflow states fill from the schema defaults, same as any board.
-  expect(config.plane.boards.web!.state_map.in_progress).toBe("In Progress");
-  // The stock set is defaults DATA merged in, not a hardcoded allowlist.
-  expect(Object.keys(config.plane.boards)).toEqual(["ops", "int", "vid", "vidpip", "web"]);
+  expect(config.tracker.default_board).toBe("web");
+  expect(config.tracker.boards).toEqual(["ops", "int", "vid", "vidpip", "web"]);
 });
 
-test("unknown default Plane board is a loud config error listing valid boards", () => {
-  expect(() => loadToml(`[plane]\ndefault_board = "missing"\n`)).toThrow(/unknown default_board "missing" \(have: ops, int, vid, vidpip\)/);
+test("an explicit [tracker] section wins over a lingering [plane] one", () => {
+  const config = loadToml(`
+[plane]
+poll_secs = 3
+
+[tracker]
+poll_secs = 9
+`);
+  expect(config.tracker.poll_secs).toBe(9);
+});
+
+test("unknown default board is a loud config error listing valid boards", () => {
+  expect(() => loadToml(`[tracker]\ndefault_board = "missing"\n`)).toThrow(/unknown default_board "missing" \(have: ops, int, vid, vidpip\)/);
 });
 
 test("github activity relay defaults route to the configured dev feed", () => {

@@ -221,12 +221,12 @@ test("composePrompt interleaves caller-supplied extra blocks by the same priorit
 });
 
 test("composePrompt renders with the live config", () => {
-  const config = validateConfig({ plane: { default_board: "ops" } });
+  const config = validateConfig({ tracker: { default_board: "ops" } });
   const registry = new CapabilityRegistry();
   registry.register(
     cap({
       id: "boards",
-      promptBlock: { id: "boards", render: ({ config: c }) => `default board: ${c.plane.default_board}` },
+      promptBlock: { id: "boards", render: ({ config: c }) => `default board: ${c.tracker.default_board}` },
     }),
   );
   expect(registry.composePrompt({ config })).toBe("default board: ops");

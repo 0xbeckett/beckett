@@ -7,12 +7,7 @@ const quiet = (() => {
   return logger as never;
 })();
 const config = {
-  plane: {
-    base_url: "https://plane.test", workspace_slug: "beckett", poll_secs: 5, default_board: "ops",
-    boards: { ops: { project_slug: "ops", state_map: {
-      backlog: "Backlog", todo: "Todo", in_progress: "In Progress", in_review: "In Review", done: "Done", cancelled: "Cancelled",
-    } } },
-  },
+  tracker: { poll_secs: 5, default_board: "ops", boards: ["ops"] },
 } as unknown as Config;
 const ticket = (state: string = "todo") => ({
   ref: "#1", title: "Ticket", body: "work", criteria: ["works"], state, needs: [],

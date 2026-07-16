@@ -23,6 +23,7 @@ import { preflightFor, type PreflightResult } from "../drivers/index.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus } from "../shell/control-bus.ts";
 import { resolveGitHubAccount } from "../github/owner.ts";
+import { boredBaseUrl } from "../bored/client.ts";
 
 /** One health probe's outcome. `fail` rows flip the report's overall `ok` to false. */
 export interface DoctorCheck {
@@ -314,16 +315,21 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     }
   }
 
-  // 3. Live token probes — the only honest answer to "is this credential still good?".
-  const planeApiRoot = (env.PLANE_INTERNAL_URL?.trim() || config.plane.base_url).replace(/\/+$/, "");
+  // 3. Tracker reachability — bored is a loopback service with no credential; /health is the probe.
+  const boredRoot = boredBaseUrl(env);
+  try {
+    const res = await fetchFn(`${boredRoot}/health`, { signal: AbortSignal.timeout(10_000) });
+    checks.push(
+      res.ok
+        ? { name: "tracker: bored", level: "ok", detail: `HTTP ${res.status} at ${boredRoot}` }
+        : { name: "tracker: bored", level: "fail", detail: `HTTP ${res.status} from ${boredRoot}/health` },
+    );
+  } catch (err) {
+    checks.push({ name: "tracker: bored", level: "fail", detail: `unreachable at ${boredRoot}: ${(err as Error).message}` });
+  }
+
+  // 3b. Live token probes — the only honest answer to "is this credential still good?".
   const probes: Array<{ name: string; key: string; required: boolean; url: (v: string) => string; headers: (v: string) => Record<string, string>; missingDetail?: string }> = [
-    {
-      name: "token: plane",
-      key: "PLANE_API_TOKEN",
-      required: true,
-      url: () => `${planeApiRoot}/api/v1/workspaces/${config.plane.workspace_slug}/projects/`,
-      headers: (v) => ({ "X-API-Key": v }),
-    },
     {
       name: "token: discord",
       key: "DISCORD_TOKEN",
