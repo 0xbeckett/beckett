@@ -63,7 +63,7 @@ test("list, create, state, journal comments, and cancellation use bored HTTP end
     if (method === "POST" && u.pathname === "/tickets/%231/staff") {
       current = ticket("in_progress"); return Response.json({ ticket: current });
     }
-    if (method === "POST" && u.pathname === "/tickets/%231/pause") return Response.json({ ticket: ticket("in_review") });
+    if (method === "POST" && u.pathname === "/tickets/%231/gate") return Response.json({ ticket: ticket(body?.node === "beckett_review" ? "done" : "in_review") });
     if (method === "POST" && u.pathname === "/tickets/%231/cancel") return Response.json({ ticket: ticket("cancelled") });
     if (method === "POST" && u.pathname === "/tickets/%231/nudge") return Response.json({ receipt: { target: "implement#v1" } });
     if (method === "GET" && u.pathname === "/tickets/%231/events") return Response.json({ events: [
@@ -80,14 +80,17 @@ test("list, create, state, journal comments, and cancellation use bored HTTP end
   expect(created.state).toBe("in_progress");
   expect(requests.find((request) => request.method === "POST" && request.path === "/tickets")?.body).toMatchObject({
     title: "Ticket", criteria: ["works"], autoStaff: false,
+    stateMap: { beckett_implement: "in_progress", beckett_review: "in_review" },
   });
   await client.setState("#1", "in_review");
+  await client.setState("#1", "done");
   await client.setState("#1", "cancelled");
   await expect(client.addComment("#1", "status")).resolves.toMatchObject({ body: "status", author: "beckett" });
   await expect(client.listComments("#1")).resolves.toEqual([{
     id: "#1:event:7", ticketId: "#1", author: "bored", body: "ship it", createdAt: "2026-01-01T00:00:01Z",
   }]);
   await expect(client.listJournal("#1")).resolves.toEqual(["2026-01-01 ship it"]);
-  await expect(client.setState("#1", "done")).rejects.toMatchObject({ status: 501 });
+  await expect(client.setState("#1", "todo")).rejects.toMatchObject({ status: 501 });
+  expect(requests.find((request) => request.method === "POST" && request.path === "/tickets/%231/gate")?.body).toEqual({ node: "beckett_implement", verdict: "pass" });
   expect(requests.map((request) => `${request.method} ${request.path}`)).toContain("POST /tickets/%231/staff");
 });

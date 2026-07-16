@@ -56,6 +56,26 @@ const EventSchema = z.object({
   text: z.string().optional(),
 }).passthrough();
 
+/**
+ * A two-gate Bored flow used only as a state bridge. Bored keeps the durable source of truth and
+ * its documented `staff`/`gate` verbs advance the same states the legacy dispatcher requests;
+ * human gates deliberately spawn no Bored worker, so there is never a duplicate harness process.
+ */
+function dispatcherBridgeFlow(): Record<string, unknown> {
+  return {
+    version: 1,
+    entry: "beckett_implement",
+    nodes: {
+      beckett_implement: {
+        kind: "gate", by: "human", onPass: "beckett_review", onFail: "park", maxFails: 1, maxVisits: 1,
+      },
+      beckett_review: {
+        kind: "gate", by: "human", onPass: "done", onFail: "park", maxFails: 1, maxVisits: 1,
+      },
+    },
+  };
+}
+
 /** Bored's tracker client, shaped to satisfy TrackerClient. */
 export class BoredClient {
   private readonly config: Config;
@@ -124,13 +144,22 @@ export class BoredClient {
     // Bored files ready tickets as `todo`; unlike Plane it has no mutable backlog column.
     // Do not turn Plane's omitted/default backlog into a failing write; explicit transitions
     // still go through the supported workflow verbs below.
-    if (input.state && input.state !== ticket.state) await this.setState(ticket.id, input.state);
+    if (input.state && input.state !== ticket.state) {
+      // A direct filing may request a later lifecycle state. Walk the bridge in order so Bored
+      // has opened the run before a gate is decided.
+      if (input.state === "in_review" || input.state === "done") {
+        await this.setState(ticket.id, "in_progress");
+        await this.setState(ticket.id, "in_review");
+      }
+      if (input.state === "done") await this.setState(ticket.id, "done");
+      else if (input.state !== "in_review") await this.setState(ticket.id, input.state);
+    }
     return (await this.getIssue(ticket.id)) ?? ticket;
   }
 
   async setState(id: string, state: TicketState): Promise<void> {
-    // These are the state transitions bored's public API can honestly perform. Its state is a
-    // projection of its run, not a mutable column like Plane's workflow state.
+    // Bored's state is a workflow projection, not a mutable column. The bridge flow above
+    // translates the dispatcher's lifecycle writes into Bored's documented workflow verbs.
     switch (state) {
       case "in_progress":
         await this.req("POST", `${this.ticketPath(id)}/staff`, {});
