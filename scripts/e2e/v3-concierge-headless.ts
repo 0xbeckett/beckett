@@ -1,19 +1,19 @@
 /**
  * Headless Concierge validation — drives ConciergeSession.ask() WITHOUT Discord and checks the
- * decision quality: trivia is answered inline (no ticket), real backend work is filed as a Plane
- * ticket with the codex-implement / Opus-review casting. Run on a host where `claude` + the
- * `beckett` CLI + Plane are reachable (loom-desk), with PLANE_* in the env / ~/.beckett.
+ * decision quality: trivia is answered inline (no ticket), real backend work is filed as a
+ * tracker ticket with the codex-implement / Opus-review casting. Run on a host where `claude` +
+ * the `beckett` CLI + the bored tracker are reachable.
  *
  *   bun run scripts/e2e/v3-concierge-headless.ts
  */
 import { join } from "node:path";
 import { loadConfig } from "../../src/config.ts";
 import { ConciergeSession } from "../../src/concierge/index.ts";
-import { PlaneClient } from "../../src/tracker/client.ts";
+import { createTrackerClient } from "../../src/tracker/client.ts";
 
 const repoRoot = process.env.BECKETT_REPO_ROOT ?? join(import.meta.dir, "../..");
 const config = loadConfig();
-const client = new PlaneClient({ config });
+const client = createTrackerClient({ config });
 const before = (await client.listIssues()).length;
 
 const s = new ConciergeSession({ config, cwd: repoRoot });

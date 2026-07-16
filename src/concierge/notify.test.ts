@@ -1,6 +1,6 @@
 /**
  * Coverage for the closed agent loop's routing + dedup (Concierge.notify / frameUpdate). This is
- * the brittle judgment — which Plane events become a Discord ping, on which channel, exactly once —
+ * the brittle judgment — which tracker events become a Discord ping, on which channel, exactly once —
  * so it's pinned here against an injected fake session rather than left to a live run.
  */
 
@@ -138,12 +138,12 @@ test("the done ping carries the artifact link from the dispatcher's done comment
       return Promise.resolve("");
     },
   } as unknown as ConciergeSession;
-  const plane = {
+  const tracker = {
     listComments: async () => [
       comment("<!-- beckett:dispatcher -->\nSelf-reviewed → **done** (one pass).\n\nShipped: https://github.com/0xbeckett/healthz"),
     ],
   };
-  const concierge = new Concierge({ config, session, gateway: {} as never, plane });
+  const concierge = new Concierge({ config, session, gateway: {} as never, tracker });
   concierge.notify({ kind: "state_changed", ticket: ticket({ state: "done" }), from: "in_review", to: "done" });
   await new Promise((r) => setTimeout(r, 0));
   expect(asks.length).toBe(1);

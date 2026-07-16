@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrackerPoller } from "./poll.ts";
-import type { PlaneClient } from "./client.ts";
+import type { TrackerClient } from "./client.ts";
 import type { TicketComment, Ticket } from "./types.ts";
 
 function ticket(over: Partial<Ticket> = {}): Ticket {
@@ -36,7 +36,7 @@ function comment(ticketId: string, over: Partial<TicketComment> = {}): TicketCom
   };
 }
 
-class FakePlaneClient {
+class FakeTrackerClient {
   tickets: Ticket[] = [];
   comments = new Map<string, TicketComment[]>();
   commentCalls: { ticketId: string; since?: string }[] = [];
@@ -77,9 +77,9 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 
 describe("TrackerPoller comment hot path", () => {
   test("does not fetch comments for unchanged active tickets", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     client.tickets = [ticket()];
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
 
     await poller.poll(); // first sight seeds the cursor without replaying history
     client.commentCalls = [];
@@ -89,9 +89,9 @@ describe("TrackerPoller comment hot path", () => {
   });
 
   test("fetches comments when issue updatedAt advances", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     client.tickets = [ticket()];
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
 
     await poller.poll();
     const updated = ticket({ updatedAt: "2026-01-01T00:00:05.000Z" });
@@ -104,12 +104,12 @@ describe("TrackerPoller comment hot path", () => {
   });
 
   test("fetches changed tickets' comments in parallel while preserving ticket order", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     client.tickets = [
       ticket({ id: "a", identifier: "OPS-A" }),
       ticket({ id: "b", identifier: "OPS-B" }),
     ];
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
     await poller.poll();
 
     let release!: () => void;
@@ -139,7 +139,7 @@ describe("TrackerPoller comment hot path", () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-comment-cursor-"));
     try {
       const cursorPath = join(dir, "cursors.json");
-      const client = new FakePlaneClient();
+      const client = new FakeTrackerClient();
       const active = ticket({ updatedAt: "2026-01-01T00:10:00.000Z" });
       client.tickets = [active];
       client.comments.set("t1", [
@@ -154,7 +154,7 @@ describe("TrackerPoller comment hot path", () => {
       );
 
       const poller = new TrackerPoller({
-        client: client as unknown as PlaneClient,
+        client: client as unknown as TrackerClient,
         logger: quiet,
         now: () => Date.parse("2026-01-01T00:10:00.000Z"),
         commentCursorPath: cursorPath,
@@ -172,11 +172,11 @@ describe("TrackerPoller comment hot path", () => {
   });
 
   test("prime re-staffs live INT Design but leaves Review (Design) parked", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     const design = ticket({ id: "int-design", identifier: "INT-1", state: "design" });
     const gate = ticket({ id: "int-gate", identifier: "INT-2", state: "design_review" });
     client.tickets = [design, gate];
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
 
     const events = await poller.prime();
     expect(events.filter((e) => e.kind === "state_changed")).toEqual([
@@ -185,17 +185,17 @@ describe("TrackerPoller comment hot path", () => {
   });
 
   test("prime re-staffs tickets already in review", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     const reviewing = ticket({ state: "in_review" });
     client.tickets = [reviewing];
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
 
     const events = await poller.prime();
     expect(events).toEqual([{ kind: "state_changed", ticket: reviewing, from: null, to: "in_review" }]);
   });
 
   test("same-timestamp comments are deduped by id instead of dropped", async () => {
-    class InclusiveFakePlaneClient extends FakePlaneClient {
+    class InclusiveFakeTrackerClient extends FakeTrackerClient {
       override async listComments(
         ticketId: string,
         since?: string,
@@ -210,7 +210,7 @@ describe("TrackerPoller comment hot path", () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-comment-tie-"));
     try {
       const cursorPath = join(dir, "cursors.json");
-      const client = new InclusiveFakePlaneClient();
+      const client = new InclusiveFakeTrackerClient();
       client.tickets = [ticket()];
       await Bun.write(
         cursorPath,
@@ -219,7 +219,7 @@ describe("TrackerPoller comment hot path", () => {
         }),
       );
       const poller = new TrackerPoller({
-        client: client as unknown as PlaneClient,
+        client: client as unknown as TrackerClient,
         logger: quiet,
         now: () => Date.parse("2026-01-01T00:01:00.000Z"),
         commentCursorPath: cursorPath,
@@ -245,9 +245,9 @@ describe("TrackerPoller comment hot path", () => {
   });
 
   test("scheduled ticks deliver empty batches so downstream maintenance still runs", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     client.tickets = [ticket()];
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
     await poller.poll();
 
     const seen: number[] = [];
@@ -265,10 +265,10 @@ describe("TrackerPoller comment hot path", () => {
 
 describe("TrackerPoller stats (issue #30)", () => {
   test("successful polls stamp lastPollAt and keep failures at zero", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     client.tickets = [ticket()];
     let clock = 1_000;
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => clock });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => clock });
 
     expect(poller.stats()).toEqual({ lastPollAt: null, lastPollAgeMs: null, consecutiveFailures: 0 });
     await poller.poll();
@@ -277,15 +277,15 @@ describe("TrackerPoller stats (issue #30)", () => {
   });
 
   test("failed polls count consecutively and a success resets", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     client.tickets = [ticket()];
     let boom = true;
     const listIssueHeads = client.listIssueHeads.bind(client);
     client.listIssueHeads = async () => {
-      if (boom) throw new Error("plane down");
+      if (boom) throw new Error("tracker down");
       return listIssueHeads();
     };
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
 
     await poller.poll();
     await poller.poll();
@@ -301,9 +301,9 @@ describe("TrackerPoller stats (issue #30)", () => {
 
 describe("polling diet + instant paths (issue #33)", () => {
   test("an unchanged board costs zero hydrations after first sight", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     client.tickets = [ticket()];
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
 
     await poller.poll(); // first sight hydrates once
     expect(client.getIssueCalls).toEqual(["t1"]);
@@ -313,12 +313,12 @@ describe("polling diet + instant paths (issue #33)", () => {
   });
 
   test("only the ticket whose updated_at moved is hydrated", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     client.tickets = [
       ticket({ id: "a", identifier: "OPS-A" }),
       ticket({ id: "b", identifier: "OPS-B" }),
     ];
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
     await poller.poll();
     client.getIssueCalls = [];
 
@@ -331,10 +331,10 @@ describe("polling diet + instant paths (issue #33)", () => {
   });
 
   test("observe() suppresses the duplicate of a dispatcher-written advance", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     const t = ticket();
     client.tickets = [t];
-    const poller = new TrackerPoller({ client: client as unknown as PlaneClient, logger: quiet, now: () => 0 });
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
     await poller.poll();
 
     // The dispatcher advanced the ticket to done and already notified the concierge directly.
@@ -347,10 +347,10 @@ describe("polling diet + instant paths (issue #33)", () => {
   });
 
   test("poke() runs an immediate tick instead of waiting out the poll interval", async () => {
-    const client = new FakePlaneClient();
+    const client = new FakeTrackerClient();
     const batches: unknown[][] = [];
     const poller = new TrackerPoller({
-      client: client as unknown as PlaneClient,
+      client: client as unknown as TrackerClient,
       logger: quiet,
       pollSecs: 3_600, // the interval alone would never fire inside this test
       now: () => 0,

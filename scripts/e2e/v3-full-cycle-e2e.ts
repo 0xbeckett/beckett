@@ -1,37 +1,23 @@
 /**
- * v3 FULL-CYCLE e2e — the capstone. Wires the real TrackerPoller + Dispatcher against the live
- * Plane instance (reached via an SSH tunnel → PLANE_INTERNAL_URL) and drives ONE ticket through
- * the entire machine: create(in_progress) → poller → implement worker → in_review → reviewer →
- * done. Spawns real Claude workers in real git worktrees. Cleans up the ticket at the end.
+ * FULL-CYCLE e2e — the capstone. Wires the real TrackerPoller + Dispatcher against the live
+ * bored tracker (loopback; BECKETT_BORED_URL, default http://127.0.0.1:7770) and drives ONE
+ * ticket through the entire machine: create(in_progress) → poller → implement worker →
+ * in_review → reviewer → done. Spawns real Claude workers in real git worktrees. Cancels an
+ * unfinished ticket at the end (bored keeps history; there is no destructive delete).
  *
- * Run (with `ssh -fN -L 8751:localhost:8750 loom-desk` up):
- *   PLANE_INTERNAL_URL=http://localhost:8751 PLANE_API_TOKEN=... bun run scripts/e2e/v3-full-cycle-e2e.ts
+ * Run on a host where bored + the `claude` harness are available:
+ *   bun run scripts/e2e/v3-full-cycle-e2e.ts
  */
+import { join } from "node:path";
 import { loadConfig } from "../../src/config.ts";
-import { PlaneClient } from "../../src/tracker/client.ts";
+import { createTrackerClient } from "../../src/tracker/client.ts";
 import { TrackerPoller } from "../../src/tracker/poll.ts";
 import { Dispatcher } from "../../src/dispatch/dispatcher.ts";
 
-const repoRoot = "/Users/jason/Code/beckett";
-const config = {
-  ...loadConfig(),
-  plane: {
-    base_url: "https://plane.0xbeckett.me",
-    workspace_slug: "beckett",
-    project_slug: "ops",
-    poll_secs: 3,
-    state_map: {
-      backlog: "Backlog",
-      todo: "Todo",
-      in_progress: "In Progress",
-      in_review: "In Review",
-      done: "Done",
-      cancelled: "Cancelled",
-    },
-  },
-} as any;
+const repoRoot = process.env.BECKETT_REPO_ROOT ?? join(import.meta.dir, "../..");
+const config = loadConfig();
 
-const client = new PlaneClient({ config });
+const client = createTrackerClient({ config });
 const dispatcher = new Dispatcher({ client, config, resolveRepoRoot: () => repoRoot });
 const poller = new TrackerPoller({ client, pollSecs: 3 });
 
@@ -69,15 +55,13 @@ poller.stop();
 console.log(`\n→ final state: ${finalState || lastState}`);
 console.log(finalState === "done" ? "✅ FULL CYCLE PASSED (in_progress → in_review → done)" : "⚠️  did not reach done within the deadline");
 
-// cleanup
-try {
-  const internal = process.env.PLANE_INTERNAL_URL ?? "http://localhost:8751";
-  await fetch(`${internal}/api/v1/workspaces/beckett/projects/${ticket.projectId}/issues/${ticket.id}/`, {
-    method: "DELETE",
-    headers: { "X-API-Key": process.env.PLANE_API_TOKEN ?? "" },
-  });
-  console.log("  cleaned up test ticket.");
-} catch {
-  /* best effort */
+// cleanup: cancel anything unfinished so the board doesn't accumulate stuck e2e tickets
+if (finalState !== "done" && finalState !== "cancelled") {
+  try {
+    await client.setState(ticket.id, "cancelled");
+    console.log("  cancelled unfinished test ticket.");
+  } catch {
+    /* best effort */
+  }
 }
 process.exit(0);
