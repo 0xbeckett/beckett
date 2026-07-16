@@ -2,9 +2,9 @@
  * Beckett — version source-of-truth + deploy-time bump orchestration (`src/version/index.ts`)
  * =======================================================================================
  * `package.json`'s `version` is the ONE canonical home for Beckett's own semver (OPS-188). This
- * module is the only place that reads/writes it, plus the git glue that (a) finds the last
- * DEPLOYED version (the newest `vX.Y.Z` tag — deploy tags after a successful restart) and (b) lists
- * the commit subjects merged since then. On top of that sits {@link computeBumpSuggestion}: base +
+ * module is the only place that reads/writes it, plus the git glue that (a) finds the highest known
+ * release version across `package.json` and `vX.Y.Z` tags, and (b) lists commits since the newest
+ * tag when one exists. On top of that sits {@link computeBumpSuggestion}: base +
  * commits → a MINOR/PATCH suggestion (see {@link classifyBump}) that the deploy step surfaces for
  * confirm/override before it's written and committed. MAJOR is owner-only and never auto-suggested.
  *
@@ -14,7 +14,7 @@
 
 import { join } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
-import { applyBump, classifyBump, formatSemver, parseSemver, type BumpLevel, type BumpSuggestion } from "./semver.ts";
+import { applyBump, classifyBump, compareSemver, formatSemver, parseSemver, type BumpLevel, type BumpSuggestion } from "./semver.ts";
 
 export * from "./semver.ts";
 
@@ -43,17 +43,19 @@ export function readVersion(repoRoot: string = defaultRepoRoot()): string {
 /**
  * Write a new version into `package.json`, preserving the file's exact formatting by replacing only
  * the `"version": "…"` token (never a full re-serialize, which would reorder/reflow the file). The
- * new value is validated first. Returns the version written.
+ * new value is validated first and must be strictly greater than the current source-of-truth
+ * version. A release writer must never turn an untagged/manual version bump into a downgrade.
+ * Returns the version written.
  */
 export function writeVersion(newVersion: string, repoRoot: string = defaultRepoRoot()): string {
   const next = formatSemver(parseSemver(newVersion)); // normalize + validate
+  const current = readVersion(repoRoot);
+  if (compareSemver(next, current) <= 0) {
+    throw new Error(`refusing to write v${next}: package.json is already v${current}`);
+  }
   const path = packageJsonPath(repoRoot);
   const raw = readFileSync(path, "utf8");
   const versionField = /("version"\s*:\s*")(\d+\.\d+\.\d+)(")/;
-  // Match presence EXPLICITLY — never infer "field missing" from `replaced === raw`. When the target
-  // already equals what's on disk (e.g. a redeploy where the classifier lands on the current
-  // version), `.replace()` is a valid no-op that leaves the string identical; that is NOT a failure.
-  // Only a genuinely absent version field is an error.
   if (!versionField.test(raw)) {
     throw new Error("could not locate a version field to update in package.json");
   }
@@ -75,11 +77,8 @@ async function runGit(repoRoot: string, args: string[]): Promise<string> {
 }
 
 /**
- * The last DEPLOYED version: the newest `vX.Y.Z` tag (deploy tags after a successful restart), as a
- * bare semver string (no "v"). `null` when there are no version tags yet (a fresh repo / first
- * deploy), so callers can fall back to the source-of-truth version as the base.
- */
-export async function lastDeployedVersion(repoRoot: string = defaultRepoRoot()): Promise<string | null> {
+/** The newest valid `vX.Y.Z` tag, or `null` when this is a first deploy. */
+async function newestTaggedVersion(repoRoot: string): Promise<string | null> {
   const out = await runGit(repoRoot, ["tag", "--list", "v[0-9]*.[0-9]*.[0-9]*", "--sort=-v:refname"]);
   const newest = out.split("\n").map((s) => s.trim()).filter(Boolean)[0];
   if (!newest) return null;
@@ -88,6 +87,17 @@ export async function lastDeployedVersion(repoRoot: string = defaultRepoRoot()):
   } catch {
     return null;
   }
+}
+
+/**
+ * The bump base: the greater of package.json's source-of-truth version and the newest `vX.Y.Z`
+ * tag, as a bare semver string. This deliberately preserves an untagged/manual package version;
+ * tags are a release record, never permission to downgrade the source of truth.
+ */
+export async function lastDeployedVersion(repoRoot: string = defaultRepoRoot()): Promise<string> {
+  const packageVersion = readVersion(repoRoot);
+  const tagVersion = await newestTaggedVersion(repoRoot);
+  return tagVersion && compareSemver(tagVersion, packageVersion) > 0 ? tagVersion : packageVersion;
 }
 
 /**
@@ -128,11 +138,11 @@ export async function areasChangedSince(repoRoot: string, base: string | null): 
 
 /** A fully-resolved bump suggestion the deploy step can print, confirm, or override. */
 export interface DeployBumpSuggestion {
-  /** The last deployed version we diffed against (source-of-truth version when no tag exists). */
+  /** The max(package.json version, newest tag) bump base. */
   base: string;
-  /** Whether `base` came from a git tag (`true`) or fell back to package.json (`false`). */
+  /** Whether a tag exists for the selected bump base. */
   fromTag: boolean;
-  /** The commit subjects since `base` that were classified. */
+  /** The commit subjects since the newest tag (or recent history when no tag exists) that were classified. */
   commits: string[];
   /** Top-level source areas touched since `base` (colour for the reason, not the decision). */
   areas: string[];
@@ -143,22 +153,23 @@ export interface DeployBumpSuggestion {
 }
 
 /**
- * Compute the deploy-time bump suggestion: diff since the last deployed version, classify MINOR vs
- * PATCH, and project the resulting version. Pure data — it neither writes nor commits. `base`
- * defaults to the newest version tag, falling back to the source-of-truth version.
+ * Compute the deploy-time bump suggestion: use max(package.json version, newest tag) as the base,
+ * classify MINOR vs PATCH from commits since the newest tag, and project the resulting version.
+ * Pure data — it neither writes nor commits.
  */
 export async function computeBumpSuggestion(
   repoRoot: string = defaultRepoRoot(),
   max = 50,
 ): Promise<DeployBumpSuggestion> {
-  const tagBase = await lastDeployedVersion(repoRoot);
-  const base = tagBase ?? readVersion(repoRoot);
+  const packageVersion = readVersion(repoRoot);
+  const tagBase = await newestTaggedVersion(repoRoot);
+  const base = tagBase && compareSemver(tagBase, packageVersion) > 0 ? tagBase : packageVersion;
   const commits = await commitsSinceVersion(repoRoot, tagBase, max);
   const areas = await areasChangedSince(repoRoot, tagBase);
   const suggestion = classifyBump(commits);
   return {
     base,
-    fromTag: tagBase !== null,
+    fromTag: tagBase === base,
     commits,
     areas,
     suggestion,

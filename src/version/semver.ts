@@ -33,6 +33,13 @@ export function formatSemver(v: Semver): string {
   return `${v.major}.${v.minor}.${v.patch}`;
 }
 
+/** Compare two versions numerically (negative when `a < b`, zero when equal, positive when `a > b`). */
+export function compareSemver(a: string, b: string): number {
+  const left = parseSemver(a);
+  const right = parseSemver(b);
+  return left.major - right.major || left.minor - right.minor || left.patch - right.patch;
+}
+
 /**
  * Apply a bump to a version string and return the new one. Higher parts zero the lower parts
  * (a minor resets patch; a major resets minor + patch) — the standard semver carry.

@@ -38,6 +38,7 @@ import { quickDetachedMessage } from "./quick-output.ts";
 import { formatDispatchTrace, readDispatchEvents } from "../dispatch/events.ts";
 import {
   commitVersion,
+  compareSemver,
   computeBumpSuggestion,
   defaultRepoRoot as versionRepoRoot,
   readVersion,
@@ -283,6 +284,10 @@ async function runVersion(argv: string[]): Promise<void> {
   const { version, level } = resolveVersion(s.base, s.suggestion, override);
   if (version === s.base) {
     fail(`resolved version v${version} equals the base — nothing to bump (choose a higher level or --set)`);
+  }
+  const current = readVersion(repoRoot);
+  if (compareSemver(version, current) <= 0) {
+    fail(`refusing to write v${version}: package.json is already v${current}`);
   }
 
   writeVersion(version, repoRoot);
