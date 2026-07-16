@@ -151,7 +151,7 @@ export class BoredClient {
 
   /** Bored's event journal is its comment-equivalent; nudges are the human text dispatch consumes. */
   async listComments(ticketId: string, since?: string, opts: { inclusive?: boolean } = {}): Promise<PlaneComment[]> {
-    const events = await this.listJournal(ticketId);
+    const events = await this.listEvents(ticketId);
     return events
       .filter((event) => event.type === "nudge_delivered" && typeof event.text === "string")
       .map((event) => ({
@@ -182,8 +182,15 @@ export class BoredClient {
     };
   }
 
-  /** Raw bored journal/events surface for operators and poll adaptation. */
-  async listJournal(ticketId: string, tail?: number): Promise<Array<z.infer<typeof EventSchema>>> {
+  /** Raw human journal exposed by bored for operator and diagnostic consumers. */
+  async listJournal(ticketId: string, tail?: number): Promise<string[]> {
+    const query = tail === undefined ? "" : `?tail=${encodeURIComponent(String(tail))}`;
+    const response = await this.req("GET", `${this.ticketPath(ticketId)}/journal${query}`) as { journal?: unknown };
+    return z.array(z.string()).parse(response.journal ?? []);
+  }
+
+  /** Structured event feed used as the poller's comment/nudge equivalent. */
+  private async listEvents(ticketId: string, tail?: number): Promise<Array<z.infer<typeof EventSchema>>> {
     const query = tail === undefined ? "" : `?tail=${encodeURIComponent(String(tail))}`;
     const response = await this.req("GET", `${this.ticketPath(ticketId)}/events${query}`) as { events?: unknown };
     return z.array(EventSchema).parse(response.events ?? []);

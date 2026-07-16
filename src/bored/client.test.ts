@@ -69,6 +69,7 @@ test("list, create, state, journal comments, and cancellation use bored HTTP end
     if (method === "GET" && u.pathname === "/tickets/%231/events") return Response.json({ events: [
       { seq: 7, timestamp: "2026-01-01T00:00:01Z", type: "nudge_delivered", text: "ship it" },
     ] });
+    if (method === "GET" && u.pathname === "/tickets/%231/journal") return Response.json({ journal: ["2026-01-01 ship it"] });
     if (method === "GET" && u.pathname === "/health") return Response.json({ ok: true });
     throw new Error(`unexpected bored route: ${method} ${u.pathname}`);
   }) as unknown as typeof fetch;
@@ -86,6 +87,7 @@ test("list, create, state, journal comments, and cancellation use bored HTTP end
   await expect(client.listComments("#1")).resolves.toEqual([{
     id: "#1:event:7", ticketId: "#1", author: "bored", body: "ship it", createdAt: "2026-01-01T00:00:01Z",
   }]);
+  await expect(client.listJournal("#1")).resolves.toEqual(["2026-01-01 ship it"]);
   await expect(client.setState("#1", "done")).rejects.toMatchObject({ status: 501 });
   expect(requests.map((request) => `${request.method} ${request.path}`)).toContain("POST /tickets/%231/staff");
 });
