@@ -5,20 +5,20 @@ import { join } from "node:path";
 import type { CreateTicketInput } from "../tracker/types.ts";
 import type { Ticket } from "../tracker/types.ts";
 import { TaskStore } from "../task/store.ts";
-import { startTaskBranch, type TaskPlaneClient } from "./task-start.ts";
+import { startTaskBranch, type TaskTrackerClient } from "./task-start.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function setup(): { store: TaskStore; inputs: CreateTicketInput[]; tickets: Ticket[]; client: TaskPlaneClient } {
+function setup(): { store: TaskStore; inputs: CreateTicketInput[]; tickets: Ticket[]; client: TaskTrackerClient } {
   const dir = mkdtempSync(join(tmpdir(), "beckett-task-start-"));
   dirs.push(dir);
   const store = new TaskStore(join(dir, "tasks.json"));
   const inputs: CreateTicketInput[] = [];
   const tickets: Ticket[] = [];
-  const client: TaskPlaneClient = {
+  const client: TaskTrackerClient = {
     async listIssues() {
       return tickets.map((ticket) => ({ ...ticket }));
     },
@@ -38,8 +38,8 @@ function setup(): { store: TaskStore; inputs: CreateTicketInput[]; tickets: Tick
         blockedBy: input.blockedBy ?? [],
         branchRef: input.branchRef,
         project: input.project,
-        projectId: "plane-project",
-        url: `https://plane.test/OPS-${n}`,
+        projectId: "bored:ops",
+        url: `https://tracker.test/OPS-${n}`,
         updatedAt: "2026-07-12T00:00:00.000Z",
         originChannel: input.originChannel,
       } as Ticket;
@@ -50,7 +50,7 @@ function setup(): { store: TaskStore; inputs: CreateTicketInput[]; tickets: Tick
   return { store, inputs, tickets, client };
 }
 
-test("starts the main branch as a linked Plane ticket", async () => {
+test("starts the main branch as a linked tracker ticket", async () => {
   const { store, inputs, client } = setup();
   await store.createTask({ title: "Voting", project: "polls" });
 
@@ -73,7 +73,7 @@ test("starts the main branch as a linked Plane ticket", async () => {
   expect(store.findByTicket("OPS-1")?.task.number).toBe(1);
 });
 
-test("translates branch dependencies and native parentage into Plane ids", async () => {
+test("translates branch dependencies and native parentage into tracker ids", async () => {
   const { store, inputs, client } = setup();
   await store.createTask({ title: "Voting", project: "polls" });
   const api = await store.createBranch({ task: 1, title: "API", needs: ["1.1"] });
@@ -92,7 +92,7 @@ test("translates branch dependencies and native parentage into Plane ids", async
   });
 });
 
-test("refuses an unstarted dependency or duplicate start before writing Plane", async () => {
+test("refuses an unstarted dependency or duplicate start before writing the tracker", async () => {
   const { store, inputs, client } = setup();
   await store.createTask({ title: "Voting", project: "polls" });
   const api = await store.createBranch({ task: 1, title: "API", needs: ["1.1"] });
@@ -107,7 +107,7 @@ test("refuses an unstarted dependency or duplicate start before writing Plane", 
   expect(inputs).toHaveLength(1);
 });
 
-test("starts immediately when every authoritative Plane dependency is already done", async () => {
+test("starts immediately when every authoritative tracker dependency is already done", async () => {
   const { store, inputs, tickets, client } = setup();
   await store.createTask({ title: "Voting", project: "polls" });
   const api = await store.createBranch({ task: 1, title: "API", needs: ["1.1"] });
@@ -136,8 +136,8 @@ test("recovers a remotely-created branch instead of filing a duplicate", async (
     blockedBy: [],
     branchRef: "1.1",
     project: "polls",
-    projectId: "plane-project",
-    url: "https://plane.test/OPS-99",
+    projectId: "bored:ops",
+    url: "https://tracker.test/OPS-99",
     updatedAt: "2026-07-12T00:00:00.000Z",
   });
 
@@ -147,7 +147,7 @@ test("recovers a remotely-created branch instead of filing a duplicate", async (
   expect(store.getBranch("1.1")?.branch.ticket?.id).toBe("remote-1");
 });
 
-test("concurrent starts reserve the branch before the Plane network gap", async () => {
+test("concurrent starts reserve the branch before the tracker network gap", async () => {
   const { store, inputs, client } = setup();
   await store.createTask({ title: "Voting", project: "polls" });
   let release!: () => void;

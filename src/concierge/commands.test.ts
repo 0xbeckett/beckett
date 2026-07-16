@@ -248,7 +248,7 @@ test("startup repairs a deleted task thread and restores linked-ticket routing",
   await tasks.setThread(1, "thread-deleted", "parent-1");
   await tasks.linkTicket(
     "1.1",
-    { id: "ticket-id", identifier: "OPS-321", board: "ops", projectId: "project-id", url: "https://plane/OPS-321" },
+    { id: "ticket-id", identifier: "OPS-321", board: "ops", projectId: "project-id", url: "https://tracker.test/OPS-321" },
     "in_progress",
   );
 

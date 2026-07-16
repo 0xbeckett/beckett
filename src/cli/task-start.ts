@@ -1,10 +1,10 @@
-/** Plane-facing half of `beckett task start`, kept injectable for focused tests. */
+/** Tracker-facing half of `beckett task start`, kept injectable for focused tests. */
 import type { CreateTicketInput } from "../tracker/types.ts";
 import type { Ticket, TicketState } from "../tracker/types.ts";
 import { projectSlug } from "../tracker/cast.ts";
 import type { TaskBranch, TaskStore, WorkTask } from "../task/store.ts";
 
-export interface TaskPlaneClient {
+export interface TaskTrackerClient {
   createIssue(input: CreateTicketInput): Promise<Ticket>;
   listIssues(): Promise<Ticket[]>;
 }
@@ -23,20 +23,20 @@ export interface StartedTaskBranch {
 }
 
 /**
- * File one registered branch as a normal Plane ticket, translating task-branch dependencies back
- * to the internal Plane identifiers the dispatcher already understands.
+ * File one registered branch as a normal tracker ticket, translating task-branch dependencies
+ * back to the internal ticket identifiers the dispatcher already understands.
  */
 export async function startTaskBranch(
   store: TaskStore,
-  client: TaskPlaneClient,
+  client: TaskTrackerClient,
   input: StartTaskBranchInput,
 ): Promise<StartedTaskBranch> {
   const found = store.getBranch(input.branchRef);
   if (!found) throw new Error(`no such branch: #${input.branchRef.replace(/^#/, "")}`);
-  const planeTickets = await client.listIssues();
-  const remoteMatches = planeTickets.filter((ticket) => ticket.branchRef === found.branch.ref);
+  const remoteTickets = await client.listIssues();
+  const remoteMatches = remoteTickets.filter((ticket) => ticket.branchRef === found.branch.ref);
   if (remoteMatches.length > 1) {
-    throw new Error(`branch #${found.branch.ref} has multiple Plane records; refusing to create another`);
+    throw new Error(`branch #${found.branch.ref} has multiple tracker records; refusing to create another`);
   }
   if (found.branch.ticket) {
     throw new Error(`branch #${found.branch.ref} is already started as ${found.branch.ticket.identifier}`);
@@ -66,13 +66,13 @@ export async function startTaskBranch(
     }
     return dependency;
   });
-  const currentById = new Map(planeTickets.map((ticket) => [ticket.id, ticket]));
+  const currentById = new Map(remoteTickets.map((ticket) => [ticket.id, ticket]));
   for (const dependency of dependencies) {
     if (dependency.ticket!.board !== input.board) {
-      throw new Error(`dependency branch #${dependency.ref} must use the same Plane board as #${found.branch.ref}`);
+      throw new Error(`dependency branch #${dependency.ref} must use the same tracker board as #${found.branch.ref}`);
     }
     if (!currentById.has(dependency.ticket!.id)) {
-      throw new Error(`dependency branch #${dependency.ref} is missing from Plane; refusing to park forever`);
+      throw new Error(`dependency branch #${dependency.ref} is missing from the tracker; refusing to park forever`);
     }
   }
   const blockers = dependencies.map((dependency) => dependency.ticket!.identifier);
@@ -84,10 +84,10 @@ export async function startTaskBranch(
       throw new Error(`parent branch #${found.branch.parentRef} must be started before #${found.branch.ref}`);
     }
     if (parent.ticket.board !== input.board) {
-      throw new Error(`parent branch #${found.branch.parentRef} must use the same Plane board as #${found.branch.ref}`);
+      throw new Error(`parent branch #${found.branch.parentRef} must use the same tracker board as #${found.branch.ref}`);
     }
     if (!currentById.has(parent.ticket.id)) {
-      throw new Error(`parent branch #${found.branch.parentRef} is missing from Plane`);
+      throw new Error(`parent branch #${found.branch.parentRef} is missing from the tracker`);
     }
     parentId = parent.ticket.id;
   }
@@ -131,7 +131,7 @@ export async function startTaskBranch(
     await store.releaseStart(found.branch.ref, claim).catch(() => undefined);
     return { task: store.getTask(found.task.number)!, branch, ticket };
   } catch (err) {
-    // Keep the claim: a timeout may have created Plane remotely. A retry first reconciles by the
+    // Keep the claim: a timeout may have created the ticket remotely. A retry first reconciles by the
     // branch marker; stale claims become reclaimable after the bounded recovery window.
     throw err;
   }

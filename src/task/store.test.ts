@@ -51,7 +51,7 @@ test("links internal tickets while keeping the public branch reference stable", 
   await store.createTask({ title: "Voting", project: "polls" });
   const linked = await store.linkTicket(
     "#1.1",
-    { id: "uuid", identifier: "OPS-143", board: "ops", projectId: "p1", url: "https://plane/OPS-143" },
+    { id: "uuid", identifier: "OPS-143", board: "ops", projectId: "p1", url: "https://tracker.test/OPS-143" },
     "in_progress",
     "polls",
   );
@@ -65,7 +65,7 @@ test("a corrupt registry fails loudly instead of resetting task numbers", () => 
   expect(() => store.list()).toThrow("task registry");
 });
 
-test("start claims serialize the Plane create gap and clear after linking", async () => {
+test("start claims serialize the tracker create gap and clear after linking", async () => {
   const { path, store } = makeStore();
   await store.createTask({ title: "Voting" });
   const token = await store.reserveStart("1.1");
@@ -98,7 +98,7 @@ test("resuming implementation clears the previous final diff snapshot", async ()
     identifier: "OPS-143",
     board: "ops",
     projectId: "p1",
-    url: "https://plane/OPS-143",
+    url: "https://tracker.test/OPS-143",
   };
   await store.createTask({ title: "Voting" });
   await store.linkTicket("1.1", ticket, "in_review");

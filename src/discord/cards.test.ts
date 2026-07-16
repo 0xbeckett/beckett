@@ -75,7 +75,7 @@ test("a direct push card links the published repository instead of calling it lo
   expect(embed.color).toBe(0x2ea043);
 });
 
-test("task card lists public branch refs without internal Plane identifiers", () => {
+test("task card lists public branch refs without internal tracker identifiers", () => {
   const embed = renderTaskEmbed({
     id: "t1",
     number: 42,
@@ -88,7 +88,7 @@ test("task card lists public branch refs without internal Plane identifiers", ()
       title: "API",
       status: "running",
       needs: [],
-      ticket: { id: "uuid", identifier: "OPS-143", board: "ops", projectId: "p1", url: "https://plane" },
+      ticket: { id: "uuid", identifier: "OPS-143", board: "ops", projectId: "p1", url: "https://tracker.test" },
       createdAt: "2026-07-12T00:00:00.000Z",
       updatedAt: "2026-07-12T00:00:00.000Z",
     }],

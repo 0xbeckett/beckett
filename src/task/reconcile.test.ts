@@ -18,7 +18,7 @@ test("full-board reconciliation catches terminal changes made while Beckett was 
   await store.createTask({ title: "Voting" });
   await store.linkTicket(
     "1.1",
-    { id: "ticket-1", identifier: "OPS-1", board: "ops", projectId: "p1", url: "https://plane/OPS-1" },
+    { id: "ticket-1", identifier: "OPS-1", board: "ops", projectId: "p1", url: "https://tracker.test/OPS-1" },
     "in_progress",
   );
   const terminal = {
@@ -34,7 +34,7 @@ test("full-board reconciliation catches terminal changes made while Beckett was 
     blockedBy: [],
     branchRef: "1.1",
     projectId: "p1",
-    url: "https://plane/OPS-1",
+    url: "https://tracker.test/OPS-1",
     updatedAt: "2026-07-12T00:00:00.000Z",
   } satisfies Ticket;
 
