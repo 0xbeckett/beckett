@@ -1,5 +1,5 @@
 /**
- * Beckett v3 — Plane ticket-queue shared domain types (`src/plane/types.ts`)
+ * Beckett v3 — Plane ticket-queue shared domain types (`src/tracker/types.ts`)
  * =======================================================================================
  * THE v3 CONTRACT. Every v3 build agent imports its shared vocabulary from here:
  *   - PlaneClient (`./client.ts`)        — speaks the Plane REST API, returns {@link Ticket}s
@@ -136,7 +136,7 @@ export interface Ticket {
 }
 
 /** One comment on a Plane issue. */
-export interface PlaneComment {
+export interface TicketComment {
   id: string;
   ticketId: string;
   author: string; // Plane member id / display name
@@ -155,7 +155,7 @@ export interface PlaneComment {
 export type PollEvent =
   | { kind: "created"; ticket: Ticket }
   | { kind: "state_changed"; ticket: Ticket; from: TicketState | null; to: TicketState }
-  | { kind: "comment_added"; ticket: Ticket; comment: PlaneComment }
+  | { kind: "comment_added"; ticket: Ticket; comment: TicketComment }
   | { kind: "cancelled"; ticket: Ticket };
 
 /** Convenience discriminator alias for the four poll-event kinds. */

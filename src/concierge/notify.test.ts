@@ -7,7 +7,7 @@
 import { expect, test } from "bun:test";
 import { Concierge, type ConciergeSession } from "./index.ts";
 import type { Config } from "../types.ts";
-import type { PlaneComment, PollEvent, Ticket } from "../plane/types.ts";
+import type { TicketComment, PollEvent, Ticket } from "../tracker/types.ts";
 
 const CHAN = "1097283746520174592";
 
@@ -47,7 +47,7 @@ function ticket(overrides: Partial<Ticket> = {}): Ticket {
   };
 }
 
-function comment(body: string): PlaneComment {
+function comment(body: string): TicketComment {
   return { id: "c1", ticketId: "id-1", author: "beckett", body, createdAt: "now" };
 }
 

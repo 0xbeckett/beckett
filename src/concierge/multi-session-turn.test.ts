@@ -17,7 +17,7 @@ import { Concierge, type ConciergeSession, type TurnMessage } from "./index.ts";
 import { validateConfig } from "../config.ts";
 import type { IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
-import type { Ticket } from "../plane/types.ts";
+import type { Ticket } from "../tracker/types.ts";
 
 const CHAN_A = "1097283746520174592";
 const CHAN_B = "1097283746520174599";

@@ -1,7 +1,7 @@
 /** Plane-facing half of `beckett task start`, kept injectable for focused tests. */
-import type { CreateTicketInput } from "../plane/client.ts";
-import type { Ticket, TicketState } from "../plane/types.ts";
-import { projectSlug } from "../plane/cast.ts";
+import type { CreateTicketInput } from "../tracker/types.ts";
+import type { Ticket, TicketState } from "../tracker/types.ts";
+import { projectSlug } from "../tracker/cast.ts";
 import type { TaskBranch, TaskStore, WorkTask } from "../task/store.ts";
 
 export interface TaskPlaneClient {

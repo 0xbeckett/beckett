@@ -1,4 +1,4 @@
-import type { Ticket } from "../plane/types.ts";
+import type { Ticket } from "../tracker/types.ts";
 import type { TaskStore } from "./store.ts";
 
 /** Reconcile a complete Plane board snapshot, including states the event poller intentionally omits. */

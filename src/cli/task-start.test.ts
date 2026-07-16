@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CreateTicketInput } from "../plane/client.ts";
-import type { Ticket } from "../plane/types.ts";
+import type { CreateTicketInput } from "../tracker/types.ts";
+import type { Ticket } from "../tracker/types.ts";
 import { TaskStore } from "../task/store.ts";
 import { startTaskBranch, type TaskPlaneClient } from "./task-start.ts";
 

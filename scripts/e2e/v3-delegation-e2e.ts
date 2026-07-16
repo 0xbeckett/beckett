@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "../../src/config.ts";
 import { spawnWorker } from "../../src/dispatch/spawn.ts";
-import type { Ticket } from "../../src/plane/types.ts";
+import type { Ticket } from "../../src/tracker/types.ts";
 
 const repoRoot = "/Users/jason/Code/beckett";
 const config = loadConfig();

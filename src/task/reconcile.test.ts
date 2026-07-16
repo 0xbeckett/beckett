@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Ticket } from "../plane/types.ts";
+import type { Ticket } from "../tracker/types.ts";
 import { reconcileTaskTickets } from "./reconcile.ts";
 import { TaskStore } from "./store.ts";
 

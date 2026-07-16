@@ -7,11 +7,11 @@
  */
 import { z } from "zod";
 import { log } from "../log.ts";
-import { resolvePlaneBoardName } from "../config.ts";
+import { resolveBoardName } from "../config.ts";
 import type { Config, Logger } from "../types.ts";
-import { parseCast, serializeCast } from "../plane/cast.ts";
-import type { CreateTicketInput, PlaneProvisioningResult, PlaneState } from "../plane/client.ts";
-import type { Casting, PlaneComment, Ticket, TicketState } from "../plane/types.ts";
+import { parseCast, serializeCast } from "../tracker/cast.ts";
+import type { CreateTicketInput, ProvisioningResult, WorkflowState } from "../tracker/types.ts";
+import type { Casting, TicketComment, Ticket, TicketState } from "../tracker/types.ts";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const REQUEST_MAX_ATTEMPTS = 7;
@@ -93,7 +93,7 @@ export class BoredClient {
     this.logger = deps.logger ?? log.child("bored.client");
     this.fetchImpl = deps.fetch ?? globalThis.fetch.bind(globalThis);
     this.apiBase = (deps.baseUrl ?? process.env.BECKETT_BORED_URL ?? "http://127.0.0.1:7770").replace(/\/+$/, "");
-    this.boardName = resolvePlaneBoardName(this.config, deps.board);
+    this.boardName = resolveBoardName(this.config, deps.board);
   }
 
   stats(): { lastHttpStatus: number | null; lastOkAt: number | null; lastErrorAt: number | null; lastError: string | null } {
@@ -192,7 +192,7 @@ export class BoredClient {
   }
 
   /** Bored's event journal is its comment-equivalent; nudges are the human text dispatch consumes. */
-  async listComments(ticketId: string, since?: string, opts: { inclusive?: boolean } = {}): Promise<PlaneComment[]> {
+  async listComments(ticketId: string, since?: string, opts: { inclusive?: boolean } = {}): Promise<TicketComment[]> {
     const events = await this.listEvents(ticketId);
     return events
       .filter((event) => event.type === "nudge_delivered" && typeof event.text === "string")
@@ -211,7 +211,7 @@ export class BoredClient {
    * Bored has no free-form comment resource. A dispatcher note is sent through its documented
    * nudge endpoint and is subsequently visible through the event journal above.
    */
-  async addComment(ticketId: string, body: string): Promise<PlaneComment> {
+  async addComment(ticketId: string, body: string): Promise<TicketComment> {
     const response = await this.req("POST", `${this.ticketPath(ticketId)}/nudge`, { text: body }) as {
       receipt?: { target?: string };
     };
@@ -244,13 +244,13 @@ export class BoredClient {
     return { board: this.boardName, projectId: `bored:${this.boardName}`, identifier: this.boardName };
   }
 
-  async listStates(): Promise<PlaneState[]> {
+  async listStates(): Promise<WorkflowState[]> {
     return ["backlog", "todo", "design", "design_review", "in_progress", "in_review", "done", "cancelled"]
       .map((name) => ({ id: name, name }));
   }
 
   /** Bored is provisioned by its managed service; clients do not create boards or states. */
-  async ensureProvisioned(): Promise<PlaneProvisioningResult> {
+  async ensureProvisioned(): Promise<ProvisioningResult> {
     await this.req("GET", "/health");
     return { projectCreated: false, statesCreated: [] };
   }

@@ -1,5 +1,5 @@
 /**
- * Beckett v3 — cast-block parse/serialize (`src/plane/cast.ts`)
+ * Beckett v3 — cast-block parse/serialize (`src/tracker/cast.ts`)
  * =======================================================================================
  * Per-stage casting + acceptance criteria are stored INSIDE the Plane issue description so
  * Plane stays the single source of truth (no sidecar DB). The format is:

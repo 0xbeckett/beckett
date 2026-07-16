@@ -43,7 +43,7 @@ import type {
   WorkerState,
   HarnessDriver,
 } from "../types.ts";
-import type { HarnessSpec, Ticket } from "../plane/types.ts";
+import type { HarnessSpec, Ticket } from "../tracker/types.ts";
 import { createDriver } from "../drivers/index.ts";
 import { workerId as mintWorkerId } from "../ids.ts";
 import { log } from "../log.ts";

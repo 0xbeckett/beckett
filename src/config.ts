@@ -203,7 +203,7 @@ export function validateConfig(raw: unknown): Config {
 }
 
 /** Resolve a user-supplied board name (case-insensitive), defaulting to config.plane.default_board. */
-export function resolvePlaneBoardName(config: Config, board?: string): string {
+export function resolveBoardName(config: Config, board?: string): string {
   const names = Object.keys(config.plane.boards);
   const wanted = (board && board.trim() ? board.trim() : config.plane.default_board).toLowerCase();
   const match = names.find((name) => name.toLowerCase() === wanted);
@@ -215,7 +215,7 @@ export function resolvePlaneBoardName(config: Config, board?: string): string {
 
 /** Return the selected board's Plane project/state-map config. */
 export function resolvePlaneBoard(config: Config, board?: string): Config["plane"]["boards"][string] {
-  return config.plane.boards[resolvePlaneBoardName(config, board)]!;
+  return config.plane.boards[resolveBoardName(config, board)]!;
 }
 
 /** The fully-defaulted config (an empty TOML). Handy for tests + the v0 seed boot. */

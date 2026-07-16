@@ -9,7 +9,7 @@
 import { join } from "node:path";
 import { loadConfig } from "../../src/config.ts";
 import { ConciergeSession } from "../../src/concierge/index.ts";
-import { PlaneClient } from "../../src/plane/client.ts";
+import { PlaneClient } from "../../src/tracker/client.ts";
 
 const repoRoot = process.env.BECKETT_REPO_ROOT ?? join(import.meta.dir, "../..");
 const config = loadConfig();

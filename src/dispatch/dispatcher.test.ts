@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../types.ts";
-import type { Ticket, TicketState, PollEvent, HarnessSpec, PlaneComment } from "../plane/types.ts";
+import type { Ticket, TicketState, PollEvent, HarnessSpec, TicketComment } from "../tracker/types.ts";
 import type { GitOps } from "./dispatcher.ts";
 
 // ── controllable fake worker handle + spawn mock ────────────────────────────────────────────
@@ -190,7 +190,7 @@ class FakeClient {
     const t = this.board.find((b) => b.id === id);
     if (t) t.state = state;
   }
-  async addComment(ticketId: string, body: string): Promise<PlaneComment> {
+  async addComment(ticketId: string, body: string): Promise<TicketComment> {
     if (this.failAddComment > 0) {
       this.failAddComment--;
       throw new Error("Plane comment write failed");
@@ -1255,7 +1255,7 @@ describe("never drop a steer (issue #22)", () => {
   test("a comment with no live worker is held and folded into the next worker's brief", async () => {
     const { d, client } = newDispatcher();
     const ticket = makeTicket({ state: "todo" });
-    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "actually cap it at 10s", createdAt: "now" };
+    const comment: TicketComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "actually cap it at 10s", createdAt: "now" };
     await d.handle({ kind: "comment_added", ticket, comment });
     expect(client.comments.at(-1)!.body).toContain("holding this comment");
 
@@ -1272,7 +1272,7 @@ describe("never drop a steer (issue #22)", () => {
     await tick();
     created[0].finish("success", "did it", doneSignal("complete"));
     // Comment lands while the finish is being processed (handle still registered, result set):
-    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "also add logging", createdAt: "now" };
+    const comment: TicketComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "also add logging", createdAt: "now" };
     await d.handle({ kind: "comment_added", ticket, comment });
     await tick();
     await tick();
@@ -1294,7 +1294,7 @@ describe("never drop a steer (issue #22)", () => {
     await d.handle(stateChanged(ticket, "in_progress"));
     await tick();
     created[0].nudgeReceipt = "dropped";
-    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "use bun not npm", createdAt: "now" };
+    const comment: TicketComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "use bun not npm", createdAt: "now" };
     await d.handle({ kind: "comment_added", ticket, comment });
 
     expect(client.comments.at(-1)!.body).toContain("already finished");
@@ -1312,7 +1312,7 @@ describe("never drop a steer (issue #22)", () => {
     await d.handle(stateChanged(ticket, "in_progress"));
     await tick();
     created[0].nudgeReceipt = "will-restart";
-    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "prefer sqlite", createdAt: "now" };
+    const comment: TicketComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "prefer sqlite", createdAt: "now" };
     await d.handle({ kind: "comment_added", ticket, comment });
 
     expect(created[0].nudges).toEqual(["prefer sqlite"]);
@@ -1336,7 +1336,7 @@ describe("never drop a steer (issue #22)", () => {
   test("steers orphaned by `done` are surfaced with a reopen hint, not dropped", async () => {
     const { d, client } = newDispatcher();
     const ticket = makeTicket({ state: "todo" });
-    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "tweak the copy", createdAt: "now" };
+    const comment: TicketComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "tweak the copy", createdAt: "now" };
     await d.handle({ kind: "comment_added", ticket, comment });
 
     await d.handle(stateChanged({ ...ticket, state: "done" }, "done", "in_review"));
@@ -1352,7 +1352,7 @@ describe("steering + cancel", () => {
     const ticket = makeTicket();
     await d.handle(stateChanged(ticket, "in_progress"));
     await tick();
-    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "cap it at 10s", createdAt: "now" };
+    const comment: TicketComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "cap it at 10s", createdAt: "now" };
     await d.handle({ kind: "comment_added", ticket, comment });
     expect(created[0].nudges).toEqual(["cap it at 10s"]);
   });
@@ -1362,7 +1362,7 @@ describe("steering + cancel", () => {
     const ticket = makeTicket();
     await d.handle(stateChanged(ticket, "in_progress"));
     await tick();
-    const own: PlaneComment = { id: "c1", ticketId: ticket.id, author: "beckett", body: `${BECKETT_COMMENT_MARKER}\nadvanced`, createdAt: "now" };
+    const own: TicketComment = { id: "c1", ticketId: ticket.id, author: "beckett", body: `${BECKETT_COMMENT_MARKER}\nadvanced`, createdAt: "now" };
     await d.handle({ kind: "comment_added", ticket, comment: own });
     expect(created[0].nudges).toHaveLength(0);
   });
@@ -2296,7 +2296,7 @@ describe("pipeline latency (issue #33)", () => {
     // Worst case pre-fix: the driver waits ACK_TIMEOUT_MS (30s) for a stdin echo. Simulate a
     // nudge that never resolves at all — handle() must still return immediately.
     created[0]!.nudge = () => new Promise<never>(() => {});
-    const comment: PlaneComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "steer", createdAt: "now" };
+    const comment: TicketComment = { id: "c1", ticketId: ticket.id, author: "jawrooo", body: "steer", createdAt: "now" };
     const start = Date.now();
     await d.handle({ kind: "comment_added", ticket, comment });
     expect(Date.now() - start).toBeLessThan(1_000);

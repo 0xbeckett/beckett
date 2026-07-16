@@ -21,7 +21,7 @@
  * text.
  */
 
-import type { Ticket } from "../plane/types.ts";
+import type { Ticket } from "../tracker/types.ts";
 
 /**
  * The steering block folded into a prompt when comments arrived while no worker was live

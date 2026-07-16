@@ -32,10 +32,10 @@
  */
 
 import type { Config, DoneSignal, Effort, Logger } from "../types.ts";
-import type { HarnessSpec, Ticket, TicketState } from "../plane/types.ts";
+import type { HarnessSpec, Ticket, TicketState } from "../tracker/types.ts";
 import type { DispatchOutcome } from "./events.ts";
 import type { TicketWorkerHandle } from "./spawn.ts";
-import { projectSlug } from "../plane/cast.ts";
+import { projectSlug } from "../tracker/cast.ts";
 import { steeringBlock } from "./resume-brief.ts";
 import { CapabilityRegistry, type CapabilityDeps, type PromptBlock } from "../capability/index.ts";
 import { availableCapabilityModules, createCapability } from "../capability/modules/index.ts";

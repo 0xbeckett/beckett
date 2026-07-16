@@ -10,7 +10,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { z } from "zod";
-import type { Ticket, TicketState } from "../plane/types.ts";
+import type { Ticket, TicketState } from "../tracker/types.ts";
 
 export const TASK_TITLE_MAX = 100;
 const LOCK_STALE_MS = 30_000;

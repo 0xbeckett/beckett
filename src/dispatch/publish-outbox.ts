@@ -7,7 +7,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Ticket } from "../plane/types.ts";
+import type { Ticket } from "../tracker/types.ts";
 import type { Logger } from "../types.ts";
 
 export const PUBLISH_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000] as const;

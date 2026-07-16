@@ -5,7 +5,7 @@
  * committed checkpoint trail). Pure function → no mocks.
  */
 import { describe, expect, test } from "bun:test";
-import type { Ticket } from "../plane/types.ts";
+import type { Ticket } from "../tracker/types.ts";
 import { buildResumeBrief, steeringBlock } from "./resume-brief.ts";
 
 function ticket(over: Partial<Ticket> = {}): Ticket {

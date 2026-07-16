@@ -43,10 +43,10 @@ import type { Config, Harness, Logger, WorkerEvent } from "../types.ts";
 import type {
   Ticket,
   TicketState,
-  PlaneComment,
+  TicketComment,
   PollEvent,
   HarnessSpec,
-} from "../plane/types.ts";
+} from "../tracker/types.ts";
 import type { ProgressSink } from "../progress/journal.ts";
 import { log } from "../log.ts";
 import {
@@ -62,7 +62,7 @@ import {
   mergeBranchesIntoWorktree,
   SCAFFOLDING_DIR,
 } from "../worker/worktree.ts";
-import { projectSlug } from "../plane/cast.ts";
+import { projectSlug } from "../tracker/cast.ts";
 import { hardCapSeconds, sweepLedgeredWorker } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
 import { AdvanceOutbox, type AdvanceOperation } from "./advance-outbox.ts";
@@ -93,17 +93,17 @@ import {
 // =======================================================================================
 
 /**
- * The subset of the Plane REST client (`docs/V3.md` §3, `src/plane/client.ts`) the dispatcher
+ * The subset of the Plane REST client (`docs/V3.md` §3, `src/tracker/client.ts`) the dispatcher
  * uses. Declared structurally so this module does not hard-depend on the parallel-built client
  * — the concrete `PlaneClient` satisfies it.
  */
-export interface PlaneClientLike {
+export interface TrackerClientLike {
   /** Move a ticket to a new lifecycle state (resolves state_map name → Plane state UUID). */
   setState(id: string, state: TicketState): Promise<void>;
   /** Fetch a ticket before dispatcher-initiated state changes, so human terminal moves win. */
   getIssue?(id: string): Promise<Ticket | null>;
   /** Post a comment on a ticket; returns the created comment. */
-  addComment(ticketId: string, body: string): Promise<PlaneComment>;
+  addComment(ticketId: string, body: string): Promise<TicketComment>;
   /** List every ticket in the project — used to find dependents to promote when one finishes. */
   listIssues(): Promise<Ticket[]>;
 }
@@ -129,11 +129,11 @@ export interface GitOps {
 
 export interface DispatcherDeps {
   /** Default Plane client (normally config.plane.default_board). */
-  client: PlaneClientLike;
+  client: TrackerClientLike;
   /** All board-scoped clients the daemon polls; used for identifier lookup and cross-board deps. */
-  clients?: PlaneClientLike[];
+  clients?: TrackerClientLike[];
   /** Resolve the board-scoped client for a Plane project id. Falls back to client. */
-  clientForProjectId?: (projectId: string) => PlaneClientLike | undefined;
+  clientForProjectId?: (projectId: string) => TrackerClientLike | undefined;
   config: Config;
   /** Stage registry override (tests / embedders); defaults to the shared built-in registry. */
   stages?: StageRegistry;
@@ -402,9 +402,9 @@ function parseRuntimeState(value: unknown): DispatcherRuntimeState {
 // =======================================================================================
 
 export class Dispatcher {
-  private readonly client: PlaneClientLike;
-  private readonly clients: PlaneClientLike[];
-  private readonly clientForProjectIdDep?: (projectId: string) => PlaneClientLike | undefined;
+  private readonly client: TrackerClientLike;
+  private readonly clients: TrackerClientLike[];
+  private readonly clientForProjectIdDep?: (projectId: string) => TrackerClientLike | undefined;
   private readonly projectIdByTicketId = new Map<string, string>();
   private readonly config: Config;
   private readonly githubOwner: string;
@@ -765,17 +765,17 @@ export class Dispatcher {
     if (ticket?.id && ticket.projectId) this.projectIdByTicketId.set(ticket.id, ticket.projectId);
   }
 
-  private clientForProjectId(projectId?: string): PlaneClientLike {
+  private clientForProjectId(projectId?: string): TrackerClientLike {
     if (!projectId) return this.client;
     return this.clientForProjectIdDep?.(projectId) ?? this.client;
   }
 
-  private clientForTicket(ticket: Ticket): PlaneClientLike {
+  private clientForTicket(ticket: Ticket): TrackerClientLike {
     this.rememberTicket(ticket);
     return this.clientForProjectId(ticket.projectId);
   }
 
-  private clientForTicketId(ticketId: string, projectId?: string): PlaneClientLike {
+  private clientForTicketId(ticketId: string, projectId?: string): TrackerClientLike {
     return this.clientForProjectId(projectId ?? this.projectIdByTicketId.get(ticketId));
   }
 
@@ -1111,7 +1111,7 @@ export class Dispatcher {
    * the cap, between stages, finished-but-not-advanced) → hold it in {@link pendingSteers}
    * (persisted) for the next worker, and say so on the ticket.
    */
-  private async onComment(ticket: Ticket, comment: PlaneComment): Promise<void> {
+  private async onComment(ticket: Ticket, comment: TicketComment): Promise<void> {
     if (this.isBeckettComment(comment)) {
       return; // our own summary/status comment — never self-nudge
     }
@@ -2983,7 +2983,7 @@ export class Dispatcher {
    * recorded when we posted it; the HTML marker is a restart-surviving fallback (the id set is
    * in-memory). Either match means "don't treat this as a human steering nudge."
    */
-  private isBeckettComment(comment: PlaneComment): boolean {
+  private isBeckettComment(comment: TicketComment): boolean {
     return this.ownCommentIds.has(comment.id) || comment.body.trimStart().startsWith("<!-- beckett");
   }
 

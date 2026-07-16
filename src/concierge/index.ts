@@ -33,7 +33,7 @@ import { dirname, join } from "node:path";
 // stamp the restart release note's `-#` subheader so it tracks the shipped version, never a literal.
 import pkg from "../../package.json" with { type: "json" };
 import type { Config, IncomingMessage, Logger, ProactivityMode, ThreadCreated } from "../types.ts";
-import type { PollEvent, PlaneComment, Ticket } from "../plane/types.ts";
+import type { PollEvent, TicketComment, Ticket } from "../tracker/types.ts";
 import type { PrPollEvent } from "../github/types.ts";
 import type { GitHubActivityEvent } from "../github/activity.ts";
 import { resolveGitHubOwner } from "../github/owner.ts";
@@ -1170,7 +1170,7 @@ export interface ConciergeOptions {
   /** Inject a per-scope session factory (pool tests); defaults to real ConciergeSessions. */
   sessionFactory?: (scope: string) => ConciergeSession;
   /** Plane read access for milestone enrichment (issue #21) — the shared PlaneClient in prod. */
-  plane?: { listComments(ticketId: string): Promise<PlaneComment[]> };
+  plane?: { listComments(ticketId: string): Promise<TicketComment[]> };
   /** Inject the ambient triage classifier (tests); defaults to the real one-shot Haiku classifier. */
   ambientTriage?: TriageFn;
   /** Inject the ambient clock (tests); defaults to the coordinator's real-timer clock. */
@@ -1323,7 +1323,7 @@ export class Concierge {
    * on terminal tickets, so the `done` ping fetches the dispatcher's done comment here to carry
    * the artifact/PR link. Optional — absent (tests), the ping falls back to the ticket URL only.
    */
-  private readonly plane: { listComments(ticketId: string): Promise<PlaneComment[]> } | null;
+  private readonly plane: { listComments(ticketId: string): Promise<TicketComment[]> } | null;
   /**
    * The @mention turns currently in flight, keyed by channel (at most one live turn per channel —
    * a channel's session serializes its own turns; different channels run concurrently, OPS-80
@@ -4378,7 +4378,7 @@ function frameAmbientTimeout(channelId: string, offerText: string, ttlSecs: numb
 const DISPATCHER_COMMENT_PREFIX = "<!-- beckett";
 
 /** True when a comment was authored by Beckett's machinery (a milestone/error narration), not a human. */
-function isDispatcherComment(comment: PlaneComment): boolean {
+function isDispatcherComment(comment: TicketComment): boolean {
   return comment.body.trimStart().startsWith(DISPATCHER_COMMENT_PREFIX);
 }
 

@@ -1,8 +1,8 @@
 /** Active tracker selection. `BECKETT_TRACKER=plane` remains the compatibility default. */
 import type { Config, Logger } from "../types.ts";
-import type { CreateTicketInput, PlaneProvisioningResult, PlaneState } from "../plane/client.ts";
-import type { PlaneComment, Ticket, TicketState } from "../plane/types.ts";
-import { createPlaneClient } from "../plane/client.ts";
+import type { CreateTicketInput, ProvisioningResult, WorkflowState } from "../tracker/types.ts";
+import type { TicketComment, Ticket, TicketState } from "../tracker/types.ts";
+import { createPlaneClient } from "../tracker/types.ts";
 import { createBoredClient } from "../bored/client.ts";
 
 /** The dispatch/poll surface shared by Plane and bored. */
@@ -14,12 +14,12 @@ export interface TrackerClient {
   createIssue(input: CreateTicketInput): Promise<Ticket>;
   setState(id: string, state: TicketState): Promise<void>;
   setIssueState(id: string, state: TicketState): Promise<void>;
-  listComments(ticketId: string, since?: string, opts?: { inclusive?: boolean }): Promise<PlaneComment[]>;
-  addComment(ticketId: string, body: string): Promise<PlaneComment>;
+  listComments(ticketId: string, since?: string, opts?: { inclusive?: boolean }): Promise<TicketComment[]>;
+  addComment(ticketId: string, body: string): Promise<TicketComment>;
   board(): string;
   projectInfo(): Promise<{ board: string; projectId: string; identifier: string | null }>;
-  listStates(): Promise<PlaneState[]>;
-  ensureProvisioned(): Promise<PlaneProvisioningResult>;
+  listStates(): Promise<WorkflowState[]>;
+  ensureProvisioned(): Promise<ProvisioningResult>;
 }
 
 export interface CreateTrackerClientDeps {

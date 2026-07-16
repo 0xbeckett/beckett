@@ -19,7 +19,7 @@
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { ActionClass, CapabilityRegistry, type Capability } from "../capability/index.ts";
-import { loadConfig, resolvePlaneBoardName } from "../config.ts";
+import { loadConfig, resolveBoardName } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus, ControlBusTimeoutError } from "../shell/control-bus.ts";
 import { createCapability } from "../capability/modules/index.ts";
@@ -29,8 +29,8 @@ import { bundledMaintainersFile, loadMaintainers, requestMaintainerGrant, revoke
 import { loadPeers, addPeer, removePeer } from "../discord/peers.ts";
 import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
 import { readJournal, DEFAULT_TAIL_LINES } from "../progress/journal.ts";
-import type { Casting, Ticket, TicketState } from "../plane/types.ts";
-import { projectSlug } from "../plane/cast.ts";
+import type { Casting, Ticket, TicketState } from "../tracker/types.ts";
+import { projectSlug } from "../tracker/cast.ts";
 import { parseSince, readSpendLedger, summarizeSpend } from "../spend.ts";
 import { TaskStore, displayTaskName, normalizeBranchRef, normalizeTaskNumber } from "../task/store.ts";
 import { startTaskBranch } from "./task-start.ts";
@@ -96,7 +96,7 @@ function guardRestrictedProject(project: string | undefined, confirmed: boolean)
 
 function cliBoardName(board: unknown): string {
   try {
-    return resolvePlaneBoardName(config, typeof board === "string" ? board : undefined);
+    return resolveBoardName(config, typeof board === "string" ? board : undefined);
   } catch (err) {
     fail((err as Error).message);
   }
@@ -185,8 +185,8 @@ async function readWorkBody(flags: Record<string, string | boolean>): Promise<st
 
 /** Resolve preset + explicit cast flags through the same validation path for tickets and tasks. */
 async function castingFromFlags(flags: Record<string, string | boolean>): Promise<Casting> {
-  const { parseCastJson, validateCasting } = await import("../plane/cast.ts");
-  const { loadPresets, requirePreset, resolveCasting } = await import("../plane/presets.ts");
+  const { parseCastJson, validateCasting } = await import("../tracker/cast.ts");
+  const { loadPresets, requirePreset, resolveCasting } = await import("../tracker/presets.ts");
   const explicitCast = flags.cast ? parseCastJson(String(flags.cast)) : {};
   let presetCast: Casting | undefined;
   if (flags.preset) {
@@ -876,7 +876,7 @@ async function runTask(argv: string[]): Promise<void> {
 // The Concierge shells these from its Bash tool to file/inspect/steer tickets. Output is
 // JSON on stdout (the Concierge reads it). PlaneClient speaks HTTP to Plane; the secret
 // PLANE_API_TOKEN rides process.env, never config. Imported dynamically so the rest of the
-// CLI keeps working while `src/plane/client.ts` is built in parallel.
+// CLI keeps working while `src/tracker/client.ts` is built in parallel.
 async function runTicket(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { _, flags } = parse(rest);
@@ -1012,7 +1012,7 @@ async function runTicket(argv: string[]): Promise<void> {
 // Both read the file FRESH and validate it, so a malformed presets.json fails here loudly too.
 async function runPreset(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
-  const { loadPresets, requirePreset } = await import("../plane/presets.ts");
+  const { loadPresets, requirePreset } = await import("../tracker/presets.ts");
   let presets;
   try {
     presets = loadPresets(paths.presetsFile);
@@ -1082,8 +1082,8 @@ async function runPlan(argv: string[]): Promise<void> {
   // Presets read FRESH here (once per plan) so a just-edited flow applies with no restart. A node
   // may name a "preset" (expanded into its cast, explicit "cast" overriding per stage) exactly like
   // `ticket create --preset`. A malformed presets.json fails the whole plan before any node is filed.
-  const { loadPresets, requirePreset, resolveCasting } = await import("../plane/presets.ts");
-  const { validateCasting } = await import("../plane/cast.ts");
+  const { loadPresets, requirePreset, resolveCasting } = await import("../tracker/presets.ts");
+  const { validateCasting } = await import("../tracker/cast.ts");
   let planPresets;
   try {
     planPresets = loadPresets(paths.presetsFile);

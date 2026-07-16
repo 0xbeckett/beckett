@@ -1,5 +1,5 @@
 /**
- * v3 FULL-CYCLE e2e — the capstone. Wires the real PlanePoller + Dispatcher against the live
+ * v3 FULL-CYCLE e2e — the capstone. Wires the real TrackerPoller + Dispatcher against the live
  * Plane instance (reached via an SSH tunnel → PLANE_INTERNAL_URL) and drives ONE ticket through
  * the entire machine: create(in_progress) → poller → implement worker → in_review → reviewer →
  * done. Spawns real Claude workers in real git worktrees. Cleans up the ticket at the end.
@@ -8,8 +8,8 @@
  *   PLANE_INTERNAL_URL=http://localhost:8751 PLANE_API_TOKEN=... bun run scripts/e2e/v3-full-cycle-e2e.ts
  */
 import { loadConfig } from "../../src/config.ts";
-import { PlaneClient } from "../../src/plane/client.ts";
-import { PlanePoller } from "../../src/plane/poll.ts";
+import { PlaneClient } from "../../src/tracker/client.ts";
+import { TrackerPoller } from "../../src/tracker/poll.ts";
 import { Dispatcher } from "../../src/dispatch/dispatcher.ts";
 
 const repoRoot = "/Users/jason/Code/beckett";
@@ -33,7 +33,7 @@ const config = {
 
 const client = new PlaneClient({ config });
 const dispatcher = new Dispatcher({ client, config, resolveRepoRoot: () => repoRoot });
-const poller = new PlanePoller({ client, pollSecs: 3 });
+const poller = new TrackerPoller({ client, pollSecs: 3 });
 
 console.log("→ creating ticket (cast: implement=claude, review=claude) in state in_progress…");
 const ticket = await client.createIssue({

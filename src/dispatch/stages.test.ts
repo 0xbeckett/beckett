@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { Config } from "../types.ts";
-import type { Ticket } from "../plane/types.ts";
+import type { Ticket } from "../tracker/types.ts";
 import { validateConfig } from "../config.ts";
 import {
   StageRegistry,

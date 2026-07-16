@@ -1,5 +1,5 @@
 /**
- * Tests for the cast block parse/serialize round-trip (`src/plane/cast.ts`).
+ * Tests for the cast block parse/serialize round-trip (`src/tracker/cast.ts`).
  * The cast block is how per-stage harness assignment + acceptance criteria are stored inside
  * a Plane issue description — its round-trip integrity is load-bearing for the whole queue.
  */

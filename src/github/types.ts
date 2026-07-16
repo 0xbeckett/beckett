@@ -5,7 +5,7 @@
  * PR and went blind to review comments, CI, and the eventual merge. This module gives it eyes.
  * The {@link GitHubPrPoller} watches the PRs Beckett opened on the 0xbeckett org and turns the
  * raw `gh pr view` reads below into a stream of MATERIAL {@link PrPollEvent}s — the same shape
- * the Plane poller uses to feed the Concierge (see `src/plane/types.ts`).
+ * the Plane poller uses to feed the Concierge (see `src/tracker/types.ts`).
  *
  * Scope (v1): read-and-relay only. Nothing here replies to a review or merges a PR — those stay
  * a human handshake. Import style (whole repo, bun-native): explicit `.ts` extensions, ESM.

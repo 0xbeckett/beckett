@@ -1,4 +1,4 @@
-import type { Ticket } from "../plane/types.ts";
+import type { Ticket } from "../tracker/types.ts";
 
 /** Keep task-backed Git refs in the public `#N.x` namespace; legacy tickets retain their ref. */
 export function gitBranchForTicket(ticket: Pick<Ticket, "identifier" | "branchRef">): string {

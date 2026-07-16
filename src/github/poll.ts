@@ -4,7 +4,7 @@
  * OPS-124 — watches the PRs Beckett opened on the 0xbeckett org and turns "what changed on my
  * PR" into a stream of material {@link PrPollEvent}s the Concierge relays in voice ("ro left 2
  * comments on #96", "CI failed on the memory branch", "#96 merged"). It mirrors the Plane poller
- * (`src/plane/poll.ts`): an in-memory snapshot per PR, diffed against a fresh read each tick, with
+ * (`src/tracker/poll.ts`): an in-memory snapshot per PR, diffed against a fresh read each tick, with
  * the diff persisted so a daemon restart never re-fires an old notification (the "notify re-fire
  * loop" hazard).
  *
