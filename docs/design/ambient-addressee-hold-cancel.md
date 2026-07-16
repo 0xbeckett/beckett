@@ -180,7 +180,7 @@ all-or-nothing. There is **no per-turn mid-flight abort today**; §5 addresses t
 | `enabled` | `false` | master switch |
 | `default_mode` / `channels` | `off` | per-channel `off`/`suggest`/`auto` |
 | `triage_provider` / `triage_model` | `claude` / `claude-haiku-4-5` | classifier backend |
-| `triage_threshold` | `0.45` | min confidence to interject (cold) |
+| `triage_threshold` | `0.55` | min confidence to interject (cold); conservative so a cold coin-flip stays silent |
 | `burst_quiet_secs` | `20` | cold debounce |
 | `engaged_quiet_secs` | `4` | engaged debounce (v4.1.2) |
 | `engaged_window_secs` | `180` | how long after a Beckett post counts as "engaged" |

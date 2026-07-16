@@ -272,7 +272,7 @@ describe("OPS-193 tightened cold-interjection bar", () => {
 
   test("a genuinely funny beat that fits is still a speak signal; a mere opportunity is not", () => {
     expect(rubric).toContain("genuinely funny, on-point line");
-    expect(rubric).toContain("not the mere opportunity");
+    expect(rubric).toContain("the mere opportunity to be clever");
   });
 });
 
