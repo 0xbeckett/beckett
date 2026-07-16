@@ -1,10 +1,10 @@
 /**
- * Beckett v3 — Plane ticket-queue shared domain types (`src/tracker/types.ts`)
+ * Beckett — tracker shared domain types (`src/tracker/types.ts`)
  * =======================================================================================
- * THE v3 CONTRACT. Every v3 build agent imports its shared vocabulary from here:
- *   - PlaneClient (`./client.ts`)        — speaks the Plane REST API, returns {@link Ticket}s
+ * THE TICKET CONTRACT. Every module imports its shared vocabulary from here:
+ *   - BoredClient (`../bored/client.ts`) — speaks bored's HTTP API, returns {@link Ticket}s
  *   - Poller     (`./poll.ts`)           — diffs poll snapshots, emits {@link PollEvent}s
- *   - Dispatcher (`./dispatcher.ts`)     — consumes {@link PollEvent}s, spawns workers
+ *   - Dispatcher (`../dispatch/*`)       — consumes {@link PollEvent}s, spawns workers
  *   - Concierge  (`../concierge/*`)      — files {@link Ticket}s with per-stage {@link Casting}
  *
  * This module is intentionally implementation-free (types only), mirroring the root
@@ -20,8 +20,8 @@
 // =======================================================================================
 
 /**
- * Beckett's canonical ticket lifecycle. Maps onto Plane's per-project workflow state NAMES
- * via `config.plane.state_map` (the dispatcher/client translate name → Plane state UUID).
+ * Beckett's canonical ticket lifecycle. bored projects these states from its workflow runs;
+ * the client translates lifecycle writes into bored's staff/gate/cancel verbs.
  */
 export type TicketState =
   | "backlog"
@@ -65,7 +65,7 @@ export interface HarnessSpec {
 /**
  * Per-stage casting for a ticket. `design` staffs an INT ticket's design worker, `implement`
  * staffs the `in_progress` worker, and `review` staffs the `in_review` reviewer. Open-ended:
- * future stages (e.g. `integrate`) key in by name. Stored inside the Plane issue description as
+ * future stages (e.g. `integrate`) key in by name. Stored inside the ticket description as
  * a ```beckett-cast``` fenced block.
  */
 export interface Casting {
@@ -75,30 +75,30 @@ export interface Casting {
 }
 
 // =======================================================================================
-// Ticket + comments — the hydrated view of a Plane issue
+// Ticket + comments — the hydrated view of a tracker ticket
 // =======================================================================================
 
 /**
- * A Plane issue hydrated into Beckett's view. `description` is the raw Plane description
+ * A tracker ticket hydrated into Beckett's view. `description` is the raw stored description
  * (cast block + criteria + prose); `body` is JUST the human prose with the cast block and
  * the acceptance-criteria section stripped out (see {@link parseCast} in `./cast.ts`).
  * `casting` and `criteria` are the parsed-out structured halves of `description`.
  */
 export interface Ticket {
-  id: string; // Plane issue id (UUID)
+  id: string; // tracker ticket id (bored ref, e.g. "OPS-42")
   identifier: string; // human ref, e.g. "BEC-42"
   title: string;
-  description: string; // raw Plane description (cast block + criteria + prose)
+  description: string; // raw stored description (cast block + criteria + prose)
   body: string; // prose only (cast block + criteria section removed)
   state: TicketState;
-  assignees: string[]; // Plane member ids
+  assignees: string[]; // tracker member ids (bored tickets carry none)
   casting: Casting;
   criteria: string[]; // acceptance-criteria bullet lines
   /**
    * Identifiers of tickets this one is blocked by (a `beckett plan` dependency edge, e.g.
    * `["OPS-41"]`). The ticket is held in `backlog` until EVERY blocker reaches `done`, at which
    * point the dispatcher promotes it to `in_progress`. Empty for an independent ticket. Stored in
-   * the issue description (```beckett-deps``` block) so Plane stays the single source of truth and
+   * the ticket description (```beckett-deps``` block) so the tracker stays the single source of truth and
    * the DAG survives a daemon restart — no in-memory dependency state to lose.
    */
   blockedBy: string[];
@@ -106,7 +106,7 @@ export interface Ticket {
    * The CODE project this ticket builds — its own repo under `~/Projects/<project>`, pushed to
    * `0xbeckett/<project>` on GitHub, fully decoupled from Beckett's own source repo. The Concierge
    * names it at creation (```beckett-project``` block); absent ⇒ the dispatcher falls back to the
-   * ticket identifier (a per-ticket sandbox). NOT the Plane project (that's `projectId`).
+   * ticket identifier (a per-ticket sandbox). NOT the tracker board (that's `projectId`).
    */
   project?: string;
   /** Stable user-facing task-branch reference, for example `42.2`. */
@@ -119,27 +119,27 @@ export interface Ticket {
    * repo default exactly as a normal ticket does.
    */
   targetBranch?: string;
-  /** Native Plane parent work-item id when this branch is nested under another started branch. */
+  /** Parent ticket id when this branch is nested under another started branch. */
   parentId?: string;
   /** Lifecycle state a held task branch should enter once its dependencies finish. */
   startState?: TicketState;
-  projectId: string; // Plane project id (the queue, e.g. "ops") — NOT the code project above
-  url: string; // deep link to the issue in the Plane web UI
+  projectId: string; // tracker board id (the queue, e.g. "bored:ops") — NOT the code project above
+  url: string; // deep link to the ticket on the tracker
   updatedAt: string; // ISO-8601; the poll cursor / change key
   /**
    * Discord channel that filed this ticket, stamped by the Concierge at creation so worker/ticket
    * updates can be routed back to the conversation that asked (the closed agent loop). Absent for
-   * tickets created outside Discord (e.g. straight in Plane). Round-tripped through the issue
-   * description by the PlaneClient — Plane stays the single source of truth (no sidecar DB).
+   * tickets created outside Discord (e.g. straight on the tracker). Stored natively by bored —
+   * the tracker stays the single source of truth (no sidecar DB).
    */
   originChannel?: string;
 }
 
-/** One comment on a Plane issue. */
+/** One comment on a ticket (bored surfaces these from its event journal). */
 export interface TicketComment {
   id: string;
   ticketId: string;
-  author: string; // Plane member id / display name
+  author: string; // author id / display name
   body: string;
   createdAt: string; // ISO-8601
 }
@@ -150,7 +150,7 @@ export interface TicketComment {
 
 /**
  * What the poller emits after diffing one poll snapshot against the last. The dispatcher is
- * the sole consumer (Spec: shell POLLS Plane every `config.plane.poll_secs`, emits these).
+ * the sole consumer (the shell POLLS the tracker every `config.tracker.poll_secs`, emits these).
  */
 export type PollEvent =
   | { kind: "created"; ticket: Ticket }
@@ -165,7 +165,7 @@ export type PollEventKind = PollEvent["kind"];
 // Cast-block parse/serialize — the structured halves of a ticket description
 // =======================================================================================
 
-/** The structured parts {@link parseCast} pulls out of a Plane issue description. */
+/** The structured parts {@link parseCast} pulls out of a ticket description. */
 export interface ParsedCast {
   casting: Casting;
   criteria: string[];
@@ -175,4 +175,53 @@ export interface ParsedCast {
   startState?: TicketState; // desired post-dependency state (```beckett-start-state``` block)
   targetBranch?: string; // non-main publish/integration branch (```beckett-target-branch```) — see Ticket.targetBranch
   body: string; // prose with the cast/deps/project blocks + criteria section removed
+}
+
+// =======================================================================================
+// Client contract inputs/outputs (shared by the client factory and its consumers)
+// =======================================================================================
+
+/** Inputs to {@link TrackerClient.createIssue}. `body`/`description` are aliases (prose only). */
+export interface CreateTicketInput {
+  title: string;
+  /** Human prose body; `serializeCast` composes the final stored description. */
+  body?: string;
+  /** Alias for {@link CreateTicketInput.body} (the CLI / Concierge may pass either name). */
+  description?: string;
+  casting?: Casting;
+  criteria?: string[];
+  /** Identifiers of tickets this one is blocked by (held in `backlog` until all are `done`). */
+  blockedBy?: string[];
+  /** Code-project slug — the ticket's own repo under `~/Projects/<project>` (see {@link Ticket.project}). */
+  project?: string;
+  /** User-facing task branch reference, e.g. `42.2`. */
+  branchRef?: string;
+  /** Non-main integration/target branch to publish onto (see {@link Ticket.targetBranch}). */
+  targetBranch?: string;
+  /** Parent ticket id for nested task branches. */
+  parentId?: string;
+  /** State to enter after dependencies clear; defaults to the requested initial state. */
+  startState?: TicketState;
+  /** Lifecycle state to file into; defaults to the tracker's ready column. */
+  state?: TicketState;
+  /** Tracker member ids to assign (unused by bored). */
+  assignees?: string[];
+  /**
+   * Discord channel that originated this ticket, so worker/ticket updates route back to the
+   * right conversation (closed agent loop). Surfaced on hydration as {@link Ticket.originChannel}.
+   */
+  originChannel?: string;
+}
+
+/** A workflow state descriptor, as returned by {@link TrackerClient.listStates}. */
+export interface WorkflowState {
+  id: string;
+  name: string;
+  group?: string;
+}
+
+/** What a call to {@link TrackerClient.ensureProvisioned} had to create. */
+export interface ProvisioningResult {
+  projectCreated: boolean;
+  statesCreated: string[];
 }
