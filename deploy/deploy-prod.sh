@@ -94,13 +94,34 @@ systemctl --user is-active beckett-v4.service
 journalctl --user -u beckett-v4.service -n 12 --no-pager -o cat
 REMOTE
 
-# Tag the deployed version (one source: package.json) — skip if the tag already exists.
+# Record the verified deployment with an annotated release tag and push it via git's explicit
+# tag refspec. Do not use `beckett gh push` here: its branch-only API rejects refs/tags/* (GH014).
+# A pre-existing tag must already be an annotated tag on this exact release commit; silently
+# accepting a local lightweight/stale tag would let package.json and origin's history drift again.
 VERSION="v$(python3 -c 'import json;print(json.load(open("package.json"))["version"])')"
+HEAD_COMMIT="$(git rev-parse HEAD)"
 if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
-  echo "== tag ${VERSION} already exists — not re-tagging =="
+  [ "$(git cat-file -t "refs/tags/${VERSION}")" = "tag" ] || {
+    echo "FATAL: existing ${VERSION} is not an annotated tag" >&2
+    exit 1
+  }
+  [ "$(git rev-list -n 1 "${VERSION}")" = "${HEAD_COMMIT}" ] || {
+    echo "FATAL: existing ${VERSION} does not point at the release commit" >&2
+    exit 1
+  }
+  echo "== annotated tag ${VERSION} already exists =="
 else
-  git tag "${VERSION}"
-  git push -q origin "${VERSION}"
-  echo "== tagged ${VERSION} =="
+  git tag -a "${VERSION}" -m "beckett: release ${VERSION}"
+  echo "== created annotated tag ${VERSION} =="
 fi
+# The fully-qualified refspec is accepted by git/GitHub and guarantees the release tag reaches
+# origin, unlike the branch-oriented `beckett gh push` interface.
+git push -q origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
+REMOTE_TAG="$(git ls-remote --tags origin "refs/tags/${VERSION}" | awk '{print $1}')"
+LOCAL_TAG="$(git rev-parse "refs/tags/${VERSION}")"
+[ "${REMOTE_TAG}" = "${LOCAL_TAG}" ] || {
+  echo "FATAL: origin did not retain ${VERSION} after push" >&2
+  exit 1
+}
+echo "== tagged and pushed ${VERSION} =="
 echo "== deploy complete =="

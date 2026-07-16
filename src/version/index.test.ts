@@ -1,8 +1,8 @@
 /**
  * Coverage for the version source-of-truth I/O and the deploy-time bump orchestration (OPS-188),
  * against a throwaway package.json + git repo. Pins: package.json is edited in place (formatting
- * preserved), the base is the newest vX.Y.Z tag, and MAJOR is override-only (resolveVersion never
- * yields a major without an explicit choice).
+ * preserved), the bump base is max(package.json, newest vX.Y.Z tag), and MAJOR is override-only
+ * (resolveVersion never yields a major without an explicit choice).
  */
 
 import { test, expect, describe, beforeAll } from "bun:test";
@@ -54,17 +54,13 @@ describe("readVersion / writeVersion (source of truth)", () => {
     expect(after).toBe(`{\n  "name": "x",\n  "version": "4.2.0",\n  "type": "module"\n}\n`);
   });
 
-  test("writing the version already on disk is a valid no-op, not a 'field not found' error", () => {
-    // Regression (OPS-188): writeVersion used to infer match-failure from `replaced === raw`, so
-    // when the target equalled what was on disk the no-op replace looked identical and it wrongly
-    // threw 'version field not found', hard-aborting the deploy. Reproduces the real case: the
-    // classifier lands on the version package.json already carries (stale tag vs already-bumped pkg).
+  test("refuses to overwrite the current version or downgrade it", () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-ver-"));
     const original = `{\n  "name": "x",\n  "version": "4.2.0",\n  "type": "module"\n}\n`;
     writeFileSync(join(dir, "package.json"), original);
-    expect(() => writeVersion("4.2.0", dir)).not.toThrow();
-    expect(readVersion(dir)).toBe("4.2.0");
-    // The file is untouched (byte-for-byte) — a no-op write must not reflow or corrupt it.
+    expect(() => writeVersion("4.2.0", dir)).toThrow(/refusing to write/);
+    expect(() => writeVersion("4.1.9", dir)).toThrow(/refusing to write/);
+    // A rejected write is byte-for-byte non-destructive.
     expect(readFileSync(join(dir, "package.json"), "utf8")).toBe(original);
   });
 
@@ -156,14 +152,38 @@ describe("git-backed base + commits + suggestion", () => {
     expect(s.commits).toContain("feat: add a shiny new capability");
   });
 
-  test("no tags → base falls back to package.json, never throws", async () => {
+  test("untagged package.json ahead of newest tag is the bump base (never downgrades)", async () => {
+    const untagged = mkdtempSync(join(tmpdir(), "beckett-verrepo-untagged-"));
+    await initRepo(untagged);
+    writeFileSync(join(untagged, "package.json"), `{\n  "version": "4.1.2"\n}\n`);
+    await git(["add", "package.json"], untagged);
+    await git(["commit", "-q", "-m", "release v4.1.2"], untagged);
+    await tag(untagged, "v4.1.2");
+
+    // Simulate the incident: a manual v5.0.0 release reached package.json but was never tagged.
+    writeFileSync(join(untagged, "package.json"), `{\n  "version": "5.0.0"\n}\n`);
+    await git(["add", "package.json"], untagged);
+    await git(["commit", "-q", "-m", "release v5.0.0"], untagged);
+    writeFileSync(join(untagged, "feature"), "1");
+    await git(["add", "feature"], untagged);
+    await git(["commit", "-q", "-m", "feat: add the next capability"], untagged);
+
+    expect(await lastDeployedVersion(untagged)).toBe("5.0.0");
+    const s = await computeBumpSuggestion(untagged);
+    expect(s.base).toBe("5.0.0");
+    expect(s.fromTag).toBe(false);
+    expect(s.suggested).toBe("5.1.0");
+    expect(s.suggested.startsWith("4.")).toBe(false);
+  });
+
+  test("no tags → package.json is the bump base, never throws", async () => {
     const fresh = mkdtempSync(join(tmpdir(), "beckett-verrepo2-"));
     mkdirSync(fresh, { recursive: true });
     await initRepo(fresh);
     writeFileSync(join(fresh, "package.json"), `{\n  "version": "0.1.0"\n}\n`);
     await git(["add", "-A"], fresh);
     await git(["commit", "-q", "-m", "fix: initial"], fresh);
-    expect(await lastDeployedVersion(fresh)).toBeNull();
+    expect(await lastDeployedVersion(fresh)).toBe("0.1.0");
     const s = await computeBumpSuggestion(fresh);
     expect(s.base).toBe("0.1.0");
     expect(s.fromTag).toBe(false);
