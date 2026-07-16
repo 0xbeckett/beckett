@@ -21,12 +21,13 @@ const ticket = await client.createIssue({
 });
 console.log("4. created:", ticket.identifier, "state:", ticket.state, "url:", ticket.url);
 
-const comment = await client.addComment(ticket.id, "OPS-191 verification comment (nudge).");
-console.log("5. comment added:", comment.id);
-
 await client.setState(ticket.id, "in_progress");
 const inProgress = await client.getIssue(ticket.id);
-console.log("6. state -> in_progress:", inProgress?.state);
+console.log("5. state -> in_progress:", inProgress?.state);
+
+// bored only accepts nudges once a run exists — same order the dispatcher uses.
+const comment = await client.addComment(ticket.id, "OPS-191 verification comment (nudge).");
+console.log("6. comment added:", comment.id);
 
 const journal = await (client as BoredClient).listJournal(ticket.id, 5);
 console.log("7. journal tail:", JSON.stringify(journal.slice(-2)));
