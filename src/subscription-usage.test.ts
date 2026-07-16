@@ -363,7 +363,7 @@ test("usage probe environment excludes unrelated daemon secrets", () => {
     PATH: "/bin",
     CODEX_HOME: "/tmp/codex",
     DISCORD_TOKEN: "discord-secret",
-    PLANE_API_TOKEN: "plane-secret",
+    CLOUDFLARE_API_TOKEN: "cf-secret",
     GITHUB_PAT: "github-secret",
   })).toEqual({ HOME: "/tmp/home", PATH: "/bin", CODEX_HOME: "/tmp/codex" });
 });

@@ -27,7 +27,6 @@ function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     home: HOME,
     platform: "linux",
     env: {
-      PLANE_API_TOKEN: "t",
       DISCORD_TOKEN: "t",
       GITHUB_PAT: "t",
       CLOUDFLARE_API_TOKEN: "t",
@@ -48,10 +47,10 @@ function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     listProcesses: async () => [],
     readFile: (path: string) => {
       if (path.endsWith(".env.example")) {
-        return "DISCORD_TOKEN=\nPLANE_API_TOKEN=\nGITHUB_PAT=\nDISCORD_ALERT_WEBHOOK_URL= # optional\n";
+        return "DISCORD_TOKEN=\nGITHUB_PAT=\nDISCORD_ALERT_WEBHOOK_URL= # optional\n";
       }
       if (path.endsWith("/.env")) {
-        return "DISCORD_TOKEN=x\nPLANE_API_TOKEN=x\nGITHUB_PAT=x\nDISCORD_ALERT_WEBHOOK_URL=x\n";
+        return "DISCORD_TOKEN=x\nGITHUB_PAT=x\nDISCORD_ALERT_WEBHOOK_URL=x\n";
       }
       if (path.endsWith("dispatcher-state.json")) return JSON.stringify({ liveWorkers: {} });
       if (path.endsWith("config.yml")) return "tunnel: abc\n";
@@ -269,7 +268,7 @@ describe("doctor — the issue-#30 regression checklist", () => {
     const report = await runDoctor(
       healthyDeps({
         readFile: (path: string) => {
-          if (path.endsWith("/.env")) return "DISCORD_TOKEN=x\nPLANE_API_TOKEN=x\n"; // no GITHUB_PAT
+          if (path.endsWith("/.env")) return "DISCORD_TOKEN=x\n"; // no GITHUB_PAT
           return base.readFile!(path);
         },
       }),
@@ -286,7 +285,7 @@ describe("doctor — the issue-#30 regression checklist", () => {
       healthyDeps({
         readFile: (path: string) => {
           if (path.endsWith("/.env")) {
-            return "DISCORD_TOKEN=x\nPLANE_API_TOKEN=x\nGITHUB_PAT=x\nMYSTERY_KEY=x\n";
+            return "DISCORD_TOKEN=x\nGITHUB_PAT=x\nMYSTERY_KEY=x\n";
           }
           return base.readFile!(path);
         },
