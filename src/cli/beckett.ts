@@ -36,6 +36,15 @@ import { TaskStore, displayTaskName, normalizeBranchRef, normalizeTaskNumber } f
 import { startTaskBranch } from "./task-start.ts";
 import { quickDetachedMessage } from "./quick-output.ts";
 import { formatDispatchTrace, readDispatchEvents } from "../dispatch/events.ts";
+import {
+  commitVersion,
+  computeBumpSuggestion,
+  defaultRepoRoot as versionRepoRoot,
+  readVersion,
+  resolveVersion,
+  writeVersion,
+  type BumpLevel,
+} from "../version/index.ts";
 
 const config = loadConfig();
 const paths = buildPaths(config);
