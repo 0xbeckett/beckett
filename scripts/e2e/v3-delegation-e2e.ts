@@ -1,7 +1,7 @@
 /**
  * v3 REAL delegation proof — spawns an actual Claude worker via the dispatcher's spawn path
  * and verifies it does the work in its isolated git worktree. This is the "can we actually
- * delegate to agents" check (no Plane needed; exercises driver + worktree + scope-guard + done).
+ * delegate to agents" check (no tracker needed; exercises driver + worktree + scope-guard + done).
  *
  * Run: bun run scripts/e2e/v3-delegation-e2e.ts
  */

@@ -40,7 +40,7 @@ interface CliResult {
 
 /**
  * Run one `beckett …` invocation hermetically. The env is built from scratch (PATH only),
- * so no real GITHUB_PAT / CLOUDFLARE_* / AGENTMAIL_API_KEY / PLANE_API_TOKEN on this host can
+ * so no real GITHUB_PAT / CLOUDFLARE_* / AGENTMAIL_API_KEY secrets on this host can
  * leak in; BECKETT_DIR and HOME point into a fresh temp sandbox so no host state is read and
  * the daemon socket is guaranteed absent (the dead-daemon paths are deterministic).
  */

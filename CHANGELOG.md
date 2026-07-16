@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Tracker cutover: bored is the only ticket queue (OPS-191)
+
+- **Plane is gone.** `src/plane/` (client, poller, presets, cast helpers) is deleted; the shared
+  pieces now live in `src/tracker/` (types, cast blocks, presets, poller) and the only backend is
+  the loopback [bored](https://github.com/frgmt0/bored) service (`src/bored/`, reached via
+  `BECKETT_BORED_URL`, default `http://127.0.0.1:7770`). `createTrackerClient` always constructs
+  the bored client; the `BECKETT_TRACKER` selection flag from OPS-190 is removed rather than left
+  as a half-flag that could name a backend that no longer exists.
+- **Config:** the `[plane]` section is replaced by `[tracker]` (`poll_secs`, `default_board`,
+  `boards` as a plain name array — bored keeps its own workflow, so boards carry no per-board
+  config). A legacy `[plane]` section in an existing `~/.beckett/config.toml` is still accepted
+  and folded into `[tracker]` at load time so a pre-cutover box boots untouched; its Plane-only
+  keys (base_url, workspace_slug, project_slug, state_map) are discarded.
+- **Secrets:** `PLANE_API_TOKEN` / `PLANE_INTERNAL_URL` (and the whole Plane `.env` block) are no
+  longer read or required — bored is credential-free on loopback. `beckett doctor` now probes
+  `GET /health` on the bored service instead of a Plane token; the installers no longer prompt
+  for Plane URLs/workspaces/tokens and preflight the tracker connection instead of provisioning
+  Plane boards. `deploy/plane/` (the self-hosted Plane stack) is deleted.
+
 ### Incoming AgentMail notifications (OPS-173)
 
 - **Chosen delivery: durable polling fallback, not a webhook.** The daemon has no public HTTP

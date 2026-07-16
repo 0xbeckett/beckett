@@ -3,7 +3,7 @@
  *
  * Drives fake normalized Discord gateway messages through the real Concierge +
  * AmbientCoordinator pipeline with injected fakes for Discord, triage, and the
- * model session. No live model, Discord, or Plane calls are made.
+ * model session. No live model, Discord, or tracker calls are made.
  *
  * Coverage:
  *   code gate (enabled master + single channel suggest override, default off)
@@ -325,7 +325,7 @@ async function main(): Promise<void> {
     assertEqual(gateway.posts.length, 2, "PASS should suppress posting");
     assertEqual(readLedger(dir).offers?.length ?? 0, 0, "PASS should not create a pending offer");
 
-    console.log("\n✅ AMBIENT INTERJECTION E2E PASSED (offline; no live model/Discord/Plane)");
+    console.log("\n✅ AMBIENT INTERJECTION E2E PASSED (offline; no live model/Discord/tracker)");
   } finally {
     if (savedDir === undefined) delete process.env.BECKETT_DIR;
     else process.env.BECKETT_DIR = savedDir;
