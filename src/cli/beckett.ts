@@ -232,14 +232,17 @@ async function runSpend(argv: string[]): Promise<void> {
 // deployed tag, surfaces the "why", then applies + commits the chosen version. MAJOR is owner-only:
 // it never comes out of the auto-classifier, only an explicit `--major` (or an explicit X.Y.Z).
 async function runVersion(argv: string[]): Promise<void> {
-  const [sub, ...rest] = argv;
+  // The subcommand is the first POSITIONAL — a leading flag like `--json` is NOT a subcommand — so
+  // `beckett version --json` reports the version instead of tripping the unknown-subcommand path.
+  const { _: positionals, flags: topFlags } = parse(argv);
+  const sub = positionals[0];
+  const rest = argv.filter((t) => t !== sub);
   const repoRoot = versionRepoRoot();
 
   // `beckett version` (or `--json`): just report the source-of-truth version.
   if (!sub || sub === "show") {
-    const { flags } = parse(rest);
     const version = readVersion(repoRoot);
-    if (flags.json) out({ version });
+    if (topFlags.json) out({ version });
     out(version);
   }
 
