@@ -803,7 +803,10 @@ function discordUserId(value: string | undefined): string | undefined {
 
 /** Avoid a redundant explicit ping when Discord's native reply already notifies this user. */
 function stripUserMention(content: string, userId: string): string {
-  return content.replace(new RegExp(`<@!?${userId}>`, "g"), "").replace(/ {2,}/g, " ").trim();
+  const stripped = content.replace(new RegExp(`<@!?${userId}>`, "g"), "").replace(/ {2,}/g, " ").trim();
+  // Discord rejects an entirely empty text message. Keep the reply deliverable if a model emitted
+  // only the redundant mention, without restoring a second notification.
+  return stripped || "\u200b";
 }
 
 /** Discord channel/thread names are 1-100 characters. Keep task names stable and single-line. */

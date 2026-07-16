@@ -261,6 +261,15 @@ test("direct replies use a native reply and whitelist only its author", async ()
   expect(payloads[0]?.content).toBe("@everyone @here <@&987654321> got it");
 });
 
+test("a reply containing only a redundant mention remains deliverable without double-pinging", async () => {
+  const { payloads, callSendNow } = fakeSendableGateway();
+  const userId = "1151230208783945818";
+  await callSendNow(`<@${userId}>`, { replyToMessageId: "message-1", replyToUserId: userId });
+
+  expect(payloads[0]?.content).toBe("\u200b");
+  expect(payloads[0]?.allowedMentions).toEqual({ parse: [], users: [userId], repliedUser: true });
+});
+
 test("ambient one-liners have no reply or ping, and all implicit mention parsing is disabled", async () => {
   const { payloads, callSendNow } = fakeSendableGateway();
   await callSendNow("@everyone @here <@&987654321> <@1151230208783945818> nice");
