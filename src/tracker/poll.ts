@@ -49,8 +49,14 @@ interface CommentCursor {
   lastCommentIds: string[];
 }
 
-/** Backstop for tracker backends that do not bump ticket updatedAt on comments/nudges. */
-const COMMENT_FULL_SWEEP_MS = 60_000;
+/**
+ * Sweep interval for comment reads on unchanged active tickets. bored does NOT bump a ticket's
+ * updatedAt when a nudge lands, so this sweep IS the comment/steering delivery path (verified
+ * live in OPS-191) — not a rare backstop like it was against Plane. bored is a loopback service,
+ * so a 5s sweep costs one local /events read per active ticket per tick and keeps steering
+ * latency at the poll cadence instead of up to a minute.
+ */
+const COMMENT_FULL_SWEEP_MS = 5_000;
 const COMMENT_CURSOR_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 /** Constructor dependencies for {@link TrackerPoller}. */
