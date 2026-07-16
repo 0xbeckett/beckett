@@ -1,0 +1,8 @@
+  if (group === "config") {
+    if (sub === "print-default") {
+      const { defaultConfigToml } = await import("../config.ts");
+      process.stdout.write(defaultConfigToml());
+      process.exit(0);
+    }
+    fail("usage: beckett config print-default  (regenerates deploy/config.toml.example)");
+  }

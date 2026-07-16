@@ -1,0 +1,45 @@
+async function runMaintainer(argv: string[]): Promise<void> {
+  const [sub, ...rest] = argv;
+  const ownerId = process.env.DISCORD_OWNER_ID;
+  if (sub === "ls" || sub === "status") {
+    const bundled = Array.from(loadAccess(bundledMaintainersFile()).ids);
+    const all = loadMaintainers(paths.maintainersFile);
+    const pending = loadPending(paths.maintainersPendingFile);
+    out({
+      ids: Array.from(all),
+      bundled,
+      granted: Array.from(all).filter((id) => !bundled.includes(id)),
+      count: all.size,
+      // Codes are secrets shown only in the requesting turn — never re-printed here.
+      pending: pending.map((p) => ({ id: p.id, expiresAt: p.expiresAt })),
+    });
+  }
+  if (sub === "grant") {
+    const id = rest[0];
+    if (!id) fail("usage: beckett maintainer grant <discord-user-id>");
+    const r = requestMaintainerGrant(paths.maintainersPendingFile, paths.maintainersFile, id, ownerId);
+    out({
+      ok: r.ok,
+      status: r.status === "pending" ? "pending-approval" : r.status,
+      id,
+      code: r.code,
+      expiresInMin: Math.round(PENDING_GRANT_TTL_MS / 60_000),
+      how: r.code
+        ? `not granted yet — the owner must reply "@beckett approve ${r.code}" (or "deny ${r.code}") within ${Math.round(PENDING_GRANT_TTL_MS / 60_000)} minutes. Maintainer adds are owner-approved only.`
+        : undefined,
+      pendingCount: r.pendingCount,
+    });
+  }
+  if (sub === "revoke") {
+    const id = rest[0];
+    if (!id) fail("usage: beckett maintainer revoke <discord-user-id>");
+    const r = revokeMaintainer(paths.maintainersFile, id);
+    out({
+      ok: r.ok,
+      status: r.status,
+      id,
+      note: r.status === "bundled" ? "this id ships in the bundled maintainers.txt — removing it is a code change, not a CLI call" : undefined,
+    });
+  }
+  fail("usage: beckett maintainer ls | grant <id> | revoke <id>");
+}

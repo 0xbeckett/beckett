@@ -1,0 +1,19 @@
+async function runProactivity(argv: string[]): Promise<void> {
+  const [sub, ...rest] = argv;
+  if (sub === "status") {
+    await bus("proactivity.status", {});
+  }
+  if (sub === "set") {
+    const { _ } = parse(rest);
+    const channelId = _[0]?.trim();
+    const mode = _[1]?.trim();
+    if (!channelId || (mode !== "off" && mode !== "suggest" && mode !== "auto")) {
+      fail("usage: beckett proactivity set <channel-id> off|suggest|auto");
+    }
+    await bus("proactivity.set", { channelId, mode });
+  }
+  if (sub === "off") {
+    await bus("proactivity.off", {});
+  }
+  fail("usage: beckett proactivity status | set <channel-id> off|suggest|auto | off");
+}

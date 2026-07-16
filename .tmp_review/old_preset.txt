@@ -1,0 +1,22 @@
+  if (group === "preset") {
+    const { loadPresets, requirePreset } = await import("../plane/presets.ts");
+    let presets;
+    try {
+      presets = loadPresets(paths.presetsFile);
+    } catch (err) {
+      fail((err as Error).message);
+    }
+    if (sub === "ls" || sub === "list" || sub === undefined) {
+      out({ file: paths.presetsFile, presets });
+    }
+    if (sub === "show" || sub === "get") {
+      const name = rest[0];
+      if (!name) fail("usage: beckett preset show <name>");
+      try {
+        out({ name, cast: requirePreset(presets, String(name)) });
+      } catch (err) {
+        fail((err as Error).message);
+      }
+    }
+    fail("usage: beckett preset ls | show <name>");
+  }
