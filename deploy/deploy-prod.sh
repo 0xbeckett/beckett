@@ -8,6 +8,35 @@ set -euo pipefail
 
 HOST="${BECKETT_HOST:-beckett@loom-desk}"
 
+# ── smart semver bump (OPS-188) ─────────────────────────────────────────────────────────────
+# BEFORE we ship the merge, decide whether this release is a MINOR (new capability) or a PATCH
+# (fix / internal / behavior-preserving) from the commits since the last deployed tag, then write
+# + commit the new version to the source of truth (package.json). MAJOR is owner-only — it never
+# comes from the classifier, only an explicit override. The suggestion is CONFIRMABLE: run
+# interactively and beckett prompts; or pre-decide non-interactively with
+#   BECKETT_BUMP=minor|patch|major|yes ./deploy/deploy-prod.sh
+# ("yes" accepts the auto suggestion). The bump commit must reach origin/main before prod pulls,
+# so we sync main, bump, and push here.
+echo "== computing version bump since last deploy =="
+git fetch origin --tags --prune
+git checkout main
+git pull --ff-only origin main
+BUMP_ARGS=()
+case "${BECKETT_BUMP:-}" in
+  minor) BUMP_ARGS=(--minor) ;;
+  patch) BUMP_ARGS=(--patch) ;;
+  major) BUMP_ARGS=(--major) ;;
+  yes)   BUMP_ARGS=(--yes) ;;
+  "")    : ;;  # interactive: beckett prompts for confirm/override
+  *)     echo "FATAL: BECKETT_BUMP must be one of minor|patch|major|yes" >&2; exit 1 ;;
+esac
+if bun run beckett version bump "${BUMP_ARGS[@]}"; then
+  git push origin main          # ship the release-bump commit so prod ff-pulls it below
+else
+  echo "FATAL: version bump aborted — not deploying" >&2
+  exit 1
+fi
+
 echo "== deploying origin/main to ${HOST} =="
 ssh "${HOST}" 'bash -s' <<'REMOTE'
 set -euo pipefail

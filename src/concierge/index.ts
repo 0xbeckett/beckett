@@ -3993,8 +3993,14 @@ export function buildReleaseNote(channelId: string, subjects: string[]): string 
     `This is a "patch notes" flex, not a changelog. Make it FUNNY, witty, a little bit STUPID, ` +
     `and fully self-aware. Lean into the bit. Chaos energy, lowercase, your gen-z voice. Roast ` +
     `yourself if it lands. Absolutely NOT a dry list of commits.\n` +
-    `- a couple lines max. hype up the one or two things that actually slap and skip the boring ` +
-    `chore/plumbing commits entirely. do NOT just paste the list back.\n` +
+    `- OPEN with the version front and center: the FIRST line of the message must be this exact ` +
+    `Discord big-header, verbatim, so the release number is the loud headline:\n` +
+    `  ## beckett v${version}\n` +
+    `- right under that header, give a SHORT readable summary of what actually changed this release ` +
+    `(a line or two, or a couple of tight bullets) — the good stuff from the commit list above, in ` +
+    `plain language. this is the "what's new", so make it legible, not cryptic.\n` +
+    `- a couple lines max after the header. hype up the one or two things that actually slap and ` +
+    `skip the boring chore/plumbing commits entirely. do NOT just paste the list back.\n` +
     `- talk about what you can DO now, not what got refactored. make people care.\n` +
     `- then close it out with your sign-off "we're so back" written THREE separate times (owner's ` +
     `rule, non-negotiable), each on its own line.\n` +

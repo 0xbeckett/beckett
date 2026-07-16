@@ -226,6 +226,92 @@ async function runSpend(argv: string[]): Promise<void> {
   out({ path: paths.spend, since: since === undefined ? null : new Date(since).toISOString(), ...summarizeSpend(rows) });
 }
 
+// ── version (in-process: Beckett's own semver source of truth + deploy-time smart bump) ─────
+// `package.json`'s version is the ONE canonical home (OPS-188). `beckett version` reads it back;
+// `beckett version bump` computes a MINOR/PATCH suggestion from the commits merged since the last
+// deployed tag, surfaces the "why", then applies + commits the chosen version. MAJOR is owner-only:
+// it never comes out of the auto-classifier, only an explicit `--major` (or an explicit X.Y.Z).
+async function runVersion(argv: string[]): Promise<void> {
+  const [sub, ...rest] = argv;
+  const repoRoot = versionRepoRoot();
+
+  // `beckett version` (or `--json`): just report the source-of-truth version.
+  if (!sub || sub === "show") {
+    const { flags } = parse(rest);
+    const version = readVersion(repoRoot);
+    if (flags.json) out({ version });
+    out(version);
+  }
+
+  if (sub !== "bump") {
+    fail(`unknown version subcommand: ${sub}\nusage: beckett version | beckett version bump [--minor|--patch|--major|--set X.Y.Z] [--yes] [--no-commit] [--json]`);
+  }
+
+  const { flags } = parse(rest);
+  const s = await computeBumpSuggestion(repoRoot);
+
+  // Resolve the owner's choice. Explicit level/version flags are an override (and the ONLY path to a
+  // major); `--yes` accepts the auto suggestion; otherwise, on a TTY, prompt; off a TTY, refuse to
+  // silently ship (the deploy step passes a flag or --yes).
+  let override: BumpLevel | string | undefined;
+  const levelFlags = (["major", "minor", "patch"] as const).filter((l) => flags[l] === true);
+  if (levelFlags.length > 1) fail("pick at most one of --major / --minor / --patch");
+  if (typeof flags.set === "string") override = flags.set;
+  else if (levelFlags[0]) override = levelFlags[0];
+  else if (flags.yes === true) override = undefined; // accept the suggestion
+  else if (process.stdin.isTTY) override = promptForBump(s);
+  else {
+    fail(
+      `refusing to auto-bump without confirmation. Suggested: ${s.suggestion.level.toUpperCase()} → v${s.suggested}\n` +
+        s.suggestion.reasons.join("\n") +
+        `\nRe-run with --yes to accept, or --minor/--patch/--major/--set X.Y.Z to override.`,
+    );
+  }
+
+  const { version, level } = resolveVersion(s.base, s.suggestion, override);
+  if (version === s.base) {
+    fail(`resolved version v${version} equals the base — nothing to bump (choose a higher level or --set)`);
+  }
+
+  writeVersion(version, repoRoot);
+  let committed = false;
+  if (flags["no-commit"] !== true) {
+    await commitVersion(repoRoot, version);
+    committed = true;
+  }
+
+  out({
+    previous: s.base,
+    version,
+    level,
+    suggestedLevel: s.suggestion.level,
+    overridden: level !== s.suggestion.level,
+    committed,
+    commits: s.commits,
+    areas: s.areas,
+    why: s.suggestion.reasons,
+  });
+}
+
+/**
+ * Interactive confirm/override for a bump suggestion (TTY only). Enter accepts the suggestion; a
+ * word (`minor`/`patch`/`major`) or an explicit `X.Y.Z` overrides it; `n`/`q` aborts the deploy.
+ */
+function promptForBump(s: Awaited<ReturnType<typeof computeBumpSuggestion>>): BumpLevel | string | undefined {
+  process.stderr.write(
+    `\nbeckett version bump — base v${s.base}${s.fromTag ? " (last deployed tag)" : " (package.json)"}\n` +
+      `${s.commits.length} commit${s.commits.length === 1 ? "" : "s"} since; areas: ${s.areas.join(", ") || "—"}\n` +
+      s.suggestion.reasons.join("\n") +
+      `\nsuggested: ${s.suggestion.level.toUpperCase()} → v${s.suggested}\n`,
+  );
+  const answer = (prompt("accept? [Enter=yes / minor / patch / major / X.Y.Z / n=abort]:") ?? "").trim().toLowerCase();
+  if (answer === "" || answer === "y" || answer === "yes") return undefined; // accept suggestion
+  if (answer === "n" || answer === "no" || answer === "q") fail("version bump aborted by operator");
+  if (answer === "major" || answer === "minor" || answer === "patch") return answer;
+  if (/^\d+\.\d+\.\d+$/.test(answer)) return answer;
+  fail(`unrecognized choice: ${JSON.stringify(answer)}`);
+}
+
 // ── journal (in-process: the private per-ticket worker progress log) ────────────────────────
 // The verbose worker play-by-play that used to stream into a user-facing Discord thread now
 // lives in `<beckettDir>/journal/<ticket>.log`. This is the Concierge's on-demand context pull:
@@ -1312,6 +1398,21 @@ function buildCliCapabilities(): Capability[] {
           summary: "is prod healthy and what is it doing right now",
           usage: "beckett status [--pretty]",
           run: runStatus,
+        },
+      ],
+      busCommands: [],
+    },
+    {
+      id: "version",
+      summary: "Beckett's own semver (source of truth) + deploy-time smart bump (OPS-188)",
+      actionClass: ActionClass.FREE,
+      cliHelp: "version [bump]",
+      cliVerbs: [
+        {
+          name: "version",
+          summary: "print the current version, or `bump` to classify+apply a MINOR/PATCH at deploy",
+          usage: "beckett version | beckett version bump [--minor|--patch|--major|--set X.Y.Z] [--yes] [--no-commit]",
+          run: runVersion,
         },
       ],
       busCommands: [],
