@@ -2159,7 +2159,8 @@ export class Concierge {
       // Persist BEFORE the async post so a restart mid-announce can't re-announce the same range.
       writeAnnouncedSha(announcedFile, head);
       if (subjects.length === 0) return;
-      // `channelId` (config) gates whether we announce; the post itself always lands in #general.
+      // `channelId` (config) gates whether we announce; the post itself always lands in #announcements
+      // (`RELEASE_NOTE_CHANNEL_ID`) — the release note is Beckett's own version glow-up, not a per-fork feed.
       void this.pool
         .ask(RELEASE_NOTE_CHANNEL_ID, buildReleaseNote(RELEASE_NOTE_CHANNEL_ID, subjects))
         .catch((err) => this.log.warn("changes announcement turn failed (continuing)", { err: String(err) }));
