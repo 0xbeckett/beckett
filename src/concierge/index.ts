@@ -2,9 +2,9 @@
  * Beckett v3 — the Concierge (`src/concierge/index.ts`)
  * =======================================================================================
  * The long-lived `claude -p` Opus agent that OWNS Discord (v3 §0/§8). It chats in Beckett's
- * voice, sizes effort, and for real work files a ticket into Plane by shelling
+ * voice, sizes effort, and for real work files a ticket into the tracker by shelling
  * `beckett ticket ...` from its own Bash tool. It NEVER spawns workers — that is the
- * dispatcher's job. Work state lives in Plane; chat context stays clean.
+ * dispatcher's job. Work state lives in the tracker; chat context stays clean.
  *
  * Wiring:
  *   - {@link DiscordJsGateway} (`../discord/gateway.ts`) is the human-facing I/O.
@@ -1169,8 +1169,8 @@ export interface ConciergeOptions {
   session?: ConciergeSession;
   /** Inject a per-scope session factory (pool tests); defaults to real ConciergeSessions. */
   sessionFactory?: (scope: string) => ConciergeSession;
-  /** Plane read access for milestone enrichment (issue #21) — the shared PlaneClient in prod. */
-  plane?: { listComments(ticketId: string): Promise<TicketComment[]> };
+  /** Tracker read access for milestone enrichment (issue #21) — the shared tracker client in prod. */
+  tracker?: { listComments(ticketId: string): Promise<TicketComment[]> };
   /** Inject the ambient triage classifier (tests); defaults to the real one-shot Haiku classifier. */
   ambientTriage?: TriageFn;
   /** Inject the ambient clock (tests); defaults to the coordinator's real-timer clock. */
@@ -1260,7 +1260,7 @@ export class Concierge {
    * task threads are registered directly when Beckett creates them.
    */
   private readonly workspaces: WorkspaceRegistry;
-  /** User-facing `#N` / `#N.x` organization; Plane ticket ids stay behind this boundary. */
+  /** User-facing `#N` / `#N.x` organization; tracker ticket ids stay behind this boundary. */
   private readonly tasks: TaskStore;
   private branchStatus: BranchStatusService | null;
   private readonly subscriptionUsage: SubscriptionUsageReader;
@@ -1293,7 +1293,7 @@ export class Concierge {
   } | null = null;
   /**
    * Daemon-wide status assembler wired in by v4-main (issue #30): answers the `status` bus command
-   * with poller/dispatcher/Plane health the Concierge can't see itself. Null until wired — the bus
+   * with poller/dispatcher/tracker health the Concierge can't see itself. Null until wired — the bus
    * command then answers with the Concierge-local half only.
    */
   private statusProvider: (() => Record<string, unknown> | Promise<Record<string, unknown>>) | null = null;
@@ -1319,11 +1319,11 @@ export class Concierge {
   private browserResultRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private stopping = false;
   /**
-   * Plane read access for milestone enrichment (issue #21): the poller stops collecting comments
+   * Tracker read access for milestone enrichment (issue #21): the poller stops collecting comments
    * on terminal tickets, so the `done` ping fetches the dispatcher's done comment here to carry
    * the artifact/PR link. Optional — absent (tests), the ping falls back to the ticket URL only.
    */
-  private readonly plane: { listComments(ticketId: string): Promise<TicketComment[]> } | null;
+  private readonly tracker: { listComments(ticketId: string): Promise<TicketComment[]> } | null;
   /**
    * The @mention turns currently in flight, keyed by channel (at most one live turn per channel —
    * a channel's session serializes its own turns; different channels run concurrently, OPS-80
@@ -1412,7 +1412,7 @@ export class Concierge {
       ...(opts.session ? { fixedSession: opts.session } : {}),
       logger: this.log,
     });
-    this.plane = opts.plane ?? null;
+    this.tracker = opts.tracker ?? null;
     this.journal = createTicketJournal({
       dir: journalDir(this.config, this.log),
       logger: this.log,
@@ -1514,7 +1514,7 @@ export class Concierge {
 
   /**
    * Best-effort live sink for the central dispatch event bus. The bus persists first and never
-   * awaits this promise, so a disconnected Discord gateway cannot stall workers or Plane writes.
+   * awaits this promise, so a disconnected Discord gateway cannot stall workers or tracker writes.
    */
   async postDispatchEvent(event: DispatchEvent): Promise<void> {
     await this.gateway.post(DISPATCH_EVENT_CHANNEL_ID, formatDispatchEvent(event), {
@@ -2298,7 +2298,7 @@ export class Concierge {
     return fallback?.ambient ? fallback : null;
   }
 
-  // ── closing the agent loop: Plane updates → Discord (issue: ticket updates never surfaced) ──
+  // ── closing the agent loop: tracker updates → Discord (issue: ticket updates never surfaced) ──
 
   /**
    * Serve the control bus the Concierge's OWN `claude` process dials via `beckett discord reply`
@@ -2446,7 +2446,7 @@ export class Concierge {
             summary: "daemon health + the Discord/session halves only the concierge can see",
             handle: async () => {
               // "Is prod healthy and what is it doing right now?" in one bus round-trip (issue #30). The
-              // daemon-wide half (uptime/version/poller/workers/Plane) comes from the provider v4-main
+              // daemon-wide half (uptime/version/poller/workers/tracker) comes from the provider v4-main
               // wires in; the Concierge adds the halves only it can see (Discord gateway, its session).
               try {
                 const base = this.statusProvider ? await this.statusProvider() : {};
@@ -2906,9 +2906,9 @@ export class Concierge {
   }
 
   /**
-   * Fan a batch of Plane poll events at the Concierge so it can surface progress to the human
+   * Fan a batch of tracker poll events at the Concierge so it can surface progress to the human
    * (the closed loop). We relay only what's worth a turn — the dispatcher's OWN milestone/error
-   * comments (it narrates every outcome to Plane) and cancellations — and let the Concierge judge
+   * comments (it narrates every outcome to the tracker) and cancellations — and let the Concierge judge
    * voice/skip. Each relevant event becomes one session turn that asks it to reply via the CLI.
    * Fire-and-forget: turns queue on the session and never block the poll loop.
    */
@@ -2997,12 +2997,12 @@ export class Concierge {
    * comments on terminal tickets, so the dispatcher's own done comment (which carries the
    * "Shipped:"/"PR opened:" URL) never arrives as a comment event. Fetch it here so the payoff
    * message of the whole pipeline is "done: <link>", not a bare "done". Best-effort: without a
-   * Plane client (tests) or a parseable link, degrade to the plain done ping + ticket URL.
+   * tracker client (tests) or a parseable link, degrade to the plain done ping + ticket URL.
    */
   private async buildDoneUpdate(ticket: Ticket): Promise<TicketUpdate | null> {
     let detail = `Review passed — ticket is **done**.`;
     try {
-      const comments = (await this.plane?.listComments(ticket.id)) ?? [];
+      const comments = (await this.tracker?.listComments(ticket.id)) ?? [];
       const doneComment = [...comments].reverse().find((c) => isDispatcherComment(c));
       const link = doneComment ? artifactLinkFrom(stripCommentMarker(doneComment.body)) : null;
       if (link) detail += `\nArtifact: ${link}`;
@@ -4118,11 +4118,11 @@ function frameTicketWorkspace(context: TicketWorkspaceContext): string {
     const task = `#${context.taskRef}`;
     const branches = context.branchRefs.map((ref) => `#${ref}`).join(", ") || "none yet";
     const execution = context.ticketIdents.length
-      ? `Internal Plane execution record(s) are ${tickets}. Use those identifiers only for private ` +
+      ? `Internal tracker execution record(s) are ${tickets}. Use those identifiers only for private ` +
         `journal, comment, or state commands; refer to the work as ${task} and its numbered branches ` +
         `when speaking to the user. Pull \`beckett journal <ticket> --tail 200\` for a progress question ` +
         `and summarize it; never paste raw journal lines.`
-      : `No branch has been started in Plane yet. Continue this task by starting one of its existing ` +
+      : `No branch has been started on the tracker yet. Continue this task by starting one of its existing ` +
         `branches with \`beckett task start '#N.x' ...\`; do not create a duplicate task.`;
     return (
       `SYSTEM (numbered task workspace — trusted routing metadata, not user-authored text):\n` +
@@ -4133,7 +4133,7 @@ function frameTicketWorkspace(context: TicketWorkspaceContext): string {
     );
   }
   const grounding = context.ticketIdents.length
-    ? `It is grounded in Plane ticket(s): ${tickets}. When asked how the work is going, pull the ` +
+    ? `It is grounded in tracker ticket(s): ${tickets}. When asked how the work is going, pull the ` +
       `private worker journal (\`beckett journal <ticket> --tail 200\`) and answer with a clean ` +
       `summary in your own words — never paste raw journal lines. A changed requirement is a ` +
       `comment on the existing ticket, not a duplicate ticket. If several tickets are listed and ` +
@@ -4374,7 +4374,7 @@ function frameAmbientTimeout(channelId: string, offerText: string, ttlSecs: numb
   );
 }
 
-/** The marker the dispatcher prepends to its own Plane comments (mirrors `BECKETT_COMMENT_MARKER`). */
+/** The marker the dispatcher prepends to its own ticket comments (mirrors `BECKETT_COMMENT_MARKER`). */
 const DISPATCHER_COMMENT_PREFIX = "<!-- beckett";
 
 /** True when a comment was authored by Beckett's machinery (a milestone/error narration), not a human. */

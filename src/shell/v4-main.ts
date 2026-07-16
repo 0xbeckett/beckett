@@ -1,21 +1,21 @@
 /**
  * Beckett v4 — the shell entrypoint (`src/shell/v4-main.ts`)
  * =======================================================================================
- * Boots the v3 Plane ticket-queue system and wires the four moving parts together:
+ * Boots the ticket-queue system and wires the four moving parts together:
  *
- *   1. Config + env — `loadConfig()` reads `~/.beckett/config.toml` (the `[plane]` /
- *      `[concierge]` sections) and loads `~/.beckett/.env` so `PLANE_API_TOKEN` lands in
- *      `process.env` for the {@link PlaneClient}.
- *   2. PlaneClient — the only module that speaks HTTP to the self-hosted Plane instance.
- *   3. Poller — polls the Plane REST API every `config.plane.poll_secs`, diffs snapshots, and
+ *   1. Config + env — `loadConfig()` reads `~/.beckett/config.toml` (the `[tracker]` /
+ *      `[concierge]` sections) and loads `~/.beckett/.env`.
+ *   2. BoredClient — the only module that speaks HTTP to the loopback bored tracker
+ *      (BECKETT_BORED_URL, default http://127.0.0.1:7770).
+ *   3. Poller — polls bored every `config.tracker.poll_secs`, diffs snapshots, and
  *      hands each batch of {@link PollEvent}s to the dispatcher.
- *   4. Dispatcher — the v3 state machine: spawns implement/review workers, steers them from
+ *   4. Dispatcher — the state machine: spawns implement/review workers, steers them from
  *      ticket comments, aborts on cancel, advances ticket state on finish.
  *   5. Concierge — the long-lived `claude -p` Opus agent that owns Discord and files tickets.
  *
  * The Concierge and the poll→dispatch loop are independent: the Concierge writes tickets into
- * Plane, the poller observes them, the dispatcher acts. They never call each other directly —
- * Plane is the shared queue. This mirrors the architecture in `docs/V3.md` §0.
+ * the tracker, the poller observes them, the dispatcher acts. They never call each other
+ * directly — the tracker is the shared queue.
  *
  * This is a NEW entrypoint; the v2 `src/shell/main.ts` is left untouched. Run it with
  * `bun run v4` (see package.json) or `bun src/shell/v4-main.ts`.
@@ -31,7 +31,8 @@ import { log as rootLog } from "../log.ts";
 import type { Config, Harness, Logger } from "../types.ts";
 import type { Ticket } from "../tracker/types.ts";
 import { projectSlug } from "../tracker/cast.ts";
-import { createTrackerClient, trackerKind, type TrackerClient } from "../tracker/client.ts";
+import { createTrackerClient, type TrackerClient } from "../tracker/client.ts";
+import { boredBaseUrl } from "../bored/client.ts";
 import { createTrackerPoller, type TrackerPoller } from "../tracker/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
 import { createGitHubPrPoller, type GitHubPrPoller } from "../github/poll.ts";
@@ -111,27 +112,21 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("booting beckett v4", {
     version: BECKETT_VERSION,
-    plane: config.plane.base_url,
-    workspace: config.plane.workspace_slug,
-    defaultBoard: config.plane.default_board,
-    boards: Object.keys(config.plane.boards),
-    pollSecs: config.plane.poll_secs,
+    tracker: boredBaseUrl(),
+    defaultBoard: config.tracker.default_board,
+    boards: config.tracker.boards,
+    pollSecs: config.tracker.poll_secs,
     conciergeModel: config.concierge.model,
     projectsRoot: PROJECTS_ROOT,
   });
 
-  const activeTracker = trackerKind();
-  if (activeTracker === "plane" && !process.env.PLANE_API_TOKEN) {
-    logger.warn("PLANE_API_TOKEN is not set — Plane API calls will fail until it is provided");
-  }
-
-  // Bored has one managed tracker board; Plane retains its exact per-board setup by default.
-  const activeBoards = activeTracker === "bored" ? [config.plane.default_board] : Object.keys(config.plane.boards);
+  // bored serves ONE managed board per instance — poll only the default board.
+  const activeBoards = [config.tracker.default_board];
   const clients = new Map<string, TrackerClient>();
   for (const board of activeBoards) {
-    clients.set(board, createTrackerClient({ config, board, logger: logger.child(`${activeTracker}.client.${board}`) }));
+    clients.set(board, createTrackerClient({ config, board, logger: logger.child(`tracker.client.${board}`) }));
   }
-  const client = clients.get(config.plane.default_board) ?? clients.values().next().value!;
+  const client = clients.get(config.tracker.default_board) ?? clients.values().next().value!;
   const clientByProjectId = new Map<string, TrackerClient>();
   const pollerByProjectId = new Map<string, TrackerPoller>();
 
@@ -230,7 +225,7 @@ async function boot(): Promise<BootedSystem> {
   const concierge = createConcierge({
     config,
     logger: logger.child("concierge"),
-    plane: client,
+    tracker: client,
     tasks,
     branchStatus: createBranchStatusService({
       store: tasks,
@@ -249,22 +244,20 @@ async function boot(): Promise<BootedSystem> {
       board,
       createTrackerPoller({
         client: boardClient,
-        logger: logger.child(`${activeTracker}.poll.${board}`),
-        pollSecs: config.plane.poll_secs,
+        logger: logger.child(`tracker.poll.${board}`),
+        pollSecs: config.tracker.poll_secs,
         commentCursorPath: join(
           beckettDir,
-          board === config.plane.default_board ? "comment-cursors.json" : `comment-cursors-${board}.json`,
+          board === config.tracker.default_board ? "comment-cursors.json" : `comment-cursors-${board}.json`,
         ),
       }),
     );
   }
-  const poller = pollers.get(config.plane.default_board) ?? pollers.values().next().value!;
-  // Provision and then resolve boards SERIALly before polling. This is the deploy-time repair
-  // path for a newly configured board (notably INT): each client lists first and creates only
-  // missing project/states. Serializing avoids a four-board boot burst; each individual request
-  // also uses PlaneClient's 429 Retry-After/exponential-backoff wrapper.
-  // Failures remain non-fatal so a temporary Plane outage does not take Discord down; the poller
-  // retries provisioning through its normal client bootstrap on later ticks.
+  const poller = pollers.get(config.tracker.default_board) ?? pollers.values().next().value!;
+  // Health-check the tracker and pre-resolve board routing before polling. Each request uses
+  // the client's 429 Retry-After/exponential-backoff wrapper. Failures remain non-fatal so a
+  // temporary tracker outage does not take Discord down; the poller retries through its normal
+  // client bootstrap on later ticks.
   for (const [board, boardClient] of clients) {
     try {
       await boardClient.ensureProvisioned();
@@ -282,7 +275,7 @@ async function boot(): Promise<BootedSystem> {
         });
       });
     } catch (err) {
-      logger.warn("Plane board provisioning/pre-resolution failed", { board, error: (err as Error).message });
+      logger.warn("tracker board health-check/pre-resolution failed", { board, error: (err as Error).message });
     }
   }
   const rememberRouting = (events: Ticket | Ticket[], board: string) => {
@@ -317,7 +310,7 @@ async function boot(): Promise<BootedSystem> {
     preflight: (harness) => preflightFor(harness, config),
     onBeforePublish: async ({ ticket }) => {
       if (!ticket.branchRef) return;
-      const board = clientByProjectId.get(ticket.projectId)?.board() ?? config.plane.default_board;
+      const board = clientByProjectId.get(ticket.projectId)?.board() ?? config.tracker.default_board;
       // Snapshot against the original task base before an owned-repo push rebases onto a parallel
       // branch that reached main first. This persisted aggregate survives worktree teardown.
       await syncTaskBranch(ticket, board, true);
@@ -328,7 +321,7 @@ async function boot(): Promise<BootedSystem> {
     onAdvance: async (event) => {
       (pollerByProjectId.get(event.ticket.projectId) ?? poller).observe(event);
       if (event.ticket.branchRef) {
-        const board = clientByProjectId.get(event.ticket.projectId)?.board() ?? config.plane.default_board;
+        const board = clientByProjectId.get(event.ticket.projectId)?.board() ?? config.tracker.default_board;
         try {
           // Publication snapshots completed contributions before any rebase. State advances only
           // update lifecycle here so the accurate pre-publish aggregate is never overwritten.
@@ -436,9 +429,9 @@ async function boot(): Promise<BootedSystem> {
     },
     githubPr: prPoller ? prPoller.stats() : null,
     githubActivity: activityPoller ? { repo: activityConfig.repo, branch: activityConfig.branch } : null,
-    plane: {
-      baseUrl: config.plane.base_url,
-      defaultBoard: config.plane.default_board,
+    tracker: {
+      baseUrl: boredBaseUrl(),
+      defaultBoard: config.tracker.default_board,
       boards: Object.fromEntries([...clients].map(([board, c]) => [board, c.stats()])),
       ...client.stats(),
     },

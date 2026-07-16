@@ -34,6 +34,11 @@ export class BoredApiError extends Error {
   }
 }
 
+/** bored's loopback base URL: BECKETT_BORED_URL, else the managed-service default. */
+export function boredBaseUrl(env: Record<string, string | undefined> = process.env): string {
+  return (env.BECKETT_BORED_URL ?? "http://127.0.0.1:7770").replace(/\/+$/, "");
+}
+
 const TicketStateSchema = z.enum([
   "backlog", "todo", "design", "design_review", "in_progress", "in_review", "done", "cancelled",
 ]);
@@ -92,7 +97,7 @@ export class BoredClient {
     this.config = deps.config;
     this.logger = deps.logger ?? log.child("bored.client");
     this.fetchImpl = deps.fetch ?? globalThis.fetch.bind(globalThis);
-    this.apiBase = (deps.baseUrl ?? process.env.BECKETT_BORED_URL ?? "http://127.0.0.1:7770").replace(/\/+$/, "");
+    this.apiBase = deps.baseUrl?.replace(/\/+$/, "") ?? boredBaseUrl();
     this.boardName = resolveBoardName(this.config, deps.board);
   }
 
