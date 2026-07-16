@@ -21,16 +21,17 @@ echo "== computing version bump since last deploy =="
 git fetch origin --tags --prune
 git checkout main
 git pull --ff-only origin main
-BUMP_ARGS=()
+BUMP_FLAG=""
 case "${BECKETT_BUMP:-}" in
-  minor) BUMP_ARGS=(--minor) ;;
-  patch) BUMP_ARGS=(--patch) ;;
-  major) BUMP_ARGS=(--major) ;;
-  yes)   BUMP_ARGS=(--yes) ;;
+  minor) BUMP_FLAG="--minor" ;;
+  patch) BUMP_FLAG="--patch" ;;
+  major) BUMP_FLAG="--major" ;;
+  yes)   BUMP_FLAG="--yes" ;;
   "")    : ;;  # interactive: beckett prompts for confirm/override
   *)     echo "FATAL: BECKETT_BUMP must be one of minor|patch|major|yes" >&2; exit 1 ;;
 esac
-if bun run beckett version bump "${BUMP_ARGS[@]}"; then
+# ${VAR:+"$VAR"} → nothing when empty (safe under set -u, portable to bash 3.2 on the Mac).
+if bun run beckett version bump ${BUMP_FLAG:+"$BUMP_FLAG"}; then
   git push origin main          # ship the release-bump commit so prod ff-pulls it below
 else
   echo "FATAL: version bump aborted — not deploying" >&2

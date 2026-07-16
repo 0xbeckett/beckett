@@ -41,6 +41,16 @@ describe("buildReleaseNote", () => {
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
   });
 
+  test("leads with the version front-and-center as a big header + a readable what-changed summary (OPS-188)", () => {
+    const note = buildReleaseNote("999", ["x"]);
+    // The message must OPEN with the version as a loud Discord header (## …), not bury it in the tail.
+    expect(note).toContain(`## beckett v${pkg.version}`);
+    expect(note.toLowerCase()).toContain("open with the version front and center");
+    // …and it must ask for a readable summary of what changed (the "what's new"), not just commits.
+    expect(note.toLowerCase()).toContain("readable summary");
+    expect(note.toLowerCase()).toContain("what's new");
+  });
+
   test("instructs the 'we're so back' sign-off three times, before the version subheader", () => {
     const note = buildReleaseNote("999", ["x"]);
     expect(note.toLowerCase()).toContain("we're so back");

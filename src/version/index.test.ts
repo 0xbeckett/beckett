@@ -26,6 +26,21 @@ const git = async (args: string[], cwd: string): Promise<string> => {
   return out;
 };
 
+/** Init a throwaway repo with signing disabled (some dev machines force signed/annotated tags). */
+const initRepo = async (cwd: string): Promise<void> => {
+  await git(["init", "-q", "-b", "main"], cwd);
+  await git(["config", "user.email", "t@t.io"], cwd);
+  await git(["config", "user.name", "t"], cwd);
+  await git(["config", "commit.gpgSign", "false"], cwd);
+  await git(["config", "tag.gpgSign", "false"], cwd);
+  await git(["config", "tag.forceSignAnnotated", "false"], cwd);
+};
+
+/** Annotated tag at HEAD (works regardless of the host's lightweight-tag policy). */
+const tag = async (cwd: string, name: string): Promise<void> => {
+  await git(["tag", "-a", name, "-m", name], cwd);
+};
+
 describe("readVersion / writeVersion (source of truth)", () => {
   test("reads the version and rewrites it in place, preserving formatting", () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-ver-"));
@@ -73,16 +88,14 @@ describe("git-backed base + commits + suggestion", () => {
   beforeAll(async () => {
     repo = mkdtempSync(join(tmpdir(), "beckett-verrepo-"));
     mkdirSync(repo, { recursive: true });
-    await git(["init", "-q", "-b", "main"], repo);
-    await git(["config", "user.email", "t@t.io"], repo);
-    await git(["config", "user.name", "t"], repo);
+    await initRepo(repo);
     // v4.1.2 is the "last deployed" tag.
     writeFileSync(join(repo, "package.json"), `{\n  "version": "4.1.2"\n}\n`);
     await git(["add", "-A"], repo);
     await git(["commit", "-q", "-m", "release v4.1.2"], repo);
-    await git(["tag", "v4.1.2"], repo);
+    await tag(repo, "v4.1.2");
     // An older tag, to prove sort picks the newest.
-    await git(["tag", "v3.6.1", "HEAD"], repo);
+    await tag(repo, "v3.6.1");
     // Two feature commits merged since.
     writeFileSync(join(repo, "a"), "1");
     await git(["add", "-A"], repo);
@@ -115,9 +128,7 @@ describe("git-backed base + commits + suggestion", () => {
   test("no tags → base falls back to package.json, never throws", async () => {
     const fresh = mkdtempSync(join(tmpdir(), "beckett-verrepo2-"));
     mkdirSync(fresh, { recursive: true });
-    await git(["init", "-q", "-b", "main"], fresh);
-    await git(["config", "user.email", "t@t.io"], fresh);
-    await git(["config", "user.name", "t"], fresh);
+    await initRepo(fresh);
     writeFileSync(join(fresh, "package.json"), `{\n  "version": "0.1.0"\n}\n`);
     await git(["add", "-A"], fresh);
     await git(["commit", "-q", "-m", "fix: initial"], fresh);
