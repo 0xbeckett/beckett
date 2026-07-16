@@ -139,6 +139,22 @@ function mergeProactivityOverride(rawConfig: unknown, overridePath: string): unk
   return root;
 }
 
+/**
+ * OPS-191 back-compat: fold a legacy top-level `[plane]` section into `[tracker]` so an
+ * existing box's config.toml keeps booting after the Plane→bored cutover. The shared keys
+ * (poll_secs, default_board, boards) carry over where `[tracker]` doesn't set them itself;
+ * the Plane-only keys (base_url, workspace_slug, project_slug, state_map) are discarded by
+ * the tracker fragment's normalizer. Purely a config-shape shim — no Plane code path exists.
+ */
+function foldLegacyPlaneSection(raw: unknown): unknown {
+  if (!isRecord(raw) || !Object.prototype.hasOwnProperty.call(raw, "plane")) return raw;
+  const root = cloneRecord(raw);
+  const legacy = cloneRecord(root.plane);
+  root.tracker = { ...legacy, ...cloneRecord(root.tracker) };
+  delete root.plane;
+  return root;
+}
+
 export interface LoadConfigOptions {
   /** Override env source (for tests). Defaults to process.env. */
   env?: PathEnv;
@@ -177,6 +193,9 @@ export function loadConfig(opts: LoadConfigOptions = {}): Config {
   // 3. runtime proactivity overrides (partial [proactivity]) → raw object.
   raw = mergeProactivityOverride(raw, opts.proactivityOverrideFile ?? `${beckettDir}/proactivity.json`);
 
+  // 3b. legacy [plane] section → [tracker] (OPS-191 cutover shim).
+  raw = foldLegacyPlaneSection(raw);
+
   // 4. validate + apply defaults (loud refuse-to-start on invalid).
   const result = ConfigSchema.safeParse(raw);
   if (!result.success) {
@@ -192,7 +211,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): Config {
 
 /** Parse a config object directly (tests / in-memory). Same validation as loadConfig. */
 export function validateConfig(raw: unknown): Config {
-  const result = ConfigSchema.safeParse(raw ?? {});
+  const result = ConfigSchema.safeParse(foldLegacyPlaneSection(raw ?? {}));
   if (!result.success) {
     const issues = result.error.issues
       .map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`)
@@ -202,20 +221,15 @@ export function validateConfig(raw: unknown): Config {
   return result.data as Config;
 }
 
-/** Resolve a user-supplied board name (case-insensitive), defaulting to config.plane.default_board. */
+/** Resolve a user-supplied board name (case-insensitive), defaulting to config.tracker.default_board. */
 export function resolveBoardName(config: Config, board?: string): string {
-  const names = Object.keys(config.plane.boards);
-  const wanted = (board && board.trim() ? board.trim() : config.plane.default_board).toLowerCase();
+  const names = config.tracker.boards;
+  const wanted = (board && board.trim() ? board.trim() : config.tracker.default_board).toLowerCase();
   const match = names.find((name) => name.toLowerCase() === wanted);
   if (!match) {
-    throw new Error(`unknown Plane board "${board ?? config.plane.default_board}" (have: ${names.join(", ") || "none"})`);
+    throw new Error(`unknown board "${board ?? config.tracker.default_board}" (have: ${names.join(", ") || "none"})`);
   }
   return match;
-}
-
-/** Return the selected board's Plane project/state-map config. */
-export function resolvePlaneBoard(config: Config, board?: string): Config["plane"]["boards"][string] {
-  return config.plane.boards[resolveBoardName(config, board)]!;
 }
 
 /** The fully-defaulted config (an empty TOML). Handy for tests + the v0 seed boot. */

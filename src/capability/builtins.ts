@@ -155,121 +155,36 @@ const HarnessConfigSchema = z
   .default({});
 
 // =======================================================================================
-// plane — ticket-queue boards (Spec v3)
+// tracker — the bored ticket queue (OPS-190/191)
 // =======================================================================================
 
-const DEV_STATE_MAP = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  cancelled: "Cancelled",
-} as const;
-
-const VIDEO_STATE_MAP = {
-  backlog: "Ideas",
-  todo: "Scripting",
-  in_progress: "Production",
-  in_review: "Review",
-  done: "Published",
-  cancelled: "Shelved",
-} as const;
-
-/** INT's own Plane workflow: design is live; design_review is the human-only gate. */
-const INT_STATE_MAP = {
-  backlog: "Backlog",
-  todo: "Todo",
-  design: "Design",
-  design_review: "Review (Design)",
-  in_progress: "In Progress",
-  in_review: "Review",
-  done: "Done",
-  cancelled: "Cancelled",
-} as const;
-
 /**
- * The stock board set — DATA, not code. `normalizePlaneConfig` iterates this record
- * generically, and `[plane.boards.<name>]` in config.toml overrides or extends it, so the
- * effective board list is configuration-driven: adding a board is a config.toml table (or,
- * for a new stock default, one entry here) — never another hardcoded branch.
+ * The stock board-name set. Boards are just names now: bored serves one managed board per
+ * instance and keeps its own workflow, so a board carries no per-board config. `[tracker]`
+ * `boards = [...]` in config.toml overrides or extends the list.
  */
-const DEFAULT_PLANE_BOARDS: Record<string, { project_slug: string; state_map: Record<string, string> }> = {
-  ops: { project_slug: "beckett", state_map: DEV_STATE_MAP },
-  /** Separate intensive-task board — never add its design columns to OPS. */
-  int: { project_slug: "INT", state_map: INT_STATE_MAP },
-  vid: { project_slug: "VID", state_map: VIDEO_STATE_MAP },
-  vidpip: { project_slug: "VIDPIP", state_map: DEV_STATE_MAP },
-};
+const DEFAULT_BOARDS = ["ops", "int", "vid", "vidpip"] as const;
 
-/** The board the legacy flat `[plane]` shape (and default_board's default) normalizes into. */
+/** The board the legacy shapes (and default_board's default) normalize into. */
 const LEGACY_FLAT_BOARD = "ops";
 
-const StateMapSchema = z
-  .object({
-    backlog: z.string().min(1).default("Backlog"),
-    todo: z.string().min(1).default("Todo"),
-    // These columns exist only on INT. Keeping them optional prevents ordinary boards from
-    // advertising (or requiring) design columns they do not have.
-    design: z.string().min(1).optional(),
-    design_review: z.string().min(1).optional(),
-    in_progress: z.string().min(1).default("In Progress"),
-    in_review: z.string().min(1).default("In Review"),
-    done: z.string().min(1).default("Done"),
-    cancelled: z.string().min(1).default("Cancelled"),
-  })
-  .default({});
-
-const PlaneBoardSchema = z
-  .object({
-    project_slug: z.string().min(1),
-    state_map: StateMapSchema,
-  })
-  .strict();
-
-function mergeBoardDefaults(
-  base: { project_slug: string; state_map: Record<string, string> },
-  raw: unknown,
-): Record<string, unknown> {
-  const override = cloneRecord(raw);
-  return {
-    project_slug:
-      typeof override.project_slug === "string" ? override.project_slug : base.project_slug,
-    state_map: { ...base.state_map, ...cloneRecord(override.state_map) },
-  };
-}
-
-function normalizePlaneConfig(rawPlane: unknown): unknown {
-  const raw = cloneRecord(rawPlane);
-  const incomingBoards = isRecord(raw.boards) ? raw.boards : {};
-  const boards: Record<string, unknown> = {};
-  for (const [name, base] of Object.entries(DEFAULT_PLANE_BOARDS)) {
-    boards[name] = mergeBoardDefaults(base, incomingBoards[name]);
-  }
-  for (const [name, value] of Object.entries(incomingBoards)) {
-    if (name in boards) continue;
-    boards[name] = value;
-  }
-
-  // Backward compatibility: accept the old flat [plane] shape, but normalize it into the ops
-  // board before the strict schema sees the object. Existing boxes keep booting untouched.
-  if (Object.prototype.hasOwnProperty.call(raw, "project_slug")) {
-    boards[LEGACY_FLAT_BOARD] = {
-      ...cloneRecord(boards[LEGACY_FLAT_BOARD]),
-      project_slug: raw.project_slug,
-    };
-  }
-  if (Object.prototype.hasOwnProperty.call(raw, "state_map")) {
-    boards[LEGACY_FLAT_BOARD] = {
-      ...cloneRecord(boards[LEGACY_FLAT_BOARD]),
-      state_map: {
-        ...DEFAULT_PLANE_BOARDS[LEGACY_FLAT_BOARD]!.state_map,
-        ...cloneRecord(raw.state_map),
-      },
-    };
-  }
-
+/**
+ * Accept the retired Plane-era board TABLE (`boards.<name> = { project_slug, state_map }`)
+ * by collapsing it to its names — the per-board keys were Plane-only and bored needs none of
+ * them. (The top-level `[plane]` → `[tracker]` fold happens in `src/config.ts` before this
+ * fragment ever sees the object.)
+ */
+function normalizeTrackerConfig(rawTracker: unknown): unknown {
+  const raw = cloneRecord(rawTracker);
+  const boards = Array.isArray(raw.boards)
+    ? raw.boards
+    : isRecord(raw.boards)
+      ? [...new Set([...DEFAULT_BOARDS, ...Object.keys(raw.boards)])]
+      : [...DEFAULT_BOARDS];
   const out: Record<string, unknown> = { ...raw, boards };
+  // Plane-only keys a legacy section may still carry — dropped, never validated against.
+  delete out.base_url;
+  delete out.workspace_slug;
   delete out.project_slug;
   delete out.state_map;
   if (!Object.prototype.hasOwnProperty.call(out, "default_board")) {
@@ -278,27 +193,25 @@ function normalizePlaneConfig(rawPlane: unknown): unknown {
   return out;
 }
 
-const PlaneConfigSchema = z
+const TrackerConfigSchema = z
   .preprocess(
-    normalizePlaneConfig,
+    normalizeTrackerConfig,
     z
       .object({
-        base_url: z.string().min(1).default("https://plane.0xbeckett.me"),
-        workspace_slug: z.string().min(1).default("beckett"),
-        // Perf: pickup/review/relay latency is bounded by this poll. The poller now avoids
-        // unchanged-ticket comment reads, so a 5s default cuts average wait without increasing the
-        // old hot-path Plane load. Poll cost scales linearly with board count (3 boards is fine).
+        // Perf: pickup/review/relay latency is bounded by this poll. The poller avoids
+        // unchanged-ticket comment reads, so a 5s default cuts average wait cheaply (bored is
+        // a loopback service — polls never leave the box).
         poll_secs: posInt.default(5),
         default_board: z.string().min(1).default(LEGACY_FLAT_BOARD),
-        boards: z.record(PlaneBoardSchema).default(DEFAULT_PLANE_BOARDS as unknown as Record<string, z.infer<typeof PlaneBoardSchema>>),
+        boards: z.array(z.string().min(1)).default([...DEFAULT_BOARDS]),
       })
       .strict()
-      .superRefine((plane, ctx) => {
-        if (!Object.prototype.hasOwnProperty.call(plane.boards, plane.default_board)) {
+      .superRefine((tracker, ctx) => {
+        if (!tracker.boards.includes(tracker.default_board)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ["default_board"],
-            message: `unknown default_board "${plane.default_board}" (have: ${Object.keys(plane.boards).join(", ") || "none"})`,
+            message: `unknown default_board "${tracker.default_board}" (have: ${tracker.boards.join(", ") || "none"})`,
           });
         }
       }),
@@ -435,14 +348,13 @@ export const configFragments = {
       gmail_address: z.string().default(""),
     })
     .default({}),
-  // v3 — Plane ticket-queue (Spec v3). base_url/workspace locate the self-hosted Plane; the
-  // PLANE_API_TOKEN secret comes from .env, NOT here. Named boards select a Plane project plus
-  // the project's workflow-state NAME map; Beckett keeps the six canonical TicketStates.
-  plane: PlaneConfigSchema,
+  // The bored ticket queue (OPS-190/191). bored's loopback URL rides BECKETT_BORED_URL in env,
+  // not here; boards are plain names. Beckett keeps the canonical TicketStates.
+  tracker: TrackerConfigSchema,
   // OPS-124 — GitHub PR sense: the poller that watches the PRs Beckett opened on the 0xbeckett
   // org and relays review/CI/merge signal. The GITHUB_PAT secret lives in env, not here. Active
   // only when a PAT is configured. GitHub's REST API is rate-limited, so this polls far less
-  // aggressively than Plane (60s default is ample for review/CI latency).
+  // aggressively than the ticket tracker (60s default is ample for review/CI latency).
   github: z
     .object({
       poll_secs: posInt.default(60),
@@ -581,7 +493,7 @@ const BUILTIN_CAPABILITY_INFO: {
   harness: { id: "harness", summary: "Coding-agent harnesses (claude/codex/pi): binaries, models, fallback order." },
   paths: { id: "paths", summary: "Filesystem layout: beckett dir, db, logs, events, socket." },
   identity: { id: "identity", summary: "Beckett's external identities (GitHub user, Gmail address)." },
-  plane: { id: "plane", summary: "Plane ticket-queue: workspace, boards, state maps, polling." },
+  tracker: { id: "tracker", summary: "bored ticket-queue: board names, polling." },
   github: { id: "github", summary: "GitHub sense: PR review/CI/merge poller + external-activity relay." },
   proactivity: { id: "proactivity", summary: "Ambient interjection policy (burst triage, cooldowns, channel modes)." },
   shared_context: { id: "shared-context", summary: "Channel-scoped shared context: attributed transcripts + server memory." },
