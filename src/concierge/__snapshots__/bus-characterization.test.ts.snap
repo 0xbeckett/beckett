@@ -196,7 +196,7 @@ exports[`bus: proactivity.status default payload 1`] = `
       "transcriptWindow": 15,
       "triageModel": "claude-haiku-4-5",
       "triageProvider": "claude",
-      "triageThreshold": 0.45,
+      "triageThreshold": 0.55,
     },
     "channels": [],
     "defaultMode": "off",
