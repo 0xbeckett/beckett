@@ -55,12 +55,6 @@ export function coerceDiscordTurnOutput(value: unknown): DiscordTurnOutput {
   const structured = parseDiscordTurnOutput(value);
   if (structured) return structured;
   if (typeof value !== "string") return { decision: "pass", message: null };
-
-  // The old ambient test seam used PASS as a line sentinel. Preserve that seam without treating
-  // ordinary uses of "pass" as control ("the tests pass" remains a send).
-  if (value.split(/\r?\n/).some((line) => line.trim() === "PASS")) {
-    return { decision: "pass", message: null };
-  }
   const message = value.trim();
   return message ? { decision: "send", message } : { decision: "pass", message: null };
 }

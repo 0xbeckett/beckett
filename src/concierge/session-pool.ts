@@ -32,7 +32,8 @@ import { coerceDiscordTurnOutput, type DiscordTurnOutput } from "./output.ts";
 export interface PoolSession {
   start?(): Promise<void>;
   stop(): Promise<void>;
-  ask(message: TurnMessage, meta?: unknown, opts?: { priority?: boolean }): Promise<DiscordTurnOutput>;
+  /** String is legacy support for injected test doubles; real sessions return DiscordTurnOutput. */
+  ask(message: TurnMessage, meta?: unknown, opts?: { priority?: boolean }): Promise<DiscordTurnOutput | string>;
   requestReload?(): void;
   queueDepth?(): number;
   currentSessionId?(): string;

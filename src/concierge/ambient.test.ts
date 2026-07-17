@@ -319,7 +319,7 @@ describe("AmbientCoordinator", () => {
     expect(turns[2]).toMatchObject({ engaged: false });
   });
 
-  test("a PASS on an engaged turn does not refresh the window — a dead conversation goes cold", async () => {
+  test("a structured pass on an engaged turn does not refresh the window — a dead conversation goes cold", async () => {
     const clock = new FakeClock();
     let triageCalls = 0;
     let engageCalls = 0;
@@ -341,7 +341,7 @@ describe("AmbientCoordinator", () => {
       },
       engage: async () => {
         engageCalls++;
-        return "PASS";
+        return { decision: "pass", message: null } as const;
       },
     });
 
@@ -352,7 +352,7 @@ describe("AmbientCoordinator", () => {
     expect(engageCalls).toBe(1); // engaged: the session got to decide...
     expect(triageCalls).toBe(0);
 
-    // ...and PASSed, so the window was NOT refreshed: 10s later the channel is cold and the
+    // ...and chose pass, so the window was NOT refreshed: 10s later the channel is cold and the
     // (declining) triage gate is back in charge.
     clock.advance(10_000);
     coordinator.observe(msg("m2", "c1", "random chatter", 12_000), "member");

@@ -21,12 +21,12 @@ console.log("starting concierge session (model:", config.concierge.model, ")…"
 await s.start();
 
 console.log("\n--- TRIVIA ask (expect inline answer, NO ticket) ---");
-console.log("REPLY:", (await s.ask("yo beckett, what's 2 + 2? just making conversation")).slice(0, 400));
+console.log("REPLY:", JSON.stringify(await s.ask("yo beckett, what's 2 + 2? just making conversation")).slice(0, 400));
 
 console.log("\n--- REAL BACKEND TASK ask (expect a filed ticket, codex casting) ---");
 console.log(
   "REPLY:",
-  (await s.ask("can you get a /healthz endpoint added to our API backend? should return 200 with body 'ok'. build it please.")).slice(0, 500),
+  JSON.stringify(await s.ask("can you get a /healthz endpoint added to our API backend? should return 200 with body 'ok'. build it please.")).slice(0, 500),
 );
 
 await s.stop();

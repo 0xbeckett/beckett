@@ -175,7 +175,7 @@ function msg(channelId: string, messageId: string): IncomingMessage {
 
 test("a mention landing behind a busy session gets an immediate fast ack", async () => {
   const { concierge, posts } = conciergeHarness({
-    ask: async () => "the real answer",
+    ask: async () => ({ decision: "send", message: "the real answer" } as const),
     queueDepth: () => 1, // a turn is already running
     getCurrentMeta: () => null,
   });
@@ -188,7 +188,7 @@ test("a mention landing behind a busy session gets an immediate fast ack", async
 
 test("no fast ack when the session is idle", async () => {
   const { concierge, posts } = conciergeHarness({
-    ask: async () => "the answer",
+    ask: async () => ({ decision: "send", message: "the answer" } as const),
     queueDepth: () => 0,
     getCurrentMeta: () => null,
   });
@@ -208,7 +208,7 @@ test("a CLI reply claims the turn EXECUTING now — a queued second mention can'
     pendingTickets: [],
   };
   const { concierge, posts } = conciergeHarness({
-    ask: async () => "unused",
+    ask: async () => ({ decision: "send", message: "unused" } as const),
     queueDepth: () => 0,
     getCurrentMeta: () => turn1Mention, // the session says: turn 1 is what's running
   });
@@ -225,7 +225,7 @@ test("a CLI reply claims the turn EXECUTING now — a queued second mention can'
 
 test("an update turn (no mention meta) can never claim a pending mention", async () => {
   const { concierge, posts } = conciergeHarness({
-    ask: async () => "unused",
+    ask: async () => ({ decision: "send", message: "unused" } as const),
     queueDepth: () => 0,
     getCurrentMeta: () => null, // a notify() update turn is running — it carries no mention
   });

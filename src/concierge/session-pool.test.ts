@@ -112,9 +112,9 @@ test("a slow turn in one channel does not block another channel's turn", async (
   await new Promise((r) => setTimeout(r, 0)); // let both asks pass their session-ready await
   expect(made.find((s) => s.scope === "chan-slow")!.asks).toEqual(["long think"]);
   made.find((s) => s.scope === "chan-fast")!.resolveAsk("done fast");
-  expect(await fastPool).toBe("done fast");
+  expect(await fastPool).toEqual({ decision: "send", message: "done fast" });
   made.find((s) => s.scope === "chan-slow")!.resolveAsk("done slow");
-  expect(await slow).toBe("done slow");
+  expect(await slow).toEqual({ decision: "send", message: "done slow" });
 });
 
 test("fixed session: all scopes route to it; warm() starts it exactly once", async () => {
@@ -146,7 +146,7 @@ test("a failed launch surfaces to the caller and the next ask retries fresh", as
     },
   });
   await expect(p.ask("chan-a", "first")).rejects.toThrow("spawn failed");
-  expect(await p.ask("chan-a", "second")).toBe("reply:chan-a");
+  expect(await p.ask("chan-a", "second")).toEqual({ decision: "send", message: "reply:chan-a" });
   expect(attempts).toBe(2);
 });
 
@@ -239,7 +239,7 @@ test("idle sweep recycles idle children and evicts child-less entries (with onEv
   expect(dead.stopCalls).toBe(1);
   expect((p.stats() as { sessions: number }).sessions).toBe(1);
   // The evicted scope is not poisoned: its next turn recreates a fresh entry.
-  expect(await p.ask("chan-dead", "again")).toBe("reply:chan-dead");
+  expect(await p.ask("chan-dead", "again")).toEqual({ decision: "send", message: "reply:chan-dead" });
 });
 
 test("a launch failure on the synchronous sessionFor path never becomes an unhandled rejection", async () => {
@@ -310,19 +310,19 @@ test("a shared TurnGate serializes turns across two real sessions at limit 1", a
   const events: string[] = [];
   const makePatched = (name: string) => {
     const s = new ConciergeSession({ config, scope: name, gate });
-    (s as unknown as { runTurn(m: TurnMessage): Promise<string> }).runTurn = async (m: TurnMessage) => {
+    (s as unknown as { runTurn(m: TurnMessage): Promise<{ decision: "send"; message: string }> }).runTurn = async (m: TurnMessage) => {
       events.push(`${name}:start:${String(m)}`);
       await new Promise((r) => setTimeout(r, 10));
       events.push(`${name}:end:${String(m)}`);
-      return `${name}-reply`;
+      return { decision: "send", message: `${name}-reply` };
     };
     return s;
   };
   const a = makePatched("a");
   const b = makePatched("b");
   const [ra, rb] = await Promise.all([a.ask("1"), b.ask("2")]);
-  expect(ra).toBe("a-reply");
-  expect(rb).toBe("b-reply");
+  expect(ra).toEqual({ decision: "send", message: "a-reply" });
+  expect(rb).toEqual({ decision: "send", message: "b-reply" });
   // With one slot, the two turns never interleave: each start is followed by its own end.
   for (let i = 0; i < events.length; i += 2) {
     expect(events[i]!.replace(":start:", ":end:")).toBe(events[i + 1]!);
@@ -336,12 +336,12 @@ test("with two slots, turns in different sessions genuinely overlap", async () =
   let peak = 0;
   const makePatched = (name: string) => {
     const s = new ConciergeSession({ config, scope: name, gate });
-    (s as unknown as { runTurn(m: TurnMessage): Promise<string> }).runTurn = async () => {
+    (s as unknown as { runTurn(m: TurnMessage): Promise<{ decision: "send"; message: string }> }).runTurn = async () => {
       active += 1;
       peak = Math.max(peak, active);
       await new Promise((r) => setTimeout(r, 10));
       active -= 1;
-      return `${name}-reply`;
+      return { decision: "send", message: `${name}-reply` };
     };
     return s;
   };
