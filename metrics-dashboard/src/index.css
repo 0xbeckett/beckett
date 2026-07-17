@@ -1,0 +1,159 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Neo-brutalist theme for Beckett's model-metrics dashboard.
+  Honest structure: paper canvas, ink borders, hard offset shadows, one hot accent.
+  Tokens drive everything so dark mode + dither-kit chart colors stay coherent.
+*/
+:root {
+  --radius: 0px;
+
+  /* Canvas + ink */
+  --background: oklch(0.96 0.01 95);      /* warm paper */
+  --foreground: oklch(0.16 0.02 275);     /* near-black ink */
+
+  --card: oklch(0.99 0.005 95);
+  --card-foreground: oklch(0.16 0.02 275);
+  --popover: oklch(0.99 0.005 95);
+  --popover-foreground: oklch(0.16 0.02 275);
+
+  /* One accent: hot signal red-orange */
+  --primary: oklch(0.62 0.24 27);
+  --primary-foreground: oklch(0.98 0.01 95);
+
+  --secondary: oklch(0.9 0.02 95);
+  --secondary-foreground: oklch(0.16 0.02 275);
+
+  --muted: oklch(0.92 0.01 95);
+  --muted-foreground: oklch(0.42 0.02 275);
+
+  --accent: oklch(0.62 0.24 27);
+  --accent-foreground: oklch(0.98 0.01 95);
+
+  --destructive: oklch(0.58 0.22 27);
+  --destructive-foreground: oklch(0.98 0.01 95);
+
+  --border: oklch(0.16 0.02 275);         /* heavy ink border */
+  --input: oklch(0.16 0.02 275);
+  --ring: oklch(0.62 0.24 27);
+
+  /* Chart ramp — distinct, high-contrast, works dithered */
+  --chart-1: oklch(0.62 0.24 27);         /* signal red-orange */
+  --chart-2: oklch(0.55 0.16 255);        /* electric blue */
+  --chart-3: oklch(0.72 0.18 140);        /* acid green */
+  --chart-4: oklch(0.70 0.19 85);         /* amber */
+  --chart-5: oklch(0.55 0.20 320);        /* magenta */
+  --chart-6: oklch(0.45 0.02 275);        /* graphite */
+}
+
+.dark {
+  --background: oklch(0.17 0.01 275);      /* ink canvas */
+  --foreground: oklch(0.95 0.01 95);
+
+  --card: oklch(0.21 0.012 275);
+  --card-foreground: oklch(0.95 0.01 95);
+  --popover: oklch(0.21 0.012 275);
+  --popover-foreground: oklch(0.95 0.01 95);
+
+  --primary: oklch(0.68 0.22 27);
+  --primary-foreground: oklch(0.14 0.01 275);
+
+  --secondary: oklch(0.28 0.02 275);
+  --secondary-foreground: oklch(0.95 0.01 95);
+
+  --muted: oklch(0.26 0.015 275);
+  --muted-foreground: oklch(0.68 0.02 275);
+
+  --accent: oklch(0.68 0.22 27);
+  --accent-foreground: oklch(0.14 0.01 275);
+
+  --destructive: oklch(0.65 0.2 27);
+  --destructive-foreground: oklch(0.14 0.01 275);
+
+  --border: oklch(0.92 0.01 95);          /* paper border on ink */
+  --input: oklch(0.92 0.01 95);
+  --ring: oklch(0.68 0.22 27);
+
+  --chart-1: oklch(0.70 0.22 27);
+  --chart-2: oklch(0.68 0.16 255);
+  --chart-3: oklch(0.78 0.18 140);
+  --chart-4: oklch(0.80 0.18 85);
+  --chart-5: oklch(0.68 0.20 320);
+  --chart-6: oklch(0.80 0.02 275);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --radius-sm: var(--radius);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius);
+  --radius-xl: var(--radius);
+
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "tnum" 1;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  /* Neo-brutalist grain: faint dotted lattice on the canvas */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image: radial-gradient(var(--border) 0.5px, transparent 0.5px);
+    background-size: 22px 22px;
+    opacity: 0.06;
+  }
+}
+
+/* Hard offset shadow — the signature brutalist depth cue */
+@utility shadow-brutal {
+  box-shadow: 6px 6px 0 0 var(--border);
+}
+@utility shadow-brutal-sm {
+  box-shadow: 4px 4px 0 0 var(--border);
+}
+@utility shadow-brutal-accent {
+  box-shadow: 6px 6px 0 0 var(--primary);
+}
