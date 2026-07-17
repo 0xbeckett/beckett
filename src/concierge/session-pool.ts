@@ -26,12 +26,13 @@
 import type { Logger } from "../types.ts";
 import { log as rootLog } from "../log.ts";
 import type { TurnMessage } from "./index.ts";
+import { coerceDiscordTurnOutput, type DiscordTurnOutput } from "./output.ts";
 
 /** The slice of ConciergeSession the pool routes through (structural — no runtime import cycle). */
 export interface PoolSession {
   start?(): Promise<void>;
   stop(): Promise<void>;
-  ask(message: TurnMessage, meta?: unknown, opts?: { priority?: boolean }): Promise<string>;
+  ask(message: TurnMessage, meta?: unknown, opts?: { priority?: boolean }): Promise<DiscordTurnOutput>;
   requestReload?(): void;
   queueDepth?(): number;
   currentSessionId?(): string;
@@ -167,14 +168,17 @@ export class SessionPool {
     message: TurnMessage,
     meta?: unknown,
     opts?: { priority?: boolean },
-  ): Promise<string> {
+  ): Promise<DiscordTurnOutput> {
     const entry = this.entryFor(channelId);
     // Synchronous up to session.ask() when the session is already up — queue admission (and the
     // priority jump) must not lose a race to an intervening microtask.
     if (!entry.started) await entry.ready;
     entry.lastUsedAt = Date.now();
     try {
-      return await entry.session.ask(message, meta, opts);
+      // Real ConciergeSessions return this discriminated value after validating Claude's
+      // structured_output. Coercion only keeps pre-existing untyped injected test doubles usable;
+      // assistant text from a real model never reaches this boundary.
+      return coerceDiscordTurnOutput(await entry.session.ask(message, meta, opts));
     } finally {
       entry.lastUsedAt = Date.now();
     }
