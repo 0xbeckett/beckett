@@ -119,7 +119,7 @@ test("output from a superseded child never touches the current turn", () => {
   expect(s.pending!.parts).toEqual(["tail of the CURRENT answer"]);
 });
 
-test("a result delivers only its structured output, never assistant scratch text", () => {
+test("reasoning before a pass decision is never promoted to Discord output", () => {
   const s = makeSession() as unknown as {
     child: unknown;
     pending: {
@@ -222,6 +222,24 @@ test("no fast ack when the session is idle", async () => {
   await concierge.onMessage(msg("chan-1", "m-1"));
   expect(posts).toHaveLength(1);
   expect(posts[0]!.text).toBe("the answer");
+});
+
+test("a direct reply can say pass, while a structured pass posts nothing", async () => {
+  const spoken = conciergeHarness({
+    ask: async () => ({ decision: "send", message: "the tests pass" } as const),
+    queueDepth: () => 0,
+    getCurrentMeta: () => null,
+  });
+  await spoken.concierge.onMessage(msg("chan-1", "m-1"));
+  expect(spoken.posts.map((post) => post.text)).toEqual(["the tests pass"]);
+
+  const silent = conciergeHarness({
+    ask: async () => ({ decision: "pass", message: null } as const),
+    queueDepth: () => 0,
+    getCurrentMeta: () => null,
+  });
+  await silent.concierge.onMessage(msg("chan-2", "m-2"));
+  expect(silent.posts).toEqual([]);
 });
 
 test("a CLI reply claims the turn EXECUTING now — a queued second mention can't steal it", async () => {
