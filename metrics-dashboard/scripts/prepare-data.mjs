@@ -20,6 +20,9 @@ const REPO_ROOT = resolve(__dirname, "..", "..");
 const SRC = process.env.TELEMETRY_DATASET
   ? resolve(process.env.TELEMETRY_DATASET)
   : resolve(REPO_ROOT, "data", "telemetry-runs.json");
+const CODE_STATS_SRC = process.env.CODE_STATS_DATASET
+  ? resolve(process.env.CODE_STATS_DATASET)
+  : resolve(REPO_ROOT, "data", "code-stats.json");
 const OUT = resolve(__dirname, "..", "src", "generated", "metrics.json");
 
 // Display label + dither-kit palette colour per model. Any model the harvester
