@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-17T02:12:47.175Z",
+  "generated_at": "2026-07-17T02:04:12.562Z",
   "rate_table_effective_date": "2026-07-16",
   "runs": [
     {
@@ -28488,7 +28488,7 @@
       "timestamp": "2026-07-17T01:46:07.053Z",
       "wall_clock_seconds": 638.958,
       "cost_usd": 3.65509,
-      "review_cycles": 2,
+      "review_cycles": 1,
       "tokens": {
         "input": 162402,
         "output": 18291,
@@ -28522,14 +28522,14 @@
       "harness": "claude-code",
       "model": "claude-opus-4-8",
       "timestamp": "2026-07-17T01:51:02.895Z",
-      "wall_clock_seconds": 899.869,
-      "cost_usd": 0.11707875,
+      "wall_clock_seconds": 21.56,
+      "cost_usd": 0.08819625,
       "review_cycles": 0,
       "tokens": {
-        "input": 7057,
-        "output": 671,
+        "input": 7053,
+        "output": 484,
         "cache_read": 0,
-        "cache_write": 10403
+        "cache_write": 6533
       },
       "rate_estimate": true
     },
@@ -28540,13 +28540,13 @@
       "harness": "pi",
       "model": "gpt-5.6-terra",
       "timestamp": "2026-07-17T01:51:05.335Z",
-      "wall_clock_seconds": 793.362,
-      "cost_usd": 8.1109265,
-      "review_cycles": 1,
+      "wall_clock_seconds": 779.208,
+      "cost_usd": 7.725216,
+      "review_cycles": 0,
       "tokens": {
-        "input": 353415,
-        "output": 27443,
-        "cache_read": 6815744,
+        "input": 350600,
+        "output": 27252,
+        "cache_read": 6439936,
         "cache_write": 0
       },
       "rate_estimate": false
@@ -28578,7 +28578,7 @@
       "timestamp": "2026-07-17T01:56:47.657Z",
       "wall_clock_seconds": 300.375,
       "cost_usd": 0.6954225,
-      "review_cycles": 2,
+      "review_cycles": 1,
       "tokens": {
         "input": 6910,
         "output": 22501,
@@ -28594,52 +28594,16 @@
       "harness": "pi",
       "model": "gpt-5.6-terra",
       "timestamp": "2026-07-17T02:01:52.912Z",
-      "wall_clock_seconds": 306.628,
-      "cost_usd": 0.8575,
-      "review_cycles": 2,
+      "wall_clock_seconds": 135.78,
+      "cost_usd": 0.614076,
+      "review_cycles": 1,
       "tokens": {
-        "input": 69112,
-        "output": 6736,
-        "cache_read": 583680,
+        "input": 52286,
+        "output": 5327,
+        "cache_read": 403456,
         "cache_write": 0
       },
       "rate_estimate": false
-    },
-    {
-      "run_id": "claude-code:c244644e-31f5-4f36-bf88-96fa70f489ec",
-      "session_id": "c244644e-31f5-4f36-bf88-96fa70f489ec",
-      "task_id": "#10",
-      "harness": "claude-code",
-      "model": "claude-sonnet-5",
-      "timestamp": "2026-07-17T02:04:20.377Z",
-      "wall_clock_seconds": 90.183,
-      "cost_usd": 0.38916675,
-      "review_cycles": 1,
-      "tokens": {
-        "input": 6856,
-        "output": 4388,
-        "cache_read": 0,
-        "cache_write": 80741
-      },
-      "rate_estimate": true
-    },
-    {
-      "run_id": "claude-code:e8c41e17-be5c-44f9-8172-d1aa9c1fd628",
-      "session_id": "e8c41e17-be5c-44f9-8172-d1aa9c1fd628",
-      "task_id": "#8",
-      "harness": "claude-code",
-      "model": "claude-sonnet-5",
-      "timestamp": "2026-07-17T02:07:01.315Z",
-      "wall_clock_seconds": 342.522,
-      "cost_usd": 0.52822875,
-      "review_cycles": 2,
-      "tokens": {
-        "input": 11635,
-        "output": 18058,
-        "cache_read": 0,
-        "cache_write": 59321
-      },
-      "rate_estimate": true
     }
   ]
 }
