@@ -147,6 +147,15 @@
   }
 }
 
+/* Keep dither-kit's axis tick labels from colliding on narrow viewports:
+   6 model labels under one chart overrun at phone widths, so shrink the tick
+   text there. Direct `text` rule beats the inherited 10px on the axis <g>. */
+@media (max-width: 640px) {
+  .dk-plot text {
+    font-size: 8.5px;
+  }
+}
+
 /* Hard offset shadow — the signature brutalist depth cue */
 @utility shadow-brutal {
   box-shadow: 6px 6px 0 0 var(--border);

@@ -2,14 +2,7 @@ import { useEffect, useState } from "react";
 import { Moon, Sun } from "lucide-react";
 import { BarViz, AreaViz } from "@/components/charts";
 import { ChartCard, Panel, Stat } from "@/components/ui";
-import {
-  metrics,
-  usd,
-  usdPrecise,
-  hrs,
-  shortDate,
-  type DitherColor,
-} from "@/metrics";
+import { metrics, usd, usdPrecise, hrs, shortDate } from "@/metrics";
 
 function useTheme(): [boolean, () => void] {
   const [dark, setDark] = useState(() => {
@@ -26,36 +19,18 @@ function useTheme(): [boolean, () => void] {
 
 const h = metrics.headline;
 
-// Per-model palette chip for the identity strip under the cost chart.
-function ModelKey() {
+// Which models are priced from an estimated (non-published) SKU — flagged so the
+// cost figures stay honest. Text-only: the bars are one colour, so coloured chips
+// here would imply a model→colour encoding the charts don't use.
+function EstimateKey() {
+  const estimated = metrics.models.filter((m) => m.estimate).map((m) => m.label);
+  if (estimated.length === 0) return null;
   return (
-    <div className="flex flex-wrap gap-x-3 gap-y-1">
-      {metrics.models.map((m) => (
-        <span key={m.model} className="flex items-center gap-1.5">
-          <span
-            className="inline-block size-2 border border-border"
-            style={{ background: paletteFill(m.color) }}
-          />
-          <span className="text-foreground">{m.label}</span>
-          {m.estimate ? <span className="text-muted-foreground">·est</span> : null}
-        </span>
-      ))}
-    </div>
+    <>
+      <span className="text-foreground">·est</span> = estimated SKU (
+      {estimated.join(", ")}).
+    </>
   );
-}
-
-// Mirror of dither-kit's palette fills, for the small identity chips only.
-function paletteFill(c: DitherColor): string {
-  const map: Record<DitherColor, string> = {
-    green: "rgb(40,210,110)",
-    blue: "rgb(53,143,243)",
-    purple: "rgb(150,110,255)",
-    pink: "rgb(240,90,190)",
-    orange: "rgb(255,150,50)",
-    red: "rgb(240,70,70)",
-    grey: "rgb(92,92,100)",
-  };
-  return map[c];
 }
 
 export function App() {
@@ -135,13 +110,12 @@ export function App() {
             kicker="USD · current rates"
             footnote={
               <>
-                <div className="mb-1.5 text-foreground">{ModelKey()}</div>
                 Opus does the heavy lifting and the heavy spending. Rates from the
                 harvester's dated table
                 {metrics.rate_table_effective_date
                   ? ` (${metrics.rate_table_effective_date})`
                   : ""}
-                ; <span className="text-foreground">·est</span> = estimated SKU.
+                . <EstimateKey />
               </>
             }
           >

@@ -34,7 +34,7 @@ export function BarViz({
 }) {
   const config = { value: { label: seriesLabel, color } };
   return (
-    <div className="h-[240px] w-full sm:h-[260px]">
+    <div className="dk-plot h-[240px] w-full sm:h-[260px]">
       <BarChart
         data={data}
         config={config}
@@ -76,7 +76,7 @@ export function AreaViz({
 }) {
   const config = { value: { label: seriesLabel, color } };
   return (
-    <div className="h-[240px] w-full sm:h-[260px]">
+    <div className="dk-plot h-[240px] w-full sm:h-[260px]">
       <AreaChart
         data={data}
         config={config}
