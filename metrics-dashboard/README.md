@@ -15,9 +15,13 @@ aggregates (sum/count), and draws.
         │  (harvester — ticket #8)
         ▼
 data/telemetry-runs.json          one normalized row per run (~1.6k rows)
+~/Projects/* git history
+        │  (code-stats harvester — cached locally; no live clones/fetches)
+        ▼
+data/code-stats.json              LOC/authors/velocity/project rollups
         │  (scripts/prepare-data.mjs — build-time rollup, sum/count only)
         ▼
-src/generated/metrics.json        tiny per-model / per-day aggregates (committed)
+src/generated/metrics.json        telemetry + code-stats aggregates (committed)
         │  (vite build)
         ▼
 dist/                             static site → metrics.0xbeckett.me
@@ -29,7 +33,17 @@ metric — cost (`cost_usd`), wall-clock (`wall_clock_seconds`) and review bounc
 (`review_cycles`) come straight from the harvester's rows and are only summed/counted. Missing
 fields degrade to skips (never a crash), mirroring the harvester's own fail-soft contract.
 
-Point it at a different dataset with `TELEMETRY_DATASET=/path/to/runs.json`.
+Point it at a different telemetry dataset with `TELEMETRY_DATASET=/path/to/runs.json`, or a
+code-stats cache with `CODE_STATS_DATASET=/path/to/code-stats.json`.
+
+## Code stats refresh
+
+`bun run code-stats:refresh` scans only already-local direct children of `~/Projects` (override
+with `BECKETT_PROJECTS_DIR` or `--projects-dir`). It uses `git log --numstat` and `git ls-files`
+to atomically cache `data/code-stats.json`: historic additions/deletions/net LOC, commits and
+lines by author, daily commit velocity, and per-repo/current-file rollups. It never clones,
+fetches, or invokes GitHub. Run it before `bun run build` to publish the latest code layer in
+the existing generated `metrics.json` document.
 
 ## Charts
 
@@ -56,8 +70,8 @@ bun run build          # → dist/ (runs prepare-data first)
 bun run typecheck
 ```
 
-To refresh the whole picture: re-run the harvester (`bun run telemetry:refresh` in the repo
-root) to rebuild `data/telemetry-runs.json`, then `bun run build` here.
+To refresh the whole picture: re-run `bun run telemetry:refresh` and
+`bun run code-stats:refresh` in the repo root, then `bun run build` here.
 
 ## Deploy
 

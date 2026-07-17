@@ -37,6 +37,14 @@ export type Metrics = {
   reviewCycles: { cycles: number; label: string; count: number }[];
   runsOverTime: { date: string; runs: number; cost: number }[];
   harnesses: { harness: string; count: number }[];
+  /** Cached git-history aggregates, served in this same generated metrics document. */
+  codeStats: {
+    source_generated_at: string | null;
+    headline: { commits: number; files: number; projects: number; additions: number; deletions: number; net: number };
+    projects: { repo: string; commits: number; files: number; additions: number; deletions: number; net: number; first_commit: string | null; last_commit: string | null }[];
+    authors: { author: string; name: string; email: string; commits: number; additions: number; deletions: number; net: number }[];
+    velocity: { date: string; commits: number }[];
+  };
   notes: { skippedRows: number; anyEstimated: boolean };
 };
 

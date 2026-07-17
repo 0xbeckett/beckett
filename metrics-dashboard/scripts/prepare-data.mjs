@@ -20,6 +20,9 @@ const REPO_ROOT = resolve(__dirname, "..", "..");
 const SRC = process.env.TELEMETRY_DATASET
   ? resolve(process.env.TELEMETRY_DATASET)
   : resolve(REPO_ROOT, "data", "telemetry-runs.json");
+const CODE_STATS_SRC = process.env.CODE_STATS_DATASET
+  ? resolve(process.env.CODE_STATS_DATASET)
+  : resolve(REPO_ROOT, "data", "code-stats.json");
 const OUT = resolve(__dirname, "..", "src", "generated", "metrics.json");
 
 // Display label + dither-kit palette colour per model. Any model the harvester
@@ -42,6 +45,39 @@ function metaFor(model, idx) {
 }
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const text = (v) => (typeof v === "string" ? v : null);
+const nonNegative = (v) => Math.max(0, num(v) ?? 0);
+
+// The code-stats harvester owns these aggregates. This projection only removes local paths
+// before publishing the same static JSON document the dashboard already imports.
+function codeStatsForDashboard(raw) {
+  const empty = {
+    source_generated_at: null,
+    headline: { commits: 0, files: 0, projects: 0, additions: 0, deletions: 0, net: 0 },
+    projects: [], authors: [], velocity: [],
+  };
+  if (!raw || typeof raw !== "object") return empty;
+  const headline = raw.headline && typeof raw.headline === "object" ? raw.headline : {};
+  return {
+    source_generated_at: text(raw.generated_at),
+    headline: {
+      commits: nonNegative(headline.commits), files: nonNegative(headline.files), projects: nonNegative(headline.projects),
+      additions: nonNegative(headline.additions), deletions: nonNegative(headline.deletions), net: num(headline.net) ?? 0,
+    },
+    projects: Array.isArray(raw.projects) ? raw.projects.filter((p) => p && typeof p === "object").map((p) => ({
+      repo: text(p.repo) ?? "unknown", commits: nonNegative(p.commits), files: nonNegative(p.files),
+      additions: nonNegative(p.additions), deletions: nonNegative(p.deletions), net: num(p.net) ?? 0,
+      first_commit: text(p.first_commit), last_commit: text(p.last_commit),
+    })) : [],
+    authors: Array.isArray(raw.authors) ? raw.authors.filter((a) => a && typeof a === "object").map((a) => ({
+      author: text(a.author) ?? "unknown", name: text(a.name) ?? "unknown", email: text(a.email) ?? "",
+      commits: nonNegative(a.commits), additions: nonNegative(a.additions), deletions: nonNegative(a.deletions), net: num(a.net) ?? 0,
+    })) : [],
+    velocity: Array.isArray(raw.velocity) ? raw.velocity.filter((v) => v && typeof v === "object" && text(v.date)).map((v) => ({
+      date: v.date, commits: nonNegative(v.commits),
+    })) : [],
+  };
+}
 
 function main() {
   let raw;
@@ -51,6 +87,10 @@ function main() {
     console.error(`[prepare-data] cannot read dataset at ${SRC}: ${err.message}`);
     process.exit(1);
   }
+
+  let rawCodeStats = null;
+  try { rawCodeStats = JSON.parse(readFileSync(CODE_STATS_SRC, "utf8")); }
+  catch (err) { console.error(`[prepare-data] code-stats dataset unavailable at ${CODE_STATS_SRC}: ${err.message}; emitting empty code stats`); }
 
   const runs = Array.isArray(raw.runs) ? raw.runs : [];
   if (runs.length === 0) {
@@ -169,6 +209,8 @@ function main() {
     reviewCycles,
     runsOverTime,
     harnesses: harnessList,
+    // Same generated metrics.json API as telemetry; populated from data/code-stats.json.
+    codeStats: codeStatsForDashboard(rawCodeStats),
     notes: {
       skippedRows,
       anyEstimated: models.some((m) => m.estimate),
