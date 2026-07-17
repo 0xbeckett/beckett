@@ -4,7 +4,7 @@ import type { AccessLevel } from "../discord/access.ts";
 import { buildPaths } from "../paths.ts";
 import type { Config, IncomingMessage, Logger, ProactivityMode } from "../types.ts";
 import { passesTriageGate, type TriageFn, type TriageMessage, type TriageVerdict } from "./triage.ts";
-import { coerceDiscordTurnOutput, type DiscordTurnOutput } from "./output.ts";
+import type { DiscordTurnOutput } from "./output.ts";
 
 export interface AmbientTranscriptMessage extends TriageMessage {
   userId: string;
@@ -63,8 +63,7 @@ export interface CreateAmbientCoordinatorDeps {
   logger: Logger;
   clock?: AmbientClock;
   triage: TriageFn;
-  /** A real concierge returns DiscordTurnOutput; string support preserves old injected test seams. */
-  engage: (turn: AmbientTurn) => Promise<DiscordTurnOutput | string>;
+  engage: (turn: AmbientTurn) => Promise<DiscordTurnOutput>;
   storageFile?: string;
   /**
    * OPS-80: when set, the coordinator stops keeping its own per-channel ring buffers and reads
@@ -159,7 +158,7 @@ class Coordinator implements AmbientCoordinator {
   private readonly logger: Logger;
   private readonly clock: AmbientClock;
   private readonly triage: TriageFn;
-  private readonly engage: (turn: AmbientTurn) => Promise<DiscordTurnOutput | string>;
+  private readonly engage: (turn: AmbientTurn) => Promise<DiscordTurnOutput>;
   private readonly storageFile: string;
   private readonly transcriptSource?: (channelId: string) => AmbientTranscriptMessage[];
   /** Legacy ring buffer — used only when no {@link transcriptSource} is injected (OPS-80). */
@@ -344,9 +343,7 @@ class Coordinator implements AmbientCoordinator {
         if (this.isCapped(channelId)) return;
       }
 
-      const output = coerceDiscordTurnOutput(
-        await this.engage({ kind: "candidate", channelId, burst, transcript, verdict, engaged }),
-      );
+      const output = await this.engage({ kind: "candidate", channelId, burst, transcript, verdict, engaged });
       if (!isAmbientPass(output)) {
         // Any real post opens/refreshes the engaged window (belt to the Concierge's suspenders —
         // legacy no-store configs never route through recordBeckettPost).
@@ -364,13 +361,13 @@ class Coordinator implements AmbientCoordinator {
 
   private async runConsentTurn(channelId: string, offer: PendingOffer, message: IncomingMessage): Promise<void> {
     try {
-      const output = coerceDiscordTurnOutput(await this.engage({
+      const output = await this.engage({
         kind: "consent",
         channelId,
         offer,
         message,
         transcript: this.getTranscript(channelId),
-      }));
+      });
       if (!isAmbientPass(output)) this.noteBeckettPost(channelId);
     } catch (err) {
       this.logger.warn("ambient consent turn failed", { channel: channelId, error: (err as Error).message });
@@ -399,9 +396,7 @@ class Coordinator implements AmbientCoordinator {
     this.persistOffers();
     if (offer.mode !== "auto" || !this.config.enabled) return;
     try {
-      const output = coerceDiscordTurnOutput(
-        await this.engage({ kind: "timeout", channelId, offer, transcript: this.getTranscript(channelId) }),
-      );
+      const output = await this.engage({ kind: "timeout", channelId, offer, transcript: this.getTranscript(channelId) });
       if (!isAmbientPass(output)) {
         this.noteBeckettPost(channelId);
         this.markInterjection(channelId);

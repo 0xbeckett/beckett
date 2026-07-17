@@ -97,7 +97,7 @@ describe("AmbientCoordinator", () => {
         triageCalls++;
         return yes;
       }) as TriageFn,
-      engage: async () => "should not run",
+      engage: async () => ({ decision: "send", message: "should not run" }),
     });
 
     coordinator.observe(msg("m1", "c1", "wish this had csv", 0), "member");
@@ -114,7 +114,7 @@ describe("AmbientCoordinator", () => {
       logger: quietLogger,
       clock: new FakeClock(),
       triage: async () => yes,
-      engage: async () => "ok",
+      engage: async () => ({ decision: "send", message: "ok" }),
     });
 
     coordinator.observe(msg("m1", "c1", "secret outsider text", 0), "outsider");
@@ -137,7 +137,7 @@ describe("AmbientCoordinator", () => {
       },
       engage: async (turn) => {
         turns.push(turn);
-        return "want me to kick that off?";
+        return { decision: "send", message: "want me to kick that off?" };
       },
     });
 
@@ -168,7 +168,7 @@ describe("AmbientCoordinator", () => {
         replyTarget = burst[0]?.repliedToId;
         return { ...yes, interject: false, kind: "none" };
       },
-      engage: async () => "must not run",
+      engage: async () => ({ decision: "send", message: "must not run" }),
     });
 
     coordinator.observe(msg("m2", "c1", "can you paste that?", 0, { repliedToId: "m1" }), "member");
@@ -189,7 +189,7 @@ describe("AmbientCoordinator", () => {
       triage: async () => ({ ...yes, confidence: 1, addressee: "other" }),
       engage: async () => {
         engageCalls++;
-        return "I should not interrupt";
+        return { decision: "send", message: "I should not interrupt" };
       },
     });
 
@@ -210,7 +210,7 @@ describe("AmbientCoordinator", () => {
         triageCalls++;
         return yes;
       },
-      engage: async () => "ok",
+      engage: async () => ({ decision: "send", message: "ok" }),
     });
 
     coordinator.observe(msg("m1", "c1", "maybe csv would help", 0), "member");
@@ -240,7 +240,7 @@ describe("AmbientCoordinator", () => {
         triageCalls++;
         return yes;
       },
-      engage: async () => "I can do that",
+      engage: async () => ({ decision: "send", message: "I can do that" }),
     });
 
     coordinator.observe(msg("m1", "c1", "wish csv existed", 0), "member");
@@ -284,7 +284,7 @@ describe("AmbientCoordinator", () => {
       },
       engage: async (turn) => {
         turns.push(turn);
-        return "riffing back";
+        return { decision: "send", message: "riffing back" };
       },
     });
 
