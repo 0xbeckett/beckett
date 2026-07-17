@@ -9,6 +9,9 @@ export interface TokenUsage {
 }
 
 export interface ModelRate extends TokenUsage {
+  /** Optional audit metadata for providers that price cache buckets as input multipliers. */
+  cache_read_multiplier?: number;
+  cache_creation_multiplier?: number;
   estimate: boolean;
   source: string;
 }
@@ -234,7 +237,9 @@ export function parseCodexSession(path: string, contents: string, note: (message
 }
 
 export function calculateCost(tokens: TokenUsage, rate: ModelRate): number {
-  return Number(((tokens.input * rate.input + tokens.output * rate.output + tokens.cache_read * rate.cache_read + tokens.cache_write * rate.cache_write) / 1_000_000).toFixed(8));
+  const cacheReadRate = rate.cache_read_multiplier === undefined ? rate.cache_read : rate.input * rate.cache_read_multiplier;
+  const cacheCreationRate = rate.cache_creation_multiplier === undefined ? rate.cache_write : rate.input * rate.cache_creation_multiplier;
+  return Number(((tokens.input * rate.input + tokens.output * rate.output + tokens.cache_read * cacheReadRate + tokens.cache_write * cacheCreationRate) / 1_000_000).toFixed(8));
 }
 
 async function filesUnder(root: string, note: (message: string) => void): Promise<string[]> {

@@ -53,7 +53,10 @@ usage, or timestamps; costs are never invented as zero.
 
 All cost calculations use only `config/model-rates.json`, a dated table expressed in USD per
 million tokens. The harvester recomputes cost from the recorded token categories; it does not
-trust any runtime-provided dollar total. Cache reads and writes are priced separately.
+trust any runtime-provided dollar total. Cache reads and writes are priced separately. For Claude,
+`cache_read` maps to `cache_read_input_tokens` (0.1× input) and `cache_write` maps to
+`cache_creation_input_tokens` (1.25× input for the 5-minute cache tier); the explicit multiplier
+metadata and the resulting USD/Mtok values are both stored in the dated table.
 
 Some requested runtime labels (the Claude `*-5`/`4-8` labels and generic Codex `gpt-5.6`) do
 not have an exact public SKU. Their rate-table entries have `estimate: true` and a specific

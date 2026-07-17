@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-17T02:19:37.699Z",
+  "generated_at": "2026-07-17T02:21:59.895Z",
   "rate_table_effective_date": "2026-07-16",
   "runs": [
     {
@@ -28648,13 +28648,13 @@
       "harness": "pi",
       "model": "gpt-5.6-terra",
       "timestamp": "2026-07-17T02:16:59.829Z",
-      "wall_clock_seconds": 154.578,
-      "cost_usd": 1.253918,
+      "wall_clock_seconds": 296.793,
+      "cost_usd": 3.3885745,
       "review_cycles": 2,
       "tokens": {
-        "input": 112928,
-        "output": 6610,
-        "cache_read": 872448,
+        "input": 244993,
+        "output": 12324,
+        "cache_read": 2591232,
         "cache_write": 0
       },
       "rate_estimate": false

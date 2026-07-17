@@ -15,7 +15,7 @@ test("harvest normalizes Claude, pi, Codex, and bored review transitions", async
   await Promise.all([mkdir(claude, { recursive: true }), mkdir(pi, { recursive: true }), mkdir(codex, { recursive: true }), mkdir(bored, { recursive: true })]);
   await writeFile(join(claude, "c.jsonl"), [
     line({ type: "user", sessionId: "claude-1", timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "[OPS-9] do it" } }),
-    line({ type: "assistant", sessionId: "claude-1", timestamp: "2026-01-01T00:01:00Z", message: { id: "one", role: "assistant", model: "claude-haiku-4-5-20251001", usage: { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_input_tokens: 1_000_000 } } }),
+    line({ type: "assistant", sessionId: "claude-1", timestamp: "2026-01-01T00:01:00Z", message: { id: "one", role: "assistant", model: "claude-haiku-4-5-20251001", usage: { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 1_000_000 } } }),
   ].join(""));
   await writeFile(join(pi, "p.jsonl"), [
     line({ type: "session", id: "pi-1", cwd: "/work/OPS-9", timestamp: "2026-01-01T00:00:00Z" }),
@@ -44,7 +44,8 @@ test("harvest normalizes Claude, pi, Codex, and bored review transitions", async
   const claudeRun = dataset.runs.find((run) => run.harness === "claude-code");
   expect(claudeRun?.model).toBe("claude-haiku-4-5-20251001");
   expect(claudeRun?.tokens.cache_read).toBe(1_000_000);
-  expect(claudeRun?.cost_usd).toBe(6.1);
+  expect(claudeRun?.tokens.cache_write).toBe(1_000_000);
+  expect(claudeRun?.cost_usd).toBe(7.35);
   expect(JSON.parse(await readFile(output, "utf8")).runs).toHaveLength(3);
   expect(notes.at(-1)).toContain("wrote 3 normalized runs");
 });
