@@ -48,8 +48,8 @@ const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const text = (v) => (typeof v === "string" ? v : null);
 const nonNegative = (v) => Math.max(0, num(v) ?? 0);
 
-// The code-stats harvester owns these aggregates. This projection only removes local paths
-// before publishing the same static JSON document the dashboard already imports.
+// The code-stats harvester owns these aggregates. This projection validates and publishes them
+// in the same static JSON document the dashboard already imports.
 function codeStatsForDashboard(raw) {
   const empty = {
     source_generated_at: null,
