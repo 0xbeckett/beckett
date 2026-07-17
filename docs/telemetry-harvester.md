@@ -22,8 +22,10 @@ transitions from implementation (`in_progress` / `beckett_implement`) to review
 
 ## Sources
 
-- **Claude Code:** `~/.claude/projects/**/*.jsonl`. Assistant API message usage is summed;
-  duplicate entries for one Claude message id are counted once.
+- **Claude Code:** `~/.claude/projects/**/*.jsonl`. Assistant API message usage is summed,
+  including `cache_read_input_tokens`; duplicate entries for one Claude message id are counted
+  once. Claude child transcripts inherit their parent's session id, so their `agentId` is used
+  as the independently-metered session identifier.
 - **pi:** `~/.pi/agent/sessions/**/*.jsonl`. Assistant response usage (`input`, `output`,
   cache reads/writes) is summed. The model selected by `model_change` is used when a message
   does not repeat it.

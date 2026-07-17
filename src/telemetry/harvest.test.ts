@@ -15,7 +15,7 @@ test("harvest normalizes Claude, pi, Codex, and bored review transitions", async
   await Promise.all([mkdir(claude, { recursive: true }), mkdir(pi, { recursive: true }), mkdir(codex, { recursive: true }), mkdir(bored, { recursive: true })]);
   await writeFile(join(claude, "c.jsonl"), [
     line({ type: "user", sessionId: "claude-1", timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "[OPS-9] do it" } }),
-    line({ type: "assistant", sessionId: "claude-1", timestamp: "2026-01-01T00:01:00Z", message: { id: "one", role: "assistant", model: "claude-haiku-4-5-20251001", usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 } } }),
+    line({ type: "assistant", sessionId: "claude-1", timestamp: "2026-01-01T00:01:00Z", message: { id: "one", role: "assistant", model: "claude-haiku-4-5-20251001", usage: { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_read_input_tokens: 1_000_000 } } }),
   ].join(""));
   await writeFile(join(pi, "p.jsonl"), [
     line({ type: "session", id: "pi-1", cwd: "/work/OPS-9", timestamp: "2026-01-01T00:00:00Z" }),
@@ -41,9 +41,28 @@ test("harvest normalizes Claude, pi, Codex, and bored review transitions", async
   expect(dataset.runs).toHaveLength(3);
   expect(dataset.runs.map((run) => run.harness).sort()).toEqual(["claude-code", "codex", "pi"]);
   expect(dataset.runs.every((run) => run.review_cycles === 2 && run.cost_usd > 0 && run.task_id === "OPS-9")).toBe(true);
-  expect(dataset.runs.find((run) => run.harness === "claude-code")?.model).toBe("claude-haiku-4-5-20251001");
+  const claudeRun = dataset.runs.find((run) => run.harness === "claude-code");
+  expect(claudeRun?.model).toBe("claude-haiku-4-5-20251001");
+  expect(claudeRun?.tokens.cache_read).toBe(1_000_000);
+  expect(claudeRun?.cost_usd).toBe(6.1);
   expect(JSON.parse(await readFile(output, "utf8")).runs).toHaveLength(3);
   expect(notes.at(-1)).toContain("wrote 3 normalized runs");
+});
+
+test("Claude child runs use the child id rather than their shared parent session id", async () => {
+  const root = await mkdtemp(join(tmpdir(), "beckett-telemetry-child-"));
+  const claude = join(root, "claude/projects/project/subagents");
+  await mkdir(claude, { recursive: true });
+  await writeFile(join(claude, "child.jsonl"), [
+    line({ type: "user", sessionId: "parent-1", agentId: "agent-1", timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "[OPS-9] do it" } }),
+    line({ type: "assistant", sessionId: "parent-1", agentId: "agent-1", timestamp: "2026-01-01T00:00:02Z", message: { id: "one", role: "assistant", model: "claude-haiku-4-5", usage: { input_tokens: 1 } } }),
+  ].join(""));
+  const dataset = await harvest({
+    output: join(root, "runs.json"), rates: join(process.cwd(), "config/model-rates.json"), claudeDir: join(root, "claude/projects"),
+    piDir: join(root, "none"), codexDir: join(root, "none"), boredStateDir: join(root, "none"), note: () => {},
+  });
+  expect(dataset.runs[0]?.session_id).toBe("agent-1");
+  expect(dataset.runs[0]?.run_id).toBe("claude-code:agent-1");
 });
 
 test("harvest completes with absent session sources", async () => {

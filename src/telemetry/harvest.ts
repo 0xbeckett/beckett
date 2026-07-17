@@ -72,7 +72,7 @@ function addTokens(into: TokenUsage, usage: unknown): void {
   if (!value) return;
   into.input += number(value.input) || number(value.input_tokens);
   into.output += number(value.output) || number(value.output_tokens);
-  into.cache_read += number(value.cacheRead) || number(value.cache_read) || number(value.cached_input_tokens);
+  into.cache_read += number(value.cacheRead) || number(value.cache_read) || number(value.cache_read_input_tokens) || number(value.cached_input_tokens);
   into.cache_write += number(value.cacheWrite) || number(value.cache_write) || number(value.cache_creation_input_tokens);
 }
 
@@ -113,6 +113,7 @@ export function parseClaudeSession(path: string, contents: string, note: (messag
   const allTimes: string[] = [];
   const usageByModel = new Map<string, TokenUsage>();
   let sessionId: string | null = null;
+  let agentId: string | null = null;
   let taskId: string | null = null;
 
   for (const line of contents.split(/\r?\n/)) {
@@ -123,6 +124,10 @@ export function parseClaudeSession(path: string, contents: string, note: (messag
     const at = timestamp(entry.timestamp);
     if (at) allTimes.push(at);
     sessionId ??= text(entry.sessionId);
+    // Claude subagent transcripts inherit their parent's sessionId. agentId is the
+    // actual independently-metered run and prevents several child runs collapsing
+    // onto the parent row.
+    agentId ??= text(entry.agentId);
     taskId ??= taskIdFromText(text(entry.gitBranch)) ?? taskIdFromText(text(entry.cwd));
     const message = asObject(entry.message);
     if (!message) continue;
@@ -149,7 +154,7 @@ export function parseClaudeSession(path: string, contents: string, note: (messag
   const start = earliest(allTimes);
   const end = latest(allTimes);
   if (!model || !start || !end) { note(`claude-code: no model/usage/timestamps; skipped ${path}`); return null; }
-  const id = sessionId ?? basename(path, ".jsonl");
+  const id = agentId ?? sessionId ?? basename(path, ".jsonl");
   return { sessionId: id, taskId, model, timestamp: start, endTimestamp: end, tokens: usageFromClaude(usageByModel.get(model)) };
 }
 
