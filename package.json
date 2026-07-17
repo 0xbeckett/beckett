@@ -11,6 +11,7 @@
     "browser:smoke": "bun scripts/ops/browser-smoke.ts",
     "eval:browser": "bun scripts/eval/browser-agent.ts",
     "eval:triage": "bun scripts/eval/triage-classifier.ts",
+    "telemetry:refresh": "bun scripts/ops/telemetry-harvest.ts",
     "typecheck": "bun x tsc --noEmit",
     "test": "bun test"
   },
