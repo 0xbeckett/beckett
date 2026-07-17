@@ -9,28 +9,22 @@ export type DiscordTurnOutput =
   | { decision: "send"; message: string }
   | { decision: "pass"; message: null };
 
-/** Schema passed to `claude --json-schema` for every persistent concierge turn. */
+/**
+ * Schema passed to `claude --json-schema` for every persistent concierge turn.
+ *
+ * The API requires a top-level `type: "object"` on a tool input schema — a bare `oneOf` is
+ * rejected with a 400 on EVERY turn, which the fail-closed parser below turns into permanent
+ * silence. The send/pass cross-field invariants (send ⇒ non-empty string, pass ⇒ null) are
+ * enforced by {@link parseDiscordTurnOutput} instead.
+ */
 export const DISCORD_TURN_OUTPUT_SCHEMA = {
-  oneOf: [
-    {
-      type: "object",
-      properties: {
-        decision: { const: "send" },
-        message: { type: "string", minLength: 1 },
-      },
-      required: ["decision", "message"],
-      additionalProperties: false,
-    },
-    {
-      type: "object",
-      properties: {
-        decision: { const: "pass" },
-        message: { type: "null" },
-      },
-      required: ["decision", "message"],
-      additionalProperties: false,
-    },
-  ],
+  type: "object",
+  properties: {
+    decision: { type: "string", enum: ["send", "pass"] },
+    message: { type: ["string", "null"] },
+  },
+  required: ["decision", "message"],
+  additionalProperties: false,
 } as const;
 
 /** Strictly validate the CLI's `structured_output`; malformed output fails closed. */
