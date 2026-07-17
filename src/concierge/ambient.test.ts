@@ -375,7 +375,7 @@ describe("AmbientCoordinator", () => {
         triage: async () => yes,
         engage: async (turn) => {
           turns.push(turn);
-          return "running with it";
+          return { decision: "send", message: "running with it" };
         },
         storageFile,
       });
@@ -396,7 +396,7 @@ describe("AmbientCoordinator", () => {
         triage: async () => yes,
         engage: async (turn) => {
           turns.push(turn);
-          return "running with it";
+          return { decision: "send", message: "running with it" };
         },
         storageFile,
       });
