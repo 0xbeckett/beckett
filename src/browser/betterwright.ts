@@ -48,7 +48,8 @@ export function createBetterWrightRuntime(settings: BrowserHostSettings, logger:
     executablePath: chromium.executablePath(),
     headless: settings.headless,
     defaultTimeout: Math.max(5, Math.ceil(settings.evalTimeoutMs / 1_000)),
-    // Preserve BetterWright 0.5's default private-network access policy.
+    // BetterWright 0.6 retains 0.5's open private-network and loopback defaults.
+    // Pin them explicitly so Beckett's local/intranet access survives future upgrades.
     policy: new NetworkPolicy({ allowLoopback: true, allowPrivateNetwork: true }),
     downloadPolicy: "deny",
     publicSearchPolicy: "block",
