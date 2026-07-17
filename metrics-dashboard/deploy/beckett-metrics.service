@@ -1,0 +1,13 @@
+[Unit]
+Description=Beckett model-metrics dashboard (static, dither-kit) — metrics.0xbeckett.me
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/beckett/.local/share/beckett-metrics/dist
+ExecStart=/usr/bin/python3 -m http.server 8971 --bind 127.0.0.1 --directory /home/beckett/.local/share/beckett-metrics/dist
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
