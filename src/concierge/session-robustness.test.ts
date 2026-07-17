@@ -119,6 +119,33 @@ test("output from a superseded child never touches the current turn", () => {
   expect(s.pending!.parts).toEqual(["tail of the CURRENT answer"]);
 });
 
+test("a result delivers only its structured output, never assistant scratch text", () => {
+  const s = makeSession() as unknown as {
+    child: unknown;
+    pending: {
+      parts: string[];
+      timer: ReturnType<typeof setTimeout>;
+      resolve: (output: unknown) => void;
+      reject: (error: Error) => void;
+    } | null;
+    handleLine(line: string, from: unknown): void;
+  };
+  const child = {};
+  let delivered: unknown;
+  s.child = child;
+  s.pending = {
+    parts: ["I should keep this private.\nPASS"],
+    timer: setTimeout(() => undefined, 60_000),
+    resolve: (output) => { delivered = output; },
+    reject: () => {},
+  };
+
+  s.handleLine(JSON.stringify({ type: "result", structured_output: { decision: "pass", message: null } }), child);
+
+  expect(delivered).toEqual({ decision: "pass", message: null });
+  expect(s.pending).toBeNull();
+});
+
 test("a superseded child's exit does not tear down the current child or fail the turn", async () => {
   tempBeckettDir();
   const s = makeSession();

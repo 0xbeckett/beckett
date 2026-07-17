@@ -115,7 +115,9 @@ function harness(
       // Let a test act AS the concierge mid-turn (e.g. run `beckett discord decline`) before the
       // reply is returned — exactly the window the hold-and-cancel backstop lives in.
       if (opts.onAsk) await opts.onAsk(concierge);
-      return state.reply;
+      return state.reply === "PASS"
+        ? { decision: "pass", message: null }
+        : { decision: "send", message: state.reply };
     },
     queueDepth: () => 0,
   } as unknown as ConciergeSession;
