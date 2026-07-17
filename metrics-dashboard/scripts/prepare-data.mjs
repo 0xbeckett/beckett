@@ -70,7 +70,7 @@ function codeStatsForDashboard(raw) {
       first_commit: text(p.first_commit), last_commit: text(p.last_commit),
     })) : [],
     authors: Array.isArray(raw.authors) ? raw.authors.filter((a) => a && typeof a === "object").map((a) => ({
-      author: text(a.author) ?? "unknown", name: text(a.name) ?? "unknown", email: text(a.email) ?? "",
+      author: text(a.author) ?? "unknown", name: text(a.name) ?? "unknown",
       commits: nonNegative(a.commits), additions: nonNegative(a.additions), deletions: nonNegative(a.deletions), net: num(a.net) ?? 0,
     })) : [],
     velocity: Array.isArray(raw.velocity) ? raw.velocity.filter((v) => v && typeof v === "object" && text(v.date)).map((v) => ({

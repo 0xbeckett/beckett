@@ -42,7 +42,7 @@ export type Metrics = {
     source_generated_at: string | null;
     headline: { commits: number; files: number; projects: number; additions: number; deletions: number; net: number };
     projects: { repo: string; commits: number; files: number; additions: number; deletions: number; net: number; first_commit: string | null; last_commit: string | null }[];
-    authors: { author: string; name: string; email: string; commits: number; additions: number; deletions: number; net: number }[];
+    authors: { author: string; name: string; commits: number; additions: number; deletions: number; net: number }[];
     velocity: { date: string; commits: number }[];
   };
   notes: { skippedRows: number; anyEstimated: boolean };

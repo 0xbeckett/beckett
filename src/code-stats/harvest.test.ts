@@ -38,7 +38,7 @@ test("code-stats caches history LOC, authors, projects, and daily velocity", asy
     ["alpha", 2, 1, 3], ["beta", 1, 1, 1],
   ]);
   expect(stats.authors.map((author) => [author.author, author.commits, author.additions, author.deletions])).toEqual([
-    ["Ada Human <ada@example.test>", 2, 3, 1], ["Beckett <bot@example.test>", 1, 2, 0],
+    ["Ada Human", 2, 3, 1], ["Beckett", 1, 2, 0],
   ]);
   expect(stats.velocity).toEqual([{ date: "2026-01-01", commits: 1 }, { date: "2026-01-02", commits: 2 }]);
   expect(JSON.parse(await readFile(output, "utf8")).headline.commits).toBe(3);

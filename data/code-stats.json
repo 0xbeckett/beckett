@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-17T22:03:09.490Z",
+  "generated_at": "2026-07-17T22:05:02.788Z",
   "projects_root": "/home/beckett/Projects",
   "headline": {
     "commits": 521,
@@ -355,180 +355,112 @@
   ],
   "authors": [
     {
-      "author": "Beckett <0xbeckett@users.noreply.github.com>",
+      "author": "Beckett",
       "name": "Beckett",
-      "email": "0xbeckett@users.noreply.github.com",
-      "commits": 198,
-      "additions": 58569,
-      "deletions": 26072,
-      "net": 32497
+      "commits": 264,
+      "additions": 71827,
+      "deletions": 32349,
+      "net": 39478
     },
     {
-      "author": "frgmt0 <jason.awz2005@icloud.com>",
+      "author": "frgmt0",
       "name": "frgmt0",
-      "email": "jason.awz2005@icloud.com",
       "commits": 83,
       "additions": 51085,
       "deletions": 2072,
       "net": 49013
     },
     {
-      "author": "ProCreations-Official <161275264+ProCreations-Official@users.noreply.github.com>",
+      "author": "ProCreations-Official",
       "name": "ProCreations-Official",
-      "email": "161275264+ProCreations-Official@users.noreply.github.com",
       "commits": 82,
       "additions": 5974,
       "deletions": 1313,
       "net": 4661
     },
     {
-      "author": "Beckett <297532813+0xbeckett@users.noreply.github.com>",
-      "name": "Beckett",
-      "email": "297532813+0xbeckett@users.noreply.github.com",
-      "commits": 51,
-      "additions": 7509,
-      "deletions": 2711,
-      "net": 4798
-    },
-    {
-      "author": "ro_frgmt <105447989+frgmt0@users.noreply.github.com>",
+      "author": "ro_frgmt",
       "name": "ro_frgmt",
-      "email": "105447989+frgmt0@users.noreply.github.com",
       "commits": 43,
       "additions": 9928,
       "deletions": 17048,
       "net": -7120
     },
     {
-      "author": "ProCreations <pro.ultra.creations.ios.shortc@gmail.com>",
+      "author": "ProCreations",
       "name": "ProCreations",
-      "email": "pro.ultra.creations.ios.shortc@gmail.com",
       "commits": 18,
       "additions": 9544,
       "deletions": 8398,
       "net": 1146
     },
     {
-      "author": "Beckett <jw@kcodes.me>",
-      "name": "Beckett",
-      "email": "jw@kcodes.me",
-      "commits": 8,
-      "additions": 3045,
-      "deletions": 319,
-      "net": 2726
-    },
-    {
-      "author": "CuriosityOS <admin@altura.ovh>",
+      "author": "CuriosityOS",
       "name": "CuriosityOS",
-      "email": "admin@altura.ovh",
-      "commits": 8,
-      "additions": 18830,
-      "deletions": 1189,
-      "net": 17641
+      "commits": 10,
+      "additions": 21458,
+      "deletions": 1371,
+      "net": 20087
     },
     {
-      "author": "Claude <noreply@anthropic.com>",
+      "author": "Claude",
       "name": "Claude",
-      "email": "noreply@anthropic.com",
       "commits": 6,
       "additions": 26310,
       "deletions": 44,
       "net": 26266
     },
     {
-      "author": "kcodes0 <jason.awz2005@icloud.com>",
+      "author": "kcodes0",
       "name": "kcodes0",
-      "email": "jason.awz2005@icloud.com",
       "commits": 5,
       "additions": 2718,
       "deletions": 186,
       "net": 2532
     },
     {
-      "author": "arathald <arathald@users.noreply.github.com>",
+      "author": "arathald",
       "name": "arathald",
-      "email": "arathald@users.noreply.github.com",
       "commits": 4,
       "additions": 16,
       "deletions": 16,
       "net": 0
     },
     {
-      "author": "Beckett <beckett@0xbeckett.me>",
-      "name": "Beckett",
-      "email": "beckett@0xbeckett.me",
-      "commits": 4,
-      "additions": 414,
-      "deletions": 3148,
-      "net": -2734
-    },
-    {
-      "author": "Beckett <jason.awz2005@gmail.com>",
-      "name": "Beckett",
-      "email": "jason.awz2005@gmail.com",
-      "commits": 2,
-      "additions": 1096,
-      "deletions": 8,
-      "net": 1088
-    },
-    {
-      "author": "claude[bot] <209825114+claude[bot]@users.noreply.github.com>",
+      "author": "claude[bot]",
       "name": "claude[bot]",
-      "email": "209825114+claude[bot]@users.noreply.github.com",
       "commits": 2,
       "additions": 159,
       "deletions": 18,
       "net": 141
     },
     {
-      "author": "CuriosityOS <CuriosityOS@users.noreply.github.com>",
-      "name": "CuriosityOS",
-      "email": "CuriosityOS@users.noreply.github.com",
-      "commits": 2,
-      "additions": 2628,
-      "deletions": 182,
-      "net": 2446
-    },
-    {
-      "author": "0xbeckett <0xbeckett@users.noreply.github.com>",
+      "author": "0xbeckett",
       "name": "0xbeckett",
-      "email": "0xbeckett@users.noreply.github.com",
       "commits": 1,
       "additions": 279,
       "deletions": 0,
       "net": 279
     },
     {
-      "author": "Beckett <beckett@localhost>",
-      "name": "Beckett",
-      "email": "beckett@localhost",
-      "commits": 1,
-      "additions": 1194,
-      "deletions": 91,
-      "net": 1103
-    },
-    {
-      "author": "CORE <core@MacBook-Pro.local>",
+      "author": "CORE",
       "name": "CORE",
-      "email": "core@MacBook-Pro.local",
       "commits": 1,
       "additions": 538,
       "deletions": 63,
       "net": 475
     },
     {
-      "author": "google-labs-jules[bot] <161369871+google-labs-jules[bot]@users.noreply.github.com>",
+      "author": "google-labs-jules[bot]",
       "name": "google-labs-jules[bot]",
-      "email": "161369871+google-labs-jules[bot]@users.noreply.github.com",
       "commits": 1,
       "additions": 43,
       "deletions": 2,
       "net": 41
     },
     {
-      "author": "SSH <skylerhoberman1@gmail.com>",
+      "author": "SSH",
       "name": "SSH",
-      "email": "skylerhoberman1@gmail.com",
       "commits": 1,
       "additions": 4,
       "deletions": 0,

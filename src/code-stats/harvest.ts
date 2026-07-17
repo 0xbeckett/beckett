@@ -5,7 +5,6 @@ import { dirname, join, resolve } from "node:path";
 export interface CodeStatsDataset {
   schema_version: 1;
   generated_at: string;
-  projects_root: string;
   headline: CodeStatsHeadline;
   projects: CodeStatsProject[];
   authors: CodeStatsAuthor[];
@@ -23,7 +22,6 @@ export interface CodeStatsHeadline {
 
 export interface CodeStatsProject {
   repo: string;
-  path: string;
   commits: number;
   files: number;
   additions: number;
@@ -34,10 +32,9 @@ export interface CodeStatsProject {
 }
 
 export interface CodeStatsAuthor {
-  /** A stable display identity. Name alone is ambiguous when people change emails. */
+  /** Git shortlog-style author name (for example, all Beckett worker commits group as Beckett). */
   author: string;
   name: string;
-  email: string;
   commits: number;
   additions: number;
   deletions: number;
@@ -45,7 +42,7 @@ export interface CodeStatsAuthor {
 }
 
 export interface CodeStatsVelocity {
-  /** UTC author-date calendar day (YYYY-MM-DD). */
+  /** Author-date calendar day (YYYY-MM-DD). */
   date: string;
   commits: number;
 }
@@ -118,15 +115,16 @@ async function harvestProject(path: string, repo: string): Promise<{ project: Co
     git(path, ["log", "--numstat", "--format=%x1e%H%x1f%an%x1f%ae%x1f%aI", "HEAD"]),
     git(path, ["ls-files", "-z"]),
   ]);
-  if (log === null || files === null) return null;
-  const commits = parseGitLog(log);
+  // An unborn repository is still a project: expose a zero rollup instead of silently
+  // losing it from the headline. `git log HEAD` exits non-zero there, while ls-files works.
+  if (files === null) return null;
+  const commits = parseGitLog(log ?? "");
   const additions = commits.reduce((sum, commit) => sum + commit.additions, 0);
   const deletions = commits.reduce((sum, commit) => sum + commit.deletions, 0);
   const dated = commits.map((commit) => commit.date).filter((date) => Number.isFinite(Date.parse(date))).sort();
   return {
     project: {
       repo,
-      path,
       commits: commits.length,
       files: files ? files.split("\0").filter(Boolean).length : 0,
       additions,
@@ -155,9 +153,11 @@ export async function harvestCodeStats(options: CodeStatsHarvestOptions): Promis
     if (!result) continue;
     projects.push(result.project);
     for (const commit of result.commits) {
-      const author = `${commit.name} <${commit.email}>`;
+      // Match git shortlog's useful human-level grouping: a worker named Beckett should
+      // remain one author even when it has committed with more than one noreply address.
+      const author = commit.name;
       const current = authors.get(author) ?? {
-        author, name: commit.name, email: commit.email, commits: 0, additions: 0, deletions: 0, net: 0,
+        author, name: commit.name, commits: 0, additions: 0, deletions: 0, net: 0,
       };
       current.commits += 1;
       current.additions += commit.additions;
@@ -180,7 +180,6 @@ export async function harvestCodeStats(options: CodeStatsHarvestOptions): Promis
   const dataset: CodeStatsDataset = {
     schema_version: 1,
     generated_at: new Date().toISOString(),
-    projects_root: options.projectsDir,
     headline,
     projects: projects.sort((a, b) => b.commits - a.commits || a.repo.localeCompare(b.repo)),
     authors: [...authors.values()].sort((a, b) => b.commits - a.commits || a.author.localeCompare(b.author)),
