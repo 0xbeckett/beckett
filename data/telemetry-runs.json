@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-17T02:00:06.684Z",
+  "generated_at": "2026-07-17T02:04:12.562Z",
   "rate_table_effective_date": "2026-07-16",
   "runs": [
     {
@@ -28468,14 +28468,14 @@
       "harness": "claude-code",
       "model": "claude-opus-4-8",
       "timestamp": "2026-07-17T01:46:02.389Z",
-      "wall_clock_seconds": 7.85,
-      "cost_usd": 0.04263,
+      "wall_clock_seconds": 958.091,
+      "cost_usd": 0.0940025,
       "review_cycles": 0,
       "tokens": {
-        "input": 3991,
-        "output": 358,
+        "input": 7303,
+        "output": 583,
         "cache_read": 0,
-        "cache_write": 2196
+        "cache_write": 6866
       },
       "rate_estimate": true
     },
@@ -28540,13 +28540,13 @@
       "harness": "pi",
       "model": "gpt-5.6-terra",
       "timestamp": "2026-07-17T01:51:05.335Z",
-      "wall_clock_seconds": 481.664,
-      "cost_usd": 4.744594,
+      "wall_clock_seconds": 779.208,
+      "cost_usd": 7.725216,
       "review_cycles": 0,
       "tokens": {
-        "input": 183114,
-        "output": 20503,
-        "cache_read": 3979264,
+        "input": 350600,
+        "output": 27252,
+        "cache_read": 6439936,
         "cache_write": 0
       },
       "rate_estimate": false
@@ -28576,16 +28576,34 @@
       "harness": "claude-code",
       "model": "claude-sonnet-5",
       "timestamp": "2026-07-17T01:56:47.657Z",
-      "wall_clock_seconds": 195.697,
-      "cost_usd": 0.526491,
+      "wall_clock_seconds": 300.375,
+      "cost_usd": 0.6954225,
       "review_cycles": 1,
       "tokens": {
-        "input": 6767,
-        "output": 13756,
+        "input": 6910,
+        "output": 22501,
         "cache_read": 0,
-        "cache_write": 79960
+        "cache_write": 89914
       },
       "rate_estimate": true
+    },
+    {
+      "run_id": "pi:69536e37-c94f-437d-9265-a6108a1d4688",
+      "session_id": "69536e37-c94f-437d-9265-a6108a1d4688",
+      "task_id": "#8",
+      "harness": "pi",
+      "model": "gpt-5.6-terra",
+      "timestamp": "2026-07-17T02:01:52.912Z",
+      "wall_clock_seconds": 135.78,
+      "cost_usd": 0.614076,
+      "review_cycles": 1,
+      "tokens": {
+        "input": 52286,
+        "output": 5327,
+        "cache_read": 403456,
+        "cache_write": 0
+      },
+      "rate_estimate": false
     }
   ]
 }

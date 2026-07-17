@@ -27,7 +27,10 @@ test("harvest normalizes Claude, pi, Codex, and bored review transitions", async
     line({ type: "turn_context", timestamp: "2026-01-01T00:00:01Z", payload: { model: "gpt-5.6-luna" } }),
     line({ type: "event_msg", timestamp: "2026-01-01T00:00:03Z", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 1_000_000, cached_input_tokens: 200_000, output_tokens: 1_000_000 } } } }),
   ].join(""));
-  await writeFile(join(bored, "9.jsonl"), line({ taskRef: "OPS-9", type: "edge_taken", from: "beckett_implement", to: "beckett_review" }));
+  await writeFile(join(bored, "9.jsonl"), [
+    line({ taskRef: "OPS-9", type: "edge_taken", from: "beckett_implement", to: "beckett_review" }),
+    line({ taskRef: "OPS-9", type: "edge_taken", from: "in_progress", to: "in_review" }),
+  ].join(""));
 
   const output = join(root, "runs.json");
   const notes: string[] = [];
@@ -37,7 +40,7 @@ test("harvest normalizes Claude, pi, Codex, and bored review transitions", async
   });
   expect(dataset.runs).toHaveLength(3);
   expect(dataset.runs.map((run) => run.harness).sort()).toEqual(["claude-code", "codex", "pi"]);
-  expect(dataset.runs.every((run) => run.review_cycles === 1 && run.cost_usd > 0 && run.task_id === "OPS-9")).toBe(true);
+  expect(dataset.runs.every((run) => run.review_cycles === 2 && run.cost_usd > 0 && run.task_id === "OPS-9")).toBe(true);
   expect(dataset.runs.find((run) => run.harness === "claude-code")?.model).toBe("claude-haiku-4-5-20251001");
   expect(JSON.parse(await readFile(output, "utf8")).runs).toHaveLength(3);
   expect(notes.at(-1)).toContain("wrote 3 normalized runs");

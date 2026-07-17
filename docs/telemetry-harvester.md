@@ -7,8 +7,8 @@ object whose `runs` array contains one normalized session run per row. Regenerat
 bun run telemetry:refresh
 ```
 
-The command writes the file atomically enough for a static-dashboard rebuild (one complete
-JSON write), prints skips to stderr, and exits after every readable source has been considered.
+The command writes a complete temporary JSON file and atomically renames it into place for a
+static-dashboard rebuild, prints skips to stderr, and exits after every readable source has been considered.
 It does not contact any model provider.
 
 ## Row contract

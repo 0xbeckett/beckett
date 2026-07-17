@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 export interface TokenUsage {
@@ -233,23 +233,22 @@ export function calculateCost(tokens: TokenUsage, rate: ModelRate): number {
 }
 
 async function filesUnder(root: string, note: (message: string) => void): Promise<string[]> {
-  try {
-    const result: string[] = [];
-    const todo = [root];
-    while (todo.length) {
-      const dir = todo.pop()!;
+  const result: string[] = [];
+  const todo = [root];
+  while (todo.length) {
+    const dir = todo.pop()!;
+    try {
       const entries = await readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) todo.push(path);
         else if (entry.isFile() && entry.name.endsWith(".jsonl")) result.push(path);
       }
+    } catch (error) {
+      note(`source absent/unreadable: ${dir} (${(error as Error).message})`);
     }
-    return result.sort();
-  } catch (error) {
-    note(`source absent/unreadable: ${root} (${(error as Error).message})`);
-    return [];
   }
+  return result.sort();
 }
 
 async function trackerCyclesFromState(stateDir: string, note: (message: string) => void): Promise<Map<string, number>> {
@@ -337,7 +336,9 @@ export async function harvest(options: HarvestOptions): Promise<TelemetryDataset
   ].filter((run): run is TelemetryRun => run !== null).sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.run_id.localeCompare(b.run_id));
   const dataset: TelemetryDataset = { schema_version: 1, generated_at: new Date().toISOString(), rate_table_effective_date: rates.effective_date, runs };
   await mkdir(dirname(options.output), { recursive: true });
-  await writeFile(options.output, `${JSON.stringify(dataset, null, 2)}\n`);
+  const temporaryOutput = `${options.output}.${process.pid}.tmp`;
+  await writeFile(temporaryOutput, `${JSON.stringify(dataset, null, 2)}\n`);
+  await rename(temporaryOutput, options.output);
   note(`wrote ${runs.length} normalized runs to ${options.output}`);
   return dataset;
 }
