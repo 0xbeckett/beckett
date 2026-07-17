@@ -6,6 +6,7 @@ import { XAxis } from "@/components/dither-kit/x-axis";
 import { YAxis } from "@/components/dither-kit/y-axis";
 import { Grid } from "@/components/dither-kit/grid";
 import { Tooltip } from "@/components/dither-kit/tooltip";
+import { Sparkline } from "@/components/dither-kit/sparkline";
 import type { DitherColor } from "@/metrics";
 
 type Datum = { label: string; value: number };
@@ -23,6 +24,7 @@ export function BarViz({
   yFormatter,
   variant = "hatched",
   maxTicks = 8,
+  heightClass = "h-[240px] sm:h-[260px]",
 }: {
   data: Datum[];
   color: DitherColor;
@@ -31,10 +33,11 @@ export function BarViz({
   yFormatter: (v: number) => string;
   variant?: "gradient" | "dotted" | "hatched" | "solid";
   maxTicks?: number;
+  heightClass?: string;
 }) {
   const config = { value: { label: seriesLabel, color } };
   return (
-    <div className="dk-plot h-[240px] w-full sm:h-[260px]">
+    <div className={`dk-plot w-full ${heightClass}`}>
       <BarChart
         data={data}
         config={config}
@@ -46,18 +49,15 @@ export function BarViz({
         <YAxis tickFormatter={yFormatter} tickCount={4} />
         <XAxis dataKey="label" maxTicks={maxTicks} />
         <Bar dataKey="value" variant={variant} />
-        <Tooltip
-          labelKey="label"
-          valueFormatter={(v) => valueFormatter(v)}
-        />
+        <Tooltip labelKey="label" valueFormatter={(v) => valueFormatter(v)} />
       </BarChart>
     </div>
   );
 }
 
 /**
- * Dithered area chart for the run timeline. Dates on X, run count on Y; the
- * dither fill carries the neo-brutalist texture.
+ * Dithered area chart for a time series. Dates on X, count on Y; the dither fill
+ * carries the neo-brutalist texture. `heightClass` lets the hero timeline run taller.
  */
 export function AreaViz({
   data,
@@ -66,6 +66,8 @@ export function AreaViz({
   xFormatter,
   yFormatter,
   valueFormatter,
+  maxTicks = 6,
+  heightClass = "h-[240px] sm:h-[260px]",
 }: {
   data: { date: string; value: number }[];
   color: DitherColor;
@@ -73,10 +75,12 @@ export function AreaViz({
   xFormatter: (v: unknown) => string;
   yFormatter: (v: number) => string;
   valueFormatter: (v: number) => string;
+  maxTicks?: number;
+  heightClass?: string;
 }) {
   const config = { value: { label: seriesLabel, color } };
   return (
-    <div className="dk-plot h-[240px] w-full sm:h-[260px]">
+    <div className={`dk-plot w-full ${heightClass}`}>
       <AreaChart
         data={data}
         config={config}
@@ -86,10 +90,21 @@ export function AreaViz({
       >
         <Grid />
         <YAxis tickFormatter={yFormatter} tickCount={4} />
-        <XAxis dataKey="date" tickFormatter={(v) => xFormatter(v)} maxTicks={6} />
+        <XAxis dataKey="date" tickFormatter={(v) => xFormatter(v)} maxTicks={maxTicks} />
         <Area dataKey="value" variant="gradient" />
         <Tooltip labelKey="date" valueFormatter={(v) => valueFormatter(v)} />
       </AreaChart>
     </div>
   );
+}
+
+/** Tiny inline sparkline for hero stats — no axes, just the dithered trend. */
+export function Spark({
+  data,
+  color,
+}: {
+  data: number[];
+  color: DitherColor;
+}) {
+  return <Sparkline data={data} color={color} variant="gradient" className="h-full w-full" />;
 }

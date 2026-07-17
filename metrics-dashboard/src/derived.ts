@@ -43,10 +43,13 @@ export const costPerCommit = cs.headline.commits > 0 ? h.totalSpend / cs.headlin
 export const linesPerDollar = h.totalSpend > 0 ? cs.headline.additions / h.totalSpend : 0;
 export const commitsPerDay = cs.velocity.length > 0 ? cs.headline.commits / cs.velocity.length : 0;
 
+// Axis labels have to fit under a bar; long repo/author names get elided.
+const short = (s: string, n = 9): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
 // ── Series ready for charts ─────────────────────────────────────────────────
 export const velocitySeries = cs.velocity.map((v) => ({ date: v.date, value: v.commits }));
-export const projectSeries = topProjects.map((p) => ({ label: p.repo, value: p.additions }));
-export const authorSeries = authors.slice(0, 7).map((a) => ({ label: a.name, value: a.commits }));
+export const projectSeries = topProjects.map((p) => ({ label: short(p.repo), value: p.additions }));
+export const authorSeries = authors.slice(0, 7).map((a) => ({ label: short(a.name), value: a.commits }));
 export const costSeries = metrics.models.map((m) => ({ label: m.label, value: m.cost }));
 export const wallSeries = metrics.models.map((m) => ({ label: m.label, value: m.wallHours }));
 export const cycleSeries = metrics.reviewCycles.map((c) => ({ label: c.label, value: c.count }));
