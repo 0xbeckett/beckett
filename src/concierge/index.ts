@@ -64,6 +64,7 @@ import {
 } from "../discord/workspaces.ts";
 import { setChannelModeOverride, setEnabledOverride } from "./proactivity-store.ts";
 import { readPersistedOffers } from "./ambient.ts";
+import { DISCORD_TURN_OUTPUT_SCHEMA, parseDiscordTurnOutput, type DiscordTurnOutput } from "./output.ts";
 import { classify, loadAccess, resolvePending, ACCESS_CAP, type AccessLevel } from "../discord/access.ts";
 import { loadMaintainers, resolveMaintainerPending } from "../discord/maintainers.ts";
 import { childEnv as strippedChildEnv } from "../env.ts";
@@ -348,8 +349,9 @@ type Child = ReturnType<typeof Bun.spawn>;
 
 /** A turn waiting for its `result` boundary. Single-flight: at most one is live at a time. */
 interface PendingTurn {
+  /** Assistant text blocks are diagnostic only; outbound delivery reads structured_output at result. */
   parts: string[];
-  resolve: (reply: string) => void;
+  resolve: (reply: DiscordTurnOutput) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -360,7 +362,7 @@ interface QueuedTurn {
   meta?: unknown;
   /** Priority turns (person mentions) jump ahead of queued update turns (issue #25). */
   priority: boolean;
-  resolve: (reply: string) => void;
+  resolve: (reply: DiscordTurnOutput) => void;
   reject: (err: Error) => void;
 }
 
@@ -385,8 +387,9 @@ export interface ConciergeSessionOptions {
 
 /**
  * A persistent, single-flight Opus chat session over `claude -p` stream-json. `ask()` writes
- * one user line, then resolves with the assistant text accumulated up to the next `result`.
- * Survives an unexpected process exit by relaunching with `--resume <sessionId>`.
+ * one user line, then resolves with a schema-validated Discord delivery decision at the next
+ * `result`. Assistant text blocks are never outbound text. Survives an unexpected process exit
+ * by relaunching with `--resume <sessionId>`.
  */
 export class ConciergeSession {
   private readonly config: Config;
@@ -491,14 +494,14 @@ export class ConciergeSession {
 
   /**
    * Run one chat turn. Writes the message as a user line and resolves with the assistant's
-   * reply text once claude emits the turn's `result`. Single-flight via the internal queue.
+   * structured delivery decision once claude emits the turn's `result`. Single-flight via the internal queue.
    * `meta` identifies the caller's turn (e.g. the @mention being answered) — exposed via
    * {@link getCurrentMeta} while THIS turn executes, so a CLI reply can be correlated to the
    * turn that issued it (issue #24 reply-claim race). `opts.priority` turns (person mentions)
    * jump ahead of queued update turns (issue #25) but never pre-empt a RUNNING turn.
    */
-  ask(message: TurnMessage, meta?: unknown, opts?: { priority?: boolean }): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
+  ask(message: TurnMessage, meta?: unknown, opts?: { priority?: boolean }): Promise<DiscordTurnOutput> {
+    return new Promise<DiscordTurnOutput>((resolve, reject) => {
       const entry: QueuedTurn = { message, meta, priority: opts?.priority === true, resolve, reject };
       if (entry.priority) {
         const firstNormal = this.turnQueue.findIndex((t) => !t.priority);
@@ -589,7 +592,7 @@ export class ConciergeSession {
 
   // ── internals ────────────────────────────────────────────────────────────────────────
 
-  private async runTurn(message: TurnMessage, meta?: unknown): Promise<string> {
+  private async runTurn(message: TurnMessage, meta?: unknown): Promise<DiscordTurnOutput> {
     if (this.stopped) throw new Error("concierge session stopped");
     if (!this.child) await this.relaunch();
     const child = this.child;
@@ -597,18 +600,17 @@ export class ConciergeSession {
     this.currentMeta = meta ?? null;
     const outbound = this.consumeSeed(message);
 
-    const turn = new Promise<string>((resolve, reject) => {
+    const turn = new Promise<DiscordTurnOutput>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending && this.pending.timer === timer) {
-          const acc = this.pending.parts.join("\n\n").trim();
           this.pending = null;
           // The turn is dead but the child may still be streaming into it. Treat the child as
           // compromised (issue #24): kill it so late output can never contaminate the NEXT turn,
           // and so a genuinely hung child doesn't turn every future turn into a timeout. The next
           // ask() resumes the same session — context intact.
           this.recycleChild("turn timeout");
-          // Don't hang the human forever — return whatever we have (or a soft nudge).
-          resolve(acc || TURN_TIMEOUT_FALLBACK);
+          // Don't hang the human forever. This is daemon-authored fallback text, not model output.
+          resolve({ decision: "send", message: TURN_TIMEOUT_FALLBACK });
         }
       }, TURN_TIMEOUT_MS);
       this.pending = { parts: [], resolve, reject, timer };
@@ -726,6 +728,8 @@ export class ConciergeSession {
       "--output-format",
       "stream-json",
       "--verbose",
+      "--json-schema",
+      JSON.stringify(DISCORD_TURN_OUTPUT_SCHEMA),
       "--replay-user-messages",
       "--permission-mode",
       "bypassPermissions",
@@ -901,7 +905,7 @@ export class ConciergeSession {
           break;
         case "result":
           this.recordUsage(obj.usage);
-          this.onResult();
+          this.onResult(obj);
           break;
         default:
           break; // user echoes, stream deltas, errors, unknown — not needed for chat output
@@ -930,13 +934,23 @@ export class ConciergeSession {
     }
   }
 
-  private onResult(): void {
+  private onResult(result: Record<string, unknown>): void {
     this.consecutiveCrashes = 0; // a completed turn = the child is healthy again
     const p = this.pending;
     if (!p) return;
     clearTimeout(p.timer);
     this.pending = null;
-    p.resolve(p.parts.join("\n\n").trim());
+    const output = parseDiscordTurnOutput(result.structured_output);
+    if (!output) {
+      // Never fall back to assistant text here. It is allowed to contain deliberation, and a bad
+      // schema result must mean silence rather than an accidental Discord post.
+      this.log.warn("concierge result missing valid Discord delivery output; suppressing", {
+        assistantTextBlocks: p.parts.length,
+      });
+      p.resolve({ decision: "pass", message: null });
+      return;
+    }
+    p.resolve(output);
   }
 
   /**
@@ -1028,12 +1042,12 @@ export class ConciergeSession {
       sessionId: oldSession,
     });
 
-    // 1. Last words from the dying session, on its still-live child (best-effort). Guard the
-    //    timeout sentinel — seeding "Still chewing…" as a handoff note would be nonsense.
+    // 1. Last words from the dying session, on its still-live child (best-effort). The same
+    // structured output boundary applies here; this is internal state, never a Discord post.
     let summary = "";
     try {
-      const note = (await this.runTurn(HANDOFF_PROMPT)).trim();
-      if (note && note !== TURN_TIMEOUT_FALLBACK) summary = note;
+      const note = await this.runTurn(HANDOFF_PROMPT);
+      if (note.decision === "send" && note.message !== TURN_TIMEOUT_FALLBACK) summary = note.message;
     } catch (err) {
       this.log.warn("concierge handoff summary failed — rotating without it", { err: String(err) });
     }
@@ -3212,14 +3226,13 @@ export class Concierge {
       const turn = await this.buildTurn(m, content, workspace);
       // The mention rides as the turn's meta so CLI replies correlate to THIS turn (issue #24);
       // person turns take PRIORITY over queued ticket-update turns (issue #25).
-      const reply = await this.pool.ask(m.channelId, turn, mention, { priority: true });
+      const output = await this.pool.ask(m.channelId, turn, mention, { priority: true });
       keepTyping = false;
       clearInterval(typing);
-      const text = reply.trim();
-      // The turn's text IS the reply for a person's @mention — post it as a native reply. Skip it
-      // only if the Concierge already answered this turn itself via `beckett discord reply` (then
-      // that bus post was the reply, and posting again would duplicate it).
-      if (text && !mention.repliedViaCli) {
+      // Only the schema-validated `message` crosses this boundary. Assistant text is intentionally
+      // unavailable here, so deliberation cannot become a native Discord reply.
+      if (output.decision === "send" && !mention.repliedViaCli) {
+        const text = output.message;
         // The Concierge's conversational reply is a native reply, which notifies only its author.
         const ackId = await this.gateway.post(m.channelId, text, {
           replyToMessageId: m.messageId,
@@ -3399,14 +3412,13 @@ export class Concierge {
    * mention path deliberately: NO typing indicator and NO fast-ack (Beckett doesn't telegraph that
    * it's "considering" speaking), and the turn is queued NON-priority so real mentions and ticket
    * updates jump ahead. The reply is auto-posted as a PLAIN message (no `replyToMessageId`) UNLESS
-   * the model returns the `PASS` sentinel — then nothing is posted and the cooldown is left
-   * unconsumed (the coordinator inspects the returned text). On a real post for a candidate we arm
-   * the offer ledger via {@link AmbientCoordinator.recordOffer} (TTL + cooldown); a consent turn
-   * that actually replies closes its offer window. The returned string is what the coordinator sees
-   * (so `PASS` must survive verbatim). If the model answered via `beckett discord reply` instead,
-   * the reply-claim below suppresses the auto-post exactly as it does for a mention.
+   * the model returns a structured `pass` decision — then nothing is posted and the cooldown is
+   * left unconsumed. On a real post for a candidate we arm the offer ledger via
+   * {@link AmbientCoordinator.recordOffer} (TTL + cooldown); a consent turn that actually replies
+   * closes its offer window. If the model answered via `beckett discord reply` instead, the
+   * reply-claim below suppresses the auto-post exactly as it does for a mention.
    */
-  private async runAmbientTurn(turn: AmbientTurn): Promise<string> {
+  private async runAmbientTurn(turn: AmbientTurn): Promise<DiscordTurnOutput> {
     const framed = this.frameAmbientTurn(turn);
     // These messages are now in front of the session — don't re-prepend them on the next mention.
     this.markAmbientSeen(turn.channelId, turn.transcript);
@@ -3433,26 +3445,21 @@ export class Concierge {
     };
     this.activeMentions.set(turn.channelId, claim);
     try {
-      const reply = (await this.pool.ask(turn.channelId, framed, claim, { priority: false })).trim();
-      // OPS-101 hold-and-cancel backstop (OPS-99 §5.3): if the concierge ran `beckett discord
-      // decline` this turn, it judged the burst wasn't for it (a classifier false-positive). Abort
-      // exactly like a PASS: post nothing, consume no cooldown. This wins over any drafted reply
-      // text — cancellation degrades to a synthetic PASS so no partial/half-posted state can exist.
-      if (claim.declined) return "PASS";
-      // PASS (alone, first line) → post nothing, consume no cooldown. Return it verbatim so the
-      // coordinator sees the sentinel and skips its own cooldown stamp.
-      if (isAmbientPass(reply)) return reply;
+      const output = await this.pool.ask(turn.channelId, framed, claim, { priority: false });
+      // OPS-101 hold-and-cancel backstop (OPS-99 §5.3): decline is terminal and becomes a
+      // structured pass, so no partial/half-posted state can exist.
+      if (claim.declined) return { decision: "pass", message: null };
+      if (output.decision === "pass") return output;
+      const reply = output.message;
       // The model may have already posted via the CLI (consent turns are told to ack that way); the
       // reply-claim marked `repliedViaCli` and captured the message id — don't post a second time.
       let postedId: string | null;
       if (claim.repliedViaCli) {
         postedId = claim.ackMessageId; // the bus path already recorded this post (OPS-80)
-      } else if (reply) {
+      } else {
         postedId = await this.gateway.post(turn.channelId, reply);
         // OPS-80: an ambient interjection is a real Beckett post in the channel — record it.
         this.recordBeckettPost(turn.channelId, reply, postedId);
-      } else {
-        postedId = null;
       }
       if (turn.kind === "candidate" && !turn.engaged) {
         // Only a COLD interjection arms the offer/consent machinery. An engaged continuation is
@@ -3460,12 +3467,12 @@ export class Concierge {
         // that PASSed all non-consent chatter for offer_ttl_secs (the "we interact and it goes
         // silent" bug, OPS-87 follow-up).
         this.armAmbientOffer(turn, postedId, reply);
-      } else if (turn.kind === "consent" && !isAmbientPass(reply) && turn.message.userId === turn.offer.sourceUserId) {
+      } else if (turn.kind === "consent" && turn.message.userId === turn.offer.sourceUserId) {
         // A real answer FROM THE PERSON THE OFFER WAS MADE TO resolves it — close the window
         // (accept or decline). Conversational replies to bystanders must not kill a live offer.
         this.ambient?.clearOffer(turn.channelId);
       }
-      return reply;
+      return output;
     } finally {
       if (this.activeMentions.get(turn.channelId) === claim) this.activeMentions.delete(turn.channelId);
     }
@@ -4278,7 +4285,7 @@ function ambientAnchorId(turn: AmbientTurn): string {
 /**
  * The ambient-candidate frame (§4.5): overheard chatter Beckett is choosing whether to speak to.
  * Triage gets the first vote; the full session still checks that its proposed beat remains timely
- * before drafting one short reply or returning PASS.
+ * before drafting one short reply or returning a structured `pass` decision.
  */
 function frameAmbientCandidate(
   channelId: string,
@@ -4297,7 +4304,7 @@ function frameAmbientCandidate(
       `Your recent message makes a continuation plausible, not certain. Read the newest lines and\n` +
       `reply targets first. If the latest unresolved turn still addresses you and invites a response,\n` +
       `answer, riff back, or close it out warmly with ONE short message in your voice.\n` +
-      `Reply with exactly PASS if people pivoted to each other, a human already answered, the moment\n` +
+      `Use delivery decision "pass" if people pivoted to each other, a human already answered, the moment\n` +
       `is settled, or the latest line is a natural closer. Never reply merely because you spoke earlier.\n` +
       `Do not file a ticket yet. An offer is a question, not a commitment.`
     );
@@ -4310,7 +4317,7 @@ function frameAmbientCandidate(
     `Triage found a possible beat, not an obligation to speak. If the latest unresolved turn still\n` +
     `has specific, welcome value you can add, reply with ONE short message in your voice. A concrete\n` +
     `offer or answer, a genuinely funny line, or a useful pointer can qualify.\n` +
-    `Reply with exactly PASS when a human already answered, the plan is settled, the moment closed,\n` +
+    `Use delivery decision "pass" when a human already answered, the plan is settled, the moment closed,\n` +
     `someone is upset, or your reply would only agree, restate, nitpick, or add a generic quip.\n` +
     `If on reflection this turn belongs to someone else (triage can misread the addressee), run\n` +
     `\`beckett discord decline --channel ${channelId}\` BEFORE you write anything — that quietly\n` +
@@ -4348,7 +4355,7 @@ export function addresseeFrameLine(addressee: TriageVerdict["addressee"]): strin
 
 /**
  * The consent follow-up frame (§4.5): a new message arrived in a channel with a live offer. The
- * model judges whether it accepts (ack + file the ticket), declines/unrelated (PASS), or is a
+ * model judges whether it accepts (ack + file the ticket), declines/unrelated (`pass`), or is a
  * fresh ambient candidate on its own.
  */
 function frameAmbientConsent(offerText: string, userFrame: string, elapsedSecs: number): string {
@@ -4359,14 +4366,14 @@ function frameAmbientConsent(offerText: string, userFrame: string, elapsedSecs: 
     `If this accepts your offer: ack via \`beckett discord reply\`, then file the ticket exactly as\n` +
     `you would for a direct request (--channel stamped). If it declines: acknowledge in ONE gracious\n` +
     `line — don't go silent on a person talking to you. If it's unrelated chatter or banter: you're\n` +
-    `still in the room — reply with ONE short line if you have a beat, or PASS if a reply would just\n` +
-    `be noise (PASS leaves your offer quietly waiting; it expires on its own).`
+    `still in the room — put ONE short line in the delivery message if you have a beat, or use\n` +
+    `delivery decision "pass" if a reply would just be noise (pass leaves your offer quietly waiting; it expires on its own).`
   );
 }
 
 /**
  * The silence-consent frame (§4.5, `auto` mode only): an offer aged out with no reply in a
- * proceed-on-silence channel. Post a one-line heads-up and file the ticket, or PASS if stale.
+ * proceed-on-silence channel. Post a one-line heads-up and file the ticket, or use `pass` if stale.
  */
 function frameAmbientTimeout(channelId: string, offerText: string, ttlSecs: number): string {
   const mins = Math.max(1, Math.round(ttlSecs / 60));
@@ -4374,7 +4381,7 @@ function frameAmbientTimeout(channelId: string, offerText: string, ttlSecs: numb
     `SYSTEM (ambient timeout): your offer "${offerText}" in [channel:${channelId}] got no reply in ${mins} minutes.\n` +
     `This channel is set to proceed-on-silence. If the work is still sensible, post a one-line\n` +
     `heads-up ("no objection, so I'm running with the CSV export thing") and file the ticket.\n` +
-    `If the moment has passed, PASS.`
+    `If the moment has passed, use delivery decision "pass".`
   );
 }
 
