@@ -296,8 +296,15 @@ async function parseSource(
   return result;
 }
 
+function rateForModel(model: string, rates: RateTable): ModelRate | null {
+  const normalized = model.toLowerCase();
+  // Anthropic's transcript model ids often append a release date (for example
+  // claude-haiku-4-5-20251001); the dated rate is deliberately keyed by SKU.
+  return rates.models[normalized] ?? rates.models[normalized.replace(/-\d{8}$/, "")] ?? null;
+}
+
 function runFromSession(session: ParsedSession, harness: TelemetryRun["harness"], rates: RateTable, cycles: Map<string, number>, note: (message: string) => void): TelemetryRun | null {
-  const rate = rates.models[session.model.toLowerCase()];
+  const rate = rateForModel(session.model, rates);
   if (!rate) { note(`${harness}: skipped ${session.sessionId}; model ${session.model} has no rate in table`); return null; }
   const wall = Math.max(0, (Date.parse(session.endTimestamp) - Date.parse(session.timestamp)) / 1000);
   return {
