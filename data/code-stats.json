@@ -1,11 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-17T22:05:02.788Z",
-  "projects_root": "/home/beckett/Projects",
+  "generated_at": "2026-07-17T22:05:33.632Z",
   "headline": {
     "commits": 521,
     "files": 628,
-    "projects": 31,
+    "projects": 34,
     "additions": 199883,
     "deletions": 62880,
     "net": 137003
@@ -13,7 +12,6 @@
   "projects": [
     {
       "repo": "beckett",
-      "path": "/home/beckett/Projects/beckett",
       "commits": 329,
       "files": 345,
       "additions": 144539,
@@ -24,7 +22,6 @@
     },
     {
       "repo": "second-opinion",
-      "path": "/home/beckett/Projects/second-opinion",
       "commits": 108,
       "files": 14,
       "additions": 12373,
@@ -35,7 +32,6 @@
     },
     {
       "repo": "bored",
-      "path": "/home/beckett/Projects/bored",
       "commits": 17,
       "files": 59,
       "additions": 13975,
@@ -46,7 +42,6 @@
     },
     {
       "repo": "andc",
-      "path": "/home/beckett/Projects/andc",
       "commits": 15,
       "files": 25,
       "additions": 1642,
@@ -57,7 +52,6 @@
     },
     {
       "repo": "bored-hardening",
-      "path": "/home/beckett/Projects/bored-hardening",
       "commits": 6,
       "files": 56,
       "additions": 13156,
@@ -68,7 +62,6 @@
     },
     {
       "repo": "pulse",
-      "path": "/home/beckett/Projects/pulse",
       "commits": 5,
       "files": 49,
       "additions": 4743,
@@ -79,7 +72,6 @@
     },
     {
       "repo": "random",
-      "path": "/home/beckett/Projects/random",
       "commits": 4,
       "files": 4,
       "additions": 453,
@@ -90,7 +82,6 @@
     },
     {
       "repo": "ssh-codes-audit",
-      "path": "/home/beckett/Projects/ssh-codes-audit",
       "commits": 4,
       "files": 1,
       "additions": 841,
@@ -101,7 +92,6 @@
     },
     {
       "repo": "beckett-tv",
-      "path": "/home/beckett/Projects/beckett-tv",
       "commits": 3,
       "files": 8,
       "additions": 448,
@@ -112,7 +102,6 @@
     },
     {
       "repo": "gravity-well",
-      "path": "/home/beckett/Projects/gravity-well",
       "commits": 3,
       "files": 3,
       "additions": 391,
@@ -123,7 +112,6 @@
     },
     {
       "repo": "probabilities",
-      "path": "/home/beckett/Projects/probabilities",
       "commits": 3,
       "files": 14,
       "additions": 1889,
@@ -134,7 +122,6 @@
     },
     {
       "repo": "beckett-stopmotion",
-      "path": "/home/beckett/Projects/beckett-stopmotion",
       "commits": 2,
       "files": 10,
       "additions": 249,
@@ -145,7 +132,6 @@
     },
     {
       "repo": "generic-saas",
-      "path": "/home/beckett/Projects/generic-saas",
       "commits": 2,
       "files": 3,
       "additions": 760,
@@ -156,7 +142,6 @@
     },
     {
       "repo": "ops-28",
-      "path": "/home/beckett/Projects/ops-28",
       "commits": 2,
       "files": 14,
       "additions": 1771,
@@ -167,7 +152,6 @@
     },
     {
       "repo": "stopmotion-pipeline",
-      "path": "/home/beckett/Projects/stopmotion-pipeline",
       "commits": 2,
       "files": 11,
       "additions": 688,
@@ -178,7 +162,6 @@
     },
     {
       "repo": "arcade",
-      "path": "/home/beckett/Projects/arcade",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -189,7 +172,6 @@
     },
     {
       "repo": "beckett-marketing",
-      "path": "/home/beckett/Projects/beckett-marketing",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -200,7 +182,6 @@
     },
     {
       "repo": "beckett-yt",
-      "path": "/home/beckett/Projects/beckett-yt",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -211,7 +192,6 @@
     },
     {
       "repo": "black-hole-codex",
-      "path": "/home/beckett/Projects/black-hole-codex",
       "commits": 1,
       "files": 3,
       "additions": 613,
@@ -222,7 +202,6 @@
     },
     {
       "repo": "black-hole-opus",
-      "path": "/home/beckett/Projects/black-hole-opus",
       "commits": 1,
       "files": 5,
       "additions": 1048,
@@ -233,7 +212,6 @@
     },
     {
       "repo": "brushstroke",
-      "path": "/home/beckett/Projects/brushstroke",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -244,7 +222,6 @@
     },
     {
       "repo": "cal",
-      "path": "/home/beckett/Projects/cal",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -255,7 +232,6 @@
     },
     {
       "repo": "duel",
-      "path": "/home/beckett/Projects/duel",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -266,7 +242,6 @@
     },
     {
       "repo": "jingle-jingle",
-      "path": "/home/beckett/Projects/jingle-jingle",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -277,7 +252,6 @@
     },
     {
       "repo": "multiplayer",
-      "path": "/home/beckett/Projects/multiplayer",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -288,7 +262,6 @@
     },
     {
       "repo": "multiplayer-design",
-      "path": "/home/beckett/Projects/multiplayer-design",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -299,7 +272,6 @@
     },
     {
       "repo": "ops-117",
-      "path": "/home/beckett/Projects/ops-117",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -310,7 +282,6 @@
     },
     {
       "repo": "ops-118",
-      "path": "/home/beckett/Projects/ops-118",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -321,7 +292,6 @@
     },
     {
       "repo": "ops-29",
-      "path": "/home/beckett/Projects/ops-29",
       "commits": 1,
       "files": 2,
       "additions": 206,
@@ -332,7 +302,6 @@
     },
     {
       "repo": "paper-plane",
-      "path": "/home/beckett/Projects/paper-plane",
       "commits": 1,
       "files": 0,
       "additions": 0,
@@ -343,7 +312,6 @@
     },
     {
       "repo": "pi-smoke",
-      "path": "/home/beckett/Projects/pi-smoke",
       "commits": 1,
       "files": 2,
       "additions": 98,
@@ -351,6 +319,36 @@
       "net": 98,
       "first_commit": "2026-07-01T13:40:37-07:00",
       "last_commit": "2026-07-01T13:40:37-07:00"
+    },
+    {
+      "repo": "blackhole",
+      "commits": 0,
+      "files": 0,
+      "additions": 0,
+      "deletions": 0,
+      "net": 0,
+      "first_commit": null,
+      "last_commit": null
+    },
+    {
+      "repo": "ivig",
+      "commits": 0,
+      "files": 0,
+      "additions": 0,
+      "deletions": 0,
+      "net": 0,
+      "first_commit": null,
+      "last_commit": null
+    },
+    {
+      "repo": "plasticity-lab",
+      "commits": 0,
+      "files": 0,
+      "additions": 0,
+      "deletions": 0,
+      "net": 0,
+      "first_commit": null,
+      "last_commit": null
     }
   ],
   "authors": [

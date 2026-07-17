@@ -201,11 +201,11 @@
     }
   ],
   "codeStats": {
-    "source_generated_at": "2026-07-17T22:05:02.788Z",
+    "source_generated_at": "2026-07-17T22:05:33.632Z",
     "headline": {
       "commits": 521,
       "files": 628,
-      "projects": 31,
+      "projects": 34,
       "additions": 199883,
       "deletions": 62880,
       "net": 137003
@@ -520,6 +520,36 @@
         "net": 98,
         "first_commit": "2026-07-01T13:40:37-07:00",
         "last_commit": "2026-07-01T13:40:37-07:00"
+      },
+      {
+        "repo": "blackhole",
+        "commits": 0,
+        "files": 0,
+        "additions": 0,
+        "deletions": 0,
+        "net": 0,
+        "first_commit": null,
+        "last_commit": null
+      },
+      {
+        "repo": "ivig",
+        "commits": 0,
+        "files": 0,
+        "additions": 0,
+        "deletions": 0,
+        "net": 0,
+        "first_commit": null,
+        "last_commit": null
+      },
+      {
+        "repo": "plasticity-lab",
+        "commits": 0,
+        "files": 0,
+        "additions": 0,
+        "deletions": 0,
+        "net": 0,
+        "first_commit": null,
+        "last_commit": null
       }
     ],
     "authors": [
