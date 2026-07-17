@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "source_generated_at": "2026-07-17T02:21:59.895Z",
+  "rate_table_effective_date": "2026-07-16",
+  "headline": {
+    "totalRuns": 1593,
+    "totalSpend": 1100.74,
+    "totalWallHours": 679.2,
+    "modelsUsed": 6,
+    "firstRun": "2026-06-28",
+    "lastRun": "2026-07-17",
+    "tasksTracked": 172
+  },
+  "models": [
+    {
+      "model": "claude-opus-4-8",
+      "label": "opus-4.8",
+      "color": "red",
+      "runs": 945,
+      "cost": 870.55,
+      "wallHours": 654.35,
+      "estimate": true
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "label": "terra",
+      "color": "orange",
+      "runs": 47,
+      "cost": 100.82,
+      "wallHours": 4.4,
+      "estimate": false
+    },
+    {
+      "model": "claude-sonnet-5",
+      "label": "sonnet-5",
+      "color": "blue",
+      "runs": 103,
+      "cost": 74.26,
+      "wallHours": 5.2,
+      "estimate": true
+    },
+    {
+      "model": "claude-fable-5",
+      "label": "fable-5",
+      "color": "purple",
+      "runs": 94,
+      "cost": 41.65,
+      "wallHours": 13.02,
+      "estimate": true
+    },
+    {
+      "model": "claude-haiku-4-5-20251001",
+      "label": "haiku-4.5",
+      "color": "green",
+      "runs": 403,
+      "cost": 13.45,
+      "wallHours": 2.24,
+      "estimate": true
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "label": "luna",
+      "color": "pink",
+      "runs": 1,
+      "cost": 0.01,
+      "wallHours": 0,
+      "estimate": false
+    }
+  ],
+  "reviewCycles": [
+    {
+      "cycles": 0,
+      "label": "0",
+      "count": 1581
+    },
+    {
+      "cycles": 1,
+      "label": "1",
+      "count": 7
+    },
+    {
+      "cycles": 2,
+      "label": "2",
+      "count": 5
+    }
+  ],
+  "runsOverTime": [
+    {
+      "date": "2026-06-28",
+      "runs": 71,
+      "cost": 3.38
+    },
+    {
+      "date": "2026-06-29",
+      "runs": 45,
+      "cost": 57.6
+    },
+    {
+      "date": "2026-06-30",
+      "runs": 350,
+      "cost": 133.62
+    },
+    {
+      "date": "2026-07-01",
+      "runs": 116,
+      "cost": 158.3
+    },
+    {
+      "date": "2026-07-02",
+      "runs": 35,
+      "cost": 54.76
+    },
+    {
+      "date": "2026-07-03",
+      "runs": 13,
+      "cost": 16.07
+    },
+    {
+      "date": "2026-07-04",
+      "runs": 0,
+      "cost": 0
+    },
+    {
+      "date": "2026-07-05",
+      "runs": 0,
+      "cost": 0
+    },
+    {
+      "date": "2026-07-06",
+      "runs": 313,
+      "cost": 70.51
+    },
+    {
+      "date": "2026-07-07",
+      "runs": 109,
+      "cost": 41.15
+    },
+    {
+      "date": "2026-07-08",
+      "runs": 62,
+      "cost": 62.7
+    },
+    {
+      "date": "2026-07-09",
+      "runs": 44,
+      "cost": 43.21
+    },
+    {
+      "date": "2026-07-10",
+      "runs": 60,
+      "cost": 59.29
+    },
+    {
+      "date": "2026-07-11",
+      "runs": 64,
+      "cost": 97.24
+    },
+    {
+      "date": "2026-07-12",
+      "runs": 66,
+      "cost": 44.2
+    },
+    {
+      "date": "2026-07-13",
+      "runs": 57,
+      "cost": 53.19
+    },
+    {
+      "date": "2026-07-14",
+      "runs": 22,
+      "cost": 29.97
+    },
+    {
+      "date": "2026-07-15",
+      "runs": 69,
+      "cost": 67.23
+    },
+    {
+      "date": "2026-07-16",
+      "runs": 85,
+      "cost": 86.04
+    },
+    {
+      "date": "2026-07-17",
+      "runs": 12,
+      "cost": 22.28
+    }
+  ],
+  "harnesses": [
+    {
+      "harness": "claude-code",
+      "count": 1545
+    },
+    {
+      "harness": "pi",
+      "count": 46
+    },
+    {
+      "harness": "codex",
+      "count": 2
+    }
+  ],
+  "notes": {
+    "skippedRows": 0,
+    "anyEstimated": true
+  }
+}
