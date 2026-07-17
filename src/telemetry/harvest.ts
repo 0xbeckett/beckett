@@ -49,7 +49,6 @@ export interface HarvestOptions {
   piDir: string;
   codexDir: string;
   boredStateDir: string;
-  trackerUrl?: string;
   note?: (message: string) => void;
 }
 
@@ -112,7 +111,6 @@ function usageFromClaude(value: unknown): TokenUsage {
 export function parseClaudeSession(path: string, contents: string, note: (message: string) => void): ParsedSession | null {
   const seenMessages = new Set<string>();
   const allTimes: string[] = [];
-  const modelTimes = new Map<string, string[]>();
   const usageByModel = new Map<string, TokenUsage>();
   let sessionId: string | null = null;
   let taskId: string | null = null;
@@ -142,7 +140,6 @@ export function parseClaudeSession(path: string, contents: string, note: (messag
     const tokens = usageByModel.get(normalized) ?? { ...ZERO_TOKENS };
     addTokens(tokens, usage);
     usageByModel.set(normalized, tokens);
-    if (at) (modelTimes.get(normalized) ?? (modelTimes.set(normalized, []), modelTimes.get(normalized)!)).push(at);
   }
 
   const model = [...usageByModel.keys()].sort((a, b) => {
