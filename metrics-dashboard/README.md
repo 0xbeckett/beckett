@@ -1,50 +1,70 @@
-# Beckett — Model Metrics dashboard
+# Beckett — Proof of Work dashboard
 
-Neo-brutalist, static dashboard of Beckett's own model performance. Live at
-**https://metrics.0xbeckett.me**.
+Neo-brutalist, static **marketing** dashboard for Beckett — an autonomous coding agent — told
+entirely in numbers and charts. Live at **https://metrics.0xbeckett.me**.
 
-It is the **front half** of the `metrics.0xbeckett.me` project. The **back half** is the
-telemetry harvester (ticket #8, `../src/telemetry/harvest.ts`), which is the single source of
-truth for the numbers. This app never recomputes cost or cycle counts — it only reads,
-aggregates (sum/count), and draws.
+The page is the **front half** of the `metrics.0xbeckett.me` project. The **back half** is two
+harvesters, each the single source of truth for its numbers:
+
+- **Telemetry** (ticket #8, `../src/telemetry/harvest.ts`) — per-session model / cost / wall-clock
+  / review-cycle rows.
+- **Code stats** (ticket #26.3, `../src/code-stats/harvest.ts`) — git-history aggregates: lines,
+  commits, files, per-project rollups, authorship, and daily velocity.
+
+This app never recomputes cost, cycle counts, or LOC — it only reads, aggregates (sum/count),
+and draws.
 
 ## Data flow
 
 ```
-~/.claude · ~/.pi · ~/.codex · bored tracker
-        │  (harvester — ticket #8)
-        ▼
-data/telemetry-runs.json          one normalized row per run (~1.6k rows)
-        │  (scripts/prepare-data.mjs — build-time rollup, sum/count only)
-        ▼
-src/generated/metrics.json        tiny per-model / per-day aggregates (committed)
-        │  (vite build)
-        ▼
-dist/                             static site → metrics.0xbeckett.me
+~/.claude · ~/.pi · ~/.codex · bored tracker        ~/Projects/* git history
+        │  (telemetry harvester — #8)                       │  (code-stats harvester — #26.3)
+        ▼                                                    ▼
+data/telemetry-runs.json  (~1.6k run rows)          data/code-stats.json  (per-repo/author/day)
+        └───────────────────┬────────────────────────────────┘
+                            │  (scripts/prepare-data.mjs — build-time rollup, sum/count only)
+                            ▼
+             src/generated/metrics.json   telemetry aggregates + `codeStats` block (committed)
+                            │  (vite build)
+                            ▼
+             dist/                          static site → metrics.0xbeckett.me
 ```
 
-`prepare-data.mjs` reads `../data/telemetry-runs.json`, rolls it into the four chart shapes plus
-the headline totals, and writes `src/generated/metrics.json`. It **does not** re-derive any
-metric — cost (`cost_usd`), wall-clock (`wall_clock_seconds`) and review bounces
-(`review_cycles`) come straight from the harvester's rows and are only summed/counted. Missing
-fields degrade to skips (never a crash), mirroring the harvester's own fail-soft contract.
+`prepare-data.mjs` reads both datasets, rolls them into the chart shapes plus the headline
+totals, and writes `src/generated/metrics.json`. It **does not** re-derive any metric — cost
+(`cost_usd`), wall-clock (`wall_clock_seconds`), review bounces (`review_cycles`) and every
+code-stats figure come straight from the harvesters' rows and are only summed/counted. The
+code-stats projection additionally strips local paths before publishing. Missing datasets degrade
+to empty aggregates (never a crash), mirroring the harvesters' own fail-soft contract.
 
-Point it at a different dataset with `TELEMETRY_DATASET=/path/to/runs.json`.
+Point it at different datasets with `TELEMETRY_DATASET=/path/to/runs.json` and
+`CODE_STATS_DATASET=/path/to/code-stats.json`.
+
+## The page
+
+A marketing piece, not an info panel: giant count-up hero figures (lines shipped, commits,
+projects, spend, sessions, compute), a full-width commit-velocity timeline as the hero visual, a
+strip of derived cost-per-outcome ratios (first-try rate, $/commit, lines/$, …), then a grid of
+charts. Numbers count up on load and charts draw in — fast, and skipped under
+`prefers-reduced-motion`. `src/derived.ts` computes the marketing projections; `src/motion.tsx`
+holds the count-up hook and reveal wrapper.
 
 ## Charts
 
-All four required views render with [**dither-kit**](https://www.tripwire.sh/dither-kit)
-(`@dither-kit/*`, installed into `src/components/dither-kit/`):
+All views render with [**dither-kit**](https://www.tripwire.sh/dither-kit) (`@dither-kit/*`,
+installed into `src/components/dither-kit/`). Each card is monochromatic (one palette colour) to
+stay legible:
 
-| View | dither-kit component |
-|------|----------------------|
-| API cost per model (USD, current rates) | `BarChart` |
-| Wall-clock per model (hours) | `BarChart` |
-| Review-cycle distribution (implement→review bounces) | `BarChart` |
-| Runs over time (daily) | `AreaChart` |
-
-dither-kit natively covers every chart type this dashboard needs, so **no fallback substitution
-was required**. Each card is monochromatic (one palette colour) to stay legible and uncluttered.
+| View | Source | dither-kit component |
+|------|--------|----------------------|
+| Commit velocity (daily, hero) | code stats | `AreaChart` |
+| Lines per project (top 8) | code stats | `BarChart` |
+| Authorship (commits, top 7) | code stats | `BarChart` |
+| API cost per model (USD) | telemetry | `BarChart` |
+| Runs per day | telemetry | `AreaChart` |
+| Wall-clock per model (hours) | telemetry | `BarChart` |
+| Review-cycle distribution | telemetry | `BarChart` |
+| Hero-stat sparklines | both | `Sparkline` |
 
 ## Develop / build
 
@@ -56,8 +76,9 @@ bun run build          # → dist/ (runs prepare-data first)
 bun run typecheck
 ```
 
-To refresh the whole picture: re-run the harvester (`bun run telemetry:refresh` in the repo
-root) to rebuild `data/telemetry-runs.json`, then `bun run build` here.
+To refresh the whole picture: re-run both harvesters in the repo root — `bun run
+telemetry:refresh` (→ `data/telemetry-runs.json`) and `bun run code-stats:refresh` (→
+`data/code-stats.json`) — then `bun run build` here.
 
 ## Deploy
 
