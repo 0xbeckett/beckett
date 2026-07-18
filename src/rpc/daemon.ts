@@ -17,6 +17,7 @@
  * Optional:
  *   DISCORD_RPC_LARGE_IMAGE  — asset key or mp:external/... URL (default: "beckett")
  *   DISCORD_RPC_DETAILS      — static detail line override
+ *   DISCORD_RPC_STATE        — fallback state line (default: "beckett")
  *   BECKETT_DIR              — beckett runtime dir (for status polling)
  */
 
@@ -24,6 +25,7 @@ import { connect } from "node:net";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { resolveBeckettDir } from "../paths.ts";
 
 // ── opcodes ─────────────────────────────────────────────────────────────────
 const OP_HANDSHAKE = 0;
@@ -35,7 +37,8 @@ const OP_PONG = 4;
 const CLIENT_ID = process.env.DISCORD_RPC_CLIENT_ID ?? "";
 const LARGE_IMAGE = process.env.DISCORD_RPC_LARGE_IMAGE ?? "beckett";
 const STATIC_DETAILS = process.env.DISCORD_RPC_DETAILS ?? "";
-const BECKETT_DIR = process.env.BECKETT_DIR ?? join(process.env.HOME ?? "/home/beckett", ".beckett");
+const STATE = process.env.DISCORD_RPC_STATE ?? "beckett";
+const BECKETT_DIR = resolveBeckettDir(process.env);
 const STATUS_FILE = join(BECKETT_DIR, "rpc-status.json");
 
 if (!CLIENT_ID) {
@@ -71,17 +74,17 @@ function findIpcPath(): string | null {
 }
 
 function readStatus(): { details: string; state: string } {
-  if (STATIC_DETAILS) return { details: STATIC_DETAILS, state: "loom-desk" };
+  if (STATIC_DETAILS) return { details: STATIC_DETAILS, state: STATE };
   try {
-    if (!existsSync(STATUS_FILE)) return { details: "on standby", state: "loom-desk" };
+    if (!existsSync(STATUS_FILE)) return { details: "on standby", state: STATE };
     const raw = readFileSync(STATUS_FILE, "utf8");
     const parsed = JSON.parse(raw) as { details?: string; state?: string };
     return {
       details: parsed.details ?? "working on something",
-      state: parsed.state ?? "loom-desk",
+      state: parsed.state ?? STATE,
     };
   } catch {
-    return { details: "working on something", state: "loom-desk" };
+    return { details: "working on something", state: STATE };
   }
 }
 
