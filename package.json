@@ -17,6 +17,7 @@
     "moss:bench": "bun scripts/bench/moss-local.ts",
     "memory:bench": "bun scripts/bench/recall-memory.ts",
     "recall:bench": "bun scripts/bench/recall-relevance.ts",
+    "recall:agent-bench": "bun scripts/bench/recall-agent.ts",
     "typecheck": "bun x tsc --noEmit",
     "test": "bun test"
   },
