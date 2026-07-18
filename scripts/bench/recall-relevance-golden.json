@@ -18,6 +18,14 @@
       "targets": [{ "name": "zoom-can-use-fable", "file": "zoom-can-use-fable.md" }]
     },
     {
+      "id": "zoom-authorizations",
+      "query": "what is zoom authorized to do for Fable, restarts, and deploys",
+      "targets": [
+        { "name": "zoom-can-use-fable", "file": "zoom-can-use-fable.md" },
+        { "name": "self-restart-on-owner-request", "file": "self-restart-on-owner-request.md" }
+      ]
+    },
+    {
       "id": "website-apex-deploy",
       "query": "why can't I deploy to the 0xbeckett.me apex",
       "targets": [{ "name": "website-deploy-apex-blocked", "file": "references/website-deploy-apex-blocked.md" }]
