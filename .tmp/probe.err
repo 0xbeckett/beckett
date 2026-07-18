@@ -1,0 +1,5 @@
+$ bun scripts/bench/recall-agent.ts --json --models luna --limit "1" --concurrency "1"
+error: Cannot find module '@moss-dev/moss-core' from '/home/beckett/Projects/beckett/.beckett/worktrees/#27/src/moss-local/index.ts'
+
+Bun v1.3.13 (Linux x64)
+error: script "recall:agent-bench" exited with code 1
