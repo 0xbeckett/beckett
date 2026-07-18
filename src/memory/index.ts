@@ -342,12 +342,13 @@ export class MemoryStore implements Memory {
       this.archiveFile(node, a.reason + (a.by ? ` by ${a.by}` : ""), g);
     }
 
-    // Everything moved/rewritten — settle derived state: backlinks, index, git.
+    // Everything moved/rewritten — settle derived state: backlinks, index, moss, git.
     g = this.buildGraph();
     for (const n of g.nodes.values()) {
       if (!n.phantom && n.path) this.refreshBacklinksOnDisk(n, g);
     }
     this.atomicWrite(join(this.dir, "MEMORY.md"), renderIndex(g));
+    await this.syncMossQuietly(g); // archived/merged nodes leave the retrieval index too
     this.commit(
       `memory: maintenance (${plan.archives.length} archived, ${plan.merges.length} merged)`,
     );
@@ -435,9 +436,10 @@ export class MemoryStore implements Memory {
   // ── reindex ──────────────────────────────────────────────────────────────────────────
 
   /** Rebuild + validate the in-memory graph from the markdown tree (the files ARE the store —
-   *  the v2 SQLite mirror was deleted with the rest of the retired stack, issue #28). */
+   *  the v2 SQLite mirror was deleted with the rest of the retired stack, issue #28), and
+   *  bring the moss retrieval index back in step with it (issue #20). */
   async reindex(): Promise<void> {
-    this.buildGraph();
+    await this.syncMossQuietly(this.buildGraph());
   }
 
   // ── graph build (Spec 08 §2.3) ──────────────────────────────────────────────────────
@@ -524,6 +526,14 @@ export class MemoryStore implements Memory {
 
   private ensureDir(): void {
     mkdirSync(this.dir, { recursive: true });
+    // The .moss/ retrieval cache (issue #20) is derived, partly binary, and rewritten on
+    // every write — keep it out of the memory repo's history (commit uses `git add -A`).
+    const gitignore = join(this.dir, ".gitignore");
+    if (!existsSync(gitignore)) {
+      writeFileSync(gitignore, ".moss/\n");
+    } else if (!readFileSync(gitignore, "utf8").split(/\r?\n/).includes(".moss/")) {
+      writeFileSync(gitignore, readFileSync(gitignore, "utf8").replace(/\n?$/, "\n") + ".moss/\n");
+    }
     if (this.git && !existsSync(join(this.dir, ".git"))) {
       this.runGit(["init", "-q"]);
     }
@@ -588,7 +598,7 @@ export class MemoryStore implements Memory {
 
   // ── write serialization (Spec 08 §8.1) ──────────────────────────────────────────────
 
-  private withLock<T>(fn: () => T): Promise<T> {
+  private withLock<T>(fn: () => T | Promise<T>): Promise<T> {
     const run = this.writeChain.then(fn, fn);
     // Keep the chain alive regardless of this op's outcome.
     this.writeChain = run.then(
@@ -609,8 +619,17 @@ export class MemoryStore implements Memory {
  * `q.audience` is the hard, fail-closed visibility gate (multiplayer §9.1): it is applied to
  * every seed AND every one-hop expansion target, so a scoped fact never appears — not even as
  * a backlink/expansion stub. No audience (or no viewer id) ⇒ only public nodes are returned.
+ *
+ * `scoreOf` is the pluggable relevance scorer (issue #20): MemoryStore.recall passes the
+ * moss-served ranking; when absent (direct engine calls, moss unavailable) the original
+ * lexical scorer runs. The scorer ONLY ranks — filters, hint/name boosts, recency,
+ * staleness, link expansion, and above all the visibility gate stay right here, in code.
  */
-export function recallOver(q: RecallQuery & { audience?: Audience }, g: MemoryGraph): RecallResult {
+export function recallOver(
+  q: RecallQuery & { audience?: Audience },
+  g: MemoryGraph,
+  scoreOf?: (node: MemoryNode) => number,
+): RecallResult {
   const k = q.k ?? DEFAULT_K;
   const hops = q.hops ?? DEFAULT_HOPS;
   const audience = q.audience;
@@ -642,7 +661,7 @@ export function recallOver(q: RecallQuery & { audience?: Audience }, g: MemoryGr
   // (search.ts) stems and IDF-weights over name/aliases/description/metadata/BODY, so a fact
   // buried mid-note or worded differently ("deploying" vs "deploy") still surfaces. With no
   // query text but a filter, the filter IS the query: return the filtered set, freshest first.
-  const stats = corpusStats(g.nodes.values());
+  const stats = scoreOf ? undefined : corpusStats(g.nodes.values());
   const hasText = q.text.trim() !== "";
   const seeds: ScoredNode[] = candidates
     .map((line): ScoredNode | null => {
@@ -653,7 +672,7 @@ export function recallOver(q: RecallQuery & { audience?: Audience }, g: MemoryGr
         if (!typeFilter && !nameFilter) return null;
         return { node, score: recency(node, now), via: "match", reason: "filter match" };
       }
-      let s = scoreNode(q.text, node, stats);
+      let s = scoreOf ? scoreOf(node) : scoreNode(q.text, node, stats);
       if (q.hint?.names?.includes(node.name)) s += 100;
       if (q.hint?.types?.includes(node.type)) s += 5;
       if (nameFilter?.has(node.name)) s += 100; // an explicitly named node is never ranked out
