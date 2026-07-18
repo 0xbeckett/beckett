@@ -1,54 +1,53 @@
-# Recall relevance benchmark
+# Memory recall benchmark
 
-`bun run recall:bench` is the regression harness for Moss-backed `beckett recall` ranking. It is deliberately separate from [`recall-moss-benchmark.md`](./recall-moss-benchmark.md), which measures the Moss transplant's latency and overlap with the retired lexical ranker.
+`bun run recall:bench` evaluates the production `MemoryStore.recall()` path against a versioned, human-curated set of real-memory questions. It is a retrieval regression harness, not a synthetic corpus or a second ranker.
 
-## Run it
+## Corpus and data
+
+[`scripts/bench/recall-relevance-golden.json`](../scripts/bench/recall-relevance-golden.json) is version 2 of the benchmark. It has 101 natural-language `(question, expectedNoteIds[])` pairs, balanced across:
+
+- `feedback`
+- `people-profile`
+- `project-status`
+- `environment-setup`
+- `adversarial`
+
+Every pair records the staged `sourceFiles` that were actually read while its labels were authored. The runner verifies each expected ID resolves to that real Markdown file after staging. It loads and parses both source `MEMORY.md` indexes as evidence too; those files are intentionally not added as duplicate graph nodes because `MemoryStore` derives the graph index from the per-fact notes.
+
+The corpus is the configured `~/.beckett/memory` tree plus the retained Claude Code tree at `~/.claude/projects/-home-beckett-beckett/memory`. This includes current Beckett notes, their `MEMORY.md`, and historical Claude Code notes such as `zoom-can-use-fable`. The runner copies Markdown in canonical order into a temporary directory and calls `MemoryStore.buildGraph()` and `MemoryStore.recall()` — the same graph, Moss hybrid retrieval, lexical sharpener, and visibility gate used by `beckett recall`.
+
+Adversarial cases carry `hardNegativeNoteIds`: lexically plausible notes that are wrong and must not win retrieval. The retained regression `can zoom use fable` expects `zoom-can-use-fable` and explicitly labels `website-deploy-apex-blocked` and `how-to-use-memory` as hard negatives.
+
+## Run
 
 ```bash
 bun run recall:bench
 bun run recall:bench -- --json > /tmp/recall-relevance.json
 ```
 
-The runner resolves the **same configured root as `beckett recall`** with `loadConfig()` + `buildPaths()`: normally `~/.beckett/memory` (or `$BECKETT_DIR/memory` when `BECKETT_DIR` is set). It copies that read-only corpus into a temporary directory, then calls `MemoryStore.recall()` for every case. Therefore every query follows the production graph build, Moss index sync, hybrid Moss ranking, and in-code visibility gate; it does not duplicate ranking logic. The temporary copy prevents the derived `.moss/` cache from changing canonical memory.
-
-The reported Zoom/Fable regression is retained in the historical Claude Code memory corpus at `~/.claude/projects/-home-beckett-beckett/memory/zoom-can-use-fable.md`, not in the current CLI root. The harness stages that retained corpus alongside the CLI root so `can zoom use fable` remains an executable regression case. Override either source when restoring or evaluating a snapshot:
+For a restored snapshot, point both roots at that snapshot:
 
 ```bash
 bun run recall:bench -- --memory-dir /path/to/.beckett/memory \
-  --legacy-memory-dir /path/to/retained/memory
-# Equivalent environment override for the retained source:
-BECKETT_RECALL_BENCH_LEGACY_MEMORY=/path/to/retained/memory bun run recall:bench
+  --legacy-memory-dir /path/to/claude-project-memory
 ```
 
-Both source directories are required: silently dropping the legacy source would make the Zoom labels meaningless. The runner checks every labeled node exists after staging before it scores anything.
+Both roots and both `MEMORY.md` files are required. The harness has no network calls and writes its derived Moss state only to a temporary directory. File staging and exact-score tie handling are sorted, so re-runs against an unchanged corpus are deterministic.
 
-## What it reports
+## Report
 
-The golden set in [`scripts/bench/recall-relevance-golden.json`](../scripts/bench/recall-relevance-golden.json) has 31 person/project/fact questions, including direct, reworded, and ambiguous multi-answer questions. Labels name both the memory node and its source-relative Markdown file. The runner fetches ten real hits per query and emits:
+The report emits these metrics overall and for every category:
 
-- **precision@1** — whether the first result is a labeled fact;
-- **MRR** — reciprocal rank of the first labeled fact;
-- **nDCG@10** — discounted gain across all labels (so multi-answer cases matter);
-- a per-query table with rank, all metrics, expected files, and the first three returned nodes;
-- **overall relevance score** — the unweighted mean of aggregate precision@1, MRR, and nDCG@10. It is a readable headline, not a replacement for the three standard metrics.
+- **precision@1**
+- **precision@5**
+- **MRR**
 
-Moss's native index can enumerate equal-relevance tail documents in a different order. The runner stages files in a canonical order, sorts *exact-score ties* by node name after `MemoryStore.recall()` returns, and reports the stable top three (while nDCG still scores all ten real hits). This makes the report repeatable without changing the production ranker.
+Per-query JSON/table rows retain expected IDs, source files, top five actual results, and the rank of every hard negative. `hard-negative@1` is a diagnostic rate (lower is better), separate from the required relevance metrics.
 
-## Baseline — 2026-07-18
+## Adding a pair
 
-Against the checked host corpus (15 files from `~/.beckett/memory`, 27 retained Zoom-era files, 41 parsed nodes), this branch measured:
-
-| overall relevance score | precision@1 | MRR | nDCG@10 | queries |
-|---:|---:|---:|---:|---:|
-| 0.920 | 0.871 | 0.935 | 0.952 | 31 |
-
-The non-top-one cases were `available-tools`, `reversible-work`, `beckett-identity`, and `discord-timeout-no-retry` (all rank 2). This is the baseline for #33.2; re-run the command after a ranking-only change and compare the aggregate **and** the per-query rows before claiming an improvement.
-
-## Add a case
-
-1. Read the actual Markdown fact first; do not label from a filename alone.
-2. Add an object to `cases` in `scripts/bench/recall-relevance-golden.json` with a stable `id`, natural-language `query`, and one or more `{ "name", "file" }` targets. Use multiple targets only when each is genuinely a correct answer.
-3. Keep the owner/guild audience unless the case requires an explicit `audience` override. This matches the normal owner invocation of `beckett recall --viewer 1151230208783945818 --viewer-role owner --context guild`.
-4. Run `bun run recall:bench` twice (or compare `--json` output) and record an intentional baseline change in this document.
-
-Do not tune `src/memory/moss.ts` or any recall weighting as part of adding labels. This branch is only the measuring stick.
+1. Read the real note body and, where useful, its `MEMORY.md` entry first.
+2. Add a stable `id`, `category`, ordinary-person `question`, `expectedNoteIds`, and exact staged `sourceFiles` (`live/...` or `legacy/...`).
+3. Add `hardNegativeNoteIds` whenever lexical overlap could retrieve an incorrect note. Never label an expected note as a negative.
+4. Keep the set within 80–150 pairs and keep each category between 10% and 35%; the runner validates this before calling retrieval.
+5. Run the JSON command twice. Do not tune `src/memory/moss.ts` or ranking weights when only adding labels.

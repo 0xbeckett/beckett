@@ -275,7 +275,7 @@ try {
   } else {
     console.log("# Recall relevance benchmark");
     console.log(`Corpus: CLI root ${cliMemoryDir} (${copied.live} fact files) + retained Claude Code root ${legacyMemoryDir} (${copied.legacy} fact files); ${report.corpus.parsedNodes} graph nodes.`);
-    console.log(`MEMORY.md indexes parsed: live ${indexNoteIds.live.length} references, legacy ${indexNoteIds.legacy.length} references.`);
+    console.log(`MEMORY.md indexes parsed: live ${indexNoteIds.live?.length ?? 0} references, legacy ${indexNoteIds.legacy?.length ?? 0} references.`);
     console.log(`Retrieval: real MemoryStore.recall, k=${RETRIEVAL_K}; exact-score ties sort by node name.`);
     console.log("");
     console.log("## Overall");

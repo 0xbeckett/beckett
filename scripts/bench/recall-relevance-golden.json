@@ -63,8 +63,8 @@
     {"id":"v5-main-rule","category":"project-status","question":"What is the rule for merging V5 daemon phases to main?","expectedNoteIds":["v5-publisher-ff-main"],"sourceFiles":["legacy/v5-publisher-ff-main.md"]},
     {"id":"v5-pr-status","category":"project-status","question":"What is the status of the final v5-daemon to main pull request?","expectedNoteIds":["v5-publisher-ff-main"],"sourceFiles":["legacy/v5-publisher-ff-main.md"]},
     {"id":"v5-ff-recovery","category":"project-status","question":"What should I do if the V5 publisher fast-forwards a phase onto main?","expectedNoteIds":["v5-publisher-ff-main"],"sourceFiles":["legacy/v5-publisher-ff-main.md"]},
-    {"id":"land-ticket-courier","category":"project-status","question":"A landing ticket resolved the conflict but never pushed. What should I do?","expectedNoteIds":["land-tickets-courier-early"],"sourceFiles":["legacy/land-tickets-courier-early.md"]},
-    {"id":"land-ticket-check","category":"project-status","question":"How can I confirm a pure publish task is actually ready for a courier push?","expectedNoteIds":["land-tickets-courier-early"],"sourceFiles":["legacy/land-tickets-courier-early.md"]},
+    {"id":"codebase-sweep-crash","category":"project-status","question":"Why does one ticket that changes every file in the codebase keep crash-looping?","expectedNoteIds":["whole-codebase-sweep-crash-loops"],"sourceFiles":["legacy/whole-codebase-sweep-crash-loops.md"]},
+    {"id":"codebase-sweep-split","category":"project-status","question":"How should I scope a broad change that needs to touch many modules?","expectedNoteIds":["whole-codebase-sweep-crash-loops"],"sourceFiles":["legacy/whole-codebase-sweep-crash-loops.md"]},
     {"id":"no-merge-verification","category":"project-status","question":"How do I verify a worker obeyed a do-not-merge instruction?","expectedNoteIds":["worker-ignores-no-merge"],"sourceFiles":["legacy/worker-ignores-no-merge.md"]},
 
     {"id":"host-os","category":"environment-setup","question":"What operating system and machine is Beckett running on?","expectedNoteIds":["loom-desk"],"sourceFiles":["live/env/loom-desk.md"]},
