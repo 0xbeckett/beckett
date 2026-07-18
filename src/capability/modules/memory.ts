@@ -20,6 +20,7 @@ import {
   ViewerRoleSchema,
   VisibilitySchema,
 } from "../../memory/search.ts";
+import type { MemoryAgentSeat } from "../../memory/agent-recall.ts";
 import { fail, out, parse } from "../../cli/io.ts";
 import type { NodeType, RememberIntent } from "../../types.ts";
 
@@ -85,6 +86,77 @@ function provenanceMetadataFromFlags(flags: Record<string, string | boolean>): R
 
 export function createMemoryCapability({ paths }: CapabilityDeps): Capability {
   /**
+   * The `--agent` path of `beckett recall` (issue #26). Runs the memory agent over the gated
+   * candidates and prints the concise note or a clean PASS, then a probing follow-up if
+   * `--follow-up` is given. Exits (never returns) so the caller short-circuits the score-ranked
+   * output — the agent IS the answer here. `--agent` may name a seat (luna|haiku); default luna.
+   */
+  async function runAgenticRecall(
+    memory: ReturnType<typeof createMemory>,
+    ctx: {
+      text: string;
+      types?: string[];
+      names?: string[];
+      flags: Record<string, string | boolean>;
+      audience: Audience;
+    },
+  ): Promise<never> {
+    const { text, types, names, flags, audience } = ctx;
+    const seatRaw = flags.agent === true ? "luna" : String(flags.agent);
+    if (seatRaw !== "luna" && seatRaw !== "haiku") fail("--agent must be one of: luna, haiku");
+    const seat = seatRaw as MemoryAgentSeat;
+
+    const { base, agent } = await memory.recallAgentic(
+      {
+        text,
+        filter: types || names ? { types, names } : undefined,
+        k: flags.k ? Number(flags.k) : undefined,
+        hops: flags.hops ? Number(flags.hops) : undefined,
+        audience,
+      },
+      { seat },
+    );
+
+    const followUpQ = flags["follow-up"] ? String(flags["follow-up"]) : undefined;
+    const followUp = followUpQ ? await agent.followUp(followUpQ) : undefined;
+
+    const describe = (a: typeof agent.answer) => ({
+      pass: !a.relevant,
+      relevant: a.relevant,
+      note: a.note,
+      noteIds: a.noteIds,
+      fallback: a.fallback,
+      latencyMs: Math.round(a.latencyMs),
+    });
+
+    if (flags.json) {
+      out({
+        seat,
+        answer: describe(agent.answer),
+        followUp: followUp ? { question: followUpQ, ...describe(followUp) } : null,
+        // The gated candidate pool the agent actually read (audience-filtered in code).
+        candidates: base.hits.map((h) => ({ name: h.node.name, type: h.node.type, description: h.node.description })),
+      });
+    }
+
+    const render = (label: string, a: typeof agent.answer): string[] => {
+      const lines = [`# ${label} (seat: ${seat}${a.fallback ? ", fallback: moss ranking" : ""})`];
+      if (a.relevant) {
+        lines.push(a.note || "(relevant, no prose)");
+        lines.push(`cited: ${a.noteIds.join(", ")}`);
+      } else {
+        lines.push("PASS — nothing on file genuinely adds to this question.");
+      }
+      return lines;
+    };
+
+    const lines = render("recall", agent.answer);
+    if (followUp) lines.push("", ...render(`follow-up: ${followUpQ}`, followUp));
+    lines.push("", "# candidates read", ...base.hits.map((h) => `- ${h.node.name} (${h.node.type}): ${h.node.description}`));
+    out(lines.join("\n"));
+  }
+
+  /**
    * The shared recall handler behind BOTH `beckett recall …` (the first-class targeted tool,
    * OPS-121) and `beckett memory recall …` (the original spelling — kept working). Accepts a
    * free-text query, hard `--type`/`--name` filters, or any combination; prints the ranked
@@ -94,6 +166,7 @@ export function createMemoryCapability({ paths }: CapabilityDeps): Capability {
   async function runRecall(argv: string[]): Promise<never> {
     const usage =
       'usage: beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] ' +
+      "[--agent [luna|haiku]] [--follow-up <question>] " +
       "[--as-self | --viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] [--json]";
     const { _, flags } = parse(argv);
     const text = _.join(" ");
@@ -106,6 +179,14 @@ export function createMemoryCapability({ paths }: CapabilityDeps): Capability {
     const audience = audienceFromFlags(flags);
 
     const memory = createMemory({ memoryDir: paths.memoryDir, logger: undefined, git: false });
+
+    // Agentic recall (issue #26): opt-in via --agent. Retrieval + the fail-closed visibility gate
+    // run first (in the engine), then a small LLM agent (luna/haiku, CLI only) reads only the gated
+    // candidates and passes a concise note or a clean PASS. Absent the flag, behavior is unchanged.
+    if (flags.agent !== undefined) {
+      await runAgenticRecall(memory, { text, types, names, flags, audience });
+    }
+
     const r = await memory.recall({
       text,
       filter: types || names ? { types, names } : undefined,
