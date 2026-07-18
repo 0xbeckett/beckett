@@ -79,6 +79,12 @@ import {
 import { MOSS_LEXICAL_SHARPENER_WEIGHT, mossScores, openMemoryMoss, syncMossWithGraph } from "./moss.ts";
 import type { LocalMoss } from "../moss-local/index.ts";
 import { planMaintenance, type MaintainReport } from "./maintain.ts";
+import {
+  agentRecall,
+  AGENT_CANDIDATE_K,
+  type AgentRecallDeps,
+  type AgentRecallSession,
+} from "./agent-recall.ts";
 
 // =======================================================================================
 // Tunables (Spec 08 §3, §4.2 — start conservative; favor flagging over auto-merge)
@@ -185,6 +191,30 @@ export class MemoryStore implements Memory {
     const g = this.buildGraph();
     const scoreOf = await this.mossScorer(q.text, g);
     return recallOver(q, g, scoreOf);
+  }
+
+  /**
+   * Agentic recall (issue #26): moss/grep retrieves the top ~15 candidate notes, the fail-closed
+   * visibility gate runs in code, and THEN a small LLM agent (luna via pi, or haiku via
+   * `claude -p` — never the API) reads only those gated candidates and either passes a concise
+   * relevant note or returns a clean PASS. The returned {@link AgentRecallSession} supports a
+   * probing follow-up. `base` is the underlying score-ranked recall — the same bundle {@link
+   * recall} returns, and the graceful fallback the agent degrades to if the model is unavailable.
+   *
+   * The candidate set handed to the agent is `base.hits`, which {@link recallOver} has ALREADY
+   * gated per {@link Audience}: a scoped note the viewer can't see never reaches the agent.
+   */
+  async recallAgentic(
+    q: RecallQuery & { audience?: Audience },
+    deps: AgentRecallDeps = {},
+  ): Promise<{ base: RecallResult; agent: AgentRecallSession }> {
+    // Pull a wider candidate pool than default recall (the agent, not the score, is the judge).
+    const base = await this.recall({ ...q, k: q.k ?? AGENT_CANDIDATE_K });
+    const agent = await agentRecall(base.hits, q.text, {
+      logger: this.logger.child("agent"),
+      ...deps,
+    });
+    return { base, agent };
   }
 
   /**
