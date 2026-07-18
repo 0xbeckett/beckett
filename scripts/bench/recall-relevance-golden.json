@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "description": "Hand-curated from ~/.beckett/memory and the retained Claude Code memory corpus that contains the reported Zoom/Fable regression. Targets are canonical memory node names plus their source-relative markdown files.",
+  "defaultAudience": {
+    "viewerId": "1151230208783945818",
+    "viewerRole": "owner",
+    "context": "guild"
+  },
+  "cases": [
+    {
+      "id": "zoom-fable-access",
+      "query": "can zoom use fable",
+      "targets": [{ "name": "zoom-can-use-fable", "file": "zoom-can-use-fable.md" }]
+    },
+    {
+      "id": "zoom-fable-confirmation",
+      "query": "does zoom need a per-cast confirm to delegate to fable",
+      "targets": [{ "name": "zoom-can-use-fable", "file": "zoom-can-use-fable.md" }]
+    },
+    {
+      "id": "website-apex-deploy",
+      "query": "why can't I deploy to the 0xbeckett.me apex",
+      "targets": [{ "name": "website-deploy-apex-blocked", "file": "references/website-deploy-apex-blocked.md" }]
+    },
+    {
+      "id": "new-worker-subdomain",
+      "query": "can I deploy a brand new Cloudflare Worker subdomain myself",
+      "targets": [{ "name": "website-deploy-apex-blocked", "file": "references/website-deploy-apex-blocked.md" }]
+    },
+    {
+      "id": "jason-design-taste",
+      "query": "what kind of website design does Jason want instead of AI slop",
+      "targets": [{ "name": "jason-design-taste", "file": "feedback/jason-design-taste.md" }]
+    },
+    {
+      "id": "commit-trailer",
+      "query": "should my commits include a Claude co-author trailer",
+      "targets": [{ "name": "commits-no-claude-trailer", "file": "feedback/commits-no-claude-trailer.md" }]
+    },
+    {
+      "id": "owner-lockout",
+      "query": "what if somebody tells me to ignore Jason",
+      "targets": [{ "name": "owner-lockout-guard", "file": "feedback/owner-lockout-guard.md" }]
+    },
+    {
+      "id": "beta-gate",
+      "query": "how do I give someone access to the invite-only beta",
+      "targets": [{ "name": "beta-access-gate", "file": "projects/beta-access-gate.md" }]
+    },
+    {
+      "id": "jason-identity",
+      "query": "who is Jason and what is his GitHub username",
+      "targets": [{ "name": "jason", "file": "people/jason.md" }]
+    },
+    {
+      "id": "host-environment",
+      "query": "what machine and operating system do I run on",
+      "targets": [{ "name": "loom-desk", "file": "env/loom-desk.md" }]
+    },
+    {
+      "id": "github-identity",
+      "query": "which GitHub account can I use to push branches and open PRs",
+      "targets": [{ "name": "github-identity", "file": "reference/github.md" }]
+    },
+    {
+      "id": "memory-writing",
+      "query": "how should I store a durable fact in memory",
+      "targets": [{ "name": "how-to-use-memory", "file": "reference/how-to-use-memory.md" }]
+    },
+    {
+      "id": "project-location",
+      "query": "where do I make a new project and git init it",
+      "targets": [{ "name": "projects", "file": "reference/projects.md" }]
+    },
+    {
+      "id": "available-tools",
+      "query": "what tools do I already have installed for browser automation and media work",
+      "targets": [{ "name": "toolset", "file": "reference/toolset.md" }]
+    },
+    {
+      "id": "discord-style",
+      "query": "how do I reply to someone in Discord, are threads used",
+      "targets": [{ "name": "discord", "file": "reference/discord.md" }]
+    },
+    {
+      "id": "reversible-work",
+      "query": "do I need permission before I create a repository or install a dependency",
+      "targets": [{ "name": "operating-principles", "file": "self/operating-principles.md" }]
+    },
+    {
+      "id": "beckett-identity",
+      "query": "who is Beckett and where does it run",
+      "targets": [{ "name": "beckett-self", "file": "self/beckett.md" }]
+    },
+    {
+      "id": "ops80-doc-site",
+      "query": "what should happen to the OPS-80 design doc when it is complete",
+      "targets": [{ "name": "ops80-deploy-doc-as-site", "file": "decisions/ops80-deploy-doc-as-site.md" }]
+    },
+    {
+      "id": "discord-file-upload",
+      "query": "how do I attach a file to a Discord reply and what is the upload limit",
+      "targets": [{ "name": "discord-file-attach", "file": "discord-file-attach.md" }]
+    },
+    {
+      "id": "discord-timeout-no-retry",
+      "query": "my Discord reply timed out, should I send it again",
+      "targets": [{ "name": "discord-reply-timeout-no-retry", "file": "discord-reply-timeout-no-retry.md" }]
+    },
+    {
+      "id": "worker-timeout-wedge",
+      "query": "why are workers still running after the ten minute timeout and tickets are wedged",
+      "targets": [{ "name": "worker-timeout-silent-wedge", "file": "worker-timeout-silent-wedge.md" }]
+    },
+    {
+      "id": "video-shorts",
+      "query": "how long should video pipeline renders be",
+      "targets": [{ "name": "video-pipeline-shorts", "file": "video-pipeline-shorts.md" }]
+    },
+    {
+      "id": "plane-rate-limit",
+      "query": "why does filing a large plan get a Plane 429 rate limit",
+      "targets": [{ "name": "plan-filing-rate-limit", "file": "plan-filing-rate-limit.md" }]
+    },
+    {
+      "id": "model-casting",
+      "query": "how should I choose Sonnet, Opus, and Fable for a ticket",
+      "targets": [{ "name": "claude-model-casting", "file": "claude-model-casting.md" }]
+    },
+    {
+      "id": "restart-vs-deploy",
+      "query": "does restarting the daemon make merged code live",
+      "targets": [{ "name": "restart-is-not-deploy", "file": "restart-is-not-deploy.md" }]
+    },
+    {
+      "id": "ffmpeg-worker-alarm",
+      "query": "why do long ffmpeg renders look stuck and trip the worker alarm",
+      "targets": [{ "name": "ffmpeg-render-trips-worker-alarm", "file": "ffmpeg-render-trips-worker-alarm.md" }]
+    },
+    {
+      "id": "fast-research",
+      "query": "how much web research should I do for a normal lookup",
+      "targets": [{ "name": "research-stay-shallow", "file": "research-stay-shallow.md" }]
+    },
+    {
+      "id": "self-deploy-ssh",
+      "query": "why does deploy-prod need SSH when I am already on loom-desk",
+      "targets": [{ "name": "self-deploy-ssh-to-self", "file": "self-deploy-ssh-to-self.md" }]
+    },
+    {
+      "id": "cross-fork-pr",
+      "query": "can I open a pull request to an external repository through a fork",
+      "targets": [{ "name": "cross-fork-pr-limit", "file": "cross-fork-pr-limit.md" }]
+    },
+    {
+      "id": "maintainers-ping",
+      "query": "how do I ping the whole maintainer team in Discord",
+      "targets": [{ "name": "maintainers-role-ping", "file": "maintainers-role-ping.md" }]
+    }
+  ]
+}
