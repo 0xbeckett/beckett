@@ -29,10 +29,10 @@ The golden set in [`scripts/bench/recall-relevance-golden.json`](../scripts/benc
 - **precision@1** — whether the first result is a labeled fact;
 - **MRR** — reciprocal rank of the first labeled fact;
 - **nDCG@10** — discounted gain across all labels (so multi-answer cases matter);
-- a per-query table with rank, all metrics, expected files, and the first five returned nodes;
+- a per-query table with rank, all metrics, expected files, and the first three returned nodes;
 - **overall relevance score** — the unweighted mean of aggregate precision@1, MRR, and nDCG@10. It is a readable headline, not a replacement for the three standard metrics.
 
-Moss's native index can enumerate equal-score tail documents in a different order. The runner only sorts *exact-score ties* by node name after `MemoryStore.recall()` returns, making report JSON and metrics repeatable without changing the production ranker.
+Moss's native index can enumerate equal-relevance tail documents in a different order. The runner stages files in a canonical order, sorts *exact-score ties* by node name after `MemoryStore.recall()` returns, and reports the stable top three (while nDCG still scores all ten real hits). This makes the report repeatable without changing the production ranker.
 
 ## Baseline — 2026-07-18
 

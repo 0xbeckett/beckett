@@ -81,7 +81,9 @@ function stageSource(source: Source, destination: string): number {
     throw new Error(`required ${source.label} corpus is missing: ${source.dir}`);
   }
   let copied = 0;
-  for (const rel of readdirSync(source.dir, { recursive: true }) as string[]) {
+  // Directory enumeration order is not a portability guarantee. A canonical insertion order
+  // makes a freshly staged Moss index reproducible across runs and filesystems.
+  for (const rel of (readdirSync(source.dir, { recursive: true }) as string[]).sort((a, b) => a.localeCompare(b))) {
     if (!rel.endsWith(".md") || basename(rel) === "MEMORY.md") continue;
     const parts = rel.split(/[\\/]/);
     if (parts.includes(".git") || parts.includes(".moss") || parts.includes("archive")) continue;
@@ -139,7 +141,9 @@ try {
       id: test.id,
       query: test.query,
       targets: test.targets,
-      returned,
+      // Keep the diagnostic concise. nDCG still scores all ten real hits above; the
+      // presentation intentionally avoids Moss's nondeterministic equal-relevance tail.
+      topResults: returned.slice(0, 3),
       ...metrics,
     });
   }
@@ -180,7 +184,7 @@ try {
     console.log("|---|---:|---:|---:|---:|---|---|");
     for (const row of rows) {
       console.log(
-        `| ${row.id} | ${row.firstRelevantRank ?? "—"} | ${format(row.precisionAtK)} | ${format(row.reciprocalRank)} | ${format(row.ndcgAt10)} | ${row.targets.map((target) => target.file).join(", ")} | ${row.returned.slice(0, 5).join(", ") || "—"} |`,
+        `| ${row.id} | ${row.firstRelevantRank ?? "—"} | ${format(row.precisionAtK)} | ${format(row.reciprocalRank)} | ${format(row.ndcgAt10)} | ${row.targets.map((target) => target.file).join(", ")} | ${row.topResults.join(", ") || "—"} |`,
       );
     }
   }
