@@ -15,8 +15,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemory, type MemoryStore } from "./index.ts";
-import { memoryMossDir, MEMORY_INDEX_NAME, mossScores, openMemoryMoss } from "./moss.ts";
-import type { Audience } from "./search.ts";
+import { memoryMossDir, MEMORY_INDEX_NAME, MOSS_LEXICAL_SHARPENER_WEIGHT, mossScores, openMemoryMoss } from "./moss.ts";
+import { corpusStats, scoreNode, type Audience } from "./search.ts";
 import type { Logger } from "../types.ts";
 
 const tmpDirs: string[] = [];
@@ -70,7 +70,7 @@ async function seedScoped(store: MemoryStore): Promise<void> {
 
 // ── retrieval is served by moss ──────────────────────────────────────────────────────────
 
-test("recall hit scores ARE local moss scores (modulo the recency tie-breaker epsilon)", async () => {
+test("recall scores are Moss-first with the normalized field-aware lexical sharpener", async () => {
   const { store, dir } = tempStore();
   await store.remember({
     op: "create", name: "docs-site", type: "project",
@@ -88,13 +88,22 @@ test("recall hit scores ARE local moss scores (modulo the recency tie-breaker ep
   const r = await store.recall({ text: query });
   expect(r.hits[0]!.node.name).toBe("docs-site");
 
-  // Recompute the ranking straight from the persisted index: every hit's score must be the
-  // moss score plus the freshness tie-breaker epsilon (nodes written seconds ago ⇒ +0.00015).
+  // Recompute the score from the persisted Moss index. Moss remains primary; the bounded
+  // lexical term restores title/description weighting for close hybrid competitors.
   const moss = await openMemoryMoss(dir, quietLog);
   const raw = mossScores(moss, query);
+  const graph = store.buildGraph();
+  const stats = corpusStats(graph.nodes.values());
+  const lexical = new Map(
+    [...graph.nodes.values()].map((node) => [node.name, scoreNode(query, node, stats)]),
+  );
+  const lexicalMax = Math.max(...lexical.values(), 1);
   expect(raw.size).toBeGreaterThan(0);
   for (const h of r.hits) {
-    expect(h.score).toBeCloseTo(raw.get(h.node.name)! + 0.15 * 1e-3, 9);
+    const expected = raw.get(h.node.name)! +
+      MOSS_LEXICAL_SHARPENER_WEIGHT * (lexical.get(h.node.name) ?? 0) / lexicalMax +
+      0.15 * 1e-3;
+    expect(h.score).toBeCloseTo(expected, 9);
   }
 });
 

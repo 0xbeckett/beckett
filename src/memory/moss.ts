@@ -39,6 +39,12 @@ export const MEMORY_INDEX_NAME = "memory";
 /** Hybrid fusion weight for the ranking query — #31.1's default (0.75 dense, 0.25 keyword). */
 const RANKING_SEMANTIC_WEIGHT = 0.75;
 
+/**
+ * A deliberately small field-aware lexical sharpener for the Moss hybrid rank. It is applied
+ * only after Moss has selected lexical matches, so dense+keyword retrieval remains primary.
+ */
+export const MOSS_LEXICAL_SHARPENER_WEIGHT = 0.025;
+
 /** The derived-cache home: hidden inside the memory dir (gitignored by MemoryStore). */
 export function memoryMossDir(memoryDir: string): string {
   return join(memoryDir, ".moss");

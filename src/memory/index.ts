@@ -76,7 +76,7 @@ import {
   provenanceOf,
   scoreNode,
 } from "./search.ts";
-import { mossScores, openMemoryMoss, syncMossWithGraph } from "./moss.ts";
+import { MOSS_LEXICAL_SHARPENER_WEIGHT, mossScores, openMemoryMoss, syncMossWithGraph } from "./moss.ts";
 import type { LocalMoss } from "../moss-local/index.ts";
 import { planMaintenance, type MaintainReport } from "./maintain.ts";
 
@@ -204,7 +204,18 @@ export class MemoryStore implements Memory {
       await syncMossWithGraph(moss, g);
       if (!text.trim()) return undefined; // filter-only recall — nothing to rank
       const scores = mossScores(moss, text);
-      return (node) => scores.get(node.name) ?? 0;
+      // Moss's hybrid rank remains the primary score. A small, normalized lexical component
+      // restores the existing field weighting (name/description outrank incidental body text)
+      // when otherwise-close hybrid hits compete. It is a rank sharpener, not a second
+      // retrieval path: `mossScores` has already applied Moss's keyword-match floor.
+      const stats = corpusStats(g.nodes.values());
+      const lexicalScores = new Map(
+        [...g.nodes.values()].map((node) => [node.name, scoreNode(text, node, stats)]),
+      );
+      const lexicalMax = Math.max(...lexicalScores.values(), 1);
+      return (node) =>
+        (scores.get(node.name) ?? 0) +
+        MOSS_LEXICAL_SHARPENER_WEIGHT * (lexicalScores.get(node.name) ?? 0) / lexicalMax;
     } catch (err) {
       this.logger.warn("memory: moss retrieval unavailable — using the lexical fallback", {
         err: String(err),
