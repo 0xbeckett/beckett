@@ -167,6 +167,24 @@ export class LocalMoss {
     return { ...result, docCount: this.docCount };
   }
 
+  /** Delete documents by id, then atomically persist. Unknown ids are ignored. */
+  async delete(ids: readonly string[]): Promise<{ deleted: number; docCount: number }> {
+    const targets = [...new Set(ids)].filter((id) => this.documents.has(id));
+    if (targets.length === 0) return { deleted: 0, docCount: this.docCount };
+    const deleted = this.index.deleteDocuments(targets);
+    for (const id of targets) this.documents.delete(id);
+    await this.persist();
+    return { deleted, docCount: this.docCount };
+  }
+
+  /** All documents currently in the index (defensive copies, typed metadata preserved). */
+  list(): MossDocument[] {
+    return [...this.documents.values()].map((document) => ({
+      ...document,
+      metadata: document.metadata ? { ...document.metadata } : undefined,
+    }));
+  }
+
   /** Hybrid local search (Moss dense + keyword fusion) with an optional metadata AND-filter. */
   query(text: string, filters?: MossFilters, options: QueryOptions = {}): MossQueryResult {
     if (!text.trim()) return { docs: [], query: text, timeTakenInMs: 0 };

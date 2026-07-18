@@ -128,6 +128,17 @@ function asStrings(v: unknown): string[] {
   return [String(v)];
 }
 
+/**
+ * The full searchable surface of a node — the same fields the lexical scorer weighs
+ * (name, aliases, description+type, metadata values, body), flattened into one string.
+ * This is what the local Moss index embeds per node (src/memory/moss.ts), so the moss
+ * retrieval path and the lexical fallback see the exact same text.
+ */
+export function searchableText(node: MemoryNode): string {
+  const f = nodeFields(node);
+  return [f.name, f.alias, f.description, f.meta, f.body].filter(Boolean).join("\n");
+}
+
 /** Build document frequencies over the real nodes of a graph. */
 export function corpusStats(nodes: Iterable<MemoryNode>): CorpusStats {
   const df = new Map<string, number>();

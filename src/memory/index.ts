@@ -76,6 +76,8 @@ import {
   provenanceOf,
   scoreNode,
 } from "./search.ts";
+import { mossScores, openMemoryMoss, syncMossWithGraph } from "./moss.ts";
+import type { LocalMoss } from "../moss-local/index.ts";
 import { planMaintenance, type MaintainReport } from "./maintain.ts";
 
 // =======================================================================================
@@ -168,6 +170,8 @@ export class MemoryStore implements Memory {
   private writeChain: Promise<unknown> = Promise.resolve();
   /** Raw file contents captured during the last build (for content-hash + surgical edits). */
   private rawCache = new Map<string, string>();
+  /** The local Moss index serving recall's ranking (issue #20); opened lazily, cached. */
+  private moss?: LocalMoss;
 
   constructor(deps: MemoryDeps) {
     this.dir = deps.memoryDir;
@@ -175,11 +179,53 @@ export class MemoryStore implements Memory {
     this.git = deps.git ?? true;
   }
 
-  // ── recall (Spec 08 §3) ────────────────────────────────────────────────────────────
+  // ── recall (Spec 08 §3; retrieval served by local Moss since issue #20) ────────────
 
   async recall(q: RecallQuery & { audience?: Audience }): Promise<RecallResult> {
     const g = this.buildGraph();
-    return recallOver(q, g);
+    const scoreOf = await this.mossScorer(q.text, g);
+    return recallOver(q, g, scoreOf);
+  }
+
+  /**
+   * Rank the query through the local Moss index (#31.1): sync the index to the graph
+   * just built (which also migrates a pre-moss store on first contact and heals
+   * out-of-band edits/deletes), then score via Moss's hybrid retrieval. Returns
+   * `undefined` — the lexical fallback — when the runtime is unavailable: retrieval
+   * degrades, recall never breaks. Visibility is deliberately NOT Moss's job: recallOver
+   * gates every node in code, fail-closed, whatever the scorer says.
+   */
+  private async mossScorer(
+    text: string,
+    g: MemoryGraph,
+  ): Promise<((node: MemoryNode) => number) | undefined> {
+    try {
+      const moss = await this.openMoss();
+      await syncMossWithGraph(moss, g);
+      if (!text.trim()) return undefined; // filter-only recall — nothing to rank
+      const scores = mossScores(moss, text);
+      return (node) => scores.get(node.name) ?? 0;
+    } catch (err) {
+      this.logger.warn("memory: moss retrieval unavailable — using the lexical fallback", {
+        err: String(err),
+      });
+      return undefined;
+    }
+  }
+
+  private async openMoss(): Promise<LocalMoss> {
+    this.moss ??= await openMemoryMoss(this.dir, this.logger);
+    return this.moss;
+  }
+
+  /** Post-write index sync for remember/maintain/reindex — best-effort, never throws
+   *  (recall's own sync heals any miss on the next call). */
+  private async syncMossQuietly(g: MemoryGraph): Promise<void> {
+    try {
+      await syncMossWithGraph(await this.openMoss(), g);
+    } catch (err) {
+      this.logger.warn("memory: moss index sync failed — recall will resync", { err: String(err) });
+    }
   }
 
   // ── remember (Spec 08 §4) ──────────────────────────────────────────────────────────
@@ -188,7 +234,7 @@ export class MemoryStore implements Memory {
     return this.withLock(() => this.rememberLocked(intent));
   }
 
-  private rememberLocked(intent: RememberIntent): MemoryNode {
+  private async rememberLocked(intent: RememberIntent): Promise<MemoryNode> {
     if (!intent.name || !/^[a-z0-9-]+$/.test(intent.name)) {
       throw new Error(`memory.remember: invalid node name '${intent.name}' (must be kebab-case)`);
     }
@@ -252,9 +298,11 @@ export class MemoryStore implements Memory {
       }
     }
 
-    // 5. Regenerate the always-loaded index (Spec 08 §4.5) + mirror + event + commit.
+    // 5. Regenerate the always-loaded index (Spec 08 §4.5) + mirror + event + commit,
+    //    and keep the moss retrieval index in step with the write (issue #20).
     this.atomicWrite(join(this.dir, "MEMORY.md"), renderIndex(g));
     this.commit(`memory: ${op} ${name}`);
+    await this.syncMossQuietly(g);
 
     const result = g.nodes.get(name);
     if (!result) throw new Error(`memory.remember: node '${name}' missing after write`);
@@ -272,7 +320,7 @@ export class MemoryStore implements Memory {
     return this.withLock(() => this.maintainLocked(opts));
   }
 
-  private maintainLocked(opts: { dryRun?: boolean }): MaintainReport {
+  private async maintainLocked(opts: { dryRun?: boolean }): Promise<MaintainReport> {
     this.ensureDir();
     let g = this.buildGraph();
     const scanned = [...g.nodes.values()].filter((n) => !n.phantom).length;
