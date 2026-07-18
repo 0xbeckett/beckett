@@ -121,10 +121,16 @@ function startupChannelId(): string | null {
 
 /**
  * Where the restart "what's new" release note lands (owner's pick: #announcements). The `announce` config
- * still gates WHETHER it fires (fork-silent by default), but the post itself always goes here — this
- * is the send target baked into the injected SYSTEM prompt, not a per-instance config knob.
+ * still gates WHETHER it fires (fork-silent by default); the target defaults to this constant,
+ * overridable via `BECKETT_RELEASE_NOTE_CHANNEL_ID` or suppressed entirely with `disabled`.
  */
 const RELEASE_NOTE_CHANNEL_ID = "1523507437485948958";
+
+function releaseNoteChannelId(): string | null {
+  const configured = process.env.BECKETT_RELEASE_NOTE_CHANNEL_ID?.trim();
+  if (configured?.toLowerCase() === "disabled") return null;
+  return configured || RELEASE_NOTE_CHANNEL_ID;
+}
 
 /**
  * Reserved pool scope for system-origin turns when no real channel applies (startup channel
@@ -145,6 +151,11 @@ function scopeStateFile(beckettDir: string, scope: string): string {
 
 /** Dedicated home for task, branch, and subscription-status cards. */
 export const CARDS_CHANNEL_ID = "1525690195234521179";
+
+/** Cards channel, overridable via `BECKETT_CARDS_CHANNEL_ID` (unset/empty → the constant). */
+function cardsChannelId(): string {
+  return process.env.BECKETT_CARDS_CHANNEL_ID?.trim() || CARDS_CHANNEL_ID;
+}
 
 /** Hard ceiling on one chat turn before we give up waiting for its `result` line. */
 const TURN_TIMEOUT_MS = 240_000;
@@ -2022,7 +2033,7 @@ export class Concierge {
       const task = this.tasks.getTask(raw);
       if (!task) throw new Error(`no such task: ${raw}`);
       await this.postCards([renderTaskEmbed(task)], `Task card for ${displayTaskName(task)}`);
-      return { content: `Posted ${displayTaskName(task)} card in <#${CARDS_CHANNEL_ID}>.` };
+      return { content: `Posted ${displayTaskName(task)} card in <#${cardsChannelId()}>.` };
     }
     if (command.name === "branch") {
       if (!this.branchStatus) throw new Error("branch status provider is unavailable");
@@ -2033,7 +2044,7 @@ export class Concierge {
           ? [{ label: "Open repository", url: card.publication.url }]
           : undefined;
       await this.postCards([renderBranchEmbed(card)], `Branch card for #${card.ref}`, buttons);
-      return { content: `Posted branch card in <#${CARDS_CHANNEL_ID}>.` };
+      return { content: `Posted branch card in <#${cardsChannelId()}>.` };
     }
     if (command.name === "stats") {
       const ownerId = this.ownerId();
@@ -2042,7 +2053,7 @@ export class Concierge {
       }
       const usages = await this.subscriptionUsage.readAll();
       await this.postCards(renderSubscriptionUsageEmbeds(usages), "Subscription usage cards");
-      return { content: `Posted subscription usage cards in <#${CARDS_CHANNEL_ID}>.` };
+      return { content: `Posted subscription usage cards in <#${cardsChannelId()}>.` };
     }
     throw new Error(`unsupported Discord command: ${command.name} ${command.subcommand ?? ""}`.trim());
   }
@@ -2055,13 +2066,14 @@ export class Concierge {
     replyToMessageId?: string,
     replyToUserId?: string,
   ): Promise<string> {
-    const messageId = await this.gateway.post(CARDS_CHANNEL_ID, "", {
+    const channelId = cardsChannelId();
+    const messageId = await this.gateway.post(channelId, "", {
       ...(replyToMessageId ? { replyToMessageId } : {}),
       ...(replyToUserId ? { replyToUserId } : {}),
       embeds,
       ...(buttons?.length ? { buttons } : {}),
     });
-    this.recordBeckettPost(CARDS_CHANNEL_ID, recordText, messageId);
+    this.recordBeckettPost(channelId, recordText, messageId);
     return messageId;
   }
 
@@ -2175,12 +2187,15 @@ export class Concierge {
       // Persist BEFORE the async post so a restart mid-announce can't re-announce the same range.
       writeAnnouncedSha(announcedFile, head);
       if (subjects.length === 0) return;
-      // `channelId` (config) gates whether we announce; the post itself always lands in #announcements
-      // (`RELEASE_NOTE_CHANNEL_ID`) — the release note is Beckett's own version glow-up, not a per-fork feed.
+      // `channelId` (config) gates whether we announce; the post itself lands in #announcements
+      // (`releaseNoteChannelId()`, env-overridable) — the release note is Beckett's own version
+      // glow-up, not a per-fork feed. `disabled` skips the post (the sha above still persisted).
+      const releaseChannelId = releaseNoteChannelId();
+      if (!releaseChannelId) return;
       void this.pool
-        .ask(RELEASE_NOTE_CHANNEL_ID, buildReleaseNote(RELEASE_NOTE_CHANNEL_ID, subjects))
+        .ask(releaseChannelId, buildReleaseNote(releaseChannelId, subjects))
         .catch((err) => this.log.warn("changes announcement turn failed (continuing)", { err: String(err) }));
-      this.log.info("queued changes announcement", { channelId: RELEASE_NOTE_CHANNEL_ID, commits: subjects.length });
+      this.log.info("queued changes announcement", { channelId: releaseChannelId, commits: subjects.length });
     } catch (err) {
       this.log.warn("changes announcement failed (continuing)", { err: String(err) });
     }
@@ -3182,8 +3197,8 @@ export class Concierge {
           [renderBranchEmbed(card)],
           `Branch card for #${branchRef}`,
           buttons,
-          m.channelId === CARDS_CHANNEL_ID ? m.messageId : undefined,
-          m.channelId === CARDS_CHANNEL_ID ? m.userId : undefined,
+          m.channelId === cardsChannelId() ? m.messageId : undefined,
+          m.channelId === cardsChannelId() ? m.userId : undefined,
         );
         return;
       } catch (err) {
