@@ -5,6 +5,7 @@
     "": {
       "name": "beckett",
       "dependencies": {
+        "@moss-dev/moss-core": "0.8.7",
         "agentmail": "^0.5.15",
         "betterwright": "0.6.0",
         "discord.js": "^14.16.3",
@@ -36,6 +37,16 @@
     "@discordjs/ws": ["@discordjs/ws@1.2.3", "", { "dependencies": { "@discordjs/collection": "^2.1.0", "@discordjs/rest": "^2.5.1", "@discordjs/util": "^1.1.0", "@sapphire/async-queue": "^1.5.2", "@types/ws": "^8.5.10", "@vladfrangu/async_event_emitter": "^2.2.4", "discord-api-types": "^0.38.1", "tslib": "^2.6.2", "ws": "^8.17.0" } }, "sha512-wPlQDxEmlDg5IxhJPuxXr3Vy9AjYq5xCvFWGJyD7w7Np8ZGu+Mc+97LCoEc/+AYCo2IDpKioiH0/c/mj5ZR9Uw=="],
 
     "@isaacs/fs-minipass": ["@isaacs/fs-minipass@4.0.1", "", { "dependencies": { "minipass": "^7.0.4" } }, "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w=="],
+
+    "@moss-dev/moss-core": ["@moss-dev/moss-core@0.8.7", "", { "optionalDependencies": { "@moss-dev/moss-core-darwin-arm64": "0.8.7", "@moss-dev/moss-core-linux-arm64-gnu": "0.8.7", "@moss-dev/moss-core-linux-x64-gnu": "0.8.7", "@moss-dev/moss-core-win32-x64-msvc": "0.8.7" } }, "sha512-IxmJYNCBHhnjNj8o3H0T7XRCDVhSbwv+WmAc5KLDkAug9Ep74FK4/kpjiR32muZXTbvbktxYgB6iHL7oUMY2xw=="],
+
+    "@moss-dev/moss-core-darwin-arm64": ["@moss-dev/moss-core-darwin-arm64@0.8.7", "", { "os": "darwin", "cpu": "arm64" }, "sha512-SxRD5vV5HSezJRr1GcIxQKOyX/nJ6RCgQYSDZTPsYbo49M0bRdAATKUpGIW5xHC7YZsZXZY8OiUVcw5lBQW0Lg=="],
+
+    "@moss-dev/moss-core-linux-arm64-gnu": ["@moss-dev/moss-core-linux-arm64-gnu@0.8.7", "", { "os": "linux", "cpu": "arm64" }, "sha512-uRs/V6f0qvbStGSGNd/10cWJQKMPEumpQCAcjdRODiLbh5N+S6TIt2/bUHfc5uMxPFC9Bld7URglNmtfNXCKNA=="],
+
+    "@moss-dev/moss-core-linux-x64-gnu": ["@moss-dev/moss-core-linux-x64-gnu@0.8.7", "", { "os": "linux", "cpu": "x64" }, "sha512-HgQgYN3ivLVNGJbQIBp6N2i+96y7cN/40sqzL0jqh2TzTziygoiSlwIkIqkkDZJ8DnSwJAMMQ9o2l1zPoMskCQ=="],
+
+    "@moss-dev/moss-core-win32-x64-msvc": ["@moss-dev/moss-core-win32-x64-msvc@0.8.7", "", { "os": "win32", "cpu": "x64" }, "sha512-P49hUAuOXpMP1gVM+SMf0DyvXUU8OHLpppUsz7CRWJ4GkNY6JCnC3tHD1dEJQSnHMx9zOnS0hoAV6qzuhWuIrg=="],
 
     "@sapphire/async-queue": ["@sapphire/async-queue@1.5.5", "", {}, "sha512-cvGzxbba6sav2zZkH8GPf2oGk9yYoD5qrNWdu9fRehifgnFZJMV+nuy2nON2roRO4yQQ+v7MK/Pktl/HgfsUXg=="],
 

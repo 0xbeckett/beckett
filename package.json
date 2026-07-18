@@ -1,7 +1,7 @@
 {
   "name": "beckett",
   "version": "5.2.0",
-  "description": "Beckett \u2014 an agentic coworker reached in Discord. A harness over harnesses.",
+  "description": "Beckett — an agentic coworker reached in Discord. A harness over harnesses.",
   "type": "module",
   "private": true,
   "module": "src/shell/v4-main.ts",
@@ -17,6 +17,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@moss-dev/moss-core": "0.8.7",
     "agentmail": "^0.5.15",
     "betterwright": "0.6.0",
     "discord.js": "^14.16.3",
