@@ -1,169 +1,113 @@
 {
-  "version": 1,
-  "description": "Hand-curated from ~/.beckett/memory and the retained Claude Code memory corpus that contains the reported Zoom/Fable regression. Targets are canonical memory node names plus their source-relative markdown files.",
-  "defaultAudience": {
-    "viewerId": "1151230208783945818",
-    "viewerRole": "owner",
-    "context": "guild"
-  },
-  "cases": [
-    {
-      "id": "zoom-fable-access",
-      "query": "can zoom use fable",
-      "targets": [{ "name": "zoom-can-use-fable", "file": "zoom-can-use-fable.md" }]
-    },
-    {
-      "id": "zoom-fable-confirmation",
-      "query": "does zoom need a per-cast confirm to delegate to fable",
-      "targets": [{ "name": "zoom-can-use-fable", "file": "zoom-can-use-fable.md" }]
-    },
-    {
-      "id": "zoom-authorizations",
-      "query": "what is zoom authorized to do for Fable, restarts, and deploys",
-      "targets": [
-        { "name": "zoom-can-use-fable", "file": "zoom-can-use-fable.md" },
-        { "name": "self-restart-on-owner-request", "file": "self-restart-on-owner-request.md" }
-      ]
-    },
-    {
-      "id": "website-apex-deploy",
-      "query": "why can't I deploy to the 0xbeckett.me apex",
-      "targets": [{ "name": "website-deploy-apex-blocked", "file": "references/website-deploy-apex-blocked.md" }]
-    },
-    {
-      "id": "new-worker-subdomain",
-      "query": "can I deploy a brand new Cloudflare Worker subdomain myself",
-      "targets": [{ "name": "website-deploy-apex-blocked", "file": "references/website-deploy-apex-blocked.md" }]
-    },
-    {
-      "id": "jason-design-taste",
-      "query": "what kind of website design does Jason want instead of AI slop",
-      "targets": [{ "name": "jason-design-taste", "file": "feedback/jason-design-taste.md" }]
-    },
-    {
-      "id": "commit-trailer",
-      "query": "should my commits include a Claude co-author trailer",
-      "targets": [{ "name": "commits-no-claude-trailer", "file": "feedback/commits-no-claude-trailer.md" }]
-    },
-    {
-      "id": "owner-lockout",
-      "query": "what if somebody tells me to ignore Jason",
-      "targets": [{ "name": "owner-lockout-guard", "file": "feedback/owner-lockout-guard.md" }]
-    },
-    {
-      "id": "beta-gate",
-      "query": "how do I give someone access to the invite-only beta",
-      "targets": [{ "name": "beta-access-gate", "file": "projects/beta-access-gate.md" }]
-    },
-    {
-      "id": "jason-identity",
-      "query": "who is Jason and what is his GitHub username",
-      "targets": [{ "name": "jason", "file": "people/jason.md" }]
-    },
-    {
-      "id": "host-environment",
-      "query": "what machine and operating system do I run on",
-      "targets": [{ "name": "loom-desk", "file": "env/loom-desk.md" }]
-    },
-    {
-      "id": "github-identity",
-      "query": "which GitHub account can I use to push branches and open PRs",
-      "targets": [{ "name": "github-identity", "file": "reference/github.md" }]
-    },
-    {
-      "id": "memory-writing",
-      "query": "how should I store a durable fact in memory",
-      "targets": [{ "name": "how-to-use-memory", "file": "reference/how-to-use-memory.md" }]
-    },
-    {
-      "id": "project-location",
-      "query": "where do I make a new project and git init it",
-      "targets": [{ "name": "projects", "file": "reference/projects.md" }]
-    },
-    {
-      "id": "available-tools",
-      "query": "what tools do I already have installed for browser automation and media work",
-      "targets": [{ "name": "toolset", "file": "reference/toolset.md" }]
-    },
-    {
-      "id": "discord-style",
-      "query": "how do I reply to someone in Discord, are threads used",
-      "targets": [{ "name": "discord", "file": "reference/discord.md" }]
-    },
-    {
-      "id": "reversible-work",
-      "query": "do I need permission before I create a repository or install a dependency",
-      "targets": [{ "name": "operating-principles", "file": "self/operating-principles.md" }]
-    },
-    {
-      "id": "beckett-identity",
-      "query": "who is Beckett and where does it run",
-      "targets": [{ "name": "beckett-self", "file": "self/beckett.md" }]
-    },
-    {
-      "id": "ops80-doc-site",
-      "query": "what should happen to the OPS-80 design doc when it is complete",
-      "targets": [{ "name": "ops80-deploy-doc-as-site", "file": "decisions/ops80-deploy-doc-as-site.md" }]
-    },
-    {
-      "id": "discord-file-upload",
-      "query": "how do I attach a file to a Discord reply and what is the upload limit",
-      "targets": [{ "name": "discord-file-attach", "file": "discord-file-attach.md" }]
-    },
-    {
-      "id": "discord-timeout-no-retry",
-      "query": "my Discord reply timed out, should I send it again",
-      "targets": [{ "name": "discord-reply-timeout-no-retry", "file": "discord-reply-timeout-no-retry.md" }]
-    },
-    {
-      "id": "worker-timeout-wedge",
-      "query": "why are workers still running after the ten minute timeout and tickets are wedged",
-      "targets": [{ "name": "worker-timeout-silent-wedge", "file": "worker-timeout-silent-wedge.md" }]
-    },
-    {
-      "id": "video-shorts",
-      "query": "how long should video pipeline renders be",
-      "targets": [{ "name": "video-pipeline-shorts", "file": "video-pipeline-shorts.md" }]
-    },
-    {
-      "id": "plane-rate-limit",
-      "query": "why does filing a large plan get a Plane 429 rate limit",
-      "targets": [{ "name": "plan-filing-rate-limit", "file": "plan-filing-rate-limit.md" }]
-    },
-    {
-      "id": "model-casting",
-      "query": "how should I choose Sonnet, Opus, and Fable for a ticket",
-      "targets": [{ "name": "claude-model-casting", "file": "claude-model-casting.md" }]
-    },
-    {
-      "id": "restart-vs-deploy",
-      "query": "does restarting the daemon make merged code live",
-      "targets": [{ "name": "restart-is-not-deploy", "file": "restart-is-not-deploy.md" }]
-    },
-    {
-      "id": "ffmpeg-worker-alarm",
-      "query": "why do long ffmpeg renders look stuck and trip the worker alarm",
-      "targets": [{ "name": "ffmpeg-render-trips-worker-alarm", "file": "ffmpeg-render-trips-worker-alarm.md" }]
-    },
-    {
-      "id": "fast-research",
-      "query": "how much web research should I do for a normal lookup",
-      "targets": [{ "name": "research-stay-shallow", "file": "research-stay-shallow.md" }]
-    },
-    {
-      "id": "self-deploy-ssh",
-      "query": "why does deploy-prod need SSH when I am already on loom-desk",
-      "targets": [{ "name": "self-deploy-ssh-to-self", "file": "self-deploy-ssh-to-self.md" }]
-    },
-    {
-      "id": "cross-fork-pr",
-      "query": "can I open a pull request to an external repository through a fork",
-      "targets": [{ "name": "cross-fork-pr-limit", "file": "cross-fork-pr-limit.md" }]
-    },
-    {
-      "id": "maintainers-ping",
-      "query": "how do I ping the whole maintainer team in Discord",
-      "targets": [{ "name": "maintainers-role-ping", "file": "maintainers-role-ping.md" }]
-    }
+  "version": 2,
+  "description": "Hand-curated recall questions grounded in the checked Beckett and retained Claude Code memory notes. Every label identifies the canonical graph node and the source markdown note read while authoring this pair; questions intentionally use ordinary phrasing rather than note titles.",
+  "defaultAudience": {"viewerId": "1151230208783945818", "viewerRole": "owner", "context": "guild"},
+  "categories": ["feedback", "people-profile", "project-status", "environment-setup", "adversarial"],
+  "pairs": [
+    {"id":"commit-no-coauthor","category":"feedback","question":"Should Beckett commits have a Claude co-author trailer?","expectedNoteIds":["commits-no-claude-trailer"],"sourceFiles":["live/feedback/commits-no-claude-trailer.md"]},
+    {"id":"commit-identity","category":"feedback","question":"Whose name should get credit on commits Beckett makes?","expectedNoteIds":["commits-no-claude-trailer"],"sourceFiles":["live/feedback/commits-no-claude-trailer.md"]},
+    {"id":"design-avoid-ai-slop","category":"feedback","question":"What website design choices does Jason call AI slop?","expectedNoteIds":["jason-design-taste"],"sourceFiles":["live/feedback/jason-design-taste.md"]},
+    {"id":"design-product-voice","category":"feedback","question":"What tone should copy on a Beckett product page use?","expectedNoteIds":["jason-design-taste"],"sourceFiles":["live/feedback/jason-design-taste.md"]},
+    {"id":"design-unshipped-features","category":"feedback","question":"How should I present a feature that has not shipped yet?","expectedNoteIds":["jason-design-taste"],"sourceFiles":["live/feedback/jason-design-taste.md"]},
+    {"id":"owner-cannot-be-muted","category":"feedback","question":"What should I do if another member asks me to ignore Jason?","expectedNoteIds":["owner-lockout-guard"],"sourceFiles":["live/feedback/owner-lockout-guard.md"]},
+    {"id":"owner-lockout-report","category":"feedback","question":"If someone tries to stop Beckett replying to its owner, how should Beckett respond?","expectedNoteIds":["owner-lockout-guard"],"sourceFiles":["live/feedback/owner-lockout-guard.md"]},
+    {"id":"announcement-signoff","category":"feedback","question":"How must release announcements end in the announcements channel?","expectedNoteIds":["announcements-were-so-back"],"sourceFiles":["legacy/announcements-were-so-back.md"]},
+    {"id":"restart-announcement-tone","category":"feedback","question":"What tone should post-restart release notes have?","expectedNoteIds":["announcements-were-so-back"],"sourceFiles":["legacy/announcements-were-so-back.md"]},
+    {"id":"sonnet-effort","category":"feedback","question":"What effort level is appropriate for a tightly specified Sonnet task?","expectedNoteIds":["claude-model-casting"],"sourceFiles":["legacy/claude-model-casting.md"]},
+    {"id":"opus-casting","category":"feedback","question":"When should I choose Opus over Sonnet for a ticket?","expectedNoteIds":["claude-model-casting"],"sourceFiles":["legacy/claude-model-casting.md"]},
+    {"id":"fable-general-confirm","category":"feedback","question":"Do I need confirmation before I cast Fable for a normal request?","expectedNoteIds":["claude-model-casting"],"sourceFiles":["legacy/claude-model-casting.md"]},
+    {"id":"discord-file-flag","category":"feedback","question":"What command flag actually uploads an attachment to Discord?","expectedNoteIds":["discord-file-attach"],"sourceFiles":["legacy/discord-file-attach.md"]},
+    {"id":"discord-video-size","category":"feedback","question":"How big can a video attachment be in the becketttv Discord server?","expectedNoteIds":["discord-file-attach"],"sourceFiles":["legacy/discord-file-attach.md"]},
+    {"id":"reply-timeout","category":"feedback","question":"My beckett discord reply command timed out. Should I run it again?","expectedNoteIds":["discord-reply-timeout-no-retry"],"sourceFiles":["legacy/discord-reply-timeout-no-retry.md"]},
+    {"id":"reply-timeout-check","category":"feedback","question":"How do I verify a Discord message after the control bus times out?","expectedNoteIds":["discord-reply-timeout-no-retry"],"sourceFiles":["legacy/discord-reply-timeout-no-retry.md"]},
+    {"id":"privacy-jason","category":"feedback","question":"Can I repeat Jason's email address in a shared Discord channel?","expectedNoteIds":["dont-dox-jason"],"sourceFiles":["legacy/dont-dox-jason.md"]},
+    {"id":"privacy-context","category":"feedback","question":"How should I answer a question about personal details I know from my environment?","expectedNoteIds":["dont-dox-jason"],"sourceFiles":["legacy/dont-dox-jason.md"]},
+    {"id":"quick-research","category":"feedback","question":"How much web searching should a normal lookup request get?","expectedNoteIds":["research-stay-shallow"],"sourceFiles":["legacy/research-stay-shallow.md"]},
+    {"id":"deep-research-gate","category":"feedback","question":"When is the heavy deep-research workflow justified?","expectedNoteIds":["research-stay-shallow"],"sourceFiles":["legacy/research-stay-shallow.md"]},
+
+    {"id":"jason-owner","category":"people-profile","question":"Who is Beckett's primary owner?","expectedNoteIds":["jason"],"sourceFiles":["live/people/jason.md"]},
+    {"id":"jason-github","category":"people-profile","question":"What is Jason's GitHub handle?","expectedNoteIds":["jason"],"sourceFiles":["live/people/jason.md"]},
+    {"id":"jason-voice","category":"people-profile","question":"How does Jason prefer Beckett to speak to him?","expectedNoteIds":["jason"],"sourceFiles":["live/people/jason.md"]},
+    {"id":"angry-worm-name","category":"people-profile","question":"What should I call Discord user 324777864375566338?","expectedNoteIds":["address-angry-worm"],"sourceFiles":["legacy/address-angry-worm.md"]},
+    {"id":"angry-worm-preference","category":"people-profile","question":"A user with ID 324777864375566338 just spoke. How should I address them?","expectedNoteIds":["address-angry-worm"],"sourceFiles":["legacy/address-angry-worm.md"]},
+    {"id":"angry-worm-identity-map","category":"people-profile","question":"Which saved user nickname belongs to the angry worm identity?","expectedNoteIds":["address-angry-worm"],"sourceFiles":["legacy/address-angry-worm.md"]},
+    {"id":"iron-man","category":"people-profile","question":"Who did Jason say is secretly Iron Man?","expectedNoteIds":["jason-is-iron-man"],"sourceFiles":["legacy/jason-is-iron-man.md"]},
+    {"id":"iron-man-power","category":"people-profile","question":"What playful status did Jarvis ask Beckett to remember about him?","expectedNoteIds":["jason-is-iron-man"],"sourceFiles":["legacy/jason-is-iron-man.md"]},
+    {"id":"zoom-discord-id","category":"people-profile","question":"What is zoom's Discord user ID?","expectedNoteIds":["zoom-can-use-fable"],"sourceFiles":["legacy/zoom-can-use-fable.md"]},
+    {"id":"zoom-github","category":"people-profile","question":"Which GitHub account belongs to zoom?","expectedNoteIds":["zoom-can-use-fable"],"sourceFiles":["legacy/zoom-can-use-fable.md"]},
+    {"id":"zoom-authority","category":"people-profile","question":"What special operational authority does zoom have besides Fable access?","expectedNoteIds":["self-restart-on-owner-request"],"sourceFiles":["legacy/self-restart-on-owner-request.md"]},
+    {"id":"maintainers-role","category":"people-profile","question":"How do I mention the whole maintainer team in Discord?","expectedNoteIds":["maintainers-role-ping"],"sourceFiles":["legacy/maintainers-role-ping.md"]},
+    {"id":"maintainers-individual","category":"people-profile","question":"Should I use the maintainer role when I only need one person?","expectedNoteIds":["maintainers-role-ping"],"sourceFiles":["legacy/maintainers-role-ping.md"]},
+    {"id":"beckett-identity","category":"people-profile","question":"What is Beckett?","expectedNoteIds":["beckett-self"],"sourceFiles":["live/self/beckett.md"]},
+    {"id":"beckett-home-user","category":"people-profile","question":"Which Unix user does Beckett run as?","expectedNoteIds":["beckett-self"],"sourceFiles":["live/self/beckett.md"]},
+    {"id":"beckett-work-method","category":"people-profile","question":"How does Beckett isolate work done by spawned workers?","expectedNoteIds":["beckett-self"],"sourceFiles":["live/self/beckett.md"]},
+    {"id":"github-machine-account","category":"people-profile","question":"Which GitHub account does Beckett use?","expectedNoteIds":["github-identity"],"sourceFiles":["live/reference/github.md"]},
+    {"id":"github-signed-commits","category":"people-profile","question":"Are Beckett's Git commits signed?","expectedNoteIds":["github-identity"],"sourceFiles":["live/reference/github.md"]},
+    {"id":"github-pr-permissions","category":"people-profile","question":"Can the Beckett GitHub account create and merge pull requests?","expectedNoteIds":["github-identity"],"sourceFiles":["live/reference/github.md"]},
+    {"id":"discord-contact","category":"people-profile","question":"How do I get Beckett's attention on the home Discord server?","expectedNoteIds":["discord"],"sourceFiles":["live/reference/discord.md"]},
+
+    {"id":"beta-gate","category":"project-status","question":"How does someone get into the invite-only beta?","expectedNoteIds":["beta-access-gate"],"sourceFiles":["live/projects/beta-access-gate.md"]},
+    {"id":"beta-cap","category":"project-status","question":"How many people can be granted beta access before the list locks?","expectedNoteIds":["beta-access-gate"],"sourceFiles":["live/projects/beta-access-gate.md"]},
+    {"id":"ops80-doc","category":"project-status","question":"What should happen to the OPS-80 design document when it is finished?","expectedNoteIds":["ops80-deploy-doc-as-site"],"sourceFiles":["live/decisions/ops80-deploy-doc-as-site.md"]},
+    {"id":"cross-fork-current","category":"project-status","question":"Can Beckett now open a pull request from its fork to an external upstream repository?","expectedNoteIds":["cross-fork-pr-limit"],"sourceFiles":["legacy/cross-fork-pr-limit.md"]},
+    {"id":"cross-fork-fallback","category":"project-status","question":"What is the fallback if a cross-fork PR API call fails again?","expectedNoteIds":["cross-fork-pr-limit"],"sourceFiles":["legacy/cross-fork-pr-limit.md"]},
+    {"id":"bored-repo","category":"project-status","question":"Which repository should a bored task land in?","expectedNoteIds":["frgmt0-bored-collaborator"],"sourceFiles":["legacy/frgmt0-bored-collaborator.md"]},
+    {"id":"bored-mirror","category":"project-status","question":"Should I use the bored-hardening mirror for work on bored?","expectedNoteIds":["frgmt0-bored-collaborator"],"sourceFiles":["legacy/frgmt0-bored-collaborator.md"]},
+    {"id":"coworker-roadmap","category":"project-status","question":"Who has authority to decide the open questions in the next-level Coworker roadmap?","expectedNoteIds":["next-level-coworker"],"sourceFiles":["legacy/next-level-coworker.md"]},
+    {"id":"coworker-theme-one","category":"project-status","question":"Which first-wave Coworker tickets are already live?","expectedNoteIds":["next-level-coworker"],"sourceFiles":["legacy/next-level-coworker.md"]},
+    {"id":"ops125-status","category":"project-status","question":"Is the blip-proof workers change live yet?","expectedNoteIds":["next-level-coworker"],"sourceFiles":["legacy/next-level-coworker.md"]},
+    {"id":"channel-sessions-status","category":"project-status","question":"Are Beckett conversations still serialized through one global session?","expectedNoteIds":["per-channel-sessions-live"],"sourceFiles":["legacy/per-channel-sessions-live.md"]},
+    {"id":"channel-sessions-killswitch","category":"project-status","question":"What config setting restores the old global conversation session behavior?","expectedNoteIds":["per-channel-sessions-live"],"sourceFiles":["legacy/per-channel-sessions-live.md"]},
+    {"id":"notify-loop-cause","category":"project-status","question":"Why did the same completed ticket notification keep firing?","expectedNoteIds":["notify-refire-loop"],"sourceFiles":["legacy/notify-refire-loop.md"]},
+    {"id":"notify-loop-response","category":"project-status","question":"How should I react to repeated identical done updates until OPS-112 is fixed?","expectedNoteIds":["notify-refire-loop"],"sourceFiles":["legacy/notify-refire-loop.md"]},
+    {"id":"v5-main-rule","category":"project-status","question":"What is the rule for merging V5 daemon phases to main?","expectedNoteIds":["v5-publisher-ff-main"],"sourceFiles":["legacy/v5-publisher-ff-main.md"]},
+    {"id":"v5-pr-status","category":"project-status","question":"What is the status of the final v5-daemon to main pull request?","expectedNoteIds":["v5-publisher-ff-main"],"sourceFiles":["legacy/v5-publisher-ff-main.md"]},
+    {"id":"v5-ff-recovery","category":"project-status","question":"What should I do if the V5 publisher fast-forwards a phase onto main?","expectedNoteIds":["v5-publisher-ff-main"],"sourceFiles":["legacy/v5-publisher-ff-main.md"]},
+    {"id":"land-ticket-courier","category":"project-status","question":"A landing ticket resolved the conflict but never pushed. What should I do?","expectedNoteIds":["land-tickets-courier-early"],"sourceFiles":["legacy/land-tickets-courier-early.md"]},
+    {"id":"land-ticket-check","category":"project-status","question":"How can I confirm a pure publish task is actually ready for a courier push?","expectedNoteIds":["land-tickets-courier-early"],"sourceFiles":["legacy/land-tickets-courier-early.md"]},
+    {"id":"no-merge-verification","category":"project-status","question":"How do I verify a worker obeyed a do-not-merge instruction?","expectedNoteIds":["worker-ignores-no-merge"],"sourceFiles":["legacy/worker-ignores-no-merge.md"]},
+
+    {"id":"host-os","category":"environment-setup","question":"What operating system and machine is Beckett running on?","expectedNoteIds":["loom-desk"],"sourceFiles":["live/env/loom-desk.md"]},
+    {"id":"host-runtime-path","category":"environment-setup","question":"Where are Beckett's runtime and configuration files on loom-desk?","expectedNoteIds":["loom-desk"],"sourceFiles":["live/env/loom-desk.md"]},
+    {"id":"host-access","category":"environment-setup","question":"Does the beckett user have sudo and how is the machine reachable?","expectedNoteIds":["loom-desk"],"sourceFiles":["live/env/loom-desk.md"]},
+    {"id":"python-installs","category":"environment-setup","question":"What should I use instead of bare pip on this host?","expectedNoteIds":["toolset"],"sourceFiles":["live/reference/toolset.md"]},
+    {"id":"browser-tools","category":"environment-setup","question":"Which browser automation tools are already installed?","expectedNoteIds":["toolset"],"sourceFiles":["live/reference/toolset.md"]},
+    {"id":"installing-tools","category":"environment-setup","question":"May Beckett install a dependency that is not already in the tool list?","expectedNoteIds":["toolset","operating-principles"],"sourceFiles":["live/reference/toolset.md","live/self/operating-principles.md"]},
+    {"id":"project-directory","category":"environment-setup","question":"Where should Beckett create a new project?","expectedNoteIds":["projects"],"sourceFiles":["live/reference/projects.md"]},
+    {"id":"worker-worktree","category":"environment-setup","question":"Where does each worker get its own git worktree?","expectedNoteIds":["projects"],"sourceFiles":["live/reference/projects.md"]},
+    {"id":"memory-location","category":"environment-setup","question":"Where does Beckett keep its durable memory notes?","expectedNoteIds":["how-to-use-memory"],"sourceFiles":["live/reference/how-to-use-memory.md"]},
+    {"id":"memory-write","category":"environment-setup","question":"What belongs in a new durable memory note?","expectedNoteIds":["how-to-use-memory"],"sourceFiles":["live/reference/how-to-use-memory.md"]},
+    {"id":"memory-structure","category":"environment-setup","question":"How should memory facts be organized and linked?","expectedNoteIds":["how-to-use-memory"],"sourceFiles":["live/reference/how-to-use-memory.md"]},
+    {"id":"restart-vs-deploy","category":"environment-setup","question":"Does restarting beckett-v4.service make a merged change live?","expectedNoteIds":["restart-is-not-deploy"],"sourceFiles":["legacy/restart-is-not-deploy.md"]},
+    {"id":"real-deploy","category":"environment-setup","question":"What is the canonical way to deploy merged Beckett code?","expectedNoteIds":["restart-is-not-deploy"],"sourceFiles":["legacy/restart-is-not-deploy.md"]},
+    {"id":"self-deploy-ssh","category":"environment-setup","question":"Why can deploy-prod.sh fail even when I run it on loom-desk itself?","expectedNoteIds":["self-deploy-ssh-to-self"],"sourceFiles":["legacy/self-deploy-ssh-to-self.md"]},
+    {"id":"self-deploy-prereqs","category":"environment-setup","question":"What SSH setup is required before Beckett can deploy to itself?","expectedNoteIds":["self-deploy-ssh-to-self"],"sourceFiles":["legacy/self-deploy-ssh-to-self.md"]},
+    {"id":"self-deploy-detached","category":"environment-setup","question":"How should I run a self-deploy that will restart my own service?","expectedNoteIds":["self-deploy-ssh-to-self"],"sourceFiles":["legacy/self-deploy-ssh-to-self.md"]},
+    {"id":"claude-token-cron","category":"environment-setup","question":"Should I restore the cron job that copies Clawdio's Claude token to Beckett?","expectedNoteIds":["claude-token-sharing"],"sourceFiles":["legacy/claude-token-sharing.md"]},
+    {"id":"claude-token-source","category":"environment-setup","question":"Why did syncing Claude credentials from the claude account break Beckett?","expectedNoteIds":["claude-token-sharing"],"sourceFiles":["legacy/claude-token-sharing.md"]},
+    {"id":"claude-token-fix","category":"environment-setup","question":"What is the durable fix for recurring Claude token invalidation?","expectedNoteIds":["claude-token-sharing"],"sourceFiles":["legacy/claude-token-sharing.md"]},
+    {"id":"worker-stall-diagnosis","category":"environment-setup","question":"Where should I look for a worker that appears stuck after ten minutes?","expectedNoteIds":["worker-timeout-silent-wedge"],"sourceFiles":["legacy/worker-timeout-silent-wedge.md"]},
+
+    {"id":"adversarial-zoom-fable","category":"adversarial","question":"can zoom use fable","expectedNoteIds":["zoom-can-use-fable"],"hardNegativeNoteIds":["website-deploy-apex-blocked","how-to-use-memory"],"sourceFiles":["legacy/zoom-can-use-fable.md","live/references/website-deploy-apex-blocked.md","live/reference/how-to-use-memory.md"]},
+    {"id":"adversarial-zoom-confirm","category":"adversarial","question":"Does zoom need a separate confirmation before asking for Fable?","expectedNoteIds":["zoom-can-use-fable"],"hardNegativeNoteIds":["claude-model-casting"],"sourceFiles":["legacy/zoom-can-use-fable.md","legacy/claude-model-casting.md"]},
+    {"id":"adversarial-apex-not-zoom","category":"adversarial","question":"Can I deploy the 0xbeckett.me apex myself?","expectedNoteIds":["website-deploy-apex-blocked"],"hardNegativeNoteIds":["zoom-can-use-fable","self-deploy-ssh-to-self"],"sourceFiles":["live/references/website-deploy-apex-blocked.md","legacy/zoom-can-use-fable.md","legacy/self-deploy-ssh-to-self.md"]},
+    {"id":"adversarial-new-worker","category":"adversarial","question":"Can Beckett deploy a brand-new Worker subdomain?","expectedNoteIds":["website-deploy-apex-blocked"],"hardNegativeNoteIds":["restart-is-not-deploy"],"sourceFiles":["live/references/website-deploy-apex-blocked.md","legacy/restart-is-not-deploy.md"]},
+    {"id":"adversarial-fable-generic","category":"adversarial","question":"When is Fable appropriate for a massive critical review?","expectedNoteIds":["claude-model-casting"],"hardNegativeNoteIds":["zoom-can-use-fable"],"sourceFiles":["legacy/claude-model-casting.md","legacy/zoom-can-use-fable.md"]},
+    {"id":"adversarial-restart-not-live","category":"adversarial","question":"I restarted the daemon after merging. Why is the new code not live?","expectedNoteIds":["restart-is-not-deploy"],"hardNegativeNoteIds":["self-restart-on-owner-request","self-deploy-ssh-to-self"],"sourceFiles":["legacy/restart-is-not-deploy.md","legacy/self-restart-on-owner-request.md","legacy/self-deploy-ssh-to-self.md"]},
+    {"id":"adversarial-authorized-restart","category":"adversarial","question":"Who is allowed to ask Beckett to restart or deploy itself?","expectedNoteIds":["self-restart-on-owner-request"],"hardNegativeNoteIds":["restart-is-not-deploy"],"sourceFiles":["legacy/self-restart-on-owner-request.md","legacy/restart-is-not-deploy.md"]},
+    {"id":"adversarial-discord-timeout","category":"adversarial","question":"The Discord reply timed out; should I retry the send?","expectedNoteIds":["discord-reply-timeout-no-retry"],"hardNegativeNoteIds":["notify-refire-loop"],"sourceFiles":["legacy/discord-reply-timeout-no-retry.md","legacy/notify-refire-loop.md"]},
+    {"id":"adversarial-notify-timeout","category":"adversarial","question":"Why are done notifications repeating after a timeout?","expectedNoteIds":["notify-refire-loop"],"hardNegativeNoteIds":["discord-reply-timeout-no-retry"],"sourceFiles":["legacy/notify-refire-loop.md","legacy/discord-reply-timeout-no-retry.md"]},
+    {"id":"adversarial-worker-render","category":"adversarial","question":"Why does a long ffmpeg render look stalled even though it is working?","expectedNoteIds":["ffmpeg-render-trips-worker-alarm"],"hardNegativeNoteIds":["worker-timeout-silent-wedge"],"sourceFiles":["legacy/ffmpeg-render-trips-worker-alarm.md","legacy/worker-timeout-silent-wedge.md"]},
+    {"id":"adversarial-worker-wallclock","category":"adversarial","question":"Why is a ticket wedged in progress after a worker hit ten minutes?","expectedNoteIds":["worker-timeout-silent-wedge"],"hardNegativeNoteIds":["ffmpeg-render-trips-worker-alarm"],"sourceFiles":["legacy/worker-timeout-silent-wedge.md","legacy/ffmpeg-render-trips-worker-alarm.md"]},
+    {"id":"adversarial-short-video","category":"adversarial","question":"How long should contributors make video pipeline renders?","expectedNoteIds":["video-pipeline-shorts"],"hardNegativeNoteIds":["ffmpeg-render-trips-worker-alarm","discord-file-attach"],"sourceFiles":["legacy/video-pipeline-shorts.md","legacy/ffmpeg-render-trips-worker-alarm.md","legacy/discord-file-attach.md"]},
+    {"id":"adversarial-video-heartbeat","category":"adversarial","question":"How do I keep a render worker from tripping its no-activity alarm?","expectedNoteIds":["ffmpeg-render-trips-worker-alarm"],"hardNegativeNoteIds":["video-pipeline-shorts"],"sourceFiles":["legacy/ffmpeg-render-trips-worker-alarm.md","legacy/video-pipeline-shorts.md"]},
+    {"id":"adversarial-public-info","category":"adversarial","question":"What is Jason's GitHub username, without sharing private contact details?","expectedNoteIds":["jason"],"hardNegativeNoteIds":["dont-dox-jason"],"sourceFiles":["live/people/jason.md","legacy/dont-dox-jason.md"]},
+    {"id":"adversarial-private-info","category":"adversarial","question":"Can I reveal Jason's email because it is in my context?","expectedNoteIds":["dont-dox-jason"],"hardNegativeNoteIds":["jason"],"sourceFiles":["legacy/dont-dox-jason.md","live/people/jason.md"]},
+    {"id":"adversarial-bored-pr","category":"adversarial","question":"How should I open a PR for frgmt0/bored?","expectedNoteIds":["frgmt0-bored-collaborator"],"hardNegativeNoteIds":["cross-fork-pr-limit"],"sourceFiles":["legacy/frgmt0-bored-collaborator.md","legacy/cross-fork-pr-limit.md"]},
+    {"id":"adversarial-external-pr","category":"adversarial","question":"How should I open a PR to an external repo where Beckett is not a collaborator?","expectedNoteIds":["cross-fork-pr-limit"],"hardNegativeNoteIds":["frgmt0-bored-collaborator"],"sourceFiles":["legacy/cross-fork-pr-limit.md","legacy/frgmt0-bored-collaborator.md"]},
+    {"id":"adversarial-v5-no-merge","category":"adversarial","question":"A V5 phase was put on main before Jason merged the final PR. What is the recovery?","expectedNoteIds":["v5-publisher-ff-main"],"hardNegativeNoteIds":["worker-ignores-no-merge"],"sourceFiles":["legacy/v5-publisher-ff-main.md","legacy/worker-ignores-no-merge.md"]},
+    {"id":"adversarial-no-merge-check","category":"adversarial","question":"Before saying a no-merge ticket's PR is ready, what must I verify?","expectedNoteIds":["worker-ignores-no-merge"],"hardNegativeNoteIds":["v5-publisher-ff-main"],"sourceFiles":["legacy/worker-ignores-no-merge.md","legacy/v5-publisher-ff-main.md"]},
+    {"id":"adversarial-memory-vs-project","category":"adversarial","question":"Where should I write a durable fact instead of creating a new code project?","expectedNoteIds":["how-to-use-memory"],"hardNegativeNoteIds":["projects"],"sourceFiles":["live/reference/how-to-use-memory.md","live/reference/projects.md"]},
+    {"id":"adversarial-project-vs-memory","category":"adversarial","question":"Where should I initialize a new repository instead of writing a memory note?","expectedNoteIds":["projects"],"hardNegativeNoteIds":["how-to-use-memory"],"sourceFiles":["live/reference/projects.md","live/reference/how-to-use-memory.md"]}
   ]
 }
