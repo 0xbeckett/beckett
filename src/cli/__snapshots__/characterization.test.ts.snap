@@ -98,7 +98,7 @@ exports[`cli: recall: no query prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] [--as-self | --viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] [--json]
+"error: usage: beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] [--agent [luna|haiku]] [--follow-up <question>] [--as-self | --viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] [--json]
 "
 ,
   "stdout": "",
@@ -145,7 +145,7 @@ exports[`cli: memory: recall without args prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] [--as-self | --viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] [--json]
+"error: usage: beckett recall "<query>" [--type person,project,...] [--name <node>,...] [--k N] [--hops N] [--agent [luna|haiku]] [--follow-up <question>] [--as-self | --viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] [--json]
 "
 ,
   "stdout": "",
