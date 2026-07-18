@@ -416,6 +416,8 @@ export class ConciergeSession {
   private sessionId: string;
 
   private child: Child | null = null;
+  /** Single-flight child relaunch shared by runTurn and prewarm — a race cannot double-spawn (issue #153). */
+  private relaunching: Promise<void> | null = null;
   private pending: PendingTurn | null = null;
   /**
    * Serializes turns (claude sees one input at a time) as a REAL queue, not a promise chain, so
@@ -594,7 +596,7 @@ export class ConciergeSession {
 
   private async runTurn(message: TurnMessage, meta?: unknown): Promise<DiscordTurnOutput> {
     if (this.stopped) throw new Error("concierge session stopped");
-    if (!this.child) await this.relaunch();
+    if (!this.child) await this.ensureChild();
     const child = this.child;
     if (!child) throw new Error("concierge session has no live process");
     this.currentMeta = meta ?? null;
@@ -642,6 +644,33 @@ export class ConciergeSession {
   /** Whether a `claude` child process is currently alive for this session. */
   hasLiveChild(): boolean {
     return this.child !== null;
+  }
+
+  /**
+   * Start a recycled child's relaunch NOW, without a turn (issue #153): on a mention the spawn
+   * then overlaps buildTurn's attachment downloads instead of serializing after them. No-op when
+   * a child is live, the session is stopped, or a relaunch is already in flight; a racing ask
+   * awaits the SAME single-flight promise, so a prewarm/turn race can never double-spawn.
+   */
+  prewarm(): void {
+    if (this.stopped || this.child) return;
+    this.ensureChild().catch((err) => {
+      // A speculative warm-up must never surface as an unhandled rejection. ensureChild cleared
+      // the single-flight latch, so the next runTurn retries its own relaunch and reports there.
+      this.log.warn("concierge prewarm relaunch failed", {
+        sessionId: this.sessionId,
+        err: String(err),
+      });
+    });
+  }
+
+  /** The shared single-flight relaunch: every caller in the window awaits the ONE promise. */
+  private ensureChild(): Promise<void> {
+    if (this.child) return Promise.resolve();
+    this.relaunching ??= this.relaunch().finally(() => {
+      this.relaunching = null;
+    });
+    return this.relaunching;
   }
 
   /**
@@ -3156,6 +3185,13 @@ export class Concierge {
       await this.denyOutsider(m);
       return;
     }
+
+    // Pre-warm the channel's session child (issue #153): if this scope already exists in the pool
+    // with a recycled child, start the `--resume` relaunch NOW so the spawn overlaps buildTurn's
+    // attachment downloads instead of serializing after them. Only mention/DM/workspace messages
+    // reach this line (the ambient split returned above), and the pool skips scopes it doesn't
+    // already hold, so a message that never produces a turn cannot create a session.
+    this.pool.prewarm(m.channelId);
 
     // Bouncer approvals resolve at CODE level, bound to Discord's authenticated author id.
     // The turn never reaches the LLM, so no amount of chat content ("Jason said it's ok",
