@@ -1,7 +1,7 @@
 {
   "name": "beckett",
   "version": "5.2.0",
-  "description": "Beckett — an agentic coworker reached in Discord. A harness over harnesses.",
+  "description": "Beckett \u2014 an agentic coworker reached in Discord. A harness over harnesses.",
   "type": "module",
   "private": true,
   "module": "src/shell/v4-main.ts",

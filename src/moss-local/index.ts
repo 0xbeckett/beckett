@@ -213,7 +213,8 @@ export class LocalMoss {
       embeddingModel: LOCAL_EMBEDDING_MODEL,
       documents: [...this.documents.values()],
     };
-    // Write sidecar first: a completed .moss file is never paired with future document metadata.
+    // Each durable file is replaced atomically; the sidecar retains typed metadata that Moss's
+    // binary document format intentionally stores as strings.
     await atomicWrite(this.documentsPath, `${JSON.stringify(docs)}\n`);
     await atomicWrite(this.indexPath, serializeToBinary(this.index.serialize()));
   }
