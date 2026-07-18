@@ -51,6 +51,72 @@ test("a released slot hands off to the oldest waiter without overshooting", asyn
   expect(gate.stats()).toEqual({ limit: 1, active: 0, waiting: 0 });
 });
 
+test("a priority acquire jumps ahead of earlier normal waiters (issue #120)", async () => {
+  const gate = new TurnGate(1);
+  const order: string[] = [];
+  const holder = await gate.acquire();
+  const normalA = gate.acquire().then((r) => {
+    order.push("normalA");
+    return r;
+  });
+  const normalB = gate.acquire().then((r) => {
+    order.push("normalB");
+    return r;
+  });
+  const person = gate.acquire(true).then((r) => {
+    order.push("person");
+    return r;
+  });
+  expect(gate.stats().waiting).toBe(3);
+  holder();
+  (await person)();
+  (await normalA)();
+  (await normalB)();
+  expect(order).toEqual(["person", "normalA", "normalB"]);
+  expect(gate.stats()).toEqual({ limit: 1, active: 0, waiting: 0 });
+});
+
+test("FIFO holds among same-class waiters — priority behind earlier priority, normal behind normal", async () => {
+  const gate = new TurnGate(1);
+  const order: string[] = [];
+  const holder = await gate.acquire();
+  const track = (name: string, priority: boolean) =>
+    gate.acquire(priority).then((r) => {
+      order.push(name);
+      return r;
+    });
+  const normal1 = track("normal1", false);
+  const person1 = track("person1", true);
+  const normal2 = track("normal2", false);
+  const person2 = track("person2", true);
+  holder();
+  (await person1)();
+  (await person2)();
+  (await normal1)();
+  (await normal2)();
+  expect(order).toEqual(["person1", "person2", "normal1", "normal2"]);
+});
+
+test("a priority waiter takes a released slot by direct handoff without overshooting", async () => {
+  const gate = new TurnGate(1);
+  const first = await gate.acquire();
+  let personIn = false;
+  const person = gate.acquire(true).then((r) => {
+    personIn = true;
+    return r;
+  });
+  expect(gate.saturated()).toBeTrue();
+  first();
+  // The handoff keeps the slot occupied — a racing fresh acquire must queue, not steal it.
+  const thief = gate.acquire().then((r) => r);
+  const release = await person;
+  expect(personIn).toBeTrue();
+  expect(gate.saturated()).toBeTrue();
+  release();
+  (await thief)();
+  expect(gate.stats()).toEqual({ limit: 1, active: 0, waiting: 0 });
+});
+
 test("release is idempotent — a double call frees exactly one slot", async () => {
   const gate = new TurnGate(1);
   const release = await gate.acquire();
