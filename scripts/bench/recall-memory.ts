@@ -161,7 +161,10 @@ for (const { q, expect } of QUERIES) {
   const moss = await store.recall({ text: q, audience: SELF_AUDIENCE }); // transplanted path
   const baseTop5 = names(base);
   const mossTop5 = names(moss);
-  const mossAll = new Set(moss.hits.map((h) => h.node.name));
+  // "Dropped" means gone from moss retrieval entirely (not merely ranked out of the top-k):
+  // check the baseline's top hits against a depth-100 moss recall.
+  const deep = await store.recall({ text: q, k: 100, audience: SELF_AUDIENCE });
+  const mossAll = new Set(deep.hits.map((h) => h.node.name));
   rows.push({
     q,
     expect,
@@ -264,6 +267,9 @@ lines.push("|---|---|---|---|---|---|");
 for (const r of rows) {
   lines.push(`| ${r.q} | ${r.expect} | ${r.baseRank ?? "—"} | ${r.mossRank ?? "—"} | ${r.overlap5}/5 | ${r.dropped.join(", ") || "none"} |`);
 }
+lines.push("");
+lines.push("(top-5 overlap below 5/5 is rank shuffling between two different rankers; a fact only");
+lines.push("counts as dropped if a depth-100 moss recall does not return it at all.)");
 lines.push("");
 lines.push(`- expected node found: baseline ${found.base}/${rows.length}, moss ${found.moss}/${rows.length}`);
 lines.push(`- expected in top-1: baseline ${top1.base}/${rows.length}, moss ${top1.moss}/${rows.length}`);

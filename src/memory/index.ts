@@ -677,7 +677,11 @@ export function recallOver(
       if (q.hint?.types?.includes(node.type)) s += 5;
       if (nameFilter?.has(node.name)) s += 100; // an explicitly named node is never ranked out
       if (s <= RELEVANCE_FLOOR) return null;
-      s *= recency(node, now);
+      // Freshness shaping. The ×1.15 multiplier is calibrated for lexical magnitudes, where
+      // real ties are common and relative gaps are wide. Moss's rank-fused scores are
+      // compressed (a few % between adjacent ranks), so multiplying would let freshness leap
+      // several relevance ranks; there it degrades to a pure tie-breaker (issue #20).
+      s = scoreOf ? s + (recency(node, now) - 1) * 1e-3 : s * recency(node, now);
       if (node.stale) s *= 0.5; // deprioritize, don't drop (Spec 08 §1.5)
       return { node, score: s, via: "match", reason: "relevance match" };
     })

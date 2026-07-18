@@ -70,7 +70,7 @@ async function seedScoped(store: MemoryStore): Promise<void> {
 
 // ── retrieval is served by moss ──────────────────────────────────────────────────────────
 
-test("recall hit scores ARE local moss scores (modulo the in-code recency boost)", async () => {
+test("recall hit scores ARE local moss scores (modulo the recency tie-breaker epsilon)", async () => {
   const { store, dir } = tempStore();
   await store.remember({
     op: "create", name: "docs-site", type: "project",
@@ -89,12 +89,12 @@ test("recall hit scores ARE local moss scores (modulo the in-code recency boost)
   expect(r.hits[0]!.node.name).toBe("docs-site");
 
   // Recompute the ranking straight from the persisted index: every hit's score must be the
-  // moss score times the recency multiplier (both nodes were written seconds ago ⇒ 1.15).
+  // moss score plus the freshness tie-breaker epsilon (nodes written seconds ago ⇒ +0.00015).
   const moss = await openMemoryMoss(dir, quietLog);
   const raw = mossScores(moss, query);
   expect(raw.size).toBeGreaterThan(0);
   for (const h of r.hits) {
-    expect(h.score).toBeCloseTo(raw.get(h.node.name)! * 1.15, 9);
+    expect(h.score).toBeCloseTo(raw.get(h.node.name)! + 0.15 * 1e-3, 9);
   }
 });
 
