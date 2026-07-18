@@ -1,6 +1,6 @@
 # Fully-local Moss runtime
 
-`src/moss-local/` is an internal-only retrieval boundary for the later memory transplant. It does **not** change Beckett's existing markdown memory graph or the `recall`/`remember` CLI.
+`src/moss-local/` is an internal-only retrieval boundary. Since issue #20 it serves memory recall's ranking (see **Consumers** below); the markdown memory graph stays canonical and the `recall`/`remember` CLI surface is unchanged.
 
 ## What is local
 
@@ -40,6 +40,17 @@ const result = moss.query("how do I ship it?", { project: "beckett" });
 ```
 
 `query(text, filters, options?)` performs hybrid semantic + keyword retrieval. Filters are ANDed exact values by default and support `$eq`, `$ne`, `$in`, and `$nin`, for example `{ visibility: { $in: ["owner", "team"] } }`. Query hits retain original string/number/boolean metadata.
+
+## Consumers
+
+- **Memory recall (issue #20)** — `src/memory/moss.ts` keeps a per-store index under
+  `<memoryDir>/.moss/` (diff-synced from the markdown tree on every recall/remember/maintain,
+  which also migrates a pre-moss store on first contact) and serves `beckett recall`'s ranking
+  through `LocalMoss.query`: the keyword arm (`semanticWeight: 0`) decides which nodes match,
+  the hybrid arm ranks them. Visibility scoping is enforced in `src/memory/index.ts`
+  (`recallOver`), never here — the index holds scoped documents and must not be treated as an
+  access boundary. Quality/latency numbers vs the pre-moss lexical baseline:
+  [`docs/recall-moss-benchmark.md`](./recall-moss-benchmark.md) (`bun run memory:bench`).
 
 ## Attribution
 
