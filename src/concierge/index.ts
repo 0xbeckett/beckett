@@ -121,10 +121,16 @@ function startupChannelId(): string | null {
 
 /**
  * Where the restart "what's new" release note lands (owner's pick: #announcements). The `announce` config
- * still gates WHETHER it fires (fork-silent by default), but the post itself always goes here — this
- * is the send target baked into the injected SYSTEM prompt, not a per-instance config knob.
+ * still gates WHETHER it fires (fork-silent by default); the target defaults to this constant,
+ * overridable via `BECKETT_RELEASE_NOTE_CHANNEL_ID` or suppressed entirely with `disabled`.
  */
 const RELEASE_NOTE_CHANNEL_ID = "1523507437485948958";
+
+function releaseNoteChannelId(): string | null {
+  const configured = process.env.BECKETT_RELEASE_NOTE_CHANNEL_ID?.trim();
+  if (configured?.toLowerCase() === "disabled") return null;
+  return configured || RELEASE_NOTE_CHANNEL_ID;
+}
 
 /**
  * Reserved pool scope for system-origin turns when no real channel applies (startup channel
@@ -145,6 +151,11 @@ function scopeStateFile(beckettDir: string, scope: string): string {
 
 /** Dedicated home for task, branch, and subscription-status cards. */
 export const CARDS_CHANNEL_ID = "1525690195234521179";
+
+/** Cards channel, overridable via `BECKETT_CARDS_CHANNEL_ID` (unset/empty → the constant). */
+function cardsChannelId(): string {
+  return process.env.BECKETT_CARDS_CHANNEL_ID?.trim() || CARDS_CHANNEL_ID;
+}
 
 /** Hard ceiling on one chat turn before we give up waiting for its `result` line. */
 const TURN_TIMEOUT_MS = 240_000;
@@ -312,6 +323,9 @@ const CRASH_LOOP_THRESHOLD = 3;
 /** The immediate "you're seen" reply when a mention lands behind a busy session (issue #24). */
 const FAST_ACK_TEXT = "On it — I'm mid-task right now, you're next in line.";
 
+/** One fast ack per channel per this window — rapid mentions get one bubble, not one each (issue #128). */
+const FAST_ACK_DEDUPE_MS = 60_000;
+
 /** Prompt that asks the dying session for a compact handoff before we drop its transcript. */
 const HANDOFF_PROMPT =
   "SYSTEM: Your conversation context is about to be compacted and this transcript dropped.\n" +
@@ -416,6 +430,8 @@ export class ConciergeSession {
   private sessionId: string;
 
   private child: Child | null = null;
+  /** Single-flight child relaunch shared by runTurn and prewarm — a race cannot double-spawn (issue #153). */
+  private relaunching: Promise<void> | null = null;
   private pending: PendingTurn | null = null;
   /**
    * Serializes turns (claude sees one input at a time) as a REAL queue, not a promise chain, so
@@ -525,7 +541,11 @@ export class ConciergeSession {
     this.pumping = true;
     try {
       while (this.turnQueue.length > 0) {
-        const release = this.gate ? await this.gate.acquire() : null;
+        // A person turn at the head (issue #120) carries its priority into the pool gate, so it
+        // never waits behind system turns queued by OTHER channels. Peek — the entry is shifted
+        // only after the slot is won, so a stop() during the wait still finds the queue to drain.
+        const priority = this.turnQueue[0]?.priority === true;
+        const release = this.gate ? await this.gate.acquire(priority) : null;
         // A stop() during the gate wait drained the queue — release the slot and bail.
         const entry = this.turnQueue.shift();
         if (!entry) {
@@ -594,7 +614,7 @@ export class ConciergeSession {
 
   private async runTurn(message: TurnMessage, meta?: unknown): Promise<DiscordTurnOutput> {
     if (this.stopped) throw new Error("concierge session stopped");
-    if (!this.child) await this.relaunch();
+    if (!this.child) await this.ensureChild();
     const child = this.child;
     if (!child) throw new Error("concierge session has no live process");
     this.currentMeta = meta ?? null;
@@ -642,6 +662,33 @@ export class ConciergeSession {
   /** Whether a `claude` child process is currently alive for this session. */
   hasLiveChild(): boolean {
     return this.child !== null;
+  }
+
+  /**
+   * Start a recycled child's relaunch NOW, without a turn (issue #153): on a mention the spawn
+   * then overlaps buildTurn's attachment downloads instead of serializing after them. No-op when
+   * a child is live, the session is stopped, or a relaunch is already in flight; a racing ask
+   * awaits the SAME single-flight promise, so a prewarm/turn race can never double-spawn.
+   */
+  prewarm(): void {
+    if (this.stopped || this.child) return;
+    this.ensureChild().catch((err) => {
+      // A speculative warm-up must never surface as an unhandled rejection. ensureChild cleared
+      // the single-flight latch, so the next runTurn retries its own relaunch and reports there.
+      this.log.warn("concierge prewarm relaunch failed", {
+        sessionId: this.sessionId,
+        err: String(err),
+      });
+    });
+  }
+
+  /** The shared single-flight relaunch: every caller in the window awaits the ONE promise. */
+  private ensureChild(): Promise<void> {
+    if (this.child) return Promise.resolve();
+    this.relaunching ??= this.relaunch().finally(() => {
+      this.relaunching = null;
+    });
+    return this.relaunching;
   }
 
   /**
@@ -1351,6 +1398,8 @@ export class Concierge {
   private readonly activeMentions = new Map<string, MentionClaim>();
   /** Last static denial by channel+user, so denied DMs/mentions cannot spam Discord. */
   private readonly accessDenyAt = new Map<string, number>();
+  /** Last fast ack by channel, so rapid mentions get one ack bubble instead of one each (issue #128). */
+  private readonly fastAckAt = new Map<string, number>();
   /**
    * The ambient-interjection coordinator (proposal §4). Owns per-channel ring buffers, debounce,
    * cooldowns, and the offer ledger; calls back into {@link runAmbientTurn} to run a session turn.
@@ -2022,7 +2071,7 @@ export class Concierge {
       const task = this.tasks.getTask(raw);
       if (!task) throw new Error(`no such task: ${raw}`);
       await this.postCards([renderTaskEmbed(task)], `Task card for ${displayTaskName(task)}`);
-      return { content: `Posted ${displayTaskName(task)} card in <#${CARDS_CHANNEL_ID}>.` };
+      return { content: `Posted ${displayTaskName(task)} card in <#${cardsChannelId()}>.` };
     }
     if (command.name === "branch") {
       if (!this.branchStatus) throw new Error("branch status provider is unavailable");
@@ -2033,7 +2082,7 @@ export class Concierge {
           ? [{ label: "Open repository", url: card.publication.url }]
           : undefined;
       await this.postCards([renderBranchEmbed(card)], `Branch card for #${card.ref}`, buttons);
-      return { content: `Posted branch card in <#${CARDS_CHANNEL_ID}>.` };
+      return { content: `Posted branch card in <#${cardsChannelId()}>.` };
     }
     if (command.name === "stats") {
       const ownerId = this.ownerId();
@@ -2042,7 +2091,7 @@ export class Concierge {
       }
       const usages = await this.subscriptionUsage.readAll();
       await this.postCards(renderSubscriptionUsageEmbeds(usages), "Subscription usage cards");
-      return { content: `Posted subscription usage cards in <#${CARDS_CHANNEL_ID}>.` };
+      return { content: `Posted subscription usage cards in <#${cardsChannelId()}>.` };
     }
     throw new Error(`unsupported Discord command: ${command.name} ${command.subcommand ?? ""}`.trim());
   }
@@ -2055,13 +2104,14 @@ export class Concierge {
     replyToMessageId?: string,
     replyToUserId?: string,
   ): Promise<string> {
-    const messageId = await this.gateway.post(CARDS_CHANNEL_ID, "", {
+    const channelId = cardsChannelId();
+    const messageId = await this.gateway.post(channelId, "", {
       ...(replyToMessageId ? { replyToMessageId } : {}),
       ...(replyToUserId ? { replyToUserId } : {}),
       embeds,
       ...(buttons?.length ? { buttons } : {}),
     });
-    this.recordBeckettPost(CARDS_CHANNEL_ID, recordText, messageId);
+    this.recordBeckettPost(channelId, recordText, messageId);
     return messageId;
   }
 
@@ -2175,12 +2225,15 @@ export class Concierge {
       // Persist BEFORE the async post so a restart mid-announce can't re-announce the same range.
       writeAnnouncedSha(announcedFile, head);
       if (subjects.length === 0) return;
-      // `channelId` (config) gates whether we announce; the post itself always lands in #announcements
-      // (`RELEASE_NOTE_CHANNEL_ID`) — the release note is Beckett's own version glow-up, not a per-fork feed.
+      // `channelId` (config) gates whether we announce; the post itself lands in #announcements
+      // (`releaseNoteChannelId()`, env-overridable) — the release note is Beckett's own version
+      // glow-up, not a per-fork feed. `disabled` skips the post (the sha above still persisted).
+      const releaseChannelId = releaseNoteChannelId();
+      if (!releaseChannelId) return;
       void this.pool
-        .ask(RELEASE_NOTE_CHANNEL_ID, buildReleaseNote(RELEASE_NOTE_CHANNEL_ID, subjects))
+        .ask(releaseChannelId, buildReleaseNote(releaseChannelId, subjects))
         .catch((err) => this.log.warn("changes announcement turn failed (continuing)", { err: String(err) }));
-      this.log.info("queued changes announcement", { channelId: RELEASE_NOTE_CHANNEL_ID, commits: subjects.length });
+      this.log.info("queued changes announcement", { channelId: releaseChannelId, commits: subjects.length });
     } catch (err) {
       this.log.warn("changes announcement failed (continuing)", { err: String(err) });
     }
@@ -3157,6 +3210,13 @@ export class Concierge {
       return;
     }
 
+    // Pre-warm the channel's session child (issue #153): if this scope already exists in the pool
+    // with a recycled child, start the `--resume` relaunch NOW so the spawn overlaps buildTurn's
+    // attachment downloads instead of serializing after them. Only mention/DM/workspace messages
+    // reach this line (the ambient split returned above), and the pool skips scopes it doesn't
+    // already hold, so a message that never produces a turn cannot create a session.
+    this.pool.prewarm(m.channelId);
+
     // Bouncer approvals resolve at CODE level, bound to Discord's authenticated author id.
     // The turn never reaches the LLM, so no amount of chat content ("Jason said it's ok",
     // a quoted approval, an injected instruction) can mint a member — only the owner
@@ -3182,8 +3242,8 @@ export class Concierge {
           [renderBranchEmbed(card)],
           `Branch card for #${branchRef}`,
           buttons,
-          m.channelId === CARDS_CHANNEL_ID ? m.messageId : undefined,
-          m.channelId === CARDS_CHANNEL_ID ? m.userId : undefined,
+          m.channelId === cardsChannelId() ? m.messageId : undefined,
+          m.channelId === cardsChannelId() ? m.userId : undefined,
         );
         return;
       } catch (err) {
@@ -3215,11 +3275,17 @@ export class Concierge {
     // Fast ack (issue #24): a channel's session is single-flight, so a mention landing while that
     // channel already has a turn running (or queued), or while the pool's turn gate is saturated,
     // would sit for minutes behind only a typing indicator. Acknowledge within seconds —
-    // code-level, no model turn.
+    // code-level, no model turn. Deduped per channel (issue #128, same shape as accessDenyAt):
+    // three rapid mentions get ONE ack bubble, not three identical ones.
     if ((this.pool.sessionFor(m.channelId).queueDepth?.() ?? 0) > 0 || this.turnGate.saturated()) {
-      void this.gateway
-        .post(m.channelId, FAST_ACK_TEXT, { replyToMessageId: m.messageId, replyToUserId: m.userId })
-        .catch(() => undefined);
+      const now = Date.now();
+      const last = this.fastAckAt.get(m.channelId) ?? 0;
+      if (now - last >= FAST_ACK_DEDUPE_MS) {
+        this.fastAckAt.set(m.channelId, now);
+        void this.gateway
+          .post(m.channelId, FAST_ACK_TEXT, { replyToMessageId: m.messageId, replyToUserId: m.userId })
+          .catch(() => undefined);
+      }
     }
 
     try {

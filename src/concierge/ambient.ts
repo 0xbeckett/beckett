@@ -172,6 +172,12 @@ class Coordinator implements AmbientCoordinator {
   private readonly lastBeckettPostAt = new Map<string, number>();
   /** Channels already lazily backfilled from the persisted store after a restart (#125). */
   private readonly beckettPostBackfilled = new Set<string>();
+  /**
+   * Bumped on every mention (#118). A flush snapshots this on entry and re-checks it after each
+   * await, so a mention landing while triage is in flight aborts the ambient reply instead of
+   * double-responding next to the mention path's session turn.
+   */
+  private readonly mentionEpoch = new Map<string, number>();
   private interjectionTimes: number[] = [];
 
   constructor(deps: CreateAmbientCoordinatorDeps) {
@@ -211,6 +217,7 @@ class Coordinator implements AmbientCoordinator {
   }
 
   noteMention(channelId: string): void {
+    this.mentionEpoch.set(channelId, (this.mentionEpoch.get(channelId) ?? 0) + 1);
     const timer = this.debounceTimers.get(channelId);
     if (timer) this.clock.clearTimeout(timer);
     this.debounceTimers.delete(channelId);
@@ -323,6 +330,14 @@ class Coordinator implements AmbientCoordinator {
 
   private async flushBurst(channelId: string): Promise<void> {
     try {
+      // #118: a mention arriving BEFORE the flush cancels the debounce timer outright, but one
+      // arriving DURING the seconds-wide triage await used to slip through — both paths answered.
+      const epochAtEntry = this.mentionEpoch.get(channelId) ?? 0;
+      const mentionRaced = (): boolean => {
+        if ((this.mentionEpoch.get(channelId) ?? 0) === epochAtEntry) return false;
+        this.logger.info("ambient flush aborted: mention arrived mid-flight", { channel: channelId });
+        return true;
+      };
       const burst = this.bursts.get(channelId) ?? [];
       this.bursts.delete(channelId);
       if (burst.length === 0) return;
@@ -339,6 +354,7 @@ class Coordinator implements AmbientCoordinator {
         // invite Beckett. Use the fast classifier before any typing/full session instead of a brittle
         // wording heuristic or an unconditional skip.
         verdict = await this.triage(burst, transcript, { channelId });
+        if (mentionRaced()) return;
         if (!passesTriageGate(verdict, this.config.triage_threshold)) {
           this.logger.info("ambient engaged human reply skipped", { channel: channelId, burst: burst.length });
           return;
@@ -358,6 +374,7 @@ class Coordinator implements AmbientCoordinator {
       } else {
         if (this.isCapped(channelId)) return;
         verdict = await this.triage(burst, transcript, { channelId });
+        if (mentionRaced()) return;
         // A turn mechanically read as aimed at another person is not Beckett's to answer. Keep this
         // invariant outside the model so an internally inconsistent high-score verdict cannot barge
         // into a human-to-human exchange.
@@ -365,6 +382,7 @@ class Coordinator implements AmbientCoordinator {
         if (this.isCapped(channelId)) return;
       }
 
+      if (mentionRaced()) return;
       const output = await this.engage({ kind: "candidate", channelId, burst, transcript, verdict, engaged });
       if (!isAmbientPass(output)) {
         // Any real post opens/refreshes the engaged window (belt to the Concierge's suspenders —

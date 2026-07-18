@@ -128,6 +128,7 @@ const fakeSpawn = async (args: any) => {
 
 let provisioned: string[] = [];
 let provisionedOwners: string[] = [];
+let failProvision: Error | null = null;
 let commitResult: { committed: boolean; sha: string | null } = { committed: true, sha: "commit000" };
 let commitCalls: { workspace: string; message: string }[] = [];
 let diffSince = true;
@@ -148,6 +149,7 @@ const gitFakes: Partial<GitOps> = {
   headSha: async () => "base000", // v3.1 per-ticket diff base (fake repo has no real HEAD)
   hasDiffSince: async () => diffSince,
   ensureProjectRepo: async (_repoRoot: string, slug: string, owner?: string) => {
+    if (failProvision) throw failProvision;
     provisioned.push(slug);
     provisionedOwners.push(owner ?? "");
   },
@@ -292,6 +294,7 @@ beforeEach(() => {
   worktreeRemoves = [];
   worktreeMerges = [];
   failNextResumeSpawn = false;
+  failProvision = null;
 });
 
 // ── tests ─────────────────────────────────────────────────────────────────────────────────
@@ -1836,6 +1839,22 @@ describe("preflight + failure taxonomy", () => {
     expect(spawnCalls).toHaveLength(0);
     const note = client.comments.at(-1);
     expect(note?.body).toContain("Could not start the implement worker");
+    expect(note?.body).toContain("Retrying in 30s (attempt 1/3)");
+  });
+
+  test("preflight AND provisioning both failing still fails the spawn cleanly (overlapped preflight settles)", async () => {
+    failProvision = new Error("clone exploded");
+    const { d, client } = newDispatcher(2, {
+      preflight: async () => ({ ok: false, problems: ["everything is down"] }),
+    });
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    expect(spawnCalls).toHaveLength(0);
+    const note = client.comments.at(-1);
+    expect(note?.body).toContain("Could not start the implement worker");
+    expect(note?.body).toContain("could not provision the project repo");
     expect(note?.body).toContain("Retrying in 30s (attempt 1/3)");
   });
 

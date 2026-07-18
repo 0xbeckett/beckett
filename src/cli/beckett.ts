@@ -1375,7 +1375,7 @@ async function runRpc(argv: string[]): Promise<void> {
   const { _, flags } = parse([sub, ...rest].filter(Boolean) as string[]);
   if (sub === "status") {
     const details = _[0] ?? flags.details ?? "on standby";
-    const state = _[1] ?? String(flags.state ?? "loom-desk");
+    const state = _[1] ?? String(flags.state ?? "beckett");
     const statusFile = join(paths.beckettDir, "rpc-status.json");
     const { mkdirSync, writeFileSync } = await import("node:fs");
     mkdirSync(paths.beckettDir, { recursive: true });

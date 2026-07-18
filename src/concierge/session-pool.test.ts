@@ -302,6 +302,76 @@ test("stats aggregates per-scope session stats under perSession", async () => {
   expect(Object.keys(stats.perSession)).toEqual(["chan-a"]);
 });
 
+// ── prewarm (issue #153): spawn overlap without duplicate children ───────────────────────────
+
+test("pool prewarm never creates a session; it kicks only an existing started scope", async () => {
+  const made: FakeSession[] = [];
+  const prewarms: string[] = [];
+  const p = new SessionPool({
+    scope: "channel",
+    maxLiveSessions: 6,
+    idleRecycleMs: 0,
+    makeSession: (scope) => {
+      const s = fakeSession(scope);
+      s.prewarm = () => prewarms.push(scope);
+      made.push(s);
+      return s;
+    },
+  });
+  // Unknown scope: no entry may be created (entryFor spawns a child and live-cap-recycles others).
+  p.prewarm("chan-a");
+  expect(made).toHaveLength(0);
+  expect(prewarms).toEqual([]);
+  await p.ask("chan-a", "hi");
+  p.prewarm("chan-a");
+  expect(made).toHaveLength(1);
+  expect(prewarms).toEqual(["chan-a"]);
+});
+
+/** A real session with `relaunch` patched to count spawns and install a writable fake child. */
+function prewarmableSession(scope: string): { session: ConciergeSession; launches: () => number } {
+  const session = new ConciergeSession({ config: validateConfig({}), scope });
+  let launches = 0;
+  (session as unknown as { relaunch(): Promise<void> }).relaunch = async () => {
+    launches += 1;
+    await new Promise((r) => setTimeout(r, 10)); // a real spawn takes time — widen the race window
+    (session as unknown as { child: unknown }).child = {
+      stdin: { write() {}, flush() {} },
+      kill() {},
+    };
+  };
+  return { session, launches: () => launches };
+}
+
+test("repeated prewarms share one relaunch and a live child makes prewarm a no-op", async () => {
+  const { session, launches } = prewarmableSession("prewarm-dup");
+  session.prewarm();
+  session.prewarm(); // relaunch in flight: must join it, not start a second child
+  await new Promise((r) => setTimeout(r, 30));
+  expect(session.hasLiveChild()).toBeTrue();
+  session.prewarm(); // child live: no-op
+  await new Promise((r) => setTimeout(r, 30));
+  expect(launches()).toBe(1);
+});
+
+test("a prewarm racing an ask results in exactly one launch (issue #153)", async () => {
+  const { session, launches } = prewarmableSession("prewarm-race");
+  session.prewarm();
+  const turn = session.ask("hello"); // admitted while the prewarm's relaunch is still in flight
+  // The turn reaches the child only after the SHARED relaunch resolves; complete it by hand
+  // (no real claude stdout loop exists to emit the `result` line).
+  const internals = session as unknown as {
+    pending: { resolve(v: { decision: "send"; message: string }): void; timer: ReturnType<typeof setTimeout> } | null;
+  };
+  while (!internals.pending) await new Promise((r) => setTimeout(r, 1));
+  clearTimeout(internals.pending.timer);
+  const pending = internals.pending;
+  internals.pending = null;
+  pending.resolve({ decision: "send", message: "warmed" });
+  expect(await turn).toEqual({ decision: "send", message: "warmed" });
+  expect(launches()).toBe(1);
+});
+
 // ── the gate inside real ConciergeSessions (pump integration, no child spawned) ──────────────
 
 test("a shared TurnGate serializes turns across two real sessions at limit 1", async () => {

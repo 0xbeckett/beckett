@@ -213,6 +213,26 @@ test("a mention landing behind a busy session gets an immediate fast ack", async
   expect(posts.at(-1)!.text).toBe("the real answer");
 });
 
+test("rapid mentions behind a busy session get ONE fast ack, not one bubble each (issue #128)", async () => {
+  const { concierge, posts } = conciergeHarness({
+    ask: async () => ({ decision: "send", message: "the real answer" } as const),
+    queueDepth: () => 1, // a turn is already running the whole time
+    getCurrentMeta: () => null,
+  });
+  await concierge.onMessage(msg("chan-1", "m-1"));
+  await concierge.onMessage(msg("chan-1", "m-2"));
+  await concierge.onMessage(msg("chan-1", "m-3"));
+
+  const acks = posts.filter((p) => p.text.includes("you're next"));
+  expect(acks).toHaveLength(1);
+  expect(acks[0]!.replyTo).toBe("m-1"); // the ack replies to the FIRST mention of the burst
+  expect(posts.filter((p) => p.text === "the real answer")).toHaveLength(3); // replies unaffected
+
+  // The throttle is per channel — a busy OTHER channel still gets its own ack.
+  await concierge.onMessage(msg("chan-2", "m-4"));
+  expect(posts.filter((p) => p.text.includes("you're next"))).toHaveLength(2);
+});
+
 test("no fast ack when the session is idle", async () => {
   const { concierge, posts } = conciergeHarness({
     ask: async () => ({ decision: "send", message: "the answer" } as const),

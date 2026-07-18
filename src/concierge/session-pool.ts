@@ -41,6 +41,8 @@ export interface PoolSession {
   stats?(): Record<string, unknown>;
   /** Kill the child process, keep the session (`--resume` on the next turn). */
   recycle?(reason: string): void;
+  /** Start a recycled child's relaunch without a turn (issue #153); no-op when live/stopped. */
+  prewarm?(): void;
   hasLiveChild?(): boolean;
   /** Per-process issuer credential exported into the child env (bus-op correlation, §9.3). */
   busToken?(): string;
@@ -149,6 +151,22 @@ export class SessionPool {
     this.enforceLiveCap(key);
     this.armIdleTimer();
     return entry;
+  }
+
+  /**
+   * Kick a channel's EXISTING session into relaunching its recycled child ahead of the turn
+   * (issue #153). Deliberately does NOT create an entry: entryFor() starts a session child and
+   * live-cap-recycles other sessions' children as side effects — too heavy for a speculative
+   * signal. A brand-new scope pays its first spawn inside ask() exactly as before; a scope
+   * whose start() is still in flight is skipped (its launch IS the warm-up).
+   */
+  prewarm(channelId: string): void {
+    if (this.stopped) return;
+    const entry = this.entries.get(this.scopeKey(channelId));
+    if (!entry || !entry.started) return;
+    // The idle sweep must not reap the child we just asked for before the turn lands.
+    entry.lastUsedAt = Date.now();
+    entry.session.prewarm?.();
   }
 
   /** Ensure a scope's session is up NOW (boot fail-fast for the home scope). */

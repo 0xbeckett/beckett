@@ -1556,19 +1556,9 @@ export class Dispatcher {
     // Preflight the cast harness (issue #17): a dead harness (binary gone, login expired) must
     // produce ONE clear substitution comment, not a wedged ticket. Substituting loses any resume
     // hint (the session belongs to the unhealthy harness) — a fresh start elsewhere beats a wedge.
-    const healthy = await this.pickHealthyHarness(ticket, stage, spec);
-    if (!healthy) {
-      await this.onSpawnFailure(
-        ticket,
-        stage,
-        new Error("no healthy harness available (all preflights failed — check `beckett doctor`)"),
-      );
-      return; // launchSpawn's finally releases the reservation + pumps
-    }
-    if (healthy.harness !== spec.harness) {
-      resumeSessionId = undefined; // the persisted session belongs to the unhealthy harness
-      spec = healthy;
-    }
+    // Started here but awaited AFTER repo/worktree provisioning: nothing below depends on the
+    // harness choice until spawnWorker, so the preflight's CLI probes overlap the git work.
+    const healthyP = this.pickHealthyHarness(ticket, stage, spec);
 
     // v3.1: ensure the ticket's OWN project repo exists before any stage runs — clone
     // `<configured-owner>/<slug>` if it is already on GitHub (a continuing project, or Beckett's
@@ -1589,6 +1579,7 @@ export class Dispatcher {
         repoRoot,
         error: (err as Error).message,
       });
+      await healthyP.catch(() => null); // settle the overlapped preflight — no escaped rejection
       await this.onSpawnFailure(
         ticket,
         stage,
@@ -1609,12 +1600,28 @@ export class Dispatcher {
         repoRoot,
         error: (err as Error).message,
       });
+      await healthyP.catch(() => null); // settle the overlapped preflight — no escaped rejection
       await this.onSpawnFailure(
         ticket,
         stage,
         new Error(`could not allocate a worktree under \`${repoRoot}\`: ${(err as Error).message}`),
       );
       return; // launchSpawn's finally releases the reservation + pumps
+    }
+
+    // Provisioning is done — collect the overlapped preflight verdict before anything reads spec.
+    const healthy = await healthyP;
+    if (!healthy) {
+      await this.onSpawnFailure(
+        ticket,
+        stage,
+        new Error("no healthy harness available (all preflights failed — check `beckett doctor`)"),
+      );
+      return; // launchSpawn's finally releases the reservation + pumps
+    }
+    if (healthy.harness !== spec.harness) {
+      resumeSessionId = undefined; // the persisted session belongs to the unhealthy harness
+      spec = healthy;
     }
     const branch = gitBranchForTicket(ticket);
 
