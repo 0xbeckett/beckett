@@ -1,1 +1,2 @@
 $ bun scripts/bench/recall-agent.ts --json --models "luna,haiku" --concurrency "5"
+DONE exit=0

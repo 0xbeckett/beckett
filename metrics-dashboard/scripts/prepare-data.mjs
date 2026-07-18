@@ -11,7 +11,7 @@
  * Output: src/generated/metrics.json  (tiny, committed alongside the build so the
  * static site never ships the ~800KB raw dataset to the browser).
  */
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +24,10 @@ const CODE_STATS_SRC = process.env.CODE_STATS_DATASET
   ? resolve(process.env.CODE_STATS_DATASET)
   : resolve(REPO_ROOT, "data", "code-stats.json");
 const OUT = resolve(__dirname, "..", "src", "generated", "metrics.json");
+const RECALL_SRC = process.env.RECALL_EVAL_DATASET
+  ? resolve(process.env.RECALL_EVAL_DATASET)
+  : resolve(REPO_ROOT, "data", "recall-eval.json");
+const RECALL_OUT = resolve(__dirname, "..", "src", "generated", "recall.json");
 
 // Display label + dither-kit palette colour per model. Any model the harvester
 // emits that we don't recognise still renders — it falls through to "grey".
@@ -235,4 +239,187 @@ function round(n, dp) {
   return Math.round((n + Number.EPSILON) * f) / f;
 }
 
+// ── Recall eval (#34.2) ────────────────────────────────────────────────────
+// The recall-agent benchmark (scripts/bench/recall-agent.ts) emits a single JSON
+// document: aggregate scores per model seat plus a `perQuery` block of per-row
+// scores tagged with their golden category. We roll that into the small shapes
+// the recall charts consume — per-category P@1/P@5/MRR per seat, the aggregate
+// head-to-head, and the latency comparison — the same fail-soft way as above.
+
+// Fixed seat presentation. luna (pi) vs haiku (claude -p); colours match the
+// telemetry model palette so a reader who sees both pages keeps one mental map.
+const SEAT_META = {
+  luna: { label: "luna", color: "pink" },
+  haiku: { label: "haiku", color: "green" },
+};
+// Golden categories → short, glanceable axis labels.
+const CATEGORY_LABEL = {
+  feedback: "Feedback",
+  "people-profile": "People",
+  "project-status": "Project",
+  "environment-setup": "Environment",
+  adversarial: "Adversarial",
+};
+function categoryLabel(cat) {
+  if (CATEGORY_LABEL[cat]) return CATEGORY_LABEL[cat];
+  return String(cat)
+    .split(/[-_]/)
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+
+function recallForDashboard(raw, generatedAt) {
+  const empty = {
+    schema_version: 1,
+    generated_at: generatedAt,
+    available: false,
+    corpus: { parsedNodes: 0, cliMemoryDir: null, legacyMemoryDir: null },
+    queries: 0,
+    models: [],
+    categories: [],
+    aggregate: [],
+    perCategory: { precisionAt1: [], precisionAt5: [], mrr: [] },
+    latency: [],
+  };
+  if (!raw || typeof raw !== "object" || !raw.models || !raw.perQuery) return empty;
+
+  // Seats present in the run, in a stable presentation order (luna then haiku).
+  const seats = Object.keys(SEAT_META).filter((s) => raw.models[s] && raw.perQuery[s]);
+  if (seats.length === 0) return empty;
+
+  const models = seats.map((seat) => {
+    const m = raw.models[seat] ?? {};
+    const meta = SEAT_META[seat];
+    return {
+      seat,
+      model: text(m.model) ?? seat,
+      label: meta.label,
+      color: meta.color,
+      queries: nonNegative(m.queries),
+      precisionAt1: round(num(m.precisionAt1) ?? 0, 3),
+      precisionAt5: round(num(m.precisionAt5) ?? 0, 3),
+      mrr: round(num(m.mrr) ?? 0, 3),
+      passRate: round(num(m.passRate) ?? 0, 3),
+      fallbackRate: round(num(m.fallbackRate) ?? 0, 3),
+      p50LatencyMs: nonNegative(m.p50LatencyMs),
+      p95LatencyMs: nonNegative(m.p95LatencyMs),
+    };
+  });
+
+  // Per-category means, computed from the per-query rows (the aggregate block is
+  // corpus-wide only). Row scores are already 0..1 per the golden labels.
+  const catOrder = [];
+  const catRows = new Map(); // category -> { seat -> {p1:[], p5:[], mrr:[]} }
+  for (const seat of seats) {
+    const rows = Array.isArray(raw.perQuery[seat]?.rows) ? raw.perQuery[seat].rows : [];
+    for (const r of rows) {
+      if (!r || typeof r !== "object") continue;
+      const cat = text(r.category);
+      if (!cat) continue;
+      if (!catRows.has(cat)) {
+        catRows.set(cat, {});
+        catOrder.push(cat);
+      }
+      const bySeat = catRows.get(cat);
+      const acc = bySeat[seat] ?? { p1: [], p5: [], mrr: [] };
+      acc.p1.push(num(r.precisionAt1) ?? 0);
+      acc.p5.push(num(r.precisionAt5) ?? 0);
+      acc.mrr.push(num(r.reciprocalRank) ?? 0);
+      bySeat[seat] = acc;
+    }
+  }
+
+  const categories = catOrder.map((cat) => {
+    const bySeat = catRows.get(cat);
+    const perSeat = {};
+    let n = 0;
+    for (const seat of seats) {
+      const acc = bySeat[seat] ?? { p1: [], p5: [], mrr: [] };
+      n = Math.max(n, acc.p1.length);
+      perSeat[seat] = {
+        precisionAt1: round(mean(acc.p1), 3),
+        precisionAt5: round(mean(acc.p5), 3),
+        mrr: round(mean(acc.mrr), 3),
+        queries: acc.p1.length,
+      };
+    }
+    return { category: cat, label: categoryLabel(cat), queries: n, byModel: perSeat };
+  });
+
+  // Grouped-bar rows: one entry per category, a value column per seat.
+  const perCatFor = (metric) =>
+    categories.map((c) => {
+      const row = { label: c.label, category: c.category };
+      for (const seat of seats) row[seat] = c.byModel[seat][metric];
+      return row;
+    });
+
+  // Aggregate head-to-head: the three headline scores side by side per seat.
+  const aggMetric = (key, label) => {
+    const row = { label };
+    for (const m of models) row[m.seat] = m[key];
+    return row;
+  };
+
+  const latMetric = (key, label) => {
+    const row = { label };
+    for (const m of models) row[m.seat] = m[key];
+    return row;
+  };
+
+  const corpus = raw.corpus && typeof raw.corpus === "object" ? raw.corpus : {};
+  return {
+    schema_version: 1,
+    generated_at: generatedAt,
+    available: true,
+    corpus: {
+      parsedNodes: nonNegative(corpus.parsedNodes),
+      cliMemoryDir: text(corpus.cliMemoryDir),
+      legacyMemoryDir: text(corpus.legacyMemoryDir),
+    },
+    queries: nonNegative(raw.queries),
+    models,
+    categories,
+    aggregate: [
+      aggMetric("precisionAt1", "P@1"),
+      aggMetric("precisionAt5", "P@5"),
+      aggMetric("mrr", "MRR"),
+    ],
+    perCategory: {
+      precisionAt1: perCatFor("precisionAt1"),
+      precisionAt5: perCatFor("precisionAt5"),
+      mrr: perCatFor("mrr"),
+    },
+    latency: [latMetric("p50LatencyMs", "p50"), latMetric("p95LatencyMs", "p95")],
+  };
+}
+
+function writeRecall() {
+  let rawRecall = null;
+  try {
+    rawRecall = JSON.parse(readFileSync(RECALL_SRC, "utf8"));
+  } catch (err) {
+    console.error(
+      `[prepare-data] recall eval dataset unavailable at ${RECALL_SRC}: ${err.message}; emitting empty recall`
+    );
+  }
+  // Stamp with the dataset file's mtime so the page can show when the eval ran,
+  // without the benchmark itself having to emit a timestamp.
+  let generatedAt = null;
+  try {
+    generatedAt = statSync(RECALL_SRC).mtime.toISOString();
+  } catch {
+    /* no dataset — leave null */
+  }
+  const recall = recallForDashboard(rawRecall, generatedAt);
+  mkdirSync(dirname(RECALL_OUT), { recursive: true });
+  writeFileSync(RECALL_OUT, `${JSON.stringify(recall, null, 2)}\n`);
+  console.error(
+    `[prepare-data] recall: ${recall.available ? "ok" : "EMPTY"} · ${recall.queries} queries · ` +
+      `${recall.models.length} seats · ${recall.categories.length} categories → ${RECALL_OUT}`
+  );
+}
+
 main();
+writeRecall();
