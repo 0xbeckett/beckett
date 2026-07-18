@@ -220,6 +220,93 @@ describe("AmbientCoordinator", () => {
     expect(triageCalls).toBe(0);
   });
 
+  test("mention arriving during triage aborts the ambient engage (cold path)", async () => {
+    const clock = new FakeClock();
+    let engageCalls = 0;
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({
+        proactivity: { enabled: true, default_mode: "suggest", burst_quiet_secs: 1, engaged_window_secs: 0 },
+      }),
+      logger: quietLogger,
+      clock,
+      triage: async () => {
+        // The mention lands while the classifier is in flight — its session turn will answer,
+        // so the ambient flush must stand down instead of double-responding.
+        coordinator.noteMention("c1");
+        return yes;
+      },
+      engage: async () => {
+        engageCalls++;
+        return { decision: "send", message: "double respond" };
+      },
+    });
+
+    coordinator.observe(msg("m1", "c1", "wish csv existed", 0), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(engageCalls).toBe(0);
+  });
+
+  test("mention arriving during engaged human-reply triage aborts the ambient engage", async () => {
+    const clock = new FakeClock();
+    let engageCalls = 0;
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({
+        proactivity: {
+          enabled: true,
+          default_mode: "suggest",
+          burst_quiet_secs: 1,
+          engaged_quiet_secs: 1,
+          engaged_window_secs: 60,
+        },
+      }),
+      logger: quietLogger,
+      clock,
+      triage: async () => {
+        coordinator.noteMention("c1");
+        return yes;
+      },
+      engage: async () => {
+        engageCalls++;
+        return { decision: "send", message: "double respond" };
+      },
+    });
+
+    // Seed the transcript with a human message, then a native reply to it inside the engaged
+    // window — the lane that validates via the fast classifier before engaging.
+    coordinator.observe(msg("m1", "c1", "the export keeps timing out", 0, { userId: "user-2" }), "member");
+    coordinator.noteBeckettPost("c1");
+    coordinator.observe(msg("m2", "c1", "can you paste the log?", 1_000, { repliedToId: "m1" }), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(engageCalls).toBe(0);
+  });
+
+  test("mentions in one channel do not abort flushes in another", async () => {
+    const clock = new FakeClock();
+    let engageCalls = 0;
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({
+        proactivity: { enabled: true, default_mode: "suggest", burst_quiet_secs: 1, engaged_window_secs: 0 },
+      }),
+      logger: quietLogger,
+      clock,
+      triage: async () => {
+        coordinator.noteMention("c-other");
+        return yes;
+      },
+      engage: async () => {
+        engageCalls++;
+        return { decision: "send", message: "ok" };
+      },
+    });
+
+    coordinator.observe(msg("m1", "c1", "wish csv existed", 0), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(engageCalls).toBe(1);
+  });
+
   test("cooldown and hourly cap are enforced before triage (cold path — engaged lane disabled)", async () => {
     const clock = new FakeClock();
     let triageCalls = 0;
