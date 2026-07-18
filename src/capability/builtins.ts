@@ -233,14 +233,29 @@ function triageModelForProvider(provider: "claude" | "cerebras", model?: string)
   return !model || model === CEREBRAS_TRIAGE_MODEL ? CLAUDE_TRIAGE_MODEL : model;
 }
 
+/**
+ * The provider default when config.toml doesn't pick one: Cerebras whenever its key is on the
+ * box (~1850 tok/s vs a multi-second `claude -p` spawn — ambient triage sits on the interjection
+ * hot path), else the subscription CLI. Safe to read process.env here: this runs at PARSE time
+ * (inside the schema transform), and `loadConfig()` loads `~/.beckett/.env` into process.env as
+ * its first step, before validation. An explicit `triage_provider` always wins.
+ */
+function defaultTriageProvider(): "claude" | "cerebras" {
+  return process.env.CEREBRAS_API_KEY?.trim() ? "cerebras" : "claude";
+}
+
 const ProactivityConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     default_mode: ProactivityModeSchema.default("off"),
-    // Where the burst classifier runs. `claude` is the subscription-CLI default; `cerebras` is
-    // the wire-speed API option and needs CEREBRAS_API_KEY in ~/.beckett/.env. triage_model must
-    // name a model the chosen provider serves.
-    triage_provider: z.enum(["claude", "cerebras"]).default("claude"),
+    // Where the burst classifier runs. Unset, it resolves at parse time: `cerebras` (the
+    // wire-speed API option) when CEREBRAS_API_KEY is in ~/.beckett/.env, else the subscription
+    // `claude` CLI. An explicit value always wins. triage_model must name a model the chosen
+    // provider serves.
+    triage_provider: z
+      .enum(["claude", "cerebras"])
+      .optional()
+      .transform((provider) => provider ?? defaultTriageProvider()),
     triage_model: z.string().min(1).optional(),
     // The cold-interjection bar. Set conservative on purpose: a cold coin-flip should stay
     // silent, so only a clear, welcome contribution (the classifier's `0.55-0.74` band and up)

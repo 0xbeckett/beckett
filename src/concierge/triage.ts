@@ -351,27 +351,48 @@ async function classifyViaCerebras(
   return TriageModelVerdictSchema.parse(JSON.parse(extractVerdictJson(content)));
 }
 
+/** Claude-side model when a keyless cerebras config degrades to the CLI (belt-and-suspenders). */
+const CLAUDE_FALLBACK_TRIAGE_MODEL = "claude-haiku-4-5";
+
 export function createTriageClassifier(opts: CreateTriageClassifierOptions): TriageFn {
-  const timeoutMs = opts.timeoutMs ?? (opts.provider === "cerebras" ? 15_000 : 30_000);
   const promptPath = opts.promptPath ?? join(import.meta.dir, "triage.md");
-  const provider = opts.provider ?? "claude";
+  const configuredProvider = opts.provider ?? "claude";
   const threshold = opts.threshold ?? 0.55;
   let cachedPrompt: string | undefined;
+  let warnedMissingKey = false;
 
   return async (burst, transcript, meta = {}) => {
+    // Belt-and-suspenders: a cerebras config with no key (opts.apiKey and process.env checked at
+    // call time, matching classifyViaCerebras) must not fail every verdict closed — degrade to
+    // the subscription CLI on its own default model. Warn once; the per-verdict log carries the
+    // effective provider so the degradation stays visible.
+    let provider = configuredProvider;
+    let effectiveOpts = opts;
+    if (provider === "cerebras" && !(opts.apiKey ?? process.env.CEREBRAS_API_KEY)) {
+      if (!warnedMissingKey) {
+        warnedMissingKey = true;
+        opts.logger.warn(
+          "CEREBRAS_API_KEY missing (~/.beckett/.env) — falling back to the claude triage classifier",
+          { configuredModel: opts.model, fallbackModel: CLAUDE_FALLBACK_TRIAGE_MODEL },
+        );
+      }
+      provider = "claude";
+      effectiveOpts = { ...opts, model: CLAUDE_FALLBACK_TRIAGE_MODEL };
+    }
+    const timeoutMs = opts.timeoutMs ?? (provider === "cerebras" ? 15_000 : 30_000);
     const started = performance.now();
     try {
       const staticPrompt = cachedPrompt ?? (cachedPrompt = readFileSync(promptPath, "utf8").trim());
       const context = buildTriageContext(burst, transcript);
       const rawVerdict =
         provider === "cerebras"
-          ? await classifyViaCerebras(opts, staticPrompt, context, timeoutMs)
-          : await classifyViaClaude(opts, staticPrompt, context, timeoutMs);
+          ? await classifyViaCerebras(effectiveOpts, staticPrompt, context, timeoutMs)
+          : await classifyViaClaude(effectiveOpts, staticPrompt, context, timeoutMs);
       const verdict = calibrateTriageVerdict(rawVerdict, threshold);
       opts.logger.info("ambient triage verdict", {
         channel: meta.channelId ?? null,
         provider,
-        model: opts.model,
+        model: effectiveOpts.model,
         latencyMs: Math.round(performance.now() - started),
         kind: verdict.kind,
         confidence: verdict.confidence,
@@ -389,7 +410,7 @@ export function createTriageClassifier(opts: CreateTriageClassifierOptions): Tri
       opts.logger.info("ambient triage verdict", {
         channel: meta.channelId ?? null,
         provider,
-        model: opts.model,
+        model: effectiveOpts.model,
         latencyMs: Math.round(performance.now() - started),
         kind: verdict.kind,
         confidence: verdict.confidence,

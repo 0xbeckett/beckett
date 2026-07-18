@@ -11,6 +11,23 @@ import { join } from "node:path";
 import { defaultConfigToml, loadConfig, validateConfig } from "./config.ts";
 import { browserHostSettings } from "./browser/runtime.ts";
 
+/**
+ * Run `fn` with process.env.CEREBRAS_API_KEY pinned (undefined = absent). The proactivity
+ * fragment's triage_provider default reads the key at parse time, so tests touching defaults
+ * must control it (same save/restore pattern as concierge/triage.test.ts).
+ */
+function withCerebrasKey<T>(value: string | undefined, fn: () => T): T {
+  const saved = process.env.CEREBRAS_API_KEY;
+  if (value === undefined) delete process.env.CEREBRAS_API_KEY;
+  else process.env.CEREBRAS_API_KEY = value;
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env.CEREBRAS_API_KEY;
+    else process.env.CEREBRAS_API_KEY = saved;
+  }
+}
+
 /** Load a config from a literal TOML body in an isolated temp beckett dir. */
 function loadToml(body: string) {
   const dir = mkdtempSync(join(tmpdir(), "beckett-config-test-"));
@@ -116,7 +133,7 @@ test("github activity relay defaults route to the configured dev feed", () => {
 });
 
 test("proactivity defaults ship disabled and off", () => {
-  const config = validateConfig({});
+  const config = withCerebrasKey(undefined, () => validateConfig({}));
   expect(config.proactivity).toMatchObject({
     enabled: false,
     default_mode: "off",
@@ -146,6 +163,26 @@ test("proactivity classifier model defaults follow the selected provider", () =>
     validateConfig({ proactivity: { triage_provider: "cerebras", triage_model: "custom-cerebras-model" } })
       .proactivity.triage_model,
   ).toBe("custom-cerebras-model");
+});
+
+test("triage provider defaults to cerebras when CEREBRAS_API_KEY is present (issue #152)", () => {
+  const config = withCerebrasKey("csk-test", () => validateConfig({}));
+  expect(config.proactivity.triage_provider).toBe("cerebras");
+  expect(config.proactivity.triage_model).toBe("gemma-4-31b");
+});
+
+test("a blank CEREBRAS_API_KEY does not flip the triage default", () => {
+  const config = withCerebrasKey("   ", () => validateConfig({}));
+  expect(config.proactivity.triage_provider).toBe("claude");
+  expect(config.proactivity.triage_model).toBe("claude-haiku-4-5");
+});
+
+test("an explicit triage_provider in config.toml beats the CEREBRAS_API_KEY default", () => {
+  const config = withCerebrasKey("csk-test", () =>
+    validateConfig({ proactivity: { triage_provider: "claude" } }),
+  );
+  expect(config.proactivity.triage_provider).toBe("claude");
+  expect(config.proactivity.triage_model).toBe("claude-haiku-4-5");
 });
 
 test("shared_context defaults ship enabled with the OPS-80 bounds", () => {
@@ -216,13 +253,15 @@ test("proactivity runtime override merges over TOML", () => {
 });
 
 describe("default-config example drift (issue #34)", () => {
+  // The committed example pins the KEYLESS defaults (the triage provider default is
+  // env-sensitive since #152, and a host key must not make this suite flap).
   test("deploy/config.toml.example matches the live schema's defaults", () => {
     const committed = readFileSync(join(import.meta.dir, "..", "deploy", "config.toml.example"), "utf8");
-    expect(committed).toBe(defaultConfigToml());
+    expect(committed).toBe(withCerebrasKey(undefined, () => defaultConfigToml()));
   });
 
   test("the generated example round-trips through the strict validator", () => {
-    const parsed = Bun.TOML.parse(defaultConfigToml());
+    const parsed = Bun.TOML.parse(withCerebrasKey(undefined, () => defaultConfigToml()));
     expect(() => validateConfig(parsed)).not.toThrow();
   });
 });
