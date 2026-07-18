@@ -11,7 +11,7 @@
  * the canonical memory directories.
  */
 
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { buildPaths } from "../../src/paths.ts";
@@ -21,23 +21,51 @@ import type { Audience } from "../../src/memory/search.ts";
 import type { Logger } from "../../src/types.ts";
 import { mean, scoreRanking } from "./recall-relevance-lib.ts";
 
-interface GoldenTarget {
-  name: string;
-  file: string;
-}
+type BenchmarkCategory = "feedback" | "people-profile" | "project-status" | "environment-setup" | "adversarial";
 
-interface GoldenCase {
+/** A versioned, human-authored question grounded in one or more canonical note files. */
+interface BenchmarkPair {
   id: string;
-  query: string;
-  targets: GoldenTarget[];
+  category: BenchmarkCategory;
+  question: string;
+  expectedNoteIds: string[];
+  /** Staged paths proving which real note(s) were read to author the labels. */
+  sourceFiles: string[];
+  /** Lexically tempting notes that are explicitly wrong for this question. */
+  hardNegativeNoteIds?: string[];
   audience?: Audience;
 }
 
-interface GoldenSet {
+interface BenchmarkSet {
   version: number;
   description: string;
   defaultAudience: Audience;
-  cases: GoldenCase[];
+  categories: BenchmarkCategory[];
+  pairs: BenchmarkPair[];
+}
+
+interface BenchmarkRow {
+  id: string;
+  category: BenchmarkCategory;
+  question: string;
+  expectedNoteIds: string[];
+  hardNegativeNoteIds: string[];
+  sourceFiles: string[];
+  topResults: string[];
+  precisionAt1: number;
+  precisionAt5: number;
+  reciprocalRank: number;
+  ndcgAt10: number;
+  firstRelevantRank: number | null;
+  hardNegativeRanks: { noteId: string; rank: number | null }[];
+}
+
+interface Summary {
+  queries: number;
+  precisionAt1: number;
+  precisionAt5: number;
+  mrr: number;
+  hardNegativeAt1: number;
 }
 
 interface Source {
@@ -47,7 +75,6 @@ interface Source {
 
 const GOLDEN_PATH = new URL("./recall-relevance-golden.json", import.meta.url);
 const DEFAULT_LEGACY_DIR = join(homedir(), ".claude", "projects", "-home-beckett-beckett", "memory");
-const PRECISION_K = 1;
 const RETRIEVAL_K = 10;
 
 const quietLog: Logger = (() => {
@@ -99,11 +126,52 @@ function format(value: number): string {
   return value.toFixed(3);
 }
 
-const args = parseArgs(process.argv.slice(2));
-const golden = JSON.parse(await Bun.file(GOLDEN_PATH).text()) as GoldenSet;
-if (golden.version !== 1 || golden.cases.length < 20) {
-  throw new Error("golden set must be version 1 and contain at least 20 cases");
+/** Parse the derived MEMORY.md indexes too, without treating them as duplicate graph nodes. */
+function indexedNoteIds(source: Source): string[] {
+  const indexPath = join(source.dir, "MEMORY.md");
+  if (!existsSync(indexPath)) throw new Error(`required ${source.label} MEMORY.md is missing: ${indexPath}`);
+  const text = readFileSync(indexPath, "utf8");
+  const ids = [
+    ...text.matchAll(/\[\[([a-z0-9-]+)(?:\|[^\]]+)?\]\]/g),
+    ...text.matchAll(/\]\(([a-z0-9-]+)\.md\)/g),
+  ].map((match) => match[1]!);
+  return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
 }
+
+function validateSet(set: BenchmarkSet): void {
+  const requiredCategories: BenchmarkCategory[] = ["feedback", "people-profile", "project-status", "environment-setup", "adversarial"];
+  if (set.version !== 2 || set.pairs.length < 80 || set.pairs.length > 150) {
+    throw new Error("benchmark set must be version 2 and contain 80–150 pairs");
+  }
+  if (new Set(set.categories).size !== requiredCategories.length || !requiredCategories.every((category) => set.categories.includes(category))) {
+    throw new Error(`benchmark set categories must be exactly: ${requiredCategories.join(", ")}`);
+  }
+  const ids = new Set<string>();
+  const categoryCounts = new Map<BenchmarkCategory, number>();
+  for (const pair of set.pairs) {
+    if (ids.has(pair.id)) throw new Error(`duplicate benchmark pair id: ${pair.id}`);
+    ids.add(pair.id);
+    if (!requiredCategories.includes(pair.category)) throw new Error(`invalid category on ${pair.id}`);
+    if (!pair.question.trim() || pair.expectedNoteIds.length === 0 || pair.sourceFiles.length === 0) {
+      throw new Error(`pair ${pair.id} needs a question, expected note id(s), and source file(s)`);
+    }
+    if (pair.hardNegativeNoteIds?.some((id) => pair.expectedNoteIds.includes(id))) {
+      throw new Error(`pair ${pair.id} labels a note both expected and hard-negative`);
+    }
+    categoryCounts.set(pair.category, (categoryCounts.get(pair.category) ?? 0) + 1);
+  }
+  // A stratified corpus should not quietly regress into one dominant category.
+  for (const category of requiredCategories) {
+    const count = categoryCounts.get(category) ?? 0;
+    if (count < 10 || count > Math.ceil(set.pairs.length * 0.35)) {
+      throw new Error(`category ${category} must have 10–35% of pairs; found ${count}`);
+    }
+  }
+}
+
+const args = parseArgs(process.argv.slice(2));
+const golden = JSON.parse(await Bun.file(GOLDEN_PATH).text()) as BenchmarkSet;
+validateSet(golden);
 
 // This resolves exactly as the CLI does: config [paths] first, with BECKETT_DIR overrides.
 const cliMemoryDir = args.memoryDir ?? buildPaths(loadConfig()).memoryDir;
@@ -116,55 +184,89 @@ const stagedDir = mkdtempSync(join(tmpdir(), "beckett-recall-relevance-"));
 
 try {
   const copied = Object.fromEntries(sources.map((source) => [source.label, stageSource(source, stagedDir)]));
+  // MEMORY.md is a derived index, not a graph node. Parse it as corpus evidence while the
+  // production graph below independently parses the real per-fact Markdown files.
+  const indexNoteIds: Record<string, string[]> = Object.fromEntries(
+    sources.map((source) => [source.label, indexedNoteIds(source)]),
+  );
   const memory = createMemory({ memoryDir: stagedDir, logger: quietLog, git: false });
   const graph = memory.buildGraph();
-  const targetNames = new Set(golden.cases.flatMap((test) => test.targets.map((target) => target.name)));
-  const missing = [...targetNames].filter((name) => !graph.nodes.has(name));
-  if (missing.length > 0) {
-    throw new Error(`golden target(s) missing after staging: ${missing.join(", ")}`);
+  const expectedNames = new Set(golden.pairs.flatMap((pair) => pair.expectedNoteIds));
+  const missing = [...expectedNames].filter((name) => !graph.nodes.has(name));
+  if (missing.length > 0) throw new Error(`expected note(s) missing after staging: ${missing.join(", ")}`);
+  for (const pair of golden.pairs) {
+    for (const noteId of pair.expectedNoteIds) {
+      const node = graph.nodes.get(noteId)!;
+      const stagedPath = node.path.slice(stagedDir.length + 1).replaceAll("\\", "/");
+      if (!pair.sourceFiles.includes(stagedPath)) {
+        throw new Error(`pair ${pair.id} does not cite ${noteId}'s real source file (${stagedPath})`);
+      }
+    }
+    for (const sourceFile of pair.sourceFiles) {
+      if (!existsSync(join(stagedDir, sourceFile))) throw new Error(`pair ${pair.id} cites missing source file: ${sourceFile}`);
+    }
   }
 
-  const rows = [];
-  for (const test of golden.cases) {
+  const rows: BenchmarkRow[] = [];
+  for (const pair of golden.pairs) {
     const result = await memory.recall({
-      text: test.query,
+      text: pair.question,
       k: RETRIEVAL_K,
-      audience: test.audience ?? golden.defaultAudience,
+      audience: pair.audience ?? golden.defaultAudience,
     });
     // Moss can emit equal-score tail hits in native-index order. Canonicalize only exact ties
     // for a stable report; all scores and candidates still came from MemoryStore.recall.
     const returned = [...result.hits]
       .sort((a, b) => b.score - a.score || a.node.name.localeCompare(b.node.name))
       .map((hit) => hit.node.name);
-    const metrics = scoreRanking(returned, test.targets.map((target) => target.name), PRECISION_K);
+    const at1 = scoreRanking(returned, pair.expectedNoteIds, 1);
+    const at5 = scoreRanking(returned, pair.expectedNoteIds, 5);
+    const hardNegativeRanks = (pair.hardNegativeNoteIds ?? []).map((noteId) => ({
+      noteId,
+      rank: returned.indexOf(noteId) === -1 ? null : returned.indexOf(noteId) + 1,
+    }));
     rows.push({
-      id: test.id,
-      query: test.query,
-      targets: test.targets,
+      id: pair.id,
+      category: pair.category,
+      question: pair.question,
+      expectedNoteIds: pair.expectedNoteIds,
+      hardNegativeNoteIds: pair.hardNegativeNoteIds ?? [],
+      sourceFiles: pair.sourceFiles,
       // Keep the diagnostic concise. nDCG still scores all ten real hits above; the
       // presentation intentionally avoids Moss's nondeterministic equal-relevance tail.
-      topResults: returned.slice(0, 3),
-      ...metrics,
+      topResults: returned.slice(0, 5),
+      precisionAt1: at1.precisionAtK,
+      precisionAt5: at5.precisionAtK,
+      reciprocalRank: at1.reciprocalRank,
+      ndcgAt10: at1.ndcgAt10,
+      firstRelevantRank: at1.firstRelevantRank,
+      hardNegativeRanks,
     });
   }
 
-  const aggregate = {
-    queries: rows.length,
-    precisionAt1: mean(rows.map((row) => row.precisionAtK)),
-    mrr: mean(rows.map((row) => row.reciprocalRank)),
-    ndcgAt10: mean(rows.map((row) => row.ndcgAt10)),
-  };
-  // A compact headline only; retain all three standard metrics below for tuning decisions.
-  const overallRelevanceScore = mean([aggregate.precisionAt1, aggregate.mrr, aggregate.ndcgAt10]);
+  const summarize = (selected: readonly BenchmarkRow[]): Summary => ({
+    queries: selected.length,
+    precisionAt1: mean(selected.map((row) => row.precisionAt1)),
+    precisionAt5: mean(selected.map((row) => row.precisionAt5)),
+    mrr: mean(selected.map((row) => row.reciprocalRank)),
+    hardNegativeAt1: mean(selected.map((row) => row.hardNegativeRanks.some((negative) => negative.rank === 1) ? 1 : 0)),
+  });
+  const aggregate = summarize(rows);
+  const perCategory = Object.fromEntries(golden.categories.map((category) => [
+    category,
+    summarize(rows.filter((row) => row.category === category)),
+  ])) as Record<BenchmarkCategory, Summary>;
   const report = {
     corpus: {
       cliMemoryDir,
       legacyMemoryDir,
       copied,
+      indexNoteIds,
       parsedNodes: [...graph.nodes.values()].filter((node) => !node.phantom).length,
     },
-    retrieval: { k: RETRIEVAL_K, precisionAtK: PRECISION_K },
-    aggregate: { ...aggregate, overallRelevanceScore },
+    retrieval: { k: RETRIEVAL_K, metrics: ["precision@1", "precision@5", "MRR"] },
+    aggregate,
+    perCategory,
     queries: rows,
   };
 
@@ -172,20 +274,27 @@ try {
     console.log(JSON.stringify(report, null, 2));
   } else {
     console.log("# Recall relevance benchmark");
-    console.log(`Corpus: CLI root ${cliMemoryDir} (${copied.live} files) + retained legacy root ${legacyMemoryDir} (${copied.legacy} files); ${report.corpus.parsedNodes} parsed nodes.`);
-    console.log(`Retrieval: real MemoryStore.recall, k=${RETRIEVAL_K}; exact-score ties sort by node name; metrics: precision@${PRECISION_K}, MRR, nDCG@10.`);
+    console.log(`Corpus: CLI root ${cliMemoryDir} (${copied.live} fact files) + retained Claude Code root ${legacyMemoryDir} (${copied.legacy} fact files); ${report.corpus.parsedNodes} graph nodes.`);
+    console.log(`MEMORY.md indexes parsed: live ${indexNoteIds.live.length} references, legacy ${indexNoteIds.legacy.length} references.`);
+    console.log(`Retrieval: real MemoryStore.recall, k=${RETRIEVAL_K}; exact-score ties sort by node name.`);
     console.log("");
-    console.log("## Aggregate");
-    console.log(`overall relevance score: ${format(overallRelevanceScore)}`);
-    console.log(`precision@${PRECISION_K}: ${format(aggregate.precisionAt1)}  MRR: ${format(aggregate.mrr)}  nDCG@10: ${format(aggregate.ndcgAt10)}`);
+    console.log("## Overall");
+    console.log(`queries: ${aggregate.queries}  precision@1: ${format(aggregate.precisionAt1)}  precision@5: ${format(aggregate.precisionAt5)}  MRR: ${format(aggregate.mrr)}  hard-negative@1: ${format(aggregate.hardNegativeAt1)}`);
+    console.log("");
+    console.log("## Per category");
+    console.log("| category | queries | P@1 | P@5 | MRR | hard-negative@1 |");
+    console.log("|---|---:|---:|---:|---:|---:|");
+    for (const category of golden.categories) {
+      const summary = perCategory[category]!;
+      console.log(`| ${category} | ${summary.queries} | ${format(summary.precisionAt1)} | ${format(summary.precisionAt5)} | ${format(summary.mrr)} | ${format(summary.hardNegativeAt1)} |`);
+    }
     console.log("");
     console.log("## Per query");
-    console.log("| case | first relevant rank | P@1 | MRR | nDCG@10 | expected file(s) | top results |");
-    console.log("|---|---:|---:|---:|---:|---|---|");
+    console.log("| case | category | first relevant rank | P@1 | P@5 | MRR | expected notes | hard-negative ranks | top results |");
+    console.log("|---|---|---:|---:|---:|---:|---|---|---|");
     for (const row of rows) {
-      console.log(
-        `| ${row.id} | ${row.firstRelevantRank ?? "—"} | ${format(row.precisionAtK)} | ${format(row.reciprocalRank)} | ${format(row.ndcgAt10)} | ${row.targets.map((target) => target.file).join(", ")} | ${row.topResults.join(", ") || "—"} |`,
-      );
+      const hardNegatives = row.hardNegativeRanks.map((negative) => `${negative.noteId}:${negative.rank ?? "—"}`).join(", ") || "—";
+      console.log(`| ${row.id} | ${row.category} | ${row.firstRelevantRank ?? "—"} | ${format(row.precisionAt1)} | ${format(row.precisionAt5)} | ${format(row.reciprocalRank)} | ${row.expectedNoteIds.join(", ")} | ${hardNegatives} | ${row.topResults.join(", ") || "—"} |`);
     }
   }
 } finally {
