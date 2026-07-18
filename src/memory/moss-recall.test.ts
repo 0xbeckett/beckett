@@ -200,6 +200,12 @@ test("maintain-archiving a node removes it from the moss index (delete stays in 
   const report = await store.maintain();
   expect(report.archives.map((a) => a.name)).toEqual(["doomed"]);
   expect(indexedIds(dir)).toEqual(["keeper"]);
+
+  // The post-delete index must survive a reload intact: a FRESH store (new process in real
+  // life) queries the persisted binary and only the surviving fact comes back.
+  const fresh = createMemory({ memoryDir: dir, logger: quietLog, git: false });
+  const r = await fresh.recall({ text: "a fact that stays" });
+  expect(r.hits.map((h) => h.node.name)).toEqual(["keeper"]);
 });
 
 test("an out-of-band file delete heals from the index on the next recall", async () => {
