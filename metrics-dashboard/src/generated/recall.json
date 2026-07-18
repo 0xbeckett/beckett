@@ -1,0 +1,265 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-18T16:21:06.963Z",
+  "available": true,
+  "corpus": {
+    "parsedNodes": 41,
+    "cliMemoryDir": "/home/beckett/.beckett/memory",
+    "legacyMemoryDir": "/home/beckett/.claude/projects/-home-beckett-beckett/memory"
+  },
+  "queries": 101,
+  "models": [
+    {
+      "seat": "luna",
+      "model": "gpt-5.6-luna",
+      "label": "luna",
+      "color": "pink",
+      "queries": 101,
+      "precisionAt1": 0.96,
+      "precisionAt5": 0.198,
+      "mrr": 0.97,
+      "passRate": 0.01,
+      "fallbackRate": 0.01,
+      "p50LatencyMs": 5505,
+      "p95LatencyMs": 8166
+    },
+    {
+      "seat": "haiku",
+      "model": "claude-haiku-4-5-20251001",
+      "label": "haiku",
+      "color": "green",
+      "queries": 101,
+      "precisionAt1": 0.931,
+      "precisionAt5": 0.192,
+      "mrr": 0.941,
+      "passRate": 0.04,
+      "fallbackRate": 0,
+      "p50LatencyMs": 3425,
+      "p95LatencyMs": 5437
+    }
+  ],
+  "categories": [
+    {
+      "category": "feedback",
+      "label": "Feedback",
+      "queries": 20,
+      "byModel": {
+        "luna": {
+          "precisionAt1": 1,
+          "precisionAt5": 0.2,
+          "mrr": 1,
+          "queries": 20
+        },
+        "haiku": {
+          "precisionAt1": 0.9,
+          "precisionAt5": 0.19,
+          "mrr": 0.925,
+          "queries": 20
+        }
+      }
+    },
+    {
+      "category": "people-profile",
+      "label": "People",
+      "queries": 20,
+      "byModel": {
+        "luna": {
+          "precisionAt1": 0.85,
+          "precisionAt5": 0.19,
+          "mrr": 0.9,
+          "queries": 20
+        },
+        "haiku": {
+          "precisionAt1": 0.85,
+          "precisionAt5": 0.18,
+          "mrr": 0.875,
+          "queries": 20
+        }
+      }
+    },
+    {
+      "category": "project-status",
+      "label": "Project",
+      "queries": 20,
+      "byModel": {
+        "luna": {
+          "precisionAt1": 0.95,
+          "precisionAt5": 0.19,
+          "mrr": 0.95,
+          "queries": 20
+        },
+        "haiku": {
+          "precisionAt1": 0.9,
+          "precisionAt5": 0.18,
+          "mrr": 0.9,
+          "queries": 20
+        }
+      }
+    },
+    {
+      "category": "environment-setup",
+      "label": "Environment",
+      "queries": 20,
+      "byModel": {
+        "luna": {
+          "precisionAt1": 1,
+          "precisionAt5": 0.21,
+          "mrr": 1,
+          "queries": 20
+        },
+        "haiku": {
+          "precisionAt1": 1,
+          "precisionAt5": 0.21,
+          "mrr": 1,
+          "queries": 20
+        }
+      }
+    },
+    {
+      "category": "adversarial",
+      "label": "Adversarial",
+      "queries": 21,
+      "byModel": {
+        "luna": {
+          "precisionAt1": 1,
+          "precisionAt5": 0.2,
+          "mrr": 1,
+          "queries": 21
+        },
+        "haiku": {
+          "precisionAt1": 1,
+          "precisionAt5": 0.2,
+          "mrr": 1,
+          "queries": 21
+        }
+      }
+    }
+  ],
+  "aggregate": [
+    {
+      "label": "P@1",
+      "luna": 0.96,
+      "haiku": 0.931
+    },
+    {
+      "label": "P@5",
+      "luna": 0.198,
+      "haiku": 0.192
+    },
+    {
+      "label": "MRR",
+      "luna": 0.97,
+      "haiku": 0.941
+    }
+  ],
+  "perCategory": {
+    "precisionAt1": [
+      {
+        "label": "Feedback",
+        "category": "feedback",
+        "luna": 1,
+        "haiku": 0.9
+      },
+      {
+        "label": "People",
+        "category": "people-profile",
+        "luna": 0.85,
+        "haiku": 0.85
+      },
+      {
+        "label": "Project",
+        "category": "project-status",
+        "luna": 0.95,
+        "haiku": 0.9
+      },
+      {
+        "label": "Environment",
+        "category": "environment-setup",
+        "luna": 1,
+        "haiku": 1
+      },
+      {
+        "label": "Adversarial",
+        "category": "adversarial",
+        "luna": 1,
+        "haiku": 1
+      }
+    ],
+    "precisionAt5": [
+      {
+        "label": "Feedback",
+        "category": "feedback",
+        "luna": 0.2,
+        "haiku": 0.19
+      },
+      {
+        "label": "People",
+        "category": "people-profile",
+        "luna": 0.19,
+        "haiku": 0.18
+      },
+      {
+        "label": "Project",
+        "category": "project-status",
+        "luna": 0.19,
+        "haiku": 0.18
+      },
+      {
+        "label": "Environment",
+        "category": "environment-setup",
+        "luna": 0.21,
+        "haiku": 0.21
+      },
+      {
+        "label": "Adversarial",
+        "category": "adversarial",
+        "luna": 0.2,
+        "haiku": 0.2
+      }
+    ],
+    "mrr": [
+      {
+        "label": "Feedback",
+        "category": "feedback",
+        "luna": 1,
+        "haiku": 0.925
+      },
+      {
+        "label": "People",
+        "category": "people-profile",
+        "luna": 0.9,
+        "haiku": 0.875
+      },
+      {
+        "label": "Project",
+        "category": "project-status",
+        "luna": 0.95,
+        "haiku": 0.9
+      },
+      {
+        "label": "Environment",
+        "category": "environment-setup",
+        "luna": 1,
+        "haiku": 1
+      },
+      {
+        "label": "Adversarial",
+        "category": "adversarial",
+        "luna": 1,
+        "haiku": 1
+      }
+    ]
+  },
+  "latency": [
+    {
+      "label": "p50",
+      "luna": 5505,
+      "haiku": 3425
+    },
+    {
+      "label": "p95",
+      "luna": 8166,
+      "haiku": 5437
+    }
+  ]
+}
