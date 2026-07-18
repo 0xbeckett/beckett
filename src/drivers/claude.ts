@@ -11,8 +11,8 @@
  * is the one harness that can take a nudge mid-run, so it does NOT use {@link OneShotDriver}'s
  * buffered-relaunch machinery).
  *
- * Mechanism (Spec 02 §4.1, verified on `claude 2.1.195` — my-docs/loom-desk-setup-log.md
- * Risk-A):
+ * Mechanism (Spec 02 §4.1, verified on `claude 2.1.195` — the "Risk-A" verification
+ * pass):
  *
  *   claude -p \
  *     --input-format stream-json --output-format stream-json --verbose \
