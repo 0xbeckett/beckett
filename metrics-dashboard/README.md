@@ -3,6 +3,13 @@
 Neo-brutalist, static dashboard of Beckett's own model performance. Live at
 **https://metrics.0xbeckett.me**.
 
+Two tabs:
+
+- **Telemetry** — real spend, wall-clock and review bounces per model (the harvester, below).
+- **Recall Eval** — the memory-recall agent's accuracy against the golden set: per-category
+  P@1/P@5/MRR, luna (pi) vs haiku (claude -p), from the real #34.2 benchmark output. See
+  [Recall eval](#recall-eval-342).
+
 It is the **front half** of the `metrics.0xbeckett.me` project. The **back half** is the
 telemetry harvester (ticket #8, `../src/telemetry/harvest.ts`), which is the single source of
 truth for the numbers. This app never recomputes cost or cycle counts — it only reads,
@@ -45,9 +52,45 @@ lines by author, daily commit velocity, and per-repo/current-file rollups. It ne
 fetches, or invokes GitHub. Run it before `bun run build` to publish the latest code layer in
 the existing generated `metrics.json` document.
 
+## Recall eval (#34.2)
+
+The **Recall Eval** tab reads the `recall-agent` benchmark
+(`../scripts/bench/recall-agent.ts`), which is the same fail-soft
+read/aggregate contract as the telemetry side — the benchmark owns the numbers,
+this app only groups and draws them.
+
+```
+~/.beckett/memory · ~/.claude/.../memory       (live + legacy corpus)
+        │  bun run recall:agent-bench -- --json    (moss retrieve → gate → LLM agent)
+        ▼
+data/recall-eval.json      per-model aggregate + per-query rows, both seats (luna, haiku)
+        │  scripts/prepare-data.mjs — group rows by golden category, mean per seat
+        ▼
+src/generated/recall.json  per-category P@1/P@5/MRR, aggregate head-to-head, latency
+        │  vite build
+        ▼
+dist/  →  metrics.0xbeckett.me  (Recall Eval tab)
+```
+
+Refresh the eval and rebuild:
+
+```sh
+# from the repo root — runs the real luna-vs-haiku benchmark (~few min, LLM calls via CLI)
+bun run recall:agent-bench -- --json > data/recall-eval.json
+# then here
+bun run build
+```
+
+Point at a different eval dataset with `RECALL_EVAL_DATASET=/path/to/recall-eval.json`. A missing
+dataset degrades to an in-app empty state (with the command to generate it), never a crash.
+
+Scores are 0–1 against the #34.1 golden labels. **P@5 tops out near 0.2** because most golden
+queries have a single relevant note (1-of-5 = 0.20) — that ceiling is the honest shape, not a bug;
+the per-category chart and footnote make it legible.
+
 ## Charts
 
-All four required views render with [**dither-kit**](https://www.tripwire.sh/dither-kit)
+All four required telemetry views render with [**dither-kit**](https://www.tripwire.sh/dither-kit)
 (`@dither-kit/*`, installed into `src/components/dither-kit/`):
 
 | View | dither-kit component |
