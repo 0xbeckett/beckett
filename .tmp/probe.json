@@ -1,0 +1,42 @@
+{
+  "corpus": {
+    "cliMemoryDir": "/home/beckett/.beckett/memory",
+    "legacyMemoryDir": "/home/beckett/.claude/projects/-home-beckett-beckett/memory",
+    "parsedNodes": 41
+  },
+  "queries": 1,
+  "models": {
+    "luna": {
+      "model": "gpt-5.6-luna",
+      "queries": 1,
+      "precisionAt1": 1,
+      "precisionAt5": 0.2,
+      "mrr": 1,
+      "passRate": 0,
+      "fallbackRate": 0,
+      "p50LatencyMs": 5919,
+      "p95LatencyMs": 5919
+    }
+  },
+  "perQuery": {
+    "luna": {
+      "rows": [
+        {
+          "id": "commit-no-coauthor",
+          "category": "feedback",
+          "precisionAt1": 1,
+          "precisionAt5": 0.2,
+          "reciprocalRank": 1,
+          "firstRelevantRank": 1,
+          "latencyMs": 5918.864928999999,
+          "fallback": false,
+          "pass": false,
+          "noteIds": [
+            "commits-no-claude-trailer"
+          ]
+        }
+      ],
+      "model": "gpt-5.6-luna"
+    }
+  }
+}
