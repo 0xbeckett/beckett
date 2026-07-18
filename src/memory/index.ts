@@ -51,7 +51,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import type {
   IndexLine,
@@ -279,7 +278,7 @@ export class MemoryStore implements Memory {
     if (!intent.name || !/^[a-z0-9-]+$/.test(intent.name)) {
       throw new Error(`memory.remember: invalid node name '${intent.name}' (must be kebab-case)`);
     }
-    this.ensureDir();
+    await this.ensureDir();
     let g = this.buildGraph();
 
     // 1. Dedup: does a node already cover this fact? (Spec 08 §4.2)
@@ -342,7 +341,7 @@ export class MemoryStore implements Memory {
     // 5. Regenerate the always-loaded index (Spec 08 §4.5) + mirror + event + commit,
     //    and keep the moss retrieval index in step with the write (issue #20).
     this.atomicWrite(join(this.dir, "MEMORY.md"), renderIndex(g));
-    this.commit(`memory: ${op} ${name}`);
+    await this.commit(`memory: ${op} ${name}`);
     await this.syncMossQuietly(g);
 
     const result = g.nodes.get(name);
@@ -362,7 +361,7 @@ export class MemoryStore implements Memory {
   }
 
   private async maintainLocked(opts: { dryRun?: boolean }): Promise<MaintainReport> {
-    this.ensureDir();
+    await this.ensureDir();
     let g = this.buildGraph();
     const scanned = [...g.nodes.values()].filter((n) => !n.phantom).length;
     const plan = planMaintenance(g, Date.now());
@@ -390,7 +389,7 @@ export class MemoryStore implements Memory {
     }
     this.atomicWrite(join(this.dir, "MEMORY.md"), renderIndex(g));
     await this.syncMossQuietly(g); // archived/merged nodes leave the retrieval index too
-    this.commit(
+    await this.commit(
       `memory: maintenance (${plan.archives.length} archived, ${plan.merges.length} merged)`,
     );
     this.logger.info("memory: maintenance executed", {
@@ -565,7 +564,7 @@ export class MemoryStore implements Memory {
     return join(this.dir, folder, `${name}.md`);
   }
 
-  private ensureDir(): void {
+  private async ensureDir(): Promise<void> {
     mkdirSync(this.dir, { recursive: true });
     // The .moss/ retrieval cache (issue #20) is derived, partly binary, and rewritten on
     // every write — keep it out of the memory repo's history (commit uses `git add -A`).
@@ -576,7 +575,7 @@ export class MemoryStore implements Memory {
       writeFileSync(gitignore, readFileSync(gitignore, "utf8").replace(/\n?$/, "\n") + ".moss/\n");
     }
     if (this.git && !existsSync(join(this.dir, ".git"))) {
-      this.runGit(["init", "-q"]);
+      await this.runGit(["init", "-q"]);
     }
   }
 
@@ -610,12 +609,12 @@ export class MemoryStore implements Memory {
 
   // ── git versioning (Spec 08 §8.2) ───────────────────────────────────────────────────
 
-  private commit(message: string): void {
+  private async commit(message: string): Promise<void> {
     if (!this.git) return;
     if (!existsSync(join(this.dir, ".git"))) return;
-    this.runGit(["add", "-A"]);
+    await this.runGit(["add", "-A"]);
     // -c flags avoid a dependency on a global git identity for the memory repo.
-    this.runGit([
+    await this.runGit([
       "-c",
       "user.email=beckett@localhost",
       "-c",
@@ -628,9 +627,18 @@ export class MemoryStore implements Memory {
     ]);
   }
 
-  private runGit(args: string[]): void {
+  private async runGit(args: string[]): Promise<void> {
     try {
-      execFileSync("git", ["-C", this.dir, ...args], { stdio: "ignore" });
+      const proc = Bun.spawn(["git", "-C", this.dir, ...args], {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      const code = await proc.exited;
+      if (code !== 0) {
+        const stderr = await new Response(proc.stderr).text();
+        throw new Error(`git exited ${code}${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
+      }
     } catch (err) {
       // Versioning is best-effort; a missing git binary never breaks memory (Spec 08 §8.2).
       this.logger.debug("memory: git command failed", { args: args.join(" "), err: String(err) });
