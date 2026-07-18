@@ -1,1 +1,0 @@
-$ bun scripts/bench/recall-agent.ts --json --concurrency "6"

@@ -22,3 +22,6 @@ output/
 *.log
 .agents/
 .gstack/
+
+# bench artifacts
+.bench-out/
