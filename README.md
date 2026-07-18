@@ -26,6 +26,7 @@ personality, point it at your own Discord, and you have your own Beckett.
 - [Deploying changes](#deploying-changes)
 - [Repo layout](#repo-layout)
 - [Contributing / working in the code](#contributing--working-in-the-code)
+- [License](#license)
 
 ---
 
@@ -332,4 +333,6 @@ specs/          design specs (v2 archived under _legacy-v2/)
 
 ---
 
-No license is declared yet — if you want to fork and redistribute, ask first. And give yours a name.
+## License
+
+[MIT](LICENSE). Fork it, redistribute it, no permission needed. Just give yours a name.
