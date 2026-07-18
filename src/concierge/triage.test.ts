@@ -383,7 +383,7 @@ describe("cerebras provider", () => {
     }
   });
 
-  test("fenced content still parses; HTTP errors and a missing key fail closed (interject=false)", async () => {
+  test("fenced content still parses; HTTP errors fail closed (interject=false)", async () => {
     const fenced = createTriageClassifier({
       provider: "cerebras",
       model: "gemma-4-31b",
@@ -407,23 +407,64 @@ describe("cerebras provider", () => {
       fetchFn: (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch,
     });
     expect((await httpErr(burst, [])).interject).toBe(false);
+  });
 
+  test("a missing key falls back to the claude classifier instead of failing closed (issue #152)", async () => {
     const saved = process.env.CEREBRAS_API_KEY;
     delete process.env.CEREBRAS_API_KEY;
+    const dir = mkdtempSync(join(tmpdir(), "beckett-triage-fallback-"));
     try {
+      const promptPath = join(dir, "triage.md");
+      const argsPath = join(dir, "args.json");
+      const bin = join(dir, "fake-claude.ts");
+      writeFileSync(promptPath, "STATIC RUBRIC", "utf8");
+      writeFileSync(
+        bin,
+        `#!/usr/bin/env bun\n` +
+          `import { writeFileSync } from "node:fs";\n` +
+          `writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)));\n` +
+          `console.log(JSON.stringify({ type: "result", result: JSON.stringify({ kind: "question", confidence: 0.8, reason: "open question", addressee: "group" }) }));\n`,
+        "utf8",
+      );
+      chmodSync(bin, 0o755);
+
+      const warnings: string[] = [];
+      const capturingLogger = {
+        debug() {},
+        info() {},
+        warn(msg: string) {
+          warnings.push(msg);
+        },
+        error() {},
+        child() {
+          return capturingLogger;
+        },
+      } as unknown as import("../types.ts").Logger;
+
       const noKey = createTriageClassifier({
         provider: "cerebras",
         model: "gemma-4-31b",
-        logger: quietLogger,
+        claudeBin: bin,
+        promptPath,
+        logger: capturingLogger,
         fetchFn: (async () => {
-          throw new Error("must not be called without a key");
+          throw new Error("cerebras must not be called without a key");
         }) as unknown as typeof fetch,
       });
+
       const verdict = await noKey(burst, []);
-      expect(verdict.interject).toBe(false);
-      expect(verdict.reason).toContain("CEREBRAS_API_KEY");
+      expect(verdict).toMatchObject({ interject: true, kind: "question" });
+      const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+      // The fallback remaps the cerebras model onto claude's own triage default — the CLI must
+      // never be spawned with a model it doesn't serve.
+      expect(args[args.indexOf("--model") + 1]).toBe("claude-haiku-4-5");
+
+      // A second call keeps working and the missing-key warning fires once, not per verdict.
+      expect((await noKey(burst, [])).interject).toBe(true);
+      expect(warnings.filter((msg) => msg.includes("CEREBRAS_API_KEY")).length).toBe(1);
     } finally {
       if (saved !== undefined) process.env.CEREBRAS_API_KEY = saved;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
