@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAmbientCoordinator, type AmbientClock, type AmbientTurn } from "./ambient.ts";
+import {
+  createAmbientCoordinator,
+  type AmbientClock,
+  type AmbientTranscriptMessage,
+  type AmbientTurn,
+} from "./ambient.ts";
 import { validateConfig } from "../config.ts";
 import type { IncomingMessage, Logger } from "../types.ts";
 import type { TriageFn, TriageVerdict } from "./triage.ts";
@@ -317,6 +322,109 @@ describe("AmbientCoordinator", () => {
     expect(triageCalls).toBe(1);
     expect(turns).toHaveLength(3);
     expect(turns[2]).toMatchObject({ engaged: false });
+  });
+
+  test("restores the engaged window from the persisted store after a restart", async () => {
+    const clock = new FakeClock();
+    clock.t = 100_000;
+    let triageCalls = 0;
+    const turns: AmbientTurn[] = [];
+    // The shared channel store survived the restart and shows Beckett posted 5s ago.
+    const store: AmbientTranscriptMessage[] = [
+      {
+        userId: "user-1",
+        messageId: "s1",
+        authorId: "user-1",
+        authorDisplayName: "Jason",
+        content: "can you ship the csv export?",
+        ts: 90_000,
+        repliedToId: null,
+        isBeckett: false,
+      },
+      {
+        userId: "beckett",
+        messageId: "s2",
+        authorId: "beckett",
+        authorDisplayName: "Beckett",
+        content: "on it — filing the ticket",
+        ts: 95_000,
+        repliedToId: null,
+        isBeckett: true,
+      },
+    ];
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({
+        proactivity: {
+          enabled: true,
+          default_mode: "suggest",
+          burst_quiet_secs: 30,
+          engaged_quiet_secs: 1,
+          engaged_window_secs: 60,
+        },
+      }),
+      logger: quietLogger,
+      clock,
+      triage: async () => {
+        triageCalls++;
+        return yes;
+      },
+      engage: async (turn) => {
+        turns.push(turn);
+        return { decision: "send", message: "yep, still here" };
+      },
+      transcriptSource: () => [...store],
+    });
+
+    // Fresh coordinator, no noteBeckettPost ever called (in-memory window map is empty). The next
+    // reply must ride the engaged lane off the store — short lull, no triage, engaged flag set —
+    // instead of falling to the cold path.
+    coordinator.observe(msg("m1", "c1", "and does it survive restarts?", 100_000), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(triageCalls).toBe(0);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ kind: "candidate", channelId: "c1", engaged: true });
+  });
+
+  test("store without a Beckett post leaves the channel cold after restart", async () => {
+    const clock = new FakeClock();
+    clock.t = 100_000;
+    let triageCalls = 0;
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({
+        proactivity: {
+          enabled: true,
+          default_mode: "suggest",
+          burst_quiet_secs: 1,
+          engaged_quiet_secs: 30,
+          engaged_window_secs: 60,
+        },
+      }),
+      logger: quietLogger,
+      clock,
+      triage: async () => {
+        triageCalls++;
+        return { ...yes, interject: false, kind: "none" };
+      },
+      engage: async () => ({ decision: "send", message: "must not run" }),
+      transcriptSource: () => [
+        {
+          userId: "user-1",
+          messageId: "s1",
+          authorId: "user-1",
+          authorDisplayName: "Jason",
+          content: "humans only in here",
+          ts: 99_000,
+          repliedToId: null,
+          isBeckett: false,
+        },
+      ],
+    });
+
+    coordinator.observe(msg("m1", "c1", "random chatter", 100_000), "member");
+    clock.advance(1_000);
+    await tick();
+    expect(triageCalls).toBe(1);
   });
 
   test("a structured pass on an engaged turn does not refresh the window — a dead conversation goes cold", async () => {

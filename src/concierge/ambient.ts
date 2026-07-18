@@ -170,6 +170,8 @@ class Coordinator implements AmbientCoordinator {
   private readonly lastInterjectionAt = new Map<string, number>();
   /** When Beckett last SPOKE per channel (any path) — anchors the engaged window. */
   private readonly lastBeckettPostAt = new Map<string, number>();
+  /** Channels already lazily backfilled from the persisted store after a restart (#125). */
+  private readonly beckettPostBackfilled = new Set<string>();
   private interjectionTimes: number[] = [];
 
   constructor(deps: CreateAmbientCoordinatorDeps) {
@@ -223,8 +225,28 @@ class Coordinator implements AmbientCoordinator {
   private isEngaged(channelId: string): boolean {
     const windowSecs = this.config.engaged_window_secs ?? 180;
     if (windowSecs <= 0) return false;
-    const last = this.lastBeckettPostAt.get(channelId);
+    const last = this.lastBeckettPostAt.get(channelId) ?? this.backfillLastBeckettPost(channelId);
     return last !== undefined && this.clock.now() - last < windowSecs * 1000;
+  }
+
+  /**
+   * #125: `lastBeckettPostAt` is in-memory only, so a restart mid-conversation dropped the engaged
+   * window and the next reply hit the cold triage path. When the persisted channel store is injected
+   * (OPS-80), seed the window once from the newest Beckett entry in the transcript. One-shot lazy
+   * backfill — no new persistence, and the legacy no-store path is untouched.
+   */
+  private backfillLastBeckettPost(channelId: string): number | undefined {
+    if (!this.transcriptSource || this.beckettPostBackfilled.has(channelId)) return undefined;
+    this.beckettPostBackfilled.add(channelId);
+    const transcript = this.transcriptSource(channelId);
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      const entry = transcript[i];
+      if (entry?.isBeckett === true) {
+        this.lastBeckettPostAt.set(channelId, entry.ts);
+        return entry.ts;
+      }
+    }
+    return undefined;
   }
 
   recordOffer(channelId: string, offer: Omit<PendingOffer, "expiresAt"> & { expiresAt?: number }): PendingOffer {
