@@ -536,7 +536,11 @@ export class ConciergeSession {
     this.pumping = true;
     try {
       while (this.turnQueue.length > 0) {
-        const release = this.gate ? await this.gate.acquire() : null;
+        // A person turn at the head (issue #120) carries its priority into the pool gate, so it
+        // never waits behind system turns queued by OTHER channels. Peek — the entry is shifted
+        // only after the slot is won, so a stop() during the wait still finds the queue to drain.
+        const priority = this.turnQueue[0]?.priority === true;
+        const release = this.gate ? await this.gate.acquire(priority) : null;
         // A stop() during the gate wait drained the queue — release the slot and bail.
         const entry = this.turnQueue.shift();
         if (!entry) {
