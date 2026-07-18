@@ -57,7 +57,7 @@ function hash(value: string): number {
 function addFeature(vector: Float64Array, feature: string, weight: number): void {
   const value = hash(feature);
   const index = value % EMBEDDING_DIMENSIONS;
-  vector[index] += (value & 0x80000000) === 0 ? weight : -weight;
+  vector[index] = (vector[index] ?? 0) + ((value & 0x80000000) === 0 ? weight : -weight);
 }
 
 /** Generate a unit-length local embedding. Same text always generates the same vector. */

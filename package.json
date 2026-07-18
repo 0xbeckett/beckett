@@ -13,6 +13,8 @@
     "eval:triage": "bun scripts/eval/triage-classifier.ts",
     "telemetry:refresh": "bun scripts/ops/telemetry-harvest.ts",
     "code-stats:refresh": "bun scripts/ops/code-stats-harvest.ts",
+    "moss:smoke": "bun test src/moss-local/index.test.ts",
+    "moss:bench": "bun scripts/bench/moss-local.ts",
     "typecheck": "bun x tsc --noEmit",
     "test": "bun test"
   },
