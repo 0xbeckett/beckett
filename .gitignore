@@ -22,6 +22,11 @@ output/
 *.log
 .agents/
 .gstack/
+.tmp/
+.tmp-*.mjs
 
 # bench artifacts
 .bench-out/
+
+# npm lockfile — this project standardizes on bun.lock
+package-lock.json
