@@ -323,6 +323,9 @@ const CRASH_LOOP_THRESHOLD = 3;
 /** The immediate "you're seen" reply when a mention lands behind a busy session (issue #24). */
 const FAST_ACK_TEXT = "On it — I'm mid-task right now, you're next in line.";
 
+/** One fast ack per channel per this window — rapid mentions get one bubble, not one each (issue #128). */
+const FAST_ACK_DEDUPE_MS = 60_000;
+
 /** Prompt that asks the dying session for a compact handoff before we drop its transcript. */
 const HANDOFF_PROMPT =
   "SYSTEM: Your conversation context is about to be compacted and this transcript dropped.\n" +
@@ -1366,6 +1369,8 @@ export class Concierge {
   private readonly activeMentions = new Map<string, MentionClaim>();
   /** Last static denial by channel+user, so denied DMs/mentions cannot spam Discord. */
   private readonly accessDenyAt = new Map<string, number>();
+  /** Last fast ack by channel, so rapid mentions get one ack bubble instead of one each (issue #128). */
+  private readonly fastAckAt = new Map<string, number>();
   /**
    * The ambient-interjection coordinator (proposal §4). Owns per-channel ring buffers, debounce,
    * cooldowns, and the offer ledger; calls back into {@link runAmbientTurn} to run a session turn.
@@ -3234,11 +3239,17 @@ export class Concierge {
     // Fast ack (issue #24): a channel's session is single-flight, so a mention landing while that
     // channel already has a turn running (or queued), or while the pool's turn gate is saturated,
     // would sit for minutes behind only a typing indicator. Acknowledge within seconds —
-    // code-level, no model turn.
+    // code-level, no model turn. Deduped per channel (issue #128, same shape as accessDenyAt):
+    // three rapid mentions get ONE ack bubble, not three identical ones.
     if ((this.pool.sessionFor(m.channelId).queueDepth?.() ?? 0) > 0 || this.turnGate.saturated()) {
-      void this.gateway
-        .post(m.channelId, FAST_ACK_TEXT, { replyToMessageId: m.messageId, replyToUserId: m.userId })
-        .catch(() => undefined);
+      const now = Date.now();
+      const last = this.fastAckAt.get(m.channelId) ?? 0;
+      if (now - last >= FAST_ACK_DEDUPE_MS) {
+        this.fastAckAt.set(m.channelId, now);
+        void this.gateway
+          .post(m.channelId, FAST_ACK_TEXT, { replyToMessageId: m.messageId, replyToUserId: m.userId })
+          .catch(() => undefined);
+      }
     }
 
     try {
