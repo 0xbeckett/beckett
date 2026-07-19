@@ -122,14 +122,23 @@ test("unknown default board is a loud config error listing valid boards", () => 
   expect(() => loadToml(`[tracker]\ndefault_board = "missing"\n`)).toThrow(/unknown default_board "missing" \(have: ops, int, vid, vidpip\)/);
 });
 
-test("github activity relay defaults route to the configured dev feed", () => {
+test("github activity relay is off until an instance configures its own repository and dev feed", () => {
   expect(validateConfig({}).github.activity).toMatchObject({
-    enabled: true,
-    repo: "0xbeckett/beckett",
+    enabled: false,
+    repo: "",
     branch: "main",
     poll_secs: 60,
-    channel_id: "1520658476974735490",
+    channel_id: "",
   });
+});
+
+test("enabled GitHub activity relay requires an explicit repository and channel", () => {
+  expect(() => validateConfig({ github: { activity: { enabled: true } } })).toThrow(
+    /set github\.activity\.repo/,
+  );
+  expect(() => validateConfig({ github: { activity: { enabled: true, repo: "octocat/demo" } } })).toThrow(
+    /set github\.activity\.channel_id/,
+  );
 });
 
 test("proactivity defaults ship disabled and off", () => {

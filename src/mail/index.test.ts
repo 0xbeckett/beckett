@@ -45,24 +45,30 @@ describe("AgentMail inbox bootstrap", () => {
       creates++;
       return { inboxId: "created-id", email: "beckett@agentmail.to" };
     };
-    expect(await bootstrapInbox(api, file)).toEqual({ version: 1, inboxId: "created-id", address: "beckett@agentmail.to" });
+    expect(await bootstrapInbox(api, file, "beckett@agentmail.to")).toEqual({ version: 1, inboxId: "created-id", address: "beckett@agentmail.to" });
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ version: 1, inboxId: "created-id", address: "beckett@agentmail.to" });
-    expect(await bootstrapInbox(api, file)).toEqual({ version: 1, inboxId: "created-id", address: "beckett@agentmail.to" });
+    expect(await bootstrapInbox(api, file, "beckett@agentmail.to")).toEqual({ version: 1, inboxId: "created-id", address: "beckett@agentmail.to" });
     expect(creates).toBe(1);
   });
 
   test("discovers AgentMail's single auto-provisioned inbox", async () => {
     const file = stateFile();
-    const state = await bootstrapInbox(fakeApi([{ inboxId: "onboarded", email: "agent@agentmail.to" }]), file);
+    const state = await bootstrapInbox(fakeApi([{ inboxId: "onboarded", email: "agent@agentmail.to" }]), file, "agent@agentmail.to");
     expect(state).toEqual({ version: 1, inboxId: "onboarded", address: "agent@agentmail.to" });
   });
 
-  test("prefers the existing 0xbeckett inbox when AgentMail has multiple inboxes", async () => {
+  test("prefers the configured inbox when AgentMail has multiple inboxes", async () => {
     const state = await bootstrapInbox(fakeApi([
       { inboxId: "other", email: "other@agentmail.to" },
-      { inboxId: "beckett", email: "0xbeckett@agentmail.to" },
-    ]), stateFile());
-    expect(state).toEqual({ version: 1, inboxId: "beckett", address: "0xbeckett@agentmail.to" });
+      { inboxId: "agent", email: "agent@agentmail.to" },
+    ]), stateFile(), "agent@agentmail.to");
+    expect(state).toEqual({ version: 1, inboxId: "agent", address: "agent@agentmail.to" });
+  });
+
+  test("requires an explicit instance-owned AgentMail address", async () => {
+    await expect(bootstrapInbox(fakeApi(), stateFile(), "")).rejects.toThrow(
+      "BECKETT_MAIL_ADDRESS is not set — set it to this instance's AgentMail address",
+    );
   });
 });
 

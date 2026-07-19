@@ -44,6 +44,7 @@ test("mail poller silently baselines old mail and emits exactly once for later I
   const opts = {
     api: fakeApi(messages),
     inboxStateFile: join(dir, "mail.json"),
+    mailAddress: "0xbeckett@agentmail.to",
     stateFile: defaultMailListenerStateFile(dir),
     intervalMs: 0,
     onIncomingEmail: async (email: { messageId: string; from: string; subject: string; snippet: string }) => { delivered.push(email); },
@@ -72,7 +73,7 @@ test("poller does not turn outgoing mail into an inbound notification", async ()
   const messages = [item("old")];
   const delivered: string[] = [];
   const poller = createAgentMailPoller({
-    api: fakeApi(messages), inboxStateFile: join(dir, "mail.json"), stateFile: defaultMailListenerStateFile(dir), intervalMs: 0,
+    api: fakeApi(messages), inboxStateFile: join(dir, "mail.json"), mailAddress: "0xbeckett@agentmail.to", stateFile: defaultMailListenerStateFile(dir), intervalMs: 0,
     onIncomingEmail: async (email) => { delivered.push(email.messageId); },
   });
   await poller.start();

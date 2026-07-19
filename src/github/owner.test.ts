@@ -25,10 +25,12 @@ describe("resolveGitHubOwner", () => {
     expect(resolveGitHubOwner({ identity: { github_user: "octocat" } }, {})).toBe("octocat");
   });
 
-  test("preserves the legacy canonical owner for partial configs", () => {
-    expect(resolveGitHubOwner({}, {})).toBe("0xbeckett");
-    expect(resolveGitHubOwner({ identity: { github_user: "  " } }, { BECKETT_GH_ORG: " " })).toBe(
-      "0xbeckett",
+  test("refuses to guess a maintainer account for partial configs", () => {
+    expect(() => resolveGitHubOwner({}, {})).toThrow(
+      "GitHub account is not configured — set GITHUB_ACCOUNT or identity.github_user in config.toml",
+    );
+    expect(() => resolveGitHubOwner({ identity: { github_user: "  " } }, { BECKETT_GH_ORG: " " })).toThrow(
+      /set GITHUB_ACCOUNT or identity\.github_user/,
     );
   });
 

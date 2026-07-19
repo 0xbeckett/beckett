@@ -38,10 +38,16 @@ export class OpenRouterProvider {
     if (!key.trim()) {
       throw new Error("no OPENROUTER_API_KEY in env — OpenRouter evals are unavailable");
     }
+    const referer = opts.referer ?? process.env.OPENROUTER_REFERER ?? "";
+    if (!referer.trim()) {
+      throw new Error(
+        "OPENROUTER_REFERER is not set — set it to this instance's public URL or pass referer to OpenRouterProvider",
+      );
+    }
     this.apiKey = key;
     this.baseUrl = (opts.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
     this.appTitle = opts.appTitle ?? "Beckett eval";
-    this.referer = opts.referer ?? "https://0xbeckett.me";
+    this.referer = referer.trim();
     this.timeoutMs = opts.timeoutMs ?? 180_000;
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }

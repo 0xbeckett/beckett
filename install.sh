@@ -759,7 +759,7 @@ configure_instance() {
     local env_tmp
     env_tmp="$(mktemp)"
     TEMP_PATHS+=("${env_tmp}")
-    printf '# Created by the Beckett installer. Keep this file private.\nDISCORD_TOKEN=\nDISCORD_OWNER_ID=\nDISCORD_OWNER_NAME=\nGITHUB_PAT=\nBECKETT_GH_ORG=\nBECKETT_BORED_URL=\nBECKETT_STARTUP_CHANNEL_ID=disabled\n' > "${env_tmp}"
+    printf '# Created by the Beckett installer. Keep this file private.\nDISCORD_TOKEN=\nDISCORD_OWNER_ID=\nDISCORD_OWNER_NAME=\nGITHUB_PAT=\nBECKETT_GH_ORG=\nBECKETT_MAIL_ADDRESS=\nOPENROUTER_REFERER=\nBECKETT_BORED_URL=\nBECKETT_STARTUP_CHANNEL_ID=disabled\n' > "${env_tmp}"
     chown "${BECKETT_USER}:${BECKETT_USER}" "${env_tmp}"
     as_beckett install -m 0600 "${env_tmp}" "${env_path}"
   else
