@@ -3,8 +3,8 @@
  * the control bus. Pins the properties the pool exists for: two channels' turns run CONCURRENTLY
  * (no cross-channel queueing), each channel gets its own persistent session (DMs included — the
  * structural fix for model-side DM bleed), reply-claim correlation stays channel-true when several
- * turns are live at once, ticket updates route to their origin channel's session, and each
- * channel's shared-context watermark keys to ITS session's id.
+ * turns are live at once, daemon-origin updates stay on SYSTEM_SCOPE while replying to their
+ * destination via CLI, and each channel's shared-context watermark keys to ITS session's id.
  * Harness conventions copied from shared-context-turn.test.ts (tmpdir BECKETT_DIR, access.txt,
  * fake gateway, validateConfig) with a per-scope session FACTORY instead of one fixed session.
  */
@@ -18,6 +18,7 @@ import { validateConfig } from "../config.ts";
 import type { IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
 import type { Ticket } from "../tracker/types.ts";
+import type { QuickRun } from "../quick/index.ts";
 
 const CHAN_A = "1097283746520174592";
 const CHAN_B = "1097283746520174599";
@@ -290,7 +291,7 @@ test("tokenless correlation never falls back to a live turn in a DIFFERENT chann
   h.sessionFor(CHAN_A)!.finish("");
 });
 
-test("ticket updates route to their origin channel's session, grouped per channel", async () => {
+test("ticket updates run on the system session, grouped per destination channel", async () => {
   const h = harness();
   const ticket = (id: string, channel: string): Ticket =>
     ({
@@ -314,21 +315,62 @@ test("ticket updates route to their origin channel's session, grouped per channe
   await tick();
   await tick();
 
-  const a = h.sessionFor(CHAN_A)!;
-  const b = h.sessionFor(CHAN_B)!;
-  // A's two updates folded into ONE turn on A's session; B's went to B's session.
-  expect(a.asks).toHaveLength(1);
-  expect(String(a.asks[0]!.message)).toContain("OPS-1");
-  expect(String(a.asks[0]!.message)).toContain("OPS-2");
-  expect(b.asks).toHaveLength(1);
-  expect(String(b.asks[0]!.message)).toContain("OPS-3");
+  const system = h.sessionFor("system")!;
+  // A's two updates fold into one system turn and B's gets another; neither human channel gets
+  // daemon chatter in its conversation transcript.
+  expect(system.asks).toHaveLength(2);
+  expect(String(system.asks[0]!.message)).toContain("OPS-1");
+  expect(String(system.asks[0]!.message)).toContain("OPS-2");
+  expect(String(system.asks[1]!.message)).toContain("OPS-3");
+  expect(h.sessionFor(CHAN_A)).toBeUndefined();
+  expect(h.sessionFor(CHAN_B)).toBeUndefined();
 });
 
-test("first per-channel boot migrates the legacy global session file to the home scope", () => {
+test("email, unstamped quick results, and boot warm-up use the dedicated system scope", async () => {
+  const h = harness();
+  await h.concierge.start();
+  const system = h.sessionFor("system")!;
+  expect(system).toBeDefined(); // boot warm-up did not create the ops-channel session
+  expect(h.sessionFor("1520658476974735490")).toBeUndefined();
+
+  await h.concierge.notifyIncomingEmail({
+    from: "sender@example.com",
+    subject: "A subject",
+    snippet: "A preview",
+    messageId: "mail-1",
+  });
+  const unstamped = {
+    runId: "quick-1",
+    agent: "quick-code",
+    task: "check it",
+    channelId: null,
+    requesterId: null,
+    startedAt: 0,
+    finishedAt: 1,
+    state: "done",
+    result: "all clear",
+    detached: true,
+    sessionId: null,
+    proofFiles: [],
+    question: null,
+    questionMessageId: null,
+  } satisfies QuickRun;
+  await h.concierge.notifyQuickResult(unstamped);
+  await tick();
+
+  expect(system.asks).toHaveLength(2);
+  expect(String(system.asks[0]!.message)).toContain("incoming email");
+  expect(String(system.asks[0]!.message)).toContain("discord reply --channel 1520658476974735490");
+  expect(String(system.asks[1]!.message)).toContain("quick-agent result");
+  expect(h.sessionFor(CHAN_A)).toBeUndefined();
+  await h.concierge.stop();
+});
+
+test("first per-channel boot migrates the legacy global session file to the system scope", () => {
   const h = harness();
   const migrate = (scope: string) =>
     (h.concierge as unknown as { migrateLegacySessionState(s: string): void }).migrateLegacySessionState(scope);
-  const home = "1520658476974735490";
+  const home = "system";
   writeFileSync(
     join(h.dir, "concierge-session.json"),
     JSON.stringify({ sessionId: "legacy-sid", handoff: "old note" }),
@@ -336,7 +378,7 @@ test("first per-channel boot migrates the legacy global session file to the home
   );
 
   migrate(home);
-  // Yesterday's all-channels conversation resumes as the HOME scope's session…
+  // Yesterday's all-channels conversation resumes in the isolated system scope…
   const migrated = JSON.parse(readFileSync(join(h.dir, "concierge-sessions", `${home}.json`), "utf8"));
   expect(migrated.sessionId).toBe("legacy-sid");
   expect(migrated.handoff).toBe("old note");
@@ -349,10 +391,10 @@ test("migration is a no-op once the per-scope state dir exists (already-migrated
   mkdirSync(join(h.dir, "concierge-sessions"), { recursive: true });
   writeFileSync(join(h.dir, "concierge-session.json"), JSON.stringify({ sessionId: "stale" }), "utf8");
   (h.concierge as unknown as { migrateLegacySessionState(s: string): void }).migrateLegacySessionState(
-    "1520658476974735490",
+    "system",
   );
   expect(existsSync(join(h.dir, "concierge-session.json"))).toBeTrue();
-  expect(existsSync(join(h.dir, "concierge-sessions", "1520658476974735490.json"))).toBeFalse();
+  expect(existsSync(join(h.dir, "concierge-sessions", "system.json"))).toBeFalse();
 });
 
 test("each channel's shared-context watermark keys to that channel's own sessionId", async () => {

@@ -1301,7 +1301,7 @@ function isMentionClaim(meta: unknown): meta is MentionClaim {
   );
 }
 
-/** A framed automated ticket-update turn, addressed to its origin channel's session (§9.3). */
+/** A framed automated ticket-update turn, addressed to an origin channel via CLI from SYSTEM_SCOPE. */
 interface TicketUpdate {
   channel: string;
   text: string;
@@ -1951,10 +1951,11 @@ export class Concierge {
   /**
    * Relay material GitHub PR transitions (OPS-124): the PR poller surfaces new reviews, CI
    * conclusions, merges, and closes on the PRs Beckett opened. Each becomes an automated-update
-   * turn routed to the ticket's origin channel — the SAME mechanism as {@link notify} ticket
-   * updates. Read-and-relay only: nothing here replies to a review or merges a PR. Events whose PR
-   * carries no origin channel are dropped SILENTLY (criterion: nowhere to route → say nothing). A
-   * batch is grouped per channel so one poll wave costs one turn per channel, not one per event.
+   * turn on SYSTEM_SCOPE, with an explicit CLI reply to the ticket's origin channel — the SAME
+   * mechanism as {@link notify} ticket updates. Read-and-relay only: nothing here replies to a
+   * review or merges a PR. Events whose PR carries no origin channel are dropped SILENTLY
+   * (criterion: nowhere to route → say nothing). A batch is grouped per channel so one poll wave
+   * costs one turn per recipient, not one per event.
    */
   /**
    * Post external GitHub main/merge activity straight into the configured dev feed. This bypasses
