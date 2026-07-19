@@ -139,9 +139,10 @@ bash /tmp/install-beckett.sh        # as root; otherwise: sudo bash /tmp/install
 ```
 
 It creates an unprivileged `beckett` account, enables user-service lingering, installs Node 24
-LTS plus Bun/Claude/Codex/Pi/GitHub CLI, clones the locked app dependencies, writes private
-instance config, and links the systemd units. It deliberately does **not** grant passwordless
-sudo or weaken the host's AppArmor policy.
+LTS plus Bun/Claude/Codex/Pi/GitHub CLI, clones the locked app dependencies, provisions the
+[bored](https://github.com/frgmt0/bored) ticket tracker (clone + build + a loopback `bored.service`
+user unit), writes private instance config, and links the systemd units. It deliberately does
+**not** grant passwordless sudo or weaken the host's AppArmor policy.
 
 Have these ready when prompted:
 
@@ -152,9 +153,6 @@ Have these ready when prompted:
   Numbered task threads inherit their parent channel's visibility, so put task creation in a
   suitably private parent when task names are sensitive. Discord's [bot quick start](https://docs.discord.com/developers/quick-start/getting-started)
   walks through creation and Guild Install;
-- a running [bored](https://github.com/frgmt0/bored) tracker service on the same box (loopback;
-  `BECKETT_BORED_URL`, default `http://127.0.0.1:7770`) — Beckett files, steers, and completes
-  every ticket through it;
 - a GitHub PAT and the matching GitHub username;
 - a Claude Code subscription login. Pi and Codex logins are needed only when those workers are
   enabled.
@@ -162,9 +160,10 @@ Have these ready when prompted:
 Browser/device authentication cannot be completed on someone else's behalf, so a fresh install
 stays safely staged instead of crash-looping. The installer prints the exact login commands and
 one rerun command; that rerun starts Beckett only after required secrets and enabled harness
-credentials exist. Before startup it checks the bored tracker is reachable, validates the GitHub PAT belongs
-to the configured account, and then runs `beckett doctor`. Every rerun is idempotent, preserves
-custom config/secrets, and explicitly restarts an already-running daemon onto the new code.
+credentials exist. Before startup it starts the bored tracker (Beckett files, steers, and completes
+every ticket through it) and confirms it is reachable, validates the GitHub PAT belongs to the
+configured account, and then runs `beckett doctor`. Every rerun is idempotent, preserves custom
+config/secrets, and explicitly restarts an already-running daemon onto the new code.
 
 Installing a fork is the same flow:
 

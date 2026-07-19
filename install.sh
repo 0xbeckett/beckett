@@ -14,8 +14,19 @@ readonly BECKETT_STATE="${BECKETT_HOME}/.beckett"
 readonly NODE_BASE_URL="https://nodejs.org/dist/latest-v24.x"
 readonly PI_PACKAGE="@earendil-works/pi-coding-agent"
 
+# The bored tracker (frgmt0/bored). Beckett files/steers/completes every ticket through it, so a
+# fresh host cannot ship code without it — the installer provisions it just like the app itself.
+readonly DEFAULT_BORED_REPO_URL="https://github.com/frgmt0/bored.git"
+readonly DEFAULT_BORED_REPO_REF="main"
+readonly BORED_CHECKOUT="${BECKETT_HOME}/bored"
+readonly BORED_STATE="${BECKETT_HOME}/.local/state/bored"
+
 REPO_URL="${BECKETT_REPO_URL:-${DEFAULT_REPO_URL}}"
 REPO_REF="${BECKETT_REPO_REF:-${DEFAULT_REPO_REF}}"
+BORED_REPO_URL="${BECKETT_BORED_REPO_URL:-${DEFAULT_BORED_REPO_URL}}"
+BORED_REPO_REF="${BECKETT_BORED_REPO_REF:-${DEFAULT_BORED_REPO_REF}}"
+# Must match the port in BECKETT_BORED_URL; both default to bored's managed-service loopback.
+BORED_PORT="${BECKETT_BORED_PORT:-7770}"
 NON_INTERACTIVE=0
 NO_START=0
 TEMP_PATHS=()
@@ -420,6 +431,69 @@ clone_or_update_repo() {
   as_beckett git -C "${BECKETT_REPO}" merge-base --is-ancestor HEAD FETCH_HEAD ||
     die "the installed checkout has commits not in ${REPO_REF}; refusing to rewrite it"
   as_beckett git -C "${BECKETT_REPO}" merge --ff-only FETCH_HEAD
+}
+
+clone_or_update_tracker() {
+  if [ ! -e "${BORED_CHECKOUT}" ]; then
+    log "cloning the bored tracker ${BORED_REPO_URL} (${BORED_REPO_REF})"
+    local staging="${BORED_CHECKOUT}.installing.$$"
+    rm -rf -- "${staging}"
+    as_beckett git clone --branch "${BORED_REPO_REF}" --single-branch -- "${BORED_REPO_URL}" "${staging}"
+    as_beckett mv "${staging}" "${BORED_CHECKOUT}"
+    return
+  fi
+
+  [ -d "${BORED_CHECKOUT}/.git" ] || die "${BORED_CHECKOUT} exists but is not a git checkout"
+  local dirty
+  # An operator may run a locally-patched tracker; never clobber an edited checkout.
+  dirty="$(as_beckett git -C "${BORED_CHECKOUT}" status --porcelain)"
+  if [ -n "${dirty}" ]; then
+    warn "${BORED_CHECKOUT} has local changes; leaving the tracker checkout as-is"
+    return
+  fi
+  log "fast-forwarding the bored tracker to ${BORED_REPO_REF}"
+  as_beckett git -C "${BORED_CHECKOUT}" fetch origin "${BORED_REPO_REF}"
+  as_beckett git -C "${BORED_CHECKOUT}" merge --ff-only FETCH_HEAD ||
+    warn "could not fast-forward ${BORED_CHECKOUT}; keeping the current tracker revision"
+}
+
+# Run a command as beckett with the user systemd/dbus session reachable (systemctl --user needs it).
+as_beckett_user_service() {
+  local uid runtime_dir
+  uid="$(id -u "${BECKETT_USER}")"
+  runtime_dir="/run/user/${uid}"
+  as_beckett env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" "$@"
+}
+
+provision_tracker() {
+  log "provisioning the bored tracker user service"
+  # bored ships its own idempotent installer: it builds the checkout, writes ~/.config/bored/bored.env,
+  # installs+enables the user unit, and enables lingering. We drive it WITHOUT --start so a staged host
+  # keeps the tracker stopped exactly like Beckett; start_tracker brings it up on the validated start
+  # path. --worker /bin/false with --max-workers 1 keeps bored a pure ticket store — Beckett spawns and
+  # drives every worker itself over the control bus, never through bored's seat runner.
+  as_beckett_user_service "${BORED_CHECKOUT}/scripts/install-systemd-user-service.sh" \
+    --source "${BORED_CHECKOUT}" \
+    --repo "${BECKETT_REPO}" \
+    --root "${BORED_STATE}" \
+    --port "${BORED_PORT}" \
+    --worker /bin/false \
+    --max-workers 1 \
+    --owner-dm owner
+}
+
+start_tracker() {
+  log "starting the bored tracker and waiting for its health probe"
+  as_beckett_user_service systemctl --user restart bored.service
+  local attempt
+  for attempt in $(seq 1 30); do
+    if as_beckett curl --fail --silent --show-error --max-time 5 \
+      "http://127.0.0.1:${BORED_PORT}/health" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+  die "the bored tracker did not answer http://127.0.0.1:${BORED_PORT}/health after starting bored.service; check: sudo -iu ${BECKETT_USER} journalctl --user -u bored.service"
 }
 
 install_app_dependencies() {
@@ -847,7 +921,7 @@ preflight_tracker() {
     'const { loadConfig } = await import("./src/config.ts"); console.log(loadConfig().tracker.default_board);')"
   [ -n "${board}" ] || die "no tracker board is configured"
   if ! as_beckett "${BECKETT_HOME}/.local/bin/beckett" ticket list --board "${board}" >/dev/null; then
-    die "the bored tracker is unreachable; ensure the bored service is running (BECKETT_BORED_URL, default http://127.0.0.1:7770), then rerun the installer"
+    die "the bored tracker did not serve board '${board}' (BECKETT_BORED_URL, default http://127.0.0.1:${BORED_PORT}); check: sudo -iu ${BECKETT_USER} journalctl --user -u bored.service"
   fi
 }
 
@@ -873,6 +947,7 @@ install_units() {
     return
   fi
 
+  start_tracker
   preflight_tracker
   log "configuration is complete; enabling and starting Beckett"
   as_beckett env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
@@ -925,6 +1000,8 @@ main() {
   install_user_toolchain
   clone_or_update_repo
   install_app_dependencies
+  clone_or_update_tracker
+  provision_tracker
   configure_instance
   install_cli_shim
   install_units
