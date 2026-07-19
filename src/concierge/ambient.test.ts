@@ -126,6 +126,47 @@ describe("AmbientCoordinator", () => {
     expect(coordinator.getTranscript("c1")).toEqual([]);
   });
 
+  test("the default cold debounce is 8s while the engaged lane remains 4s", async () => {
+    const clock = new FakeClock();
+    let triageCalls = 0;
+    const turns: AmbientTurn[] = [];
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({ proactivity: { enabled: true, default_mode: "suggest" } }),
+      logger: quietLogger,
+      clock,
+      triage: async () => {
+        triageCalls++;
+        return yes;
+      },
+      engage: async (turn) => {
+        turns.push(turn);
+        return { decision: "pass", message: null };
+      },
+    });
+
+    coordinator.observe(msg("m1", "c1", "wish this had csv", 0), "member");
+    clock.advance(7_999);
+    await tick();
+    expect(triageCalls).toBe(0);
+    expect(turns).toHaveLength(0);
+
+    clock.advance(1);
+    await tick();
+    expect(triageCalls).toBe(1);
+    expect(turns[0]).toMatchObject({ kind: "candidate", engaged: false });
+
+    coordinator.noteBeckettPost("c2");
+    coordinator.observe(msg("m2", "c2", "and pdf too", 8_000), "member");
+    clock.advance(3_999);
+    await tick();
+    expect(turns).toHaveLength(1);
+
+    clock.advance(1);
+    await tick();
+    expect(triageCalls).toBe(1); // engaged continuations still bypass the classifier
+    expect(turns[1]).toMatchObject({ kind: "candidate", engaged: true });
+  });
+
   test("debounces bursts, triages once after quiet, and engages candidate", async () => {
     const clock = new FakeClock();
     const bursts: string[][] = [];

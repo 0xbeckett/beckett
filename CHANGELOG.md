@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Faster cold ambient interjections (#123, #158)
+
+- Cold ambient bursts now flush after an 8-second quiet period rather than 20 seconds, removing
+  12 seconds from the triage/session path while retaining burst assembly. The engaged continuation
+  lane remains a 4-second lull, and every candidate still reaches the session turn, which can PASS
+  when the moment is no longer timely. When `CEREBRAS_API_KEY` is present, the existing default
+  fast Cerebras triage provider remains selected instead of spawning the Claude CLI.
+
 ### Tracker cutover: bored is the only ticket queue (OPS-191)
 
 - **Plane is gone.** `src/plane/` (client, poller, presets, cast helpers) is deleted; the shared

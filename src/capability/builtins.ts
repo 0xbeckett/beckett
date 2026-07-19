@@ -263,7 +263,10 @@ const ProactivityConfigSchema = z
     // answering something Beckett just said — never pass through this gate (the engaged lane in
     // ambient.ts bypasses it), so raising the bar tightens over-interjection without ghosting them.
     triage_threshold: z.number().min(0).max(1).default(0.55),
-    burst_quiet_secs: posInt.default(20),
+    // Cold bursts need a real conversational pause, but 20s leaves the classifier and queued
+    // session turn responding after the moment has closed. Eight seconds preserves burst
+    // assembly while removing 12s from the cold interjection path.
+    burst_quiet_secs: posInt.default(8),
     // Mid-conversation, waiting out the full cold debounce reads as wandering off — a short
     // lull IS a turn boundary when people are talking WITH Beckett (v4.1.2).
     engaged_quiet_secs: posInt.default(4),

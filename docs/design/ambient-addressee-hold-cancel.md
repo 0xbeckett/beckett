@@ -92,7 +92,7 @@ burst flushes only after a lull:
 ```ts
 const quietSecs = this.isEngaged(channelId)
   ? (this.config.engaged_quiet_secs ?? 4)     // v4.1.2: mid-conversation, 4s IS a turn boundary
-  : this.config.burst_quiet_secs;             // cold default 20s
+  : this.config.burst_quiet_secs;             // cold default 8s
 const timer = this.clock.setTimeout(() => { …; void this.flushBurst(channelId); }, quietSecs*1000);
 ```
 
@@ -144,7 +144,7 @@ lane the *session turn itself* decides (it can still return `PASS` on a conversa
 Three cadence changes, all reused by this design:
 
 - **Engaged lull `engaged_quiet_secs` (default 4)** — the 4s debounce in §2.2. Mid-conversation,
-  waiting out the cold 20s read as "wandered off."
+  even the cold 8s debounce reads as "wandered off."
 - **Typing indicator** — `runAmbientTurn` fires `gateway.sendTyping` **only** for `consent` turns
   and **engaged** candidates (`index.ts:1966`). Cold candidates stay untelegraphed: no "beckett is
   typing…" over a conversation it may still `PASS` on from eavesdrop distance.
@@ -179,9 +179,9 @@ all-or-nothing. There is **no per-turn mid-flight abort today**; §5 addresses t
 |---|---|---|
 | `enabled` | `false` | master switch |
 | `default_mode` / `channels` | `off` | per-channel `off`/`suggest`/`auto` |
-| `triage_provider` / `triage_model` | `claude` / `claude-haiku-4-5` | classifier backend |
+| `triage_provider` / `triage_model` | `cerebras` / `gemma-4-31b` when `CEREBRAS_API_KEY` is set; otherwise `claude` / `claude-haiku-4-5` | classifier backend |
 | `triage_threshold` | `0.55` | min confidence to interject (cold); conservative so a cold coin-flip stays silent |
-| `burst_quiet_secs` | `20` | cold debounce |
+| `burst_quiet_secs` | `8` | cold debounce |
 | `engaged_quiet_secs` | `4` | engaged debounce (v4.1.2) |
 | `engaged_window_secs` | `180` | how long after a Beckett post counts as "engaged" |
 | `channel_cooldown_secs` | `60` | cold backstop |
