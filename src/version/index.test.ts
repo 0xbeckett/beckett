@@ -17,6 +17,7 @@ import {
   computeBumpSuggestion,
   resolveVersion,
   cutChangelog,
+  commitVersion,
 } from "./index.ts";
 import { classifyBump } from "./semver.ts";
 
@@ -75,6 +76,98 @@ describe("readVersion / writeVersion (source of truth)", () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-ver-"));
     writeFileSync(join(dir, "package.json"), `{\n  "version": "1.0.0"\n}\n`);
     expect(() => writeVersion("banana", dir)).toThrow();
+  });
+});
+
+describe("cutChangelog (fold the Unreleased cut into the version bump — issue #147)", () => {
+  const CHANGELOG = [
+    "# Changelog",
+    "",
+    "## Unreleased",
+    "",
+    "### A new capability",
+    "",
+    "- did a thing",
+    "",
+    "## v1.0.0 — first (2026-01-01)",
+    "",
+    "- shipped",
+    "",
+  ].join("\n");
+
+  test("moves Unreleased under a dated heading and leaves a fresh stub", () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-cl-"));
+    writeFileSync(join(dir, "CHANGELOG.md"), CHANGELOG);
+    const res = cutChangelog("1.1.0", dir, "2026-07-18");
+    expect(res.changed).toBe(true);
+    expect(res.version).toBe("1.1.0");
+    const after = readFileSync(join(dir, "CHANGELOG.md"), "utf8");
+    // Fresh empty Unreleased stub, then the dated cut, then the prior release — in order.
+    const headings = after.split("\n").filter((l) => l.startsWith("## "));
+    expect(headings).toEqual(["## Unreleased", "## v1.1.0 (2026-07-18)", "## v1.0.0 — first (2026-01-01)"]);
+    // The moved notes live under the new dated heading, not under Unreleased.
+    expect(after).toContain("## v1.1.0 (2026-07-18)\n\n### A new capability\n\n- did a thing");
+    // The Unreleased stub is empty (nothing between it and the dated heading but a blank line).
+    expect(after).toContain("## Unreleased\n\n## v1.1.0");
+  });
+
+  test("normalizes a leading-v version argument", () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-cl-"));
+    writeFileSync(join(dir, "CHANGELOG.md"), CHANGELOG);
+    const res = cutChangelog("v2.0.0", dir, "2026-07-18");
+    expect(res.changed).toBe(true);
+    expect(readFileSync(join(dir, "CHANGELOG.md"), "utf8")).toContain("## v2.0.0 (2026-07-18)");
+  });
+
+  test("empty Unreleased section is a clean no-op (no manufactured dated section)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-cl-"));
+    const empty = "# Changelog\n\n## Unreleased\n\n## v1.0.0 — first (2026-01-01)\n\n- shipped\n";
+    writeFileSync(join(dir, "CHANGELOG.md"), empty);
+    const res = cutChangelog("1.1.0", dir, "2026-07-18");
+    expect(res.changed).toBe(false);
+    expect(readFileSync(join(dir, "CHANGELOG.md"), "utf8")).toBe(empty);
+  });
+
+  test("a missing CHANGELOG.md is a no-op, not a crash", () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-cl-"));
+    expect(cutChangelog("1.1.0", dir, "2026-07-18").changed).toBe(false);
+  });
+
+  test("a changelog with no Unreleased heading is a loud error", () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-cl-"));
+    writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## v1.0.0 — first (2026-01-01)\n\n- shipped\n");
+    expect(() => cutChangelog("1.1.0", dir, "2026-07-18")).toThrow(/no '## Unreleased' section/);
+  });
+
+  test("the bump commit carries package.json AND the cut CHANGELOG together", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-cl-"));
+    await initRepo(dir);
+    writeFileSync(join(dir, "package.json"), `{\n  "version": "1.0.0"\n}\n`);
+    writeFileSync(join(dir, "CHANGELOG.md"), CHANGELOG);
+    await git(["add", "."], dir);
+    await git(["commit", "-qm", "seed"], dir);
+
+    writeVersion("1.1.0", dir);
+    const cut = cutChangelog("1.1.0", dir, "2026-07-18");
+    expect(cut.changed).toBe(true);
+    await commitVersion(dir, "1.1.0", cut.changed ? ["CHANGELOG.md"] : []);
+
+    // One release commit, and it touched exactly package.json + CHANGELOG.md — they can't drift.
+    const subject = await git(["log", "-1", "--pretty=%s"], dir);
+    expect(subject).toBe("beckett: release v1.1.0");
+    const files = (await git(["show", "--name-only", "--pretty=format:", "HEAD"], dir)).split("\n").filter(Boolean).sort();
+    expect(files).toEqual(["CHANGELOG.md", "package.json"]);
+    // Nothing left staged/dirty afterwards.
+    expect(await git(["status", "--porcelain"], dir)).toBe("");
+  });
+
+  test("cuts an Unreleased section that has no following release (EOF boundary)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-cl-"));
+    writeFileSync(join(dir, "CHANGELOG.md"), "# Changelog\n\n## Unreleased\n\n- lone entry\n");
+    const res = cutChangelog("1.0.0", dir, "2026-07-18");
+    expect(res.changed).toBe(true);
+    const after = readFileSync(join(dir, "CHANGELOG.md"), "utf8");
+    expect(after).toBe("# Changelog\n\n## Unreleased\n\n## v1.0.0 (2026-07-18)\n\n- lone entry\n");
   });
 });
 
