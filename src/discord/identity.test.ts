@@ -91,8 +91,19 @@ test("resolveAddress priority: preferred → known (never the raw display name)"
 });
 
 test("ensureSeeded leaves a fresh map empty without a configured owner", () => {
-  expect(ensureSeeded(file, "not-a-snowflake", "owner", 1000)).toBe(false);
-  expect(loadIdentities(file)).toEqual({});
+  const oldId = process.env.DISCORD_OWNER_ID;
+  const oldName = process.env.DISCORD_OWNER_NAME;
+  delete process.env.DISCORD_OWNER_ID;
+  delete process.env.DISCORD_OWNER_NAME;
+  try {
+    expect(ensureSeeded(file, undefined, undefined, 1000)).toBe(false);
+    expect(loadIdentities(file)).toEqual({});
+  } finally {
+    if (oldId === undefined) delete process.env.DISCORD_OWNER_ID;
+    else process.env.DISCORD_OWNER_ID = oldId;
+    if (oldName === undefined) delete process.env.DISCORD_OWNER_NAME;
+    else process.env.DISCORD_OWNER_NAME = oldName;
+  }
 });
 
 test("ensureSeeded derives the initial identity from the configured owner", () => {
