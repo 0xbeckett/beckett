@@ -56,7 +56,6 @@ socket = "/home/beckett/.beckett/beckett.sock"
 spend = "/home/beckett/.beckett/spend.jsonl"
 
 [identity]
-# Set this or GITHUB_ACCOUNT in ~/.beckett/.env before publishing projects.
 github_user = ""
 gmail_address = ""
 
@@ -69,7 +68,6 @@ boards = ["ops", "int", "vid", "vidpip"]
 poll_secs = 60
 
 [github.activity]
-# Opt in with this instance's repository and Discord channel.
 enabled = false
 repo = ""
 branch = "main"
