@@ -124,7 +124,7 @@ export async function preflightFor(
   const cached = preflightCache.get(harness);
   if (!opts.force && cached && Date.now() - cached.at < PREFLIGHT_TTL_MS) return cached.result;
 
-  const registration = REGISTRY[harness];
+  const registration = isRegisteredHarness(harness) ? REGISTRY[harness] : undefined;
   let result: PreflightResult;
   if (!registration) {
     result = { ok: false, problems: [`no driver registered for harness "${harness}"`] };

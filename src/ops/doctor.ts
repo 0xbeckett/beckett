@@ -19,7 +19,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
 import type { Config, Harness } from "../types.ts";
-import { preflightFor, type PreflightResult } from "../drivers/index.ts";
+import { availableHarnesses, preflightFor, type PreflightResult } from "../drivers/index.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus } from "../shell/control-bus.ts";
 import { resolveGitHubAccount } from "../github/owner.ts";
@@ -176,7 +176,8 @@ function envKeys(body: string): Set<string> {
 
 // ── the doctor ─────────────────────────────────────────────────────────────────────────────
 
-const KNOWN_HARNESSES: Harness[] = ["claude", "codex", "pi"];
+/** Registry-driven so a newly-registered driver's stray processes are recognized without an edit. */
+const KNOWN_HARNESSES: Harness[] = availableHarnesses();
 
 /** Compare the numeric core of semver-shaped CLI output (for example, `v22.19.0`). */
 function semverGte(raw: string, minimum: string): boolean {
