@@ -367,7 +367,8 @@ export const configFragments = {
     .default({}),
   identity: z
     .object({
-      github_user: z.string().default("0xbeckett"),
+      // Publishing resolves this with GITHUB_ACCOUNT and refuses to run when neither is set.
+      github_user: z.string().default(""),
       gmail_address: z.string().default(""),
     })
     .default({}),
@@ -385,15 +386,39 @@ export const configFragments = {
       // watches Beckett's own repository and sends terse dev-feed lines to one configured room.
       activity: z
         .object({
-          enabled: z.boolean().default(true),
-          repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/, "must be owner/repo").default("0xbeckett/beckett"),
+          // An instance must opt in with its own repository and delivery channel. Never watch
+          // or relay activity from Beckett's maintainer repository by default.
+          enabled: z.boolean().default(false),
+          repo: z.string().trim().refine(
+            (value) => !value || /^[^/\s]+\/[^/\s]+$/.test(value),
+            "must be owner/repo",
+          ).default(""),
           branch: z.string().min(1).default("main"),
           poll_secs: posInt.default(60),
-          channel_id: z.string().regex(/^\d{17,20}$/, "must be a Discord channel id").default("1520658476974735490"),
-          // The daemon account and deployment/bot identities are never external activity.
-          ignored_authors: z.array(z.string().min(1)).default(["0xbeckett", "github-actions[bot]", "dependabot[bot]"]),
+          channel_id: z.string().trim().refine(
+            (value) => !value || /^\d{17,20}$/.test(value),
+            "must be a Discord channel id",
+          ).default(""),
+          // The configured daemon identity is appended when the poller starts.
+          ignored_authors: z.array(z.string().min(1)).default(["github-actions[bot]", "dependabot[bot]"]),
         })
         .strict()
+        .superRefine((activity, ctx) => {
+          if (activity.enabled && !activity.repo) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["repo"],
+              message: "is required when github.activity.enabled is true — set github.activity.repo",
+            });
+          }
+          if (activity.enabled && !activity.channel_id) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["channel_id"],
+              message: "is required when github.activity.enabled is true — set github.activity.channel_id",
+            });
+          }
+        })
         .default({}),
     })
     .strict()

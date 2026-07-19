@@ -21,7 +21,6 @@ import { mkdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, chm
 import { dirname, resolve } from "node:path";
 import { log } from "../log.ts";
 import { parseNumstat } from "../git/diff.ts";
-import { resolveGitHubOwner } from "../github/owner.ts";
 
 const logger = log.child("worktree");
 
@@ -493,32 +492,18 @@ export async function fetchRemote(repoRoot: string, remote = "origin"): Promise<
   return true;
 }
 
-/** Process-level fallback for legacy callers that do not pass the validated config owner. */
-export const GH_ORG = resolveGitHubOwner({});
-
 /**
- * The bot git identity every commit in a project checkout must carry. Set repo-LOCAL on each
- * checkout (see {@link applyRepoIdentity}) so nothing — the dispatcher's safety-net commit OR the
- * worker's own inline `git commit`s — can silently inherit a dev box's ambient/personal identity
- * (the personal-email leak: dev-box `frgmt0`/`kcodes0`-authored commits in the repo history).
- * Overridable for a differently-named bot via env; defaults match Beckett's GitHub account noreply.
+ * Pin repo-local `user.name`/`user.email` to the bot identity. Applied on EVERY
+ * {@link ensureProjectRepo} call — including for existing checkouts — so commits cannot inherit a
+ * developer's ambient identity. The noreply address uses the validated project owner supplied by
+ * the dispatcher; it never guesses a maintainer account.
  */
-export const BOT_GIT_NAME = process.env.BECKETT_GIT_NAME?.trim() || "Beckett";
-export const BOT_GIT_EMAIL =
-  process.env.BECKETT_GIT_EMAIL?.trim() || `${GH_ORG}@users.noreply.github.com`;
-
-/**
- * Pin repo-local `user.name`/`user.email` to the bot identity ({@link BOT_GIT_NAME}/{@link
- * BOT_GIT_EMAIL}). Applied on EVERY {@link ensureProjectRepo} call — including for checkouts that
- * already exist — because the leak is correct-by-construction only if no commit can ever fall back
- * to ambient config, and the existing `~/Projects/*` checkouts on the live box predate this. Local
- * config also wins over any global/personal identity for both fresh clones and shared worktrees.
- * Best-effort: a config failure is logged, never fatal (it must not block real work).
- */
-async function applyRepoIdentity(repoRoot: string): Promise<void> {
+async function applyRepoIdentity(repoRoot: string, owner: string): Promise<void> {
+  const gitName = process.env.BECKETT_GIT_NAME?.trim() || "Beckett";
+  const gitEmail = process.env.BECKETT_GIT_EMAIL?.trim() || `${owner}@users.noreply.github.com`;
   for (const [key, value] of [
-    ["user.name", BOT_GIT_NAME],
-    ["user.email", BOT_GIT_EMAIL],
+    ["user.name", gitName],
+    ["user.email", gitEmail],
   ] as const) {
     const r = await runGit(["config", key, value], repoRoot);
     if (r.code !== 0) {
@@ -531,13 +516,13 @@ const projectRepoEnsures = new Map<string, Promise<void>>();
 
 /**
  * Ensure a ticket's project repo exists at `repoRoot` — v3.1. A ticket builds its OWN repo under
- * `~/Projects/<slug>`, decoupled from Beckett's source. If `<GH_ORG>/<slug>` already exists on
+ * `~/Projects/<slug>`, decoupled from Beckett's source. If `<owner>/<slug>` already exists on
  * GitHub (a continuing project, or Beckett's own source when a self-improvement ticket sets
  * `project: beckett`) it is **cloned**; otherwise a fresh repo is `git init`-ed on `main`. The
  * worker then commits in place and (if the ticket calls for it) creates/pushes the GitHub repo via
  * the github skill. Idempotent — a no-op once `repoRoot/.git` exists.
  */
-export async function ensureProjectRepo(repoRoot: string, slug: string, owner = GH_ORG): Promise<void> {
+export async function ensureProjectRepo(repoRoot: string, slug: string, owner: string): Promise<void> {
   const existing = projectRepoEnsures.get(repoRoot);
   if (existing) return existing;
 
@@ -550,7 +535,7 @@ export async function ensureProjectRepo(repoRoot: string, slug: string, owner = 
 
 async function ensureProjectRepoUncached(repoRoot: string, slug: string, owner: string): Promise<void> {
   if (existsSync(`${repoRoot}/.git`)) {
-    await applyRepoIdentity(repoRoot); // re-pin every call — existing checkouts predate this
+    await applyRepoIdentity(repoRoot, owner); // re-pin every call — existing checkouts predate this
     return;
   }
   const parent = dirname(repoRoot);
@@ -560,13 +545,13 @@ async function ensureProjectRepoUncached(repoRoot: string, slug: string, owner: 
   const onGitHub = (await runGit(["ls-remote", remote, "HEAD"], parent)).code === 0;
   if (onGitHub) {
     await git(["clone", remote, repoRoot], parent);
-    await applyRepoIdentity(repoRoot);
+    await applyRepoIdentity(repoRoot, owner);
     logger.info("provisioned project repo by clone", { repoRoot, remote });
     return;
   }
 
   mkdirSync(repoRoot, { recursive: true });
   await git(["init", "-b", "main"], repoRoot);
-  await applyRepoIdentity(repoRoot);
+  await applyRepoIdentity(repoRoot, owner);
   logger.info("provisioned new project repo (git init)", { repoRoot, slug });
 }

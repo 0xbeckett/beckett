@@ -56,7 +56,7 @@ socket = "/home/beckett/.beckett/beckett.sock"
 spend = "/home/beckett/.beckett/spend.jsonl"
 
 [identity]
-github_user = "0xbeckett"
+github_user = ""
 gmail_address = ""
 
 [tracker]
@@ -68,12 +68,12 @@ boards = ["ops", "int", "vid", "vidpip"]
 poll_secs = 60
 
 [github.activity]
-enabled = true
-repo = "0xbeckett/beckett"
+enabled = false
+repo = ""
 branch = "main"
 poll_secs = 60
-channel_id = "1520658476974735490"
-ignored_authors = ["0xbeckett", "github-actions[bot]", "dependabot[bot]"]
+channel_id = ""
+ignored_authors = ["github-actions[bot]", "dependabot[bot]"]
 
 [proactivity]
 enabled = false

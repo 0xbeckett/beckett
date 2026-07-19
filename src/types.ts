@@ -27,8 +27,14 @@
 // SECTION 1 — Primitive unions & enums (Spec 02 §2, Spec 04 §2)
 // =======================================================================================
 
-/** A coding-agent CLI Beckett drives as a subprocess (Spec 00 glossary). */
-export type Harness = "claude" | "codex" | "pi";
+/**
+ * A coding-agent CLI Beckett drives as a subprocess (Spec 00 glossary). Open-ended toward a
+ * registry-validated string: `claude`/`codex`/`pi` are the in-tree core (kept as literals for
+ * autocomplete), but the authoritative set of usable harnesses is the driver REGISTRY
+ * (`src/drivers/index.ts` — `isRegisteredHarness` / `availableHarnesses`), not this union. That
+ * dependency inversion lets an out-of-tree driver register itself without editing this contract.
+ */
+export type Harness = "claude" | "codex" | "pi" | (string & {});
 
 
 /** Which concrete driver runs a harness process (Spec 02 §2). */

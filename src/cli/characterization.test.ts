@@ -61,6 +61,9 @@ async function beckett(
       HOME: home,
       BECKETT_HOME: home,
       BECKETT_DIR: beckettDir,
+      // GitHub ownership is required for project publishing; keep unrelated CLI behavior tests
+      // focused on their command's own validation.
+      GITHUB_ACCOUNT: "test-account",
       ...opts.env,
     },
     stdin: opts.stdin === undefined ? "ignore" : Buffer.from(opts.stdin),

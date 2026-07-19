@@ -16,15 +16,15 @@ afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, f
 function item(messageId: string, from = "sender@example.com"): MailMessageItem {
   return {
     messageId, threadId: `thread-${messageId}`, labels: ["unread"], timestamp: "2026-07-14T00:00:00Z",
-    from, to: ["0xbeckett@agentmail.to"], subject: `subject-${messageId}`,
+    from, to: ["agent@agentmail.to"], subject: `subject-${messageId}`,
   };
 }
 
 function fakeApi(messages: MailMessageItem[]): AgentMailApi {
   return {
     inboxes: {
-      list: async () => ({ inboxes: [{ inboxId: "inbox-1", email: "0xbeckett@agentmail.to" }] }),
-      create: async () => ({ inboxId: "created", email: "0xbeckett@agentmail.to" }),
+      list: async () => ({ inboxes: [{ inboxId: "inbox-1", email: "agent@agentmail.to" }] }),
+      create: async () => ({ inboxId: "created", email: "agent@agentmail.to" }),
       messages: {
         send: async () => ({ messageId: "sent", threadId: "sent-thread" }),
         list: async () => ({ messages }),
@@ -44,6 +44,7 @@ test("mail poller silently baselines old mail and emits exactly once for later I
   const opts = {
     api: fakeApi(messages),
     inboxStateFile: join(dir, "mail.json"),
+    mailAddress: "agent@agentmail.to",
     stateFile: defaultMailListenerStateFile(dir),
     intervalMs: 0,
     onIncomingEmail: async (email: { messageId: string; from: string; subject: string; snippet: string }) => { delivered.push(email); },
@@ -72,11 +73,11 @@ test("poller does not turn outgoing mail into an inbound notification", async ()
   const messages = [item("old")];
   const delivered: string[] = [];
   const poller = createAgentMailPoller({
-    api: fakeApi(messages), inboxStateFile: join(dir, "mail.json"), stateFile: defaultMailListenerStateFile(dir), intervalMs: 0,
+    api: fakeApi(messages), inboxStateFile: join(dir, "mail.json"), mailAddress: "agent@agentmail.to", stateFile: defaultMailListenerStateFile(dir), intervalMs: 0,
     onIncomingEmail: async (email) => { delivered.push(email.messageId); },
   });
   await poller.start();
-  messages.unshift(item("outgoing", "Beckett <0xbeckett@agentmail.to>"));
+  messages.unshift(item("outgoing", "Beckett <agent@agentmail.to>"));
   await poller.pollNow();
   expect(delivered).toEqual([]);
 });

@@ -232,6 +232,7 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
 
 function cfg(max_workers = 2): Config {
   return {
+    identity: { github_user: "test-account", gmail_address: "" },
     concurrency: { max_workers },
     models: { reviewer: "claude-opus-4-8" },
     harness: {

@@ -736,6 +736,15 @@ export class Dispatcher {
     return h?.[harness]?.bin || harness;
   }
 
+  /**
+   * A harness's config `enabled` switch, indexed by (possibly out-of-tree) harness name. `undefined`
+   * ⇒ no config block for it (never treated as disabled); claude has no switch and is always on.
+   */
+  private harnessEnabled(harness: string): boolean | undefined {
+    const h = this.config.harness as unknown as Record<string, { enabled?: boolean } | undefined>;
+    return h?.[harness]?.enabled;
+  }
+
   /** Emit one persisted-before-live stage transition. No dispatch path writes telemetry directly. */
   private trace(ticket: Ticket, stage: string, outcome: DispatchOutcome, message?: string, error?: string): void {
     this.dispatchEvents.emit({
@@ -1924,7 +1933,7 @@ export class Dispatcher {
       const order = this.config.harness?.fallback_order ?? ["claude", "pi", "codex"];
       for (const candidate of order) {
         if (candidate === failed) continue;
-        if (candidate !== "claude" && this.config.harness?.[candidate]?.enabled === false) continue;
+        if (candidate !== "claude" && this.harnessEnabled(candidate) === false) continue;
         const pf = await this.preflight(candidate);
         if (!pf.ok) continue;
         const attempts = (this.implementRetries.get(ticket.id) ?? 0) + 1;
@@ -2022,7 +2031,7 @@ export class Dispatcher {
     const order = this.config.harness?.fallback_order ?? ["claude", "pi", "codex"];
     for (const candidate of order) {
       if (candidate === spec.harness) continue;
-      if (candidate !== "claude" && this.config.harness?.[candidate]?.enabled === false) continue;
+      if (candidate !== "claude" && this.harnessEnabled(candidate) === false) continue;
       const pf = await this.preflight(candidate);
       if (!pf.ok) continue;
       this.logger.warn("cast harness failed preflight — substituting", {
@@ -2059,7 +2068,7 @@ export class Dispatcher {
    */
   private castFor(ticket: Ticket, stage: string): HarnessSpec {
     const spec = this.stages.resolveCast(stage, ticket.casting[stage], ticket, this.config);
-    if (spec.harness !== "claude" && this.config.harness?.[spec.harness]?.enabled === false) {
+    if (spec.harness !== "claude" && this.harnessEnabled(spec.harness) === false) {
       this.logger.warn("cast harness is disabled in config — falling back to claude", {
         ticket: ticket.identifier,
         stage,
@@ -2076,6 +2085,13 @@ export class Dispatcher {
       case "claude": return this.config.harness.claude.default_model;
       case "codex": return this.config.harness.codex.default_model;
       case "pi": return this.config.harness.pi.default_model;
+      // Out-of-tree registered harness: no compiled-in default. Use its config `default_model` if
+      // it ships one, else "" — the cast should name the model (spec.model above) or the driver
+      // supplies its own default.
+      default: {
+        const cfg = this.config.harness as unknown as Record<string, { default_model?: string } | undefined>;
+        return cfg?.[spec.harness]?.default_model ?? "";
+      }
     }
   }
 

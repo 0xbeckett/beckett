@@ -23,6 +23,7 @@ describe("OpenRouter provider", () => {
     let captured: any;
     const provider = new OpenRouterProvider({
       apiKey: "test-key",
+      referer: "https://eval.example.test",
       baseUrl: "https://example.test/api/v1",
       fetchImpl: (async (_url, init) => {
         captured = JSON.parse(String(init?.body));
@@ -39,6 +40,12 @@ describe("OpenRouter provider", () => {
     expect(captured.model).toBe("xai/grok-4-5");
     expect(captured.max_tokens).toBe(123);
     expect(result.output).toBe("hello from model");
+  });
+
+  test("requires an instance-owned referer", () => {
+    expect(() => new OpenRouterProvider({ apiKey: "test-key", referer: "" })).toThrow(
+      "OPENROUTER_REFERER is not set — set it to this instance's public URL or pass referer to OpenRouterProvider",
+    );
   });
 });
 

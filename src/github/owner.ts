@@ -1,5 +1,3 @@
-const LEGACY_GITHUB_ACCOUNT = "0xbeckett";
-
 type GitHubIdentityConfig = { identity?: { github_user?: string } };
 type GitHubEnv = Record<string, string | undefined>;
 
@@ -16,7 +14,12 @@ export function resolveGitHubTarget(
   env: GitHubEnv = process.env,
 ): GitHubTarget {
   const configuredAccount = config.identity?.github_user?.trim();
-  const account = env.GITHUB_ACCOUNT?.trim() || configuredAccount || LEGACY_GITHUB_ACCOUNT;
+  const account = env.GITHUB_ACCOUNT?.trim() || configuredAccount;
+  if (!account) {
+    throw new Error(
+      "GitHub account is not configured — set GITHUB_ACCOUNT or identity.github_user in config.toml",
+    );
+  }
   const owner = env.BECKETT_GH_ORG?.trim() || account;
   return { account, owner };
 }

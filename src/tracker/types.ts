@@ -45,8 +45,13 @@ export const TICKET_TERMINAL: ReadonlySet<TicketState> = new Set<TicketState>([
 // Casting — which harness/model runs each workflow stage
 // =======================================================================================
 
-/** A coding-agent CLI Beckett drives as a worker (matches root `Harness`, v3 subset). */
-export type HarnessName = "claude" | "codex" | "pi";
+/**
+ * A coding-agent CLI Beckett drives as a worker (matches root `Harness`). Open toward a
+ * registry-validated string: the in-tree core `claude`/`codex`/`pi` stay literals for autocomplete,
+ * but which harness names are actually FILEABLE is decided at runtime by the driver registry
+ * (`isRegisteredHarness`), not by this type — see {@link validateCasting}.
+ */
+export type HarnessName = "claude" | "codex" | "pi" | (string & {});
 
 /** One stage's harness selection: which CLI, optionally which model + reasoning effort. */
 export interface HarnessSpec {

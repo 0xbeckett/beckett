@@ -4,7 +4,19 @@ import { AgentMailClient } from "agentmail";
 
 const MAIL_STATE_VERSION = 1;
 const BECKETT_MAIL_CLIENT_ID = "beckett-mail-v1";
-const BECKETT_MAIL_ADDRESS = "0xbeckett@agentmail.to";
+
+type MailEnv = Record<string, string | undefined>;
+
+/** Resolve the instance-owned mailbox; never discover a maintainer inbox by default. */
+export function resolveMailAddress(env: MailEnv = process.env): string {
+  const address = env.BECKETT_MAIL_ADDRESS?.trim();
+  if (!address) {
+    throw new Error(
+      "BECKETT_MAIL_ADDRESS is not set — set it to this instance's AgentMail address",
+    );
+  }
+  return address;
+}
 
 export interface MailInbox {
   inboxId: string;
@@ -91,7 +103,18 @@ export function saveMailState(stateFile: string, inbox: MailInbox): MailState {
  * created by AgentMail's agent onboarding (when it is the only inbox), otherwise find our
  * idempotent client-id marker or create a dedicated Beckett inbox.
  */
-export async function bootstrapInbox(api: AgentMailApi, stateFile: string): Promise<MailState> {
+export async function bootstrapInbox(
+  api: AgentMailApi,
+  stateFile: string,
+  mailAddress = resolveMailAddress(),
+): Promise<MailState> {
+  const configuredAddress = mailAddress.trim();
+  if (!configuredAddress) {
+    throw new Error(
+      "BECKETT_MAIL_ADDRESS is not set — set it to this instance's AgentMail address",
+    );
+  }
+
   const saved = loadMailState(stateFile);
   if (saved) return saved;
 
@@ -101,7 +124,7 @@ export async function bootstrapInbox(api: AgentMailApi, stateFile: string): Prom
   );
   // AgentMail onboarding provisioned this address before the CLI existed. Prefer it even when
   // another unrelated inbox is present, rather than accidentally creating a second mailbox.
-  const configured = listed.inboxes.find((inbox) => inbox.email.toLowerCase() === BECKETT_MAIL_ADDRESS);
+  const configured = listed.inboxes.find((inbox) => inbox.email.toLowerCase() === configuredAddress.toLowerCase());
   const discovered = marked ?? configured ?? (listed.inboxes.length === 1 ? listed.inboxes[0] : undefined);
   const inbox = discovered ?? await api.inboxes.create({
     clientId: BECKETT_MAIL_CLIENT_ID,

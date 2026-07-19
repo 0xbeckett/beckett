@@ -24,6 +24,7 @@
  */
 
 import { z } from "zod";
+import { availableHarnesses, isRegisteredHarness } from "../drivers/index.ts";
 import type { Casting, HarnessSpec, ParsedCast, TicketState } from "./types.ts";
 
 /** The fenced-block language tag that carries the casting JSON. */
@@ -57,8 +58,15 @@ export const CRITERIA_HEADING = "## Acceptance criteria";
 // zod schema for the cast-block JSON (external input — validate, never trust)
 // =======================================================================================
 
+/**
+ * `harness` is validated against the driver REGISTRY (`src/drivers/index.ts`), not a hardcoded
+ * `claude|codex|pi` enum — so registering a new driver makes it castable with no edit here. With
+ * only the three in-tree drivers registered this accepts exactly `claude|codex|pi`, as before.
+ */
 const HarnessSpecSchema: z.ZodType<HarnessSpec> = z.object({
-  harness: z.enum(["claude", "codex", "pi"]),
+  harness: z.string().refine(isRegisteredHarness, {
+    message: `unknown harness — must be one of: ${availableHarnesses().join(", ")}`,
+  }),
   model: z.string().min(1).optional(),
   effort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
   reviewTier: z.enum(["self", "fresh"]).optional(),
@@ -93,7 +101,7 @@ export const BLOCKED_MODELS: ReadonlySet<string> = new Set(["sol", "gpt-5.6"]);
 /**
  * Validate a {@link Casting} against the roster rules, returning a list of human-readable errors
  * (`[]` ⇒ valid, fileable). The SINGLE SOURCE OF TRUTH for "is this cast fileable": it reuses the
- * same {@link CastingSchema} the reader trusts for SHAPE (harness ∈ claude|codex|pi, effort ∈
+ * same {@link CastingSchema} the reader trusts for SHAPE (harness ∈ the driver registry, effort ∈
  * low|medium|high|xhigh, `model` a non-empty string) and layers on the doctrine BLOCKLIST (SOL /
  * bare `gpt-5.6` are not on our tier). Callers that must not silently file a broken cast (the
  * preset loader, the CLI create/plan paths) run this and refuse when it returns errors — unlike

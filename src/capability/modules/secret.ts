@@ -73,7 +73,7 @@ export function createSecretCapability({ paths, logger }: CapabilityDeps): Capab
       const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
       const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
       if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare is unavailable");
-      if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to the 0xbeckett.me zone id");
+      if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to your Cloudflare zone id");
       if (!process.env.CLOUDFLARE_TUNNEL_ID) fail("no CLOUDFLARE_TUNNEL_ID in ~/.beckett/.env — the existing named tunnel is unavailable");
 
       await ensureSecretService(port, paths);

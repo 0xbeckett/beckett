@@ -12,20 +12,20 @@
  */
 
 import { ActionClass, type Capability, type CapabilityDeps } from "../index.ts";
-import { CfDns } from "../../agency/cloudflare.ts";
+import { CfDns, DEFAULT_APEX_DOMAIN, apexDomain } from "../../agency/cloudflare.ts";
 import { TunnelDeployer } from "../../shell/deploy.ts";
 import { fail, out, parse } from "../../cli/io.ts";
 
 export function createDnsCapability({ logger }: CapabilityDeps): Capability {
   // Reads CLOUDFLARE_API_TOKEN + CLOUDFLARE_ZONE_ID from ~/.beckett/.env (via loadConfig). DNS
   // is FREE: a record is a reversible proposal you can delete. Short names expand to the zone
-  // apex (e.g. `x-tool` → `x-tool.0xbeckett.me`). Output is JSON. (See the `deploy` skill.)
+  // apex (e.g. `x-tool` → `x-tool.<zone apex>`). Output is JSON. (See the `deploy` skill.)
   async function runDns(argv: string[]): Promise<void> {
     const [sub, ...rest] = argv;
     const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
     const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
     if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare DNS is unavailable");
-    if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to the 0xbeckett.me zone id");
+    if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to your Cloudflare zone id");
     const dns = new CfDns({ token, zoneId, logger });
     const { _, flags } = parse(rest);
 
@@ -66,7 +66,7 @@ export function createDnsCapability({ logger }: CapabilityDeps): Capability {
     cliVerbs: [
       {
         name: "dns",
-        summary: "list/upsert/remove records on the 0xbeckett.me zone",
+        summary: "list/upsert/remove records on the configured Cloudflare zone",
         usage: "beckett dns ls [--name N] [--type T] | add <name> --content <c> [...] | rm <name> [--type T]",
         run: runDns,
       },
@@ -77,7 +77,7 @@ export function createDnsCapability({ logger }: CapabilityDeps): Capability {
 }
 
 export function createDeployCapability({ logger }: CapabilityDeps): Capability {
-  // Throws a locally-running app up at <name>.0xbeckett.me. Reversible/FREE (a record + ingress
+  // Throws a locally-running app up at <name>.<zone apex>. Reversible/FREE (a record + ingress
   // rule you can delete) but outward — announce the URL in voice. Requires CLOUDFLARE_TUNNEL_ID
   // (a one-time human prereq); fails clearly if absent. (See the `deploy` skill.)
   async function runDeploy(argv: string[]): Promise<void> {
@@ -85,7 +85,7 @@ export function createDeployCapability({ logger }: CapabilityDeps): Capability {
     const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
     const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
     if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare is unavailable");
-    if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to the 0xbeckett.me zone id");
+    if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to your Cloudflare zone id");
     const dns = new CfDns({ token, zoneId, logger });
     const deployer = new TunnelDeployer({
       tunnelId: process.env.CLOUDFLARE_TUNNEL_ID,
@@ -124,7 +124,7 @@ export function createDeployCapability({ logger }: CapabilityDeps): Capability {
     cliVerbs: [
       {
         name: "deploy",
-        summary: "throw a locally-running app up at <name>.0xbeckett.me",
+        summary: `throw a locally-running app up at <name>.${apexDomain()}`,
         usage: "beckett deploy <name> --port <p> | deploy ls | deploy rm <name>",
         run: runDeploy,
       },
@@ -138,7 +138,7 @@ export function createDeployCapability({ logger }: CapabilityDeps): Capability {
       id: "deploy",
       priority: 30,
       render: ({ ticket, slug }) =>
-        ticket && slug && ticketMentionsDeploy(ticket) ? deployDurabilityNote(slug) : "",
+        ticket && slug && ticketMentionsDeploy(ticket) ? deployDurabilityNote(slug, apexDomain()) : "",
     },
   };
 }
@@ -149,10 +149,11 @@ export function createDeployCapability({ logger }: CapabilityDeps): Capability {
  * foreground server that dies on session end, a server bound somewhere the tunnel can't reach, or
  * a hand-edited ingress with no DNS record — so the URL 404s / never resolves and burns review
  * cycles. The fix is to give ONE exact path and forbid every improvised alternative, then make the
- * worker prove the public URL responds before it may call the ticket done. Slug-parameterized so
- * the recipe names the worker's real hostname (`<slug>.0xbeckett.me`).
+ * worker prove the public URL responds before it may call the ticket done. Slug- and apex-
+ * parameterized so the recipe names the worker's real hostname (`<slug>.<zone apex>`); the apex
+ * comes from the resolved Cloudflare zone ({@link apexDomain}), defaulting to this install's zone.
  */
-export function deployDurabilityNote(slug: string): string {
+export function deployDurabilityNote(slug: string, apex: string = DEFAULT_APEX_DOMAIN): string {
   return (
     `DEPLOY DURABLY (only if the ticket needs a public URL): there is exactly ONE supported path, ` +
     `and improvising your own is the #1 cause of dead links here. Do these three steps, nothing else:\n` +
@@ -162,10 +163,10 @@ export function deployDurabilityNote(slug: string): string {
     `\`bun run dev\`) or a bare \`&\`/\`nohup\` job is FORBIDDEN — it dies when you exit and the link 404s.\n` +
     `  2. Run \`beckett deploy ${slug} --port <thePort>\`. That command (and ONLY that command) ` +
     `creates BOTH the Cloudflare tunnel ingress AND the public DNS record for ` +
-    `\`${slug}.0xbeckett.me\`. NEVER hand-edit \`~/.cloudflared/config.yml\` or touch DNS yourself — ` +
+    `\`${slug}.${apex}\`. NEVER hand-edit \`~/.cloudflared/config.yml\` or touch DNS yourself — ` +
     `that leaves a half-deploy with an ingress but no DNS, which never resolves.\n` +
     `  3. VERIFY before you call the ticket done: ` +
-    `\`curl -fsS -o /dev/null -w '%{http_code}' https://${slug}.0xbeckett.me\` must print 200. If it ` +
+    `\`curl -fsS -o /dev/null -w '%{http_code}' https://${slug}.${apex}\` must print 200. If it ` +
     `can't resolve or returns 502, the deploy is NOT done (your unit isn't running, or ` +
     `\`beckett deploy\` didn't run) — fix it and re-check. Never report a URL you haven't curled.`
   );

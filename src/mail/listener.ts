@@ -29,6 +29,8 @@ export interface AgentMailPollerOptions {
   api: AgentMailApi;
   stateFile: string;
   inboxStateFile: string;
+  /** Instance-owned AgentMail address; defaults to BECKETT_MAIL_ADDRESS. */
+  mailAddress?: string;
   /** Called only after the durable dedupe ledger says this is a new inbound message. */
   onIncomingEmail(notification: IncomingMailNotification): Promise<void>;
   /** Defaults to 30 seconds. Set to 0 in tests to disable the timer. */
@@ -97,7 +99,7 @@ export class AgentMailPoller {
   constructor(private readonly opts: AgentMailPollerOptions) {}
 
   async start(): Promise<void> {
-    this.inbox = await bootstrapInbox(this.opts.api, this.opts.inboxStateFile);
+    this.inbox = await bootstrapInbox(this.opts.api, this.opts.inboxStateFile, this.opts.mailAddress);
     this.state = loadState(this.opts.stateFile);
     if (!this.state || this.state.inboxId !== this.inbox.inboxId) {
       this.state = { version: 1, inboxId: this.inbox.inboxId, initialized: false, seenMessageIds: [] };
