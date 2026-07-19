@@ -68,6 +68,15 @@ import {
 /** Discord's hard per-message ceiling (Spec 05 §9.1). */
 const DISCORD_MAX_CHARS = 2000;
 
+/** Snowflakes are decimal 64-bit integers; malformed test/legacy cursors degrade to inequality. */
+function snowflakeAfter(id: string, cursor: string): boolean {
+  try {
+    return BigInt(id) > BigInt(cursor);
+  } catch {
+    return id !== cursor;
+  }
+}
+
 /** Native command surface. Registration is additive: unrelated application commands survive. */
 export const BECKETT_SLASH_COMMANDS = [
   new SlashCommandBuilder()
@@ -295,14 +304,16 @@ export class DiscordJsGateway implements DiscordGateway {
     if (!channel?.isTextBased()) throw new Error(`discord channel ${channelId} is not text based`);
 
     const messages: IncomingMessage[] = [];
-    let cursor = after;
+    // Discord returns each page newest-first. Start with the required `after` fetch, then page
+    // backwards from its oldest row; advancing `after` would skip the middle of a >100-message
+    // outage when the first response is the newest hundred.
+    let before: string | undefined;
     for (;;) {
-      const page = await channel.messages.fetch({ after: cursor, limit: 100 });
+      const page = await channel.messages.fetch(before ? { before, limit: 100 } : { after, limit: 100 });
       if (page.size === 0) break;
       const raw = [...page.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-      let newest = cursor;
-      for (const msg of raw) {
-        newest = msg.id;
+      const missed = raw.filter((msg) => snowflakeAfter(msg.id, after));
+      for (const msg of missed) {
         // Match MessageCreate's bot guard. A trusted federated peer is still a conversational
         // input; every other bot (including us) is never put through downtime catch-up.
         if (msg.author.bot) {
@@ -320,12 +331,13 @@ export class DiscordJsGateway implements DiscordGateway {
           });
         }
       }
-      // Discord's `after` cursor is exclusive. A non-advancing page is unexpected, but stopping
-      // here is safer than a tight REST loop if Discord returns an odd cached collection.
-      if (newest === cursor || page.size < 100) break;
-      cursor = newest;
+      const oldest = raw[0]?.id;
+      // The page was short, or it reached the durable cursor. Either way there cannot be more
+      // outage messages below this point. The duplicate guard avoids a pathological REST loop.
+      if (!oldest || page.size < 100 || !snowflakeAfter(oldest, after) || oldest === before) break;
+      before = oldest;
     }
-    return messages;
+    return messages.sort((a, b) => a.createdAt - b.createdAt);
   }
 
   onCommand(cb: (command: DiscordCommand) => Promise<DiscordCommandReply>): void {
