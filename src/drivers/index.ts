@@ -57,18 +57,19 @@ const REGISTRY: Record<string, DriverRegistration> = {
   pi: { create: (config, logger) => new PiDriver(config, logger), preflight: piPreflight },
 };
 
-/** Whether a driver is registered for `harness`. */
-export function hasDriver(harness: Harness): boolean {
-  return harness in REGISTRY;
-}
-
 /**
  * Whether `name` is a registered harness — the registry-driven replacement for a hardcoded
  * `claude|codex|pi` enum. Cast/preset validation calls this so a newly-registered driver becomes
- * castable with no second edit.
+ * castable with no second edit. Uses an own-property check so inherited keys (`constructor`,
+ * `toString`, …) are never mistaken for a driver.
  */
 export function isRegisteredHarness(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(REGISTRY, name);
+}
+
+/** Whether a driver is registered for `harness`. */
+export function hasDriver(harness: Harness): boolean {
+  return isRegisteredHarness(harness);
 }
 
 /** The set of harnesses with a usable driver in this build. */
@@ -81,7 +82,7 @@ export function availableHarnesses(): Harness[] {
  * caller escalates instead of silently doing nothing.
  */
 export function getDriverFactory(harness: Harness): DriverFactory {
-  const registration = REGISTRY[harness];
+  const registration = isRegisteredHarness(harness) ? REGISTRY[harness] : undefined;
   if (!registration) {
     throw new Error(
       `beckett: no driver registered for harness "${harness}" ` +
