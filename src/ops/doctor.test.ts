@@ -29,6 +29,7 @@ function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     env: {
       DISCORD_TOKEN: "t",
       GITHUB_PAT: "t",
+      GITHUB_ACCOUNT: "0xbeckett",
       CLOUDFLARE_API_TOKEN: "t",
       DISCORD_ALERT_WEBHOOK_URL: "https://discord.com/api/webhooks/1/x",
     },
