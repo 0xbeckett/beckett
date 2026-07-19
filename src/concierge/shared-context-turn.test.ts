@@ -93,6 +93,7 @@ interface Harness {
   setReply: (r: string) => void;
   setFailNext: () => void;
   setSessionId: (id: string) => void;
+  fetches: Array<{ channelId: string; after: string }>;
 }
 
 function harness(
@@ -104,6 +105,7 @@ function harness(
     owner?: string;
     queueDepth?: number;
     config?: Parameters<typeof validateConfig>[0];
+    downtimeMessages?: IncomingMessage[];
   } = {},
 ): Harness {
   const dir = mkdtempSync(join(tmpdir(), "beckett-shared-context-"));
@@ -117,6 +119,7 @@ function harness(
   const state = { reply: opts.reply ?? "ok", failNext: false, sessionId: "session-a" };
   const asks: TurnMessage[] = [];
   const posts: { channelId: string; text: string; replyTo?: string }[] = [];
+  const fetches: Array<{ channelId: string; after: string }> = [];
 
   const session = {
     start: async () => {},
@@ -137,6 +140,10 @@ function harness(
     start: async () => {},
     stop: async () => {},
     onMessage: () => {},
+    fetchMessagesAfter: async (channelId: string, after: string) => {
+      fetches.push({ channelId, after });
+      return opts.downtimeMessages ?? [];
+    },
     sendTyping: async () => {},
     post: async (channelId: string, text: string, o?: { replyToMessageId?: string }) => {
       posts.push({ channelId, text, replyTo: o?.replyToMessageId });
@@ -168,6 +175,7 @@ function harness(
     setSessionId: (id: string) => {
       state.sessionId = id;
     },
+    fetches,
   };
 }
 
@@ -198,6 +206,36 @@ test("mention capture closes the record's hole: A's mention is in the record, vi
   const turn = text(h.asks[1]);
   expect(turn).toContain(NEW_HEADER);
   expect(turn).toContain(`Ana (user:${ALICE}): first ask`);
+});
+
+test("boot reconciles stored channels: captures missed chatter and catches up a missed mention", async () => {
+  const now = Date.now();
+  const missed = [
+    msg("down-ambient", "message while offline", now, { mentionsBot: false }),
+    msg("down-mention", "please catch up", now + 1, { mentionsBot: true }),
+  ];
+  const h = harness({ downtimeMessages: missed });
+  const channels = join(h.dir, "channels");
+  mkdirSync(channels, { recursive: true });
+  writeFileSync(
+    join(channels, `${CHAN}.jsonl`),
+    `${JSON.stringify({
+      messageId: "stored-before-restart",
+      ts: now - 1,
+      authorId: MEMBER,
+      authorName: "Jason",
+      content: "stored before restart",
+      kind: "user",
+    })}\n`,
+  );
+
+  await h.concierge.start();
+
+  expect(h.fetches).toEqual([{ channelId: CHAN, after: "stored-before-restart" }]);
+  // The non-mention was captured, and the downtime mention took the ordinary directed-turn path.
+  expect(h.asks).toHaveLength(1);
+  expect(text(h.asks[0])).toContain("message while offline");
+  expect(text(h.asks[0])).toContain("please catch up");
 });
 
 test("a failed turn leaves its shared-context cursor uncommitted for the next mention", async () => {
