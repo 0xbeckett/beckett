@@ -145,9 +145,9 @@ async function bus(cmd: string, args: Record<string, unknown>): Promise<never> {
  * retry and create a duplicate. The daemon also coalesces retry payloads as a second line of
  * defense (see Concierge.onBusRequest).
  */
-async function discordReplyBus(args: Record<string, unknown>): Promise<never> {
+async function discordReplyBus(args: Record<string, unknown>, cmd = "discord.reply"): Promise<never> {
   try {
-    const res = await callBus(SOCK, "discord.reply", args, discordReplyAckTimeoutMs());
+    const res = await callBus(SOCK, cmd, args, discordReplyAckTimeoutMs());
     if (!res.ok) fail(res.error ?? "command failed");
     out(res.data ?? { ok: true });
   } catch (err) {
@@ -1307,6 +1307,17 @@ async function runDiscordReply(argv: string[]): Promise<void> {
   });
 }
 
+// Early ack (issue #122): drop ONE immediate "digging in" line at the top of a slow turn so the
+// person hears from you in seconds instead of after the whole 15–90s of tool work. Unlike
+// `discord reply` this does NOT claim the turn — your real answer still posts terminally afterwards.
+async function runDiscordAck(argv: string[]): Promise<void> {
+  const { _, flags } = parse(argv);
+  await discordReplyBus(
+    { channelId: flags.channel ? String(flags.channel) : undefined, text: _.join(" ") },
+    "discord.ack",
+  );
+}
+
 // Hold-and-cancel backstop (OPS-101 / OPS-99 §5.3): abort the ambient turn you're running and
 // post NOTHING — "on reflection this wasn't for me." Only valid mid-ambient-turn; the bus rejects
 // it on a direct @mention/DM (those are never declined) or once you've already replied.
@@ -1556,13 +1567,19 @@ function buildCliCapabilities(): Capability[] {
       id: "discord",
       summary: "top-level Discord actions over the control bus",
       actionClass: ActionClass.FREE,
-      cliHelp: "discord reply|decline",
+      cliHelp: "discord reply|ack|decline",
       cliVerbs: [
         {
           name: "discord reply",
           summary: "post a reply into a channel via the running daemon",
           usage: "beckett discord reply [--channel <id>] [--file <path>] <text>",
           run: runDiscordReply,
+        },
+        {
+          name: "discord ack",
+          summary: "post an immediate one-line progress ack without claiming the turn (issue #122)",
+          usage: 'beckett discord ack [--channel <id>] "<one honest line>"',
+          run: runDiscordAck,
         },
         {
           name: "discord decline",
