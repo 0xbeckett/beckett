@@ -33,11 +33,23 @@ afterEach(() => {
   for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
+/** Keep the default-config snapshot independent of a developer's local Cerebras credential. */
+function keylessDefaultConfig() {
+  const saved = process.env.CEREBRAS_API_KEY;
+  delete process.env.CEREBRAS_API_KEY;
+  try {
+    return validateConfig({});
+  } finally {
+    if (saved === undefined) delete process.env.CEREBRAS_API_KEY;
+    else process.env.CEREBRAS_API_KEY = saved;
+  }
+}
+
 function harness(): { concierge: Concierge; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "beckett-bus-char-"));
   tmpDirs.push(dir);
   process.env.BECKETT_DIR = dir;
-  const config = validateConfig({});
+  const config = keylessDefaultConfig();
   const gateway = {
     onMessage() {},
     async start() {},
