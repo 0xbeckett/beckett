@@ -1,6 +1,6 @@
 # Beckett — Spec 03: Skills (the playbook)
 
-> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/V3.md`](../../docs/V3.md).
+> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
 
 
 > Status: **draft v2.0** · 2026-06-28 · Owner: Jason

@@ -2,7 +2,7 @@
  * Beckett v3 — ticket-worker spawn helper (`src/dispatch/spawn.ts`)
  * =======================================================================================
  * The thin v3 spawn glue the {@link Dispatcher} (`./dispatcher.ts`) calls to stand up one
- * worker for a ticket stage (see `docs/V3.md` §6). v3.1: each ticket builds its OWN project repo
+ * worker for a ticket stage (see `specs/_legacy-v3/V3.md` §6). v3.1: each ticket builds its OWN project repo
  * at `~/Projects/<slug>` (pushed to the configured GitHub owner), fully decoupled from Beckett's
  * own source.
  * The worker runs IN that repo — implement, review, and rework share the one checkout and edit in
@@ -21,7 +21,7 @@
  * The returned {@link TicketWorkerHandle} exposes the control surface the dispatcher needs:
  * `nudge` (STEERING), `abort` (CANCEL), `onDone`/`onFinished` (advance the ticket), plus
  * `reap` (unsubscribe — the project repo persists). The handle
- * satisfies BOTH the task spec (`id`, `nudge`, `abort`, `onDone`, `state`) and the `docs/V3.md`
+ * satisfies BOTH the task spec (`id`, `nudge`, `abort`, `onDone`, `state`) and the `specs/_legacy-v3/V3.md`
  * §6 contract (`workerId`, `ticketId`, `stage`, `onFinished`, `reap`).
  */
 
@@ -88,7 +88,7 @@ export type StallCallback = (idleMs: number, strikes: number) => void;
 
 /**
  * The live worker handle the dispatcher tracks per ticket. Superset of the task spec and the
- * `docs/V3.md` §6 contract so either caller's expectations hold.
+ * `specs/_legacy-v3/V3.md` §6 contract so either caller's expectations hold.
  */
 export interface TicketWorkerHandle {
   /** Beckett worker id (e.g. "wk_7f3a"). Alias: {@link workerId}. */
@@ -125,7 +125,7 @@ export interface TicketWorkerHandle {
   abort(reason?: string): Promise<void>;
   /** Register a finish callback (task-spec name). Fired once with the terminal status. */
   onDone(cb: DoneCallback): void;
-  /** Register a finish callback (docs/V3.md §6 name). Same semantics as {@link onDone}. */
+  /** Register a finish callback (specs/_legacy-v3/V3.md §6 name). Same semantics as {@link onDone}. */
   onFinished(cb: DoneCallback): void;
   /**
    * Register a stall callback (issue #21): fired on each driver `stalled` signal with the idle
@@ -292,7 +292,7 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
  * it never clobbers the project's own `.claude`) bounds writes to the project repo. Throws if the
  * harness launch fails; the dispatcher surfaces that as a ticket comment.
  *
- * Exported under both names: `spawnWorker` (task spec) and `spawnTicketWorker` (docs/V3.md §6).
+ * Exported under both names: `spawnWorker` (task spec) and `spawnTicketWorker` (specs/_legacy-v3/V3.md §6).
  */
 export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHandle> {
   const { ticket, stage, harness, config, repoRoot, workspace, branch, baseRef, resumeSessionId, onProgress, steering, reviewDiff } =
@@ -494,5 +494,5 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   return handle;
 }
 
-/** docs/V3.md §6 alias for {@link spawnWorker}. */
+/** specs/_legacy-v3/V3.md §6 alias for {@link spawnWorker}. */
 export const spawnTicketWorker = spawnWorker;

@@ -1,14 +1,14 @@
 /**
  * Beckett v3 — Dispatcher (`src/dispatch/dispatcher.ts`)
  * =======================================================================================
- * The single consumer of {@link PollEvent}s (emitted by the tracker poller, `docs/V3.md` §4).
+ * The single consumer of {@link PollEvent}s (emitted by the tracker poller, `specs/_legacy-v3/V3.md` §4).
  * It is the v3 state machine: it spawns workers when tickets enter `in_progress`/`in_review`,
  * steers live workers from new ticket comments, aborts on `cancelled`, and — when a worker
  * finishes — advances the ticket's ticket state and posts a summary comment. It NEVER does the
  * work itself and NEVER routes through the retired v2 `WorkerManager`/`Store` — it composes
- * the focused {@link spawnWorker} helper (`./spawn.ts`) directly (`docs/V3.md` §5/§6).
+ * the focused {@link spawnWorker} helper (`./spawn.ts`) directly (`specs/_legacy-v3/V3.md` §5/§6).
  *
- * State-machine table (docs/V3.md §5):
+ * State-machine table (specs/_legacy-v3/V3.md §5):
  *
  *   | PollEvent                     | Condition            | Action                                  |
  *   |-------------------------------|----------------------|-----------------------------------------|
@@ -93,7 +93,7 @@ import {
 // =======================================================================================
 
 /**
- * The subset of the tracker client (`docs/V3.md` §3, `src/tracker/client.ts`) the dispatcher
+ * The subset of the tracker client (`specs/_legacy-v3/V3.md` §3, `src/tracker/client.ts`) the dispatcher
  * uses. Declared structurally so this module does not hard-depend on the parallel-built client
  * — the concrete `BoredClient` satisfies it.
  */
@@ -108,7 +108,7 @@ export interface TrackerClientLike {
   listIssues(): Promise<Ticket[]>;
 }
 
-/** Construction dependencies for the {@link Dispatcher} (docs/V3.md §5). */
+/** Construction dependencies for the {@link Dispatcher} (specs/_legacy-v3/V3.md §5). */
 /**
  * The git/worktree ops the dispatcher performs. Grouped so tests can inject fakes via
  * {@link DispatcherDeps.gitOps} WITHOUT `mock.module`-ing `../worker/worktree.ts` — that mock is
@@ -161,7 +161,7 @@ export interface DispatcherDeps {
   /**
    * Optional progress feed: the dispatcher forwards each worker's granular {@link WorkerEvent}
    * stream here, keyed by ticket identifier, so it lands in the ticket's PRIVATE journal (see
-   * `src/progress/journal.ts`). Injected from the Concierge in `v4-main.ts`; omitted in tests.
+   * `src/progress/journal.ts`). Injected from the Concierge in `src/shell/main.ts`; omitted in tests.
    */
   progress?: ProgressSink;
   /** JSONL path for durable post-finish tracker advances. Omitted in tests unless needed. */
@@ -216,7 +216,7 @@ export interface DispatcherDeps {
 
 /**
  * Marker prepended to every dispatcher-authored ticket comment so STEERING never treats one of
- * its own summaries as a human nudge (avoids a self-nudge loop, docs/V3.md §5). Rendered as an
+ * its own summaries as a human nudge (avoids a self-nudge loop, specs/_legacy-v3/V3.md §5). Rendered as an
  * invisible HTML comment in the tracker's markdown.
  */
 export const BECKETT_COMMENT_MARKER = "<!-- beckett:dispatcher -->";
@@ -805,7 +805,7 @@ export class Dispatcher {
 
   /**
    * Route one or a batch of poll events through the state machine. Accepts a single
-   * {@link PollEvent} (docs/V3.md §5) or an array (task spec); events are handled in order.
+   * {@link PollEvent} (specs/_legacy-v3/V3.md §5) or an array (task spec); events are handled in order.
    */
   async handle(event: PollEvent | PollEvent[]): Promise<void> {
     await this.replayAdvances();

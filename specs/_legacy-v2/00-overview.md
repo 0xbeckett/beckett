@@ -1,6 +1,6 @@
 # Beckett — Spec 00: Overview & Canon (v2)
 
-> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/V3.md`](../../docs/V3.md).
+> **SUPERSEDED:** This v2 design spec describes the retired parent/MCP/watcher architecture. Current build agents should start with [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
 
 
 > **Anchor document.** Defines the vision, vocabulary, and canonical decisions. If a deeper
