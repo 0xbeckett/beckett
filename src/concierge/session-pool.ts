@@ -43,6 +43,8 @@ export interface PoolSession {
   stats?(): Record<string, unknown>;
   /** Kill the child process, keep the session (`--resume` on the next turn). */
   recycle?(reason: string): void;
+  /** Cancel the turn generating right now (issue #117); false when nothing is live. */
+  cancelLiveTurn?(reason: string): boolean;
   /** Start a recycled child's relaunch without a turn (issue #153); no-op when live/stopped. */
   prewarm?(): void;
   hasLiveChild?(): boolean;
@@ -240,6 +242,21 @@ export class SessionPool {
       if (session.busToken?.() === token) return session.getCurrentMeta?.() ?? null;
     }
     return null;
+  }
+
+  /**
+   * Cancel the turn generating on a channel's session (issue #117 — in-flight interrupt). Returns
+   * false when nothing is live, OR when the live turn belongs to a DIFFERENT channel — which only
+   * happens in the collapsed global/fixed-session mode where one session hosts every channel; a
+   * channel-scoped session (production) always matches. A system/update turn (no channel meta) is
+   * never cancelled: only a directed turn for THIS channel is superseded by an amending message.
+   */
+  cancelLiveTurn(channelId: string, reason: string): boolean {
+    const entry = this.entries.get(this.scopeKey(channelId));
+    if (!entry) return false;
+    const meta = entry.session.getCurrentMeta?.() as { channelId?: string } | null | undefined;
+    if (!meta || meta.channelId !== channelId) return false;
+    return entry.session.cancelLiveTurn?.(reason) ?? false;
   }
 
   /** The live sessionId for a channel's scope (watermarks + awareness suppression are keyed to it). */

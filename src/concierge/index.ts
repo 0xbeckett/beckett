@@ -635,6 +635,45 @@ export class ConciergeSession {
     return this.currentMeta;
   }
 
+  /**
+   * Cancel the turn generating RIGHT NOW (issue #117 — in-flight interrupt / steer / amend). A
+   * same-channel message arrived while this turn was still generating, so its answer is already
+   * stale (the person amended the ask). Stop the child's doomed generation immediately and resolve
+   * the in-flight `ask` as a silent pass — no stale reply, no error bubble — so the amending
+   * message runs next as a normal turn.
+   *
+   * APPROACH — cancel-and-restart, NOT inject. `claude -p --input-format stream-json` applies
+   * extra user lines only at the NEXT turn boundary, never mid-generation (verified & documented
+   * in src/drivers/claude.ts:27). So injecting the correction as an additional user line could not
+   * pre-empt the live turn — its stale `result` would still emit first, exactly the bug we're
+   * fixing. The only contract-honoring way to STOP a live generation is to kill the child: the
+   * same SIGTERM→`--resume` abort pattern the ticket-worker {@link ClaudeDriver} already relies on.
+   * The session id is retained, so the amending turn `--resume`s the SAME conversation with the
+   * original question still in the transcript — i.e. restarted WITH the amended context.
+   *
+   * Returns false when no turn is executing (the caller then just queues normally). Only the LIVE
+   * generation is cancelled; queued-but-not-started turns are left for the pump to drain.
+   */
+  cancelLiveTurn(reason: string): boolean {
+    const p = this.pending;
+    if (!p) return false;
+    clearTimeout(p.timer);
+    this.pending = null;
+    // Kill the child so generation stops NOW; the session id survives, so the next ask()
+    // `--resume`s the same conversation. recycleChild nulls this.child first, so the ensuing
+    // onExit is treated as a superseded-child exit — it neither relaunches nor counts a crash.
+    this.recycleChild(reason);
+    // Silent pass, NOT reject: the superseded mention's handler must post nothing. turnSucceeded
+    // stays false (set false at runTurn head, only flipped true in onResult), so the interrupted
+    // turn's context watermark is left uncommitted for the amending turn to advance.
+    p.resolve({ decision: "pass", message: null });
+    this.log.info("cancelled in-flight concierge turn (superseded)", {
+      reason,
+      sessionId: this.sessionId,
+    });
+    return true;
+  }
+
   /** Stop the session and reject any in-flight or queued turn. */
   async stop(): Promise<void> {
     this.stopped = true;
@@ -3483,6 +3522,21 @@ export class Concierge {
       ackMessageId: null,
     };
     this.activeMentions.set(m.channelId, mention);
+
+    // In-flight interrupt (issue #117): this directed message landed while the channel's turn was
+    // still generating, so that turn's answer is already stale (the person amended the ask). Cancel
+    // the doomed generation now — its stale reply is suppressed and the session id retained — so
+    // THIS message is answered promptly as the next turn (resuming the same conversation, the
+    // original question intact in context), instead of the stale reply posting and the correction
+    // running as a separate full turn minutes later. No-op when the channel has no live turn, so
+    // the normal single-turn path is untouched. This mention already overwrote activeMentions
+    // above, so the superseded turn's handler won't clear the new claim when its ask() resolves.
+    if (this.pool.cancelLiveTurn(m.channelId, "superseded by same-channel message")) {
+      this.log.info("cancelled stale in-flight turn superseded by same-channel message", {
+        channelId: m.channelId,
+        messageId: m.messageId,
+      });
+    }
 
     let keepTyping = true;
     const typing = setInterval(() => {
