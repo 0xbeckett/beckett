@@ -2027,14 +2027,16 @@ export class Concierge {
     // Fail fast on a bad launch (auth/bin/config) by bringing up the home-scope session eagerly;
     // per-channel sessions come up lazily on their first turn.
     this.migrateLegacySessionState(this.homeChannelId());
-    await this.pool.warm(this.homeChannelId());
+    // Register intake before Discord can become ready, then overlap its independent login with
+    // the home Claude launch. Promise.all remains the readiness barrier: recovery and the control
+    // bus below cannot run until BOTH the gateway and home session are ready.
     this.gateway.onMessage((m) => this.onMessage(m));
     // Guarded: injected partial test gateways may predate the thread-create surface.
     if (typeof this.gateway.onThreadCreate === "function") {
       this.gateway.onThreadCreate((t) => this.onThreadCreated(t));
     }
     this.gateway.onCommand?.((command) => this.onCommand(command));
-    await this.gateway.start();
+    await Promise.all([this.pool.warm(this.homeChannelId()), this.gateway.start()]);
     await this.reconcileDowntimeMessages();
     void this.deleteStaleBrowserQuestions();
     this.retryBrowserResults();

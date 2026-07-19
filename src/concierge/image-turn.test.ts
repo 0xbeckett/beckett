@@ -234,6 +234,60 @@ test("a non-mention with an attachment is still ignored (routing unchanged)", as
 
 // ── startup banner ─────────────────────────────────────────────────────────────
 
+test("start overlaps home Claude warm-up and Discord login, but serves the bus only after both", async () => {
+  const previousStartupChannel = process.env.BECKETT_STARTUP_CHANNEL_ID;
+  process.env.BECKETT_STARTUP_CHANNEL_ID = "disabled";
+  let releaseWarm!: () => void;
+  let releaseGateway!: () => void;
+  const warm = new Promise<void>((resolve) => { releaseWarm = resolve; });
+  const gatewayReady = new Promise<void>((resolve) => { releaseGateway = resolve; });
+  const calls: string[] = [];
+  const concierge = new Concierge({
+    config: config(tmpBeckettDir()),
+    session: {
+      start: async () => {
+        calls.push("warm");
+        await warm;
+      },
+      stop: async () => {},
+      ask: async () => "",
+    } as unknown as ConciergeSession,
+    gateway: {
+      start: async () => {
+        calls.push("gateway");
+        await gatewayReady;
+      },
+      stop: async () => {},
+      onMessage: () => {},
+      onThreadCreate: () => {},
+      sendTyping: async () => {},
+      post: async () => "posted-id",
+      isConnected: () => true,
+      lastEventAgeMs: () => 0,
+    } as unknown as DiscordGateway,
+  });
+  // Avoid opening a real Unix socket; this is the explicit boot-serving boundary under test.
+  (concierge as unknown as { serveControlBus: () => void }).serveControlBus = () => calls.push("bus");
+
+  try {
+    const starting = concierge.start();
+    // Both starts must be in flight before either one resolves.
+    expect(calls).toEqual(["warm", "gateway"]);
+
+    releaseWarm();
+    await Promise.resolve();
+    expect(calls).not.toContain("bus");
+
+    releaseGateway();
+    await starting;
+    expect(calls).toEqual(["warm", "gateway", "bus"]);
+  } finally {
+    await concierge.stop();
+    if (previousStartupChannel === undefined) delete process.env.BECKETT_STARTUP_CHANNEL_ID;
+    else process.env.BECKETT_STARTUP_CHANNEL_ID = previousStartupChannel;
+  }
+});
+
 test("currentGitCommit reports the running repo's short hash + subject", async () => {
   const { short, subject } = await currentGitCommit(join(import.meta.dir, "..", ".."));
   expect(short).toMatch(/^[0-9a-f]{7,}$/); // a real abbreviated hash, not the "unknown" fallback
