@@ -1337,8 +1337,8 @@ export class Concierge {
   private readonly tasks: TaskStore;
   private branchStatus: BranchStatusService | null;
   private readonly subscriptionUsage: SubscriptionUsageReader;
-  /** One long-lived graph/Moss owner for `memory.recall` control-bus requests. */
-  private readonly memory: MemoryStore;
+  /** One long-lived graph/Moss owner for `memory.recall` control-bus requests (lazy for partial test configs). */
+  private memory: MemoryStore | null;
   private readonly taskThreadCreates = new Map<number, Promise<TaskThreadCreated>>();
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
   private busStop: (() => void) | null = null;
@@ -1456,12 +1456,7 @@ export class Concierge {
     this.tasks = opts.tasks ?? new TaskStore(tasksStateFile(this.config, this.log));
     this.branchStatus = opts.branchStatus ?? null;
     this.subscriptionUsage = opts.subscriptionUsage ?? createSubscriptionUsageReader(this.config);
-    this.memory = opts.memory ?? createMemory({
-      memoryDir: buildPaths(this.config).memoryDir,
-      logger: this.log.child("memory"),
-      git: true,
-      warm: true,
-    });
+    this.memory = opts.memory ?? null;
     this.turnGate = new TurnGate(Math.max(1, this.config.concierge?.max_concurrent_turns ?? 3));
     const makeSession =
       opts.sessionFactory ??
@@ -1563,6 +1558,16 @@ export class Concierge {
     // Handlers are closures over `this` and run only when a request arrives, so registering here
     // keeps "constructing a Concierge never touches the filesystem" intact.
     for (const capability of this.buildBusCapabilities()) this.busRegistry.register(capability);
+  }
+
+  /** Create the daemon-owned warm store on first recall, keeping partial test configs construction-only. */
+  private memoryForRecall(): MemoryStore {
+    return (this.memory ??= createMemory({
+      memoryDir: buildPaths(this.config).memoryDir,
+      logger: this.log.child("memory"),
+      git: true,
+      warm: true,
+    }));
   }
 
   /**
@@ -2741,7 +2746,7 @@ export class Concierge {
                 // Parsing/rendering is shared with the cold CLI fallback: ranking and its fail-closed
                 // audience gate stay in MemoryStore/recallOver, never in this transport layer.
                 const request = parseRecallCliRequest(req.args.argv);
-                return { ok: true, data: await recallCliOutput(this.memory, request) };
+                return { ok: true, data: await recallCliOutput(this.memoryForRecall(), request) };
               } catch (err) {
                 return { ok: false, error: (err as Error).message };
               }
