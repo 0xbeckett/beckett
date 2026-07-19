@@ -40,6 +40,7 @@ import { steeringBlock } from "./resume-brief.ts";
 import { CapabilityRegistry, type CapabilityDeps, type PromptBlock } from "../capability/index.ts";
 import { availableCapabilityModules, createCapability } from "../capability/modules/index.ts";
 import { buildPaths } from "../paths.ts";
+import { warmApexDomain } from "../agency/cloudflare.ts";
 
 // =======================================================================================
 // Shared vocabulary: caps, effort, done-signal parsing
@@ -423,6 +424,11 @@ function workerSystemAppend(
   opts: { designOnly?: boolean } = {},
 ): string {
   const slug = projectSlug(ticket.project || ticket.identifier);
+  // Kick off (once per process) resolving the Cloudflare zone's apex so the deploy-durability
+  // recipe names a fork's real hostname. Fire-and-forget: the append stays sync, and until the
+  // lookup lands `apexDomain()` returns this install's zone — so behavior here is unchanged.
+  const quiet = { info() {}, warn() {}, debug() {}, error() {}, child() { return quiet; } } as unknown as Logger;
+  void warmApexDomain({ token: env.CLOUDFLARE_API_TOKEN, zoneId: env.CLOUDFLARE_ZONE_ID, logger: quiet });
   const contributions = workerPromptCapabilities(config).composePrompt(
     { config, ticket, slug, env },
     opts.designOnly ? [designStageBlock] : [],

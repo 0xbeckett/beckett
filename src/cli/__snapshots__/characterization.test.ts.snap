@@ -447,7 +447,7 @@ exports[`cli: dns: without CLOUDFLARE_ZONE_ID is refused 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to the 0xbeckett.me zone id
+"error: no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to your Cloudflare zone id
 "
 ,
   "stdout": "",
