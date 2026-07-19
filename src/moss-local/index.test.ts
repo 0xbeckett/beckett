@@ -30,6 +30,7 @@ test("local Moss embeds, filters, persists, and reloads without fetch", async ()
       { id: "password", text: "Reset a forgotten password from account settings.", metadata: { team: "support", visible: true } },
       { id: "deploy", text: "Deploy the worker after its test suite passes.", metadata: { team: "engineering", visible: false } },
     ]);
+    await moss.flush();
 
     expect(existsSync(moss.indexPath)).toBe(true);
     expect(existsSync(moss.documentsPath)).toBe(true);
@@ -52,4 +53,13 @@ test("upsert replaces an existing local document", async () => {
   const result = await moss.upsert([{ id: "one", text: "New rollback guide", metadata: { version: 2 } }]);
   expect(result).toMatchObject({ added: 0, updated: 1, docCount: 1 });
   expect(moss.query("rollback", { version: 2 }).docs[0]?.text).toBe("New rollback guide");
+});
+
+test("rapid writes are coalesced until flush", async () => {
+  const moss = await openLocalMoss({ dataDir: await temporaryDataDir(), persistenceDelayMs: 1_000 });
+  await moss.upsert([{ id: "one", text: "first" }]);
+  await moss.upsert([{ id: "two", text: "second" }]);
+  expect(existsSync(moss.indexPath)).toBe(false);
+  await moss.flush();
+  expect((await openLocalMoss({ dataDir: moss.dataDir })).docCount).toBe(2);
 });

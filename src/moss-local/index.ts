@@ -256,7 +256,9 @@ export class LocalMoss {
       this.persistTimer = undefined;
       // The cache is rebuilt from markdown on a later recall if a process dies before this
       // best-effort deferred write; queries use the already-mutated in-memory index meanwhile.
-      void this.flush();
+      // There is no logger at this low-level boundary, and an async timer must not become an
+      // unhandled rejection; a later sync/flush can retry after a transient filesystem error.
+      void this.flush().catch(() => {});
     }, this.persistenceDelayMs);
   }
 
