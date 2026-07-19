@@ -165,6 +165,14 @@ async function boot(): Promise<BootedSystem> {
   // relays, never replies or merges. Skipped without a PAT (nothing to read GitHub with).
   const paths = buildPaths(config);
   const beckettDir = paths.beckettDir;
+  // One daemon-owned store serves bus recall and routine maintenance. Its warm graph/Moss handle
+  // survives each short-lived `beckett recall` process.
+  const memory = createMemory({
+    memoryDir: paths.memoryDir,
+    logger: logger.child("memory"),
+    git: true,
+    warm: true,
+  });
   const tasks = new TaskStore(join(beckettDir, "tasks.json"));
   const syncTaskBranch = async (ticket: Ticket, board: string, snapshot = false): Promise<void> => {
     if (!ticket.branchRef) return;
@@ -232,6 +240,7 @@ async function boot(): Promise<BootedSystem> {
       ...(githubReader ? { github: githubReader } : {}),
       githubOwner: identity.github.owner,
     }),
+    memory,
   });
 
   // 3. Pollers — one per board, all feeding the same dispatcher. `start()` primes the
@@ -529,11 +538,6 @@ async function boot(): Promise<BootedSystem> {
   // Memory self-healing (OPS-121): one maintenance pass shortly after boot, then daily —
   // archives expired/superseded facts and merges near-duplicates so the knowledge graph
   // doesn't rot between deploys. Failures log and never affect the rest of the daemon.
-  const memory = createMemory({
-    memoryDir: buildPaths(config).memoryDir,
-    logger: logger.child("memory"),
-    git: true,
-  });
   const memoryMaintenance = startRoutineMaintenance({
     maintain: (opts) => memory.maintain(opts),
     logger: logger.child("memory.maintain"),

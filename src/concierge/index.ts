@@ -2725,6 +2725,31 @@ export class Concierge {
         ],
       },
       {
+        id: "memory",
+        summary: "warm markdown-memory recall over the control bus",
+        actionClass: ActionClass.FREE,
+        cliVerbs: [],
+        busCommands: [
+          {
+            name: "memory.recall",
+            summary: "recall from the daemon-owned warm graph and Moss handle",
+            handle: async (req) => {
+              if (!Array.isArray(req.args.argv) || !req.args.argv.every((arg) => typeof arg === "string")) {
+                return { ok: false, error: "memory.recall needs an argv string array" };
+              }
+              try {
+                // Parsing/rendering is shared with the cold CLI fallback: ranking and its fail-closed
+                // audience gate stay in MemoryStore/recallOver, never in this transport layer.
+                const request = parseRecallCliRequest(req.args.argv);
+                return { ok: true, data: await recallCliOutput(this.memory, request) };
+              } catch (err) {
+                return { ok: false, error: (err as Error).message };
+              }
+            },
+          },
+        ],
+      },
+      {
         id: "channels",
         summary: "the shared channel-context store (server memory)",
         actionClass: ActionClass.FREE,
