@@ -16,7 +16,7 @@ import {
   isRegisteredHarness,
   preflightFor,
 } from "./index.ts";
-import { defaultConfig } from "../capability/index.ts";
+import { defaultConfig } from "../config.ts";
 
 describe("driver registry — single source of truth", () => {
   test("the three in-tree drivers are registered", () => {
