@@ -148,7 +148,7 @@ const CASES: Case[] = [
   { name: "identity: set with --user but nothing to set fails", argv: ["identity", "set", "--user", "123456789012345678"] },
   { name: "identity: show without an id prints usage", argv: ["identity", "show"] },
   { name: "identity: show of an unknown user returns null", argv: ["identity", "show", "--user", "42"] },
-  { name: "identity: list returns the seeded map", argv: ["identity", "list"] },
+  { name: "identity: list starts empty without an owner configuration", argv: ["identity", "list"] },
   { name: "identity: unknown sub fails", argv: ["identity", "bogus"] },
 
   // ── gh (dummy PAT gets past the env gate to the usage contract; no network) ────────────
@@ -201,7 +201,7 @@ const CASES: Case[] = [
   { name: "access: revoke without an id prints usage", argv: ["access", "revoke"] },
   { name: "access: revoke of an unknown id", argv: ["access", "revoke", "123456789012345678"] },
   { name: "access: unknown sub prints usage", argv: ["access", "bogus"] },
-  { name: "maintainer: ls returns the bundled seed", argv: ["maintainer", "ls"] },
+  { name: "maintainer: ls returns the empty bundled baseline", argv: ["maintainer", "ls"] },
   { name: "maintainer: grant without an id prints usage", argv: ["maintainer", "grant"] },
   { name: "maintainer: revoke without an id prints usage", argv: ["maintainer", "revoke"] },
   { name: "federation: ls on an empty peers file", argv: ["federation", "ls"] },

@@ -313,20 +313,13 @@ exports[`cli: identity: show of an unknown user returns null 1`] = `
 }
 `;
 
-exports[`cli: identity: list returns the seeded map 1`] = `
+exports[`cli: identity: list starts empty without an owner configuration 1`] = `
 {
   "exit": 0,
   "stderr": "",
   "stdout": 
 "{
-  "identities": {
-    "324777864375566338": {
-      "created_at": <EPOCH_MS>,
-      "updated_at": <EPOCH_MS>,
-      "known_name": "angry worm",
-      "preferred_address": "angry worm"
-    }
-  }
+  "identities": {}
 }
 "
 ,
@@ -745,22 +738,16 @@ exports[`cli: access: unknown sub prints usage 1`] = `
 }
 `;
 
-exports[`cli: maintainer: ls returns the bundled seed 1`] = `
+exports[`cli: maintainer: ls returns the empty bundled baseline 1`] = `
 {
   "exit": 0,
   "stderr": "",
   "stdout": 
 "{
-  "ids": [
-    "1151230208783945818",
-    "1132125761264951339"
-  ],
-  "bundled": [
-    "1151230208783945818",
-    "1132125761264951339"
-  ],
+  "ids": [],
+  "bundled": [],
   "granted": [],
-  "count": 2,
+  "count": 0,
   "pending": []
 }
 "
