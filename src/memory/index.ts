@@ -20,14 +20,14 @@
  *
  * Retrieval scoring lives in `./search.ts` (OPS-121): stemmed, IDF-weighted, full-node
  * (body + metadata) keyword relevance — deliberately lexical and deterministic, not
- * embeddings. Recall rebuilds the graph from disk on every call, so facts written by any
- * session (or an out-of-band `git pull`) are always visible to the next query.
+ * embeddings. Cold stores rebuild from disk on every call. The daemon's warm store instead
+ * reuses the graph and Moss handle while a metadata-only tree stamp keeps out-of-band edits
+ * visible to the next query.
  *
  * Design choices honoring Spec 08:
- *   - **Files are canonical** (Spec 08 §2.4). The in-memory graph is rebuilt from disk on every
- *     read/write, so an out-of-band `git pull` or manual edit is always reflected without a
- *     daemon restart (this stands in for the §2.3 `fs.watch` without extra machinery — the tree
- *     is tens-to-low-hundreds of small files, so the cost is trivial).
+ *   - **Files are canonical** (Spec 08 §2.4). Cold stores rebuild on every read/write; the warm
+ *     daemon detects path/mtime/size changes before reuse, then rebuilds and re-syncs once. Thus
+ *     an out-of-band `git pull` or manual edit remains visible without a daemon restart.
  *   - **A node's id is its `name`** (kebab-case), globally unique across the tree; `[[wikilinks]]`
  *     resolve by name regardless of folder (Spec 08 §1.1).
  *   - **Forward-refs are first-class**: `[[name]]` with no file yet is a valid dangling edge to a
