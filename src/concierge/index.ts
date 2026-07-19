@@ -4082,8 +4082,8 @@ export class Concierge {
   }
 
   /**
-   * Seed the identity map with its day-one entries (the example mapping + the owner, bound to the
-   * env owner id). Idempotent and additive — see {@link ensureSeeded}. Best-effort at startup.
+   * Bind the configured owner in the identity map. Fresh installs otherwise start empty.
+   * Idempotent and additive — see {@link ensureSeeded}. Best-effort at startup.
    */
   private seedIdentities(): void {
     try {

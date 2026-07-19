@@ -351,8 +351,8 @@ async function runJournal(argv: string[]): Promise<void> {
 async function runIdentity(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const file = paths.identitiesFile;
-  // Guarantee the day-one entries exist however this map is first touched (the daemon also
-  // seeds at startup) — additive + idempotent, binds the owner to DISCORD_OWNER_ID if set.
+  // Bind the configured owner when this map is first touched (the daemon also does this at
+  // startup) — additive + idempotent; fresh installs otherwise start with an empty map.
   ensureSeeded(file, process.env.DISCORD_OWNER_ID?.trim());
   if (sub === "set") {
     const { flags } = parse(rest);
@@ -503,7 +503,7 @@ async function runAccess(argv: string[]): Promise<void> {
 // Same hardened-bouncer shape as `access`: `grant` only FILES a request with a one-time
 // code; the OWNER approving on Discord (author-id checked in the daemon) applies it. No
 // approve/deny subcommand exists here — a prompt-injected concierge, or a maintainer
-// shelling this CLI, cannot mint maintainers. The bundled seed (repo maintainers.txt)
+// shelling this CLI, cannot mint maintainers. The bundled baseline (repo maintainers.txt)
 // is source-controlled: `revoke` refuses to touch it.
 async function runMaintainer(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;

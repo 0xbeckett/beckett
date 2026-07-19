@@ -13,7 +13,6 @@ import {
   upsertIdentity,
   resolveAddress,
   ensureSeeded,
-  SEED_IDENTITY,
 } from "./identity.ts";
 
 let dir: string;
@@ -91,34 +90,49 @@ test("resolveAddress priority: preferred → known (never the raw display name)"
   ).toBe("p");
 });
 
-test("ensureSeeded plants the day-one example entry (angry worm)", () => {
-  expect(ensureSeeded(file, undefined, "Jason", 1000)).toBe(true);
-  const seed = getIdentity(file, SEED_IDENTITY.id)!;
-  expect(seed.preferred_address).toBe("angry worm");
-  // Idempotent: a second call writes nothing.
-  expect(ensureSeeded(file, undefined, "Jason", 2000)).toBe(false);
+test("ensureSeeded leaves a fresh map empty without a configured owner", () => {
+  expect(ensureSeeded(file, "not-a-snowflake", "owner", 1000)).toBe(false);
+  expect(loadIdentities(file)).toEqual({});
 });
 
-test("ensureSeeded binds the owner to one id and does not clobber a chosen name", () => {
-  ensureSeeded(file, OWNER, "Jason", 1000);
+test("ensureSeeded derives the initial identity from the configured owner", () => {
+  ensureSeeded(file, OWNER, "Owner Name", 1000);
   const owner = getIdentity(file, OWNER)!;
   expect(owner.is_owner).toBe(true);
-  expect(owner.known_name).toBe("Jason");
+  expect(owner.known_name).toBe("Owner Name");
 
   // A user renaming themselves later must survive a re-seed.
   upsertIdentity(file, OWNER, { preferred_address: "boss" }, 2000);
-  ensureSeeded(file, OWNER, "Jason", 3000);
+  expect(ensureSeeded(file, OWNER, "Owner Name", 3000)).toBe(false);
   const after = getIdentity(file, OWNER)!;
   expect(after.preferred_address).toBe("boss");
   expect(after.is_owner).toBe(true);
 });
 
+test("ensureSeeded uses owner environment configuration by default", () => {
+  const oldId = process.env.DISCORD_OWNER_ID;
+  const oldName = process.env.DISCORD_OWNER_NAME;
+  process.env.DISCORD_OWNER_ID = OWNER;
+  process.env.DISCORD_OWNER_NAME = "Configured Owner";
+  try {
+    expect(ensureSeeded(file, undefined, undefined, 1000)).toBe(true);
+    const owner = getIdentity(file, OWNER)!;
+    expect(owner.is_owner).toBe(true);
+    expect(owner.known_name).toBe("Configured Owner");
+  } finally {
+    if (oldId === undefined) delete process.env.DISCORD_OWNER_ID;
+    else process.env.DISCORD_OWNER_ID = oldId;
+    if (oldName === undefined) delete process.env.DISCORD_OWNER_NAME;
+    else process.env.DISCORD_OWNER_NAME = oldName;
+  }
+});
+
 test("ensureSeeded stamps ownership onto a pre-existing plain entry", () => {
-  upsertIdentity(file, OWNER, { display_name: "jj" }, 1000);
-  ensureSeeded(file, OWNER, "Jason", 2000);
+  upsertIdentity(file, OWNER, { display_name: "owner-display" }, 1000);
+  ensureSeeded(file, OWNER, "Owner Name", 2000);
   const owner = getIdentity(file, OWNER)!;
   expect(owner.is_owner).toBe(true);
-  expect(owner.known_name).toBe("Jason"); // filled since none was chosen
+  expect(owner.known_name).toBe("Owner Name"); // filled since none was chosen
 });
 
 test("save/load round-trips and writes a real file", () => {
