@@ -312,6 +312,8 @@ export function branchCardReference(content: string): string | null {
  * hard edge. Overridable via `config.concierge.rotate_at_tokens` (driven low in tests).
  */
 const DEFAULT_ROTATE_AT_TOKENS = 160_000;
+/** Safety fallback for a channel that never becomes idle; still rotate only after releasing its gate slot. */
+const FORCED_ROTATE_AT_TOKENS = 190_000;
 
 /** Small, fast seat for a best-effort handoff; never spend an Opus chat turn on bookkeeping. */
 const HANDOFF_MODEL = "claude-haiku-4-5";
@@ -592,6 +594,12 @@ export class ConciergeSession {
           entry.reject(err instanceof Error ? err : new Error(String(err)));
         } finally {
           release?.();
+        }
+        // A never-quiet channel can still approach the hard context edge. This rare fallback is
+        // intentionally AFTER release, so its cheap handoff/fresh launch never occupies a live
+        // TurnGate slot. Normal channels rotate at the lower watermark once idle below.
+        if (this.lastContextTokens >= Math.max(this.rotateAtTokens, FORCED_ROTATE_AT_TOKENS)) {
+          await this.maybeRotate();
         }
       }
     } finally {
@@ -1086,8 +1094,8 @@ export class ConciergeSession {
   /**
    * Idle-only rotation at the proactive watermark, or a requested persona reload. The watermark
    * is intentionally below the 200k hard context edge so normal conversations rotate while no
-   * person is waiting; a sustained busy channel waits for its first idle boundary rather than
-   * monopolising a global turn slot mid-conversation.
+   * person is waiting; a sustained busy channel uses the released-slot hard-edge fallback in
+   * {@link pump} rather than monopolising a global turn slot mid-conversation.
    */
   private async maybeRotate(): Promise<void> {
     if (this.stopped || this.rotating) return;

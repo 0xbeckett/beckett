@@ -65,10 +65,11 @@ test("idle rotation uses a cheap handoff, preserves the channel window, and defe
   expect(liveTurns).toBe(0); // no dying-session handoff or fresh-session re-ground turn
 });
 
-test("an idle rotation does not hold a live TurnGate slot", async () => {
+test("the hard-edge fallback releases its live TurnGate slot before rotating", async () => {
   const gate = new TurnGate(1);
   const a = new ConciergeSession({ config: config(), logger: quietLog, gate }) as unknown as {
     ask(message: string): Promise<unknown>;
+    lastContextTokens: number;
     runTurn(message: string): Promise<{ decision: "send"; message: string }>;
     maybeRotate(): Promise<void>;
   };
@@ -80,7 +81,10 @@ test("an idle rotation does not hold a live TurnGate slot", async () => {
   const rotationStarted = new Promise<void>((resolve) => { beginRotation = resolve; });
   let finishRotation!: () => void;
   const rotationMayFinish = new Promise<void>((resolve) => { finishRotation = resolve; });
-  a.runTurn = async () => ({ decision: "send", message: "a" });
+  a.runTurn = async () => {
+    a.lastContextTokens = 190_000;
+    return { decision: "send", message: "a" };
+  };
   a.maybeRotate = async () => {
     beginRotation();
     await rotationMayFinish;
