@@ -315,38 +315,56 @@ export class SessionPool {
   }
 
   /** One idle-housekeeping pass: proactively rotate, then recycle long-idle children/entries. */
-  private async idleSweep(now: number): Promise<void> {
+  private idleSweep(now: number): void {
     if (this.idleSweeping) return;
-    this.idleSweeping = true;
-    try {
-      const idleMs = this.opts.idleRecycleMs;
-      for (const [key, entry] of this.entries) {
-        if ((entry.session.queueDepth?.() ?? 0) > 0) continue;
-        if (now - entry.lastUsedAt < idleMs) continue;
-        // A due rotation gets first claim on an idle child. It runs outside the TurnGate and its
-        // fresh process should not be immediately recycled; reset idle age and revisit next sweep.
-        if (await entry.session.rotateWhileIdle?.()) {
-          entry.lastUsedAt = now;
-          this.log.info("rotated idle concierge session", { scope: key });
-          continue;
-        }
-        if (entry.session.hasLiveChild?.() === true) {
-          entry.session.recycle?.("idle session recycle");
-          this.log.info("recycled idle concierge session child (idle timer)", { scope: key });
-        } else {
-          // Long-idle and child-less: drop the entry entirely so the pool (and the owner's
-          // per-scope caches) can't grow one entry per channel forever. The scope's session state
-          // is on disk — its next turn recreates the entry and resumes the same conversation.
-          this.entries.delete(key);
-          this.opts.onEvict?.(key);
-          void entry.session
-            .stop()
-            .catch((err) => this.log.warn("evicted session stop failed", { err: String(err) }));
-          this.log.info("evicted idle concierge session entry", { scope: key });
-        }
+    const idleMs = this.opts.idleRecycleMs;
+    for (const [key, entry] of this.entries) {
+      if ((entry.session.queueDepth?.() ?? 0) > 0) continue;
+      if (now - entry.lastUsedAt < idleMs) continue;
+      const rotate = entry.session.rotateWhileIdle;
+      if (rotate) {
+        // Keep the timer synchronous for legacy/fake sessions while a real rotation runs in the
+        // background. The session's own idle mutex handles a turn racing this promise.
+        this.idleSweeping = true;
+        void rotate.call(entry.session).then(
+          (rotated) => {
+            this.idleSweeping = false;
+            if (this.entries.get(key) !== entry || (entry.session.queueDepth?.() ?? 0) > 0) return;
+            if (rotated) {
+              entry.lastUsedAt = now;
+              this.log.info("rotated idle concierge session", { scope: key });
+            } else {
+              this.reapIdleEntry(key, entry);
+            }
+          },
+          (err) => {
+            this.idleSweeping = false;
+            this.log.warn("idle concierge rotation failed", { scope: key, err: String(err) });
+            this.reapIdleEntry(key, entry);
+          },
+        );
+        // Serialize maintenance rotations: these are deliberately outside TurnGate, so don't
+        // fan out a whole pool of one-shot handoffs at one timer tick.
+        return;
       }
-    } finally {
-      this.idleSweeping = false;
+      this.reapIdleEntry(key, entry);
+    }
+  }
+
+  private reapIdleEntry(key: string, entry: PoolEntry): void {
+    if (entry.session.hasLiveChild?.() === true) {
+      entry.session.recycle?.("idle session recycle");
+      this.log.info("recycled idle concierge session child (idle timer)", { scope: key });
+    } else {
+      // Long-idle and child-less: drop the entry entirely so the pool (and the owner's
+      // per-scope caches) can't grow one entry per channel forever. The scope's session state
+      // is on disk — its next turn recreates the entry and resumes the same conversation.
+      this.entries.delete(key);
+      this.opts.onEvict?.(key);
+      void entry.session
+        .stop()
+        .catch((err) => this.log.warn("evicted session stop failed", { err: String(err) }));
+      this.log.info("evicted idle concierge session entry", { scope: key });
     }
   }
 }

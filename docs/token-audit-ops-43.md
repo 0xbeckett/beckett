@@ -58,7 +58,7 @@ of the total cached prefix.
 - Marginal cost of the skill list on a **warm** turn: ~905 tokens at Opus cache-read (~0.1x of
   input) ≈ **$0.0014/turn**. It is only paid at full price on a cold start or after a >5-min
   cache gap (then it reappears as `cache_creation`), and even then it's ~$0.014 once.
-- Auto-compaction rotates the session roughly every `rotate_at_tokens` (default 190k,
+- Idle auto-compaction rotates the session at `rotate_at_tokens` (default 160k,
   `:81`), which re-primes the cache — but that's amortized across ~hundreds of turns.
 
 So the "just to have skills available" tax is a fraction of a cent per turn on the hot path.

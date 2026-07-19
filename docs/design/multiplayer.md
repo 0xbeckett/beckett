@@ -42,8 +42,8 @@ The turn pipeline:
    typing".
 
 4. **Session** — `ConciergeSession` (index.ts:192). One rolling transcript; at
-   `rotate_at_tokens` (default 190k) `rotate()` (index.ts:763) squashes everything
-   into a ≤200-word handoff and starts a fresh session (new `sessionId`; a
+   `rotate_at_tokens` (default 160k) idle rotation starts a fresh session with a
+   compact cheap-model handoff plus the durable channel-store window (new `sessionId`; a
    `--resume` keeps the old one — this distinction matters in §3.3).
 
 5. **Ambient buffer** — `Coordinator.appendTranscript()` (ambient.ts:213): a
