@@ -6,9 +6,9 @@
  * Today's ambient ring buffer is in-memory (lost on every deploy), has holes exactly
  * where Beckett was involved, and forgets Beckett's own replies. This module is the
  * durable replacement: one JSONL file per channel of attributed entries, bounded by a
- * hard count cap and a TTL, plus a sessionId-keyed watermark so a live session is never
- * re-fed lines it already saw — while a rotation/fresh session self-invalidates the
- * watermark and gets a full catch-up window.
+ * hard count cap and a sessionId-keyed watermark committed only after a successful turn, so a
+ * failed/queued turn is never allowed to skip lines — while a rotation/fresh session
+ * self-invalidates the watermark and gets a full catch-up window.
  *
  * Two standing rules shape everything here:
  *   - Capture must NEVER break a turn: every fs failure is caught + logged, the store

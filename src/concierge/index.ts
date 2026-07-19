@@ -3228,6 +3228,13 @@ export class Concierge {
    * it; normal channels retain the existing mention/ambient behavior byte-for-byte.
    */
   async onMessage(m: IncomingMessage): Promise<void> {
+    // A REST catch-up can overlap the first live gateway event after boot. Discord message ids are
+    // channel-unique, and processing either source once is enough; duplicate directed turns would
+    // otherwise produce two answers.
+    if (this.inboundMessageIds.has(m.messageId)) return;
+    this.inboundMessageIds.add(m.messageId);
+    if (this.inboundMessageIds.size > 10_000) this.inboundMessageIds.delete(this.inboundMessageIds.values().next().value!);
+
     // A native reply to a screenshot-backed browser question resumes that exact Claude session.
     // Consume it before ambient/shared-context capture so passwords or other answers never leak
     // into the Concierge transcript. Unrelated messages continue through normal routing.
@@ -3299,13 +3306,13 @@ export class Concierge {
 
     // Track this turn so a `beckett discord reply` the Concierge runs while answering it counts as
     // THE reply (and suppresses the auto-post below) instead of producing a second message.
-    const mention = {
+    const mention: MentionClaim = {
       channelId: m.channelId,
       messageId: m.messageId,
       userId: m.userId,
       isOwner: this.ownerId() !== undefined && m.userId === this.ownerId(),
       repliedViaCli: false,
-      ackMessageId: null as string | null,
+      ackMessageId: null,
     };
     this.activeMentions.set(m.channelId, mention);
 
@@ -3332,10 +3339,18 @@ export class Concierge {
     }
 
     try {
-      const turn = await this.buildTurn(m, content, workspace);
+      const turn = await this.buildTurn(m, content, workspace, (watermark) => {
+        mention.contextWatermark = watermark;
+      });
       // The mention rides as the turn's meta so CLI replies correlate to THIS turn (issue #24);
       // person turns take PRIORITY over queued ticket-update turns (issue #25).
       const output = await this.pool.ask(m.channelId, turn, mention, { priority: true });
+      // Reading the shared transcript is non-mutating. Commit its cursor only after a valid model
+      // result; rejected/queued/timed-out turns leave it untouched for the next attempt.
+      if (mention.contextWatermark && mention.turnSucceeded !== false) {
+        const mark = mention.contextWatermark;
+        this.channelStore?.markSeen(mark.channelId, mark.sessionId, mark.lastMessageId);
+      }
       keepTyping = false;
       clearInterval(typing);
       // Only the schema-validated `message` crosses this boundary. Assistant text is intentionally
@@ -3474,6 +3489,7 @@ export class Concierge {
     m: IncomingMessage,
     content: string,
     workspace: TicketWorkspaceContext | null = null,
+    onSharedContext?: (watermark: { channelId: string; sessionId: string; lastMessageId: string }) => void,
   ): Promise<TurnMessage> {
     const speaker = this.resolveSpeaker(m);
     // Mention-path win (§4.4): a mention like "do that" after five un-mentioned messages is a riddle
@@ -3484,7 +3500,7 @@ export class Concierge {
     const prefix =
       ticketPrefix +
       (this.channelStore
-        ? this.sharedContextPrefix(m.channelId, m.messageId)
+        ? this.sharedContextPrefix(m.channelId, m.messageId, onSharedContext)
         : this.ambientContextPrefix(m.channelId));
     if (m.attachments.length === 0)
       return prefix + frameUserTurn(m.channelId, speaker, m.messageId, content);
@@ -3701,19 +3717,28 @@ export class Concierge {
    * a full catch-up window (§3.3). `excludeMessageId` drops the live mention itself — it was
    * captured before turn assembly and rides as the framed live turn, not as history.
    */
-  private sharedContextPrefix(channelId: string, excludeMessageId?: string): string {
+  private sharedContextPrefix(
+    channelId: string,
+    excludeMessageId?: string,
+    onWatermark?: (watermark: { channelId: string; sessionId: string; lastMessageId: string }) => void,
+  ): string {
     // The awareness footer rides even when this channel itself has nothing unseen — the whole
     // point is knowing about the OTHER channels when someone asks here (server memory, v4.1).
-    return this.sharedTranscriptBlock(channelId, excludeMessageId) + this.awarenessFooter(channelId);
+    return this.sharedTranscriptBlock(channelId, excludeMessageId, onWatermark) + this.awarenessFooter(channelId);
   }
 
   /** The current channel's unseen-window block of {@link sharedContextPrefix} ("" when caught up). */
-  private sharedTranscriptBlock(channelId: string, excludeMessageId?: string): string {
+  private sharedTranscriptBlock(
+    channelId: string,
+    excludeMessageId?: string,
+    onWatermark?: (watermark: { channelId: string; sessionId: string; lastMessageId: string }) => void,
+  ): string {
     if (!this.channelStore) return "";
     const sessionId = this.pool.sessionIdFor(channelId);
-    const unseen = this.channelStore
-      .takeUnseen(channelId, sessionId)
-      .filter((e) => e.messageId !== excludeMessageId);
+    const allUnseen = this.channelStore.takeUnseen(channelId, sessionId);
+    const newest = allUnseen.at(-1);
+    if (newest) onWatermark?.({ channelId, sessionId, lastMessageId: newest.messageId });
+    const unseen = allUnseen.filter((e) => e.messageId !== excludeMessageId);
     if (unseen.length === 0) return "";
     const sc = this.config.shared_context;
     const budgetChars = Math.max(1, sc.inject_budget_tokens) * 4;

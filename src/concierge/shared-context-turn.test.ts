@@ -91,6 +91,7 @@ interface Harness {
   posts: { channelId: string; text: string; replyTo?: string }[];
   dir: string;
   setReply: (r: string) => void;
+  setFailNext: () => void;
   setSessionId: (id: string) => void;
 }
 
@@ -113,7 +114,7 @@ function harness(
   const access = opts.access ?? [MEMBER];
   writeFileSync(join(dir, "access.txt"), access.map((id) => `${id}\n`).join(""), "utf8");
 
-  const state = { reply: opts.reply ?? "ok", sessionId: "session-a" };
+  const state = { reply: opts.reply ?? "ok", failNext: false, sessionId: "session-a" };
   const asks: TurnMessage[] = [];
   const posts: { channelId: string; text: string; replyTo?: string }[] = [];
 
@@ -122,6 +123,10 @@ function harness(
     stop: async () => {},
     ask: async (m: TurnMessage) => {
       asks.push(m);
+      if (state.failNext) {
+        state.failNext = false;
+        throw new Error("test turn failure");
+      }
       return state.reply;
     },
     queueDepth: () => opts.queueDepth ?? 0,
@@ -157,6 +162,9 @@ function harness(
     setReply: (r: string) => {
       state.reply = r;
     },
+    setFailNext: () => {
+      state.failNext = true;
+    },
     setSessionId: (id: string) => {
       state.sessionId = id;
     },
@@ -190,6 +198,20 @@ test("mention capture closes the record's hole: A's mention is in the record, vi
   const turn = text(h.asks[1]);
   expect(turn).toContain(NEW_HEADER);
   expect(turn).toContain(`Ana (user:${ALICE}): first ask`);
+});
+
+test("a failed turn leaves its shared-context cursor uncommitted for the next mention", async () => {
+  const h = harness();
+  await h.concierge.onMessage(msg("m1", "background line", 0));
+  h.setFailNext();
+  await h.concierge.onMessage(msg("m2", "first attempt", 10, { mentionsBot: true }));
+  await h.concierge.onMessage(msg("m3", "retry me", 20, { mentionsBot: true }));
+
+  // m2's failed turn had rendered this backlog, but did not persist its watermark: both older
+  // lines are present for the successful retry (m3 itself remains the live frame, as usual).
+  const retry = text(h.asks[1]);
+  expect(retry).toContain("background line");
+  expect(retry).toContain("first attempt");
 });
 
 test("Beckett's auto-posted reply joins the record: the next mention's window carries it as a bare beckett line", async () => {

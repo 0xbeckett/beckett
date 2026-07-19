@@ -29,6 +29,41 @@ test("an expiring post can fail fast instead of queueing while Discord is offlin
   await expect(gateway.post("chan-1", "question", { queueIfOffline: false })).rejects.toThrow("offline");
 });
 
+test("downtime reconciliation fetches messages after the stored cursor and normalizes them oldest-first", async () => {
+  const gateway = new DiscordJsGateway();
+  const fetches: Array<Record<string, unknown>> = [];
+  const raw = (id: string, createdTimestamp: number) => ({
+    id,
+    createdTimestamp,
+    guildId: "guild-1",
+    channelId: "chan-1",
+    channel: { name: "ops" },
+    content: `message ${id}`,
+    author: { id: `user-${id}`, bot: false, username: "u", globalName: null },
+    member: { displayName: "u", roles: { cache: new Map() } },
+    mentions: { has: () => false },
+    reference: null,
+    attachments: new Map(),
+  });
+  const channel = {
+    isTextBased: () => true,
+    messages: {
+      fetch: async (opts: Record<string, unknown>) => {
+        fetches.push(opts);
+        return new Map([["newer", raw("newer", 20)], ["older", raw("older", 10)]]);
+      },
+    },
+  };
+  (gateway as unknown as { client: unknown }).client = {
+    user: { id: "bot-1" },
+    channels: { fetch: async () => channel },
+  };
+
+  const messages = await gateway.fetchMessagesAfter("chan-1", "stored-1");
+  expect(fetches).toEqual([{ after: "stored-1", limit: 100 }]);
+  expect(messages.map((m) => m.messageId)).toEqual(["older", "newer"]);
+});
+
 test("native reply to a bot-authored message counts as addressed", async () => {
   const gateway = new DiscordJsGateway();
   (gateway as unknown as { client: { user: { id: string } } }).client = { user: { id: "bot-1" } };

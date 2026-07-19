@@ -123,6 +123,7 @@ test("a new store over the same dir sees the same window and watermark", () => {
   a.append("chan", entry("m1", 1_000));
   a.append("chan", entry("m2", 2_000));
   expect(a.takeUnseen("chan", "session-1").map((e) => e.messageId)).toEqual(["m1", "m2"]);
+  a.markSeen("chan", "session-1", "m2");
 
   const b = makeStore({ channelsDir, now: () => 50_000 }).store;
   expect(b.recent("chan").map((e) => e.messageId)).toEqual(["m1", "m2"]);
@@ -132,11 +133,14 @@ test("a new store over the same dir sees the same window and watermark", () => {
 
 // ── watermarks ──────────────────────────────────────────────────────────────────────────
 
-test("same session: takeUnseen returns only what arrived since, [] when nothing new", () => {
+test("same session: takeUnseen is non-mutating until its successful turn marks the cursor", () => {
   const { store } = makeStore({ now: () => 50_000 });
   store.append("chan", entry("m1", 1_000));
   store.append("chan", entry("m2", 2_000));
   expect(store.takeUnseen("chan", "s1").map((e) => e.messageId)).toEqual(["m1", "m2"]);
+  // A failed/abandoned turn did not advance anything, so retry gets the same transcript.
+  expect(store.takeUnseen("chan", "s1").map((e) => e.messageId)).toEqual(["m1", "m2"]);
+  store.markSeen("chan", "s1", "m2");
   expect(store.takeUnseen("chan", "s1")).toEqual([]);
 
   store.append("chan", entry("m3", 3_000));
@@ -149,9 +153,11 @@ test("different sessionId gets the full window again (rotation semantics)", () =
   store.append("chan", entry("m1", 1_000));
   store.append("chan", entry("m2", 2_000));
   expect(store.takeUnseen("chan", "s1")).toHaveLength(2);
+  store.markSeen("chan", "s1", "m2");
   // rotate() minted a new sessionId → the watermark is dead → full catch-up window.
   expect(store.takeUnseen("chan", "s2").map((e) => e.messageId)).toEqual(["m1", "m2"]);
-  // And the watermark re-binds to the new session.
+  // A successful turn binds the watermark to the new session.
+  store.markSeen("chan", "s2", "m2");
   expect(store.takeUnseen("chan", "s2")).toEqual([]);
 });
 
@@ -171,6 +177,7 @@ test("a watermark id that aged out of the window yields the whole window", () =>
   const { store } = makeStore({ maxAgeHours: 1, now: () => clock });
   store.append("chan", entry("m1", clock));
   expect(store.takeUnseen("chan", "s1")).toHaveLength(1);
+  store.markSeen("chan", "s1", "m1");
 
   clock += 2 * 3_600_000; // m1 expires out of the window
   store.append("chan", entry("m2", clock));
@@ -191,6 +198,8 @@ test("wipe(single) removes that channel only; wipe() sweeps everything", () => {
   store.append("b", entry("m2", 2_000));
   store.takeUnseen("a", "s1");
   store.takeUnseen("b", "s1");
+  store.markSeen("a", "s1", "m1");
+  store.markSeen("b", "s1", "m2");
 
   expect(store.wipe("a")).toEqual(["a"]);
   expect(existsSync(join(channelsDir, "a.jsonl"))).toBe(false);
