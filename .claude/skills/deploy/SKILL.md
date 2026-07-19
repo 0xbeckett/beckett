@@ -1,13 +1,14 @@
 ---
 name: deploy
-description: Use to throw a locally-running app/mockup up at <name>.0xbeckett.me via Beckett's Cloudflare tunnel, or to manage DNS on the 0xbeckett.me zone. Always go through `beckett dns` / `beckett deploy`; the token is injected for you.
+description: Use to throw a locally-running app/mockup up at <name>.<your Cloudflare zone apex> (this install: 0xbeckett.me) via Beckett's Cloudflare tunnel, or to manage DNS on that zone. Always go through `beckett dns` / `beckett deploy`; the token is injected for you.
 ---
 
 # deploy
 
-Beckett owns the `0xbeckett.me` zone and runs a Cloudflare **named tunnel** on the host. That
-means you can take something running locally — a mockup, a prototype, a one-off page — and give
-it a real URL at `<name>.0xbeckett.me` in one command. This is the muscle behind the proactive
+Beckett owns a Cloudflare **zone** (set by `CLOUDFLARE_ZONE_ID`; this install's zone is
+`0xbeckett.me`) and runs a Cloudflare **named tunnel** on the host. That means you can take
+something running locally — a mockup, a prototype, a one-off page — and give it a real URL at
+`<name>.<zone apex>` in one command. This is the muscle behind the proactive
 "saw yall yapping, threw it up here" move (see [[proactive]]) and the artifact you hand over at
 the end (see [[deliver]]).
 
@@ -19,8 +20,8 @@ output is JSON on stdout.
 
 ## DNS — `beckett dns`
 
-The zone token can only edit DNS on `0xbeckett.me`, so DNS is **FREE**: a record is a reversible
-proposal you can delete. Short names expand to the apex (`x-tool` → `x-tool.0xbeckett.me`).
+The zone token can only edit DNS on that one zone, so DNS is **FREE**: a record is a reversible
+proposal you can delete. Short names expand to the apex (`x-tool` → `x-tool.<zone apex>`).
 
 | Want to… | Run |
 |---|---|
@@ -33,7 +34,7 @@ a grey-cloud record (e.g. a TXT or a raw A record you don't want proxied).
 
 ## Deploy — `beckett deploy`
 
-Maps `<name>.0xbeckett.me` → a local port through the tunnel, and adds the CNAME for you.
+Maps `<name>.<zone apex>` → a local port through the tunnel, and adds the CNAME for you.
 
 | Want to… | Run |
 |---|---|
@@ -62,7 +63,7 @@ command — surface that, don't pretend it's live.
   It's all reversible and within remit (a mockup at a subdomain, deletable in one command).
 - The gate is about consequence, not who asked: a mockup you deploy on your own initiative is
   fine, but anything genuinely irreversible/outward (a real production cutover, money, account
-  admin) still needs a direct go. A `.0xbeckett.me` mockup is not that.
+  admin) still needs a direct go. A subdomain mockup on your zone is not that.
 
 ## Notes & the one-time prereq
 

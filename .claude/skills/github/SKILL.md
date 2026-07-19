@@ -5,9 +5,9 @@ description: Use whenever you touch GitHub — creating a repo, pushing a branch
 
 # github
 
-Beckett has a real identity on GitHub (the `0xbeckett` account) backed by a fine-grained PAT
-that's already in `~/.beckett/.env`. The **`beckett gh`** CLI injects that token into every
-`gh`/`git` call for you.
+Beckett has a real identity on GitHub (its own account — this install: `0xbeckett` — set by
+`identity.github_user`) backed by a fine-grained PAT that's already in `~/.beckett/.env`. The
+**`beckett gh`** CLI injects that token into every `gh`/`git` call for you.
 
 ## The one rule
 
