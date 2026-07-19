@@ -443,7 +443,7 @@ export class ConciergeSession {
   /** Test-only override: when set, used verbatim as the system prompt (skips file composition). */
   private readonly staticPrompt: string | undefined;
   private readonly model: string;
-  /** Summed-input-token ceiling that triggers auto-compaction (from config; issue #5). */
+  /** Proactive summed-input-token watermark that triggers idle compaction (from config; issue #5). */
   private readonly rotateAtTokens: number;
   /** Pool scope key ("global" = the legacy single session). Drives state-file placement. */
   private readonly scope: string;
@@ -1094,8 +1094,8 @@ export class ConciergeSession {
     const reload = this.reloadPending;
     if (!reload) {
       if (this.lastContextTokens < this.rotateAtTokens) return;
-      // A rotation just failed — don't re-pay the expensive handoff turn after EVERY subsequent
-      // turn while over the ceiling; retry after a cooldown (issue #24).
+      // A rotation just failed — don't re-pay even the cheap handoff on every idle check while
+      // over the watermark; retry after a cooldown (issue #24).
       if (Date.now() - this.rotateFailedAt < ROTATE_RETRY_COOLDOWN_MS) return;
     }
     this.reloadPending = false;
