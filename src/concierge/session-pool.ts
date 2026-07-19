@@ -169,7 +169,7 @@ export class SessionPool {
     entry.session.prewarm?.();
   }
 
-  /** Ensure a scope's session is up NOW (boot fail-fast for the home scope). */
+  /** Ensure a scope's session is up NOW (boot fail-fast for the dedicated system scope). */
   async warm(channelId: string): Promise<void> {
     const entry = this.entryFor(channelId);
     if (this.opts.fixedSession && !this.fixedStarted) {
