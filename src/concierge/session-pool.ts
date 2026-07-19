@@ -35,6 +35,8 @@ export interface PoolSession {
   /** String is legacy support for injected test doubles; real sessions return DiscordTurnOutput. */
   ask(message: TurnMessage, meta?: unknown, opts?: { priority?: boolean }): Promise<DiscordTurnOutput | string>;
   requestReload?(): void;
+  /** Perform a due context rotation only if this scope is quiet; true when it rotated. */
+  rotateWhileIdle?(): Promise<boolean>;
   queueDepth?(): number;
   currentSessionId?(): string;
   getCurrentMeta?(): unknown;
@@ -87,6 +89,7 @@ export class SessionPool {
   private readonly log: Logger;
   private readonly entries = new Map<string, PoolEntry>();
   private idleTimer: ReturnType<typeof setInterval> | null = null;
+  private idleSweeping = false;
   private stopped = false;
   /** Legacy parity: a fixed session is started exactly once, by warm() (i.e. Concierge.start()). */
   private fixedStarted = false;
@@ -306,31 +309,44 @@ export class SessionPool {
     const idleMs = this.opts.idleRecycleMs;
     if (!(idleMs > 0)) return;
     const tick = Math.max(30_000, Math.min(idleMs, 5 * 60_000));
-    this.idleTimer = setInterval(() => this.idleSweep(Date.now()), tick);
+    this.idleTimer = setInterval(() => void this.idleSweep(Date.now()), tick);
     // Never keep the process alive just for housekeeping (bun timers support unref).
     (this.idleTimer as unknown as { unref?: () => void }).unref?.();
   }
 
-  /** One idle-housekeeping pass: recycle long-idle children; evict long-idle child-less entries. */
-  private idleSweep(now: number): void {
-    const idleMs = this.opts.idleRecycleMs;
-    for (const [key, entry] of this.entries) {
-      if ((entry.session.queueDepth?.() ?? 0) > 0) continue;
-      if (now - entry.lastUsedAt < idleMs) continue;
-      if (entry.session.hasLiveChild?.() === true) {
-        entry.session.recycle?.("idle session recycle");
-        this.log.info("recycled idle concierge session child (idle timer)", { scope: key });
-      } else {
-        // Long-idle and child-less: drop the entry entirely so the pool (and the owner's
-        // per-scope caches) can't grow one entry per channel forever. The scope's session state
-        // is on disk — its next turn recreates the entry and resumes the same conversation.
-        this.entries.delete(key);
-        this.opts.onEvict?.(key);
-        void entry.session
-          .stop()
-          .catch((err) => this.log.warn("evicted session stop failed", { err: String(err) }));
-        this.log.info("evicted idle concierge session entry", { scope: key });
+  /** One idle-housekeeping pass: proactively rotate, then recycle long-idle children/entries. */
+  private async idleSweep(now: number): Promise<void> {
+    if (this.idleSweeping) return;
+    this.idleSweeping = true;
+    try {
+      const idleMs = this.opts.idleRecycleMs;
+      for (const [key, entry] of this.entries) {
+        if ((entry.session.queueDepth?.() ?? 0) > 0) continue;
+        if (now - entry.lastUsedAt < idleMs) continue;
+        // A due rotation gets first claim on an idle child. It runs outside the TurnGate and its
+        // fresh process should not be immediately recycled; reset idle age and revisit next sweep.
+        if (await entry.session.rotateWhileIdle?.()) {
+          entry.lastUsedAt = now;
+          this.log.info("rotated idle concierge session", { scope: key });
+          continue;
+        }
+        if (entry.session.hasLiveChild?.() === true) {
+          entry.session.recycle?.("idle session recycle");
+          this.log.info("recycled idle concierge session child (idle timer)", { scope: key });
+        } else {
+          // Long-idle and child-less: drop the entry entirely so the pool (and the owner's
+          // per-scope caches) can't grow one entry per channel forever. The scope's session state
+          // is on disk — its next turn recreates the entry and resumes the same conversation.
+          this.entries.delete(key);
+          this.opts.onEvict?.(key);
+          void entry.session
+            .stop()
+            .catch((err) => this.log.warn("evicted session stop failed", { err: String(err) }));
+          this.log.info("evicted idle concierge session entry", { scope: key });
+        }
       }
+    } finally {
+      this.idleSweeping = false;
     }
   }
 }

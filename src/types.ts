@@ -761,7 +761,7 @@ export interface Config {
   /** v3 — the Concierge agent that owns Discord and files tickets. */
   concierge: {
     model: string;
-    /** Summed-input-token ceiling at which the Concierge session auto-compacts (rotates). */
+    /** Proactive summed-input-token watermark at which an idle Concierge session rotates. */
     rotate_at_tokens: number;
     /** Reasoning effort for the chat seat ("" = the claude CLI default; issue #25). */
     effort: "" | "low" | "medium" | "high" | "xhigh";

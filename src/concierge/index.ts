@@ -1070,15 +1070,17 @@ export class ConciergeSession {
    * turn to meter here. `pumping` is the per-channel mutex, so an ask racing this check waits
    * safely without making unrelated channels wait.
    */
-  async rotateWhileIdle(): Promise<void> {
-    if (this.pumping || this.turnQueue.length > 0) return;
+  async rotateWhileIdle(): Promise<boolean> {
+    if (this.pumping || this.turnQueue.length > 0) return false;
     this.pumping = true;
+    const rotations = this.rotations;
     try {
       await this.maybeRotate();
     } finally {
       this.pumping = false;
     }
     if (this.turnQueue.length > 0) void this.pump();
+    return this.rotations > rotations;
   }
 
   /**
@@ -1112,10 +1114,9 @@ export class ConciergeSession {
   }
 
   /**
-   * Re-ground on a fresh process: ask the dying session for a handoff note, then relaunch under a
-   * new session id (transcript dropped, persona re-read from disk) seeded with that note. Called
-   * only at a turn boundary (chained off {@link ask}'s queue), so no turn is ever in flight here.
-   * Drives both auto-compaction and live persona reload.
+   * Rotate an idle transcript. The handoff is a one-shot Haiku@low turn fed by the durable channel
+   * window, not an expensive turn on the dying chat child. The fresh child is seeded into its FIRST
+   * real turn, avoiding a pointless Opus re-ground turn while nobody is talking.
    */
   private async rotate(reason: string): Promise<void> {
     const fromTokens = this.lastContextTokens;
@@ -1123,19 +1124,23 @@ export class ConciergeSession {
     this.log.info("concierge re-grounding on a fresh session", {
       reason,
       contextTokens: fromTokens,
-      ceiling: this.rotateAtTokens,
+      watermark: this.rotateAtTokens,
       sessionId: oldSession,
     });
 
-    // 1. Last words from the dying session, on its still-live child (best-effort). The same
-    // structured output boundary applies here; this is internal state, never a Discord post.
+    // 1. Build the note off-process. This intentionally does not resume the large dying
+    // transcript: the bounded channel-store window is durable and is enough factual material for
+    // cheap bookkeeping, while avoiding another 160k-token Opus request.
+    const window = this.handoffWindow();
     let summary = "";
     try {
-      const note = await this.runTurn(HANDOFF_PROMPT);
-      if (note.decision === "send" && note.message !== TURN_TIMEOUT_FALLBACK) summary = note.message;
+      summary = await this.runCheapHandoff(window);
     } catch (err) {
-      this.log.warn("concierge handoff summary failed — rotating without it", { err: String(err) });
+      this.log.warn("concierge cheap handoff summary failed — rotating with the channel window", {
+        err: String(err),
+      });
     }
+    const handoff = enrichHandoff(summary, window);
 
     // 2. Swap the child for a fresh session. `rotating` makes onExit ignore the deliberate kill.
     this.rotating = true;
@@ -1156,20 +1161,54 @@ export class ConciergeSession {
       this.rotating = false;
     }
 
-    // 3. Re-ground the fresh self with the handoff note (skipped if we couldn't get one).
-    if (summary) {
-      try {
-        await this.runTurn(seedFromHandoff(summary));
-      } catch (err) {
-        this.log.warn("concierge re-grounding turn failed (continuing)", { err: String(err) });
-      }
+    // 3. The next real user turn consumes this seed. Do not spend an Opus turn merely to make the
+    // new process read it: it has no user-visible effect and used to hold a global gate slot.
+    if (handoff) {
+      this.seedPending = handoff;
+      this.lastHandoff = handoff;
     }
-    // Persist the new identity + handoff so a deploy right after this rotation still resumes —
-    // and if the resume fails, the fresh session re-grounds from this same note (issue #24).
-    if (summary) this.lastHandoff = summary;
     this.rotations += 1;
     this.persistSessionState();
     this.log.info("concierge re-grounding complete", { reason, from: oldSession, to: this.sessionId });
+  }
+
+  /** Run bounded handoff bookkeeping on Haiku@low, entirely outside the live session and TurnGate. */
+  private async runCheapHandoff(channelWindow: string): Promise<string> {
+    const bin = this.config.harness.claude.bin;
+    const prompt = `${HANDOFF_PROMPT}\n\n<channel-store-window>\n${channelWindow.trim() || "(empty)"}\n</channel-store-window>`;
+    const proc = Bun.spawn(
+      [
+        bin,
+        "-p",
+        prompt,
+        "--model",
+        HANDOFF_MODEL,
+        "--effort",
+        HANDOFF_EFFORT,
+        "--output-format",
+        "json",
+        "--tools",
+        "",
+        "--no-session-persistence",
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--no-chrome",
+      ],
+      {
+        cwd: this.cwd,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: this.childEnv(),
+        timeout: HANDOFF_TIMEOUT_MS,
+        killSignal: "SIGKILL",
+      },
+    );
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    const code = await proc.exited;
+    if (proc.signalCode === "SIGKILL") throw new Error("handoff timed out");
+    if (code !== 0) throw new Error(`handoff exited ${code}: ${(stderr.trim() || stdout.trim()).slice(0, 500)}`);
+    return handoffTextFromOutput(stdout);
   }
 
   /** Session health for `beckett status` (issue #30): identity, context pressure, crash/rotation counts. */
@@ -1498,6 +1537,8 @@ export class Concierge {
           logger: this.log,
           scope,
           gate: this.turnGate,
+          // Rotation's small handoff gets the persisted channel window, not the dying transcript.
+          handoffWindow: () => this.handoffWindowForScope(scope),
           // Crash-loop alarm (issue #24): a repeating child crash (bad auth/config) pings the ops
           // channel instead of surfacing only as per-message "something broke" replies.
           onCrashLoop: (info) => {
@@ -1632,6 +1673,36 @@ export class Concierge {
       repliedToId: e.repliedToId,
       isBeckett: e.kind === "beckett",
     }));
+  }
+
+  /**
+   * Bounded durable source material for an idle session handoff. Channel-scoped sessions get
+   * their own window; legacy global sessions get the newest entries across channels. This is
+   * deliberately the same rough budget as normal shared-context injection, so a handoff remains
+   * a cheap request instead of another giant context turn.
+   */
+  private handoffWindowForScope(scope: string): string {
+    if (!this.channelStore) return "";
+    const budget = Math.max(1, this.config.shared_context?.inject_budget_tokens ?? 3000) * 4;
+    const entries =
+      scope === GLOBAL_SCOPE
+        ? this.channelStore
+            .listChannels()
+            .flatMap((info) => this.channelStore!.recent(info.channelId).map((entry) => ({ channelId: info.channelId, entry })))
+            .sort((a, b) => a.entry.ts - b.entry.ts)
+        : this.channelStore.recent(scope).map((entry) => ({ channelId: scope, entry }));
+    const selected: Array<{ channelId: string; entry: ChannelEntry }> = [];
+    let chars = 0;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const item = entries[i]!;
+      const line = `${scope === GLOBAL_SCOPE ? `[channel:${item.channelId}] ` : ""}${renderEntryLine(item.entry)}`;
+      if (selected.length > 0 && chars + line.length + 1 > budget) break;
+      selected.unshift(item);
+      chars += line.length + 1;
+    }
+    return selected
+      .map(({ channelId, entry }) => `${scope === GLOBAL_SCOPE ? `[channel:${channelId}] ` : ""}${renderEntryLine(entry)}`)
+      .join("\n");
   }
 
   /**

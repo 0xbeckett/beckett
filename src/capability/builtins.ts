@@ -421,10 +421,9 @@ export const configFragments = {
   concierge: z
     .object({
       model: z.string().min(1).default("claude-opus-4-8"),
-      // Context-size ceiling (summed input tokens) at which the session auto-compacts by rotating
-      // to a fresh session seeded with a handoff summary (issue #5). Configurable so it can be
-      // driven low in tests/harnesses to exercise a real rotation without burning ~190k tokens.
-      rotate_at_tokens: z.number().int().positive().default(190_000),
+      // Proactive idle-rotation watermark (summed input tokens). This sits below Claude's 200k
+      // hard edge so compaction normally happens with nobody waiting; configurable for tests.
+      rotate_at_tokens: z.number().int().positive().default(160_000),
       // Reasoning effort for the chat seat (issue #25): acks/triage rarely need max reasoning.
       // Empty = the claude CLI's own default. A knob, not a hardcode — the voice is the product.
       effort: z.enum(["", "low", "medium", "high", "xhigh"]).default(""),

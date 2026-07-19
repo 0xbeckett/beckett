@@ -101,7 +101,7 @@ awareness_max_channels = 5
 
 [concierge]
 model = "claude-opus-4-8"
-rotate_at_tokens = 190000
+rotate_at_tokens = 160000
 effort = ""
 session_scope = "channel"
 max_concurrent_turns = 3
