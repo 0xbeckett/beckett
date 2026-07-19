@@ -40,6 +40,7 @@ import {
   commitVersion,
   compareSemver,
   computeBumpSuggestion,
+  cutChangelog,
   defaultRepoRoot as versionRepoRoot,
   readVersion,
   resolveVersion,
@@ -291,9 +292,12 @@ async function runVersion(argv: string[]): Promise<void> {
   }
 
   writeVersion(version, repoRoot);
+  // Fold the CHANGELOG cut into the bump: move the Unreleased block under the new dated heading so
+  // the release notes land in the SAME commit as the version, and can't drift (issue #147).
+  const changelog = cutChangelog(version, repoRoot);
   let committed = false;
   if (flags["no-commit"] !== true) {
-    await commitVersion(repoRoot, version);
+    await commitVersion(repoRoot, version, changelog.changed ? ["CHANGELOG.md"] : []);
     committed = true;
   }
 
@@ -304,6 +308,7 @@ async function runVersion(argv: string[]): Promise<void> {
     suggestedLevel: s.suggestion.level,
     overridden: level !== s.suggestion.level,
     committed,
+    changelogCut: changelog.changed,
     commits: s.commits,
     areas: s.areas,
     why: s.suggestion.reasons,

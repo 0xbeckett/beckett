@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.3.2 — faster cold ambient interjections (2026-07-18)
+
 ### Faster cold ambient interjections (#123, #158)
 
 - Cold ambient bursts now flush after an 8-second quiet period rather than 20 seconds, removing
@@ -9,6 +11,8 @@
   lane remains a 4-second lull, and every candidate still reaches the session turn, which can PASS
   when the moment is no longer timely. When `CEREBRAS_API_KEY` is present, the existing default
   fast Cerebras triage provider remains selected instead of spawning the Claude CLI.
+
+## v5.2.0 — tracker cutover to bored (2026-07-16)
 
 ### Tracker cutover: bored is the only ticket queue (OPS-191)
 
@@ -28,6 +32,8 @@
   `GET /health` on the bored service instead of a Plane token; the installers no longer prompt
   for Plane URLs/workspaces/tokens and preflight the tracker connection instead of provisioning
   Plane boards. `deploy/plane/` (the self-hosted Plane stack) is deleted.
+
+## v5.0.0 — multiplayer concurrency, computer use, self-host installer (2026-07-16)
 
 ### Incoming AgentMail notifications (OPS-173)
 
@@ -160,6 +166,8 @@
   The engaged lane now treats recent Beckett activity as a hint and revalidates native replies to
   known humans with the fast classifier before typing or spending a full turn. The session verifies
   the remaining ambiguous continuations. A labeled opt-in eval reports accuracy and latency.
+
+## v4.2.0 — Coworker-as-a-Service threads + better memory (2026-07-10)
 
 ### OPS-121 — better memory: sharper recall, global context, routine staleness pruning
 

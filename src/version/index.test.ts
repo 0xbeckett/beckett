@@ -16,6 +16,7 @@ import {
   commitsSinceVersion,
   computeBumpSuggestion,
   resolveVersion,
+  cutChangelog,
 } from "./index.ts";
 import { classifyBump } from "./semver.ts";
 
