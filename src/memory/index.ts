@@ -156,6 +156,8 @@ export interface MemoryDeps {
   logger?: Logger;
   /** Git-version the memory dir on every write (Spec 08 §8.2). Default true; best-effort. */
   git?: boolean;
+  /** Keep the parsed graph and Moss sync warm, invalidating only when the markdown tree changes. */
+  warm?: boolean;
 }
 
 /** Build the {@link Memory} implementation. */
@@ -171,6 +173,11 @@ export class MemoryStore implements Memory {
   private readonly dir: string;
   private readonly logger: Logger;
   private readonly git: boolean;
+  private readonly warm: boolean;
+  /** Daemon-only cache: a cheap path/mtime/size stamp detects external edits without re-parsing or hashing nodes. */
+  private warmGraph?: { graph: MemoryGraph; stamp: string };
+  /** The graph whose documents have already been diff-synced to the warm Moss handle. */
+  private mossSyncedGraph?: MemoryGraph;
   /** Single in-process async mutex serializing writes (Spec 08 §8.1). */
   private writeChain: Promise<unknown> = Promise.resolve();
   /** Raw file contents captured during the last build (for content-hash + surgical edits). */
@@ -182,12 +189,13 @@ export class MemoryStore implements Memory {
     this.dir = deps.memoryDir;
     this.logger = deps.logger ?? rootLog.child("memory");
     this.git = deps.git ?? true;
+    this.warm = deps.warm ?? false;
   }
 
   // ── recall (Spec 08 §3; retrieval served by local Moss since issue #20) ────────────
 
   async recall(q: RecallQuery & { audience?: Audience }): Promise<RecallResult> {
-    const g = this.buildGraph();
+    const g = this.graphForRecall();
     const scoreOf = await this.mossScorer(q.text, g);
     return recallOver(q, g, scoreOf);
   }
@@ -230,7 +238,12 @@ export class MemoryStore implements Memory {
   ): Promise<((node: MemoryNode) => number) | undefined> {
     try {
       const moss = await this.openMoss();
-      await syncMossWithGraph(moss, g);
+      // A warm daemon already has this exact graph's documents indexed. Avoid the old per-recall
+      // full-node SHA-256 diff pass; a changed markdown-tree stamp creates a new graph and syncs once.
+      if (!this.warm || this.mossSyncedGraph !== g) {
+        await syncMossWithGraph(moss, g);
+        this.mossSyncedGraph = g;
+      }
       if (!text.trim()) return undefined; // filter-only recall — nothing to rank
       const scores = mossScores(moss, text);
       // Moss's hybrid rank remains the primary score. A small, normalized lexical component
@@ -263,6 +276,7 @@ export class MemoryStore implements Memory {
   private async syncMossQuietly(g: MemoryGraph): Promise<void> {
     try {
       await syncMossWithGraph(await this.openMoss(), g);
+      this.mossSyncedGraph = g;
     } catch (err) {
       this.logger.warn("memory: moss index sync failed — recall will resync", { err: String(err) });
     }
@@ -275,6 +289,9 @@ export class MemoryStore implements Memory {
   }
 
   private async rememberLocked(intent: RememberIntent): Promise<MemoryNode> {
+    // Writes can alter several files (including backlinks); never retain a partially-built graph.
+    this.warmGraph = undefined;
+    this.mossSyncedGraph = undefined;
     if (!intent.name || !/^[a-z0-9-]+$/.test(intent.name)) {
       throw new Error(`memory.remember: invalid node name '${intent.name}' (must be kebab-case)`);
     }
@@ -361,6 +378,8 @@ export class MemoryStore implements Memory {
   }
 
   private async maintainLocked(opts: { dryRun?: boolean }): Promise<MaintainReport> {
+    this.warmGraph = undefined;
+    this.mossSyncedGraph = undefined;
     await this.ensureDir();
     let g = this.buildGraph();
     const scanned = [...g.nodes.values()].filter((n) => !n.phantom).length;
@@ -479,10 +498,37 @@ export class MemoryStore implements Memory {
    *  the v2 SQLite mirror was deleted with the rest of the retired stack, issue #28), and
    *  bring the moss retrieval index back in step with it (issue #20). */
   async reindex(): Promise<void> {
+    this.warmGraph = undefined;
+    this.mossSyncedGraph = undefined;
     await this.syncMossQuietly(this.buildGraph());
   }
 
   // ── graph build (Spec 08 §2.3) ──────────────────────────────────────────────────────
+
+  /** Return the daemon's graph when the markdown tree has not changed; cold stores rebuild as before. */
+  private graphForRecall(): MemoryGraph {
+    if (!this.warm) return this.buildGraph();
+    const stamp = this.graphStamp();
+    if (this.warmGraph?.stamp === stamp) return this.warmGraph.graph;
+    const graph = this.buildGraph();
+    this.warmGraph = { graph, stamp: this.graphStamp() };
+    return graph;
+  }
+
+  /** A metadata-only change detector. Content is parsed and hashed only after a real tree change. */
+  private graphStamp(): string {
+    return this.listMarkdownFiles()
+      .sort()
+      .map((path) => {
+        try {
+          const stat = statSync(path);
+          return `${path}:${stat.mtimeMs}:${stat.size}`;
+        } catch {
+          return `${path}:gone`;
+        }
+      })
+      .join("|");
+  }
 
   /** Parse the whole memory tree into the in-memory knowledge graph. */
   buildGraph(): MemoryGraph {

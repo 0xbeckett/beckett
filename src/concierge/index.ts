@@ -97,6 +97,8 @@ import {
   createSubscriptionUsageReader,
   type SubscriptionUsageReader,
 } from "../subscription-usage.ts";
+import { createMemory, type MemoryStore } from "../memory/index.ts";
+import { parseRecallCliRequest, recallCliOutput } from "../memory/recall-cli.ts";
 
 /**
  * What one chat turn hands the model: either a plain string (text-only turns, and every internal
@@ -1251,6 +1253,8 @@ export interface ConciergeOptions {
   branchStatus?: BranchStatusService;
   /** On-demand subscription quota reader; no provider command runs until `/stats`. */
   subscriptionUsage?: SubscriptionUsageReader;
+  /** Daemon-owned warm memory store, injected by v4-main so maintenance and recall share it. */
+  memory?: MemoryStore;
 }
 
 /**
@@ -1333,6 +1337,8 @@ export class Concierge {
   private readonly tasks: TaskStore;
   private branchStatus: BranchStatusService | null;
   private readonly subscriptionUsage: SubscriptionUsageReader;
+  /** One long-lived graph/Moss owner for `memory.recall` control-bus requests. */
+  private readonly memory: MemoryStore;
   private readonly taskThreadCreates = new Map<number, Promise<TaskThreadCreated>>();
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
   private busStop: (() => void) | null = null;
@@ -1450,6 +1456,12 @@ export class Concierge {
     this.tasks = opts.tasks ?? new TaskStore(tasksStateFile(this.config, this.log));
     this.branchStatus = opts.branchStatus ?? null;
     this.subscriptionUsage = opts.subscriptionUsage ?? createSubscriptionUsageReader(this.config);
+    this.memory = opts.memory ?? createMemory({
+      memoryDir: buildPaths(this.config).memoryDir,
+      logger: this.log.child("memory"),
+      git: true,
+      warm: true,
+    });
     this.turnGate = new TurnGate(Math.max(1, this.config.concierge?.max_concurrent_turns ?? 3));
     const makeSession =
       opts.sessionFactory ??
