@@ -282,6 +282,52 @@ export class DiscordJsGateway implements DiscordGateway {
     this.handler = cb;
   }
 
+  /**
+   * REST reconciliation for the gap a fresh IDENTIFY cannot replay. The caller supplies the
+   * channel store's newest id; every accepted user message after it is normalized through the
+   * exact event path before it reaches the Concierge. Fetch in pages so a longer deploy does not
+   * silently lose the 101st message.
+   */
+  async fetchMessagesAfter(channelId: string, after: string): Promise<IncomingMessage[]> {
+    const client = this.client;
+    if (!client) throw new Error("discord gateway not started");
+    const channel = await client.channels.fetch(channelId);
+    if (!channel?.isTextBased()) throw new Error(`discord channel ${channelId} is not text based`);
+
+    const messages: IncomingMessage[] = [];
+    let cursor = after;
+    for (;;) {
+      const page = await channel.messages.fetch({ after: cursor, limit: 100 });
+      if (page.size === 0) break;
+      const raw = [...page.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+      let newest = cursor;
+      for (const msg of raw) {
+        newest = msg.id;
+        // Match MessageCreate's bot guard. A trusted federated peer is still a conversational
+        // input; every other bot (including us) is never put through downtime catch-up.
+        if (msg.author.bot) {
+          if (!isFederatedPeer(msg.author.id, client.user?.id, this.effectivePeers())) continue;
+          if (!this.peerBurst.allow(msg.channelId)) continue;
+        }
+        try {
+          messages.push(await this.normalize(msg));
+        } catch (err) {
+          // One stale/deleted reference must not make the rest of a downtime page disappear.
+          this.logger.warn("discord downtime message normalization failed", {
+            channelId,
+            messageId: msg.id,
+            error: String(err),
+          });
+        }
+      }
+      // Discord's `after` cursor is exclusive. A non-advancing page is unexpected, but stopping
+      // here is safer than a tight REST loop if Discord returns an odd cached collection.
+      if (newest === cursor || page.size < 100) break;
+      cursor = newest;
+    }
+    return messages;
+  }
+
   onCommand(cb: (command: DiscordCommand) => Promise<DiscordCommandReply>): void {
     if (this.commandHandler) this.logger.warn("discord onCommand handler replaced");
     this.commandHandler = cb;

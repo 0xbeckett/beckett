@@ -934,6 +934,11 @@ export interface DiscordGateway {
   /** Register the inbound message handler (intake + awaiting-reply resolution). */
   onMessage(cb: (m: IncomingMessage) => void | Promise<void>): void;
   /**
+   * Fetch user messages newer than a stored channel cursor, normalized exactly like gateway events.
+   * Optional while older injected test transports are phased out.
+   */
+  fetchMessagesAfter?(channelId: string, after: string): Promise<IncomingMessage[]>;
+  /**
    * Register the handler for threads PEOPLE create (bot-created threads are filtered out at the
    * gateway). The Concierge registers each as a ticket workspace so messages inside it are
    * directed turns without an @mention. Beckett itself never opens threads — the old bot-spawned

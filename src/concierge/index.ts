@@ -618,6 +618,9 @@ export class ConciergeSession {
     const child = this.child;
     if (!child) throw new Error("concierge session has no live process");
     this.currentMeta = meta ?? null;
+    // A timeout, write failure, or malformed result must leave the shared-context cursor where
+    // it was. Fakes predate this signal and leave it undefined, which remains successful parity.
+    if (isMentionClaim(meta)) meta.turnSucceeded = false;
     const outbound = this.consumeSeed(message);
 
     const turn = new Promise<DiscordTurnOutput>((resolve, reject) => {
@@ -997,6 +1000,7 @@ export class ConciergeSession {
       p.resolve({ decision: "pass", message: null });
       return;
     }
+    if (isMentionClaim(this.currentMeta)) this.currentMeta.turnSucceeded = true;
     p.resolve(output);
   }
 
@@ -1270,6 +1274,10 @@ interface MentionClaim {
   repliedViaCli: boolean;
   /** Id of the ack message the Concierge posted this turn (null until posted). */
   ackMessageId: string | null;
+  /** Shared-context cursor rendered into this turn; committed only after a real model result. */
+  contextWatermark?: { channelId: string; sessionId: string; lastMessageId: string };
+  /** Set by a real ConciergeSession: false until it receives a valid structured result. */
+  turnSucceeded?: boolean;
   /** True for an ambient (un-addressed) turn: a CLI reply posts plainly, never as a native reply. */
   ambient?: boolean;
   /**
@@ -1396,6 +1404,8 @@ export class Concierge {
    * sessions that don't track meta.
    */
   private readonly activeMentions = new Map<string, MentionClaim>();
+  /** IDs accepted this process, preventing a boot REST fetch racing the live gateway event from double-answering. */
+  private readonly inboundMessageIds = new Set<string>();
   /** Last static denial by channel+user, so denied DMs/mentions cannot spam Discord. */
   private readonly accessDenyAt = new Map<string, number>();
   /** Last fast ack by channel, so rapid mentions get one ack bubble instead of one each (issue #128). */
@@ -2008,6 +2018,7 @@ export class Concierge {
     }
     this.gateway.onCommand?.((command) => this.onCommand(command));
     await this.gateway.start();
+    await this.reconcileDowntimeMessages();
     void this.deleteStaleBrowserQuestions();
     this.retryBrowserResults();
     await this.restoreTaskWorkspaces();
@@ -2018,6 +2029,38 @@ export class Concierge {
     // Instance-specific flourish: a fun, in-voice "what's new" when the code actually advanced.
     void this.announceChanges();
     this.log.info("concierge online", { model: this.config.concierge.model });
+  }
+
+  /**
+   * A new gateway IDENTIFY has no event replay. Recover the REST gap from each durable context
+   * cursor before declaring the Concierge online: ordinary lines go through normal capture, while
+   * mentions and DMs go through the same directed-turn path that would have answered them live.
+   * This is deliberately sequential: channel order is irrelevant, but message order within one
+   * channel is conversational state.
+   */
+  private async reconcileDowntimeMessages(): Promise<void> {
+    if (!this.channelStore || !this.gateway.fetchMessagesAfter) return;
+    for (const channel of this.channelStore.listChannels()) {
+      try {
+        const missed = await this.gateway.fetchMessagesAfter(channel.channelId, channel.lastMessageId);
+        if (missed.length > 0) {
+          this.log.info("reconciling missed Discord messages", {
+            channelId: channel.channelId,
+            after: channel.lastMessageId,
+            count: missed.length,
+          });
+        }
+        for (const message of missed) await this.onMessage(message);
+      } catch (err) {
+        // Reconciliation is retryable on the next boot. Do not turn a deleted channel or a
+        // transient Discord REST failure into a daemon-wide startup failure.
+        this.log.warn("discord downtime reconciliation failed", {
+          channelId: channel.channelId,
+          after: channel.lastMessageId,
+          error: String(err),
+        });
+      }
+    }
   }
 
   /** Wire the on-demand Git/GitHub branch card provider after shell construction. */

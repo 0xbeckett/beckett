@@ -72,6 +72,8 @@ export interface ChannelInfo {
   name: string | null;
   guildId: string | null;
   entryCount: number;
+  /** Newest stored Discord/synthetic message id; boot reconciliation fetches after this. */
+  lastMessageId: string;
   lastTs: number;
   /** Distinct recent speaker display names (latest capture wins), capped. */
   participants: string[];
@@ -117,7 +119,7 @@ export interface ChannelContextStore {
   append(channelId: string, entry: ChannelEntry): void;
   /** The bounded live window: TTL + count cap applied, oldest → newest. Returns a copy. */
   recent(channelId: string): ChannelEntry[];
-  /** Entries this session hasn't seen; advances AND persists the watermark to the newest entry. */
+  /** Entries this session hasn't seen. Reading is deliberately non-mutating; mark only after its turn succeeds. */
   takeUnseen(channelId: string, sessionId: string): ChannelEntry[];
   /** Advance the watermark without reading (an ambient turn already surfaced the window itself). */
   markSeen(channelId: string, sessionId: string, lastMessageId: string): void;
@@ -489,9 +491,6 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
         const idx = window.findIndex((e) => e.messageId === mark.lastMessageId);
         if (idx !== -1) unseen = window.slice(idx + 1);
       }
-      const newest = window[window.length - 1]!;
-      marks[channelId] = { lastMessageId: newest.messageId, sessionId };
-      persistWatermarks();
       return unseen;
     },
 
@@ -534,6 +533,7 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
           name: ms[id]?.name ?? null,
           guildId: ms[id]?.guildId ?? null,
           entryCount: window.length,
+          lastMessageId: window[window.length - 1]!.messageId,
           lastTs: window[window.length - 1]!.ts,
           participants: [...names.values()].slice(0, PARTICIPANTS_CAP),
           profile: profile ? { ...profile, topics: [...profile.topics] } : null,
