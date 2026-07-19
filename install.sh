@@ -485,13 +485,14 @@ provision_tracker() {
 start_tracker() {
   log "starting the bored tracker and waiting for its health probe"
   as_beckett_user_service systemctl --user restart bored.service
-  local attempt
-  for attempt in $(seq 1 30); do
+  local waited=0
+  while [ "${waited}" -lt 30 ]; do
     if as_beckett curl --fail --silent --show-error --max-time 5 \
       "http://127.0.0.1:${BORED_PORT}/health" >/dev/null 2>&1; then
       return
     fi
     sleep 1
+    waited=$((waited + 1))
   done
   die "the bored tracker did not answer http://127.0.0.1:${BORED_PORT}/health after starting bored.service; check: sudo -iu ${BECKETT_USER} journalctl --user -u bored.service"
 }
