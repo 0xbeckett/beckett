@@ -59,7 +59,9 @@ export function createMemoryCapability({ paths }: CapabilityDeps): Capability {
 
     try {
       const { callBus } = await import("../../shell/control-bus.ts");
-      const res = await callBus(join(paths.beckettDir, "control.sock"), "memory.recall", { argv }, 5_000);
+      // Agentic recall may spend up to 45s in its model seat; unlike channels, this bus request
+      // needs to preserve that established command budget rather than declaring the daemon dead.
+      const res = await callBus(join(paths.beckettDir, "control.sock"), "memory.recall", { argv }, 60_000);
       if (!res.ok) fail(res.error ?? "memory.recall failed");
       out(res.data);
     } catch (err) {
