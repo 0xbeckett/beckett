@@ -4,9 +4,9 @@
   "description": "Beckett \u2014 an agentic coworker reached in Discord. A harness over harnesses.",
   "type": "module",
   "private": true,
-  "module": "src/shell/v4-main.ts",
+  "module": "src/shell/main.ts",
   "scripts": {
-    "v4": "bun src/shell/v4-main.ts",
+    "v4": "bun src/shell/main.ts",
     "beckett": "bun src/cli/beckett.ts",
     "browser:smoke": "bun scripts/ops/browser-smoke.ts",
     "eval:browser": "bun scripts/eval/browser-agent.ts",

@@ -112,8 +112,9 @@ character is yours.
 > live worker; *cancelled* aborts it; when a worker finishes, the dispatcher advances the ticket
 > and posts a summary comment.
 
-The authoritative build contract is [`docs/V3.md`](docs/V3.md). Specs live in
-[`specs/`](specs/) (older v2 design is archived under `specs/_legacy-v2/` — historical only).
+The authoritative architecture doc is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Design
+history lives in [`specs/`](specs/): the original spec set under `specs/_legacy/`, the v2 design
+under `specs/_legacy-v2/`, and the v3 build contract under `specs/_legacy-v3/` — historical only.
 
 ## Run your own Beckett
 
@@ -306,8 +307,8 @@ src/
   cli/          the `beckett` CLI (one entrypoint, beckett.ts)
   config.ts     strict, fully-defaulted config schema
 deploy/         systemd units, install.sh, deploy-prod.sh, host-setup.md
-docs/           V3.md (the build contract) + audits
-specs/          design specs (v2 archived under _legacy-v2/)
+docs/           ARCHITECTURE.md (the current doc) + extending-capabilities.md + audits
+specs/          design history (v3 under _legacy-v3/, v2 under _legacy-v2/, original under _legacy/)
 ```
 
 ## Contributing / working in the code
@@ -325,7 +326,7 @@ specs/          design specs (v2 archived under _legacy-v2/)
   to reproduce every label in every run.
 - **Style:** match the neighbors. This codebase leans on dense, explanatory comments that say
   *why*, strict config validation, and pure/testable helpers split out from I/O. Read
-  [`docs/V3.md`](docs/V3.md) §1 for the non-negotiable conventions.
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the non-negotiable conventions.
 - **New to the repo?** There's a paste-into-your-AI-agent onboarding prompt at
   [`docs/onboarding-prompt.md`](docs/onboarding-prompt.md) that gets a coding agent up to speed
   fast.

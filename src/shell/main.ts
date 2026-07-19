@@ -1,5 +1,5 @@
 /**
- * Beckett v4 — the shell entrypoint (`src/shell/v4-main.ts`)
+ * Beckett — the shell entrypoint (`src/shell/main.ts`)
  * =======================================================================================
  * Boots the ticket-queue system and wires the four moving parts together:
  *
@@ -17,8 +17,9 @@
  * the tracker, the poller observes them, the dispatcher acts. They never call each other
  * directly — the tracker is the shared queue.
  *
- * This is a NEW entrypoint; the v2 `src/shell/main.ts` is left untouched. Run it with
- * `bun run v4` (see package.json) or `bun src/shell/v4-main.ts`.
+ * Run it with `bun run v4` (see package.json) or `bun src/shell/main.ts`. The `v4` script name
+ * and the `beckett-v4.service` unit are kept for continuity with the 4.0.0 multiplayer release;
+ * only the file was renamed from `v4-main.ts` (see docs/ARCHITECTURE.md "Entrypoint & cutover").
  *
  * Import style (whole repo, bun-native): explicit `.ts` extensions, ESM.
  */

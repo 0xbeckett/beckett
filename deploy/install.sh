@@ -19,6 +19,13 @@ mkdir -p "${UNIT_DIR}"
 
 # Symlink every unit in deploy/systemd — the repo is the source of truth; editing the live
 # copy under ~/.config drifts silently (that is exactly what this script ends).
+#
+# Entrypoint rename cutover (issue #150): beckett-v4.service now runs `src/shell/main.ts`
+# (renamed from `src/shell/v4-main.ts`). The UNIT FILENAME is unchanged, so this is a
+# content-only cutover — no dangling-unit dance like the v3→v4 rename below. The `ln -sf`
+# here is idempotent, and the `daemon-reload` + `restart beckett-v4.service` further down
+# pick up the new ExecStart from the already-linked unit. Because the file was moved in the
+# same commit, `git pull` lands the new unit + new entrypoint atomically before this runs.
 for unit in "${REPO_DIR}"/deploy/systemd/*.service "${REPO_DIR}"/deploy/systemd/*.timer; do
   [ -e "${unit}" ] || continue
   name="$(basename "${unit}")"
