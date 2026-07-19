@@ -158,9 +158,6 @@ function cardsChannelId(): string {
   return process.env.BECKETT_CARDS_CHANNEL_ID?.trim() || CARDS_CHANNEL_ID;
 }
 
-/** Hard ceiling on one chat turn before we give up waiting for its `result` line. */
-const TURN_TIMEOUT_MS = 240_000;
-
 /** Discord shows "typing…" for ~10s; re-trigger inside this window while a turn runs. */
 const TYPING_INTERVAL_MS = 8_000;
 
@@ -320,8 +317,15 @@ const HANDOFF_MODEL = "claude-haiku-4-5";
 const HANDOFF_EFFORT = "low";
 const HANDOFF_TIMEOUT_MS = 45_000;
 
-/** What a turn resolves to when it times out — must never be seeded as a handoff "summary". */
-const TURN_TIMEOUT_FALLBACK = "Still chewing on that one — give me a sec and ask again.";
+/** A turn gets this long to finish before its eventual result is visibly marked as late. */
+const TURN_TIMEOUT_MS = 240_000;
+
+/** A real turn that is taking a while gets a human acknowledgement, even on an idle channel. */
+export const TURN_PROGRESS_ACK_MS = 25_000;
+const TURN_PROGRESS_ACK_TEXT = "Still working on this — I haven't forgotten you.";
+
+/** Prepended only to a real model answer that arrives after {@link TURN_TIMEOUT_MS}. */
+const LATE_TURN_FRAME = "Sorry, that took a while —";
 
 /** After a FAILED rotation, wait this long before re-paying the (expensive) handoff turn. */
 const ROTATE_RETRY_COOLDOWN_MS = 10 * 60_000;
@@ -399,6 +403,8 @@ interface PendingTurn {
   resolve: (reply: DiscordTurnOutput) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** The soft deadline passed; retain the turn and visibly frame its eventual real result. */
+  timedOut: boolean;
 }
 
 /** A turn admitted by {@link ConciergeSession.ask} and awaiting its slot in the pump. */
@@ -665,19 +671,8 @@ export class ConciergeSession {
     const outbound = this.consumeSeed(message);
 
     const turn = new Promise<DiscordTurnOutput>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (this.pending && this.pending.timer === timer) {
-          this.pending = null;
-          // The turn is dead but the child may still be streaming into it. Treat the child as
-          // compromised (issue #24): kill it so late output can never contaminate the NEXT turn,
-          // and so a genuinely hung child doesn't turn every future turn into a timeout. The next
-          // ask() resumes the same session — context intact.
-          this.recycleChild("turn timeout");
-          // Don't hang the human forever. This is daemon-authored fallback text, not model output.
-          resolve({ decision: "send", message: TURN_TIMEOUT_FALLBACK });
-        }
-      }, TURN_TIMEOUT_MS);
-      this.pending = { parts: [], resolve, reject, timer };
+      const timer = setTimeout(() => this.onTurnTimeout(timer), TURN_TIMEOUT_MS);
+      this.pending = { parts: [], resolve, reject, timer, timedOut: false };
       try {
         this.writeUserLine(outbound);
       } catch (err) {
@@ -884,8 +879,8 @@ export class ConciergeSession {
       this.log.debug("concierge process exited during rotation (expected)", { code });
       return;
     }
-    // A superseded child (timeout recycle, stop, already replaced) — its exit is not ours, and
-    // clearing `this.child` here would tear down the CURRENT process (issue #24).
+    // A superseded child (an explicit recycle, stop, already replaced) — its exit is not ours,
+    // and clearing `this.child` here would tear down the CURRENT process (issue #24).
     if (this.child !== exited) {
       this.log.debug("superseded concierge child exited (ignored)", { code });
       return;
@@ -1025,6 +1020,19 @@ export class ConciergeSession {
     }
   }
 
+  /**
+   * The normal deadline is deliberately soft: stream-json has no safe way to cancel one turn
+   * while retaining the same child for the next one. Keep its pending boundary and stdout reader
+   * alive so the model's completed answer, rather than filler, is what reaches the person.
+   */
+  private onTurnTimeout(timer: ReturnType<typeof setTimeout>): void {
+    if (!this.pending || this.pending.timer !== timer) return;
+    this.pending.timedOut = true;
+    this.log.warn("concierge turn exceeded soft timeout; awaiting late result", {
+      sessionId: this.sessionId,
+    });
+  }
+
   private onResult(result: Record<string, unknown>): void {
     this.consecutiveCrashes = 0; // a completed turn = the child is healthy again
     const p = this.pending;
@@ -1042,7 +1050,13 @@ export class ConciergeSession {
       return;
     }
     if (isMentionClaim(this.currentMeta)) this.currentMeta.turnSucceeded = true;
-    p.resolve(output);
+    // Never manufacture a substitute answer: this is the structured result the model actually
+    // finished, only framed so the person understands why it arrived after the soft deadline.
+    p.resolve(
+      p.timedOut && output.decision === "send"
+        ? { decision: "send", message: `${LATE_TURN_FRAME}\n\n${output.message}` }
+        : output,
+    );
   }
 
   /**
@@ -3492,15 +3506,34 @@ export class Concierge {
       }
     }
 
+    let progressAckTimer: ReturnType<typeof setTimeout> | null = null;
+    let awaitingAnswer = false;
     try {
       const turn = await this.buildTurn(m, content, workspace, (watermark) => {
         mention.contextWatermark = watermark;
       });
       // The mention rides as the turn's meta so CLI replies correlate to THIS turn (issue #24);
       // person turns take PRIORITY over queued ticket-update turns (issue #25).
-      const output = await this.pool.ask(m.channelId, turn, mention, { priority: true });
+      const answer = this.pool.ask(m.channelId, turn, mention, { priority: true });
+      awaitingAnswer = true;
+      // Unlike the fast ack above, this covers the ordinary first turn in an otherwise idle
+      // channel. It is deliberately daemon-authored: waiting feedback should not cost another
+      // model turn. A model reply already sent through the CLI is itself an acknowledgement.
+      progressAckTimer = setTimeout(() => {
+        if (!awaitingAnswer || mention.repliedViaCli) return;
+        void this.gateway
+          .post(m.channelId, TURN_PROGRESS_ACK_TEXT, {
+            replyToMessageId: m.messageId,
+            replyToUserId: m.userId,
+          })
+          .catch(() => undefined);
+      }, TURN_PROGRESS_ACK_MS);
+      const output = await answer;
+      awaitingAnswer = false;
+      clearTimeout(progressAckTimer);
+      progressAckTimer = null;
       // Reading the shared transcript is non-mutating. Commit its cursor only after a valid model
-      // result; rejected/queued/timed-out turns leave it untouched for the next attempt.
+      // result; rejected turns leave it untouched for the next attempt.
       if (mention.contextWatermark && mention.turnSucceeded !== false) {
         const mark = mention.contextWatermark;
         this.channelStore?.markSeen(mark.channelId, mark.sessionId, mark.lastMessageId);
@@ -3532,6 +3565,8 @@ export class Concierge {
         })
         .catch(() => undefined);
     } finally {
+      awaitingAnswer = false;
+      if (progressAckTimer) clearTimeout(progressAckTimer);
       if (this.activeMentions.get(m.channelId) === mention) this.activeMentions.delete(m.channelId);
     }
   }

@@ -10,7 +10,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Concierge, ConciergeSession } from "./index.ts";
+import { Concierge, ConciergeSession, TURN_PROGRESS_ACK_MS } from "./index.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
 
@@ -55,6 +55,7 @@ interface SessionGuts {
   loadSessionState(): { sessionId: string; handoff: string } | null;
   consumeSeed(message: unknown): unknown;
   handleLine(line: string, from: unknown): void;
+  onTurnTimeout(timer: ReturnType<typeof setTimeout>): void;
   onExit(code: number, exited: unknown): Promise<void>;
 }
 
@@ -112,11 +113,54 @@ test("output from a superseded child never touches the current turn", () => {
     type: "assistant",
     message: { content: [{ type: "text", text: "tail of the PREVIOUS answer" }] },
   });
-  s.handleLine(staleLine, oldChild); // late output from the timed-out child
+  s.handleLine(staleLine, oldChild); // late output from an explicitly recycled child
   expect(s.pending!.parts).toHaveLength(0);
 
   s.handleLine(staleLine.replace("PREVIOUS", "CURRENT"), newChild);
   expect(s.pending!.parts).toEqual(["tail of the CURRENT answer"]);
+});
+
+test("a soft timeout keeps the child alive and delivers its late real result", () => {
+  const s = makeSession() as unknown as {
+    child: unknown;
+    pending: {
+      parts: string[];
+      timer: ReturnType<typeof setTimeout>;
+      timedOut: boolean;
+      resolve: (output: unknown) => void;
+      reject: (error: Error) => void;
+    } | null;
+    onTurnTimeout(timer: ReturnType<typeof setTimeout>): void;
+    handleLine(line: string, from: unknown): void;
+  };
+  let killed = false;
+  const child = { kill() { killed = true; } };
+  let delivered: unknown;
+  const timer = setTimeout(() => undefined, 60_000);
+  s.child = child;
+  s.pending = {
+    parts: [],
+    timer,
+    timedOut: false,
+    resolve: (output) => { delivered = output; },
+    reject: () => {},
+  };
+
+  s.onTurnTimeout(timer);
+  expect(killed).toBeFalse();
+  expect(s.child).toBe(child);
+  expect(s.pending?.timedOut).toBe(true);
+
+  s.handleLine(JSON.stringify({
+    type: "result",
+    structured_output: { decision: "send", message: "the real answer" },
+  }), child);
+
+  expect(delivered).toEqual({
+    decision: "send",
+    message: "Sorry, that took a while —\n\nthe real answer",
+  });
+  expect(s.pending).toBeNull();
 });
 
 test("reasoning before a pass decision is never promoted to Discord output", () => {
@@ -231,6 +275,44 @@ test("rapid mentions behind a busy session get ONE fast ack, not one bubble each
   // The throttle is per channel — a busy OTHER channel still gets its own ack.
   await concierge.onMessage(msg("chan-2", "m-4"));
   expect(posts.filter((p) => p.text.includes("you're next"))).toHaveLength(2);
+});
+
+test("a slow first turn gets a progress ack without needing a busy channel", async () => {
+  let startAsk!: () => void;
+  let resolveAsk!: (output: { decision: "send"; message: string }) => void;
+  const started = new Promise<void>((resolve) => { startAsk = resolve; });
+  const answer = new Promise<{ decision: "send"; message: string }>((resolve) => { resolveAsk = resolve; });
+  const { concierge, posts } = conciergeHarness({
+    ask: async () => {
+      startAsk();
+      return await answer;
+    },
+    queueDepth: () => 0,
+    getCurrentMeta: () => null,
+  });
+
+  const realSetTimeout = globalThis.setTimeout;
+  let fireProgressAck: (() => void) | null = null;
+  globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+    if (delay === TURN_PROGRESS_ACK_MS && typeof handler === "function") {
+      fireProgressAck = () => handler(...args);
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return realSetTimeout(handler, delay, ...args);
+  }) as typeof setTimeout;
+  try {
+    const handling = concierge.onMessage(msg("chan-idle", "m-slow"));
+    await started;
+    expect(fireProgressAck).not.toBeNull();
+    fireProgressAck!();
+    await Promise.resolve();
+    expect(posts).toEqual([{ channelId: "chan-idle", text: "Still working on this — I haven't forgotten you.", replyTo: "m-slow" }]);
+
+    resolveAsk({ decision: "send", message: "the eventual answer" });
+    await handling;
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
 });
 
 test("no fast ack when the session is idle", async () => {
