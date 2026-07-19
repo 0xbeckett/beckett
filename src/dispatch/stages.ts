@@ -85,6 +85,10 @@ export function defaultEffortFor(harness: HarnessSpec["harness"], config: Config
       return config.harness.codex.default_effort;
     case "pi":
       return config.harness.pi.thinking;
+    // An out-of-tree registered harness carries no bespoke `[harness.<name>]` config block; fall
+    // back to claude's default effort (the backbone harness) rather than failing the cast.
+    default:
+      return config.harness.claude.default_effort;
   }
 }
 

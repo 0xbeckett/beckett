@@ -23,26 +23,57 @@ export { PiDriver } from "./pi.ts";
 /** Builds a fresh driver instance (one driver == one harness process). */
 export type DriverFactory = (config: Config, logger?: Logger) => HarnessDriver;
 
+/** The common shape of the per-driver preflights (binary, version, auth artifact). */
+export interface PreflightResult {
+  ok: boolean;
+  problems: string[];
+}
+
+/** A driver's static "is this harness usable RIGHT NOW?" probe (issue #17). */
+export type DriverPreflight = (config: Config) => Promise<PreflightResult>;
+
 /**
- * The harness → driver-factory table. `claude` (live-steerable stream), `codex` (one-shot
- * `codex exec`, steer-via-resume), and `pi` (one-shot `pi -p`, steer-via-resume — the malleable
- * codex replacement) are all registered so the dispatcher can cast any of them per stage
- * (Spec 02 §5; docs/V3.md §7).
+ * Everything the control plane needs to know about ONE harness — how to build its driver AND how
+ * to preflight it — kept in a single entry so the two never drift. Adding a harness (including an
+ * out-of-tree one) is one {@link REGISTRY} row; nothing else in the tree hand-enumerates the trio.
  */
-const FACTORIES: Partial<Record<Harness, DriverFactory>> = {
-  claude: (config, logger) => new ClaudeDriver(config, logger),
-  codex: (config, logger) => new CodexDriver(config, logger),
-  pi: (config, logger) => new PiDriver(config, logger),
+export interface DriverRegistration {
+  /** Construct a fresh driver process wrapper. */
+  create: DriverFactory;
+  /** Static health probe consulted before casting (and by `beckett doctor`). */
+  preflight: DriverPreflight;
+}
+
+/**
+ * The harness → registration table — the SINGLE SOURCE OF TRUTH for which harnesses exist.
+ * `claude` (live-steerable stream), `codex` (one-shot `codex exec`, steer-via-resume), and `pi`
+ * (one-shot `pi -p`, steer-via-resume — the malleable codex replacement) are all registered so the
+ * dispatcher can cast any of them per stage (Spec 02 §5; docs/V3.md §7). Both the factory and the
+ * preflight live in the same row: no separate hand-synced switch to keep aligned.
+ */
+const REGISTRY: Record<string, DriverRegistration> = {
+  claude: { create: (config, logger) => new ClaudeDriver(config, logger), preflight: claudePreflight },
+  codex: { create: (config, logger) => new CodexDriver(config, logger), preflight: codexPreflight },
+  pi: { create: (config, logger) => new PiDriver(config, logger), preflight: piPreflight },
 };
 
 /** Whether a driver is registered for `harness`. */
 export function hasDriver(harness: Harness): boolean {
-  return harness in FACTORIES && FACTORIES[harness] !== undefined;
+  return harness in REGISTRY;
+}
+
+/**
+ * Whether `name` is a registered harness — the registry-driven replacement for a hardcoded
+ * `claude|codex|pi` enum. Cast/preset validation calls this so a newly-registered driver becomes
+ * castable with no second edit.
+ */
+export function isRegisteredHarness(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(REGISTRY, name);
 }
 
 /** The set of harnesses with a usable driver in this build. */
 export function availableHarnesses(): Harness[] {
-  return (Object.keys(FACTORIES) as Harness[]).filter((h) => FACTORIES[h] !== undefined);
+  return Object.keys(REGISTRY);
 }
 
 /**
@@ -50,14 +81,14 @@ export function availableHarnesses(): Harness[] {
  * caller escalates instead of silently doing nothing.
  */
 export function getDriverFactory(harness: Harness): DriverFactory {
-  const factory = FACTORIES[harness];
-  if (!factory) {
+  const registration = REGISTRY[harness];
+  if (!registration) {
     throw new Error(
       `beckett: no driver registered for harness "${harness}" ` +
         `(available: ${availableHarnesses().join(", ") || "none"})`,
     );
   }
-  return factory;
+  return registration.create;
 }
 
 /** Construct a driver for the given harness. Convenience over {@link getDriverFactory}. */
@@ -70,24 +101,19 @@ export function createDriver(
 }
 
 // =======================================================================================
-// Preflight registry (issue #17) — "is this harness usable RIGHT NOW?"
+// Preflight (issue #17) — "is this harness usable RIGHT NOW?"
 // =======================================================================================
-
-/** The common shape of the per-driver preflights (binary, version, auth artifact). */
-export interface PreflightResult {
-  ok: boolean;
-  problems: string[];
-}
 
 const PREFLIGHT_TTL_MS = 5 * 60_000;
 const preflightCache = new Map<Harness, { at: number; result: PreflightResult }>();
 
 /**
  * Run (or serve from a ~5-min cache) the harness's static preflight: binary resolves, reports a
- * version, and its auth artifact exists. The dispatcher consults this BEFORE casting a worker so
- * a dead harness produces one clear "unavailable: <reason>" substitution instead of a wedged
- * ticket; `beckett doctor` runs the same checks. The cache keeps the per-spawn cost at zero
- * while still noticing a fixed login within minutes.
+ * version, and its auth artifact exists. The concrete probe comes straight off the {@link REGISTRY}
+ * row for the harness — there is no separate switch to keep in sync. The dispatcher consults this
+ * BEFORE casting a worker so a dead harness produces one clear "unavailable: <reason>" substitution
+ * instead of a wedged ticket; `beckett doctor` runs the same checks. The cache keeps the per-spawn
+ * cost at zero while still noticing a fixed login within minutes.
  */
 export async function preflightFor(
   harness: Harness,
@@ -97,23 +123,16 @@ export async function preflightFor(
   const cached = preflightCache.get(harness);
   if (!opts.force && cached && Date.now() - cached.at < PREFLIGHT_TTL_MS) return cached.result;
 
+  const registration = REGISTRY[harness];
   let result: PreflightResult;
-  try {
-    switch (harness) {
-      case "claude":
-        result = await claudePreflight(config);
-        break;
-      case "codex":
-        result = await codexPreflight(config);
-        break;
-      case "pi":
-        result = await piPreflight(config);
-        break;
-      default:
-        result = { ok: false, problems: [`no driver registered for harness "${harness}"`] };
+  if (!registration) {
+    result = { ok: false, problems: [`no driver registered for harness "${harness}"`] };
+  } else {
+    try {
+      result = await registration.preflight(config);
+    } catch (err) {
+      result = { ok: false, problems: [`preflight crashed: ${(err as Error).message}`] };
     }
-  } catch (err) {
-    result = { ok: false, problems: [`preflight crashed: ${(err as Error).message}`] };
   }
   preflightCache.set(harness, { at: Date.now(), result });
   return result;
