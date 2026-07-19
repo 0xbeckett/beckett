@@ -20,6 +20,46 @@ import type { Logger } from "../types.ts";
 /** Cloudflare API v4 base. All requests are made against this host. */
 const CF_API_BASE = "https://api.cloudflare.com/client/v4";
 
+/**
+ * The apex used in operator-facing prose before (or without) a live zone lookup. It is this
+ * install's zone, so behavior here is unchanged; a fork with a different `CLOUDFLARE_ZONE_ID`
+ * gets its real apex once {@link warmApexDomain} resolves the zone from the API.
+ */
+export const DEFAULT_APEX_DOMAIN = "0xbeckett.me";
+
+/** Process-wide memo of the resolved apex (from the zone) and its in-flight lookup. */
+let cachedApexDomain: string | null = null;
+let apexResolution: Promise<string> | null = null;
+
+/**
+ * The zone's apex domain for use in synchronous operator-facing prose (help text, the
+ * deploy-durability recipe). Returns the resolved zone name once {@link warmApexDomain} has
+ * completed, else {@link DEFAULT_APEX_DOMAIN}. Sync so it drops into static strings.
+ */
+export function apexDomain(): string {
+  return cachedApexDomain ?? DEFAULT_APEX_DOMAIN;
+}
+
+/**
+ * Resolve the zone's apex once per process from the Cloudflare API and cache it, so that
+ * {@link apexDomain} can name the real domain on a fork without a per-call network round-trip.
+ * Missing creds or any API error → the default apex (offline-safe; behavior unchanged for this
+ * install, whose zone IS the default). Memoized: at most one lookup per process.
+ */
+export function warmApexDomain(opts: { token?: string; zoneId?: string; logger: Logger }): Promise<string> {
+  if (cachedApexDomain) return Promise.resolve(cachedApexDomain);
+  if (apexResolution) return apexResolution;
+  const token = opts.token ?? "";
+  const zoneId = opts.zoneId ?? "";
+  if (!token || !zoneId) return Promise.resolve(DEFAULT_APEX_DOMAIN);
+  const dns = new CfDns({ token, zoneId, logger: opts.logger });
+  apexResolution = dns
+    .zoneName()
+    .then((name) => (cachedApexDomain = name))
+    .catch(() => DEFAULT_APEX_DOMAIN);
+  return apexResolution;
+}
+
 /** A single DNS record as returned by the Cloudflare API (the fields we care about). */
 export interface CfDnsRecord {
   id: string;
