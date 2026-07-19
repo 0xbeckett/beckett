@@ -339,6 +339,15 @@ const FAST_ACK_TEXT = "On it — I'm mid-task right now, you're next in line.";
 /** One fast ack per channel per this window — rapid mentions get one bubble, not one each (issue #128). */
 const FAST_ACK_DEDUPE_MS = 60_000;
 
+/**
+ * Hard cap on a model-authored early ack (`beckett discord ack`, issue #122). An ack is ONE short
+ * "digging in" line the model emits at the top of a slow turn so first-visible-text latency is
+ * decoupled from the 15–90s of tool work behind it — never a second answer channel. Truncating past
+ * this keeps the schema-validated terminal `message` the only path a full, reasoning-free answer can
+ * take, so the structured-output safety boundary is preserved even mid-turn.
+ */
+export const EARLY_ACK_MAX_CHARS = 240;
+
 /** Prompt that asks the dying session for a compact handoff before we drop its transcript. */
 const HANDOFF_PROMPT =
   "SYSTEM: You are preparing a compact handoff for another assistant.\n" +
@@ -3147,6 +3156,57 @@ export class Concierge {
                     // after filing) must NOT replace it — dedupe and correlation key on the first.
                     active.ackMessageId ??= messageId;
                   }
+                  return { ok: true, data: { messageId } };
+                } catch (err) {
+                  return { ok: false, error: (err as Error).message };
+                }
+              });
+            },
+          },
+          {
+            name: "discord.ack",
+            summary: "post an immediate one-line progress ack WITHOUT claiming the turn (issue #122)",
+            handle: async (req) => {
+              // The early-ack channel (issue #122): a slow @mention/DM turn (Opus + tool calls) can
+              // sit 15–90s behind only a typing indicator. This lets the model emit ONE short line the
+              // instant it starts working, so first-visible-text latency is decoupled from full-turn
+              // latency. Unlike discord.reply it deliberately does NOT claim the turn — the real,
+              // schema-validated answer still posts through the single terminal structured-output
+              // boundary, so no internal reasoning can leak and the person still gets the full reply.
+              const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
+              const raw = typeof req.args.text === "string" ? req.args.text.trim() : "";
+              if (!channelId || !raw) {
+                return { ok: false, error: "discord.ack needs channelId and text" };
+              }
+              // Cap it to one short line: an ack is a "digging in" signal, never a delivery vehicle.
+              // Truncating (rather than posting the whole blob) keeps the terminal `message` the ONLY
+              // full-answer path, so the ack can't be used to smuggle reasoning past the schema boundary.
+              const text =
+                raw.length > EARLY_ACK_MAX_CHARS ? `${raw.slice(0, EARLY_ACK_MAX_CHARS - 1).trimEnd()}…` : raw;
+              // Correlate to the turn EXECUTING on the issuing session (§9.3), exactly like discord.reply:
+              // a directed ack lands as a native reply to the message it's answering; a cross-channel or
+              // ambient ack posts plainly (replying-to un-addressed chatter reads as surveillance, §4.4).
+              const active = this.issuerMention(req.token, channelId);
+              const claimsActiveTurn = !!active && active.channelId === channelId;
+              if (claimsActiveTurn && active!.declined) {
+                // A declined turn posts nothing — an "ack" must not sneak output out either (mirrors
+                // discord.reply's terminal-decline guard).
+                return { ok: false, error: "you declined this turn — it posts nothing; an ack is not allowed" };
+              }
+              return this.dedupeDiscordReply(JSON.stringify(["ack", channelId, text]), async () => {
+                try {
+                  const opts = {
+                    // One atomic message: `singleMessage` bypasses the human-cadence split and its 2–4s
+                    // inter-bubble gaps, so the humanizer never gates this first token (issue #122).
+                    singleMessage: true,
+                    ...(claimsActiveTurn && !active!.ambient
+                      ? { replyToMessageId: active!.messageId, replyToUserId: active!.userId }
+                      : {}),
+                  };
+                  const messageId = await this.gateway.post(channelId, text, opts);
+                  // Deliberately NOT recorded into the shared context and NOT marked repliedViaCli: an ack
+                  // is a transient progress signal (like the daemon's fast/progress acks), so the turn's
+                  // real answer still flows through the terminal structured-output boundary untouched.
                   return { ok: true, data: { messageId } };
                 } catch (err) {
                   return { ok: false, error: (err as Error).message };
