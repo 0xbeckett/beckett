@@ -198,7 +198,8 @@ export class LocalMoss {
     }
     if (!this.dirty) return this.persistChain;
     this.dirty = false;
-    this.persistChain = this.persistChain.then(() => this.persist());
+    // A failed best-effort timer write must not poison later explicit flushes/syncs.
+    this.persistChain = this.persistChain.catch(() => {}).then(() => this.persist());
     return this.persistChain;
   }
 
