@@ -2193,7 +2193,7 @@ export class Concierge {
     this.workspaces.registerThread(t);
   }
 
-  /** Bring the session up first (fail fast on a bad launch), then go live on Discord. */
+  /** Start independent prerequisites concurrently; serve only after each is ready. */
   async start(): Promise<void> {
     this.stopping = false;
     this.seedIdentities();
@@ -2202,18 +2202,26 @@ export class Concierge {
     // Fail fast on a bad launch (auth/bin/config) by bringing up the dedicated system session
     // eagerly; real channel sessions come up lazily on their first human turn.
     this.migrateLegacySessionState(SYSTEM_SCOPE);
-    await this.pool.warm(SYSTEM_SCOPE);
+    // Register intake before Discord can become ready. Its login and the system Claude launch do
+    // not depend on each other. Workspace recovery does require Discord, so chain it from the
+    // gateway readiness promise; it can still overlap any remaining Claude warm-up.
     this.gateway.onMessage((m) => this.onMessage(m));
     // Guarded: injected partial test gateways may predate the thread-create surface.
     if (typeof this.gateway.onThreadCreate === "function") {
       this.gateway.onThreadCreate((t) => this.onThreadCreated(t));
     }
     this.gateway.onCommand?.((command) => this.onCommand(command));
-    await this.gateway.start();
-    await this.reconcileDowntimeMessages();
-    void this.deleteStaleBrowserQuestions();
-    this.retryBrowserResults();
-    await this.restoreTaskWorkspaces();
+    const systemWarm = this.pool.warm(SYSTEM_SCOPE);
+    const gatewayReady = this.gateway.start();
+    const workspaceRecovery = gatewayReady.then(async () => {
+      await this.reconcileDowntimeMessages();
+      void this.deleteStaleBrowserQuestions();
+      this.retryBrowserResults();
+      await this.restoreTaskWorkspaces();
+    });
+    // The control bus is the serving boundary: do not expose it until the system session and all
+    // Discord-dependent recovery are ready.
+    await Promise.all([systemWarm, workspaceRecovery]);
     this.serveControlBus();
     // Announce the boot (with the live commit) once the gateway is up. Best-effort + non-blocking:
     // a failed post must never hold up — or crash — the daemon coming online.
