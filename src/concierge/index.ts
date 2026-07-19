@@ -2170,7 +2170,7 @@ export class Concierge {
   }
 
   /**
-   * The progress sink the dispatcher feeds worker events into (wired in `v4-main.ts`). Exposed as
+   * The progress sink the dispatcher feeds worker events into (wired in `src/shell/main.ts`). Exposed as
    * the narrow {@link ProgressSink} so the dispatcher can't reach the journal's read surface.
    */
   progressSink(): ProgressSink {
