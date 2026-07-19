@@ -41,6 +41,12 @@ test("the repo ships an empty bundled maintainer baseline", () => {
   expect(loadAccess(bundledMaintainersFile()).ids).toEqual(new Set());
 });
 
+test("runtime maintainer additions remain effective with the empty shipped baseline", () => {
+  const { runtime } = tmp();
+  writeFileSync(runtime, `${PEER}\n`, "utf8");
+  expect(loadMaintainers(runtime)).toEqual(new Set([PEER]));
+});
+
 test("membership is the union of the bundled seed and runtime additions", () => {
   const { runtime, bundled } = tmp();
   writeFileSync(runtime, `${PEER}\n`, "utf8");

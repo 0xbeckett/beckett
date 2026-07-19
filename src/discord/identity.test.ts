@@ -106,6 +106,18 @@ test("ensureSeeded leaves a fresh map empty without a configured owner", () => {
   }
 });
 
+test("ensureSeeded uses an abstract owner fallback when no name is configured", () => {
+  const oldName = process.env.DISCORD_OWNER_NAME;
+  delete process.env.DISCORD_OWNER_NAME;
+  try {
+    ensureSeeded(file, OWNER, undefined, 1000);
+    expect(getIdentity(file, OWNER)!.known_name).toBe("owner");
+  } finally {
+    if (oldName === undefined) delete process.env.DISCORD_OWNER_NAME;
+    else process.env.DISCORD_OWNER_NAME = oldName;
+  }
+});
+
 test("ensureSeeded derives the initial identity from the configured owner", () => {
   ensureSeeded(file, OWNER, "Owner Name", 1000);
   const owner = getIdentity(file, OWNER)!;

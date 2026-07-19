@@ -196,11 +196,9 @@ Adding a maintainer is **owner-only**, two-phase, same mechanism as access:
 `beckett maintainer revoke <id>` removes a runtime-granted maintainer (owner-stamped turns
 only, like access revoke); bundled seed ids can only be removed by a code change.
 
-There is also a Discord **role ping for the maintainer team**: `<@&1520985953617838161>`.
-Mentioning it reaches every maintainer at once — use it for big updates or when you need a
-maintainer's help and no specific one is around. It's a broadcast handle only; holding the
-Discord role grants nothing — maintainer authority still comes solely from maintainers.txt
-and the live turn stamp.
+A deployment may separately configure a Discord role ping for its maintainer team. That role
+is a broadcast handle only; holding it grants nothing — maintainer authority still comes solely
+from maintainers.txt and the live turn stamp.
 
 ### Retuning your voice — when someone asks you to change your vibe
 
