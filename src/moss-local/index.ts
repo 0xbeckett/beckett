@@ -61,6 +61,8 @@ export interface LocalMossOptions {
   dataDir?: string;
   /** Environment injection keeps the default data path deterministic in callers/tests. */
   env?: NodeJS.ProcessEnv;
+  /** Delay used to coalesce durable writes. Primarily useful for deterministic tests. */
+  persistenceDelayMs?: number;
 }
 
 interface PersistedDocuments {
@@ -129,8 +131,16 @@ export class LocalMoss {
   readonly documentsPath: string;
   private index: Index;
   private readonly documents = new Map<string, MossDocument>();
+  private readonly persistenceDelayMs: number;
+  private persistTimer?: ReturnType<typeof setTimeout>;
+  private persistChain: Promise<void> = Promise.resolve();
+  private dirty = false;
 
-  private constructor(indexName: string, dataDir: string) {
+  private constructor(indexName: string, dataDir: string, persistenceDelayMs: number) {
+    if (!Number.isFinite(persistenceDelayMs) || persistenceDelayMs < 0) {
+      throw new Error("Moss persistenceDelayMs must be a non-negative finite number");
+    }
+    this.persistenceDelayMs = persistenceDelayMs;
     this.indexName = indexName;
     this.dataDir = dataDir;
     this.indexPath = join(dataDir, `${indexName}.moss`);
@@ -142,7 +152,7 @@ export class LocalMoss {
     const indexName = options.indexName ?? "memory";
     assertIndexName(indexName);
     const dataDir = resolve(options.dataDir ?? join(resolveBeckettDir(options.env), "moss"));
-    const local = new LocalMoss(indexName, dataDir);
+    const local = new LocalMoss(indexName, dataDir, options.persistenceDelayMs ?? 50);
     await local.load();
     return local;
   }
@@ -151,7 +161,7 @@ export class LocalMoss {
     return this.index.docCount;
   }
 
-  /** Embed, upsert, build, and atomically persist local documents. No network activity occurs. */
+  /** Embed, upsert, and schedule an atomic durable write. No network activity occurs. */
   async upsert(input: readonly MossDocument[]): Promise<UpsertResult> {
     const latest = new Map<string, MossDocument>();
     for (const document of input) {
@@ -163,18 +173,33 @@ export class LocalMoss {
     const docs = [...latest.values()];
     const result = this.index.addDocuments(docs.map(nativeDocument), docs.map((document) => embedLocal(document.text)), { upsert: true });
     for (const document of docs) this.documents.set(document.id, document);
-    await this.persist();
+    this.schedulePersist();
     return { ...result, docCount: this.docCount };
   }
 
-  /** Delete documents by id, then atomically persist. Unknown ids are ignored. */
+  /** Delete documents by id, then schedule an atomic durable write. Unknown ids are ignored. */
   async delete(ids: readonly string[]): Promise<{ deleted: number; docCount: number }> {
     const targets = [...new Set(ids)].filter((id) => this.documents.has(id));
     if (targets.length === 0) return { deleted: 0, docCount: this.docCount };
     const deleted = this.index.deleteDocuments(targets);
     for (const id of targets) this.documents.delete(id);
-    await this.persist();
+    this.schedulePersist();
     return { deleted, docCount: this.docCount };
+  }
+
+  /**
+   * Force all pending changes to disk. Normal ingestion is coalesced for 50ms so a burst of
+   * single-document graph updates serializes the index once rather than once per document.
+   */
+  async flush(): Promise<void> {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    if (!this.dirty) return this.persistChain;
+    this.dirty = false;
+    this.persistChain = this.persistChain.then(() => this.persist());
+    return this.persistChain;
   }
 
   /** All documents currently in the index (defensive copies, typed metadata preserved). */
@@ -222,6 +247,17 @@ export class LocalMoss {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
     }
+  }
+
+  private schedulePersist(): void {
+    this.dirty = true;
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      // The cache is rebuilt from markdown on a later recall if a process dies before this
+      // best-effort deferred write; queries use the already-mutated in-memory index meanwhile.
+      void this.flush();
+    }, this.persistenceDelayMs);
   }
 
   private async persist(): Promise<void> {

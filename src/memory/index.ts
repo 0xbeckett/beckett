@@ -246,13 +246,14 @@ export class MemoryStore implements Memory {
       }
       if (!text.trim()) return undefined; // filter-only recall — nothing to rank
       const scores = mossScores(moss, text);
-      // Moss's hybrid rank remains the primary score. A small, normalized lexical component
-      // restores the existing field weighting (name/description outrank incidental body text)
-      // when otherwise-close hybrid hits compete. It is a rank sharpener, not a second
-      // retrieval path: `mossScores` has already applied Moss's keyword-match floor.
-      const stats = corpusStats(g.nodes.values());
+      // Moss's hybrid rank remains primary. Keep the 0.025 lexical sharpener inside Moss's
+      // keyword-matched set: scoring every graph node was a second full-corpus ranking pass.
+      // Its normalization can therefore differ from the old corpus-wide sharpener, but its
+      // bounded contribution limits any resulting score delta to <= 0.025.
+      const matchedNodes = [...g.nodes.values()].filter((node) => scores.has(node.name));
+      const stats = corpusStats(matchedNodes);
       const lexicalScores = new Map(
-        [...g.nodes.values()].map((node) => [node.name, scoreNode(text, node, stats)]),
+        matchedNodes.map((node) => [node.name, scoreNode(text, node, stats)]),
       );
       const lexicalMax = Math.max(...lexicalScores.values(), 1);
       return (node) =>

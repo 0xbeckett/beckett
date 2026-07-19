@@ -6,7 +6,7 @@
 
 - The exact `@moss-dev/moss-core@0.8.7` N-API core is pinned in `package.json`/`bun.lock`. The adapter uses only its in-process `Index` primitive (hybrid dense + keyword retrieval); it never constructs `MossClient`, `IndexManager`, or `ManageClient`, which are the Cloud-facing APIs.
 - `beckett-local-hash-v1` is a deterministic feature-hashing sentence encoder shipped in [`src/moss-local/embedding.ts`](../src/moss-local/embedding.ts). It runs in-process, has no fetch/HTTP dependency, and needs no model download or API key. Its small semantic lexicon plus character features provides offline semantic matching for agent memory terms.
-- Each index is durable under `$BECKETT_DIR/moss` (default: `~/.beckett/moss`) as `<name>.moss` (Moss core binary index) and `<name>.docs.json` (original typed metadata). `upsert` atomically replaces both local files and `openLocalMoss` reloads them.
+- Each index is durable under `$BECKETT_DIR/moss` (default: `~/.beckett/moss`) as `<name>.moss` (Moss core binary index) and `<name>.docs.json` (original typed metadata). Rapid `upsert`/`delete` calls coalesce their full atomic replacement into one write after 50ms; use `await moss.flush()` when a caller needs it durable immediately. `openLocalMoss` reloads both files.
 
 The one-time `bun install` fetches the pinned native package as normal dependency installation. It is not a runtime service or model download. After installation, ingestion and query have no network path. The smoke test replaces `fetch` with a throwing function while it opens, ingests, queries, and reloads an index.
 
@@ -47,9 +47,11 @@ const result = moss.query("how do I ship it?", { project: "beckett" });
   `<memoryDir>/.moss/` (diff-synced from the markdown tree on every recall/remember/maintain,
   which also migrates a pre-moss store on first contact) and serves `beckett recall`'s ranking
   through `LocalMoss.query`: the keyword arm (`semanticWeight: 0`) decides which nodes match,
-  the hybrid arm ranks them. Visibility scoping is enforced in `src/memory/index.ts`
-  (`recallOver`), never here — the index holds scoped documents and must not be treated as an
-  access boundary. Quality/latency numbers vs the pre-moss lexical baseline:
+  and a hybrid query capped to that matched-set size ranks them. The final field-aware lexical
+  sharpener also scores only that set. This optimization may change a recall score by at most
+  0.025 (the sharpener's documented weight); visibility scoping is enforced in
+  `src/memory/index.ts` (`recallOver`), never here — the index holds scoped documents and must
+  not be treated as an access boundary. Quality/latency numbers vs the pre-moss lexical baseline:
   [`docs/recall-moss-benchmark.md`](./recall-moss-benchmark.md) (`bun run memory:bench`).
 
 ## Attribution

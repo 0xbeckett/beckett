@@ -23,7 +23,9 @@
  * The keyword arm (semanticWeight 0) returns only documents with actual lexical evidence
  * and is empty for nonsense. So: the keyword arm decides WHICH nodes match (the old
  * `scoreNode > 0` floor), the hybrid arm decides their ORDER (dense concepts + n-grams
- * sharpen ranking within the matched set). Both queries are answered by Moss.
+ * sharpen ranking within the matched set). Both queries are answered by Moss. The hybrid
+ * query is capped to that set's size, and the later lexical sharpener is likewise restricted
+ * to it; this intentionally permits at most its 0.025 bounded contribution to change.
  */
 
 import { createHash } from "node:crypto";
@@ -119,7 +121,12 @@ export function mossScores(moss: LocalMoss, text: string): Map<string, number> {
     moss.query(query, undefined, { topK, semanticWeight: 0 }).docs.map((d) => d.id),
   );
   if (matched.size === 0) return scores;
-  for (const hit of moss.query(query, undefined, { topK, semanticWeight: RANKING_SEMANTIC_WEIGHT }).docs) {
+  // There can be no more useful hybrid hits than keyword matches. This avoids asking Moss
+  // to materialize/rank the rest of the corpus just so it can be filtered below.
+  for (const hit of moss.query(query, undefined, {
+    topK: matched.size,
+    semanticWeight: RANKING_SEMANTIC_WEIGHT,
+  }).docs) {
     if (matched.has(hit.id)) scores.set(hit.id, hit.score);
   }
   return scores;
