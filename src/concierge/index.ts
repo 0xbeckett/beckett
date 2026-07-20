@@ -68,8 +68,15 @@ import { DISCORD_TURN_OUTPUT_SCHEMA, parseDiscordTurnOutput, type DiscordTurnOut
 import { classify, loadAccess, resolvePending, ACCESS_CAP, type AccessLevel } from "../discord/access.ts";
 import { loadMaintainers, resolveMaintainerPending } from "../discord/maintainers.ts";
 import { childEnv as strippedChildEnv } from "../env.ts";
-import type { QuickQuestion, QuickRun, QuickRunner } from "../quick/index.ts";
+import type { QuickRun, QuickRunner } from "../quick/index.ts";
 import type { BrowserRuntime } from "../browser/runtime.ts";
+import {
+  redactSecretText,
+  redactSecretValues,
+  type BrowserAgent,
+  type BrowserAgentQuestion,
+  type BrowserAgentRun,
+} from "../browser/agent.ts";
 import { BROWSER_QUESTION_SUFFIX } from "../browser/question-message.ts";
 import {
   createAmbientCoordinator,
@@ -180,15 +187,6 @@ interface BrowserQuestionRecord {
   deletedAt?: number;
 }
 
-interface BrowserResultEnvelope {
-  runId: string;
-  channelId: string;
-  state: "done" | "error" | "timeout";
-  result: string;
-  proofFiles: string[];
-}
-
-const BROWSER_RESULT_RETRY_MS = 1_000;
 const BROWSER_QUESTION_MAX_RECORDS = 1_000;
 const BROWSER_DELETED_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60_000;
 const DISCORD_SINGLE_MESSAGE_CHARS = 2_000;
@@ -1527,12 +1525,10 @@ export class Concierge {
   private quickRunner: QuickRunner | null = null;
   /** The daemon-owned persistent Chromium boundary used by the one-tool browser MCP bridge. */
   private browserRuntime: BrowserRuntime | null = null;
+  /** The dedicated background browser agent (issue #58); owns every browser/computer-use run. */
+  private browserAgent: BrowserAgent | null = null;
   /** Native Discord reply id -> parked browser run. Answers bypass shared chat context entirely. */
   private readonly pendingQuickQuestions = new Map<string, BrowserQuestionRecord>();
-  /** Durable minimal terminal-browser envelopes survive Discord outages and daemon restarts. */
-  private readonly pendingBrowserResults = new Map<string, BrowserResultEnvelope>();
-  private readonly browserResultDeliveries = new Map<string, Promise<void>>();
-  private browserResultRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private stopping = false;
   /**
    * Tracker read access for milestone enrichment (issue #21): the poller stops collecting comments
@@ -1813,6 +1809,11 @@ export class Concierge {
     this.browserRuntime = runtime;
   }
 
+  /** Wire the dedicated background browser agent (issue #58). See {@link browserAgent}. */
+  setBrowserAgent(agent: BrowserAgent): void {
+    this.browserAgent = agent;
+  }
+
   private browserQuestionsPath(): string {
     return join(buildPaths(this.config).beckettDir, "browser-questions.json");
   }
@@ -1904,106 +1905,6 @@ export class Concierge {
     }
   }
 
-  private browserResultsPath(): string {
-    return join(buildPaths(this.config).beckettDir, "browser-results.json");
-  }
-
-  private persistBrowserResults(): void {
-    const path = this.browserResultsPath();
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const temp = `${path}.${process.pid}.tmp`;
-    try {
-      writeFileSync(temp, JSON.stringify([...this.pendingBrowserResults.values()], null, 2) + "\n", { mode: 0o600 });
-      renameSync(temp, path);
-    } catch (error) {
-      try { unlinkSync(temp); } catch { /* absent */ }
-      this.log.warn("browser result outbox write failed", { error: String(error) });
-      throw error;
-    }
-  }
-
-  private loadBrowserResults(): void {
-    try {
-      const path = this.browserResultsPath();
-      if (!existsSync(path)) return;
-      const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-      if (!Array.isArray(parsed)) return;
-      for (const item of parsed) {
-        if (!item || typeof item !== "object") continue;
-        const value = item as Record<string, unknown>;
-        if (
-          typeof value.runId !== "string"
-          || typeof value.channelId !== "string"
-          || !["done", "error", "timeout"].includes(String(value.state))
-        ) continue;
-        this.pendingBrowserResults.set(value.runId, {
-          runId: value.runId,
-          channelId: value.channelId,
-          state: value.state as BrowserResultEnvelope["state"],
-          result: redactBrowserSecrets(typeof value.result === "string" ? value.result : ""),
-          proofFiles: Array.isArray(value.proofFiles)
-            ? value.proofFiles.filter((path): path is string => typeof path === "string")
-            : [],
-        });
-      }
-    } catch (error) {
-      this.log.warn("browser result outbox read failed", { error: String(error) });
-    }
-  }
-
-  private retryBrowserResults(): void {
-    if (this.stopping) return;
-    for (const runId of this.pendingBrowserResults.keys()) {
-      void this.deliverBrowserResult(runId).catch((error) => {
-        this.log.warn("browser result outbox delivery failed", { runId, error: String(error) });
-        this.scheduleBrowserResultRetry();
-      });
-    }
-  }
-
-  private scheduleBrowserResultRetry(): void {
-    if (this.stopping || this.browserResultRetryTimer || this.pendingBrowserResults.size === 0) return;
-    this.browserResultRetryTimer = setTimeout(() => {
-      this.browserResultRetryTimer = null;
-      this.retryBrowserResults();
-    }, BROWSER_RESULT_RETRY_MS);
-  }
-
-  private deliverBrowserResult(runId: string): Promise<void> {
-    const inFlight = this.browserResultDeliveries.get(runId);
-    if (inFlight) return inFlight;
-    const delivery = this.deliverBrowserResultOnce(runId)
-      .finally(() => this.browserResultDeliveries.delete(runId));
-    this.browserResultDeliveries.set(runId, delivery);
-    return delivery;
-  }
-
-  private async deliverBrowserResultOnce(runId: string): Promise<void> {
-    const run = this.pendingBrowserResults.get(runId);
-    if (!run) return;
-    // Never post a result that has not first reached the durable outbox.
-    this.persistBrowserResults();
-    const text = run.state === "done"
-      ? run.result || "Browser task completed."
-      : `I couldn't finish that browser task. ${run.result || `It ended with ${run.state}.`}`;
-    // Proof is part of a successful browser result, not optional decoration. If Discord rejects the
-    // attachment, leave the durable envelope and screenshot in place so the normal outbox retry can
-    // deliver them together rather than silently degrading success to an unverified text post.
-    const messageId = await this.gateway.post(run.channelId, text, {
-      ...(run.proofFiles.length > 0 ? { files: run.proofFiles } : {}),
-    });
-    this.recordBeckettPost(run.channelId, text, messageId);
-    this.pendingBrowserResults.delete(runId);
-    this.persistBrowserResults();
-    for (const proof of run.proofFiles) {
-      try {
-        unlinkSync(proof);
-      } catch {
-        // Uploaded or already absent.
-      }
-    }
-  }
-
   /**
    * Deliver a DETACHED quick run's result: the dispatching `beckett quick` call already
    * returned `{detached}`, so the report arrives as an update turn — the same shape as ticket
@@ -2011,38 +1912,6 @@ export class Concierge {
    * Public: v4-main wires it as the runner's `onDetachedResult`.
    */
   async notifyQuickResult(run: QuickRun): Promise<void> {
-    for (const [messageId, pending] of this.pendingQuickQuestions) {
-      if (pending.runId === run.runId) this.pendingQuickQuestions.set(messageId, { ...pending, stale: true });
-    }
-    try {
-      this.persistBrowserQuestions();
-    } catch {
-      // The previously durable live anchor becomes stale on restart even if this rewrite fails.
-    }
-    void this.deleteStaleBrowserQuestions();
-    // Browser work is already asynchronous and returns a trusted runner-owned screenshot. Posting
-    // directly avoids another model turn, guarantees the proof attachment, and is much faster.
-    if (run.agent === "computer-use") {
-      if (!run.channelId) {
-        this.log.warn("browser result dropped - no origin channel", { runId: run.runId });
-        return;
-      }
-      const state = run.state === "done" ? "done" : run.state === "timeout" ? "timeout" : "error";
-      this.pendingBrowserResults.set(run.runId, {
-        runId: run.runId,
-        channelId: run.channelId,
-        state,
-        result: redactBrowserSecrets(run.result ?? ""),
-        proofFiles: [...run.proofFiles],
-      });
-      try {
-        await this.deliverBrowserResult(run.runId);
-      } catch (error) {
-        this.scheduleBrowserResultRetry();
-        throw error;
-      }
-      return;
-    }
     const where = run.channelId
       ? `Relay the outcome to the person who asked — send a short note IN YOUR VOICE by running this from your Bash tool:\n` +
         `  beckett discord reply --channel ${run.channelId} "<your message>"\n` +
@@ -2058,8 +1927,46 @@ export class Concierge {
     void this.askUpdate(framed, `quick:${run.runId}`).catch(() => undefined);
   }
 
+  /**
+   * Report a terminal browser-agent run to the Concierge as an update turn (issue #58): the same
+   * SYSTEM-framed shape as ticket milestones, instructing the model to relay the outcome — and
+   * attach any proof screenshot — via `beckett discord reply` in its own voice. Throwing keeps
+   * the run undelivered in the agent's durable ledger, which retries and re-reports after a
+   * restart, so a dead browser run can never go silent.
+   */
+  async notifyBrowserOutcome(run: BrowserAgentRun): Promise<void> {
+    for (const [messageId, pending] of this.pendingQuickQuestions) {
+      if (pending.runId === run.runId) this.pendingQuickQuestions.set(messageId, { ...pending, stale: true });
+    }
+    try {
+      this.persistBrowserQuestions();
+    } catch {
+      // The previously durable live anchor becomes stale on restart even if this rewrite fails.
+    }
+    void this.deleteStaleBrowserQuestions();
+    const summary = redactBrowserSecrets(run.result ?? "(no report)");
+    const proofFlags = run.proofFiles
+      .filter((path) => existsSync(path))
+      .map((path) => `--file ${path} `)
+      .join("");
+    const proofNote = proofFlags
+      ? `A trusted proof screenshot is on disk; the reply command below already attaches it.\n`
+      : "";
+    const framed =
+      `SYSTEM (browser-agent outcome — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
+      `The background browser agent run ${run.runId} you dispatched earlier finished with state "${run.state}".\n` +
+      `Its report:\n\n${summary}\n\n${proofNote}` +
+      `Relay the outcome to the person who asked — send a short note IN YOUR VOICE by running this from your Bash tool:\n` +
+      `  beckett discord reply --channel ${run.channelId} ${proofFlags}"<your message>"\n` +
+      `Paraphrase the report — don't dump it raw. If it failed or timed out, say so plainly so they can retry or unblock it.`;
+    await this.askUpdate(framed, `browser:${run.runId}`);
+  }
+
   /** Post a blocking browser question with its trusted runtime screenshot and remember correlation. */
-  async notifyQuickQuestion(run: QuickRun, question: QuickQuestion): Promise<string> {
+  async notifyBrowserQuestion(
+    run: Pick<BrowserAgentRun, "runId" | "channelId" | "requesterId" | "state">,
+    question: BrowserAgentQuestion,
+  ): Promise<string> {
     if (!run.channelId) throw new Error("browser question has no origin channel");
     if (!run.requesterId) throw new Error("browser question has no authenticated requester");
     await this.deleteStaleBrowserQuestions();
@@ -2198,7 +2105,6 @@ export class Concierge {
     this.stopping = false;
     this.seedIdentities();
     this.loadStaleBrowserQuestions();
-    this.loadBrowserResults();
     // Fail fast on a bad launch (auth/bin/config) by bringing up the dedicated system session
     // eagerly; real channel sessions come up lazily on their first human turn.
     this.migrateLegacySessionState(SYSTEM_SCOPE);
@@ -2216,7 +2122,6 @@ export class Concierge {
     const workspaceRecovery = gatewayReady.then(async () => {
       await this.reconcileDowntimeMessages();
       void this.deleteStaleBrowserQuestions();
-      this.retryBrowserResults();
       await this.restoreTaskWorkspaces();
     });
     // The control bus is the serving boundary: do not expose it until the system session and all
@@ -2487,8 +2392,6 @@ export class Concierge {
 
   async stop(): Promise<void> {
     this.stopping = true;
-    if (this.browserResultRetryTimer) clearTimeout(this.browserResultRetryTimer);
-    this.browserResultRetryTimer = null;
     try {
       this.busStop?.();
     } catch {
@@ -2838,11 +2741,78 @@ export class Concierge {
               if (!runId || !controlToken || !code.trim()) {
                 return { ok: false, error: "browser.eval needs its run capability and JavaScript code" };
               }
+              // Keychain injection (issue #58): the browser agent's runs reference credentials as
+              // `secrets.<field>`; the values are resolved here — below the model's transcript —
+              // prefixed onto the script, and scrubbed from everything that flows back up.
+              let secretValues: string[] = [];
+              let injected = code;
               try {
-                return { ok: true, data: await this.browserRuntime.evaluate(runId, code, controlToken) };
+                const secrets = this.browserAgent ? await this.browserAgent.evalSecrets(runId) : null;
+                if (secrets && Object.keys(secrets).length > 0) {
+                  secretValues = Object.values(secrets);
+                  injected = `const secrets = Object.freeze(${JSON.stringify(secrets)});\n${code}`;
+                }
               } catch (error) {
-                return { ok: false, error: (error as Error).message };
+                return { ok: false, error: `keychain secrets are unavailable for this run: ${(error as Error).message}` };
               }
+              try {
+                const data = await this.browserRuntime.evaluate(runId, injected, controlToken);
+                return { ok: true, data: secretValues.length > 0 ? redactSecretValues(data, secretValues) : data };
+              } catch (error) {
+                const message = (error as Error).message;
+                return { ok: false, error: secretValues.length > 0 ? redactSecretText(message, secretValues) : message };
+              }
+            },
+          },
+          {
+            name: "browser.run",
+            summary: "dispatch a self-contained task to the background browser agent",
+            handle: async (req) => {
+              // The intake session NEVER blocks on browser work (issue #58): this dispatches and
+              // returns immediately. Questions surface as ledgered Discord anchors; the outcome
+              // comes back through {@link notifyBrowserOutcome} as an update turn.
+              if (!this.browserAgent) {
+                return { ok: false, error: "the browser agent is unavailable - not wired" };
+              }
+              const task = typeof req.args.task === "string" ? req.args.task.trim() : "";
+              const credsEntry = typeof req.args.credsEntry === "string" && req.args.credsEntry.trim()
+                ? req.args.credsEntry.trim()
+                : null;
+              const requestedChannelId =
+                typeof req.args.channelId === "string" && req.args.channelId.trim() ? req.args.channelId.trim() : null;
+              if (!task) {
+                return { ok: false, error: 'usage: beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]' };
+              }
+              // Resolve the ISSUING turn (token-exact; tokenless falls back to the sole live turn). The
+              // target channel deliberately plays no part in WHO authorized this — the channel-match
+              // check below then explains a browser run that tries to wander off to another channel.
+              const mention = this.issuerMention(req.token);
+              if (!mention || !mention.userId) {
+                return { ok: false, error: "browser tasks need an authenticated authorized request" };
+              }
+              if (requestedChannelId && requestedChannelId !== mention.channelId) {
+                return { ok: false, error: "browser tasks must return to the channel where the authorized request began" };
+              }
+              try {
+                const { runId } = await this.browserAgent.run(task, {
+                  channelId: mention.channelId,
+                  requesterId: mention.userId,
+                  credsEntry,
+                });
+                return { ok: true, data: { detached: true, runId } };
+              } catch (err) {
+                return { ok: false, error: (err as Error).message };
+              }
+            },
+          },
+          {
+            name: "browser.status",
+            summary: "list the browser agent's live and recent runs",
+            handle: async () => {
+              if (!this.browserAgent) {
+                return { ok: false, error: "the browser agent is unavailable - not wired" };
+              }
+              return { ok: true, data: this.browserAgent.stats() };
             },
           },
         ],
@@ -2871,23 +2841,9 @@ export class Concierge {
               if (!agent || !task) {
                 return { ok: false, error: 'usage: beckett quick <agent> "<task>" [--channel <id>]' };
               }
-              // Resolve the ISSUING turn (token-exact; tokenless falls back to the sole live turn). The
-              // target channel deliberately plays no part in WHO authorized this — the channel-match
-              // check below then explains a computer-use run that tries to wander off to another channel.
               const mention = this.issuerMention(req.token);
-              if (agent === "computer-use" && !mention) {
-                return { ok: false, error: "computer-use needs an authenticated authorized request" };
-              }
-              if (agent === "computer-use" && requestedChannelId && requestedChannelId !== mention!.channelId) {
-                return { ok: false, error: "computer-use must return to the channel where the authorized request began" };
-              }
-              const channelId = agent === "computer-use" ? mention!.channelId : requestedChannelId;
-              const requesterId = mention?.userId || null;
-              if (agent === "computer-use" && !requesterId) {
-                return { ok: false, error: "computer-use needs an authenticated authorized request" };
-              }
               try {
-                return { ok: true, data: await this.quickRunner.run(agent, task, channelId, requesterId) };
+                return { ok: true, data: await this.quickRunner.run(agent, task, requestedChannelId, mention?.userId || null) };
               } catch (err) {
                 return { ok: false, error: (err as Error).message };
               }
@@ -3762,8 +3718,8 @@ export class Concierge {
     ].filter(Boolean).join("\n");
     if (!answer) return true;
     try {
-      if (!this.quickRunner) throw new Error("quick runner is unavailable");
-      await this.quickRunner.resume(pending.runId, answer);
+      if (!this.browserAgent) throw new Error("the browser agent is unavailable");
+      await this.browserAgent.resume(pending.runId, answer);
     } catch (error) {
       const text = `I couldn't resume that browser run: ${(error as Error).message}`;
       await this.gateway.post(m.channelId, text).catch(() => undefined);

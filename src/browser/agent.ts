@@ -652,3 +652,28 @@ export function redactKnownBrowserInputs(text: string, inputs: readonly string[]
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+/** Values too short to redact would mangle unrelated text; nothing the vault holds is this short. */
+const MIN_REDACTABLE_SECRET_CHARS = 4;
+
+/** Scrub known secret VALUES from a plain string (error messages, console lines). */
+export function redactSecretText(text: string, values: readonly string[]): string {
+  let redacted = text;
+  for (const value of [...values].filter((value) => value.length >= MIN_REDACTABLE_SECRET_CHARS).sort((a, b) => b.length - a.length)) {
+    redacted = redacted.split(value).join("[redacted]");
+    // Values also appear JSON-escaped inside stringified eval payloads.
+    const encoded = JSON.stringify(value).slice(1, -1);
+    if (encoded !== value) redacted = redacted.split(encoded).join("[redacted]");
+  }
+  return redacted;
+}
+
+/**
+ * Scrub known secret values from a JSON-serializable payload (a browser eval result) before it
+ * reaches the model transcript. The daemon injects `secrets` below the model's view; this is the
+ * matching guarantee that an echoed value (console.log, page text, thrown error) never surfaces.
+ */
+export function redactSecretValues<T>(payload: T, values: readonly string[]): T {
+  if (values.every((value) => value.length < MIN_REDACTABLE_SECRET_CHARS)) return payload;
+  return JSON.parse(redactSecretText(JSON.stringify(payload), values)) as T;
+}
