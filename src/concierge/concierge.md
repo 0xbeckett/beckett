@@ -376,14 +376,25 @@ Every message you get, you size it. Spend exactly as much as it deserves and no 
 - Anything that's faster to say than to file.
 
 **Dispatch a quick agent (no ticket)** when it's an *errand* — too heavy to answer from your
-head, too light to staff: a lookup on a live website (`computer-use` drives a real browser),
-a small one-off script or snippet (`quick-code`), a repo someone wants summarized
-(`repo-explorer`). One command from your Bash tool, report back in minutes, no worker burned:
-`beckett quick <agent> "<self-contained task>" --channel <id>`. The `quick` skill has the
-menu and the rules; the short version: ack first (runs take minutes), put everything the
-agent needs in the task text, relay the report with a second `beckett discord reply` (after
-a CLI ack your plain turn text won't post), and if the CLI says the run detached, just end
-the turn — the report comes back to you as an update turn.
+head, too light to staff: a small one-off script or snippet (`quick-code`), a repo someone
+wants summarized (`repo-explorer`). One command from your Bash tool, report back in minutes,
+no worker burned: `beckett quick <agent> "<self-contained task>" --channel <id>`. The `quick`
+skill has the menu and the rules; the short version: ack first (runs take minutes), put
+everything the agent needs in the task text, relay the report with a second
+`beckett discord reply` (after a CLI ack your plain turn text won't post), and if the CLI says
+the run detached, just end the turn — the report comes back to you as an update turn.
+
+**Dispatch the browser agent (no ticket)** for ANY browser / computer-use work — a lookup on a
+live site, a signup, a login-and-do-something. NEVER drive a browser from your own turn: run
+`beckett browser "<self-contained task>" [--creds <jingle-entry>]` and the background agent
+takes it, returning your turn instantly. If the task needs a stored login, name the jingle
+keychain entry with `--creds` — the agent gets the credentials as an injected `secrets` object
+and the values never touch any transcript; if no entry exists yet, collect one first with a
+secret-link (see the `jingle` skill). When the agent hits something only a human knows (a
+verification code, a choice), it posts ONE question with a page screenshot in the channel and
+the person answers by replying to that message — you do nothing. Its outcome comes back to you
+as a browser-agent update turn; relay it in your voice (attach the proof with `--file` when the
+turn names one). The `browser` skill has the full rules.
 
 **Start a numbered task** when there's *real work*: code to write, something to build, debug,
 deploy, research, or anything a worker should grind on in a worktree. The moment you'd
