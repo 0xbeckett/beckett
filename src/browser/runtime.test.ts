@@ -214,7 +214,7 @@ test("page metadata and the complete evaluator result stay inside the configured
     await runtime.acquire({
       runId: "bounded",
       channelId: null,
-      artifactsDir: join(dir, "quick", "bounded", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "bounded", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     const result = await runtime.evaluate("bounded", `
@@ -243,7 +243,7 @@ test("persistent cookies, AI snapshots, parallel pages, proof, and warm state", 
       browser_eval_timeout_ms: 15_000,
     },
   });
-  const artifacts1 = join(dir, "quick", "run-one", "artifacts");
+  const artifacts1 = join(dir, "browser-agent", "run-one", "artifacts");
   const settings = browserHostSettings(config);
   const first = createLocalBrowserRuntime({ settings, logger: quietLog });
   try {
@@ -305,7 +305,7 @@ test("persistent cookies, AI snapshots, parallel pages, proof, and warm state", 
     await second.acquire({
       runId: "run-two",
       channelId: "chan",
-      artifactsDir: join(dir, "quick", "run-two", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "run-two", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     const restored = await second.evaluate("run-two", `
@@ -333,7 +333,7 @@ test("CDP cancels slow and concurrent downloads before they exceed the lease agg
   try {
     slowDownloadBytes = 0;
     slowDownloadCanceled = 0;
-    const slowArtifacts = join(dir, "quick", "slow-download", "artifacts");
+    const slowArtifacts = join(dir, "browser-agent", "slow-download", "artifacts");
     await runtime.acquire({
       runId: "slow-download",
       channelId: null,
@@ -352,7 +352,7 @@ test("CDP cancels slow and concurrent downloads before they exceed the lease agg
     expect(slowDownloadBytes).toBeLessThan(8 * 1024 * 1024);
     expect(readdirSync(slowArtifacts)).toEqual([]);
 
-    const concurrentArtifacts = join(dir, "quick", "concurrent-downloads", "artifacts");
+    const concurrentArtifacts = join(dir, "browser-agent", "concurrent-downloads", "artifacts");
     await runtime.acquire({
       runId: "concurrent-downloads",
       channelId: null,
@@ -397,7 +397,7 @@ test("root CDP counts raw-target downloads once, caps their files, and restores 
     await runtime.acquire({
       runId: "raw-downloads",
       channelId: null,
-      artifactsDir: join(dir, "quick", "raw-downloads", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "raw-downloads", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     const attempted = await runtime.evaluate("raw-downloads", `
@@ -434,7 +434,7 @@ test("root CDP counts raw-target downloads once, caps their files, and restores 
 
     rmSync(redirectDir, { recursive: true, force: true });
     mkdirSync(redirectDir, { recursive: true });
-    const trustedArtifacts = join(dir, "quick", "trusted-download", "artifacts");
+    const trustedArtifacts = join(dir, "browser-agent", "trusted-download", "artifacts");
     await runtime.acquire({
       runId: "trusted-download",
       channelId: null,
@@ -472,7 +472,7 @@ test("an oversized persistent profile is rejected before Chromium starts", async
     await expect(runtime.acquire({
       runId: "oversized-profile",
       channelId: null,
-      artifactsDir: join(dir, "quick", "oversized-profile", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "oversized-profile", "artifacts"),
       controlToken: CONTROL_TOKEN,
     })).rejects.toThrow("storage ceiling");
     expect(runtime.stats().launches).toBe(0);
@@ -499,7 +499,7 @@ test("profile growth watchdog stops web-storage abuse while preserving persisten
     await runtime.acquire({
       runId: "storage-hog",
       channelId: null,
-      artifactsDir: join(dir, "quick", "storage-hog", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "storage-hog", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     await expect(runtime.evaluate("storage-hog", `
@@ -520,7 +520,7 @@ test("profile growth watchdog stops web-storage abuse while preserving persisten
     await runtime.acquire({
       runId: "after-storage-hog",
       channelId: null,
-      artifactsDir: join(dir, "quick", "after-storage-hog", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "after-storage-hog", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     const cookie = await runtime.evaluate("after-storage-hog", `
@@ -575,7 +575,7 @@ test("a budget breach outranks the evaluator's transport error when the watchdog
     await runtime.acquire({
       runId: "budget-attribution",
       channelId: null,
-      artifactsDir: join(dir, "quick", "budget-attribution", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "budget-attribution", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     writeFileSync(join(settings.profileDir, "mid-eval-growth.bin"), randomBytes(4 * 1024 * 1024));
@@ -598,7 +598,7 @@ test("the controller closes excess tabs and force-disposes raw browser contexts"
     await runtime.acquire({
       runId: "tab-ceiling",
       channelId: null,
-      artifactsDir: join(dir, "quick", "tab-ceiling", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "tab-ceiling", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     const opened = await runtime.evaluate("tab-ceiling", `
@@ -691,7 +691,7 @@ test("a timed-out evaluator marks the outcome uncertain and leaves the lease ins
     await runtime.acquire({
       runId: "slow",
       channelId: null,
-      artifactsDir: join(dir, "quick", "slow", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "slow", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     await expect(runtime.evaluate("slow", `
@@ -708,7 +708,7 @@ test("a timed-out evaluator marks the outcome uncertain and leaves the lease ins
     await runtime.acquire({
       runId: "next",
       channelId: null,
-      artifactsDir: join(dir, "quick", "next", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "next", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     const next = await runtime.evaluate("next", "return page.url()");
@@ -728,7 +728,7 @@ test("an ordinary Playwright error preserves the selected tab and serializable s
     await runtime.acquire({
       runId: "recoverable",
       channelId: null,
-      artifactsDir: join(dir, "quick", "recoverable", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "recoverable", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     await runtime.evaluate("recoverable", `await page.goto(${JSON.stringify(`${baseUrl}/old`)})`);
@@ -758,7 +758,7 @@ test("sensitive screenshots use fail-closed capture styling without mutating the
     await runtime.acquire({
       runId: "redact",
       channelId: null,
-      artifactsDir: join(dir, "quick", "redact", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "redact", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     await runtime.evaluate("redact", `
@@ -825,8 +825,8 @@ test("concurrent cold acquisitions have exactly one owner", async () => {
   const runtime = createLocalBrowserRuntime({ settings: browserHostSettings(config), logger: quietLog });
   try {
     const settled = await Promise.allSettled([
-      runtime.acquire({ runId: "one", channelId: null, artifactsDir: join(dir, "quick", "one", "artifacts"), controlToken: CONTROL_TOKEN }),
-      runtime.acquire({ runId: "two", channelId: null, artifactsDir: join(dir, "quick", "two", "artifacts"), controlToken: CONTROL_TOKEN }),
+      runtime.acquire({ runId: "one", channelId: null, artifactsDir: join(dir, "browser-agent", "one", "artifacts"), controlToken: CONTROL_TOKEN }),
+      runtime.acquire({ runId: "two", channelId: null, artifactsDir: join(dir, "browser-agent", "two", "artifacts"), controlToken: CONTROL_TOKEN }),
     ]);
     expect(settled.filter((item) => item.status === "fulfilled")).toHaveLength(1);
     expect(settled.filter((item) => item.status === "rejected")).toHaveLength(1);
@@ -860,7 +860,7 @@ test("stop waits for and closes an in-flight Chromium launch", async () => {
     const acquisition = runtime.acquire({
       runId: "starting",
       channelId: null,
-      artifactsDir: join(dir, "quick", "starting", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "starting", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     await Bun.sleep(0);
@@ -891,7 +891,7 @@ test("disposable evaluator contains vm escape and async infinite loop", async ()
     await runtime.acquire({
       runId: "isolated",
       channelId: null,
-      artifactsDir: join(dir, "quick", "isolated", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "isolated", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     const escaped = await runtime.evaluate(
