@@ -8,6 +8,8 @@
  * never in a log line. We shell out to the same `jingle` launcher the skill documents.
  */
 
+import { existsSync } from "node:fs";
+
 /** One field → one jingle secret field on the entry. `value` is sensitive and only ever piped to stdin. */
 export type KeychainField = { field: string; value: string };
 
@@ -22,9 +24,25 @@ export type JingleRunner = (
   stdin: string,
 ) => Promise<{ code: number; stderr: string }>;
 
-/** Spawn `jingle` (the durable launcher on PATH) with a secret piped on stdin and no stdout capture. */
+/**
+ * Resolve the `jingle` launcher. The `secret serve` systemd --user unit does not inherit the
+ * login PATH, so prefer an explicit override / the documented install path before falling back
+ * to a bare `jingle` (which works in an interactive shell).
+ */
+function resolveJingleBin(): string {
+  const override = process.env.JINGLE_BIN;
+  if (override && override.trim()) return override.trim();
+  const home = process.env.HOME;
+  if (home) {
+    const installed = `${home}/.local/bin/jingle`;
+    if (existsSync(installed)) return installed;
+  }
+  return "jingle";
+}
+
+/** Spawn `jingle` with a secret piped on stdin and no stdout capture. */
 const spawnJingle: JingleRunner = async (args, stdin) => {
-  const proc = Bun.spawn(["jingle", ...args], {
+  const proc = Bun.spawn([resolveJingleBin(), ...args], {
     stdin: "pipe",
     // Discard stdout entirely: jingle redacts secrets, but we never want its output near a log.
     stdout: "ignore",

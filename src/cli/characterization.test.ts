@@ -170,9 +170,12 @@ const CASES: Case[] = [
 
   // ── secret ──────────────────────────────────────────────────────────────────────────────
   { name: "secret: bare prints usage", argv: ["secret"] },
-  { name: "secret: request without --name prints usage", argv: ["secret", "request"] },
+  { name: "secret: request without --name or --fields prints usage", argv: ["secret", "request"] },
   { name: "secret: request without Cloudflare creds is refused", argv: ["secret", "request", "--name", "MY_KEY"] },
   { name: "secret: request with a bad env name is rejected", argv: ["secret", "request", "--name", "not a key"] },
+  { name: "secret: keychain request without --entry is refused", argv: ["secret", "request", "--fields", "user,pass"] },
+  { name: "secret: request with a bad --dest is rejected", argv: ["secret", "request", "--fields", "user,pass", "--dest", "vault"] },
+  { name: "secret: request rejects --name with --fields", argv: ["secret", "request", "--name", "K", "--fields", "user,pass"] },
 
   // ── deploy ──────────────────────────────────────────────────────────────────────────────
   { name: "deploy: without CLOUDFLARE_API_TOKEN is refused", argv: ["deploy", "ls"] },

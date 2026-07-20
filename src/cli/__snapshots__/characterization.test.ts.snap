@@ -491,7 +491,7 @@ exports[`cli: secret: bare prints usage 1`] = `
 }
 `;
 
-exports[`cli: secret: request without --name prints usage 1`] = `
+exports[`cli: secret: request without --name or --fields prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
@@ -518,6 +518,39 @@ exports[`cli: secret: request with a bad env name is rejected 1`] = `
   "exit": 1,
   "stderr": 
 "error: secret request field must be a single environment key (A-Z, digits, underscore; not starting with a digit)
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: secret: keychain request without --entry is refused 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: secret request --dest keychain needs --entry <jingle entry handle>
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: secret: request with a bad --dest is rejected 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: secret request --dest must be 'keychain' or 'env'
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: secret: request rejects --name with --fields 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: secret request: use either --name (single env key) or --fields, not both
 "
 ,
   "stdout": "",
