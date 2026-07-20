@@ -98,7 +98,8 @@ test("agent rm removes it; a subsequent show fails", async () => {
   await cli(dir, ["agent", "add", "tmp", "--description", "d", "--prompt", "p", "--model", "m"]);
   const removed = await cliRaw(dir, ["agent", "rm", "tmp"]);
   expect(removed).toContain("removed agent tmp");
-  expect(await cli(dir, ["agent", "ls"])).toEqual([]);
+  const listed = (await cli(dir, ["agent", "ls"])) as any[];
+  expect(listed.map((a) => a.id)).not.toContain("tmp");
   await expect(cli(dir, ["agent", "show", "tmp"])).rejects.toThrow(/no such agent/);
 });
 
@@ -157,6 +158,14 @@ test("agent new requires --name and rejects a colliding derived id", async () =>
   await expect(
     cli(dir, ["agent", "new", "--name", "foo bar", "--prompt", "p", "--model", "m"]),
   ).rejects.toThrow(/already exists/);
+});
+
+test("agent invoke validates input and a known agent before spawning any harness", async () => {
+  const dir = freshDir();
+  // Missing the input argument → usage error, no spawn.
+  await expect(cli(dir, ["agent", "invoke", "social-media"])).rejects.toThrow(/usage/);
+  // Unknown agent → clean failure, no spawn.
+  await expect(cli(dir, ["agent", "invoke", "nope", "do a thing"])).rejects.toThrow(/no such agent/);
 });
 
 test("agent add rejects a missing required flag and a bad harness", async () => {
