@@ -125,6 +125,28 @@ export function normalizeSecretFields(fields: SecretFieldSpec[], destination: Se
   });
 }
 
+const PLAINTEXT_HINTS = new Set(["username", "user", "email", "login", "account"]);
+
+/**
+ * Parse the CLI `--fields` list into field specs. Each item is `name[:mod]` where `mod` is
+ * `text` (render a visible input) or `secret` (masked). Without a modifier, common identifier
+ * names (username/email/…) default to visible and everything else to masked.
+ */
+export function parseSecretFieldSpecs(raw: string): SecretFieldSpec[] {
+  const items = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  if (items.length === 0) throw new Error("secret request --fields needs at least one field name");
+  return items.map((item) => {
+    const [rawName, mod] = item.split(":").map((s) => s.trim());
+    const name = rawName ?? "";
+    let secret: boolean;
+    if (mod === "text") secret = false;
+    else if (mod === "secret") secret = true;
+    else if (mod !== undefined && mod !== "") throw new Error(`secret request --fields modifier must be "text" or "secret", got "${mod}"`);
+    else secret = !PLAINTEXT_HINTS.has(name.toLowerCase());
+    return { name, secret };
+  });
+}
+
 export function parseSecretTtlMinutes(raw: string | boolean | undefined): number {
   if (raw === undefined || raw === false) return DEFAULT_TTL_MINUTES;
   if (raw === true) throw new Error("secret request --ttl needs a value");

@@ -1,23 +1,36 @@
 /**
  * Beckett v5 — the secret capability module (`src/capability/modules/secret.ts`)
  * =======================================================================================
- * The `beckett secret …` surface (one-time secret intake, `src/secret/intake.ts`: token mint
- * + a tiny HTTP endpoint behind the existing tunnel), normalized onto the common factory
- * shape (V5 Phase 2). Handler bodies — including the systemd unit that keeps the intake
- * endpoint alive across sessions — are the former `cli/beckett.ts` code moved verbatim; the
- * CLI characterization suite pins the observable behavior byte-for-byte.
+ * The `beckett secret …` surface (secret-link intake, `src/secret/intake.ts`: token mint + a
+ * tiny HTTP endpoint behind the existing tunnel). One generated link can now collect a whole
+ * batch of named fields, route the submitted values to either the jingle keychain (default,
+ * reusable for browser/computer-use logins) or `.env`, and DM the link to the requester with an
+ * ephemeral fallback. The endpoint is kept alive across sessions by the systemd unit below.
  */
 
 import { join } from "node:path";
 import { ActionClass, type Capability, type CapabilityDeps } from "../index.ts";
 import { CfDns } from "../../agency/cloudflare.ts";
 import { TunnelDeployer } from "../../shell/deploy.ts";
-import { mintSecretRequest, parseSecretTtlMinutes, serveSecretIntake, validateSecretEnvName } from "../../secret/intake.ts";
+import {
+  mintSecretRequest,
+  parseSecretFieldSpecs,
+  parseSecretTtlMinutes,
+  serveSecretIntake,
+  validateJingleEntry,
+  validateSecretEnvName,
+  type SecretDestination,
+  type SecretFieldSpec,
+} from "../../secret/intake.ts";
+import { deliverSecretLink, discordDmSender, isDiscordUserId } from "../../secret/delivery.ts";
 import { fail, out, parse, parsePort } from "../../cli/io.ts";
-import type { Paths } from "../../types.ts";
+import type { Logger, Paths } from "../../types.ts";
 
 const SECRET_TUNNEL_NAME = "secret";
 const DEFAULT_SECRET_PORT = 8799;
+
+const USAGE =
+  "beckett secret request (--name <ENV_KEY> | --fields <a,b:text>) [--dest keychain|env] [--entry <name>] [--service <domain>] [--requester <userId>] [--message <text>] [--ttl <minutes>] | secret serve --port <port>";
 
 function systemdQuote(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
@@ -47,11 +60,69 @@ async function ensureSecretService(port: number, paths: Paths): Promise<void> {
     ...(process.env.BECKETT_DIR ? [`Environment=${systemdQuote(`BECKETT_DIR=${process.env.BECKETT_DIR}`)}`] : []),
     ...(process.env.BECKETT_HOME ? [`Environment=${systemdQuote(`BECKETT_HOME=${process.env.BECKETT_HOME}`)}`] : []),
   ];
-  const unit = `[Unit]\nDescription=Beckett one-time secret intake\n\n[Service]\nType=simple\nWorkingDirectory=${repoRoot}\nExecStart=${process.execPath} ${cliPath} secret serve --port ${port}\nRestart=on-failure\nRestartSec=2\n${envLines.join("\n")}\n\n[Install]\nWantedBy=default.target\n`;
+  const unit = `[Unit]\nDescription=Beckett secret-link intake\n\n[Service]\nType=simple\nWorkingDirectory=${repoRoot}\nExecStart=${process.execPath} ${cliPath} secret serve --port ${port}\nRestart=on-failure\nRestartSec=2\n${envLines.join("\n")}\n\n[Install]\nWantedBy=default.target\n`;
   mkdirSync(unitDir, { recursive: true });
   writeFileSync(unitPath, unit, { mode: 0o600 });
   await runQuiet(["systemctl", "--user", "daemon-reload"]);
   await runQuiet(["systemctl", "--user", "enable", "--now", "beckett-secret.service"]);
+}
+
+/** Resolve the field set + destination from the request flags. */
+function resolveRequest(flags: Record<string, string | boolean>): {
+  fields: SecretFieldSpec[];
+  destination: SecretDestination;
+} {
+  const hasName = typeof flags.name === "string" && flags.name.trim() !== "";
+  const hasFields = typeof flags.fields === "string" && flags.fields.trim() !== "";
+  if (hasName && hasFields) fail("secret request: use either --name (single env key) or --fields, not both");
+  if (!hasName && !hasFields) fail(`usage: ${USAGE}`);
+
+  // Legacy shorthand: --name is one masked env field.
+  if (hasName) {
+    const name = validateSecretEnvName(flags.name as string);
+    return { fields: [{ name, secret: true }], destination: { kind: "env" } };
+  }
+
+  const fields = parseSecretFieldSpecs(flags.fields as string);
+  const destKind = flags.dest === undefined || flags.dest === "keychain" ? "keychain" : flags.dest === "env" ? "env" : null;
+  if (destKind === null) fail("secret request --dest must be 'keychain' or 'env'");
+  if (destKind === "env") return { fields, destination: { kind: "env" } };
+
+  // keychain (default): needs an entry handle to attach the fields to.
+  if (typeof flags.entry !== "string" || !flags.entry.trim()) {
+    fail("secret request --dest keychain needs --entry <jingle entry handle>");
+  }
+  const entry = validateJingleEntry(flags.entry as string);
+  const service = typeof flags.service === "string" && flags.service.trim() ? flags.service.trim() : undefined;
+  return { fields, destination: { kind: "keychain", entry, ...(service ? { service } : {}) } };
+}
+
+async function deliverOrPrint(
+  minted: { url: string },
+  flags: Record<string, string | boolean>,
+  logger: Logger,
+): Promise<void> {
+  // No requester → keep the legacy contract: print the URL for the caller to deliver.
+  if (flags.requester === undefined) {
+    out(minted.url);
+  }
+  const requesterId = String(flags.requester);
+  if (!isDiscordUserId(requesterId)) fail("secret request --requester must be a Discord user id");
+  const token = process.env.DISCORD_TOKEN;
+  if (!token) fail("no DISCORD_TOKEN in ~/.beckett/.env — cannot DM the requester");
+  const message = typeof flags.message === "string" ? flags.message : "Here's your one-time secret link — open it and fill in the fields:";
+
+  const result = await deliverSecretLink({
+    requesterId,
+    url: minted.url,
+    message,
+    sendDm: discordDmSender({ token }),
+    logger,
+  });
+  // On DM success the URL stays in the DM and out of the transcript. On fallback, hand the URL
+  // back with the ephemeral flag so the caller posts it visible only to the requester.
+  if (result.via === "dm") out({ delivered: "dm" });
+  out({ delivered: "ephemeral", ephemeral: true, url: result.url });
 }
 
 export function createSecretCapability({ paths, logger }: CapabilityDeps): Capability {
@@ -66,8 +137,7 @@ export function createSecretCapability({ paths, logger }: CapabilityDeps): Capab
       return;
     }
     if (sub === "request") {
-      if (typeof flags.name !== "string" || !flags.name.trim()) fail("usage: beckett secret request --name <ENV_KEY> [--ttl <minutes>]");
-      const name = validateSecretEnvName(flags.name);
+      const { fields, destination } = resolveRequest(flags);
       const ttlMinutes = parseSecretTtlMinutes(flags.ttl);
       const port = parsePort(flags.port ?? process.env.BECKETT_SECRET_PORT, DEFAULT_SECRET_PORT);
       const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
@@ -84,22 +154,22 @@ export function createSecretCapability({ paths, logger }: CapabilityDeps): Capab
         logger,
       });
       const deployed = await deployer.deploy({ name: SECRET_TUNNEL_NAME, service: `http://localhost:${port}` });
-      const minted = mintSecretRequest({ paths, name, ttlMinutes, baseUrl: deployed.url });
-      out(minted.url);
+      const minted = mintSecretRequest({ paths, fields, destination, ttlMinutes, baseUrl: deployed.url });
+      await deliverOrPrint(minted, flags, logger);
     }
-    fail("usage: beckett secret request --name <ENV_KEY> [--ttl <minutes>] | secret serve --port <port>");
+    fail(`usage: ${USAGE}`);
   }
 
   return {
     id: "secret",
-    summary: "one-time secret intake: token mint + tiny HTTP endpoint behind the tunnel",
+    summary: "secret-link intake: batch fields → keychain/env, DM'd to the requester",
     actionClass: ActionClass.FREE,
     cliHelp: "secret request",
     cliVerbs: [
       {
         name: "secret",
-        summary: "mint a one-time secret-intake URL (serve runs the endpoint)",
-        usage: "beckett secret request --name <ENV_KEY> [--ttl <minutes>] | secret serve --port <port>",
+        summary: "mint a secret-intake URL for a batch of fields (serve runs the endpoint)",
+        usage: USAGE,
         run: runSecret,
       },
     ],
