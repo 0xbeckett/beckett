@@ -100,6 +100,63 @@ test("agent rm removes it; a subsequent show fails", async () => {
   await expect(cli(dir, ["agent", "show", "tmp"])).rejects.toThrow(/no such agent/);
 });
 
+test("agent new derives a kebab id from --name and defaults the description to the name", async () => {
+  const dir = freshDir();
+  const created = (await cli(dir, [
+    "agent", "new",
+    "--name", "Foo Bar",
+    "--prompt", "you are foo bar",
+    "--model", "claude-sonnet-5",
+  ])) as any;
+  expect(created).toMatchObject({
+    id: "foo-bar",
+    description: "Foo Bar", // name used as the description when --description is omitted
+    harness: "claude",
+    effort: "medium",
+    persistent: false,
+  });
+
+  // It round-trips through the same store as `add`.
+  const shown = (await cli(dir, ["agent", "show", "foo-bar"])) as any;
+  expect(shown).toMatchObject({ id: "foo-bar", systemPrompt: "you are foo bar" });
+});
+
+test("agent new accepts the same optional flags as add and honors --description", async () => {
+  const dir = freshDir();
+  const created = (await cli(dir, [
+    "agent", "new",
+    "--name", "Release Notes Writer!",
+    "--description", "drafts release notes",
+    "--prompt", "You write crisp release notes.",
+    "--model", "claude-opus-4-8",
+    "--harness", "claude",
+    "--effort", "high",
+    "--skills", "github,deliver",
+    "--tools", "Read,Edit",
+    "--persistent",
+  ])) as any;
+  expect(created).toMatchObject({
+    id: "release-notes-writer",
+    description: "drafts release notes",
+    effort: "high",
+    skills: ["github", "deliver"],
+    tools: ["Read", "Edit"],
+    persistent: true,
+  });
+});
+
+test("agent new requires --name and rejects a colliding derived id", async () => {
+  const dir = freshDir();
+  await expect(
+    cli(dir, ["agent", "new", "--prompt", "p", "--model", "m"]),
+  ).rejects.toThrow(/name/);
+
+  await cli(dir, ["agent", "new", "--name", "Foo Bar", "--prompt", "p", "--model", "m"]);
+  await expect(
+    cli(dir, ["agent", "new", "--name", "foo bar", "--prompt", "p", "--model", "m"]),
+  ).rejects.toThrow(/already exists/);
+});
+
 test("agent add rejects a missing required flag and a bad harness", async () => {
   const dir = freshDir();
   await expect(

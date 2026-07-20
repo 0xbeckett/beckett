@@ -1564,9 +1564,71 @@ function splitList(raw: unknown): string[] {
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+/** "Foo Bar!" → "foo-bar": lowercase, non-alphanumerics collapse to a single dash, trimmed. */
+function slugifyAgentId(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+const AGENT_ADD_USAGE =
+  'usage: beckett agent add <id> --description "<what it is>" --prompt "<system prompt>" ' +
+  "--model <model> [--harness claude|codex|pi] [--effort low|medium|high|xhigh] " +
+  "[--skills a,b,c] [--tools a,b,c] [--persistent]";
+
+const AGENT_NEW_USAGE =
+  'usage: beckett agent new --name "<name>" [--description "<what it is>"] --prompt "<system prompt>" ' +
+  "--model <model> [--harness claude|codex|pi] [--effort low|medium|high|xhigh] " +
+  "[--skills a,b,c] [--tools a,b,c] [--persistent]";
+
 /**
- * `beckett agent` (issue #66): add/list/show/remove reusable worker personas in the LIVE agent
- * registry. Definitions live in `agents.json` (read here directly, same as routines/tasks); the
+ * Shared create path for `agent add` / `agent new`: validate the seat flags, add to the store, and
+ * print the summary. `new` derives the id from `--name` and passes `fallbackDescription`; both go
+ * through the same validation + {@link AgentStore.add} (which throws on a duplicate id) so `new` is
+ * pure sugar over `add`, never a fork of the creation logic.
+ */
+async function createAgentFromFlags(
+  store: AgentStore,
+  id: string,
+  flags: Record<string, unknown>,
+  usage: string,
+  fallbackDescription = "",
+): Promise<void> {
+  const description = flags.description ? String(flags.description) : fallbackDescription;
+  if (!description.trim()) fail(`an agent needs a --description. ${usage}`);
+  const systemPrompt = flags.prompt ? String(flags.prompt) : "";
+  if (!systemPrompt.trim()) fail(`an agent needs a --prompt (system prompt). ${usage}`);
+  const model = flags.model ? String(flags.model) : "";
+  if (!model.trim()) fail(`an agent needs a --model. ${usage}`);
+  const harness = flags.harness ? String(flags.harness) : "claude";
+  if (!(AGENT_HARNESSES as readonly string[]).includes(harness)) {
+    fail(`--harness must be one of: ${AGENT_HARNESSES.join(", ")}`);
+  }
+  const effort = flags.effort !== undefined ? String(flags.effort) : "medium";
+  if (!(AGENT_EFFORTS as readonly string[]).includes(effort)) {
+    fail(`--effort must be one of: ${AGENT_EFFORTS.filter(Boolean).join(", ")}`);
+  }
+  try {
+    const agent = await store.add({
+      id,
+      description: description.trim(),
+      systemPrompt,
+      model: { harness: harness as AgentDefinition["model"]["harness"], model, effort: effort as AgentDefinition["model"]["effort"] },
+      skills: splitList(flags.skills),
+      tools: splitList(flags.tools),
+      persistent: flags.persistent === true,
+    });
+    out(summarizeAgent(agent));
+  } catch (err) {
+    fail((err as Error).message);
+  }
+}
+
+/**
+ * `beckett agent` (issue #66): add/new/list/show/remove reusable worker personas in the LIVE agent
+ * registry. `new --name "<name>"` is name-first sugar over `add` (derives the id from the name).
+ * Definitions live in `agents.json` (read here directly, same as routines/tasks); the
  * running daemon picks up adds/removes with no restart via its live loader (src/agent/registry.ts).
  */
 async function runAgent(argv: string[]): Promise<void> {
@@ -1589,39 +1651,19 @@ async function runAgent(argv: string[]): Promise<void> {
   if (sub === "add") {
     const { _, flags } = parse(rest);
     const id = _[0];
-    const usage =
-      'usage: beckett agent add <id> --description "<what it is>" --prompt "<system prompt>" ' +
-      "--model <model> [--harness claude|codex|pi] [--effort low|medium|high|xhigh] " +
-      "[--skills a,b,c] [--tools a,b,c] [--persistent]";
-    if (!id) fail(usage);
-    const description = flags.description ? String(flags.description) : "";
-    if (!description.trim()) fail(`an agent needs a --description. ${usage}`);
-    const systemPrompt = flags.prompt ? String(flags.prompt) : "";
-    if (!systemPrompt.trim()) fail(`an agent needs a --prompt (system prompt). ${usage}`);
-    const model = flags.model ? String(flags.model) : "";
-    if (!model.trim()) fail(`an agent needs a --model. ${usage}`);
-    const harness = flags.harness ? String(flags.harness) : "claude";
-    if (!(AGENT_HARNESSES as readonly string[]).includes(harness)) {
-      fail(`--harness must be one of: ${AGENT_HARNESSES.join(", ")}`);
-    }
-    const effort = flags.effort !== undefined ? String(flags.effort) : "medium";
-    if (!(AGENT_EFFORTS as readonly string[]).includes(effort)) {
-      fail(`--effort must be one of: ${AGENT_EFFORTS.filter(Boolean).join(", ")}`);
-    }
-    try {
-      const agent = await store.add({
-        id: id!,
-        description,
-        systemPrompt,
-        model: { harness: harness as AgentDefinition["model"]["harness"], model, effort: effort as AgentDefinition["model"]["effort"] },
-        skills: splitList(flags.skills),
-        tools: splitList(flags.tools),
-        persistent: flags.persistent === true,
-      });
-      out(summarizeAgent(agent));
-    } catch (err) {
-      fail((err as Error).message);
-    }
+    if (!id) fail(AGENT_ADD_USAGE);
+    await createAgentFromFlags(store, id!, flags, AGENT_ADD_USAGE);
+  }
+
+  if (sub === "new") {
+    // Name-first sugar over `add`: derive a kebab-case id from --name and default the description
+    // to the name, then run the exact same create path (which rejects a duplicate id).
+    const { flags } = parse(rest);
+    const name = flags.name ? String(flags.name).trim() : "";
+    if (!name) fail(`an agent needs a --name. ${AGENT_NEW_USAGE}`);
+    const id = slugifyAgentId(name);
+    if (!id) fail(`could not derive an id from --name "${name}". ${AGENT_NEW_USAGE}`);
+    await createAgentFromFlags(store, id, flags, AGENT_NEW_USAGE, name);
   }
 
   if (sub === "rm" || sub === "remove") {
@@ -1633,7 +1675,7 @@ async function runAgent(argv: string[]): Promise<void> {
   }
 
   fail(
-    'usage: beckett agent ls | show <id> | add <id> --description "..." --prompt "..." --model <model> [--harness ...] [--effort ...] [--skills a,b] [--tools a,b] [--persistent] | rm <id>',
+    'usage: beckett agent ls | show <id> | add <id> --description "..." --prompt "..." --model <model> [--harness ...] [--effort ...] [--skills a,b] [--tools a,b] [--persistent] | new --name "<name>" [same flags as add] | rm <id>',
   );
 }
 
@@ -1934,15 +1976,15 @@ function buildCliCapabilities(): Capability[] {
     },
     {
       id: "agent",
-      summary: "live agent registry: define/add/list/show/remove reusable worker personas (issue #66)",
+      summary: "live agent registry: define/add/new/list/show/remove reusable worker personas (issue #66)",
       actionClass: ActionClass.FREE,
-      cliHelp: "agent ls|show|add|rm",
+      cliHelp: "agent ls|show|add|new|rm",
       cliVerbs: [
         {
           name: "agent",
-          summary: "reusable worker personas (system prompt + harness/model/effort + skills/tools) read live by the daemon",
+          summary: "reusable worker personas (system prompt + harness/model/effort + skills/tools) read live by the daemon; `new --name` is name-first sugar over `add`",
           usage:
-            'beckett agent ls | show <id> | add <id> --description "<what>" --prompt "<system prompt>" --model <model> [--harness claude|codex|pi] [--effort low|medium|high|xhigh] [--skills a,b] [--tools a,b] [--persistent] | rm <id>',
+            'beckett agent ls | show <id> | add <id> --description "<what>" --prompt "<system prompt>" --model <model> [--harness claude|codex|pi] [--effort low|medium|high|xhigh] [--skills a,b] [--tools a,b] [--persistent] | new --name "<name>" [same flags as add] | rm <id>',
           run: runAgent,
         },
       ],
