@@ -43,6 +43,8 @@ import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
 import { createQuickRunner, type QuickRunner } from "../quick/index.ts";
 import { createBrowserRuntime, type BrowserRuntime } from "../browser/runtime.ts";
+import { createBrowserAgent, type BrowserAgent } from "../browser/agent.ts";
+import { defaultKeychainReader } from "../secret/keychain-read.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createMemory } from "../memory/index.ts";
 import { startRoutineMaintenance } from "../memory/maintain.ts";
@@ -98,6 +100,7 @@ interface BootedSystem {
   dispatcher: Dispatcher;
   concierge: Concierge;
   quick: QuickRunner;
+  browserAgent: BrowserAgent;
   browser: BrowserRuntime;
   memoryMaintenance: { stop(): void };
 }
@@ -417,12 +420,22 @@ async function boot(): Promise<BootedSystem> {
   const quick = createQuickRunner({
     config,
     logger: logger.child("quick"),
-    browser,
     onDetachedResult: (run) => concierge.notifyQuickResult(run),
-    onQuestion: (run, question) => concierge.notifyQuickQuestion(run, question),
+  });
+  // The dedicated background browser agent (issue #58): intake dispatches and returns
+  // immediately; questions surface as ledgered Discord anchors, outcomes come back as update
+  // turns, and its durable run ledger re-reports anything a crash strands.
+  const browserAgent = createBrowserAgent({
+    config,
+    logger: logger.child("browser-agent"),
+    browser,
+    keychain: defaultKeychainReader,
+    onQuestion: (run, question) => concierge.notifyBrowserQuestion(run, question),
+    onOutcome: (run) => concierge.notifyBrowserOutcome(run),
   });
   concierge.setBrowserRuntime(browser);
   concierge.setQuickRunner(quick);
+  concierge.setBrowserAgent(browserAgent);
 
   // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
   // the daemon-wide halves the Concierge can't see itself. The Concierge merges in its own
@@ -436,6 +449,7 @@ async function boot(): Promise<BootedSystem> {
     workers: dispatcher.statusWorkers(),
     quick: quick.stats(),
     browser: browser.stats(),
+    browserAgent: browserAgent.stats(),
     poller: {
       boards: Object.fromEntries([...pollers].map(([board, p]) => [board, p.stats()])),
       ...poller.stats(),
@@ -477,6 +491,11 @@ async function boot(): Promise<BootedSystem> {
   // crashed daemon orphaned, commit their ghost WIP, and arm session-resume hints so re-staffed
   // tickets continue their interrupted sessions instead of re-running from scratch.
   await dispatcher.recoverFromCrash();
+
+  // Browser-agent fail-safe (issue #58): any run the previous daemon left live on disk is now
+  // terminal — report it to the origin channel instead of leaving the person in silence, and
+  // re-deliver any outcome that never reached the Concierge.
+  await browserAgent.recover();
 
   // Blip-proofing (OPS-125): with recovery done, arm the periodic worktree-checkpoint loop so a
   // HARD crash (SIGKILL / OOM / power) — where the graceful shutdown drain never runs — loses at
@@ -549,7 +568,7 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browser, memoryMaintenance };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -574,6 +593,12 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
     await sys.quick.stopAll();
   } catch (err) {
     sys.logger.warn("quick-runner shutdown failed", { error: (err as Error).message });
+  }
+  // The browser agent settles live runs as errors; its durable ledger re-reports them next boot.
+  try {
+    await sys.browserAgent.stopAll();
+  } catch (err) {
+    sys.logger.warn("browser-agent shutdown failed", { error: (err as Error).message });
   }
   try {
     await sys.browser.stop();
