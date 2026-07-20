@@ -1647,9 +1647,24 @@ function buildCliCapabilities(): Capability[] {
       cliVerbs: [
         {
           name: "quick",
-          summary: "run computer-use | quick-code | repo-explorer and block for its report",
-          usage: 'beckett quick <computer-use|quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list',
+          summary: "run quick-code | repo-explorer and block for its report",
+          usage: 'beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list',
           run: runQuick,
+        },
+      ],
+      busCommands: [],
+    },
+    {
+      id: "browser",
+      summary: "the background browser agent: dispatch computer-use work and return immediately",
+      actionClass: ActionClass.FREE,
+      cliHelp: "browser <task>|status",
+      cliVerbs: [
+        {
+          name: "browser",
+          summary: "hand a self-contained browser task to the background agent (pauses for humans, resumes, reports back)",
+          usage: 'beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]  |  beckett browser status',
+          run: runBrowser,
         },
       ],
       busCommands: [],
