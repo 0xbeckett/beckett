@@ -569,6 +569,64 @@ describe("advance on finish", () => {
     expect(client.comments.at(-1)!.body).toContain("moving this back to **todo**");
   });
 
+  test("#65: cancelling a running ticket aborts + reaps its live worker immediately", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    client.board = [ticket];
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    const worker = created[0]!;
+    expect(worker.aborted).toBe(false);
+
+    // Human cancels; the cancel event reaches the dispatcher.
+    ticket.state = "cancelled";
+    await d.handle(stateChanged(ticket, "cancelled", "in_progress"));
+    await settle();
+
+    // The live worker (and, in the real driver, its whole process group) is torn down at once.
+    expect(worker.aborted).toBe(true);
+    expect(worker.reaped).toBe(true);
+  });
+
+  test("#65: a crashed worker for a cancelled ticket is NOT respawned (crash-retry consults state)", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    client.board = [ticket];
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(1);
+
+    // Human cancels in the tracker; the poll echo hasn't reached the dispatcher yet — the ONLY signal
+    // is the live tracker state. Then the worker crashes, which reads exactly like the retry trigger.
+    ticket.state = "cancelled";
+    created[0]!.finish("error", "blew up");
+    await settle();
+
+    // No fresh worker against the cancelled ticket, no misleading "retrying" comment, no state bump.
+    expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(1);
+    expect(client.comments.some((c) => c.body.includes("retrying"))).toBe(false);
+    expect(client.setStateCalls).toHaveLength(0);
+  });
+
+  test("#65: a late crash callback after a cancel-abort does not resurrect the worker", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    client.board = [ticket];
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    const worker = created[0]!;
+
+    ticket.state = "cancelled";
+    await d.handle(stateChanged(ticket, "cancelled", "in_progress"));
+    await settle();
+    expect(worker.aborted).toBe(true);
+
+    // A finish callback that lands AFTER the abort (a race) must not spawn a replacement.
+    worker.finish("error", "post-abort crash");
+    await settle();
+    expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(1);
+  });
+
   test("v3.1: self-review tier (low effort) → done in one pass, no in_review relay", async () => {
     const { d, client } = newDispatcher();
     const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
