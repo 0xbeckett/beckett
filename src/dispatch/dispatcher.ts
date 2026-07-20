@@ -788,6 +788,68 @@ export class Dispatcher {
     return this.clientForProjectId(projectId ?? this.projectIdByTicketId.get(ticketId));
   }
 
+  /**
+   * The ticket's CURRENT lifecycle state, read fresh from the tracker (issue #65). Every retry/respawn
+   * path holds a `Ticket` captured at spawn time, so its `.state` is stale — a human may have cancelled
+   * the ticket while the worker ran. Consult the tracker before resurrecting a worker; on a fetch
+   * failure (or a client without `getIssue`) fall back to the captured state and assume still-active,
+   * so a transient tracker blip never silently strands genuinely-in-progress work.
+   */
+  private async currentTicketState(ticket: Ticket): Promise<TicketState> {
+    const client = this.clientForTicket(ticket);
+    if (client.getIssue) {
+      try {
+        const fresh = await client.getIssue(ticket.id);
+        if (fresh) return fresh.state;
+      } catch (err) {
+        this.logger.warn("respawn-guard state fetch failed; assuming ticket still active", {
+          ticket: ticket.identifier,
+          error: (err as Error).message,
+        });
+      }
+    }
+    return ticket.state;
+  }
+
+  /**
+   * Respawn a worker for a ticket ONLY if it is still active (issue #65). A crash/exit or a delayed
+   * backed-off retry must never resurrect a worker against a ticket a human has since cancelled (or
+   * that reached done) — that was the OPS churn where `✗ implement error` looped straight into
+   * `▸ implement worker started` until a full daemon restart reconciled against the tracker. When the
+   * live state is terminal we drop the in-memory job instead of spawning.
+   */
+  private async respawnIfActive(ticket: Ticket, stage: string): Promise<void> {
+    const liveState = await this.currentTicketState(ticket);
+    if (liveState === "cancelled" || liveState === "done") {
+      this.logger.info("skipping respawn — ticket no longer active", {
+        ticket: ticket.identifier,
+        stage,
+        state: liveState,
+      });
+      this.trace(ticket, stage, "held", `ticket is ${liveState}; not respawning`);
+      this.releaseJob(ticket.id);
+      return;
+    }
+    this.spawnGuarded(ticket, stage);
+  }
+
+  /**
+   * Drop a ticket's in-memory job (issue #65): its worker-table entry, mid-spawn reservation, retry
+   * counter, pending backed-off retry timer, crash-recovery ledger row, and repo lease. Used when a
+   * respawn is refused because the ticket is no longer active. Best-effort and idempotent — the
+   * worker process is already dead by the time this runs (a live one is torn down by onCancelled).
+   */
+  private releaseJob(ticketId: string): void {
+    this.workers.delete(ticketId);
+    this.staffing.delete(ticketId);
+    this.liveTickets.delete(ticketId);
+    this.cancelSpawnRetry(ticketId);
+    this.implementRetries.delete(ticketId);
+    this.liveLedger.delete(ticketId);
+    this.releaseRepo(ticketId);
+    this.persistRuntimeState();
+  }
+
   private async listAllIssues(): Promise<Ticket[]> {
     const boards = await Promise.all(this.clients.map((client) => client.listIssues()));
     const seen = new Set<string>();
@@ -2281,6 +2343,22 @@ export class Dispatcher {
     handle: TicketWorkerHandle,
     summary: string,
   ): Promise<void> {
+    // #65: a worker exiting for a CANCELLED (or done) ticket reads exactly like a crash, and without
+    // this guard the retry path below would commit WIP, post "retrying (attempt n/m)", and re-spawn a
+    // fresh worker against a ticket nobody wants — the churn that only a daemon restart stopped. The
+    // captured `ticket.state` is stale (the cancel landed while this worker ran), so consult the
+    // tracker's LIVE state and bail before any of that when it's terminal.
+    const liveState = await this.currentTicketState(ticket);
+    if (liveState === "cancelled" || liveState === "done") {
+      this.logger.info("implement worker exited for a no-longer-active ticket — not retrying", {
+        ticket: ticket.identifier,
+        state: liveState,
+      });
+      this.trace(ticket, "implement", "held", `ticket is ${liveState}; not retrying`);
+      this.releaseJob(ticket.id);
+      return;
+    }
+
     const timedOut = handle.result?.timedOut === true;
     const reason = timedOut
       ? `hit the ${Math.round(hardCapSeconds(this.config) / 60)}-minute safety cap`
