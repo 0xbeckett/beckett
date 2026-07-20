@@ -1394,6 +1394,150 @@ async function runBrowser(argv: string[]): Promise<void> {
   }
 }
 
+function routineStore(): RoutineStore {
+  return new RoutineStore(join(paths.beckettDir, "routines.json"));
+}
+
+/** "12:34 America/Los_Angeles on 2026-07-20" — a routine's next concrete fire, humanized. */
+function describeNextFire(routine: Routine): string {
+  const at = nextFireAt(routine.schedule, routine.state, new Date(), Math.random);
+  const tz = routine.schedule.window.tz;
+  const local = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).format(at);
+  const rolled = routine.state.periodKey && routine.state.chosenFireAt ? "" : " (window; exact time not rolled yet)";
+  return `${local} ${tz}${rolled}`;
+}
+
+function summarizeRoutine(routine: Routine): Record<string, unknown> {
+  const w = routine.schedule.window;
+  return {
+    id: routine.id,
+    name: routine.name,
+    builtin: routine.builtin,
+    enabled: routine.enabled,
+    action: routine.action.kind,
+    cadence: routine.schedule.cadence.kind,
+    window: `${w.start}-${w.end} ${w.tz}`,
+    nextFire: describeNextFire(routine),
+    lastFiredAt: routine.state.lastFiredAt ?? null,
+  };
+}
+
+/**
+ * `beckett routine` (issue #62): add/list/remove/inspect humanized recurring routines and show
+ * each one's next concrete fire time. Definitions live in `routines.json` (read here directly,
+ * same as the task registry); `fire --force` routes a real live dispatch through the daemon.
+ */
+async function runRoutine(argv: string[]): Promise<void> {
+  const [sub, ...rest] = argv;
+  const store = routineStore();
+
+  if (!sub || sub === "list") {
+    const routines = await store.list();
+    out(routines.map(summarizeRoutine));
+  }
+
+  if (sub === "inspect") {
+    const id = rest[0];
+    if (!id) fail("usage: beckett routine inspect <id>");
+    const routine = await store.get(id!);
+    if (!routine) fail(`no such routine: ${id}`);
+    out({ ...summarizeRoutine(routine!), state: routine!.state, createdAt: routine!.createdAt });
+  }
+
+  if (sub === "add") {
+    const { _, flags } = parse(rest);
+    const id = _[0];
+    if (!id) {
+      fail('usage: beckett routine add <id> --window 12:00-13:00 --tz <IANA> --task "<browser task>" [--name <n>] [--creds <entry>] [--channel <id>]');
+    }
+    const windowRaw = String(flags.window ?? "");
+    const m = windowRaw.match(/^(\d{2}:\d{2})-(\d{2}:\d{2})$/);
+    if (!m) fail("--window must look like 12:00-13:00 (24h HH:MM-HH:MM)");
+    const tz = String(flags.tz ?? "");
+    if (!tz || !isValidTimeZone(tz)) fail("--tz must be a valid IANA timezone, e.g. America/Los_Angeles");
+    const task = flags.task ? String(flags.task) : "";
+    if (!task.trim()) fail('a routine needs a --task "<self-contained browser task>"');
+    try {
+      const routine = await store.add({
+        id: id!,
+        name: flags.name ? String(flags.name) : id!,
+        enabled: true,
+        action: {
+          kind: "browser",
+          task,
+          credsEntry: flags.creds ? String(flags.creds) : undefined,
+          channelId: flags.channel ? String(flags.channel) : undefined,
+        },
+        schedule: {
+          cadence: { kind: "daily" },
+          window: { start: m[1]!, end: m[2]!, tz },
+        },
+      });
+      out(summarizeRoutine(routine));
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  }
+
+  if (sub === "remove" || sub === "rm") {
+    const id = rest[0];
+    if (!id) fail("usage: beckett routine remove <id>");
+    const removed = await store.remove(id!);
+    if (!removed) fail(`no such routine: ${id}`);
+    out(`removed routine ${id}`);
+  }
+
+  if (sub === "enable" || sub === "disable") {
+    const id = rest[0];
+    if (!id) fail(`usage: beckett routine ${sub} <id>`);
+    try {
+      const routine = await store.setEnabled(id!, sub === "enable");
+      out(summarizeRoutine(routine));
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  }
+
+  if (sub === "fire") {
+    const { _, flags } = parse(rest);
+    const id = _[0];
+    if (!id) fail("usage: beckett routine fire <id> [--dry-run | --force]");
+    const dryRun = flags["dry-run"] === true || flags.dryrun === true;
+    const force = flags.force === true;
+    const routine = await store.get(id!);
+    if (!routine) fail(`no such routine: ${id}`);
+    if (dryRun) {
+      // Compose + build the exact dispatch plan WITHOUT posting — proves the wiring, no live post.
+      const plan = buildDispatchPlan(routine!, Math.random);
+      out({
+        dryRun: true,
+        routine: id,
+        wouldDispatchTo: "beckett browser (background lane)",
+        preview: plan.preview,
+        credsEntry: plan.credsEntry,
+        browserTask: plan.browserTask,
+        note: "dry-run did NOT post. To fire for real: beckett routine fire " + id + " --force",
+      });
+    }
+    // A real fire routes through the daemon so it dispatches on the browser lane, off this process.
+    try {
+      const res = await callBus(SOCK, "routine.fire", { id, force }, 30_000);
+      if (!res.ok) fail(res.error ?? "routine fire failed");
+      out(res.data);
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  }
+
+  fail(
+    "usage: beckett routine list | inspect <id> | add <id> ... | remove <id> | enable <id> | disable <id> | fire <id> [--dry-run|--force]",
+  );
+}
+
 async function runQuick(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (sub === "list") {
@@ -1669,6 +1813,22 @@ function buildCliCapabilities(): Capability[] {
           summary: "hand a self-contained browser task to the background agent (pauses for humans, resumes, reports back)",
           usage: 'beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]  |  beckett browser status',
           run: runBrowser,
+        },
+      ],
+      busCommands: [],
+    },
+    {
+      id: "routine",
+      summary: "humanized recurring routines: add/list/remove/inspect + fire (dry-run or --force)",
+      actionClass: ActionClass.FREE,
+      cliHelp: "routine list|inspect|add|remove|fire",
+      cliVerbs: [
+        {
+          name: "routine",
+          summary: "named recurring tasks that fire at a fuzzed time inside a daily window",
+          usage:
+            'beckett routine list | inspect <id> | add <id> --window 12:00-13:00 --tz <IANA> --task "<task>" [--creds <entry>] | remove <id> | enable|disable <id> | fire <id> [--dry-run|--force]',
+          run: runRoutine,
         },
       ],
       busCommands: [],
