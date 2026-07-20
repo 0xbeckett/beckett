@@ -48,6 +48,8 @@ import { defaultKeychainReader } from "../secret/keychain-read.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createMemory } from "../memory/index.ts";
 import { startRoutineMaintenance } from "../memory/maintain.ts";
+import { RoutineStore } from "../routine/store.ts";
+import { startRoutineScheduler, type RoutineScheduler } from "../routine/scheduler.ts";
 import { TaskStore } from "../task/store.ts";
 import { createBranchStatusService } from "../task/status.ts";
 import { readLocalBranchStats } from "../git/branch-stats.ts";
@@ -103,6 +105,7 @@ interface BootedSystem {
   browserAgent: BrowserAgent;
   browser: BrowserRuntime;
   memoryMaintenance: { stop(): void };
+  routineScheduler: RoutineScheduler;
 }
 
 /**
@@ -570,14 +573,53 @@ async function boot(): Promise<BootedSystem> {
     logger: logger.child("memory.maintain"),
   });
 
+  // Routines (issue #62): named recurring tasks with HUMANIZED fire times. The store is the
+  // durable source of truth (routines.json, same atomic-write spirit as the task registry); the
+  // scheduler ticks, rolls each period's fuzzed fire time once, persists it, and fires idempotently.
+  // A firing routine's action runs OFF this process through the `beckett browser` background lane
+  // (issue #50/#58) — the scheduler never blocks on browser work.
+  const routineStore = new RoutineStore(join(beckettDir, "routines.json"));
+  const routineScheduler = startRoutineScheduler({
+    store: routineStore,
+    logger: logger.child("routine"),
+    dispatcher: {
+      async dispatch(plan) {
+        // Resolve the origin channel/requester at fire time from env so no id is baked into a
+        // routine definition (BECKETT_ROUTINE_CHANNEL_ID / DISCORD_OWNER_ID).
+        const channelId = plan.channelId ?? process.env.BECKETT_ROUTINE_CHANNEL_ID?.trim() ?? null;
+        const requesterId = plan.requesterId ?? process.env.DISCORD_OWNER_ID?.trim() ?? null;
+        if (!channelId || !requesterId) {
+          throw new Error(
+            "routine dispatch needs an origin channel + requester " +
+              "(set BECKETT_ROUTINE_CHANNEL_ID and DISCORD_OWNER_ID, or the routine's channelId/requesterId)",
+          );
+        }
+        await browserAgent.run(plan.browserTask, {
+          channelId,
+          requesterId,
+          credsEntry: plan.credsEntry,
+        });
+      },
+    },
+  });
+  // Serve `beckett routine fire … --force` from the control bus (a real, live dispatch). The
+  // dry-run path is CLI-local (compose + plan, no daemon) so it can prove wiring with no post.
+  concierge.setRoutineOps({
+    fire: (id, opts) => routineScheduler.fireNow(id, opts),
+  });
+  // Prime once shortly after boot so a routine whose window is live right now is caught up
+  // without waiting a full tick. Best-effort; failures are logged inside the scheduler.
+  setTimeout(() => void routineScheduler.tick().catch(() => {}), 5_000).unref?.();
+
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance, routineScheduler };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
 async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   sys.logger.info("shutting down beckett v3", { signal });
+  sys.routineScheduler.stop();
   sys.memoryMaintenance.stop();
   sys.prPoller?.stop();
   sys.activityPoller?.stop();

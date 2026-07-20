@@ -1506,6 +1506,16 @@ export class Concierge {
     courier(id: string): Promise<{ ticket: string; cancelled: boolean }>;
   } | null = null;
   /**
+   * Routine levers wired in by v4-main (issue #62): serves `beckett routine fire … --force`
+   * from the control bus — a real, live dispatch through the browser lane. Null until wired.
+   */
+  private routineOps: {
+    fire(
+      id: string,
+      opts?: { force?: boolean; dryRun?: boolean },
+    ): Promise<{ routineId: string; preview: string; browserTask: string; credsEntry: string | null }>;
+  } | null = null;
+  /**
    * Daemon-wide status assembler wired in by v4-main (issue #30): answers the `status` bus command
    * with poller/dispatcher/tracker health the Concierge can't see itself. Null until wired — the bus
    * command then answers with the Concierge-local half only.
@@ -1787,6 +1797,11 @@ export class Concierge {
   /** Wire the dispatcher levers (v4-main, after the dispatcher exists). See {@link dispatcherOps}. */
   setDispatcherOps(ops: NonNullable<Concierge["dispatcherOps"]>): void {
     this.dispatcherOps = ops;
+  }
+
+  /** Wire the routine levers (v4-main, issue #62). See {@link routineOps}. */
+  setRoutineOps(ops: NonNullable<Concierge["routineOps"]>): void {
+    this.routineOps = ops;
   }
 
   /** Wire the daemon-wide status assembler (v4-main, issue #30). See {@link statusProvider}. */
@@ -2715,6 +2730,32 @@ export class Concierge {
               if (!id) return { ok: false, error: "usage: beckett ticket courier <id>" };
               try {
                 return { ok: true, data: await this.dispatcherOps.courier(id) };
+              } catch (err) {
+                return { ok: false, error: (err as Error).message };
+              }
+            },
+          },
+        ],
+      },
+      {
+        id: "routine",
+        summary: "humanized recurring routines: fire one now through the browser lane (issue #62)",
+        actionClass: ActionClass.FREE,
+        cliVerbs: [],
+        busCommands: [
+          {
+            name: "routine.fire",
+            summary: "fire a routine now (force = real live dispatch); dry-run stays CLI-local",
+            handle: async (req) => {
+              if (!this.routineOps) {
+                return { ok: false, error: "routine fire unavailable — the scheduler is not wired (v3 daemon only)" };
+              }
+              const id = typeof req.args.id === "string" ? req.args.id.trim() : "";
+              if (!id) return { ok: false, error: "usage: beckett routine fire <id> [--force]" };
+              const force = req.args.force === true || req.args.force === "true";
+              try {
+                const plan = await this.routineOps.fire(id, { force });
+                return { ok: true, data: { fired: id, preview: plan.preview, credsEntry: plan.credsEntry } };
               } catch (err) {
                 return { ok: false, error: (err as Error).message };
               }
