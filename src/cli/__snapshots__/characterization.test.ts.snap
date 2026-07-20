@@ -484,7 +484,7 @@ exports[`cli: secret: bare prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett secret request --name <ENV_KEY> [--ttl <minutes>] | secret serve --port <port>
+"error: usage: beckett secret request (--name <ENV_KEY> | --fields <a,b:text>) [--dest keychain|env] [--entry <name>] [--service <domain>] [--requester <userId>] [--message <text>] [--ttl <minutes>] | secret serve --port <port>
 "
 ,
   "stdout": "",
@@ -495,7 +495,7 @@ exports[`cli: secret: request without --name prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett secret request --name <ENV_KEY> [--ttl <minutes>]
+"error: usage: beckett secret request (--name <ENV_KEY> | --fields <a,b:text>) [--dest keychain|env] [--entry <name>] [--service <domain>] [--requester <userId>] [--message <text>] [--ttl <minutes>] | secret serve --port <port>
 "
 ,
   "stdout": "",
@@ -517,7 +517,7 @@ exports[`cli: secret: request with a bad env name is rejected 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: secret request --name must be a single environment key (A-Z, digits, underscore; not starting with a digit)
+"error: secret request field must be a single environment key (A-Z, digits, underscore; not starting with a digit)
 "
 ,
   "stdout": "",
