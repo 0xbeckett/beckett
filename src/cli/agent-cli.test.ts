@@ -61,9 +61,11 @@ test("agent add writes a full definition; ls and show read it back", async () =>
   });
 
   const listed = (await cli(dir, ["agent", "ls"])) as any[];
-  expect(listed).toEqual([
-    expect.objectContaining({ id: "release-notes-writer", persistent: true }),
-  ]);
+  expect(listed).toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: "release-notes-writer", persistent: true })]),
+  );
+  // The built-in social-media agent is seeded into every registry (pure data).
+  expect(listed.map((a) => a.id)).toContain("social-media");
 
   const shown = (await cli(dir, ["agent", "show", "release-notes-writer"])) as any;
   expect(shown).toMatchObject({
