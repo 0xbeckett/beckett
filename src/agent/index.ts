@@ -9,3 +9,13 @@ export * from "./types.ts";
 export * from "./builtins.ts";
 export { AgentStore, type AgentStoreOptions } from "./store.ts";
 export { LiveAgentRegistry, type LiveAgentRegistryOptions } from "./registry.ts";
+export {
+  createAgentRunner,
+  buildAgentArgs,
+  AGENT_RUN_TIMEOUT_SECS,
+  type AgentRunner,
+  type AgentRunOutcome,
+  type AgentRunOptions,
+  type AgentRunState,
+  type CreateAgentRunnerDeps,
+} from "./invoke.ts";
