@@ -51,6 +51,7 @@ import { startRoutineMaintenance } from "../memory/maintain.ts";
 import { RoutineStore } from "../routine/store.ts";
 import { startRoutineScheduler, type RoutineScheduler } from "../routine/scheduler.ts";
 import { LiveAgentRegistry } from "../agent/registry.ts";
+import { createAgentRunner } from "../agent/invoke.ts";
 import { TaskStore } from "../task/store.ts";
 import { createBranchStatusService } from "../task/status.ts";
 import { readLocalBranchStats } from "../git/branch-stats.ts";
@@ -574,10 +575,25 @@ async function boot(): Promise<BootedSystem> {
     logger: logger.child("memory.maintain"),
   });
 
+  // Agent registry (issue #66): reusable worker personas defined/added WITHOUT a daemon redeploy —
+  // agents.json is read LIVE (defensively; a bad/partial file logs-and-skips, never crashes the
+  // daemon) every time the concierge enumerates OR a routine invokes an agent. This is the runtime
+  // discovery surface #55.3 builds on.
+  const agentRegistry = new LiveAgentRegistry(join(beckettDir, "agents.json"), {
+    logger: logger.child("agent"),
+  });
+  concierge.setAgentRegistry(agentRegistry);
+
+  // The generic invoke-lane (issue #55/#72): runs ANY registered agent by its definition. The
+  // routine dispatcher below uses it to run the `social-media` agent, which AUTHORS the post; the
+  // routine never composes text itself. Adding a future agent is `beckett agent add` — this runner
+  // already knows how to run it, no core edit.
+  const agentRunner = createAgentRunner({ config, logger: logger.child("agent-run") });
+
   // Routines (issue #62): named recurring tasks with HUMANIZED fire times. The store is the
   // durable source of truth (routines.json, same atomic-write spirit as the task registry); the
   // scheduler ticks, rolls each period's fuzzed fire time once, persists it, and fires idempotently.
-  // A firing routine's action runs OFF this process through the `beckett browser` background lane
+  // A firing routine's action runs OFF this process through the background browser lane
   // (issue #50/#58) — the scheduler never blocks on browser work.
   const routineStore = new RoutineStore(join(beckettDir, "routines.json"));
   const routineScheduler = startRoutineScheduler({
@@ -595,7 +611,29 @@ async function boot(): Promise<BootedSystem> {
               "(set BECKETT_ROUTINE_CHANNEL_ID and DISCORD_OWNER_ID, or the routine's channelId/requesterId)",
           );
         }
-        await browserAgent.run(plan.browserTask, {
+
+        // The task string posted to the browser lane. For the `browser` lane it's the routine's
+        // static task; for the `agent` lane the agent AUTHORS it live (issue #55/#72).
+        let browserTask = plan.browserTask;
+        if (plan.lane === "agent") {
+          if (!plan.agentId) throw new Error("agent-lane routine is missing an agentId");
+          // Resolve the agent LIVE from the registry, so editing its prompt (or the routine's target
+          // agent) takes effect with no redeploy. A removed/unknown agent fails loudly here.
+          const def = agentRegistry.get(plan.agentId);
+          if (!def) throw new Error(`routine references unknown agent: ${plan.agentId}`);
+          const outcome = await agentRunner.run(def, plan.agentInput ?? "", { channelId, requesterId });
+          if (outcome.state !== "done" || !outcome.output.trim()) {
+            throw new Error(`agent ${plan.agentId} did not author a post: ${outcome.error ?? outcome.state}`);
+          }
+          browserTask = outcome.output.trim();
+        }
+        if (!browserTask) throw new Error("routine dispatch produced no browser task");
+
+        // Post via the PRIVILEGED in-process browser lane — the routine holds the channel/requester
+        // authorization, so a headless run can post without a Discord mention token. Credential
+        // injection (from the jingle entry NAMED by credsEntry), the X verification pause/resume,
+        // and the confirmation back to the origin channel are all the browser agent's job (issue #50).
+        await browserAgent.run(browserTask, {
           channelId,
           requesterId,
           credsEntry: plan.credsEntry,
@@ -604,18 +642,10 @@ async function boot(): Promise<BootedSystem> {
     },
   });
   // Serve `beckett routine fire … --force` from the control bus (a real, live dispatch). The
-  // dry-run path is CLI-local (compose + plan, no daemon) so it can prove wiring with no post.
+  // dry-run path is CLI-local (build the plan, no daemon) so it can prove wiring with no post.
   concierge.setRoutineOps({
     fire: (id, opts) => routineScheduler.fireNow(id, opts),
   });
-
-  // Agent registry (issue #66): reusable worker personas defined/added WITHOUT a daemon redeploy —
-  // agents.json is read LIVE (defensively; a bad/partial file logs-and-skips, never crashes the
-  // daemon) every time the concierge enumerates. This is the runtime discovery surface #55.3 builds on.
-  const agentRegistry = new LiveAgentRegistry(join(beckettDir, "agents.json"), {
-    logger: logger.child("agent"),
-  });
-  concierge.setAgentRegistry(agentRegistry);
   // Prime once shortly after boot so a routine whose window is live right now is caught up
   // without waiting a full tick. Best-effort; failures are logged inside the scheduler.
   setTimeout(() => void routineScheduler.tick().catch(() => {}), 5_000).unref?.();

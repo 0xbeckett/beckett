@@ -38,6 +38,7 @@ import { buildDispatchPlan } from "../routine/plan.ts";
 import { nextFireAt, isValidTimeZone } from "../routine/schedule.ts";
 import type { Routine } from "../routine/types.ts";
 import { AgentStore } from "../agent/store.ts";
+import { createAgentRunner } from "../agent/invoke.ts";
 import { AGENT_HARNESSES, AGENT_EFFORTS, type AgentDefinition } from "../agent/types.ts";
 import { startTaskBranch } from "./task-start.ts";
 import { quickDetachedMessage } from "./quick-output.ts";
@@ -1513,16 +1514,23 @@ async function runRoutine(argv: string[]): Promise<void> {
     const routine = await store.get(id!);
     if (!routine) fail(`no such routine: ${id}`);
     if (dryRun) {
-      // Compose + build the exact dispatch plan WITHOUT posting — proves the wiring, no live post.
-      const plan = buildDispatchPlan(routine!, Math.random);
+      // Build the exact dispatch plan WITHOUT running the agent or posting — proves the wiring,
+      // no live post. For the agent lane the post text is authored at fire time, so it's not shown.
+      const plan = buildDispatchPlan(routine!);
       out({
         dryRun: true,
         routine: id,
-        wouldDispatchTo: "beckett browser (background lane)",
+        lane: plan.lane,
+        wouldDispatchTo:
+          plan.lane === "agent"
+            ? `invoke agent ${plan.agentId} → beckett browser (background lane)`
+            : "beckett browser (background lane)",
         preview: plan.preview,
+        agentId: plan.agentId,
+        agentInput: plan.agentInput,
         credsEntry: plan.credsEntry,
         browserTask: plan.browserTask,
-        note: "dry-run did NOT post. To fire for real: beckett routine fire " + id + " --force",
+        note: "dry-run did NOT run the agent or post. To fire for real: beckett routine fire " + id + " --force",
       });
     }
     // A real fire routes through the daemon so it dispatches on the browser lane, off this process.
@@ -1674,8 +1682,32 @@ async function runAgent(argv: string[]): Promise<void> {
     out(`removed agent ${id}`);
   }
 
+  if (sub === "invoke" || sub === "run") {
+    // The generic invoke-lane (issue #55/#72): run ANY registered agent by its definition and print
+    // its output. Reads the agent LIVE from the store, so `beckett agent add` then `invoke` needs no
+    // daemon restart. The runner spawns the agent's seat (claude -p) with its prompt/tools scoped.
+    const { _, flags } = parse(rest);
+    const id = _[0];
+    const input = _.slice(1).join(" ").trim();
+    if (!id || !input) {
+      fail('usage: beckett agent invoke <id> "<input>" [--timeout <secs>]');
+    }
+    const def = await store.get(id!);
+    if (!def) fail(`no such agent: ${id}`);
+    const timeoutSecs = flags.timeout !== undefined ? Number(flags.timeout) : undefined;
+    if (timeoutSecs !== undefined && (!Number.isFinite(timeoutSecs) || timeoutSecs <= 0)) {
+      fail("--timeout must be a positive number of seconds");
+    }
+    const runner = createAgentRunner({ config, logger: quietLogger });
+    const outcome = await runner.run(def!, input, { timeoutSecs });
+    if (outcome.state !== "done") {
+      fail(`agent ${id} ${outcome.state}: ${outcome.error ?? "no output"}`);
+    }
+    out({ agent: id, runId: outcome.runId, state: outcome.state, output: outcome.output });
+  }
+
   fail(
-    'usage: beckett agent ls | show <id> | add <id> --description "..." --prompt "..." --model <model> [--harness ...] [--effort ...] [--skills a,b] [--tools a,b] [--persistent] | new --name "<name>" [same flags as add] | rm <id>',
+    'usage: beckett agent ls | show <id> | add <id> --description "..." --prompt "..." --model <model> [--harness ...] [--effort ...] [--skills a,b] [--tools a,b] [--persistent] | new --name "<name>" [same flags as add] | invoke <id> "<input>" | rm <id>',
   );
 }
 
@@ -1976,15 +2008,15 @@ function buildCliCapabilities(): Capability[] {
     },
     {
       id: "agent",
-      summary: "live agent registry: define/add/new/list/show/remove reusable worker personas (issue #66)",
+      summary: "live agent registry: define/add/new/list/show/invoke/remove reusable worker personas (issue #55/#66)",
       actionClass: ActionClass.FREE,
-      cliHelp: "agent ls|show|add|new|rm",
+      cliHelp: "agent ls|show|add|new|invoke|rm",
       cliVerbs: [
         {
           name: "agent",
-          summary: "reusable worker personas (system prompt + harness/model/effort + skills/tools) read live by the daemon; `new --name` is name-first sugar over `add`",
+          summary: "reusable worker personas (system prompt + harness/model/effort + skills/tools) read live by the daemon; `invoke` runs ANY of them; `new --name` is name-first sugar over `add`",
           usage:
-            'beckett agent ls | show <id> | add <id> --description "<what>" --prompt "<system prompt>" --model <model> [--harness claude|codex|pi] [--effort low|medium|high|xhigh] [--skills a,b] [--tools a,b] [--persistent] | new --name "<name>" [same flags as add] | rm <id>',
+            'beckett agent ls | show <id> | add <id> --description "<what>" --prompt "<system prompt>" --model <model> [--harness claude|codex|pi] [--effort low|medium|high|xhigh] [--skills a,b] [--tools a,b] [--persistent] | new --name "<name>" [same flags as add] | invoke <id> "<input>" [--timeout <secs>] | rm <id>',
           run: runAgent,
         },
       ],

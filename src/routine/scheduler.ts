@@ -77,7 +77,7 @@ export function startRoutineScheduler(deps: RoutineSchedulerDeps): RoutineSchedu
     // Claim the period BEFORE dispatching so a crash mid-dispatch never double-fires.
     const claimed = { ...state, lastFiredPeriodKey: key, lastFiredAt: at.toISOString() };
     await deps.store.setState(routine.id, claimed);
-    const plan = buildDispatchPlan(routine, rng);
+    const plan = buildDispatchPlan(routine);
     deps.logger.info("routine firing", { id: routine.id, period: key, preview: plan.preview });
     try {
       await deps.dispatcher.dispatch(plan, routine);
@@ -107,7 +107,7 @@ export function startRoutineScheduler(deps: RoutineSchedulerDeps): RoutineSchedu
   async function fireNow(id: string, opts: { force?: boolean; dryRun?: boolean } = {}): Promise<RoutineDispatchPlan> {
     const routine = await deps.store.get(id);
     if (!routine) throw new Error(`no such routine: ${id}`);
-    const plan = buildDispatchPlan(routine, rng);
+    const plan = buildDispatchPlan(routine);
     if (opts.dryRun) return plan;
     if (!opts.force) {
       // Non-forced manual fire still respects per-period idempotency.
