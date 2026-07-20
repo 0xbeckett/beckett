@@ -1356,6 +1356,40 @@ async function runProactivity(argv: string[]): Promise<void> {
 // block for its report. The bus call must outlive the daemon's sync window (`sync_wait_secs`),
 // so this is the one command with a custom callBus timeout — past the window the daemon
 // answers `{detached, runId}` and the result arrives later as a Discord-routed update turn.
+async function runBrowser(argv: string[]): Promise<void> {
+  const [sub, ...rest] = argv;
+  if (sub === "status") {
+    await bus("browser.status", {});
+  }
+  const { _, flags } = parse(sub === "run" ? rest : argv);
+  const task = _.join(" ").trim();
+  if (!task) {
+    fail('usage: beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]  |  beckett browser status');
+  }
+  try {
+    // The dispatch returns the moment the background agent takes the task; nothing here blocks.
+    const res = await callBus(
+      SOCK,
+      "browser.run",
+      {
+        task,
+        credsEntry: flags.creds ? String(flags.creds) : undefined,
+        channelId: flags.channel ? String(flags.channel) : undefined,
+      },
+      30_000,
+    );
+    if (!res.ok) fail(res.error ?? "browser dispatch failed");
+    const data = res.data as { runId: string };
+    out(
+      `browser run ${data.runId} is working independently in the background - if it needs a human input ` +
+      `it will ask ONE question in the channel with a page screenshot, and its outcome will come back ` +
+      `to you as a browser-agent update turn. Tell the person it is in progress and end this turn.`,
+    );
+  } catch (err) {
+    fail((err as Error).message);
+  }
+}
+
 async function runQuick(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (sub === "list") {
@@ -1365,7 +1399,7 @@ async function runQuick(argv: string[]): Promise<void> {
   const agent = sub?.trim();
   const task = _.join(" ").trim();
   if (!agent || !task) {
-    fail('usage: beckett quick <computer-use|quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list');
+    fail('usage: beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list');
   }
   try {
     const res = await callBus(
