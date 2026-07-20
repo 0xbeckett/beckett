@@ -1528,7 +1528,7 @@ export class Concierge {
   /** The dedicated background browser agent (issue #58); owns every browser/computer-use run. */
   private browserAgent: BrowserAgent | null = null;
   /** Native Discord reply id -> parked browser run. Answers bypass shared chat context entirely. */
-  private readonly pendingQuickQuestions = new Map<string, BrowserQuestionRecord>();
+  private readonly pendingBrowserQuestions = new Map<string, BrowserQuestionRecord>();
   private stopping = false;
   /**
    * Tracker read access for milestone enrichment (issue #21): the poller stops collecting comments
@@ -1820,24 +1820,24 @@ export class Concierge {
 
   private persistBrowserQuestions(): void {
     const now = Date.now();
-    for (const [messageId, record] of this.pendingQuickQuestions) {
+    for (const [messageId, record] of this.pendingBrowserQuestions) {
       if (record.deletedAt && record.deletedAt < now - BROWSER_DELETED_TOMBSTONE_TTL_MS) {
-        this.pendingQuickQuestions.delete(messageId);
+        this.pendingBrowserQuestions.delete(messageId);
       }
     }
-    if (this.pendingQuickQuestions.size > BROWSER_QUESTION_MAX_RECORDS) {
-      const safelyDeleted = [...this.pendingQuickQuestions.entries()]
+    if (this.pendingBrowserQuestions.size > BROWSER_QUESTION_MAX_RECORDS) {
+      const safelyDeleted = [...this.pendingBrowserQuestions.entries()]
         .filter(([, record]) => record.deletedAt !== undefined)
         .sort((a, b) => a[1].createdAt - b[1].createdAt);
-      while (this.pendingQuickQuestions.size > BROWSER_QUESTION_MAX_RECORDS && safelyDeleted.length > 0) {
-        this.pendingQuickQuestions.delete(safelyDeleted.shift()![0]);
+      while (this.pendingBrowserQuestions.size > BROWSER_QUESTION_MAX_RECORDS && safelyDeleted.length > 0) {
+        this.pendingBrowserQuestions.delete(safelyDeleted.shift()![0]);
       }
     }
     const path = this.browserQuestionsPath();
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const temp = `${path}.${process.pid}.tmp`;
     try {
-      const records = [...this.pendingQuickQuestions.entries()]
+      const records = [...this.pendingBrowserQuestions.entries()]
         .map(([messageId, record]) => ({ messageId, ...record }));
       writeFileSync(temp, JSON.stringify(records, null, 2) + "\n", { mode: 0o600 });
       renameSync(temp, path);
@@ -1850,12 +1850,12 @@ export class Concierge {
 
   private async deleteStaleBrowserQuestions(): Promise<void> {
     let changed = false;
-    for (const [messageId, record] of [...this.pendingQuickQuestions]) {
+    for (const [messageId, record] of [...this.pendingBrowserQuestions]) {
       if (!record.stale) continue;
       if (record.deletedAt) continue;
       try {
         await this.gateway.deleteMessage(record.channelId, messageId);
-        this.pendingQuickQuestions.set(messageId, { ...record, deletedAt: Date.now() });
+        this.pendingBrowserQuestions.set(messageId, { ...record, deletedAt: Date.now() });
         changed = true;
       } catch (error) {
         this.log.warn("stale browser question deletion failed; retaining privacy tombstone", {
@@ -1890,7 +1890,7 @@ export class Concierge {
         ) continue;
         // Quick/Claude sessions are intentionally not recovered after a daemon restart. Keep the
         // reply anchor only as a privacy tombstone so a late OTP/password is consumed, not stored.
-        this.pendingQuickQuestions.set(value.messageId, {
+        this.pendingBrowserQuestions.set(value.messageId, {
           runId: value.runId,
           channelId: value.channelId,
           allowedUserId: value.allowedUserId,
@@ -1935,8 +1935,8 @@ export class Concierge {
    * restart, so a dead browser run can never go silent.
    */
   async notifyBrowserOutcome(run: BrowserAgentRun): Promise<void> {
-    for (const [messageId, pending] of this.pendingQuickQuestions) {
-      if (pending.runId === run.runId) this.pendingQuickQuestions.set(messageId, { ...pending, stale: true });
+    for (const [messageId, pending] of this.pendingBrowserQuestions) {
+      if (pending.runId === run.runId) this.pendingBrowserQuestions.set(messageId, { ...pending, stale: true });
     }
     try {
       this.persistBrowserQuestions();
@@ -1970,16 +1970,16 @@ export class Concierge {
     if (!run.channelId) throw new Error("browser question has no origin channel");
     if (!run.requesterId) throw new Error("browser question has no authenticated requester");
     await this.deleteStaleBrowserQuestions();
-    if (this.pendingQuickQuestions.size >= BROWSER_QUESTION_MAX_RECORDS) {
-      const oldestDeleted = [...this.pendingQuickQuestions.entries()]
+    if (this.pendingBrowserQuestions.size >= BROWSER_QUESTION_MAX_RECORDS) {
+      const oldestDeleted = [...this.pendingBrowserQuestions.entries()]
         .filter(([, record]) => record.deletedAt !== undefined)
         .sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
       if (oldestDeleted) {
-        this.pendingQuickQuestions.delete(oldestDeleted[0]);
+        this.pendingBrowserQuestions.delete(oldestDeleted[0]);
         this.persistBrowserQuestions();
       }
     }
-    if (this.pendingQuickQuestions.size >= BROWSER_QUESTION_MAX_RECORDS) {
+    if (this.pendingBrowserQuestions.size >= BROWSER_QUESTION_MAX_RECORDS) {
       throw new Error("browser question privacy ledger is full; stale Discord anchors must be deleted first");
     }
     const text = boundedBrowserQuestion(question.text);
@@ -1998,7 +1998,7 @@ export class Concierge {
         // Discord uploaded it or the file was already absent.
       }
     }
-    this.pendingQuickQuestions.set(messageId, {
+    this.pendingBrowserQuestions.set(messageId, {
       runId: run.runId,
       channelId: run.channelId,
       allowedUserId: run.requesterId,
@@ -2008,8 +2008,8 @@ export class Concierge {
     try {
       this.persistBrowserQuestions();
     } catch (error) {
-      this.pendingQuickQuestions.set(messageId, {
-        ...this.pendingQuickQuestions.get(messageId)!,
+      this.pendingBrowserQuestions.set(messageId, {
+        ...this.pendingBrowserQuestions.get(messageId)!,
         stale: true,
       });
       let deleted = false;
@@ -2022,7 +2022,7 @@ export class Concierge {
           error: String(deleteError),
         });
       }
-      if (deleted) this.pendingQuickQuestions.delete(messageId);
+      if (deleted) this.pendingBrowserQuestions.delete(messageId);
       throw new Error(`browser question was not made durable: ${String((error as Error).message ?? error)}`);
     }
     this.recordBeckettPost(run.channelId, text, messageId);
@@ -3651,7 +3651,7 @@ export class Concierge {
 
   private async resumeBrowserQuestion(m: IncomingMessage): Promise<boolean> {
     if (m.authorIsBot || !m.repliedToId) return false;
-    const pending = this.pendingQuickQuestions.get(m.repliedToId);
+    const pending = this.pendingBrowserQuestions.get(m.repliedToId);
     if (!pending || pending.channelId !== m.channelId) {
       if (!m.repliedToBrowserQuestion && !m.repliedToBotUnverified) return false;
     }
@@ -3725,7 +3725,7 @@ export class Concierge {
       await this.gateway.post(m.channelId, text).catch(() => undefined);
       return true;
     }
-    this.pendingQuickQuestions.set(m.repliedToId, { ...pending, stale: true });
+    this.pendingBrowserQuestions.set(m.repliedToId, { ...pending, stale: true });
     try {
       this.persistBrowserQuestions();
     } catch (error) {

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Background browser agent with pause/surface/resume (#58)
+
+- **Browser / computer-use work is fully decoupled from intake.** The quick lane's
+  `computer-use` agent is replaced by a dedicated background browser agent
+  (`src/browser/agent.ts`): the Concierge dispatches with `beckett browser "<task>"
+  [--creds <jingle-entry>]` (bus `browser.run`) and its turn returns instantly — the intake
+  session can never again wedge on a browser tool call.
+- **Pause / surface / resume.** When the agent needs a human (verification code, missing
+  credential, disambiguation) it parks the Claude session, posts ONE screenshot-backed
+  question to the origin channel through the existing ledgered anchor path, and resumes the
+  same session from the person's native reply (which is still deleted before use).
+- **Keychain credentials, injected below the transcript.** `--creds <entry>` resolves a
+  jingle entry (`src/secret/keychain-read.ts`: values via `jingle exec` env carrier, TOTP
+  codes minted fresh per script) and exposes it as a read-only `secrets` object inside every
+  `betterwright_browser` script. Values are prefixed onto the script daemon-side at
+  `browser.eval` and scrubbed from every result, console line, and error that flows back, so
+  they never appear in a transcript, log, or the durable ledger.
+- **Outcomes are update turns, backed by a durable ledger.** Completion, failure, and timeout
+  report to the Concierge as a `browser-agent outcome` update turn (proof screenshots attach
+  via the existing `beckett discord reply --file`). Runs persist in
+  `~/.beckett/browser-agent/runs.json`; a daemon crash or shutdown mid-run is detected at
+  boot and reported to the origin channel instead of dying silently, and undelivered outcomes
+  retry until the Concierge takes them.
+- The quick lane is fire-and-report only again (`quick-code`, `repo-explorer`);
+  `beckett quick computer-use` now points at `beckett browser`. Browser artifacts moved from
+  `~/.beckett/quick/` to `~/.beckett/browser-agent/`.
+
 ## v5.3.2 — faster cold ambient interjections (2026-07-18)
 
 ### Faster cold ambient interjections (#123, #158)

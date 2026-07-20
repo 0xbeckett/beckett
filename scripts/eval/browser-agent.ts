@@ -326,7 +326,7 @@ async function main(): Promise<void> {
   });
   const schemaPath = join(temp, "result-schema.json");
   writeFileSync(schemaPath, JSON.stringify(BROWSER_RESULT_SCHEMA));
-  const promptPath = join(root, "src", "quick", "agents", "computer-use.md");
+  const promptPath = join(root, "src", "browser", "agent.md");
   const mcpPath = join(root, "src", "browser", "mcp.ts");
   const referenceMcpPath = join(root, "scripts", "eval", "reference-mcp.ts");
   const results: Record<string, unknown>[] = [];
