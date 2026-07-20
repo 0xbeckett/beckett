@@ -854,9 +854,27 @@ function addBrowserRuntimeMounts(args: string[], repoRoot: string, hostPath: str
     hostPath,
     "/repo/node_modules/.cache/beckett-browser/host.mjs",
   );
-  // tldts (+ its tldts-core dependency) became a direct betterwright dependency
-  // in 0.9.x for its credential-vault URL scoping, so the sandbox must expose it.
-  for (const packageName of ["betterwright", "cloakbrowser", "playwright", "playwright-core", "tldts", "tldts-core"]) {
+  // betterwright 0.9.x drives the managed CloakBrowser as its only backend, so
+  // the sandbox must now expose that whole runtime dependency closure: tldts
+  // (+ tldts-core) for the credential-vault URL scoping betterwright pulls in,
+  // and cloakbrowser's tar extractor (+ its minipass/chownr subtree), which
+  // cloakbrowser's entrypoint statically imports. The optional patchright-core
+  // stealth driver is deliberately omitted — it is only loaded when
+  // stealthRuntimeFix is enabled, which this host never sets.
+  for (const packageName of [
+    "betterwright",
+    "cloakbrowser",
+    "playwright",
+    "playwright-core",
+    "tldts",
+    "tldts-core",
+    "tar",
+    "@isaacs/fs-minipass",
+    "chownr",
+    "minipass",
+    "minizlib",
+    "yallist",
+  ]) {
     args.push(
       "--ro-bind",
       join(repoRoot, "node_modules", packageName),
