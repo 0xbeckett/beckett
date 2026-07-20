@@ -49,6 +49,17 @@ interface CommentCursor {
   lastCommentIds: string[];
 }
 
+/** The slice of a {@link Snapshot} that survives a restart on disk — enough to tell, on boot, that a
+ *  ticket was ALREADY seen in a given state so it isn't replayed as a fresh event (issue #60). */
+interface PersistedSnapshotEntry {
+  state: TicketState;
+  updatedAt: string;
+}
+
+/** States a restart must re-staff (their in-memory worker died with the daemon). Kept in sync with
+ *  the poll/prime first-sight branches so "active" means one thing in both places. */
+const RECOVERABLE_ACTIVE = new Set<TicketState>(["design", "in_progress", "in_review"]);
+
 /**
  * Sweep interval for comment reads on unchanged active tickets. bored does NOT bump a ticket's
  * updatedAt when a nudge lands, so this sweep IS the comment/steering delivery path (verified
@@ -69,6 +80,12 @@ export interface TrackerPollerDeps {
   now?: () => number;
   /** Durable comment cursor path. When set, startup sees comments posted while the daemon was down. */
   commentCursorPath?: string;
+  /**
+   * Durable state-snapshot path (issue #60). When set, a restart loads the prior ticket→state map so
+   * previously-seen active tickets are re-staffed SILENTLY instead of replaying `created` +
+   * `state_changed{from:null}` (the phantom-ping storm). A missing/corrupt file degrades to cold start.
+   */
+  snapshotPath?: string;
 }
 
 /** A non-action handler used by {@link TrackerPoller.start}. */
@@ -81,6 +98,12 @@ export class TrackerPoller {
   private readonly now: () => number;
   private readonly commentCursorPath?: string;
   private readonly persistedCommentCursors = new Map<string, CommentCursor>();
+  private readonly snapshotPath?: string;
+  /** The prior run's ticket→state map, loaded from disk once at construction. Read-only after load; a
+   *  match here (same id, same active state) means the ticket was already known before the restart. */
+  private readonly priorSnapshot = new Map<string, PersistedSnapshotEntry>();
+  /** Last body written to {@link snapshotPath}, so an unchanged board doesn't re-write the file each tick. */
+  private lastSnapshotSerialized: string | null = null;
 
   private readonly snapshot = new Map<string, Snapshot>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -101,7 +124,9 @@ export class TrackerPoller {
     this.pollSecs = deps.pollSecs ?? 5;
     this.now = deps.now ?? Date.now;
     this.commentCursorPath = deps.commentCursorPath;
+    this.snapshotPath = deps.snapshotPath;
     this.loadCommentCursors();
+    this.loadSnapshot();
   }
 
   // ── primary surface (V3 §4) ────────────────────────────────────────────────────────────
@@ -182,9 +207,19 @@ export class TrackerPoller {
         // First sight: announce creation; seed comment cursor at "now" so we never replay the
         // ticket's whole comment history. If it appears already in an active state, also emit a
         // state_changed{from:null} so the Dispatcher can pick up in-flight work.
-        slots.push({ kind: "created", ticket });
-        if (ticket.state === "design" || ticket.state === "in_progress" || ticket.state === "in_review") {
-          slots.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
+        //
+        // Warm exception (issue #60): if this ticket was already known in this SAME active state
+        // before the restart (normally prime() seeds it, but this branch also covers a prime()
+        // that failed its listIssues), it is NOT a fresh event — suppress `created` and emit a
+        // silent same-state seed (from===to) so the Dispatcher still re-staffs the lost worker
+        // WITHOUT the concierge firing a `from:null` restart ping.
+        if (RECOVERABLE_ACTIVE.has(ticket.state) && this.priorSnapshot.get(ticket.id)?.state === ticket.state) {
+          slots.push({ kind: "state_changed", ticket, from: ticket.state, to: ticket.state });
+        } else {
+          slots.push({ kind: "created", ticket });
+          if (RECOVERABLE_ACTIVE.has(ticket.state)) {
+            slots.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
+          }
         }
         this.snapshot.set(ticket.id, {
           state: ticket.state,
@@ -225,6 +260,7 @@ export class TrackerPoller {
     for (const id of [...this.snapshot.keys()]) {
       if (!seen.has(id)) this.snapshot.delete(id);
     }
+    this.saveSnapshot();
 
     const batches = await Promise.all(
       slots.map(async (slot) => {
