@@ -854,7 +854,9 @@ function addBrowserRuntimeMounts(args: string[], repoRoot: string, hostPath: str
     hostPath,
     "/repo/node_modules/.cache/beckett-browser/host.mjs",
   );
-  for (const packageName of ["betterwright", "cloakbrowser", "playwright", "playwright-core"]) {
+  // tldts (+ its tldts-core dependency) became a direct betterwright dependency
+  // in 0.9.x for its credential-vault URL scoping, so the sandbox must expose it.
+  for (const packageName of ["betterwright", "cloakbrowser", "playwright", "playwright-core", "tldts", "tldts-core"]) {
     args.push(
       "--ro-bind",
       join(repoRoot, "node_modules", packageName),
