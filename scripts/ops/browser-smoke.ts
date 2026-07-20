@@ -132,7 +132,7 @@ try {
   await runtime.acquire({
     runId,
     channelId: null,
-    artifactsDir: join(dir, "quick", runId, "artifacts"),
+    artifactsDir: join(dir, "browser-agent", runId, "artifacts"),
     controlToken: token,
   });
   stopBus = serveBus(socket, async (request) => {
@@ -173,7 +173,7 @@ try {
   await runtime.acquire({
     runId: "betterwright-smoke-restart",
     channelId: null,
-    artifactsDir: join(dir, "quick", "betterwright-smoke-restart", "artifacts"),
+    artifactsDir: join(dir, "browser-agent", "betterwright-smoke-restart", "artifacts"),
     controlToken: token,
   });
   const persisted = await runtime.evaluate(
