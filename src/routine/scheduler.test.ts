@@ -122,7 +122,11 @@ test("fireNow dry-run returns the plan WITHOUT dispatching (no live post)", asyn
   stoppers.push(scheduler.stop);
 
   const plan = await scheduler.fireNow("daily-x-shitpost", { dryRun: true });
-  expect(plan.browserTask).toContain("@beckposting");
+  // The built-in routine now drives the social-media agent (one path): the plan carries the
+  // invocation, not a composed post — the agent AUTHORS the browser task live at fire time.
+  expect(plan.lane).toBe("agent");
+  expect(plan.agentId).toBe("social-media");
+  expect(plan.browserTask).toBeNull();
   expect(plan.credsEntry).toBe("x.com");
   expect(calls.length).toBe(0); // dry-run never dispatches
 });

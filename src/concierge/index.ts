@@ -1514,7 +1514,7 @@ export class Concierge {
     fire(
       id: string,
       opts?: { force?: boolean; dryRun?: boolean },
-    ): Promise<{ routineId: string; preview: string; browserTask: string; credsEntry: string | null }>;
+    ): Promise<{ routineId: string; preview: string; credsEntry: string | null }>;
   } | null = null;
   /**
    * The live agent registry wired in by v4-main (issue #66): the runtime enumeration surface the

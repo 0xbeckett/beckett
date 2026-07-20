@@ -22,10 +22,11 @@ test("seeds the built-in daily-x-shitpost on first load", async () => {
   const x = routines.find((r) => r.id === "daily-x-shitpost");
   expect(x).toBeTruthy();
   expect(x!.builtin).toBe(true);
-  expect(x!.action.kind).toBe("x-shitpost");
+  // The daily shitpost now routes THROUGH the social-media agent (issue #55/#72) — one path.
+  expect(x!.action.kind).toBe("agent");
   expect(x!.schedule.window).toEqual({ start: "12:00", end: "13:00", tz: "America/Los_Angeles" });
-  if (x!.action.kind === "x-shitpost") {
-    expect(x!.action.account).toBe("@beckposting");
+  if (x!.action.kind === "agent") {
+    expect(x!.action.agentId).toBe("social-media");
     expect(x!.action.credsEntry).toBe("x.com");
   }
 });
