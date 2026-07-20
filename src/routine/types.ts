@@ -52,13 +52,41 @@ export const ScheduleSchema = z.object({
 export type Schedule = z.infer<typeof ScheduleSchema>;
 
 /**
- * What a routine DOES when it fires. Every action runs OFF the intake/scheduler process by
- * dispatching through the `beckett browser` background lane (issue #50/#58) — never inline.
+ * What a routine DOES when it fires. Every action runs OFF the intake/scheduler process — never
+ * inline: the daemon hands the plan to a dispatch executor ({@link ../shell/main.ts}) that runs it.
  *
- * - `x-shitpost`: compose a short in-voice shitpost and post it to X via the browser lane.
- * - `browser`: run an arbitrary self-contained browser task each period.
+ * - `agent`: invoke a registered agent ({@link ../agent/registry.ts}) with `input`; the agent
+ *   AUTHORS the work (its taste lives in its prompt — all data, no code here) and the dispatcher
+ *   hands what it authored to the privileged background browser lane. This is how the daily shitpost
+ *   is driven THROUGH the `social-media` agent (issue #55/#72). Pointing a routine at a different
+ *   agent (or editing the agent's prompt) needs no code change and no redeploy.
+ * - `browser`: run an arbitrary, STATIC self-contained browser task each period (issue #62).
+ * - `x-shitpost` (LEGACY): the pre-#72 shape. Still parsed so a routines.json seeded by an older
+ *   build keeps loading; {@link ./plan.ts} transparently routes it through the `social-media` agent,
+ *   so there is exactly ONE runtime path. New routines should use `agent`.
  */
 export const RoutineActionSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("agent"),
+    /** Registry id of the agent to invoke (e.g. "social-media"). Resolved LIVE at fire time. */
+    agentId: z.string().min(1),
+    /** The instruction handed to the agent describing what to do (e.g. "compose today's shitpost"). */
+    input: z.string().min(1),
+    /** jingle keychain entry the browser lane injects creds from, for the agent-authored task. */
+    credsEntry: z.string().optional(),
+    /** Discord channel the browser lane reports its outcome/questions to (optional; env fallback). */
+    channelId: z.string().optional(),
+    /** Authenticated requester the run is attributed to (optional; owner env fallback). */
+    requesterId: z.string().optional(),
+  }),
+  z.object({
+    kind: z.literal("browser"),
+    /** The self-contained task string handed to `beckett browser`. */
+    task: z.string().min(1),
+    credsEntry: z.string().optional(),
+    channelId: z.string().optional(),
+    requesterId: z.string().optional(),
+  }),
   z.object({
     kind: z.literal("x-shitpost"),
     /** Handle posted as, for the browser task narrative (e.g. "@beckposting"). */
@@ -68,14 +96,6 @@ export const RoutineActionSchema = z.discriminatedUnion("kind", [
     /** Discord channel the browser lane reports its outcome/questions to (optional; env fallback). */
     channelId: z.string().optional(),
     /** Authenticated requester the browser run is attributed to (optional; owner env fallback). */
-    requesterId: z.string().optional(),
-  }),
-  z.object({
-    kind: z.literal("browser"),
-    /** The self-contained task string handed to `beckett browser`. */
-    task: z.string().min(1),
-    credsEntry: z.string().optional(),
-    channelId: z.string().optional(),
     requesterId: z.string().optional(),
   }),
 ]);

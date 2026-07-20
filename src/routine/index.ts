@@ -7,7 +7,6 @@
 
 export * from "./types.ts";
 export * from "./schedule.ts";
-export * from "./compose.ts";
 export * from "./plan.ts";
 export * from "./builtins.ts";
 export { RoutineStore, type RoutineStoreOptions } from "./store.ts";

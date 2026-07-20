@@ -7,7 +7,7 @@ import {
   windowBounds,
   zonedWallToUtc,
 } from "./schedule.ts";
-import { seededRng } from "./compose.ts";
+import { seededRng } from "./schedule.ts";
 import type { Schedule } from "./types.ts";
 
 const PT = "America/Los_Angeles";
