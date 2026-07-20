@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BROWSER_RESULT_SCHEMA } from "../quick/index.ts";
+import { BROWSER_RESULT_SCHEMA } from "./agent.ts";
 import { BROWSER_TOOL_DEFINITION, handleMcpRequest, validateMcpBatch } from "./mcp.ts";
 import type { BrowserEvalResult } from "./runtime.ts";
 
@@ -112,7 +112,7 @@ describe("browser MCP", () => {
 });
 
 test("browser system prompt, result schema, and tool definition stay below the conservative 3000-token estimate", () => {
-  const prompt = readFileSync(join(import.meta.dir, "..", "quick", "agents", "computer-use.md"), "utf8");
+  const prompt = readFileSync(join(import.meta.dir, "agent.md"), "utf8");
   const completeSurface = prompt + JSON.stringify(BROWSER_RESULT_SCHEMA) + JSON.stringify(BROWSER_TOOL_DEFINITION);
   // Three characters per token deliberately overestimates normal English/JSON tokenization.
   const conservativeTokens = Math.ceil(completeSurface.length / 3);

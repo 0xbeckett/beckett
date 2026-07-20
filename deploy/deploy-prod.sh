@@ -11,7 +11,9 @@ HOST="${BECKETT_HOST:-beckett@loom-desk}"
 # ── smart semver bump (OPS-188) ─────────────────────────────────────────────────────────────
 # BEFORE we ship the merge, decide whether this release is a MINOR (new capability) or a PATCH
 # (fix / internal / behavior-preserving) from the commits since the last deployed tag, then write
-# + commit the new version to the source of truth (package.json). MAJOR is owner-only — it never
+# + commit the new version to the source of truth (package.json). The same commit also cuts
+# CHANGELOG.md — the `## Unreleased` block moves under a dated `## vX.Y.Z` heading and a fresh stub
+# is left behind (issue #147) — so the changelog and version can never drift. MAJOR is owner-only — it never
 # comes from the classifier, only an explicit override. The suggestion is CONFIRMABLE: run
 # interactively and beckett prompts; or pre-decide non-interactively with
 #   BECKETT_BUMP=minor|patch|major|yes ./deploy/deploy-prod.sh

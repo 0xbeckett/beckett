@@ -225,7 +225,7 @@ export function browserHostSettings(config: Config): BrowserHostSettings {
   assertNoExistingSymlink(browserRoot, profileDir);
   return {
     profileDir,
-    artifactsRoot: resolve(beckettDir, "quick"),
+    artifactsRoot: resolve(beckettDir, "browser-agent"),
     headless: config.quick.browser_headless,
     viewportWidth: config.quick.browser_viewport_width,
     viewportHeight: config.quick.browser_viewport_height,

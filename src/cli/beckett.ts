@@ -40,6 +40,7 @@ import {
   commitVersion,
   compareSemver,
   computeBumpSuggestion,
+  cutChangelog,
   defaultRepoRoot as versionRepoRoot,
   readVersion,
   resolveVersion,
@@ -291,9 +292,12 @@ async function runVersion(argv: string[]): Promise<void> {
   }
 
   writeVersion(version, repoRoot);
+  // Fold the CHANGELOG cut into the bump: move the Unreleased block under the new dated heading so
+  // the release notes land in the SAME commit as the version, and can't drift (issue #147).
+  const changelog = cutChangelog(version, repoRoot);
   let committed = false;
   if (flags["no-commit"] !== true) {
-    await commitVersion(repoRoot, version);
+    await commitVersion(repoRoot, version, changelog.changed ? ["CHANGELOG.md"] : []);
     committed = true;
   }
 
@@ -304,6 +308,7 @@ async function runVersion(argv: string[]): Promise<void> {
     suggestedLevel: s.suggestion.level,
     overridden: level !== s.suggestion.level,
     committed,
+    changelogCut: changelog.changed,
     commits: s.commits,
     areas: s.areas,
     why: s.suggestion.reasons,
@@ -351,8 +356,8 @@ async function runJournal(argv: string[]): Promise<void> {
 async function runIdentity(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const file = paths.identitiesFile;
-  // Guarantee the day-one entries exist however this map is first touched (the daemon also
-  // seeds at startup) — additive + idempotent, binds the owner to DISCORD_OWNER_ID if set.
+  // Bind the configured owner when this map is first touched (the daemon also does this at
+  // startup) — additive + idempotent; fresh installs otherwise start with an empty map.
   ensureSeeded(file, process.env.DISCORD_OWNER_ID?.trim());
   if (sub === "set") {
     const { flags } = parse(rest);
@@ -503,7 +508,7 @@ async function runAccess(argv: string[]): Promise<void> {
 // Same hardened-bouncer shape as `access`: `grant` only FILES a request with a one-time
 // code; the OWNER approving on Discord (author-id checked in the daemon) applies it. No
 // approve/deny subcommand exists here — a prompt-injected concierge, or a maintainer
-// shelling this CLI, cannot mint maintainers. The bundled seed (repo maintainers.txt)
+// shelling this CLI, cannot mint maintainers. The bundled baseline (repo maintainers.txt)
 // is source-controlled: `revoke` refuses to touch it.
 async function runMaintainer(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
@@ -1351,6 +1356,40 @@ async function runProactivity(argv: string[]): Promise<void> {
 // block for its report. The bus call must outlive the daemon's sync window (`sync_wait_secs`),
 // so this is the one command with a custom callBus timeout — past the window the daemon
 // answers `{detached, runId}` and the result arrives later as a Discord-routed update turn.
+async function runBrowser(argv: string[]): Promise<void> {
+  const [sub, ...rest] = argv;
+  if (sub === "status") {
+    await bus("browser.status", {});
+  }
+  const { _, flags } = parse(sub === "run" ? rest : argv);
+  const task = _.join(" ").trim();
+  if (!task) {
+    fail('usage: beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]  |  beckett browser status');
+  }
+  try {
+    // The dispatch returns the moment the background agent takes the task; nothing here blocks.
+    const res = await callBus(
+      SOCK,
+      "browser.run",
+      {
+        task,
+        credsEntry: flags.creds ? String(flags.creds) : undefined,
+        channelId: flags.channel ? String(flags.channel) : undefined,
+      },
+      30_000,
+    );
+    if (!res.ok) fail(res.error ?? "browser dispatch failed");
+    const data = res.data as { runId: string };
+    out(
+      `browser run ${data.runId} is working independently in the background - if it needs a human input ` +
+      `it will ask ONE question in the channel with a page screenshot, and its outcome will come back ` +
+      `to you as a browser-agent update turn. Tell the person it is in progress and end this turn.`,
+    );
+  } catch (err) {
+    fail((err as Error).message);
+  }
+}
+
 async function runQuick(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (sub === "list") {
@@ -1360,7 +1399,7 @@ async function runQuick(argv: string[]): Promise<void> {
   const agent = sub?.trim();
   const task = _.join(" ").trim();
   if (!agent || !task) {
-    fail('usage: beckett quick <computer-use|quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list');
+    fail('usage: beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list');
   }
   try {
     const res = await callBus(
@@ -1608,9 +1647,24 @@ function buildCliCapabilities(): Capability[] {
       cliVerbs: [
         {
           name: "quick",
-          summary: "run computer-use | quick-code | repo-explorer and block for its report",
-          usage: 'beckett quick <computer-use|quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list',
+          summary: "run quick-code | repo-explorer and block for its report",
+          usage: 'beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list',
           run: runQuick,
+        },
+      ],
+      busCommands: [],
+    },
+    {
+      id: "browser",
+      summary: "the background browser agent: dispatch computer-use work and return immediately",
+      actionClass: ActionClass.FREE,
+      cliHelp: "browser <task>|status",
+      cliVerbs: [
+        {
+          name: "browser",
+          summary: "hand a self-contained browser task to the background agent (pauses for humans, resumes, reports back)",
+          usage: 'beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]  |  beckett browser status',
+          run: runBrowser,
         },
       ],
       busCommands: [],

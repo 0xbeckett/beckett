@@ -25,6 +25,7 @@ import {
   writeSync,
 } from "node:fs";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -69,6 +70,8 @@ export interface CreateIsolatedBrowserRuntimeDeps {
   sandbox?: SandboxMode;
   execPath?: string;
   chromiumExecutable?: string;
+  /** Managed CloakBrowser cache dir bound into the betterwright sandbox. */
+  cloakCacheDir?: string;
   repoRoot?: string;
   bwrapPath?: string;
   sandboxExecPath?: string;
@@ -96,6 +99,7 @@ interface BuildBrowserHostLaunchOptions {
   nodePath?: string;
   hostPath: string;
   chromiumExecutable: string;
+  cloakCacheDir?: string;
   repoRoot: string;
   bwrapPath?: string;
   sandboxExecPath?: string;
@@ -125,6 +129,14 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
   const encodedBudgets = options.budgetOverrides
     ? Buffer.from(JSON.stringify(options.budgetOverrides), "utf8").toString("base64url")
     : undefined;
+  // The betterwright backend launches the managed CloakBrowser, which resolves
+  // its signed binary from CLOAKBROWSER_CACHE_DIR (defaulting to ~/.cloakbrowser).
+  // Point it at the host's cache and pin auto-update off so a persistent, network
+  // isolated session never tries to (and fails to) rewrite a read-only mount.
+  const cloakEnv: Record<string, string> =
+    options.backend === "betterwright" && options.cloakCacheDir
+      ? { CLOAKBROWSER_CACHE_DIR: options.cloakCacheDir, CLOAKBROWSER_AUTO_UPDATE: "false" }
+      : {};
   const baseEnv: Record<string, string> = {
     PATH: "/usr/bin:/bin",
     HOME: hostHome,
@@ -135,6 +147,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
     PLAYWRIGHT_BROWSERS_PATH: browserRoot,
     BECKETT_BROWSER_HOST_SETTINGS: encodedSettings,
     BECKETT_BROWSER_BACKEND: options.backend ?? "playwright",
+    ...cloakEnv,
     ...(encodedBudgets ? { BECKETT_BROWSER_HOST_BUDGETS: encodedBudgets } : {}),
   };
   if (options.sandbox === "none") {
@@ -191,6 +204,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
       options.backend ?? "playwright",
     ];
     if (encodedBudgets) args.push("--setenv", "BECKETT_BROWSER_HOST_BUDGETS", encodedBudgets);
+    for (const [name, value] of Object.entries(cloakEnv)) args.push("--setenv", name, value);
     args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
     addLinuxSystemMounts(args);
     // bwrap creates missing parents for bind destinations. /runtime is explicit because its child
@@ -217,6 +231,11 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
       "--dir",
       "/tmp/config",
     );
+    // Expose the managed CloakBrowser binary at its host path (CLOAKBROWSER_CACHE_DIR
+    // points here) so betterwright can launch it without a writable download step.
+    if (options.backend === "betterwright" && options.cloakCacheDir && existsSync(options.cloakCacheDir)) {
+      args.push("--ro-bind", options.cloakCacheDir, options.cloakCacheDir);
+    }
     addBrowserRuntimeMounts(args, repoRoot, hostPath);
     args.push(
       "--chdir",
@@ -243,6 +262,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
         repoRoot,
         execPath: nodePath,
         browserRoot,
+        cloakCacheDir: options.backend === "betterwright" ? options.cloakCacheDir : undefined,
         profileDir: options.settings.profileDir,
         artifactsRoot: options.settings.artifactsRoot,
         hostTmp,
@@ -320,6 +340,9 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
   const nodePath = deps.nodePath ?? findExecutable("node", process.env.PATH);
   if (!nodePath) throw new Error("computer-use browser host requires Node.js");
   const chromiumExecutable = deps.chromiumExecutable ?? chromium.executablePath();
+  // Managed CloakBrowser (betterwright backend) caches its signed binary here;
+  // mirror cloakbrowser's own resolution (CLOAKBROWSER_CACHE_DIR, else ~/.cloakbrowser).
+  const cloakCacheDir = deps.cloakCacheDir ?? (process.env.CLOAKBROWSER_CACHE_DIR?.trim() || join(homedir(), ".cloakbrowser"));
   const repoRoot = deps.repoRoot ?? resolve(MODULE_DIR, "../..");
 
   let child: HostChild | null = null;
@@ -492,6 +515,7 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
       nodePath,
       hostPath,
       chromiumExecutable,
+      cloakCacheDir,
       repoRoot,
       bwrapPath: deps.bwrapPath,
       sandboxExecPath: deps.sandboxExecPath,
@@ -854,7 +878,27 @@ function addBrowserRuntimeMounts(args: string[], repoRoot: string, hostPath: str
     hostPath,
     "/repo/node_modules/.cache/beckett-browser/host.mjs",
   );
-  for (const packageName of ["betterwright", "cloakbrowser", "playwright", "playwright-core"]) {
+  // betterwright 0.9.x drives the managed CloakBrowser as its only backend, so
+  // the sandbox must now expose that whole runtime dependency closure: tldts
+  // (+ tldts-core) for the credential-vault URL scoping betterwright pulls in,
+  // and cloakbrowser's tar extractor (+ its minipass/chownr subtree), which
+  // cloakbrowser's entrypoint statically imports. The optional patchright-core
+  // stealth driver is deliberately omitted — it is only loaded when
+  // stealthRuntimeFix is enabled, which this host never sets.
+  for (const packageName of [
+    "betterwright",
+    "cloakbrowser",
+    "playwright",
+    "playwright-core",
+    "tldts",
+    "tldts-core",
+    "tar",
+    "@isaacs/fs-minipass",
+    "chownr",
+    "minipass",
+    "minizlib",
+    "yallist",
+  ]) {
     args.push(
       "--ro-bind",
       join(repoRoot, "node_modules", packageName),
@@ -894,6 +938,7 @@ function macSandboxProfile(paths: {
   repoRoot: string;
   execPath: string;
   browserRoot: string;
+  cloakCacheDir?: string;
   profileDir: string;
   artifactsRoot: string;
   hostTmp: string;
@@ -908,6 +953,7 @@ function macSandboxProfile(paths: {
     paths.repoRoot,
     paths.execPath,
     paths.browserRoot,
+    ...(paths.cloakCacheDir ? [paths.cloakCacheDir] : []),
     paths.profileDir,
     paths.artifactsRoot,
     realpathIfPossible(paths.hostTmp),

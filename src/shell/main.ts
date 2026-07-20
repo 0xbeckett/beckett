@@ -1,5 +1,5 @@
 /**
- * Beckett v4 — the shell entrypoint (`src/shell/v4-main.ts`)
+ * Beckett — the shell entrypoint (`src/shell/main.ts`)
  * =======================================================================================
  * Boots the ticket-queue system and wires the four moving parts together:
  *
@@ -17,8 +17,9 @@
  * the tracker, the poller observes them, the dispatcher acts. They never call each other
  * directly — the tracker is the shared queue.
  *
- * This is a NEW entrypoint; the v2 `src/shell/main.ts` is left untouched. Run it with
- * `bun run v4` (see package.json) or `bun src/shell/v4-main.ts`.
+ * Run it with `bun run v4` (see package.json) or `bun src/shell/main.ts`. The `v4` script name
+ * and the `beckett-v4.service` unit are kept for continuity with the 4.0.0 multiplayer release;
+ * only the file was renamed from `v4-main.ts` (see docs/ARCHITECTURE.md "Entrypoint & cutover").
  *
  * Import style (whole repo, bun-native): explicit `.ts` extensions, ESM.
  */
@@ -42,6 +43,8 @@ import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
 import { createQuickRunner, type QuickRunner } from "../quick/index.ts";
 import { createBrowserRuntime, type BrowserRuntime } from "../browser/runtime.ts";
+import { createBrowserAgent, type BrowserAgent } from "../browser/agent.ts";
+import { defaultKeychainReader } from "../secret/keychain-read.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createMemory } from "../memory/index.ts";
 import { startRoutineMaintenance } from "../memory/maintain.ts";
@@ -97,6 +100,7 @@ interface BootedSystem {
   dispatcher: Dispatcher;
   concierge: Concierge;
   quick: QuickRunner;
+  browserAgent: BrowserAgent;
   browser: BrowserRuntime;
   memoryMaintenance: { stop(): void };
 }
@@ -263,30 +267,33 @@ async function boot(): Promise<BootedSystem> {
     );
   }
   const poller = pollers.get(config.tracker.default_board) ?? pollers.values().next().value!;
-  // Health-check the tracker and pre-resolve board routing before polling. Each request uses
-  // the client's 429 Retry-After/exponential-backoff wrapper. Failures remain non-fatal so a
-  // temporary tracker outage does not take Discord down; the poller retries through its normal
-  // client bootstrap on later ticks.
-  for (const [board, boardClient] of clients) {
-    try {
-      await boardClient.ensureProvisioned();
-      const info = await boardClient.projectInfo();
-      clientByProjectId.set(info.projectId, boardClient);
-      const boardPoller = pollers.get(board);
-      if (boardPoller) pollerByProjectId.set(info.projectId, boardPoller);
-      // Poller priming intentionally emits recovery events only for active work. Reconcile the
-      // complete board here as well so terminal/parked changes made while offline cannot leave
-      // the public task registry stale or a dependent permanently held.
-      await reconcileTaskTickets(tasks, await boardClient.listIssues(), board, (ticket, err) => {
-        logger.warn("task branch boot reconciliation failed", {
-          branch: ticket.branchRef,
-          error: String(err),
+  // Health-check the tracker and pre-resolve board routing before polling. Boards are
+  // independent, so run their within-board sequential checks concurrently. Each request uses the
+  // client's 429 Retry-After/exponential-backoff wrapper. Failures remain non-fatal so a temporary
+  // tracker outage does not take Discord down; the poller retries through its normal client
+  // bootstrap on later ticks.
+  await Promise.all(
+    [...clients].map(async ([board, boardClient]) => {
+      try {
+        await boardClient.ensureProvisioned();
+        const info = await boardClient.projectInfo();
+        clientByProjectId.set(info.projectId, boardClient);
+        const boardPoller = pollers.get(board);
+        if (boardPoller) pollerByProjectId.set(info.projectId, boardPoller);
+        // Poller priming intentionally emits recovery events only for active work. Reconcile the
+        // complete board here as well so terminal/parked changes made while offline cannot leave
+        // the public task registry stale or a dependent permanently held.
+        await reconcileTaskTickets(tasks, await boardClient.listIssues(), board, (ticket, err) => {
+          logger.warn("task branch boot reconciliation failed", {
+            branch: ticket.branchRef,
+            error: String(err),
+          });
         });
-      });
-    } catch (err) {
-      logger.warn("tracker board health-check/pre-resolution failed", { board, error: (err as Error).message });
-    }
-  }
+      } catch (err) {
+        logger.warn("tracker board health-check/pre-resolution failed", { board, error: (err as Error).message });
+      }
+    }),
+  );
   const rememberRouting = (events: Ticket | Ticket[], board: string) => {
     const boardClient = clients.get(board);
     const boardPoller = pollers.get(board);
@@ -413,12 +420,22 @@ async function boot(): Promise<BootedSystem> {
   const quick = createQuickRunner({
     config,
     logger: logger.child("quick"),
-    browser,
     onDetachedResult: (run) => concierge.notifyQuickResult(run),
-    onQuestion: (run, question) => concierge.notifyQuickQuestion(run, question),
+  });
+  // The dedicated background browser agent (issue #58): intake dispatches and returns
+  // immediately; questions surface as ledgered Discord anchors, outcomes come back as update
+  // turns, and its durable run ledger re-reports anything a crash strands.
+  const browserAgent = createBrowserAgent({
+    config,
+    logger: logger.child("browser-agent"),
+    browser,
+    keychain: defaultKeychainReader,
+    onQuestion: (run, question) => concierge.notifyBrowserQuestion(run, question),
+    onOutcome: (run) => concierge.notifyBrowserOutcome(run),
   });
   concierge.setBrowserRuntime(browser);
   concierge.setQuickRunner(quick);
+  concierge.setBrowserAgent(browserAgent);
 
   // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
   // the daemon-wide halves the Concierge can't see itself. The Concierge merges in its own
@@ -432,6 +449,7 @@ async function boot(): Promise<BootedSystem> {
     workers: dispatcher.statusWorkers(),
     quick: quick.stats(),
     browser: browser.stats(),
+    browserAgent: browserAgent.stats(),
     poller: {
       boards: Object.fromEntries([...pollers].map(([board, p]) => [board, p.stats()])),
       ...poller.stats(),
@@ -473,6 +491,11 @@ async function boot(): Promise<BootedSystem> {
   // crashed daemon orphaned, commit their ghost WIP, and arm session-resume hints so re-staffed
   // tickets continue their interrupted sessions instead of re-running from scratch.
   await dispatcher.recoverFromCrash();
+
+  // Browser-agent fail-safe (issue #58): any run the previous daemon left live on disk is now
+  // terminal — report it to the origin channel instead of leaving the person in silence, and
+  // re-deliver any outcome that never reached the Concierge.
+  await browserAgent.recover();
 
   // Blip-proofing (OPS-125): with recovery done, arm the periodic worktree-checkpoint loop so a
   // HARD crash (SIGKILL / OOM / power) — where the graceful shutdown drain never runs — loses at
@@ -545,7 +568,7 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browser, memoryMaintenance };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -570,6 +593,12 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
     await sys.quick.stopAll();
   } catch (err) {
     sys.logger.warn("quick-runner shutdown failed", { error: (err as Error).message });
+  }
+  // The browser agent settles live runs as errors; its durable ledger re-reports them next boot.
+  try {
+    await sys.browserAgent.stopAll();
+  } catch (err) {
+    sys.logger.warn("browser-agent shutdown failed", { error: (err as Error).message });
   }
   try {
     await sys.browser.stop();

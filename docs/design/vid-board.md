@@ -84,7 +84,7 @@ Beckett.
 
 ### 1.4 One client for the whole system
 
-- **Daemon:** `src/shell/v4-main.ts` (line ~105) constructs one `createPlaneClient({config})`
+- **Daemon:** `src/shell/main.ts` (line ~105) constructs one `createPlaneClient({config})`
   and hands that same instance to the poller (which feeds the dispatcher) and the Concierge.
   The poller (`src/plane/poll.ts`) sweeps `listIssueHeads()` / `listIssues()` — both scoped
   to that one project — so the daemon only ever *sees* OPS tickets.
@@ -232,7 +232,7 @@ changes" ro asked for: the client is already single-project; we just tell it *wh
 The daemon sees only OPS today because it holds one client (§1.4). To watch VID too, run a
 poller per board, all feeding the **same** dispatcher (the dispatcher is board-agnostic —
 it keys off canonical `TicketState`s and `Ticket.projectId`, which already distinguishes
-boards). Concretely in `src/shell/v4-main.ts`:
+boards). Concretely in `src/shell/main.ts`:
 
 - For each configured board, `createPlaneClient({config, board})` + `createPlanePoller`.
 - Point all pollers' event streams at the one dispatcher.
@@ -366,7 +366,7 @@ Roughly in dependency order. Each step is independently testable.
 4. **CLI** (`src/cli/beckett.ts`): add `--board` to `ticket create` (and `plan` node
    `"board"` key); resolve to `default_board` when absent; loud error on unknown board;
    update the usage strings. Keep `--project` meaning the code repo (do not touch).
-5. **Daemon** (`src/shell/v4-main.ts`): construct one client + poller per configured board;
+5. **Daemon** (`src/shell/main.ts`): construct one client + poller per configured board;
    feed all pollers into the single dispatcher; give the dispatcher a board→client resolver
    keyed on `Ticket.projectId` for write-backs. (Or the v1 simplification in §3.4.)
 6. **Tests:** a VID ticket files with a `VID-` identifier; `setState`/`reverseState`
@@ -380,7 +380,7 @@ Roughly in dependency order. Each step is independently testable.
 - `src/config.ts` — board map schema + legacy normalization
 - `src/plane/client.ts` — board-scoped construction
 - `src/cli/beckett.ts` — `--board` flag on `ticket create` / `plan`
-- `src/shell/v4-main.ts` — per-board poller wiring + dispatcher board resolver
+- `src/shell/main.ts` — per-board poller wiring + dispatcher board resolver
 - `src/dispatch/dispatcher.ts` — board-aware write-backs (only if daemon watches VID)
 - `deploy/config.toml.example` — regenerated
 - tests alongside each of the above

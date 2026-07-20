@@ -48,7 +48,7 @@ export interface DriverRegistration {
  * The harness → registration table — the SINGLE SOURCE OF TRUTH for which harnesses exist.
  * `claude` (live-steerable stream), `codex` (one-shot `codex exec`, steer-via-resume), and `pi`
  * (one-shot `pi -p`, steer-via-resume — the malleable codex replacement) are all registered so the
- * dispatcher can cast any of them per stage (Spec 02 §5; docs/V3.md §7). Both the factory and the
+ * dispatcher can cast any of them per stage (Spec 02 §5; specs/_legacy-v3/V3.md §7). Both the factory and the
  * preflight live in the same row: no separate hand-synced switch to keep aligned.
  */
 const REGISTRY: Record<string, DriverRegistration> = {

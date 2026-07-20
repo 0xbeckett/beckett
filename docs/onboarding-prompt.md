@@ -18,9 +18,9 @@ In Progress spawns a coding agent in an isolated git worktree, In Review spawns 
 comment steers the live worker, done advances the ticket and posts a summary back to Discord.
 Workers are "cast" per stage (different model/effort for implement vs review).
 
-Read `docs/V3.md` first — it's the authoritative build contract and §1 has the non-negotiable
-style conventions. Then `README.md` for the operator/fork view. Specs are in `specs/` (anything
-under `specs/_legacy*` is archived — historical only, NOT a contract).
+Read `docs/ARCHITECTURE.md` first — it's the single authoritative doc and covers the
+non-negotiable style conventions. Then `README.md` for the operator/fork view. Design history is
+in `specs/` (anything under `specs/_legacy*` is archived — historical only, NOT a contract).
 
 REPO MAP
 - src/concierge/  — the Discord-facing agent. `concierge.md` = fixed operating doctrine;

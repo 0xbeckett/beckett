@@ -15,16 +15,16 @@ dispatch a quick agent and relay its report.
 
 | agent | give it | it returns |
 |---|---|---|
-| `computer-use` | a web errand ("check whether X is in stock on site Y", "sign up for service Z with email E") | what it did/found, URLs, extracted values — it drives a real headless browser |
 | `quick-code` | a small coding errand ("script that converts this CSV to JSON", "why does this snippet throw") | the answer + absolute paths of any files it made (in a scratch dir) |
 | `repo-explorer` | a repo + a question ("what does owner/name do, how do I run it") | a ~250-word brief answering the question, with file paths |
 
-`beckett quick list` prints this menu.
+`beckett quick list` prints this menu. **Browser / computer-use work is NOT in this lane** — it
+runs in the dedicated background browser agent (`beckett browser "<task>"`, see the `browser`
+skill), which can pause for a human answer mid-run and resume; quick agents cannot.
 
 ## How to dispatch
 
 ```
-beckett quick computer-use "check https://example.com/status — is the API listed as degraded?" --channel <id>
 beckett quick quick-code "write a script that dedupes the attached wordlist; input at /path/x.txt" --channel <id>
 beckett quick repo-explorer "clone anthropics/claude-code and tell me how its hook system works" --channel <id>
 ```
@@ -50,10 +50,10 @@ beckett quick repo-explorer "clone anthropics/claude-code and tell me how its ho
   project repos by their own doctrine.
 - **Things you already know or can read in one file** — just answer inline; a quick agent
   is still a whole model spin-up.
-- **Anything owner-gated or destructive** — approvals, account deletions, payments. The
-  computer-use agent will refuse credentials/payment it wasn't handed and will stop at
-  CAPTCHAs/login walls and report the blocker; when it does, bring that to the owner rather
-  than re-dispatching.
+- **Anything owner-gated or destructive** — approvals, account deletions, payments. Bring
+  those to the owner instead of dispatching an agent at them.
+- **Anything touching a live website or browser** — that's the background browser agent
+  (`beckett browser`), never this lane.
 - The lane holds a few concurrent runs; if it answers "quick lane is full", either wait or
   file a ticket — don't spam retries.
 

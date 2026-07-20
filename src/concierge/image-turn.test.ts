@@ -234,6 +234,74 @@ test("a non-mention with an attachment is still ignored (routing unchanged)", as
 
 // ── startup banner ─────────────────────────────────────────────────────────────
 
+test("start overlaps system Claude warm-up, Discord login, and workspace recovery before serving", async () => {
+  const previousStartupChannel = process.env.BECKETT_STARTUP_CHANNEL_ID;
+  process.env.BECKETT_STARTUP_CHANNEL_ID = "disabled";
+  let releaseWarm!: () => void;
+  let releaseGateway!: () => void;
+  let releaseRecovery!: () => void;
+  const warm = new Promise<void>((resolve) => { releaseWarm = resolve; });
+  const gatewayReady = new Promise<void>((resolve) => { releaseGateway = resolve; });
+  const workspaceRecovery = new Promise<void>((resolve) => { releaseRecovery = resolve; });
+  const calls: string[] = [];
+  const concierge = new Concierge({
+    config: config(tmpBeckettDir()),
+    session: {
+      start: async () => {
+        calls.push("warm");
+        await warm;
+      },
+      stop: async () => {},
+      ask: async () => "",
+    } as unknown as ConciergeSession,
+    gateway: {
+      start: async () => {
+        calls.push("gateway");
+        await gatewayReady;
+      },
+      stop: async () => {},
+      onMessage: () => {},
+      onThreadCreate: () => {},
+      sendTyping: async () => {},
+      post: async () => "posted-id",
+      isConnected: () => true,
+      lastEventAgeMs: () => 0,
+    } as unknown as DiscordGateway,
+  });
+  // Avoid opening a real Unix socket; this is the explicit boot-serving boundary under test.
+  (concierge as unknown as { serveControlBus: () => void }).serveControlBus = () => calls.push("bus");
+  (concierge as unknown as { restoreTaskWorkspaces: () => Promise<void> }).restoreTaskWorkspaces = async () => {
+    calls.push("restore");
+    await workspaceRecovery;
+  };
+
+  try {
+    const starting = concierge.start();
+    // Both independent starts must be in flight before either one resolves.
+    expect(calls).toEqual(["warm", "gateway"]);
+
+    releaseGateway();
+    // The gateway promise resolves, then its recovery chain crosses the async reconciliation
+    // boundary before entering restore.
+    for (let i = 0; i < 10 && !calls.includes("restore"); i++) await Promise.resolve();
+    // Recovery starts as soon as Discord is ready, while the Claude warm-up is still in flight.
+    expect(calls).toEqual(["warm", "gateway", "restore"]);
+    expect(calls).not.toContain("bus");
+
+    releaseRecovery();
+    await Promise.resolve();
+    expect(calls).not.toContain("bus");
+
+    releaseWarm();
+    await starting;
+    expect(calls).toEqual(["warm", "gateway", "restore", "bus"]);
+  } finally {
+    await concierge.stop();
+    if (previousStartupChannel === undefined) delete process.env.BECKETT_STARTUP_CHANNEL_ID;
+    else process.env.BECKETT_STARTUP_CHANNEL_ID = previousStartupChannel;
+  }
+});
+
 test("currentGitCommit reports the running repo's short hash + subject", async () => {
   const { short, subject } = await currentGitCommit(join(import.meta.dir, "..", ".."));
   expect(short).toMatch(/^[0-9a-f]{7,}$/); // a real abbreviated hash, not the "unknown" fallback

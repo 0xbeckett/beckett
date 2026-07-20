@@ -112,8 +112,9 @@ character is yours.
 > live worker; *cancelled* aborts it; when a worker finishes, the dispatcher advances the ticket
 > and posts a summary comment.
 
-The authoritative build contract is [`docs/V3.md`](docs/V3.md). Specs live in
-[`specs/`](specs/) (older v2 design is archived under `specs/_legacy-v2/` — historical only).
+The authoritative architecture doc is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Design
+history lives in [`specs/`](specs/): the original spec set under `specs/_legacy/`, the v2 design
+under `specs/_legacy-v2/`, and the v3 build contract under `specs/_legacy-v3/` — historical only.
 
 ## Run your own Beckett
 
@@ -139,9 +140,10 @@ bash /tmp/install-beckett.sh        # as root; otherwise: sudo bash /tmp/install
 ```
 
 It creates an unprivileged `beckett` account, enables user-service lingering, installs Node 24
-LTS plus Bun/Claude/Codex/Pi/GitHub CLI, clones the locked app dependencies, writes private
-instance config, and links the systemd units. It deliberately does **not** grant passwordless
-sudo or weaken the host's AppArmor policy.
+LTS plus Bun/Claude/Codex/Pi/GitHub CLI, clones the locked app dependencies, provisions the
+[bored](https://github.com/frgmt0/bored) ticket tracker (clone + build + a loopback `bored.service`
+user unit), writes private instance config, and links the systemd units. It deliberately does
+**not** grant passwordless sudo or weaken the host's AppArmor policy.
 
 Have these ready when prompted:
 
@@ -152,9 +154,6 @@ Have these ready when prompted:
   Numbered task threads inherit their parent channel's visibility, so put task creation in a
   suitably private parent when task names are sensitive. Discord's [bot quick start](https://docs.discord.com/developers/quick-start/getting-started)
   walks through creation and Guild Install;
-- a running [bored](https://github.com/frgmt0/bored) tracker service on the same box (loopback;
-  `BECKETT_BORED_URL`, default `http://127.0.0.1:7770`) — Beckett files, steers, and completes
-  every ticket through it;
 - a GitHub PAT and the matching GitHub username;
 - a Claude Code subscription login. Pi and Codex logins are needed only when those workers are
   enabled.
@@ -162,9 +161,10 @@ Have these ready when prompted:
 Browser/device authentication cannot be completed on someone else's behalf, so a fresh install
 stays safely staged instead of crash-looping. The installer prints the exact login commands and
 one rerun command; that rerun starts Beckett only after required secrets and enabled harness
-credentials exist. Before startup it checks the bored tracker is reachable, validates the GitHub PAT belongs
-to the configured account, and then runs `beckett doctor`. Every rerun is idempotent, preserves
-custom config/secrets, and explicitly restarts an already-running daemon onto the new code.
+credentials exist. Before startup it starts the bored tracker (Beckett files, steers, and completes
+every ticket through it) and confirms it is reachable, validates the GitHub PAT belongs to the
+configured account, and then runs `beckett doctor`. Every rerun is idempotent, preserves custom
+config/secrets, and explicitly restarts an already-running daemon onto the new code.
 
 Installing a fork is the same flow:
 
@@ -307,8 +307,8 @@ src/
   cli/          the `beckett` CLI (one entrypoint, beckett.ts)
   config.ts     strict, fully-defaulted config schema
 deploy/         systemd units, install.sh, deploy-prod.sh, host-setup.md
-docs/           V3.md (the build contract) + audits
-specs/          design specs (v2 archived under _legacy-v2/)
+docs/           ARCHITECTURE.md (the current doc) + extending-capabilities.md + audits
+specs/          design history (v3 under _legacy-v3/, v2 under _legacy-v2/, original under _legacy/)
 ```
 
 ## Contributing / working in the code
@@ -326,7 +326,7 @@ specs/          design specs (v2 archived under _legacy-v2/)
   to reproduce every label in every run.
 - **Style:** match the neighbors. This codebase leans on dense, explanatory comments that say
   *why*, strict config validation, and pure/testable helpers split out from I/O. Read
-  [`docs/V3.md`](docs/V3.md) §1 for the non-negotiable conventions.
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the non-negotiable conventions.
 - **New to the repo?** There's a paste-into-your-AI-agent onboarding prompt at
   [`docs/onboarding-prompt.md`](docs/onboarding-prompt.md) that gets a coding agent up to speed
   fast.

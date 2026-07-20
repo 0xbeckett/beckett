@@ -15,7 +15,7 @@ Type=simple
 WorkingDirectory=%h/beckett
 # Resolve Bun from the explicit daemon PATH below. The public installer puts it in ~/.bun/bin;
 # older hosts may still keep the same binary in /usr/local/bin.
-ExecStart=/usr/bin/env bun src/shell/v4-main.ts
+ExecStart=/usr/bin/env bun src/shell/main.ts
 # Always come back — a crash, an OOM kill, or a clean-looking exit all mean the coworker is
 # offline until something restarts it. Crash recovery (issue #20) makes restarts safe.
 Restart=always

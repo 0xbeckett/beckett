@@ -8,8 +8,7 @@
 
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { BetterWright, NetworkPolicy } from "betterwright";
-import { chromium } from "playwright";
+import { BetterWright, NetworkPolicy, piImageArtifacts } from "betterwright";
 import type { Logger } from "../types.ts";
 import type {
   BrowserCheckpoint,
@@ -32,9 +31,10 @@ interface BetterWrightResult {
   error?: string;
   console?: unknown[];
   events?: unknown[];
-  artifacts?: Array<{ path?: unknown; kind?: unknown }>;
+  artifacts?: Array<{ path?: unknown; kind?: unknown; media?: unknown }>;
   pages?: Array<{ url?: unknown; title?: unknown; active?: unknown }>;
   durationMs?: unknown;
+  [key: string]: unknown;
 }
 
 export function createBetterWrightRuntime(settings: BrowserHostSettings, logger: Logger): BrowserRuntime {
@@ -44,12 +44,13 @@ export function createBetterWrightRuntime(settings: BrowserHostSettings, logger:
   const home = join(resolve(settings.profileDir), "betterwright");
   const browser = new BetterWright({
     home,
-    browser: "chromium",
-    executablePath: chromium.executablePath(),
+    // 0.9.x ships a single managed CloakBrowser backend and provisions its own
+    // signed binary via `betterwright setup`, so the host no longer picks a
+    // browser flavor or hands in a Playwright executable path.
     headless: settings.headless,
     defaultTimeout: Math.max(5, Math.ceil(settings.evalTimeoutMs / 1_000)),
-    // BetterWright 0.6 retains 0.5's open private-network and loopback defaults.
-    // Pin them explicitly so Beckett's local/intranet access survives future upgrades.
+    // Pin the open private-network and loopback defaults explicitly so Beckett's
+    // local/intranet access survives future upgrades.
     policy: new NetworkPolicy({ allowLoopback: true, allowPrivateNetwork: true }),
     downloadPolicy: "deny",
     publicSearchPolicy: "block",
@@ -70,10 +71,13 @@ export function createBetterWrightRuntime(settings: BrowserHostSettings, logger:
   function copyArtifacts(result: BetterWrightResult, lease: ActiveLease): string[] {
     mkdirSync(lease.artifactsDir, { recursive: true, mode: 0o700 });
     const copied: string[] = [];
-    for (const artifact of result.artifacts ?? []) {
-      if (typeof artifact.path !== "string" || !/\.png$/i.test(artifact.path) || !existsSync(artifact.path)) continue;
-      const target = join(resolve(lease.artifactsDir), `betterwright-${Date.now()}-${copied.length}-${basename(artifact.path)}`);
-      copyFileSync(artifact.path, target);
+    // 0.9.x exposes screenshot files through the artifact's `MEDIA:`-prefixed
+    // `media` field; piImageArtifacts resolves that (and legacy `path`) to real
+    // local image paths, so copy those rather than reading `artifact.path`.
+    for (const image of piImageArtifacts(result)) {
+      if (!existsSync(image.path)) continue;
+      const target = join(resolve(lease.artifactsDir), `betterwright-${Date.now()}-${copied.length}-${basename(image.path)}`);
+      copyFileSync(image.path, target);
       copied.push(target);
     }
     return copied;

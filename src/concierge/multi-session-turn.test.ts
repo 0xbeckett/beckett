@@ -350,10 +350,6 @@ test("email, unstamped quick results, and boot warm-up use the dedicated system 
     state: "done",
     result: "all clear",
     detached: true,
-    sessionId: null,
-    proofFiles: [],
-    question: null,
-    questionMessageId: null,
   } satisfies QuickRun;
   await h.concierge.notifyQuickResult(unstamped);
   await tick();

@@ -5,7 +5,11 @@ exports[`cli: bare invocation prints the unknown-command help 1`] = `
   "exit": 1,
   "stderr": 
 "error: unknown command: beckett  
+<<<<<<< HEAD
 commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain
+=======
+commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline | proactivity status|set|off | quick <agent>|list | browser <task>|status | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain
+>>>>>>> origin/main
 "
 ,
   "stdout": "",
@@ -17,7 +21,11 @@ exports[`cli: unknown group prints the unknown-command help 1`] = `
   "exit": 1,
   "stderr": 
 "error: unknown command: beckett wat 
+<<<<<<< HEAD
 commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain
+=======
+commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline | proactivity status|set|off | quick <agent>|list | browser <task>|status | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain
+>>>>>>> origin/main
 "
 ,
   "stdout": "",
@@ -29,7 +37,11 @@ exports[`cli: bare discord group falls through to the help 1`] = `
   "exit": 1,
   "stderr": 
 "error: unknown command: beckett discord 
+<<<<<<< HEAD
 commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline | proactivity status|set|off | quick <agent>|list | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain
+=======
+commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline | proactivity status|set|off | quick <agent>|list | browser <task>|status | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain
+>>>>>>> origin/main
 "
 ,
   "stdout": "",
@@ -313,20 +325,13 @@ exports[`cli: identity: show of an unknown user returns null 1`] = `
 }
 `;
 
-exports[`cli: identity: list returns the seeded map 1`] = `
+exports[`cli: identity: list starts empty without an owner configuration 1`] = `
 {
   "exit": 0,
   "stderr": "",
   "stdout": 
 "{
-  "identities": {
-    "324777864375566338": {
-      "created_at": <EPOCH_MS>,
-      "updated_at": <EPOCH_MS>,
-      "known_name": "angry worm",
-      "preferred_address": "angry worm"
-    }
-  }
+  "identities": {}
 }
 "
 ,
@@ -491,18 +496,18 @@ exports[`cli: secret: bare prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett secret request --name <ENV_KEY> [--ttl <minutes>] | secret serve --port <port>
+"error: usage: beckett secret request (--name <ENV_KEY> | --fields <a,b:text>) [--dest keychain|env] [--entry <name>] [--service <domain>] [--requester <userId>] [--message <text>] [--ttl <minutes>] | secret serve --port <port>
 "
 ,
   "stdout": "",
 }
 `;
 
-exports[`cli: secret: request without --name prints usage 1`] = `
+exports[`cli: secret: request without --name or --fields prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett secret request --name <ENV_KEY> [--ttl <minutes>]
+"error: usage: beckett secret request (--name <ENV_KEY> | --fields <a,b:text>) [--dest keychain|env] [--entry <name>] [--service <domain>] [--requester <userId>] [--message <text>] [--ttl <minutes>] | secret serve --port <port>
 "
 ,
   "stdout": "",
@@ -524,7 +529,40 @@ exports[`cli: secret: request with a bad env name is rejected 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: secret request --name must be a single environment key (A-Z, digits, underscore; not starting with a digit)
+"error: secret request field must be a single environment key (A-Z, digits, underscore; not starting with a digit)
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: secret: keychain request without --entry is refused 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: secret request --dest keychain needs --entry <jingle entry handle>
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: secret: request with a bad --dest is rejected 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: secret request --dest must be 'keychain' or 'env'
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: secret: request rejects --name with --fields 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: secret request: use either --name (single env key) or --fields, not both
 "
 ,
   "stdout": "",
@@ -745,22 +783,16 @@ exports[`cli: access: unknown sub prints usage 1`] = `
 }
 `;
 
-exports[`cli: maintainer: ls returns the bundled seed 1`] = `
+exports[`cli: maintainer: ls returns the empty bundled baseline 1`] = `
 {
   "exit": 0,
   "stderr": "",
   "stdout": 
 "{
-  "ids": [
-    "1151230208783945818",
-    "1132125761264951339"
-  ],
-  "bundled": [
-    "1151230208783945818",
-    "1132125761264951339"
-  ],
+  "ids": [],
+  "bundled": [],
   "granted": [],
-  "count": 2,
+  "count": 0,
   "pending": []
 }
 "
@@ -1717,7 +1749,7 @@ exports[`cli: quick: no agent/task prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett quick <computer-use|quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list
+"error: usage: beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list
 "
 ,
   "stdout": "",
@@ -1728,7 +1760,7 @@ exports[`cli: quick: agent without a task prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett quick <computer-use|quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list
+"error: usage: beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list
 "
 ,
   "stdout": "",

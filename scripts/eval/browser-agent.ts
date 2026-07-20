@@ -9,7 +9,7 @@ import { chromium } from "playwright";
 import { browserHostSettings } from "../../src/browser/runtime.ts";
 import { createIsolatedBrowserRuntime } from "../../src/browser/isolated.ts";
 import { BROWSER_TOOL_DEFINITION } from "../../src/browser/mcp.ts";
-import { BROWSER_RESULT_SCHEMA } from "../../src/quick/index.ts";
+import { BROWSER_RESULT_SCHEMA } from "../../src/browser/agent.ts";
 import { serveBus } from "../../src/shell/control-bus.ts";
 import { validateConfig } from "../../src/config.ts";
 import type { Logger } from "../../src/types.ts";
@@ -326,7 +326,7 @@ async function main(): Promise<void> {
   });
   const schemaPath = join(temp, "result-schema.json");
   writeFileSync(schemaPath, JSON.stringify(BROWSER_RESULT_SCHEMA));
-  const promptPath = join(root, "src", "quick", "agents", "computer-use.md");
+  const promptPath = join(root, "src", "browser", "agent.md");
   const mcpPath = join(root, "src", "browser", "mcp.ts");
   const referenceMcpPath = join(root, "scripts", "eval", "reference-mcp.ts");
   const results: Record<string, unknown>[] = [];

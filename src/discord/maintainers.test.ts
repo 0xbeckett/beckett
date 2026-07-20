@@ -19,8 +19,8 @@ import {
   revokeMaintainer,
 } from "./maintainers.ts";
 
-const OWNER = "1151230208783945818";
-const ZOOM = "1132125761264951339";
+const OWNER = "111111111111111111";
+const ZOOM = "222222222222222222";
 const PEER = "888888888888888888";
 const CANDIDATE = "999999999999999999";
 
@@ -37,10 +37,14 @@ function tmp(): { runtime: string; bundled: string; pending: string } {
   return { runtime: join(d, "maintainers.txt"), bundled, pending: join(d, "maintainers-pending.json") };
 }
 
-test("the repo ships a bundled maintainers.txt listing the owner and zoom", () => {
-  const ids = loadAccess(bundledMaintainersFile()).ids;
-  expect(ids.has(OWNER)).toBe(true);
-  expect(ids.has(ZOOM)).toBe(true);
+test("the repo ships an empty bundled maintainer baseline", () => {
+  expect(loadAccess(bundledMaintainersFile()).ids).toEqual(new Set());
+});
+
+test("runtime maintainer additions remain effective with the empty shipped baseline", () => {
+  const { runtime } = tmp();
+  writeFileSync(runtime, `${PEER}\n`, "utf8");
+  expect(loadMaintainers(runtime)).toEqual(new Set([PEER]));
 });
 
 test("membership is the union of the bundled seed and runtime additions", () => {

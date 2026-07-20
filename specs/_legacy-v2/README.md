@@ -1,7 +1,7 @@
 # Beckett — Specs (v2)
 
 > **SUPERSEDED:** This v2 design set describes the retired parent/MCP/watcher architecture.
-> Current build agents should start with [`docs/V3.md`](../../docs/V3.md).
+> Current build agents should start with [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
 
 **Beckett is an agentic coworker you reach in Discord.** You `@beckett` a task; it judges how
 much it needs, does the whole thing — answering inline, spinning off one worker, or fanning out a

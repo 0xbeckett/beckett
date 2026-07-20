@@ -166,36 +166,27 @@ export function resolveAddress(identity: UserIdentity | undefined): string | und
   return identity.preferred_address || identity.known_name || undefined;
 }
 
-/** The seed entry every install ships with, so the map has a real example on day one. */
-export const SEED_IDENTITY: { id: string; identity: IdentityPatch } = {
-  id: "324777864375566338",
-  identity: { known_name: "angry worm", preferred_address: "angry worm" },
-};
-
-/** How to name the owner when the env doesn't say (DISCORD_OWNER_NAME overrides). */
-const DEFAULT_OWNER_NAME = "Jason";
+/** A neutral address used only when DISCORD_OWNER_NAME is not configured. */
+const DEFAULT_OWNER_NAME = "owner";
 
 /**
- * Ensure the map has its day-one entries WITHOUT clobbering anything already recorded:
- *   - the seed example ({@link SEED_IDENTITY}), so there's a real mapping from the start;
- *   - the owner (when `ownerId` is set), flagged `is_owner` and given a `known_name`, so the
- *     session-context owner identity is bound to that ONE id and not to every speaker.
+ * Ensure the configured owner has an identity entry WITHOUT clobbering anything already
+ * recorded. Fresh installs intentionally ship with no identity-map seed: the first entry is
+ * derived only from DISCORD_OWNER_ID and DISCORD_OWNER_NAME. The owner is flagged `is_owner`
+ * and given a `known_name`, binding session-context ownership to that ONE id rather than to
+ * every speaker.
+ *
  * Idempotent and additive: an entry that already exists is left as-is (respecting later edits
  * like a "call me X"), we only fill in what's missing. Returns whether the file was written.
  */
 export function ensureSeeded(
   file: string,
-  ownerId?: string,
+  ownerId: string | undefined = process.env.DISCORD_OWNER_ID?.trim(),
   ownerName: string = process.env.DISCORD_OWNER_NAME?.trim() || DEFAULT_OWNER_NAME,
   now: number = Date.now(),
 ): boolean {
   const map = loadIdentities(file);
   let changed = false;
-
-  if (!map[SEED_IDENTITY.id]) {
-    map[SEED_IDENTITY.id] = { ...SEED_IDENTITY.identity, created_at: now, updated_at: now };
-    changed = true;
-  }
 
   if (ownerId && isSnowflake(ownerId)) {
     const existing = map[ownerId];

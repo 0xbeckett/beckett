@@ -27,6 +27,11 @@ function packageJsonPath(repoRoot: string): string {
   return join(repoRoot, "package.json");
 }
 
+/** The changelog cut alongside the version bump (OPS/issue #147). */
+export function changelogPath(repoRoot: string): string {
+  return join(repoRoot, "CHANGELOG.md");
+}
+
 /**
  * Read Beckett's current version from the source of truth (`package.json`). Throws if the file is
  * missing or its `version` isn't a MAJOR.MINOR.PATCH string — the version is load-bearing, so a
@@ -62,6 +67,81 @@ export function writeVersion(newVersion: string, repoRoot: string = defaultRepoR
   const replaced = raw.replace(versionField, `$1${next}$3`);
   writeFileSync(path, replaced);
   return next;
+}
+
+/**
+ * Local calendar date as `YYYY-MM-DD` — the dated-heading stamp for a changelog cut. Kept local
+ * (not UTC) so the section date matches the operator's day when they run the deploy.
+ */
+function todayISODate(now: Date = new Date()): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/** The result of a changelog cut. `changed` is false when there was nothing to release. */
+export interface ChangelogCut {
+  /** Whether CHANGELOG.md was rewritten (false = no Unreleased entries, or no changelog file). */
+  changed: boolean;
+  /** The version the Unreleased block was moved under (bare `X.Y.Z`). */
+  version: string;
+  /** The dated stamp applied to the new heading. */
+  date: string;
+  /** The changelog path considered. */
+  path: string;
+}
+
+const UNRELEASED_HEADING_RE = /^## Unreleased[^\n]*$/m;
+
+/**
+ * Fold the CHANGELOG's `## Unreleased` block under a dated `## vX.Y.Z (date)` heading and leave a
+ * fresh empty `## Unreleased` stub in its place (issue #147). This is what keeps CHANGELOG and
+ * `package.json` from drifting: the deploy-time bump moves the notes at the exact moment it writes
+ * the version, so a release can never ship an uncut changelog.
+ *
+ * A missing CHANGELOG.md or an empty Unreleased section is a clean no-op (`changed: false`) — a
+ * patch release with no notes shouldn't manufacture an empty dated section or fail the deploy. A
+ * changelog that exists but has no `## Unreleased` heading at all IS an error: the contract is that
+ * new work accumulates there, so its absence means the file diverged and must be fixed by hand.
+ */
+export function cutChangelog(
+  version: string,
+  repoRoot: string = defaultRepoRoot(),
+  date: string = todayISODate(),
+): ChangelogCut {
+  const v = formatSemver(parseSemver(version)); // normalize + validate (strips any leading `v`)
+  const path = changelogPath(repoRoot);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return { changed: false, version: v, date, path };
+  }
+
+  const heading = UNRELEASED_HEADING_RE.exec(raw);
+  if (!heading) {
+    throw new Error("CHANGELOG.md has no '## Unreleased' section to cut");
+  }
+  const bodyStart = heading.index + heading[0].length;
+  // The Unreleased body runs until the next top-level `## ` heading (the previous release) or EOF.
+  const nextHeading = /\n## /.exec(raw.slice(bodyStart));
+  const bodyEnd = nextHeading ? bodyStart + nextHeading.index : raw.length;
+  const body = raw.slice(bodyStart, bodyEnd);
+  if (body.trim() === "") {
+    return { changed: false, version: v, date, path }; // nothing accumulated — leave the stub alone
+  }
+
+  const trimmedBody = body.replace(/^\n+/, "").replace(/\n+$/, "");
+  const rebuilt =
+    raw.slice(0, heading.index) +
+    "## Unreleased\n\n" +
+    `## v${v} (${date})\n\n` +
+    trimmedBody +
+    "\n" +
+    raw.slice(bodyEnd);
+  writeFileSync(path, rebuilt);
+  return { changed: true, version: v, date, path };
 }
 
 /** Run git in `repoRoot`, returning trimmed stdout ("" on any failure). Best-effort, never throws. */
@@ -201,15 +281,22 @@ export function resolveVersion(
 }
 
 /**
- * Stage `package.json` and commit the version write on `repoRoot`. Best-effort return of the commit
- * message on success; throws only if the commit itself fails (so the deploy can surface it). The
- * caller owns pushing — this just records the bump locally.
+ * Stage `package.json` (plus any `extraPaths`, e.g. a cut `CHANGELOG.md`) and commit the version
+ * write on `repoRoot` in ONE commit. Best-effort return of the commit message on success; throws
+ * only if the commit itself fails (so the deploy can surface it). The caller owns pushing — this
+ * just records the bump locally. Keeping the changelog cut in the same commit is what guarantees
+ * the version and its release notes can never land separately (issue #147).
  */
-export async function commitVersion(repoRoot: string, version: string): Promise<string> {
+export async function commitVersion(
+  repoRoot: string,
+  version: string,
+  extraPaths: string[] = [],
+): Promise<string> {
   const message = `beckett: release v${version}`;
-  await runGit(repoRoot, ["add", "package.json"]);
+  const files = ["package.json", ...extraPaths];
+  await runGit(repoRoot, ["add", ...files]);
   const proc = Bun.spawn({
-    cmd: ["git", "-C", repoRoot, "commit", "-m", message, "package.json"],
+    cmd: ["git", "-C", repoRoot, "commit", "-m", message, ...files],
     stdout: "pipe",
     stderr: "pipe",
   });

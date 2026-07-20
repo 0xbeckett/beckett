@@ -211,13 +211,13 @@ test("isolated leases require the exact high-entropy control capability", async 
     await expect(runtime.acquire({
       runId: "capability",
       channelId: null,
-      artifactsDir: join(dir, "quick", "capability", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "capability", "artifacts"),
       controlToken: "short",
     })).rejects.toThrow("high-entropy");
     await runtime.acquire({
       runId: "capability",
       channelId: null,
-      artifactsDir: join(dir, "quick", "capability", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "capability", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     await expect(runtime.evaluate("capability", "return 42", "wrong-token-that-is-long-enough-000000")).rejects.toThrow(
@@ -243,7 +243,7 @@ test("evaluator never receives a screenshot path and daemon delivers a trusted P
     await runtime.acquire({
       runId: "nofollow",
       channelId: null,
-      artifactsDir: join(dir, "quick", "nofollow", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "nofollow", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     const evaluated = await runtime.evaluate("nofollow", `
@@ -284,7 +284,7 @@ test("persistent browser state survives lease host replacement", async () => {
     await runtime.acquire({
       runId: "first",
       channelId: null,
-      artifactsDir: join(dir, "quick", "first", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "first", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     await runtime.evaluate("first", `
@@ -300,7 +300,7 @@ test("persistent browser state survives lease host replacement", async () => {
     await runtime.acquire({
       runId: "second",
       channelId: null,
-      artifactsDir: join(dir, "quick", "second", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "second", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     const restored = await runtime.evaluate("second", `
@@ -328,7 +328,7 @@ test("isolated stop interrupts a cold acquisition without leaving a host", async
     const acquisition = runtime.acquire({
       runId: "stopping",
       channelId: null,
-      artifactsDir: join(dir, "quick", "stopping", "artifacts"),
+      artifactsDir: join(dir, "browser-agent", "stopping", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
     const stopping = runtime.stop();
