@@ -69,6 +69,7 @@ import { classify, loadAccess, resolvePending, ACCESS_CAP, type AccessLevel } fr
 import { loadMaintainers, resolveMaintainerPending } from "../discord/maintainers.ts";
 import { childEnv as strippedChildEnv } from "../env.ts";
 import type { QuickRun, QuickRunner } from "../quick/index.ts";
+import type { AgentDefinition } from "../agent/types.ts";
 import type { BrowserRuntime } from "../browser/runtime.ts";
 import {
   redactSecretText,
@@ -1516,6 +1517,12 @@ export class Concierge {
     ): Promise<{ routineId: string; preview: string; browserTask: string; credsEntry: string | null }>;
   } | null = null;
   /**
+   * The live agent registry wired in by v4-main (issue #66): the runtime enumeration surface the
+   * concierge/dispatcher use to discover which agents exist (agents.json, read live every call).
+   * Null until wired — {@link listKnownAgents} then answers empty.
+   */
+  private agentRegistry: { list(): AgentDefinition[]; get(id: string): AgentDefinition | null } | null = null;
+  /**
    * Daemon-wide status assembler wired in by v4-main (issue #30): answers the `status` bus command
    * with poller/dispatcher/tracker health the Concierge can't see itself. Null until wired — the bus
    * command then answers with the Concierge-local half only.
@@ -1802,6 +1809,20 @@ export class Concierge {
   /** Wire the routine levers (v4-main, issue #62). See {@link routineOps}. */
   setRoutineOps(ops: NonNullable<Concierge["routineOps"]>): void {
     this.routineOps = ops;
+  }
+
+  /** Wire the live agent registry (issue #66). See {@link agentRegistry}. */
+  setAgentRegistry(registry: NonNullable<Concierge["agentRegistry"]>): void {
+    this.agentRegistry = registry;
+  }
+
+  /**
+   * Enumerate the agents known to the running daemon right now — the runtime discovery API #55.3's
+   * prompting builds on. Reads the live registry (agents.json) on every call, so a `beckett agent
+   * add/rm` shows up with no restart. Returns [] when the registry isn't wired.
+   */
+  listKnownAgents(): AgentDefinition[] {
+    return this.agentRegistry?.list() ?? [];
   }
 
   /** Wire the daemon-wide status assembler (v4-main, issue #30). See {@link statusProvider}. */
@@ -2759,6 +2780,32 @@ export class Concierge {
               } catch (err) {
                 return { ok: false, error: (err as Error).message };
               }
+            },
+          },
+        ],
+      },
+      {
+        id: "agent",
+        summary: "live agent registry: enumerate the worker personas the running daemon knows (issue #66)",
+        actionClass: ActionClass.FREE,
+        cliVerbs: [],
+        busCommands: [
+          {
+            name: "agent.ls",
+            summary: "list the agents the running daemon knows about right now (read live from agents.json)",
+            handle: async () => {
+              return { ok: true, data: { agents: this.listKnownAgents() } };
+            },
+          },
+          {
+            name: "agent.show",
+            summary: "fetch one agent definition the running daemon knows by id",
+            handle: async (req) => {
+              const id = typeof req.args.id === "string" ? req.args.id.trim() : "";
+              if (!id) return { ok: false, error: "usage: agent.show <id>" };
+              const agent = this.agentRegistry?.get(id) ?? null;
+              if (!agent) return { ok: false, error: `no such agent: ${id}` };
+              return { ok: true, data: { agent } };
             },
           },
         ],

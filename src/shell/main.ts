@@ -50,6 +50,7 @@ import { createMemory } from "../memory/index.ts";
 import { startRoutineMaintenance } from "../memory/maintain.ts";
 import { RoutineStore } from "../routine/store.ts";
 import { startRoutineScheduler, type RoutineScheduler } from "../routine/scheduler.ts";
+import { LiveAgentRegistry } from "../agent/registry.ts";
 import { TaskStore } from "../task/store.ts";
 import { createBranchStatusService } from "../task/status.ts";
 import { readLocalBranchStats } from "../git/branch-stats.ts";
@@ -607,6 +608,14 @@ async function boot(): Promise<BootedSystem> {
   concierge.setRoutineOps({
     fire: (id, opts) => routineScheduler.fireNow(id, opts),
   });
+
+  // Agent registry (issue #66): reusable worker personas defined/added WITHOUT a daemon redeploy —
+  // agents.json is read LIVE (defensively; a bad/partial file logs-and-skips, never crashes the
+  // daemon) every time the concierge enumerates. This is the runtime discovery surface #55.3 builds on.
+  const agentRegistry = new LiveAgentRegistry(join(beckettDir, "agents.json"), {
+    logger: logger.child("agent"),
+  });
+  concierge.setAgentRegistry(agentRegistry);
   // Prime once shortly after boot so a routine whose window is live right now is caught up
   // without waiting a full tick. Best-effort; failures are logged inside the scheduler.
   setTimeout(() => void routineScheduler.tick().catch(() => {}), 5_000).unref?.();

@@ -37,6 +37,8 @@ import { RoutineStore } from "../routine/store.ts";
 import { buildDispatchPlan } from "../routine/plan.ts";
 import { nextFireAt, isValidTimeZone } from "../routine/schedule.ts";
 import type { Routine } from "../routine/types.ts";
+import { AgentStore } from "../agent/store.ts";
+import { AGENT_HARNESSES, AGENT_EFFORTS, type AgentDefinition } from "../agent/types.ts";
 import { startTaskBranch } from "./task-start.ts";
 import { quickDetachedMessage } from "./quick-output.ts";
 import { formatDispatchTrace, readDispatchEvents } from "../dispatch/events.ts";
@@ -1538,6 +1540,103 @@ async function runRoutine(argv: string[]): Promise<void> {
   );
 }
 
+function agentStore(): AgentStore {
+  return new AgentStore(join(paths.beckettDir, "agents.json"));
+}
+
+function summarizeAgent(agent: AgentDefinition): Record<string, unknown> {
+  return {
+    id: agent.id,
+    description: agent.description,
+    harness: agent.model.harness,
+    model: agent.model.model,
+    effort: agent.model.effort || "(harness default)",
+    skills: agent.skills,
+    tools: agent.tools,
+    persistent: agent.persistent,
+    builtin: agent.builtin,
+  };
+}
+
+/** Split "a, b ,c" → ["a","b","c"], dropping blanks. Empty/absent → []. */
+function splitList(raw: unknown): string[] {
+  if (typeof raw !== "string") return [];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * `beckett agent` (issue #66): add/list/show/remove reusable worker personas in the LIVE agent
+ * registry. Definitions live in `agents.json` (read here directly, same as routines/tasks); the
+ * running daemon picks up adds/removes with no restart via its live loader (src/agent/registry.ts).
+ */
+async function runAgent(argv: string[]): Promise<void> {
+  const [sub, ...rest] = argv;
+  const store = agentStore();
+
+  if (!sub || sub === "ls" || sub === "list") {
+    const agents = await store.list();
+    out(agents.map(summarizeAgent));
+  }
+
+  if (sub === "show" || sub === "inspect") {
+    const id = rest[0];
+    if (!id) fail("usage: beckett agent show <id>");
+    const agent = await store.get(id!);
+    if (!agent) fail(`no such agent: ${id}`);
+    out({ ...summarizeAgent(agent!), systemPrompt: agent!.systemPrompt, createdAt: agent!.createdAt, updatedAt: agent!.updatedAt });
+  }
+
+  if (sub === "add") {
+    const { _, flags } = parse(rest);
+    const id = _[0];
+    const usage =
+      'usage: beckett agent add <id> --description "<what it is>" --prompt "<system prompt>" ' +
+      "--model <model> [--harness claude|codex|pi] [--effort low|medium|high|xhigh] " +
+      "[--skills a,b,c] [--tools a,b,c] [--persistent]";
+    if (!id) fail(usage);
+    const description = flags.description ? String(flags.description) : "";
+    if (!description.trim()) fail(`an agent needs a --description. ${usage}`);
+    const systemPrompt = flags.prompt ? String(flags.prompt) : "";
+    if (!systemPrompt.trim()) fail(`an agent needs a --prompt (system prompt). ${usage}`);
+    const model = flags.model ? String(flags.model) : "";
+    if (!model.trim()) fail(`an agent needs a --model. ${usage}`);
+    const harness = flags.harness ? String(flags.harness) : "claude";
+    if (!(AGENT_HARNESSES as readonly string[]).includes(harness)) {
+      fail(`--harness must be one of: ${AGENT_HARNESSES.join(", ")}`);
+    }
+    const effort = flags.effort !== undefined ? String(flags.effort) : "medium";
+    if (!(AGENT_EFFORTS as readonly string[]).includes(effort)) {
+      fail(`--effort must be one of: ${AGENT_EFFORTS.filter(Boolean).join(", ")}`);
+    }
+    try {
+      const agent = await store.add({
+        id: id!,
+        description,
+        systemPrompt,
+        model: { harness: harness as AgentDefinition["model"]["harness"], model, effort: effort as AgentDefinition["model"]["effort"] },
+        skills: splitList(flags.skills),
+        tools: splitList(flags.tools),
+        persistent: flags.persistent === true,
+      });
+      out(summarizeAgent(agent));
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  }
+
+  if (sub === "rm" || sub === "remove") {
+    const id = rest[0];
+    if (!id) fail("usage: beckett agent rm <id>");
+    const removed = await store.remove(id!);
+    if (!removed) fail(`no such agent: ${id}`);
+    out(`removed agent ${id}`);
+  }
+
+  fail(
+    'usage: beckett agent ls | show <id> | add <id> --description "..." --prompt "..." --model <model> [--harness ...] [--effort ...] [--skills a,b] [--tools a,b] [--persistent] | rm <id>',
+  );
+}
+
 async function runQuick(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (sub === "list") {
@@ -1829,6 +1928,22 @@ function buildCliCapabilities(): Capability[] {
           usage:
             'beckett routine list | inspect <id> | add <id> --window 12:00-13:00 --tz <IANA> --task "<task>" [--creds <entry>] | remove <id> | enable|disable <id> | fire <id> [--dry-run|--force]',
           run: runRoutine,
+        },
+      ],
+      busCommands: [],
+    },
+    {
+      id: "agent",
+      summary: "live agent registry: define/add/list/show/remove reusable worker personas (issue #66)",
+      actionClass: ActionClass.FREE,
+      cliHelp: "agent ls|show|add|rm",
+      cliVerbs: [
+        {
+          name: "agent",
+          summary: "reusable worker personas (system prompt + harness/model/effort + skills/tools) read live by the daemon",
+          usage:
+            'beckett agent ls | show <id> | add <id> --description "<what>" --prompt "<system prompt>" --model <model> [--harness claude|codex|pi] [--effort low|medium|high|xhigh] [--skills a,b] [--tools a,b] [--persistent] | rm <id>',
+          run: runAgent,
         },
       ],
       busCommands: [],
