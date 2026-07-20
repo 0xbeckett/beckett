@@ -1952,7 +1952,8 @@ export class Dispatcher {
       );
       const timer = setTimeout(() => {
         this.spawnRetryTimers.delete(ticket.id);
-        this.spawnGuarded(ticket, stage);
+        // #65: a cancel can land during the backoff window — respawn only if still active.
+        void this.respawnIfActive(ticket, stage);
       }, delayMs);
       this.spawnRetryTimers.set(ticket.id, timer);
       return;
@@ -2014,7 +2015,7 @@ export class Dispatcher {
           failed,
           substitute: candidate,
         });
-        this.spawnGuarded(ticket, "implement");
+        await this.respawnIfActive(ticket, "implement"); // #65: skip if cancelled while classifying
         return;
       }
     }
@@ -2049,7 +2050,8 @@ export class Dispatcher {
       );
       const timer = setTimeout(() => {
         this.spawnRetryTimers.delete(ticket.id);
-        this.spawnGuarded(ticket, "implement");
+        // #65: a cancel can land during the backoff window — respawn only if still active.
+        void this.respawnIfActive(ticket, "implement");
       }, delayMs);
       this.spawnRetryTimers.set(ticket.id, timer);
       return;

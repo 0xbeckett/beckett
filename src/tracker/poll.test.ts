@@ -194,6 +194,23 @@ describe("TrackerPoller comment hot path", () => {
     expect(events).toEqual([{ kind: "state_changed", ticket: reviewing, from: null, to: "in_review" }]);
   });
 
+  test("prime does NOT re-staff cancelled or done tickets on boot (#65)", async () => {
+    const client = new FakeTrackerClient();
+    // A ticket cancelled/finished before the last daemon exit must not be resurrected on boot — the
+    // dispatcher would otherwise spawn a worker against work nobody wants. Only the active in_progress
+    // ticket gets a recovery event.
+    const cancelled = ticket({ id: "c1", identifier: "OPS-C", state: "cancelled" });
+    const finished = ticket({ id: "d1", identifier: "OPS-D", state: "done" });
+    const active = ticket({ id: "a1", identifier: "OPS-A", state: "in_progress" });
+    client.tickets = [cancelled, finished, active];
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
+
+    const events = await poller.prime();
+    expect(events.filter((e) => e.kind === "state_changed")).toEqual([
+      { kind: "state_changed", ticket: active, from: null, to: "in_progress" },
+    ]);
+  });
+
   test("warm restart re-staffs a previously-seen active ticket silently (no from:null ping, no created)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-poll-snapshot-"));
     try {
