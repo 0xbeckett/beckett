@@ -158,6 +158,17 @@ test("boot recovery (from: null) tells the user the ticket is being re-staffed (
   expect(asks[0]).toContain("restarted");
 });
 
+test("warm-restart silent re-staff (from === to) does NOT ping the user (issue #60)", async () => {
+  // The poller re-staffs a previously-seen active ticket by seeding a same-state transition so the
+  // Dispatcher picks it up WITHOUT the `from: null` restart ping. The concierge must stay silent —
+  // this is the phantom-ping-storm fix's user-facing guarantee.
+  const { concierge, asks } = harness();
+  concierge.notify({ kind: "state_changed", ticket: ticket(), from: "in_progress", to: "in_progress" });
+  concierge.notify({ kind: "state_changed", ticket: ticket({ state: "in_review" }), from: "in_review", to: "in_review" });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(0);
+});
+
 test("does not double-surface non-terminal state changes (covered by the comment)", () => {
   const { concierge, asks } = harness();
   concierge.notify({ kind: "state_changed", ticket: ticket(), from: "in_progress", to: "in_review" });
