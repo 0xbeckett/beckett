@@ -835,7 +835,7 @@ export class Dispatcher {
 
   /**
    * Drop a ticket's in-memory job (issue #65): its worker-table entry, mid-spawn reservation, retry
-   * counter, pending backed-off retry timer, crash-recovery ledger row, and repo lease. Used when a
+   * counters, pending backed-off retry timer, crash-recovery ledger row, and repo lease. Used when a
    * respawn is refused because the ticket is no longer active. Best-effort and idempotent — the
    * worker process is already dead by the time this runs (a live one is torn down by onCancelled).
    */
@@ -845,6 +845,7 @@ export class Dispatcher {
     this.liveTickets.delete(ticketId);
     this.cancelSpawnRetry(ticketId);
     this.implementRetries.delete(ticketId);
+    this.reviewInfraRetries.delete(ticketId);
     this.liveLedger.delete(ticketId);
     this.releaseRepo(ticketId);
     this.persistRuntimeState();
@@ -2756,6 +2757,19 @@ export class Dispatcher {
   }
 
   private async onReviewInfraFailure(ticket: Ticket, reason: string, summary: string): Promise<void> {
+    // #65: a review worker that crashed/errored for a CANCELLED (or done) ticket must not be retried —
+    // same churn guard as the implement path, so a cancel landing mid-review can't loop the review
+    // gate against work nobody wants. Consult the tracker's LIVE state (the captured one is stale).
+    const liveState = await this.currentTicketState(ticket);
+    if (liveState === "cancelled" || liveState === "done") {
+      this.logger.info("review gate failed for a no-longer-active ticket — not retrying", {
+        ticket: ticket.identifier,
+        state: liveState,
+      });
+      this.trace(ticket, "review:verdict", "held", `ticket is ${liveState}; not retrying`);
+      this.releaseJob(ticket.id);
+      return;
+    }
     this.trace(ticket, "review:verdict", "failed", "review infrastructure/schema failure", reason);
     const attempts = (this.reviewInfraRetries.get(ticket.id) ?? 0) + 1;
     this.reviewInfraRetries.set(ticket.id, attempts);

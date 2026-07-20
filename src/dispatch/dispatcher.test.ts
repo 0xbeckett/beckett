@@ -627,6 +627,25 @@ describe("advance on finish", () => {
     expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(1);
   });
 
+  test("#65: a crashed REVIEW worker for a cancelled ticket is NOT respawned", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ state: "in_review" });
+    client.board = [ticket];
+    await d.handle(stateChanged(ticket, "in_review"));
+    await tick();
+    expect(spawnCalls.filter((c) => c.stage === "review")).toHaveLength(1);
+
+    // Human cancels while the reviewer runs; then the review worker crashes (reads like an infra
+    // failure). The review-gate retry must consult live state and refuse to respawn.
+    ticket.state = "cancelled";
+    created[0]!.finish("error", "reviewer blew up");
+    await settle();
+
+    expect(spawnCalls.filter((c) => c.stage === "review")).toHaveLength(1);
+    expect(client.comments.some((c) => c.body.includes("Retrying the review gate"))).toBe(false);
+    expect(client.setStateCalls).toHaveLength(0);
+  });
+
   test("v3.1: self-review tier (low effort) → done in one pass, no in_review relay", async () => {
     const { d, client } = newDispatcher();
     const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
