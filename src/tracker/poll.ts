@@ -49,6 +49,17 @@ interface CommentCursor {
   lastCommentIds: string[];
 }
 
+/** The slice of a {@link Snapshot} that survives a restart on disk — enough to tell, on boot, that a
+ *  ticket was ALREADY seen in a given state so it isn't replayed as a fresh event (issue #60). */
+interface PersistedSnapshotEntry {
+  state: TicketState;
+  updatedAt: string;
+}
+
+/** States a restart must re-staff (their in-memory worker died with the daemon). Kept in sync with
+ *  the poll/prime first-sight branches so "active" means one thing in both places. */
+const RECOVERABLE_ACTIVE = new Set<TicketState>(["design", "in_progress", "in_review"]);
+
 /**
  * Sweep interval for comment reads on unchanged active tickets. bored does NOT bump a ticket's
  * updatedAt when a nudge lands, so this sweep IS the comment/steering delivery path (verified
@@ -69,6 +80,12 @@ export interface TrackerPollerDeps {
   now?: () => number;
   /** Durable comment cursor path. When set, startup sees comments posted while the daemon was down. */
   commentCursorPath?: string;
+  /**
+   * Durable state-snapshot path (issue #60). When set, a restart loads the prior ticket→state map so
+   * previously-seen active tickets are re-staffed SILENTLY instead of replaying `created` +
+   * `state_changed{from:null}` (the phantom-ping storm). A missing/corrupt file degrades to cold start.
+   */
+  snapshotPath?: string;
 }
 
 /** A non-action handler used by {@link TrackerPoller.start}. */
@@ -81,6 +98,12 @@ export class TrackerPoller {
   private readonly now: () => number;
   private readonly commentCursorPath?: string;
   private readonly persistedCommentCursors = new Map<string, CommentCursor>();
+  private readonly snapshotPath?: string;
+  /** The prior run's ticket→state map, loaded from disk once at construction. Read-only after load; a
+   *  match here (same id, same active state) means the ticket was already known before the restart. */
+  private readonly priorSnapshot = new Map<string, PersistedSnapshotEntry>();
+  /** Last body written to {@link snapshotPath}, so an unchanged board doesn't re-write the file each tick. */
+  private lastSnapshotSerialized: string | null = null;
 
   private readonly snapshot = new Map<string, Snapshot>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -101,7 +124,9 @@ export class TrackerPoller {
     this.pollSecs = deps.pollSecs ?? 5;
     this.now = deps.now ?? Date.now;
     this.commentCursorPath = deps.commentCursorPath;
+    this.snapshotPath = deps.snapshotPath;
     this.loadCommentCursors();
+    this.loadSnapshot();
   }
 
   // ── primary surface (V3 §4) ────────────────────────────────────────────────────────────
@@ -182,9 +207,19 @@ export class TrackerPoller {
         // First sight: announce creation; seed comment cursor at "now" so we never replay the
         // ticket's whole comment history. If it appears already in an active state, also emit a
         // state_changed{from:null} so the Dispatcher can pick up in-flight work.
-        slots.push({ kind: "created", ticket });
-        if (ticket.state === "design" || ticket.state === "in_progress" || ticket.state === "in_review") {
-          slots.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
+        //
+        // Warm exception (issue #60): if this ticket was already known in this SAME active state
+        // before the restart (normally prime() seeds it, but this branch also covers a prime()
+        // that failed its listIssues), it is NOT a fresh event — suppress `created` and emit a
+        // silent same-state seed (from===to) so the Dispatcher still re-staffs the lost worker
+        // WITHOUT the concierge firing a `from:null` restart ping.
+        if (RECOVERABLE_ACTIVE.has(ticket.state) && this.priorSnapshot.get(ticket.id)?.state === ticket.state) {
+          slots.push({ kind: "state_changed", ticket, from: ticket.state, to: ticket.state });
+        } else {
+          slots.push({ kind: "created", ticket });
+          if (RECOVERABLE_ACTIVE.has(ticket.state)) {
+            slots.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
+          }
         }
         this.snapshot.set(ticket.id, {
           state: ticket.state,
@@ -225,6 +260,7 @@ export class TrackerPoller {
     for (const id of [...this.snapshot.keys()]) {
       if (!seen.has(id)) this.snapshot.delete(id);
     }
+    this.saveSnapshot();
 
     const batches = await Promise.all(
       slots.map(async (slot) => {
@@ -264,6 +300,7 @@ export class TrackerPoller {
     let inDesign = 0;
     let recoverInProgress = 0;
     let inReview = 0;
+    let warm = 0;
     for (const ticket of tickets) {
       const snapshot: Snapshot = {
         state: ticket.state,
@@ -273,27 +310,30 @@ export class TrackerPoller {
         lastCommentSweepAt: this.now(),
       };
       this.snapshot.set(ticket.id, snapshot);
-      if (ticket.state === "design") {
-        // INT's Review (Design) deliberately does NOT appear here: it is a human-only parked gate.
-        recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
-        inDesign++;
-        commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
-      } else if (ticket.state === "in_progress") {
-        recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
-        recoverInProgress++;
-        commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
-      } else if (ticket.state === "in_review") {
-        recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
-        inReview++;
-        commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
-      }
+      // INT's Review (Design) deliberately does NOT appear here: it is a human-only parked gate.
+      if (!RECOVERABLE_ACTIVE.has(ticket.state)) continue;
+      // Warm restart (issue #60): this active ticket was already known — in the same state — before
+      // the restart, so the human was already told about it. Re-staff the Dispatcher SILENTLY by
+      // seeding a same-state transition (from===to): the Dispatcher spawns off `to` exactly as it
+      // does for `from:null`, but the concierge's `from === null` restart ping never fires, so a
+      // routine redeploy no longer replays a status ping for every parked in-flight ticket.
+      // Cold/first-ever sight keeps the `from:null` announce so genuinely-new in-flight work surfaces.
+      const isWarm = this.priorSnapshot.get(ticket.id)?.state === ticket.state;
+      recovery.push({ kind: "state_changed", ticket, from: isWarm ? ticket.state : null, to: ticket.state });
+      if (isWarm) warm++;
+      if (ticket.state === "design") inDesign++;
+      else if (ticket.state === "in_progress") recoverInProgress++;
+      else inReview++;
+      commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
     }
     for (const events of await Promise.all(commentRecovery)) recovery.push(...events);
+    this.saveSnapshot();
     this.logger.info("primed snapshot", {
       tickets: this.snapshot.size,
       recover_design: inDesign,
       recover_in_progress: recoverInProgress,
       recover_in_review: inReview,
+      warm_resumed_silently: warm,
     });
     return recovery;
   }
@@ -459,6 +499,60 @@ export class TrackerPoller {
     } catch (err) {
       this.logger.warn("comment cursor file unreadable; starting with empty cursors", {
         path: this.commentCursorPath,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /**
+   * Load the prior run's ticket→state map (issue #60) into {@link priorSnapshot}. A missing file is a
+   * cold start; an unreadable/corrupt one is logged and treated as a cold start — never a crash. Only
+   * well-typed entries are kept; garbage is dropped so it simply won't match a live ticket (fail safe:
+   * an unmatched ticket falls back to the today's `from:null` announce).
+   */
+  private loadSnapshot(): void {
+    if (!this.snapshotPath || !existsSync(this.snapshotPath)) return;
+    try {
+      const raw = JSON.parse(readFileSync(this.snapshotPath, "utf8")) as Record<
+        string,
+        Partial<PersistedSnapshotEntry>
+      >;
+      for (const [ticketId, entry] of Object.entries(raw)) {
+        if (typeof entry?.state === "string" && typeof entry.updatedAt === "string") {
+          this.priorSnapshot.set(ticketId, { state: entry.state as TicketState, updatedAt: entry.updatedAt });
+        }
+      }
+    } catch (err) {
+      this.logger.warn("state snapshot file unreadable; starting cold (previously-seen tickets may re-announce)", {
+        path: this.snapshotPath,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /**
+   * Atomically persist the live snapshot's ticket→state map (issue #60), mirroring
+   * {@link persistCommentCursor}: same directory, same tmp-write + rename so a mid-write crash can't
+   * leave a torn file. Skips the write when the serialized body is unchanged so an idle board doesn't
+   * churn the disk every tick. A failed write is logged, never thrown — persistence is best-effort.
+   */
+  private saveSnapshot(): void {
+    if (!this.snapshotPath) return;
+    const entries: Record<string, PersistedSnapshotEntry> = {};
+    for (const [ticketId, snap] of this.snapshot) {
+      entries[ticketId] = { state: snap.state, updatedAt: snap.updatedAt };
+    }
+    const body = JSON.stringify(entries, null, 2) + "\n";
+    if (body === this.lastSnapshotSerialized) return;
+    try {
+      mkdirSync(dirname(this.snapshotPath), { recursive: true });
+      const tmp = `${this.snapshotPath}.tmp`;
+      writeFileSync(tmp, body, "utf8");
+      renameSync(tmp, this.snapshotPath);
+      this.lastSnapshotSerialized = body;
+    } catch (err) {
+      this.logger.warn("state snapshot persist failed", {
+        path: this.snapshotPath,
         error: (err as Error).message,
       });
     }

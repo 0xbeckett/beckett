@@ -194,6 +194,174 @@ describe("TrackerPoller comment hot path", () => {
     expect(events).toEqual([{ kind: "state_changed", ticket: reviewing, from: null, to: "in_review" }]);
   });
 
+  test("warm restart re-staffs a previously-seen active ticket silently (no from:null ping, no created)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-poll-snapshot-"));
+    try {
+      const snapshotPath = join(dir, "poll-snapshot.json");
+      const client = new FakeTrackerClient();
+      const active = ticket({ state: "in_progress" });
+      client.tickets = [active];
+      // The prior daemon persisted this ticket in the same state before the restart.
+      await Bun.write(
+        snapshotPath,
+        JSON.stringify({ t1: { state: "in_progress", updatedAt: "2026-01-01T00:00:00.000Z" } }),
+      );
+
+      const poller = new TrackerPoller({
+        client: client as unknown as TrackerClient,
+        logger: quiet,
+        now: () => 0,
+        snapshotPath,
+      });
+
+      const events = await poller.prime();
+      // Dispatcher still re-staffs (to === "in_progress") but the concierge never sees `from: null`,
+      // so no restart ping fires — and no phantom `created`.
+      expect(events.filter((e) => e.kind !== "comment_added")).toEqual([
+        { kind: "state_changed", ticket: active, from: "in_progress", to: "in_progress" },
+      ]);
+      expect(events.some((e) => e.kind === "created")).toBe(false);
+      expect(events.some((e) => e.kind === "state_changed" && e.from === null)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cold start (no snapshot file) still announces genuinely-new active tickets with from:null", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-poll-snapshot-"));
+    try {
+      const snapshotPath = join(dir, "poll-snapshot.json"); // file does not exist yet
+      const client = new FakeTrackerClient();
+      const active = ticket({ state: "in_review" });
+      client.tickets = [active];
+
+      const poller = new TrackerPoller({
+        client: client as unknown as TrackerClient,
+        logger: quiet,
+        now: () => 0,
+        snapshotPath,
+      });
+
+      const events = await poller.prime();
+      expect(events).toEqual([{ kind: "state_changed", ticket: active, from: null, to: "in_review" }]);
+      // And it persisted the snapshot atomically for the next restart.
+      expect(JSON.parse(readFileSync(snapshotPath, "utf8"))).toEqual({
+        t1: { state: "in_review", updatedAt: "2026-01-01T00:00:00.000Z" },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a ticket that CHANGED state while the daemon was down re-announces (from:null), not silent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-poll-snapshot-"));
+    try {
+      const snapshotPath = join(dir, "poll-snapshot.json");
+      const client = new FakeTrackerClient();
+      const nowReviewing = ticket({ state: "in_review" });
+      client.tickets = [nowReviewing];
+      // Persisted as in_progress; it advanced to in_review while offline — a real transition.
+      await Bun.write(
+        snapshotPath,
+        JSON.stringify({ t1: { state: "in_progress", updatedAt: "2026-01-01T00:00:00.000Z" } }),
+      );
+
+      const poller = new TrackerPoller({
+        client: client as unknown as TrackerClient,
+        logger: quiet,
+        now: () => 0,
+        snapshotPath,
+      });
+
+      const events = await poller.prime();
+      expect(events).toEqual([{ kind: "state_changed", ticket: nowReviewing, from: null, to: "in_review" }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("corrupt snapshot file degrades to cold-start behavior without crashing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-poll-snapshot-"));
+    try {
+      const snapshotPath = join(dir, "poll-snapshot.json");
+      await Bun.write(snapshotPath, "{ this is not valid json");
+      const client = new FakeTrackerClient();
+      const active = ticket({ state: "in_progress" });
+      client.tickets = [active];
+
+      const poller = new TrackerPoller({
+        client: client as unknown as TrackerClient,
+        logger: quiet,
+        now: () => 0,
+        snapshotPath,
+      });
+
+      const events = await poller.prime();
+      expect(events).toEqual([{ kind: "state_changed", ticket: active, from: null, to: "in_progress" }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("poll() first-sight also honors a warm snapshot when prime() never ran (or failed)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-poll-snapshot-"));
+    try {
+      const snapshotPath = join(dir, "poll-snapshot.json");
+      const client = new FakeTrackerClient();
+      const active = ticket({ state: "in_progress" });
+      client.tickets = [active];
+      await Bun.write(
+        snapshotPath,
+        JSON.stringify({ t1: { state: "in_progress", updatedAt: "2026-01-01T00:00:00.000Z" } }),
+      );
+
+      const poller = new TrackerPoller({
+        client: client as unknown as TrackerClient,
+        logger: quiet,
+        now: () => 0,
+        snapshotPath,
+      });
+
+      // Skip prime() entirely — poll() sees the ticket for the first time but must not treat a
+      // known active ticket as fresh.
+      const events = await poller.poll();
+      expect(events).toEqual([{ kind: "state_changed", ticket: active, from: "in_progress", to: "in_progress" }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("poll() first-sight announces a genuinely-new ticket absent from the warm snapshot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-poll-snapshot-"));
+    try {
+      const snapshotPath = join(dir, "poll-snapshot.json");
+      const client = new FakeTrackerClient();
+      const known = ticket({ id: "t1", state: "in_progress" });
+      const fresh = ticket({ id: "t2", identifier: "OPS-2", state: "in_progress" });
+      client.tickets = [known, fresh];
+      await Bun.write(
+        snapshotPath,
+        JSON.stringify({ t1: { state: "in_progress", updatedAt: "2026-01-01T00:00:00.000Z" } }),
+      );
+
+      const poller = new TrackerPoller({
+        client: client as unknown as TrackerClient,
+        logger: quiet,
+        now: () => 0,
+        snapshotPath,
+      });
+
+      const events = await poller.poll();
+      expect(events).toContainEqual({ kind: "created", ticket: fresh });
+      expect(events).toContainEqual({ kind: "state_changed", ticket: fresh, from: null, to: "in_progress" });
+      // The known ticket is silent (same-state seed), never a fresh created/from:null.
+      expect(events).toContainEqual({ kind: "state_changed", ticket: known, from: "in_progress", to: "in_progress" });
+      expect(events.some((e) => e.kind === "created" && e.ticket.id === "t1")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("same-timestamp comments are deduped by id instead of dropped", async () => {
     class InclusiveFakeTrackerClient extends FakeTrackerClient {
       override async listComments(
