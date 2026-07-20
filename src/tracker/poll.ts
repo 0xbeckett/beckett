@@ -300,6 +300,7 @@ export class TrackerPoller {
     let inDesign = 0;
     let recoverInProgress = 0;
     let inReview = 0;
+    let warm = 0;
     for (const ticket of tickets) {
       const snapshot: Snapshot = {
         state: ticket.state,
@@ -309,27 +310,30 @@ export class TrackerPoller {
         lastCommentSweepAt: this.now(),
       };
       this.snapshot.set(ticket.id, snapshot);
-      if (ticket.state === "design") {
-        // INT's Review (Design) deliberately does NOT appear here: it is a human-only parked gate.
-        recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
-        inDesign++;
-        commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
-      } else if (ticket.state === "in_progress") {
-        recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
-        recoverInProgress++;
-        commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
-      } else if (ticket.state === "in_review") {
-        recovery.push({ kind: "state_changed", ticket, from: null, to: ticket.state });
-        inReview++;
-        commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
-      }
+      // INT's Review (Design) deliberately does NOT appear here: it is a human-only parked gate.
+      if (!RECOVERABLE_ACTIVE.has(ticket.state)) continue;
+      // Warm restart (issue #60): this active ticket was already known — in the same state — before
+      // the restart, so the human was already told about it. Re-staff the Dispatcher SILENTLY by
+      // seeding a same-state transition (from===to): the Dispatcher spawns off `to` exactly as it
+      // does for `from:null`, but the concierge's `from === null` restart ping never fires, so a
+      // routine redeploy no longer replays a status ping for every parked in-flight ticket.
+      // Cold/first-ever sight keeps the `from:null` announce so genuinely-new in-flight work surfaces.
+      const isWarm = this.priorSnapshot.get(ticket.id)?.state === ticket.state;
+      recovery.push({ kind: "state_changed", ticket, from: isWarm ? ticket.state : null, to: ticket.state });
+      if (isWarm) warm++;
+      if (ticket.state === "design") inDesign++;
+      else if (ticket.state === "in_progress") recoverInProgress++;
+      else inReview++;
+      commentRecovery.push(this.collectComments(ticket, snapshot).then((result) => result.events));
     }
     for (const events of await Promise.all(commentRecovery)) recovery.push(...events);
+    this.saveSnapshot();
     this.logger.info("primed snapshot", {
       tickets: this.snapshot.size,
       recover_design: inDesign,
       recover_in_progress: recoverInProgress,
       recover_in_review: inReview,
+      warm_resumed_silently: warm,
     });
     return recovery;
   }
@@ -495,6 +499,60 @@ export class TrackerPoller {
     } catch (err) {
       this.logger.warn("comment cursor file unreadable; starting with empty cursors", {
         path: this.commentCursorPath,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /**
+   * Load the prior run's ticket→state map (issue #60) into {@link priorSnapshot}. A missing file is a
+   * cold start; an unreadable/corrupt one is logged and treated as a cold start — never a crash. Only
+   * well-typed entries are kept; garbage is dropped so it simply won't match a live ticket (fail safe:
+   * an unmatched ticket falls back to the today's `from:null` announce).
+   */
+  private loadSnapshot(): void {
+    if (!this.snapshotPath || !existsSync(this.snapshotPath)) return;
+    try {
+      const raw = JSON.parse(readFileSync(this.snapshotPath, "utf8")) as Record<
+        string,
+        Partial<PersistedSnapshotEntry>
+      >;
+      for (const [ticketId, entry] of Object.entries(raw)) {
+        if (typeof entry?.state === "string" && typeof entry.updatedAt === "string") {
+          this.priorSnapshot.set(ticketId, { state: entry.state as TicketState, updatedAt: entry.updatedAt });
+        }
+      }
+    } catch (err) {
+      this.logger.warn("state snapshot file unreadable; starting cold (previously-seen tickets may re-announce)", {
+        path: this.snapshotPath,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /**
+   * Atomically persist the live snapshot's ticket→state map (issue #60), mirroring
+   * {@link persistCommentCursor}: same directory, same tmp-write + rename so a mid-write crash can't
+   * leave a torn file. Skips the write when the serialized body is unchanged so an idle board doesn't
+   * churn the disk every tick. A failed write is logged, never thrown — persistence is best-effort.
+   */
+  private saveSnapshot(): void {
+    if (!this.snapshotPath) return;
+    const entries: Record<string, PersistedSnapshotEntry> = {};
+    for (const [ticketId, snap] of this.snapshot) {
+      entries[ticketId] = { state: snap.state, updatedAt: snap.updatedAt };
+    }
+    const body = JSON.stringify(entries, null, 2) + "\n";
+    if (body === this.lastSnapshotSerialized) return;
+    try {
+      mkdirSync(dirname(this.snapshotPath), { recursive: true });
+      const tmp = `${this.snapshotPath}.tmp`;
+      writeFileSync(tmp, body, "utf8");
+      renameSync(tmp, this.snapshotPath);
+      this.lastSnapshotSerialized = body;
+    } catch (err) {
+      this.logger.warn("state snapshot persist failed", {
+        path: this.snapshotPath,
         error: (err as Error).message,
       });
     }

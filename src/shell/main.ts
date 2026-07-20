@@ -263,6 +263,10 @@ async function boot(): Promise<BootedSystem> {
           beckettDir,
           board === config.tracker.default_board ? "comment-cursors.json" : `comment-cursors-${board}.json`,
         ),
+        snapshotPath: join(
+          beckettDir,
+          board === config.tracker.default_board ? "poll-snapshot.json" : `poll-snapshot-${board}.json`,
+        ),
       }),
     );
   }
