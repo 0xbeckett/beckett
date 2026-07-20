@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.5.0 (2026-07-20)
+
 ### Background browser agent with pause/surface/resume (#58)
 
 - **Browser / computer-use work is fully decoupled from intake.** The quick lane's
