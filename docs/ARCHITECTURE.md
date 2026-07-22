@@ -3,7 +3,9 @@
 > **This is the single authoritative architecture doc.** It supersedes the older
 > per-generation contracts (`docs/V3.md`, now archived under
 > [`specs/_legacy-v3/`](../specs/_legacy-v3/V3.md)). Anything under `specs/_legacy*` is design
-> history — read for rationale, never as a live contract.
+> history — read for rationale, never as a live contract. The build contract for the next
+> generation is [`docs/v6.md`](v6.md) — design, not yet live; this doc still describes the
+> running system.
 
 Beckett is an agentic coworker you reach in Discord. You `@beckett` a task; it plans, spawns and
 steers worker harnesses (`claude -p` / `codex exec` / `pi`) in isolated git worktrees, reviews
