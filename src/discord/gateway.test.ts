@@ -11,6 +11,10 @@ import { ChannelType } from "discord.js";
 import type { ReplyOptions } from "../types.ts";
 import { chunkReply } from "./chunk.ts";
 import { DiscordJsGateway, splitDiscordContent, taskThreadName } from "./gateway.ts";
+import {
+  BROWSER_QUESTION_ATTACHMENT_NAME,
+  BROWSER_QUESTION_SUFFIX,
+} from "../browser/question-message.ts";
 
 test("splitDiscordContent splits long replies without truncating", () => {
   const input = `${"a".repeat(1500)}\n\n${"b".repeat(1500)}\n\n${"c".repeat(1500)}`;
@@ -100,6 +104,123 @@ test("native reply to a bot-authored message counts as addressed", async () => {
   expect(normalized.repliedToId).toBe("bot-msg-1");
   expect(normalized.mentionsBot).toBe(true);
   expect(normalized.roleIds).toEqual(["1520985787062030456"]);
+});
+
+test("a referenced atomic browser question is recognizable after the gateway restarts", async () => {
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: { user: { id: string } } }).client = { user: { id: "bot-1" } };
+  const normalized = await (
+    gateway as unknown as { normalize: (msg: Record<string, unknown>) => Promise<{
+      mentionsBot: boolean;
+      repliedToBrowserQuestion?: boolean;
+    }> }
+  ).normalize({
+    id: "late-secret",
+    guildId: "guild-1",
+    channelId: "chan-1",
+    channel: { name: "ops" },
+    content: "739184",
+    createdTimestamp: 0,
+    author: { id: "user-1", bot: false, username: "u", globalName: null },
+    member: { displayName: "u", roles: { cache: new Map() } },
+    mentions: { has: () => false, repliedUser: { id: "bot-1" } },
+    reference: { messageId: "orphan-question" },
+    attachments: new Map(),
+    fetchReference: async () => ({
+      author: { id: "bot-1" },
+      content: `Which code?${BROWSER_QUESTION_SUFFIX}`,
+      attachments: new Map([["attachment", { name: BROWSER_QUESTION_ATTACHMENT_NAME }]]),
+    }),
+  });
+  expect(normalized.mentionsBot).toBe(true);
+  expect(normalized.repliedToBrowserQuestion).toBe(true);
+});
+
+test("copied browser-question wording without the reserved screenshot marker stays ordinary", async () => {
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: { user: { id: string } } }).client = { user: { id: "bot-1" } };
+  const normalized = await (
+    gateway as unknown as { normalize: (msg: Record<string, unknown>) => Promise<{
+      mentionsBot: boolean;
+      repliedToBrowserQuestion?: boolean;
+      repliedToBotUnverified?: boolean;
+    }> }
+  ).normalize({
+    id: "ordinary-reply",
+    guildId: "guild-1",
+    channelId: "chan-1",
+    channel: { name: "ops" },
+    content: "normal follow-up",
+    createdTimestamp: 0,
+    author: { id: "user-1", bot: false, username: "u", globalName: null },
+    member: { displayName: "u", roles: { cache: new Map() } },
+    mentions: { has: () => false, repliedUser: { id: "bot-1" } },
+    reference: { messageId: "ordinary-bot-message" },
+    attachments: new Map(),
+    fetchReference: async () => ({
+      author: { id: "bot-1" },
+      content: `Copied wording${BROWSER_QUESTION_SUFFIX}`,
+      attachments: new Map([["attachment", { name: "ordinary-proof.png" }]]),
+    }),
+  });
+  expect(normalized.mentionsBot).toBe(true);
+  expect(normalized.repliedToBrowserQuestion).toBeUndefined();
+  expect(normalized.repliedToBotUnverified).toBeUndefined();
+});
+
+test("an uninspectable bot reply reference is marked fail-closed", async () => {
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: { user: { id: string } } }).client = { user: { id: "bot-1" } };
+  const normalized = await (
+    gateway as unknown as { normalize: (msg: Record<string, unknown>) => Promise<{
+      repliedToBrowserQuestion?: boolean;
+      repliedToBotUnverified?: boolean;
+    }> }
+  ).normalize({
+    id: "ambiguous-secret",
+    guildId: "guild-1",
+    channelId: "chan-1",
+    channel: { name: "ops" },
+    content: "739184",
+    createdTimestamp: 0,
+    author: { id: "user-1", bot: false, username: "u", globalName: null },
+    member: { displayName: "u", roles: { cache: new Map() } },
+    mentions: { has: () => false, repliedUser: { id: "bot-1" } },
+    reference: { messageId: "unknown-bot-message" },
+    attachments: new Map(),
+    fetchReference: async () => { throw new Error("transient Discord failure"); },
+  });
+  expect(normalized.repliedToBrowserQuestion).toBeUndefined();
+  expect(normalized.repliedToBotUnverified).toBe(true);
+});
+
+test("a live browser-question id stays classified during the post-to-ledger handoff", async () => {
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: { user: { id: string } } }).client = { user: { id: "bot-1" } };
+  (gateway as unknown as { ownMessageIds: Set<string> }).ownMessageIds = new Set(["live-question"]);
+  (gateway as unknown as { browserQuestionMessageIds: Set<string> }).browserQuestionMessageIds =
+    new Set(["live-question"]);
+  const normalized = await (
+    gateway as unknown as { normalize: (msg: Record<string, unknown>) => Promise<{
+      repliedToBrowserQuestion?: boolean;
+      repliedToBotUnverified?: boolean;
+    }> }
+  ).normalize({
+    id: "fast-reply",
+    guildId: "guild-1",
+    channelId: "chan-1",
+    channel: { name: "ops" },
+    content: "739184",
+    createdTimestamp: 0,
+    author: { id: "user-1", bot: false, username: "u", globalName: null },
+    member: { displayName: "u", roles: { cache: new Map() } },
+    mentions: { has: () => false, repliedUser: { id: "bot-1" } },
+    reference: { messageId: "live-question" },
+    attachments: new Map(),
+    fetchReference: async () => { throw new Error("known ids must not need REST"); },
+  });
+  expect(normalized.repliedToBrowserQuestion).toBe(true);
+  expect(normalized.repliedToBotUnverified).toBeUndefined();
 });
 
 test("a user-created thread is normalized to the onThreadCreate handler; bot/replayed ones are not", async () => {
@@ -193,10 +314,45 @@ test("ambient one-liners have no reply or ping, and all implicit mention parsing
   expect(payloads[0]?.allowedMentions).toEqual({ parse: [] });
 });
 
+test("sendNow singleMessage keeps a long browser question and screenshot in one API message", async () => {
+  const { payloads, callSendNow } = fakeSendableGateway();
+  const dir = mkdtempSync(join(tmpdir(), "beckett-atomic-discord-"));
+  const screenshot = join(dir, "question.png");
+  writeFileSync(screenshot, "png fixture");
+  const sentence = "The browser shows private account context that must stay beside its screenshot. ";
+  const question = "Which account should I choose before continuing?";
+  const instruction = " Reply directly to this message and I'll continue from the same page.";
+  const fixedText = `${question}${instruction}`;
+  const content = `${sentence.repeat(Math.floor((1_900 - fixedText.length) / sentence.length))}${fixedText}`;
+  try {
+    expect(content.length).toBeGreaterThan(1_800);
+    expect(content.length).toBeLessThanOrEqual(2_000);
+    expect(chunkReply(content).length).toBeGreaterThan(1);
+
+    const id = await callSendNow(content, {
+      files: [screenshot],
+      singleMessage: true,
+      browserQuestion: true,
+    });
+
+    expect(id).toBe("msg-1");
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]?.content).toBe(content);
+    expect(payloads[0]?.files).toHaveLength(1);
+    expect((payloads[0]?.files as Array<{ name?: string }>)[0]?.name).toBe(BROWSER_QUESTION_ATTACHMENT_NAME);
+    expect(payloads[0]?.content).toEndWith(instruction.trimStart());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("sendNow singleMessage rejects content Discord cannot accept atomically", async () => {
   const { payloads, callSendNow } = fakeSendableGateway();
   await expect(callSendNow("x".repeat(2_001), { singleMessage: true })).rejects.toThrow(
     "exceeds 2000 characters",
+  );
+  await expect(callSendNow("privacy-critical question", { browserQuestion: true })).rejects.toThrow(
+    "one atomic Discord message",
   );
   expect(payloads).toEqual([]);
 });

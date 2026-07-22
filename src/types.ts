@@ -254,6 +254,10 @@ export interface IncomingMessage {
   guildId: string | null;
   content: string;
   repliedToId: string | null; // the strong correlation key
+  /** The referenced bot message carries Beckett's fixed atomic browser-question marker. */
+  repliedToBrowserQuestion?: boolean;
+  /** A bot reply reference could not be inspected; privacy-sensitive routing must fail closed. */
+  repliedToBotUnverified?: boolean;
   mentionsBot: boolean;
   authorIsBot: boolean;
   createdAt: number;
@@ -289,7 +293,9 @@ export interface ReplyOptions {
    * rejected instead of silently weakening the one-message guarantee.
    */
   singleMessage?: boolean;
-  /** Fail immediately instead of queueing when offline. */
+  /** Mark an atomic screenshot question so replies remain recognizable across daemon crashes. */
+  browserQuestion?: boolean;
+  /** Fail immediately instead of queueing when offline; used for expiring browser questions. */
   queueIfOffline?: boolean;
 }
 
@@ -776,8 +782,8 @@ export interface Config {
   };
   /**
    * Quick agents — the NO-TICKET lane: short-lived specialist `claude -p` harnesses
-   * (`quick-code`, `repo-explorer`) the Concierge dispatches via `beckett quick` for errands
-   * between "answer inline" and "file a ticket".
+   * (`computer-use`, `quick-code`, `repo-explorer`) the Concierge dispatches via
+   * `beckett quick` for errands between "answer inline" and "file a ticket".
    */
   quick: {
     enabled: boolean;
@@ -791,27 +797,20 @@ export interface Config {
     hard_timeout_secs: number;
     /** Reject new runs past this many live ones ("quick lane is full — retry or file a ticket"). */
     max_concurrent: number;
-  };
-  /**
-   * The Concierge-driven browser. `beckett browser <args…>` passes straight through to the
-   * agent-browser CLI; its daemon keeps the browser and signed-in state alive between turns,
-   * so the Concierge works the web in its OWN session — with context, mid-task observability,
-   * and in-channel questions — instead of dispatching a blind background browser agent.
-   */
-  browser: {
-    enabled: boolean;
-    /** Default named session ("beckett"); parallel jobs pass --session and get their own profile. */
-    session: string;
-    /** agent-browser binary override. Empty = repo-pinned node_modules binary, then PATH. */
-    bin: string;
-    /** Chrome/Chromium executable override. Empty = agent-browser's own detection. */
-    executable_path: string;
-    /** The daemon (and its Chrome) exits after this much inactivity. */
-    idle_timeout_secs: number;
-    /** Output ceiling per command (AGENT_BROWSER_MAX_OUTPUT); explicit --max-output wins. */
-    max_output_chars: number;
-    /** Wall-clock ceiling per command; `beckett browser` kills a wedged command past this. */
-    command_timeout_secs: number;
+    /** Dedicated automation profile, absolute or relative to paths.beckett_dir. */
+    browser_profile_dir: string;
+    /** The production browser is headless; false is useful only for local diagnosis. */
+    browser_headless: boolean;
+    browser_viewport_width: number;
+    browser_viewport_height: number;
+    browser_launch_timeout_ms: number;
+    browser_action_timeout_ms: number;
+    browser_navigation_timeout_ms: number;
+    browser_eval_timeout_ms: number;
+    /** Per-tool output budget before the runtime truncates noisy page data. */
+    browser_max_output_chars: number;
+    /** How long a screenshot-backed user question may remain parked before expiring. */
+    browser_question_wait_secs: number;
   };
   /**
    * Restart "what's new" announcement — instance-specific, OFF by default (empty channel), so a

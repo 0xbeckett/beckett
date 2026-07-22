@@ -75,7 +75,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
 }
 
 describe("registry", () => {
-  test("ships the fire-and-report roster; browser work is the Concierge's own hands", () => {
+  test("ships the fire-and-report roster; browser work lives in the dedicated agent", () => {
     expect(QUICK_AGENTS.map((agent) => agent.name)).toEqual(["quick-code", "repo-explorer"]);
     expect(findAgent("quick-code")?.name).toBe("quick-code");
     expect(findAgent("computer-use")).toBeUndefined();
@@ -106,7 +106,7 @@ describe("plain quick runs", () => {
 });
 
 describe("guards and shutdown", () => {
-  test("bad requests fail clearly and computer-use points at beckett browser", async () => {
+  test("bad requests fail clearly and computer-use points at the browser agent", async () => {
     const { runner } = setup();
     await expect(runner.run("no-such-agent", "x", null)).rejects.toThrow(/unknown quick agent/);
     await expect(runner.run("computer-use", "log in somewhere", null)).rejects.toThrow(/beckett browser/);

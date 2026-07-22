@@ -3,8 +3,8 @@
  *
  * Fire-and-report errands only: each run spawns a short-lived `claude -p` harness, blocks up to
  * the sync window for its report, and otherwise detaches and reports back through the Concierge
- * as an update turn. Browser / computer-use work does not belong here — the Concierge drives
- * the persistent browser itself via `beckett browser` (`src/browser/cli.ts`).
+ * as an update turn. Anything that must pause for a human mid-run does not belong here — browser
+ * / computer-use work lives in the dedicated background browser agent (`src/browser/agent.ts`).
  */
 
 import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -215,7 +215,7 @@ export function createQuickRunner(deps: CreateQuickRunnerDeps): QuickRunner {
       const agent = findAgent(agentName);
       if (!agent) {
         if (agentName === "computer-use") {
-          throw new Error('computer-use is gone - drive the browser yourself with `beckett browser <command...>` (browser skill)');
+          throw new Error('computer-use moved to the dedicated browser agent - use `beckett browser "<task>"` instead');
         }
         throw new Error(`unknown quick agent "${agentName}" (use ${QUICK_AGENTS.map((a) => a.name).join("|")})`);
       }

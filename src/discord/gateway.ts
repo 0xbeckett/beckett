@@ -60,6 +60,10 @@ import { isFederatedPeer, PeerBurstLimiter } from "./federation.ts";
 import { loadPeers } from "./peers.ts";
 import { buildPaths } from "../paths.ts";
 import { chunkReply, delaySchedule, TOTAL_DELAY_BUDGET_MS } from "./chunk.ts";
+import {
+  BROWSER_QUESTION_ATTACHMENT_NAME,
+  isBrowserQuestionMessage,
+} from "../browser/question-message.ts";
 
 /** Discord's hard per-message ceiling (Spec 05 §9.1). */
 const DISCORD_MAX_CHARS = 2000;
@@ -160,6 +164,8 @@ export class DiscordJsGateway implements DiscordGateway {
   private readonly outbound: QueuedPost[] = [];
   /** Message ids posted by this process, used to recognize native no-ping replies to Beckett. */
   private readonly ownMessageIds = new Set<string>();
+  /** Privacy-critical subset of own ids, marked synchronously before `sendNow` returns. */
+  private readonly browserQuestionMessageIds = new Set<string>();
 
   /** Liveness, tracked from shard lifecycle events (more accurate than client.isReady). */
   private connected = false;
@@ -378,6 +384,7 @@ export class DiscordJsGateway implements DiscordGateway {
       if ((error as { code?: unknown }).code !== 10_008) throw error;
     }
     this.ownMessageIds.delete(messageId);
+    this.browserQuestionMessageIds.delete(messageId);
   }
 
   /** Create a dedicated task thread, or adopt/rename the current thread when already inside one. */
@@ -542,7 +549,9 @@ export class DiscordJsGateway implements DiscordGateway {
     // of Beckett's messages (the reply-ping lands in `repliedUser`, which `.users.has()` MISSES —
     // that bug silently dropped every reply-style mention). `ignoreEveryone` avoids @everyone noise.
     const directMention = botId ? msg.mentions.has(botId, { ignoreEveryone: true }) : false;
-    const reference = botId ? await this.referenceInfo(msg, botId) : { toBot: false };
+    const reference = botId
+      ? await this.referenceInfo(msg, botId)
+      : { toBot: false, browserQuestion: false, unverified: false };
     // The human-friendly name to address the speaker by: guild nickname first (what the server
     // calls them), then their global display name, then the raw username. Threaded through so
     // each turn knows WHO is talking, not just which channel (OPS-42).
@@ -560,6 +569,8 @@ export class DiscordJsGateway implements DiscordGateway {
       guildId: msg.guildId ?? null,
       content: msg.content,
       repliedToId: msg.reference?.messageId ?? null,
+      ...(reference.browserQuestion ? { repliedToBrowserQuestion: true } : {}),
+      ...(reference.unverified ? { repliedToBotUnverified: true } : {}),
       mentionsBot: isDM || directMention || reference.toBot,
       authorIsBot: msg.author.bot,
       createdAt: msg.createdTimestamp,
@@ -576,16 +587,31 @@ export class DiscordJsGateway implements DiscordGateway {
     };
   }
 
-  private async referenceInfo(msg: Message, botId: string): Promise<{ toBot: boolean }> {
+  private async referenceInfo(
+    msg: Message,
+    botId: string,
+  ): Promise<{ toBot: boolean; browserQuestion: boolean; unverified: boolean }> {
     const refId = msg.reference?.messageId;
-    if (!refId) return { toBot: false };
-    if (this.ownMessageIds.has(refId)) return { toBot: true };
+    if (!refId) return { toBot: false, browserQuestion: false, unverified: false };
+    if (this.browserQuestionMessageIds.has(refId)) {
+      return { toBot: true, browserQuestion: true, unverified: false };
+    }
+    if (this.ownMessageIds.has(refId)) return { toBot: true, browserQuestion: false, unverified: false };
     const repliedUser = (msg.mentions as { repliedUser?: { id?: string } }).repliedUser;
     try {
       const ref = await msg.fetchReference();
-      return { toBot: ref.author.id === botId };
+      const toBot = ref.author.id === botId;
+      return {
+        toBot,
+        browserQuestion: toBot && isBrowserQuestionMessage(
+          ref.content,
+          [...ref.attachments.values()].map((attachment) => attachment.name),
+        ),
+        unverified: false,
+      };
     } catch {
-      return { toBot: repliedUser?.id === botId };
+      const toBot = repliedUser?.id === botId;
+      return { toBot, browserQuestion: false, unverified: toBot };
     }
   }
 
@@ -622,6 +648,10 @@ export class DiscordJsGateway implements DiscordGateway {
         throw new Error(`single-message Discord post exceeds ${DISCORD_MAX_CHARS} characters`);
       }
     }
+    if (opts?.browserQuestion && (!opts.singleMessage || opts.files?.length !== 1)) {
+      throw new Error("browser questions require one atomic Discord message with one screenshot");
+    }
+
     const channel = await client.channels.fetch(channelId);
     if (!channel || !channel.isSendable()) {
       throw new Error(`discord channel ${channelId} is not a sendable text channel`);
@@ -694,13 +724,17 @@ export class DiscordJsGateway implements DiscordGateway {
         payload.reply = { messageReference: opts.replyToMessageId, failIfNotExists: false };
       }
       if (i === 0 && opts?.files && opts.files.length > 0) {
-        payload.files = opts.files.map((path) => new AttachmentBuilder(path));
+        payload.files = opts.files.map((path) => new AttachmentBuilder(
+          path,
+          opts.browserQuestion ? { name: BROWSER_QUESTION_ATTACHMENT_NAME } : undefined,
+        ));
       }
       if (i === 0 && opts?.embeds?.length) payload.embeds = opts.embeds.map((embed) => new EmbedBuilder(embed));
       if (i === 0 && opts?.buttons?.length) payload.components = [buildButtonRow(opts.buttons)];
 
       const sent = await channel.send(payload);
       this.ownMessageIds.add(sent.id);
+      if (i === 0 && opts?.browserQuestion) this.browserQuestionMessageIds.add(sent.id);
       firstId ??= sent.id;
     }
     this.lastEventTs = Date.now();

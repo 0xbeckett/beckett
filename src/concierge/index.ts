@@ -70,6 +70,15 @@ import { loadMaintainers, resolveMaintainerPending } from "../discord/maintainer
 import { childEnv as strippedChildEnv } from "../env.ts";
 import type { QuickRun, QuickRunner } from "../quick/index.ts";
 import type { AgentDefinition } from "../agent/types.ts";
+import type { BrowserRuntime } from "../browser/runtime.ts";
+import {
+  redactSecretText,
+  redactSecretValues,
+  type BrowserAgent,
+  type BrowserAgentQuestion,
+  type BrowserAgentRun,
+} from "../browser/agent.ts";
+import { BROWSER_QUESTION_SUFFIX } from "../browser/question-message.ts";
 import {
   createAmbientCoordinator,
   isAmbientPass,
@@ -169,8 +178,78 @@ const ACCESS_DENY_REPLY_MS = 5 * 60_000;
  */
 const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
 
+interface BrowserQuestionRecord {
+  runId: string;
+  channelId: string;
+  allowedUserId: string;
+  createdAt: number;
+  stale: boolean;
+  /** Set only after Discord confirmed the visible question anchor was deleted. */
+  deletedAt?: number;
+}
+
+const BROWSER_QUESTION_MAX_RECORDS = 1_000;
+const BROWSER_DELETED_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60_000;
+const DISCORD_SINGLE_MESSAGE_CHARS = 2_000;
 const ACCESS_DENY_TEXT =
   "I can't run Beckett turns for you yet. Access is invite-only: the owner has to request it and approve it themselves.";
+
+export function redactBrowserSecrets(text: string): string {
+  const label = "password|passcode|one[- ]time code|otp|recovery code|backup code|api key|access token|secret|token|credentials?|login details";
+  const withoutUrlCredentials = text
+    .replace(/\b(https?:\/\/)[^\s/@:]+:[^@\s]+@/gi, "$1[redacted]@")
+    .replace(/([?&](?:password|passcode|otp|token|secret|api[_-]?key)=)[^&#\s]*/gi, "$1[redacted]");
+  const jsonValues = withoutUrlCredentials.replace(
+    new RegExp(`(["'](?:${label})["']\\s*:\\s*)(["'])(?:\\\\.|(?!\\2).)*\\2`, "gi"),
+    "$1\"[redacted]\"",
+  );
+  const lines = jsonValues.split("\n");
+  const labelOnly = new RegExp(`^(?:generated\\s+)?(?:${label})\\b\\s*(?:(?:is|was)|[:=])?\\s*$`, "i");
+  const labelledValue = new RegExp(`\\b((?:${label}))\\b(\\s*(?:(?:is|was)|[:=])\\s*).*$`, "i");
+  const generatedValue = new RegExp(`\\b(generated\\s+(?:${label}))\\b(\\s+).*$`, "i");
+  const createdCredentials = /\b(credentials?\s+created)\b(\s*:\s*).*$/i;
+  let redactNextValue = false;
+  return lines.map((line) => {
+    if (redactNextValue) {
+      if (!line.trim()) return line;
+      redactNextValue = false;
+      return `${line.match(/^\s*/)?.[0] ?? ""}[redacted]`;
+    }
+    const normalizedLabel = line
+      .trim()
+      .replace(/^(?:(?:[-+*]|\d+[.)])\s+|[>#]+\s*)+/, "")
+      .replace(/^[*_~`]+|[*_~`]+$/g, "")
+      .trim();
+    if (labelOnly.test(normalizedLabel)) {
+      redactNextValue = true;
+      return `${line.trimEnd()} [redacted]`;
+    }
+    const explicit = line.replace(
+      labelledValue,
+      (_match, credentialLabel: string, separator: string) => `${credentialLabel}${separator}[redacted]`,
+    );
+    if (explicit !== line) return explicit;
+    const generated = line.replace(
+      generatedValue,
+      (_match, credentialLabel: string, separator: string) => `${credentialLabel}${separator}[redacted]`,
+    );
+    if (generated !== line) return generated;
+    return line.replace(
+      createdCredentials,
+      (_match, credentialLabel: string, separator: string) => `${credentialLabel}${separator}[redacted]`,
+    );
+  }).join("\n");
+}
+
+function boundedBrowserQuestion(question: string): string {
+  const marker = "\n...[question truncated]";
+  const budget = DISCORD_SINGLE_MESSAGE_CHARS - BROWSER_QUESTION_SUFFIX.length;
+  const redacted = redactBrowserSecrets(question).replace(/\s+/g, " ").trim();
+  const body = redacted.length <= budget
+    ? redacted
+    : `${redacted.slice(0, Math.max(0, budget - marker.length))}${marker}`;
+  return `${body}${BROWSER_QUESTION_SUFFIX}`;
+}
 
 function journalDir(config: Config, logger: Logger): string | undefined {
   try {
@@ -1429,7 +1508,7 @@ export class Concierge {
   } | null = null;
   /**
    * Routine levers wired in by v4-main (issue #62): serves `beckett routine fire … --force`
-   * from the control bus — a real, live dispatch. Null until wired.
+   * from the control bus — a real, live dispatch through the browser lane. Null until wired.
    */
   private routineOps: {
     fire(
@@ -1461,6 +1540,12 @@ export class Concierge {
    * "not available" error instead of half-working.
    */
   private quickRunner: QuickRunner | null = null;
+  /** The daemon-owned persistent Chromium boundary used by the one-tool browser MCP bridge. */
+  private browserRuntime: BrowserRuntime | null = null;
+  /** The dedicated background browser agent (issue #58); owns every browser/computer-use run. */
+  private browserAgent: BrowserAgent | null = null;
+  /** Native Discord reply id -> parked browser run. Answers bypass shared chat context entirely. */
+  private readonly pendingBrowserQuestions = new Map<string, BrowserQuestionRecord>();
   private stopping = false;
   /**
    * Tracker read access for milestone enrichment (issue #21): the poller stops collecting comments
@@ -1755,6 +1840,230 @@ export class Concierge {
     this.quickRunner = runner;
   }
 
+  /** Wire the persistent browser runtime (v4-main). */
+  setBrowserRuntime(runtime: BrowserRuntime): void {
+    this.browserRuntime = runtime;
+  }
+
+  /** Wire the dedicated background browser agent (issue #58). See {@link browserAgent}. */
+  setBrowserAgent(agent: BrowserAgent): void {
+    this.browserAgent = agent;
+  }
+
+  private browserQuestionsPath(): string {
+    return join(buildPaths(this.config).beckettDir, "browser-questions.json");
+  }
+
+  private persistBrowserQuestions(): void {
+    const now = Date.now();
+    for (const [messageId, record] of this.pendingBrowserQuestions) {
+      if (record.deletedAt && record.deletedAt < now - BROWSER_DELETED_TOMBSTONE_TTL_MS) {
+        this.pendingBrowserQuestions.delete(messageId);
+      }
+    }
+    if (this.pendingBrowserQuestions.size > BROWSER_QUESTION_MAX_RECORDS) {
+      const safelyDeleted = [...this.pendingBrowserQuestions.entries()]
+        .filter(([, record]) => record.deletedAt !== undefined)
+        .sort((a, b) => a[1].createdAt - b[1].createdAt);
+      while (this.pendingBrowserQuestions.size > BROWSER_QUESTION_MAX_RECORDS && safelyDeleted.length > 0) {
+        this.pendingBrowserQuestions.delete(safelyDeleted.shift()![0]);
+      }
+    }
+    const path = this.browserQuestionsPath();
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const temp = `${path}.${process.pid}.tmp`;
+    try {
+      const records = [...this.pendingBrowserQuestions.entries()]
+        .map(([messageId, record]) => ({ messageId, ...record }));
+      writeFileSync(temp, JSON.stringify(records, null, 2) + "\n", { mode: 0o600 });
+      renameSync(temp, path);
+    } catch (error) {
+      try { unlinkSync(temp); } catch { /* absent */ }
+      this.log.warn("browser question ledger write failed", { error: String(error) });
+      throw error;
+    }
+  }
+
+  private async deleteStaleBrowserQuestions(): Promise<void> {
+    let changed = false;
+    for (const [messageId, record] of [...this.pendingBrowserQuestions]) {
+      if (!record.stale) continue;
+      if (record.deletedAt) continue;
+      try {
+        await this.gateway.deleteMessage(record.channelId, messageId);
+        this.pendingBrowserQuestions.set(messageId, { ...record, deletedAt: Date.now() });
+        changed = true;
+      } catch (error) {
+        this.log.warn("stale browser question deletion failed; retaining privacy tombstone", {
+          messageId,
+          error: String(error),
+        });
+      }
+    }
+    if (!changed) return;
+    try {
+      this.persistBrowserQuestions();
+    } catch {
+      // The old on-disk tombstones remain privacy-safe and are retried after restart.
+    }
+  }
+
+  private loadStaleBrowserQuestions(): void {
+    try {
+      const path = this.browserQuestionsPath();
+      if (!existsSync(path)) return;
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      if (!Array.isArray(parsed)) return;
+      for (const item of parsed) {
+        if (!item || typeof item !== "object") continue;
+        const value = item as Record<string, unknown>;
+        if (
+          typeof value.messageId !== "string" ||
+          typeof value.runId !== "string" ||
+          typeof value.channelId !== "string" ||
+          typeof value.allowedUserId !== "string" ||
+          typeof value.createdAt !== "number"
+        ) continue;
+        // Quick/Claude sessions are intentionally not recovered after a daemon restart. Keep the
+        // reply anchor only as a privacy tombstone so a late OTP/password is consumed, not stored.
+        this.pendingBrowserQuestions.set(value.messageId, {
+          runId: value.runId,
+          channelId: value.channelId,
+          allowedUserId: value.allowedUserId,
+          createdAt: value.createdAt,
+          stale: true,
+          ...(typeof value.deletedAt === "number" ? { deletedAt: value.deletedAt } : {}),
+        });
+      }
+      this.persistBrowserQuestions();
+    } catch (error) {
+      this.log.warn("browser question ledger read failed", { error: String(error) });
+    }
+  }
+
+  /**
+   * Deliver a DETACHED quick run's result: the dispatching `beckett quick` call already
+   * returned `{detached}`, so the report arrives as an update turn — the same shape as ticket
+   * milestones — instructing the Concierge to relay it to the originating channel in voice.
+   * Public: v4-main wires it as the runner's `onDetachedResult`.
+   */
+  async notifyQuickResult(run: QuickRun): Promise<void> {
+    const where = run.channelId
+      ? `Relay the outcome to the person who asked — send a short note IN YOUR VOICE by running this from your Bash tool:\n` +
+        `  beckett discord reply --channel ${run.channelId} "<your message>"\n` +
+        `Paraphrase the report — don't dump it raw. If it failed or timed out, say so plainly.`
+      : `No channel was stamped on this run, so there is nowhere to route it — fold anything worth keeping into your own context and do nothing else.`;
+    const framed =
+      `SYSTEM (quick-agent result — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
+      `The ${run.agent} quick agent you dispatched earlier (run ${run.runId}) finished with state "${run.state}".\n` +
+      `Its report:\n\n${run.result ?? "(no report)"}\n\n${where}`;
+    // Quick results are daemon-origin turns, including results stamped with a human channel.
+    // Their only route back to people is the explicit CLI reply above; never add them to that
+    // channel's conversational session.
+    void this.askUpdate(framed, `quick:${run.runId}`).catch(() => undefined);
+  }
+
+  /**
+   * Report a terminal browser-agent run to the Concierge as an update turn (issue #58): the same
+   * SYSTEM-framed shape as ticket milestones, instructing the model to relay the outcome — and
+   * attach any proof screenshot — via `beckett discord reply` in its own voice. Throwing keeps
+   * the run undelivered in the agent's durable ledger, which retries and re-reports after a
+   * restart, so a dead browser run can never go silent.
+   */
+  async notifyBrowserOutcome(run: BrowserAgentRun): Promise<void> {
+    for (const [messageId, pending] of this.pendingBrowserQuestions) {
+      if (pending.runId === run.runId) this.pendingBrowserQuestions.set(messageId, { ...pending, stale: true });
+    }
+    try {
+      this.persistBrowserQuestions();
+    } catch {
+      // The previously durable live anchor becomes stale on restart even if this rewrite fails.
+    }
+    void this.deleteStaleBrowserQuestions();
+    const summary = redactBrowserSecrets(run.result ?? "(no report)");
+    const proofFlags = run.proofFiles
+      .filter((path) => existsSync(path))
+      .map((path) => `--file ${path} `)
+      .join("");
+    const proofNote = proofFlags
+      ? `A trusted proof screenshot is on disk; the reply command below already attaches it.\n`
+      : "";
+    const framed =
+      `SYSTEM (browser-agent outcome — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
+      `The background browser agent run ${run.runId} you dispatched earlier finished with state "${run.state}".\n` +
+      `Its report:\n\n${summary}\n\n${proofNote}` +
+      `Relay the outcome to the person who asked — send a short note IN YOUR VOICE by running this from your Bash tool:\n` +
+      `  beckett discord reply --channel ${run.channelId} ${proofFlags}"<your message>"\n` +
+      `Paraphrase the report — don't dump it raw. If it failed or timed out, say so plainly so they can retry or unblock it.`;
+    await this.askUpdate(framed, `browser:${run.runId}`);
+  }
+
+  /** Post a blocking browser question with its trusted runtime screenshot and remember correlation. */
+  async notifyBrowserQuestion(
+    run: Pick<BrowserAgentRun, "runId" | "channelId" | "requesterId" | "state">,
+    question: BrowserAgentQuestion,
+  ): Promise<string> {
+    if (!run.channelId) throw new Error("browser question has no origin channel");
+    if (!run.requesterId) throw new Error("browser question has no authenticated requester");
+    await this.deleteStaleBrowserQuestions();
+    if (this.pendingBrowserQuestions.size >= BROWSER_QUESTION_MAX_RECORDS) {
+      const oldestDeleted = [...this.pendingBrowserQuestions.entries()]
+        .filter(([, record]) => record.deletedAt !== undefined)
+        .sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+      if (oldestDeleted) {
+        this.pendingBrowserQuestions.delete(oldestDeleted[0]);
+        this.persistBrowserQuestions();
+      }
+    }
+    if (this.pendingBrowserQuestions.size >= BROWSER_QUESTION_MAX_RECORDS) {
+      throw new Error("browser question privacy ledger is full; stale Discord anchors must be deleted first");
+    }
+    const text = boundedBrowserQuestion(question.text);
+    let messageId: string;
+    try {
+      messageId = await this.gateway.post(run.channelId, text, {
+        files: [question.screenshot],
+        singleMessage: true,
+        browserQuestion: true,
+        queueIfOffline: false,
+      });
+    } finally {
+      try {
+        unlinkSync(question.screenshot);
+      } catch {
+        // Discord uploaded it or the file was already absent.
+      }
+    }
+    this.pendingBrowserQuestions.set(messageId, {
+      runId: run.runId,
+      channelId: run.channelId,
+      allowedUserId: run.requesterId,
+      createdAt: Date.now(),
+      stale: run.state !== "waiting",
+    });
+    try {
+      this.persistBrowserQuestions();
+    } catch (error) {
+      this.pendingBrowserQuestions.set(messageId, {
+        ...this.pendingBrowserQuestions.get(messageId)!,
+        stale: true,
+      });
+      let deleted = false;
+      try {
+        await this.gateway.deleteMessage(run.channelId, messageId);
+        deleted = true;
+      } catch (deleteError) {
+        this.log.error("browser question could not be deleted after ledger failure", {
+          messageId,
+          error: String(deleteError),
+        });
+      }
+      if (deleted) this.pendingBrowserQuestions.delete(messageId);
+      throw new Error(`browser question was not made durable: ${String((error as Error).message ?? error)}`);
+    }
+    this.recordBeckettPost(run.channelId, text, messageId);
+    return messageId;
+  }
 
   /**
    * Relay material GitHub PR transitions (OPS-124): the PR poller surfaces new reviews, CI
@@ -1831,6 +2140,7 @@ export class Concierge {
   async start(): Promise<void> {
     this.stopping = false;
     this.seedIdentities();
+    this.loadStaleBrowserQuestions();
     // Fail fast on a bad launch (auth/bin/config) by bringing up the dedicated system session
     // eagerly; real channel sessions come up lazily on their first human turn.
     this.migrateLegacySessionState(SYSTEM_SCOPE);
@@ -1847,6 +2157,7 @@ export class Concierge {
     const gatewayReady = this.gateway.start();
     const workspaceRecovery = gatewayReady.then(async () => {
       await this.reconcileDowntimeMessages();
+      void this.deleteStaleBrowserQuestions();
       await this.restoreTaskWorkspaces();
     });
     // The control bus is the serving boundary: do not expose it until the system session and all
@@ -1896,51 +2207,6 @@ export class Concierge {
   /** Wire the on-demand Git/GitHub branch card provider after shell construction. */
   setBranchStatusProvider(provider: BranchStatusService): void {
     this.branchStatus = provider;
-  }
-
-  /**
-   * Deliver a DETACHED quick run's result: the dispatching `beckett quick` call already
-   * returned `{detached}`, so the report arrives as an update turn — the same shape as ticket
-   * milestones — instructing the Concierge to relay it to the originating channel in voice.
-   * Public: shell/main wires it as the runner's `onDetachedResult`.
-   */
-  async notifyQuickResult(run: QuickRun): Promise<void> {
-    const where = run.channelId
-      ? `Relay the outcome to the person who asked — send a short note IN YOUR VOICE by running this from your Bash tool:\n` +
-        `  beckett discord reply --channel ${'${run.channelId}'} "<your message>"\n` +
-        `Paraphrase the report — don't dump it raw. If it failed or timed out, say so plainly.`
-      : `No channel was stamped on this run, so there is nowhere to route it — fold anything worth keeping into your own context and do nothing else.`;
-    const framed =
-      `SYSTEM (quick-agent result — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
-      `The ${'${run.agent}'} quick agent you dispatched earlier (run ${'${run.runId}'}) finished with state "${'${run.state}'}".\n` +
-      `Its report:\n\n${'${run.result ?? "(no report)"}'}\n\n${'${where}'}`;
-    // Quick results are daemon-origin turns, including results stamped with a human channel.
-    // Their only route back to people is the explicit CLI reply above; never add them to that
-    // channel's conversational session.
-    void this.askUpdate(framed, `quick:${'${run.runId}'}`).catch(() => undefined);
-  }
-
-  /**
-   * A scheduled routine fired (issue #62): hand its task to the Concierge as an update turn.
-   * The Concierge drives the persistent browser ITSELF (`beckett browser`) — full context,
-   * observable mid-run, questions as ordinary channel messages — instead of dispatching a
-   * blind background agent. Throwing keeps the fire failed so the scheduler can report it.
-   */
-  async notifyRoutineFire(
-    task: string,
-    origin: { channelId: string; requesterId: string; credsEntry: string | null },
-  ): Promise<void> {
-    const creds = origin.credsEntry
-      ? `Credentials: use the jingle entry "${'${origin.credsEntry}'}" (vault-inject via the jingle skill; never print or paste a secret).\n`
-      : "";
-    const framed =
-      `SYSTEM (scheduled routine fire — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
-      `A routine just fired. Complete this task NOW yourself using \`beckett browser\` (browser skill):\n\n${'${task}'}\n\n` +
-      creds +
-      `Origin channel: ${'${origin.channelId}'} (requester ${'${origin.requesterId}'}). When done — or if blocked — ` +
-      `report the outcome there IN YOUR VOICE with \`beckett discord reply --channel ${'${origin.channelId}'} "<your message>"\`. ` +
-      `Attach proof (a screenshot from \`beckett browser screenshot\`) when the result is visible.`;
-    await this.askUpdate(framed, `routine:${'${Date.now()}'}`);
   }
 
   /** Native Discord command controller. Slash interaction timing/visibility stays in the gateway. */
@@ -2494,7 +2760,7 @@ export class Concierge {
       },
       {
         id: "routine",
-        summary: "humanized recurring routines: fire one now (issue #62)",
+        summary: "humanized recurring routines: fire one now through the browser lane (issue #62)",
         actionClass: ActionClass.FREE,
         cliVerbs: [],
         busCommands: [
@@ -2540,6 +2806,101 @@ export class Concierge {
               const agent = this.agentRegistry?.get(id) ?? null;
               if (!agent) return { ok: false, error: `no such agent: ${id}` };
               return { ok: true, data: { agent } };
+            },
+          },
+        ],
+      },
+      {
+        id: "browser",
+        summary: "the daemon-owned persistent Chromium boundary",
+        actionClass: ActionClass.FREE,
+        cliVerbs: [],
+        busCommands: [
+          {
+            name: "browser.eval",
+            summary: "evaluate JavaScript in a parked persistent-browser run",
+            handle: async (req) => {
+              if (!this.browserRuntime) {
+                return { ok: false, error: "persistent browser unavailable - runtime is not wired" };
+              }
+              const runId = typeof req.args.runId === "string" ? req.args.runId.trim() : "";
+              const controlToken = typeof req.args.controlToken === "string" ? req.args.controlToken.trim() : "";
+              const code = typeof req.args.code === "string" ? req.args.code : "";
+              if (!runId || !controlToken || !code.trim()) {
+                return { ok: false, error: "browser.eval needs its run capability and JavaScript code" };
+              }
+              // Keychain injection (issue #58): the browser agent's runs reference credentials as
+              // `secrets.<field>`; the values are resolved here — below the model's transcript —
+              // prefixed onto the script, and scrubbed from everything that flows back up.
+              let secretValues: string[] = [];
+              let injected = code;
+              try {
+                const secrets = this.browserAgent ? await this.browserAgent.evalSecrets(runId) : null;
+                if (secrets && Object.keys(secrets).length > 0) {
+                  secretValues = Object.values(secrets);
+                  injected = `const secrets = Object.freeze(${JSON.stringify(secrets)});\n${code}`;
+                }
+              } catch (error) {
+                return { ok: false, error: `keychain secrets are unavailable for this run: ${(error as Error).message}` };
+              }
+              try {
+                const data = await this.browserRuntime.evaluate(runId, injected, controlToken);
+                return { ok: true, data: secretValues.length > 0 ? redactSecretValues(data, secretValues) : data };
+              } catch (error) {
+                const message = (error as Error).message;
+                return { ok: false, error: secretValues.length > 0 ? redactSecretText(message, secretValues) : message };
+              }
+            },
+          },
+          {
+            name: "browser.run",
+            summary: "dispatch a self-contained task to the background browser agent",
+            handle: async (req) => {
+              // The intake session NEVER blocks on browser work (issue #58): this dispatches and
+              // returns immediately. Questions surface as ledgered Discord anchors; the outcome
+              // comes back through {@link notifyBrowserOutcome} as an update turn.
+              if (!this.browserAgent) {
+                return { ok: false, error: "the browser agent is unavailable - not wired" };
+              }
+              const task = typeof req.args.task === "string" ? req.args.task.trim() : "";
+              const credsEntry = typeof req.args.credsEntry === "string" && req.args.credsEntry.trim()
+                ? req.args.credsEntry.trim()
+                : null;
+              const requestedChannelId =
+                typeof req.args.channelId === "string" && req.args.channelId.trim() ? req.args.channelId.trim() : null;
+              if (!task) {
+                return { ok: false, error: 'usage: beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]' };
+              }
+              // Resolve the ISSUING turn (token-exact; tokenless falls back to the sole live turn). The
+              // target channel deliberately plays no part in WHO authorized this — the channel-match
+              // check below then explains a browser run that tries to wander off to another channel.
+              const mention = this.issuerMention(req.token);
+              if (!mention || !mention.userId) {
+                return { ok: false, error: "browser tasks need an authenticated authorized request" };
+              }
+              if (requestedChannelId && requestedChannelId !== mention.channelId) {
+                return { ok: false, error: "browser tasks must return to the channel where the authorized request began" };
+              }
+              try {
+                const { runId } = await this.browserAgent.run(task, {
+                  channelId: mention.channelId,
+                  requesterId: mention.userId,
+                  credsEntry,
+                });
+                return { ok: true, data: { detached: true, runId } };
+              } catch (err) {
+                return { ok: false, error: (err as Error).message };
+              }
+            },
+          },
+          {
+            name: "browser.status",
+            summary: "list the browser agent's live and recent runs",
+            handle: async () => {
+              if (!this.browserAgent) {
+                return { ok: false, error: "the browser agent is unavailable - not wired" };
+              }
+              return { ok: true, data: this.browserAgent.stats() };
             },
           },
         ],
@@ -3193,6 +3554,10 @@ export class Concierge {
     this.inboundMessageIds.add(m.messageId);
     if (this.inboundMessageIds.size > 10_000) this.inboundMessageIds.delete(this.inboundMessageIds.values().next().value!);
 
+    // A native reply to a screenshot-backed browser question resumes that exact Claude session.
+    // Consume it before ambient/shared-context capture so passwords or other answers never leak
+    // into the Concierge transcript. Unrelated messages continue through normal routing.
+    if (await this.resumeBrowserQuestion(m)) return;
     const workspace = this.workspaces.contextFor(m.channelId);
     if (!m.mentionsBot && !workspace) {
       const level = this.accessLevelFor(m.userId);
@@ -3372,6 +3737,98 @@ export class Concierge {
     }
   }
 
+  private async resumeBrowserQuestion(m: IncomingMessage): Promise<boolean> {
+    if (m.authorIsBot || !m.repliedToId) return false;
+    const pending = this.pendingBrowserQuestions.get(m.repliedToId);
+    if (!pending || pending.channelId !== m.channelId) {
+      if (!m.repliedToBrowserQuestion && !m.repliedToBotUnverified) return false;
+    }
+    // Browser answers may contain passwords, OTPs, recovery codes, or private attachments. Remove
+    // the person's message before inspecting or forwarding it, including stale and unauthorized
+    // replies. If Discord cannot confirm deletion, fail closed instead of leaving the secret visible
+    // while using it. This requires the documented Manage Messages permission.
+    try {
+      await this.gateway.deleteMessage(m.channelId, m.messageId);
+    } catch (error) {
+      this.log.warn("browser answer could not be removed from Discord", {
+        channelId: m.channelId,
+        messageId: m.messageId,
+        error: String(error),
+      });
+      await this.gateway
+        .post(
+          m.channelId,
+          "I couldn't safely remove that browser answer, so I didn't use it. Delete it manually and grant me Manage Messages before trying again.",
+        )
+        .catch(() => undefined);
+      return true;
+    }
+    if (!pending || pending.channelId !== m.channelId) {
+      if (m.repliedToBotUnverified) {
+        await this.gateway
+          .post(
+            m.channelId,
+            "I couldn't safely verify that reply target, so I didn't retain your reply. Send it again as a fresh mention.",
+          )
+          .catch(() => undefined);
+        return true;
+      }
+      // Discord accepted the atomic question but the daemon may have died before its returned
+      // message id reached the ledger. The referenced bot message is still an authoritative
+      // privacy marker, so consume its reply rather than letting a password/OTP enter chat memory.
+      await this.gateway.deleteMessage(m.channelId, m.repliedToId).catch(() => undefined);
+      await this.gateway
+        .post(m.channelId, "That browser run is no longer active. Start the task again and I'll return to the page.")
+        .catch(() => undefined);
+      return true;
+    }
+    // Consume every reply to a known browser-question anchor before shared-context capture. Even a
+    // wrong user or stale post may contain a password/OTP and must never fall through to memory.
+    if (m.userId !== pending.allowedUserId) {
+      await this.gateway
+        .post(m.channelId, "Only the person who started this browser run can answer that question.")
+        .catch(() => undefined);
+      return true;
+    }
+    if (pending.stale) {
+      await this.gateway
+        .post(m.channelId, "That browser run is no longer active. Start the task again and I'll return to the page.")
+        .catch(() => undefined);
+      return true;
+    }
+    if (this.accessLevelFor(m.userId) === "outsider") {
+      await this.gateway.post(m.channelId, "That answer is no longer authorized.").catch(() => undefined);
+      return true;
+    }
+    const answer = [
+      m.content.trim(),
+      ...m.attachments.map((attachment) => `[attachment: ${attachment.name} ${attachment.url}]`),
+    ].filter(Boolean).join("\n");
+    if (!answer) return true;
+    try {
+      if (!this.browserAgent) throw new Error("the browser agent is unavailable");
+      await this.browserAgent.resume(pending.runId, answer);
+    } catch (error) {
+      const text = `I couldn't resume that browser run: ${(error as Error).message}`;
+      await this.gateway.post(m.channelId, text).catch(() => undefined);
+      return true;
+    }
+    this.pendingBrowserQuestions.set(m.repliedToId, { ...pending, stale: true });
+    try {
+      this.persistBrowserQuestions();
+    } catch (error) {
+      this.log.warn("browser question tombstone update failed; durable live anchor remains fail-closed", {
+        error: String(error),
+      });
+    }
+    void this.deleteStaleBrowserQuestions();
+    const text = "I have what I need. Continuing from that page now.";
+    void this.gateway
+      .post(m.channelId, text)
+      .then((messageId) => this.recordBeckettPost(m.channelId, text, messageId))
+      .catch((error) => this.log.warn("browser resume acknowledgement failed", { error: String(error) }));
+    return true;
+  }
 
   /**
    * Turn an inbound message into the turn the session sees. With no attachments it's just the framed

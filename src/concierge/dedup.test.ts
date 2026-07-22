@@ -11,10 +11,12 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Concierge, type ConciergeSession } from "./index.ts";
+import { Concierge, redactBrowserSecrets, type ConciergeSession } from "./index.ts";
 import { callBus, ControlBusTimeoutError, serveBus } from "../shell/control-bus.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
+import type { BrowserRuntime } from "../browser/runtime.ts";
+import type { BrowserAgent, BrowserAgentRun } from "../browser/agent.ts";
 
 const CHAN = "1097283746520174592";
 const MSG = "msg-42";
@@ -38,6 +40,7 @@ interface Post {
   replyTo?: string;
   files?: string[];
   singleMessage?: boolean;
+  browserQuestion?: boolean;
 }
 
 /**
@@ -62,6 +65,7 @@ function harness(opts: {
   failFilePosts?: { remaining: number };
   failDeletes?: boolean;
   postDelayMs?: number;
+  browserOnAsk?: boolean;
 }) {
   const dir = opts.dir ?? mkdtempSync(join(tmpdir(), "beckett-dedup-"));
   if (!tmpDirs.includes(dir)) tmpDirs.push(dir);
@@ -80,6 +84,7 @@ function harness(opts: {
       replyToMessageId?: string;
       files?: string[];
       singleMessage?: boolean;
+      browserQuestion?: boolean;
     }) {
       postAttempts++;
       if (opts.postDelayMs) await Bun.sleep(opts.postDelayMs);
@@ -98,6 +103,7 @@ function harness(opts: {
         replyTo: o?.replyToMessageId,
         files: o?.files,
         ...(o?.singleMessage !== undefined ? { singleMessage: o.singleMessage } : {}),
+        ...(o?.browserQuestion !== undefined ? { browserQuestion: o.browserQuestion } : {}),
       });
       return `mid-${posts.length}`;
     },
@@ -115,6 +121,12 @@ function harness(opts: {
     ...(opts.currentMeta ? { getCurrentMeta: () => opts.currentMeta } : {}),
     ask: async (m: string) => {
       asks.push(m);
+      if (opts.browserOnAsk) {
+        await concierge.onBusRequest({
+          cmd: "browser.run",
+          args: { task: "open inbox", channelId: CHAN },
+        });
+      }
       if (opts.replyViaCli) {
         await concierge.onBusRequest({
           cmd: "discord.reply",
@@ -139,6 +151,18 @@ function mention(): IncomingMessage {
     mentionsBot: true,
     attachments: [],
   } as unknown as IncomingMessage;
+}
+
+function fakeBrowserAgent(overrides: Partial<BrowserAgent> = {}): BrowserAgent {
+  return {
+    run: async () => ({ runId: "unused" }),
+    resume: async () => {},
+    evalSecrets: async () => null,
+    recover: async () => {},
+    stats: () => ({ running: 0, waiting: 1, runs: [] }),
+    stopAll: async () => {},
+    ...overrides,
+  };
 }
 
 test("answers via CLI → exactly one post, native reply, no auto-post duplicate", async () => {
@@ -171,6 +195,521 @@ test("discord.reply forwards files and permits image-only posts", async () => {
     args: { channelId: CHAN, text: "", files: ["/tmp/logo.png"] },
   });
   expect(posts).toEqual([{ channelId: CHAN, text: "", replyTo: undefined, files: ["/tmp/logo.png"] }]);
+});
+
+test("the browser agent cannot be borrowed outside an authenticated request", async () => {
+  const { concierge } = harness({ replyViaCli: false, turnText: "" });
+  let runs = 0;
+  concierge.setBrowserAgent(fakeBrowserAgent({
+    run: async () => { runs++; return { runId: "bad" }; },
+  }));
+  const result = await concierge.onBusRequest({
+    cmd: "browser.run",
+    args: { task: "open inbox", channelId: CHAN },
+  });
+  expect(result.ok).toBe(false);
+  expect(result.error).toContain("authenticated authorized request");
+  expect(runs).toBe(0);
+});
+
+test("an access-list user can start a browser task from a role-free Discord mention", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-dedup-"));
+  writeFileSync(join(dir, "access.txt"), `${USER}\n`, "utf8");
+  const { concierge } = harness({
+    replyViaCli: false,
+    turnText: "",
+    browserOnAsk: true,
+    dir,
+    ownerId: "999999999999999999",
+  });
+  const runs: { channelId: string; requesterId: string }[] = [];
+  concierge.setBrowserAgent(fakeBrowserAgent({
+    run: async (_task, opts) => {
+      runs.push({ channelId: opts.channelId, requesterId: opts.requesterId });
+      return { runId: "authorized-run" };
+    },
+  }));
+  await concierge.onMessage(mention());
+  expect(runs).toEqual([{ channelId: CHAN, requesterId: USER }]);
+});
+
+test("an authenticated request dispatches the browser agent, stamped and channel-locked", async () => {
+  const { concierge } = harness({
+    replyViaCli: false,
+    turnText: "",
+    currentMeta: {
+      channelId: CHAN,
+      messageId: MSG,
+      userId: USER,
+      isOwner: false,
+      repliedViaCli: false,
+      ackMessageId: null,
+    },
+  });
+  const dispatches: { task: string; channelId: string; requesterId: string; credsEntry: string | null | undefined }[] = [];
+  concierge.setBrowserAgent(fakeBrowserAgent({
+    run: async (task, opts) => {
+      dispatches.push({ task, channelId: opts.channelId, requesterId: opts.requesterId, credsEntry: opts.credsEntry });
+      return { runId: "ok" };
+    },
+  }));
+  const result = await concierge.onBusRequest({
+    cmd: "browser.run",
+    args: { task: "log in and export the report", channelId: CHAN, credsEntry: "x.com" },
+  });
+  expect(result.ok).toBe(true);
+  expect(result.data).toMatchObject({ detached: true, runId: "ok" });
+  expect(dispatches).toEqual([{
+    task: "log in and export the report",
+    channelId: CHAN,
+    requesterId: USER,
+    credsEntry: "x.com",
+  }]);
+
+  const mismatched = await concierge.onBusRequest({
+    cmd: "browser.run",
+    args: { task: "open inbox", channelId: "999999999999999999" },
+  });
+  expect(mismatched.ok).toBe(false);
+  expect(mismatched.error).toContain("where the authorized request began");
+});
+
+function agentRun(overrides: Partial<BrowserAgentRun> = {}): BrowserAgentRun {
+  return {
+    runId: "browser-1",
+    task: "finish signup",
+    channelId: CHAN,
+    requesterId: USER,
+    credsEntry: null,
+    startedAt: Date.now(),
+    finishedAt: null,
+    state: "waiting",
+    result: null,
+    sessionId: "session-1",
+    proofFiles: [],
+    question: "Which plan?",
+    questionMessageId: null,
+    outcomeDelivered: false,
+    ...overrides,
+  };
+}
+
+test("browser question attaches its screenshot and a native reply resumes without entering chat context", async () => {
+  const { concierge, posts, deletedMessages } = harness({ replyViaCli: false, turnText: "must not run" });
+  const resumed: { runId: string; answer: string }[] = [];
+  concierge.setBrowserAgent(fakeBrowserAgent({
+    resume: async (runId, answer) => {
+      resumed.push({ runId, answer });
+    },
+  }));
+  const questionId = await concierge.notifyBrowserQuestion(
+    agentRun(),
+    { text: "Which plan should I select?", screenshot: "/tmp/question.png" },
+  );
+  expect(posts[0]).toEqual({
+    channelId: CHAN,
+    text: "Which plan should I select?\nReply directly to this message and I'll continue from the same page.",
+    replyTo: undefined,
+    files: ["/tmp/question.png"],
+    singleMessage: true,
+    browserQuestion: true,
+  });
+
+  await concierge.onMessage({
+    ...mention(),
+    messageId: "answer-1",
+    content: "Pro",
+    mentionsBot: false,
+    repliedToId: questionId,
+    authorIsBot: false,
+  });
+  expect(resumed).toEqual([{ runId: "browser-1", answer: "Pro" }]);
+  expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "answer-1" });
+  expect(posts[1]).toMatchObject({ replyTo: undefined, text: "I have what I need. Continuing from that page now." });
+});
+
+test("a browser answer is not used when Discord cannot confirm its deletion", async () => {
+  const { concierge, posts } = harness({
+    replyViaCli: false,
+    turnText: "must not run",
+    failDeletes: true,
+  });
+  let resumes = 0;
+  concierge.setBrowserAgent(fakeBrowserAgent({
+    resume: async () => { resumes++; },
+  }));
+  const questionId = await concierge.notifyBrowserQuestion(
+    agentRun(),
+    { text: "What is the password?", screenshot: "/tmp/question.png" },
+  );
+  await concierge.onMessage({
+    ...mention(),
+    messageId: "undeletable-answer",
+    content: "Sup3rSecret!",
+    mentionsBot: false,
+    repliedToId: questionId,
+    authorIsBot: false,
+  });
+  expect(resumes).toBe(0);
+  expect(posts.at(-1)?.text).toContain("Manage Messages");
+  expect(JSON.stringify(posts)).not.toContain("Sup3rSecret");
+});
+
+test("a browser question is deleted when its privacy ledger cannot be persisted", async () => {
+  const { concierge, deletedMessages, dir } = harness({ replyViaCli: false, turnText: "" });
+  mkdirSync(join(dir, "browser-questions.json"));
+  await expect(concierge.notifyBrowserQuestion(
+    agentRun(),
+    { text: "What is the password?", screenshot: join(dir, "question.png") },
+  )).rejects.toThrow("was not made durable");
+  expect(deletedMessages).toEqual([{ channelId: CHAN, messageId: "mid-1" }]);
+  await concierge.stop();
+});
+
+test("browser question instructions stay in the one ledgered Discord message", async () => {
+  const { concierge, posts } = harness({ replyViaCli: false, turnText: "" });
+  await concierge.notifyBrowserQuestion(
+    agentRun(),
+    {
+      text: `Page context before the question.\n\nWhich password should I use? ${"context ".repeat(400)}`,
+      screenshot: "/tmp/question.png",
+    },
+  );
+  expect(posts).toHaveLength(1);
+  expect(posts[0]!.text.length).toBeLessThanOrEqual(2_000);
+  expect(posts[0]!.text).not.toContain("\n\n");
+  expect(posts[0]!.text).toStartWith("Page context before the question. Which password should I use?");
+  expect(posts[0]!.text).toEndWith("Reply directly to this message and I'll continue from the same page.");
+  expect(posts[0]!.files).toEqual(["/tmp/question.png"]);
+  // Atomicity is the GATEWAY's guarantee, not the chunker's: `singleMessage: true` bypasses
+  // chunkReply entirely (and `browserQuestion` posts require it — gateway throws
+  // otherwise), so the suffix can never be split away from the question. The old
+  // `chunkReply(text) has length 1` assertion here only held because the pre-fix sentence
+  // splitter silently DROPPED the long "context…" run; the lossless splitter would pack this
+  // text into 2 chunks — correctly — on the (unused) non-atomic path.
+  expect(posts[0]!.singleMessage).toBe(true);
+  expect(posts[0]!.browserQuestion).toBe(true);
+  await concierge.stop();
+});
+
+test("deleted browser question tombstones expire and remain bounded", async () => {
+  const { concierge, deletedMessages, dir } = harness({ replyViaCli: false, turnText: "" });
+  const now = Date.now();
+  const records = Array.from({ length: 1_005 }, (_, index) => ({
+    messageId: `question-${index}`,
+    runId: `run-${index}`,
+    channelId: CHAN,
+    allowedUserId: USER,
+    createdAt: now - index,
+    stale: false,
+  }));
+  records.push({
+    messageId: "expired-question",
+    runId: "expired-run",
+    channelId: CHAN,
+    allowedUserId: USER,
+    createdAt: now - 8 * 24 * 60 * 60_000,
+    stale: false,
+  });
+  writeFileSync(join(dir, "browser-questions.json"), JSON.stringify(records));
+  await concierge.start();
+  try {
+    let persisted: { stale: boolean; deletedAt?: number }[] = [];
+    const deadline = Date.now() + 2_000;
+    do {
+      persisted = JSON.parse(readFileSync(join(dir, "browser-questions.json"), "utf8"));
+      if (persisted.length === 1_000 && persisted.every((record) => record.deletedAt !== undefined)) break;
+      if (Date.now() > deadline) throw new Error("stale browser questions were not deleted and compacted");
+      await Bun.sleep(10);
+    } while (true);
+    expect(persisted).toHaveLength(1_000);
+    expect(persisted.every((record) => record.stale && record.deletedAt !== undefined)).toBe(true);
+    expect(JSON.stringify(persisted)).not.toContain("expired-question");
+    expect(deletedMessages).toHaveLength(1_006);
+  } finally {
+    await concierge.stop();
+  }
+});
+
+test("only the browser-run owner can answer its screenshot-backed question", async () => {
+  const { concierge, posts, deletedMessages } = harness({ replyViaCli: false, turnText: "must not run" });
+  let resumes = 0;
+  concierge.setBrowserAgent(fakeBrowserAgent({
+    resume: async () => { resumes++; },
+  }));
+  const questionId = await concierge.notifyBrowserQuestion(
+    agentRun(),
+    { text: "What is the one-time code?", screenshot: "/tmp/question.png" },
+  );
+  await concierge.onMessage({
+    ...mention(),
+    messageId: "answer-other",
+    userId: "222222222222222222",
+    content: "123456",
+    mentionsBot: false,
+    repliedToId: questionId,
+    authorIsBot: false,
+  });
+  expect(resumes).toBe(0);
+  expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "answer-other" });
+  expect(posts.at(-1)?.text).toContain("Only the person who started");
+});
+
+test("the initiating authorized user can answer a browser question without a Discord role", async () => {
+  const { concierge, posts, deletedMessages } = harness({ replyViaCli: false, turnText: "must not run" });
+  let resumes = 0;
+  concierge.setBrowserAgent(fakeBrowserAgent({
+    resume: async () => { resumes++; },
+  }));
+  const questionId = await concierge.notifyBrowserQuestion(
+    agentRun(),
+    { text: "What is the one-time code?", screenshot: "/tmp/question.png" },
+  );
+  await concierge.onMessage({
+    ...mention(),
+    messageId: "answer-revoked",
+    roleIds: [],
+    content: "123456",
+    mentionsBot: false,
+    repliedToId: questionId,
+    authorIsBot: false,
+  });
+  expect(resumes).toBe(1);
+  expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "answer-revoked" });
+  expect(posts.at(-1)?.text).toContain("Continuing from that page");
+});
+
+test("a reply to a browser question from before restart is consumed as sensitive stale input", async () => {
+  const first = harness({ replyViaCli: false, turnText: "must not run" });
+  const questionId = await first.concierge.notifyBrowserQuestion(
+    agentRun(),
+    { text: "What is the one-time code?", screenshot: "/tmp/question.png" },
+  );
+  const restarted = harness({ replyViaCli: false, turnText: "must not run", dir: first.dir });
+  await restarted.concierge.start();
+  try {
+    await restarted.concierge.onMessage({
+      ...mention(),
+      messageId: "late-secret",
+      content: "654321",
+      mentionsBot: false,
+      repliedToId: questionId,
+      authorIsBot: false,
+    });
+    expect(restarted.deletedMessages).toContainEqual({ channelId: CHAN, messageId: "late-secret" });
+    expect(restarted.posts.some((post) => post.text.includes("browser run is no longer active"))).toBe(true);
+    expect(restarted.posts.some((post) => post.text.includes("must not run"))).toBe(false);
+  } finally {
+    await restarted.concierge.stop();
+  }
+});
+
+test("an orphan browser-question reply is consumed even if the daemon crashed before ledger persistence", async () => {
+  const { concierge, posts, deletedMessages } = harness({ replyViaCli: false, turnText: "must not enter chat" });
+  await concierge.onMessage({
+    ...mention(),
+    messageId: "orphan-secret",
+    content: "739184",
+    mentionsBot: true,
+    repliedToId: "accepted-before-crash",
+    repliedToBrowserQuestion: true,
+    authorIsBot: false,
+  });
+  expect(posts.some((post) => post.text.includes("browser run is no longer active"))).toBe(true);
+  expect(posts.some((post) => post.text.includes("must not enter chat"))).toBe(false);
+  expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "orphan-secret" });
+  expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "accepted-before-crash" });
+});
+
+test("an unverified bot-reference reply fails closed instead of entering chat context", async () => {
+  const { concierge, posts, deletedMessages } = harness({ replyViaCli: false, turnText: "must not enter chat" });
+  await concierge.onMessage({
+    ...mention(),
+    messageId: "unverified-secret",
+    content: "739184",
+    mentionsBot: true,
+    repliedToId: "uninspectable-bot-message",
+    repliedToBotUnverified: true,
+    authorIsBot: false,
+  });
+  expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "unverified-secret" });
+  expect(posts.some((post) => post.text.includes("didn't retain your reply"))).toBe(true);
+  expect(posts.some((post) => post.text.includes("must not enter chat"))).toBe(false);
+});
+
+test("a browser outcome arrives as an update turn instructing a voiced reply with proof attached", async () => {
+  const { concierge, posts, asks, dir } = harness({ replyViaCli: false, turnText: "" });
+  const proof = join(dir, "proof.png");
+  writeFileSync(proof, "png fixture");
+  await concierge.notifyBrowserOutcome(agentRun({
+    state: "done",
+    result: "The account is ready at https://example.test/account.",
+    proofFiles: [proof],
+    finishedAt: Date.now(),
+  }));
+  // The outcome routes through the Concierge (an update turn), never straight to Discord.
+  expect(posts).toEqual([]);
+  expect(asks).toHaveLength(1);
+  expect(asks[0]).toContain("SYSTEM (browser-agent outcome");
+  expect(asks[0]).toContain('finished with state "done"');
+  expect(asks[0]).toContain("The account is ready at https://example.test/account.");
+  expect(asks[0]).toContain(`beckett discord reply --channel ${CHAN} --file ${proof} `);
+});
+
+test("a failed browser outcome tells the Concierge to say so plainly", async () => {
+  const { asks, concierge } = harness({ replyViaCli: false, turnText: "" });
+  await concierge.notifyBrowserOutcome(agentRun({
+    state: "timeout",
+    result: "Timed out waiting 3600s for an answer to: Which plan?",
+    finishedAt: Date.now(),
+  }));
+  expect(asks[0]).toContain('finished with state "timeout"');
+  expect(asks[0]).toContain("say so plainly");
+});
+
+test("browser outcomes redact labelled credentials before entering the update turn", async () => {
+  const { asks, concierge } = harness({ replyViaCli: false, turnText: "" });
+  await concierge.notifyBrowserOutcome(agentRun({
+    state: "done",
+    result: "Created the account. Password: Sup3rSecret!",
+    finishedAt: Date.now(),
+  }));
+  expect(asks[0]).toContain("[redacted]");
+  expect(asks[0]).not.toContain("Sup3rSecret");
+});
+
+test("a browser outcome marks the run's parked question anchor stale", async () => {
+  const { concierge, deletedMessages } = harness({ replyViaCli: false, turnText: "" });
+  const questionId = await concierge.notifyBrowserQuestion(
+    agentRun(),
+    { text: "Which plan should I select?", screenshot: "/tmp/question.png" },
+  );
+  await concierge.notifyBrowserOutcome(agentRun({ state: "done", result: "Done.", finishedAt: Date.now() }));
+  const deadline = Date.now() + 2_000;
+  while (!deletedMessages.some((deleted) => deleted.messageId === questionId)) {
+    if (Date.now() > deadline) throw new Error("stale question anchor was not deleted");
+    await Bun.sleep(10);
+  }
+});
+
+test("an update-turn failure propagates so the agent's durable ledger keeps retrying", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-dedup-"));
+  tmpDirs.push(dir);
+  process.env.BECKETT_DIR = dir;
+  process.env.DISCORD_OWNER_ID = USER;
+  const gateway = {
+    onMessage() {},
+    async start() {},
+    async stop() {},
+    sendTyping() {},
+    async post() { return "mid-1"; },
+    async deleteMessage() {},
+  } as unknown as DiscordGateway;
+  const session = {
+    async start() {},
+    async stop() {},
+    ask: async () => { throw new Error("system session down"); },
+  } as unknown as ConciergeSession;
+  const concierge = new Concierge({ config, session, gateway });
+  await expect(concierge.notifyBrowserOutcome(agentRun({
+    state: "done",
+    result: "Must not be marked delivered.",
+    finishedAt: Date.now(),
+  }))).rejects.toThrow("system session down");
+});
+
+test("browser.eval injects keychain secrets below the model and scrubs echoed values", async () => {
+  const { concierge } = harness({ replyViaCli: false, turnText: "" });
+  const evals: string[] = [];
+  concierge.setBrowserRuntime({
+    async acquire() {},
+    async evaluate(_runId: string, code: string) {
+      evals.push(code);
+      return {
+        value: "logged in as hunter2-secret",
+        console: ["typed hunter2-secret into #pass"],
+        pages: [],
+        events: [],
+        screenshots: [],
+        elapsedMs: 1,
+        truncated: false,
+      };
+    },
+    async capture() { return ""; },
+    async checkpoint() { return { urls: [], activeIndex: 0 }; },
+    async restore() {},
+    async release() { return []; },
+    hasLease() { return true; },
+    stats() { return { ready: true, profileDir: "t", activeRunId: "r1", pages: 1, launches: 1, evaluations: 0, averageEvalMs: 0 }; },
+    async stop() {},
+  } as BrowserRuntime);
+  concierge.setBrowserAgent(fakeBrowserAgent({
+    evalSecrets: async () => ({ password: "hunter2-secret", totp: "739184" }),
+  }));
+  const result = await concierge.onBusRequest({
+    cmd: "browser.eval",
+    args: { runId: "r1", controlToken: "token", code: "await page.fill('#pass', secrets.password)" },
+  });
+  expect(evals[0]).toStartWith("const secrets = Object.freeze({");
+  expect(evals[0]).toContain("hunter2-secret");
+  expect(evals[0]).toEndWith("await page.fill('#pass', secrets.password)");
+  // Nothing that flows back to the model transcript may carry a secret value.
+  expect(result.ok).toBe(true);
+  expect(JSON.stringify(result)).not.toContain("hunter2-secret");
+  expect(JSON.stringify(result)).not.toContain("739184");
+  expect((result.data as { value: string }).value).toBe("logged in as [redacted]");
+});
+
+test("browser.eval failures are scrubbed of secret values too", async () => {
+  const { concierge } = harness({ replyViaCli: false, turnText: "" });
+  concierge.setBrowserRuntime({
+    async acquire() {},
+    async evaluate() { throw new Error("locator not found after typing hunter2-secret"); },
+    async capture() { return ""; },
+    async checkpoint() { return { urls: [], activeIndex: 0 }; },
+    async restore() {},
+    async release() { return []; },
+    hasLease() { return true; },
+    stats() { return { ready: true, profileDir: "t", activeRunId: "r1", pages: 1, launches: 1, evaluations: 0, averageEvalMs: 0 }; },
+    async stop() {},
+  } as BrowserRuntime);
+  concierge.setBrowserAgent(fakeBrowserAgent({
+    evalSecrets: async () => ({ password: "hunter2-secret" }),
+  }));
+  const result = await concierge.onBusRequest({
+    cmd: "browser.eval",
+    args: { runId: "r1", controlToken: "token", code: "await page.click('#go')" },
+  });
+  expect(result.ok).toBe(false);
+  expect(result.error).toBe("locator not found after typing [redacted]");
+});
+
+test("browser summaries redact labelled credentials before Discord delivery", () => {
+  const cases = [
+    "Created it. Password: Sup3rSecret! token=abc123",
+    "generated password `correct horse battery staple`",
+    '{"password":"abc123","status":"done"}',
+    "token: abc123\nNext line is safe",
+    "Open https://user:pass@example.test/path?token=abc123",
+    "Password:\nSup3rSecret!\nSetup complete",
+    "**Password:**\nSup3rSecret!\nSetup complete",
+    "- Password:\nSup3rSecret!\nSetup complete",
+    "### Password:\nSup3rSecret!\nSetup complete",
+    "> Password:\nSup3rSecret!\nSetup complete",
+    "Credentials created: alice / Sup3rSecret!",
+  ];
+  for (const value of cases) {
+    const redacted = redactBrowserSecrets(value);
+    expect(redacted).toContain("[redacted]");
+    for (const secret of ["Sup3rSecret", "abc123", "correct horse", "user:pass"]) {
+      expect(redacted).not.toContain(secret);
+    }
+  }
+  expect(redactBrowserSecrets(cases[3]!)).toContain("Next line is safe");
+  expect(redactBrowserSecrets(cases[5]!)).toContain("Setup complete");
+  expect(redactBrowserSecrets("What is the password? Which password should I use?")).toBe(
+    "What is the password? Which password should I use?",
+  );
 });
 
 test("a send that succeeds before its bus ack times out is not posted again on retry", async () => {

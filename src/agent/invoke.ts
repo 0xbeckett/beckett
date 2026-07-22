@@ -11,15 +11,15 @@
  * system prompt appended and its granted tools scoped, block for the text output, and hand that back
  * to the caller. Unlike quick it does NOT own delivery — the CALLER decides what to do with the
  * output. That seam is what lets the daily-shitpost routine drive the `social-media` agent (which
- * AUTHORS a post) and then hand the authored task to the Concierge to run with its own browser, so a
+ * AUTHORS a post) and then hand the authored task to the privileged background browser lane, so a
  * headless routine can post to X without a Discord mention token.
  *
  * No secret ever flows through here — credential injection happens downstream in the browser lane,
  * keyed by an entry NAME the caller carries. This runner only turns a definition into a process.
  */
 
-import { mkdirSync, symlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildPaths } from "../paths.ts";
 import { childEnv } from "../env.ts";
@@ -128,13 +128,6 @@ export function createAgentRunner(deps: CreateAgentRunnerDeps): AgentRunner {
 
       const runDir = join(runsDir, runId);
       mkdirSync(runDir, { recursive: true, mode: 0o700 });
-      // Project skills (.claude/skills) are discovered from the child's cwd. Agents run in a
-      // scratch dir, so without this link a granted skill (e.g. "browser") is unreachable.
-      try {
-        symlinkSync(resolve(import.meta.dir, "..", "..", ".claude"), join(runDir, ".claude"));
-      } catch {
-        // A skill-less run is degraded but valid; never fail the dispatch over the link.
-      }
 
       let bin: string;
       let args: string[];

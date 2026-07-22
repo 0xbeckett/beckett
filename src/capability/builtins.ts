@@ -31,6 +31,7 @@ import { ActionClass, CapabilityRegistry, type Capability } from "./index.ts";
 
 const int = z.number().int();
 const posInt = int.min(1);
+const browserOutputChars = int.min(4_096).max(1_000_000);
 const nonNegInt = int.min(0);
 
 export function isRecord(v: unknown): v is Record<string, unknown> {
@@ -475,28 +476,18 @@ export const configFragments = {
       sync_wait_secs: posInt.default(240),
       hard_timeout_secs: posInt.default(900),
       max_concurrent: posInt.default(3),
-    })
-    .strict()
-    .default({}),
-  // The Concierge-driven browser: `beckett browser` passes through to the agent-browser CLI,
-  // whose daemon keeps the browser (and its signed-in state) alive between turns.
-  browser: z
-    .object({
-      enabled: z.boolean().default(true),
-      // Default named session; parallel jobs pass an explicit --session and get their own
-      // persistent profile directory under <beckettDir>/browser/profiles/<session>.
-      session: z.string().min(1).default("beckett"),
-      // Empty = auto: the repo-pinned node_modules binary, then PATH.
-      bin: z.string().default(""),
-      // Empty = agent-browser's own detection (its managed Chrome, or an installed one).
-      executable_path: z.string().default(""),
-      // The daemon (and its Chrome) exits after this much inactivity.
-      idle_timeout_secs: posInt.default(1_800),
-      // Per-command output ceiling injected as AGENT_BROWSER_MAX_OUTPUT (a huge snapshot must
-      // not flood the calling turn); an explicit --max-output flag wins.
-      max_output_chars: int.min(4_096).default(20_000),
-      // Per-command wall-clock ceiling: `beckett browser` kills a wedged command past this.
-      command_timeout_secs: posInt.default(120),
+      // Computer-use owns one persistent Chromium identity. Hosts serialize at the lease
+      // boundary and stay warm for a task, while that task may drive many tabs concurrently.
+      browser_profile_dir: z.string().min(1).default("browser/profile"),
+      browser_headless: z.boolean().default(true),
+      browser_viewport_width: posInt.default(1440),
+      browser_viewport_height: posInt.default(900),
+      browser_launch_timeout_ms: posInt.default(30_000),
+      browser_action_timeout_ms: posInt.default(10_000),
+      browser_navigation_timeout_ms: posInt.default(30_000),
+      browser_eval_timeout_ms: posInt.default(60_000),
+      browser_max_output_chars: browserOutputChars.default(24_000),
+      browser_question_wait_secs: posInt.default(3_600),
     })
     .strict()
     .default({}),
@@ -554,8 +545,7 @@ const BUILTIN_CAPABILITY_INFO: {
   proactivity: { id: "proactivity", summary: "Ambient interjection policy (burst triage, cooldowns, channel modes)." },
   shared_context: { id: "shared-context", summary: "Channel-scoped shared context: attributed transcripts + server memory." },
   concierge: { id: "concierge", summary: "The Concierge chat seat: model, effort, session pooling." },
-  quick: { id: "quick", summary: "Quick agents (no-ticket lane)." },
-  browser: { id: "browser", summary: "The Concierge-driven persistent browser (agent-browser passthrough)." },
+  quick: { id: "quick", summary: "Quick agents (no-ticket lane) + the computer-use browser host." },
   announce: { id: "announce", summary: "Restart changelog announcements." },
   federation: { id: "federation", summary: "Peer-Beckett federation over Discord." },
 };

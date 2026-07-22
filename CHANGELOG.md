@@ -2,36 +2,6 @@
 
 ## Unreleased
 
-### The Concierge drives the browser itself (agent-browser replaces the background browser agent)
-
-- **`beckett browser <command…>`** is now a passthrough to the
-  [agent-browser](https://github.com/vercel-labs/agent-browser) CLI (Apache-2.0, Vercel Labs).
-  Its native daemon keeps a real Chrome alive between invocations, so the Concierge works the
-  web in its OWN session: full conversational context, live observability ("how's that browser
-  job going" is answerable at any time — the old background agent had none), in-channel
-  blocking questions, and parallelism — page state survives between commands and turns,
-  parallel jobs run under `--session <name>`, and per-session profiles under
-  `~/.beckett/browser/profiles/<session>` keep signed-in state across restarts. The `browser`
-  skill carries the doctrine; agent-browser's own version-matched skills load on demand
-  (`beckett browser skills get core`).
-- **The dedicated background browser agent (#58) is gone**, along with everything that existed
-  only because a blind sub-agent was browsing: the BetterWright runtime and its
-  bubblewrap/prlimit isolated host, the one-tool stdio MCP bridge, the `browser.eval` /
-  `browser.run` / `browser.status` bus commands, the keychain `secrets`-injection path, the
-  atomic screenshot-question ledger (park/resume, reply consumption, tombstones, the Manage
-  Messages requirement), and the proof outbox. Credentials still come from the jingle vault —
-  via the jingle skill's subprocess injection, same as everywhere else.
-- **Routines now fire as Concierge update turns**: the scheduler hands the task (and the
-  jingle creds entry name) to the Concierge, which drives `beckett browser` itself and reports
-  to the origin channel in its own voice — same outcome contract, one brain doing the work.
-- **Config:** the `[quick] browser_*` keys are replaced by a small `[browser]` section
-  (`enabled`, `session`, `bin`, `executable_path`, `idle_timeout_secs`). Dependencies:
-  `betterwright` and `playwright` are dropped; pinned `agent-browser` is added. Deploy
-  provisions Chrome via `agent-browser install` (bubblewrap/prlimit/AppArmor userns setup is
-  no longer needed); `beckett doctor` checks the agent-browser binary, and
-  `bun run browser:smoke` exercises the real `beckett browser` invocation path end to end
-  against a live local page.
-
 ## v5.5.0 (2026-07-20)
 
 ### Background browser agent with pause/surface/resume (#58)

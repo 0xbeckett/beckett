@@ -1358,41 +1358,43 @@ async function runProactivity(argv: string[]): Promise<void> {
   fail("usage: beckett proactivity status | set <channel-id> off|suggest|auto | off");
 }
 
-// ── browser (in-process: exec the agent-browser CLI with Beckett's session/profile) ─────
-// No daemon dependency: agent-browser runs its own persistent daemon, so the browser (and its
-// signed-in state) survives between invocations and Concierge turns. The passthrough only
-// injects the default session + per-session persistent profile (explicit flags win).
+// ── quick (control bus: the NO-TICKET lane) ─────────────────────────────────────
+// Dispatch a short-lived specialist harness (computer-use | quick-code | repo-explorer) and
+// block for its report. The bus call must outlive the daemon's sync window (`sync_wait_secs`),
+// so this is the one command with a custom callBus timeout — past the window the daemon
+// answers `{detached, runId}` and the result arrives later as a Discord-routed update turn.
 async function runBrowser(argv: string[]): Promise<void> {
-  const { buildBrowserInvocation } = await import("../browser/cli.ts");
-  let invocation;
+  const [sub, ...rest] = argv;
+  if (sub === "status") {
+    await bus("browser.status", {});
+  }
+  const { _, flags } = parse(sub === "run" ? rest : argv);
+  const task = _.join(" ").trim();
+  if (!task) {
+    fail('usage: beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]  |  beckett browser status');
+  }
   try {
-    invocation = buildBrowserInvocation(config, argv);
+    // The dispatch returns the moment the background agent takes the task; nothing here blocks.
+    const res = await callBus(
+      SOCK,
+      "browser.run",
+      {
+        task,
+        credsEntry: flags.creds ? String(flags.creds) : undefined,
+        channelId: flags.channel ? String(flags.channel) : undefined,
+      },
+      30_000,
+    );
+    if (!res.ok) fail(res.error ?? "browser dispatch failed");
+    const data = res.data as { runId: string };
+    out(
+      `browser run ${data.runId} is working independently in the background - if it needs a human input ` +
+      `it will ask ONE question in the channel with a page screenshot, and its outcome will come back ` +
+      `to you as a browser-agent update turn. Tell the person it is in progress and end this turn.`,
+    );
   } catch (err) {
     fail((err as Error).message);
   }
-  const child = Bun.spawn({
-    cmd: invocation.cmd,
-    env: invocation.env,
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  // A wedged command must never hold a Concierge turn open: kill it and say so plainly.
-  const timer = setTimeout(() => {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // already gone
-    }
-    console.error(
-      `beckett browser: command exceeded ${Math.round(invocation.timeoutMs / 1000)}s and was killed. ` +
-        `The browser daemon may still be fine - check with \`beckett browser get url\` or \`beckett browser errors\`, ` +
-        `and prefer explicit waits (\`wait --load domcontentloaded\`, \`wait --text "..."\`) over long implicit ones.`,
-    );
-  }, invocation.timeoutMs);
-  const code = await child.exited;
-  clearTimeout(timer);
-  process.exit(code === null ? 124 : code);
 }
 
 function routineStore(): RoutineStore {
@@ -1521,8 +1523,8 @@ async function runRoutine(argv: string[]): Promise<void> {
         lane: plan.lane,
         wouldDispatchTo:
           plan.lane === "agent"
-            ? `invoke agent ${plan.agentId} → concierge update turn (beckett browser)`
-            : "concierge update turn (beckett browser)",
+            ? `invoke agent ${plan.agentId} → beckett browser (background lane)`
+            : "beckett browser (background lane)",
         preview: plan.preview,
         agentId: plan.agentId,
         agentInput: plan.agentInput,
@@ -1531,7 +1533,7 @@ async function runRoutine(argv: string[]): Promise<void> {
         note: "dry-run did NOT run the agent or post. To fire for real: beckett routine fire " + id + " --force",
       });
     }
-    // A real fire routes through the daemon so the Concierge picks it up as an update turn.
+    // A real fire routes through the daemon so it dispatches on the browser lane, off this process.
     try {
       const res = await callBus(SOCK, "routine.fire", { id, force }, 30_000);
       if (!res.ok) fail(res.error ?? "routine fire failed");
@@ -1709,11 +1711,6 @@ async function runAgent(argv: string[]): Promise<void> {
   );
 }
 
-// ── quick (control bus: the NO-TICKET lane) ─────────────────────────────────────
-// Dispatch a short-lived specialist harness (quick-code | repo-explorer) and block for its
-// report. The bus call must outlive the daemon's sync window (`sync_wait_secs`), so this is
-// the one command with a custom callBus timeout — past the window the daemon answers
-// `{detached, runId}` and the result arrives later as a Discord-routed update turn.
 async function runQuick(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (sub === "list") {
@@ -1980,14 +1977,14 @@ function buildCliCapabilities(): Capability[] {
     },
     {
       id: "browser",
-      summary: "the Concierge-driven persistent browser (agent-browser passthrough)",
+      summary: "the background browser agent: dispatch computer-use work and return immediately",
       actionClass: ActionClass.FREE,
-      cliHelp: "browser <agent-browser args…>",
+      cliHelp: "browser <task>|status",
       cliVerbs: [
         {
           name: "browser",
-          summary: "drive the shared persistent browser: open, snapshot, click, screenshot, …",
-          usage: "beckett browser <agent-browser command…>   (start with: beckett browser skills get core)",
+          summary: "hand a self-contained browser task to the background agent (pauses for humans, resumes, reports back)",
+          usage: 'beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]  |  beckett browser status',
           run: runBrowser,
         },
       ],

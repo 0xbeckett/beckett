@@ -18,7 +18,6 @@
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { existsSync, readFileSync, readlinkSync } from "node:fs";
-import { resolveAgentBrowserBin } from "../browser/cli.ts";
 import type { Config, Harness } from "../types.ts";
 import { availableHarnesses, preflightFor, type PreflightResult } from "../drivers/index.ts";
 import { buildPaths } from "../paths.ts";
@@ -74,6 +73,7 @@ export interface DoctorDeps {
   /** Free space at a path in KiB, or null when unknowable. */
   diskFreeKb?: (path: string) => Promise<number | null>;
   /** Verify the pinned Chromium artifact actually launches, not merely that its file exists. */
+  browserProbe?: () => Promise<{ executable: string; launchable: boolean; error?: string }>;
 }
 
 // ── default (real) probe implementations ──────────────────────────────────────────────────
@@ -138,6 +138,19 @@ async function realDiskFreeKb(path: string): Promise<number | null> {
   return Number.isFinite(avail) ? avail : null;
 }
 
+async function realBrowserProbe(): Promise<{ executable: string; launchable: boolean; error?: string }> {
+  try {
+    const { chromium } = await import("playwright");
+    const executable = chromium.executablePath();
+    if (!existsSync(executable)) return { executable, launchable: false, error: "browser binary is missing" };
+    const browser = await chromium.launch({ headless: true, channel: "chromium", timeout: 15_000 });
+    await browser.close();
+    return { executable, launchable: true };
+  } catch (error) {
+    return { executable: "unknown", launchable: false, error: (error as Error).message };
+  }
+}
+
 // ── .env / .env.example parsing ────────────────────────────────────────────────────────────
 
 /** Keys declared in a dotenv-shaped body; a same-line `# optional` marks the key optional. */
@@ -193,6 +206,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   const listProcesses = deps.listProcesses ?? realListProcesses;
   const readFile = deps.readFile ?? realReadFile;
   const diskFreeKb = deps.diskFreeKb ?? realDiskFreeKb;
+  const browserProbe = deps.browserProbe ?? realBrowserProbe;
   const paths = buildPaths(config);
   const busStatus =
     deps.busStatus ??
@@ -209,8 +223,8 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   const harnessCfg = config.harness as unknown as Record<string, { bin?: string } | undefined>;
   const binaries: Array<{ bin: string; required: boolean; minVersion?: string; why?: string }> = [
     { bin: "bun", required: true },
-    // The Concierge's own browser hands: the agent-browser daemon + CLI (beckett browser).
-    ...(config.browser.enabled ? [{ bin: resolveAgentBrowserBin(config), required: true }] : []),
+    ...(platform === "linux" ? [{ bin: "bwrap", required: true }] : []),
+    ...(platform === "linux" ? [{ bin: "prlimit", required: true }] : []),
     {
       bin: "node",
       required: true,
@@ -254,6 +268,34 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     }
     checks.push({ name: `binary: ${b.bin}`, level: "ok", detail: version });
   }
+  if (platform === "linux") {
+    const sandbox = await exec(
+      ["bwrap", "--unshare-all", "--share-net", "--die-with-parent", "--ro-bind", "/", "/", "/bin/true"],
+      { env: binEnv, timeoutMs: 15_000 },
+    );
+    checks.push(sandbox.code === 0
+      ? { name: "browser: process sandbox", level: "ok", detail: "bubblewrap user namespace works" }
+      : {
+          name: "browser: process sandbox",
+          level: "fail",
+          detail: `bubblewrap cannot create the browser sandbox: ${(sandbox.stderr || sandbox.stdout).trim() || `exit ${sandbox.code}`}`,
+        });
+  }
+  // The package, browser download, and Linux shared libraries are separate artifacts. Launching a
+  // real process catches all three before the first computer-use request does.
+  try {
+    const probe = await browserProbe();
+    checks.push(probe.launchable
+      ? { name: "browser: chromium", level: "ok", detail: probe.executable }
+      : {
+          name: "browser: chromium",
+          level: "fail",
+          detail: `${probe.error ?? "launch failed"} - run bun x playwright install --no-shell chromium and, on Linux, sudo bun x playwright install-deps chromium`,
+        });
+  } catch (err) {
+    checks.push({ name: "browser: chromium", level: "fail", detail: `Playwright unavailable: ${(err as Error).message}` });
+  }
+
   // 2. Harness preflights (issue #17's checks, forced fresh): auth artifact, version minimum,
   // flags. Disabled optional harnesses are intentionally absent rather than permanently yellow.
   const activeHarnesses: Harness[] = [

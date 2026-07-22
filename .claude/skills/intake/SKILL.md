@@ -21,9 +21,9 @@ turn working.
    only genuinely big work with real structure). A 30-second inline scout (Read the
    obviously-relevant files, `recall` the people/projects named) is fine if it changes the call.
    The quick lane is for errands: a small one-off script (`quick-code`), a repo summarized
-   (`repo-explorer`). A live-website errand you drive YOURSELF with `beckett browser` (the
-   `browser` skill) — same ack-first rhythm, but the pages stay in your own hands and stay
-   observable. Real work — reviewable, multi-file, project-repo — is still a ticket.
+   (`repo-explorer`). Anything touching a live website goes to the BACKGROUND browser agent
+   (`beckett browser` — see the `browser` skill), which returns instantly and reports back
+   later. Real work — reviewable, multi-file, project-repo — is still a ticket.
 4. **Move:**
    - `question`/`chatter` → just reply; your turn text auto-sends. Do NOT run
      `beckett discord reply` — that double-posts.
