@@ -492,6 +492,11 @@ export const configFragments = {
       executable_path: z.string().default(""),
       // The daemon (and its Chrome) exits after this much inactivity.
       idle_timeout_secs: posInt.default(1_800),
+      // Per-command output ceiling injected as AGENT_BROWSER_MAX_OUTPUT (a huge snapshot must
+      // not flood the calling turn); an explicit --max-output flag wins.
+      max_output_chars: int.min(4_096).default(20_000),
+      // Per-command wall-clock ceiling: `beckett browser` kills a wedged command past this.
+      command_timeout_secs: posInt.default(120),
     })
     .strict()
     .default({}),

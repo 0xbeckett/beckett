@@ -808,6 +808,10 @@ export interface Config {
     executable_path: string;
     /** The daemon (and its Chrome) exits after this much inactivity. */
     idle_timeout_secs: number;
+    /** Output ceiling per command (AGENT_BROWSER_MAX_OUTPUT); explicit --max-output wins. */
+    max_output_chars: number;
+    /** Wall-clock ceiling per command; `beckett browser` kills a wedged command past this. */
+    command_timeout_secs: number;
   };
   /**
    * Restart "what's new" announcement — instance-specific, OFF by default (empty channel), so a

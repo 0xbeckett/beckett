@@ -211,6 +211,8 @@ test("the Concierge browser ships enabled with the beckett session and a shutdow
     bin: "",
     executable_path: "",
     idle_timeout_secs: 1_800,
+    max_output_chars: 20_000,
+    command_timeout_secs: 120,
   });
   expect(() => validateConfig({ browser: { session: "" } })).toThrow();
   expect(() => validateConfig({ browser: { idle_timeout_secs: 0 } })).toThrow();

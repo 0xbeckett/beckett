@@ -1377,7 +1377,22 @@ async function runBrowser(argv: string[]): Promise<void> {
     stdout: "inherit",
     stderr: "inherit",
   });
-  process.exit(await child.exited);
+  // A wedged command must never hold a Concierge turn open: kill it and say so plainly.
+  const timer = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // already gone
+    }
+    console.error(
+      `beckett browser: command exceeded ${Math.round(invocation.timeoutMs / 1000)}s and was killed. ` +
+        `The browser daemon may still be fine - check with \`beckett browser get url\` or \`beckett browser errors\`, ` +
+        `and prefer explicit waits (\`wait --load domcontentloaded\`, \`wait --text "..."\`) over long implicit ones.`,
+    );
+  }, invocation.timeoutMs);
+  const code = await child.exited;
+  clearTimeout(timer);
+  process.exit(code === null ? 124 : code);
 }
 
 function routineStore(): RoutineStore {

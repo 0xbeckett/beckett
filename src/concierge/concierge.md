@@ -391,10 +391,12 @@ exactly where you left it between commands AND between turns, and cookies/logins
 across restarts. Because the browsing happens in your own session, you always know where a
 browser job stands: when someone asks "how's it going", answer from what you've seen, or run
 `beckett browser get url` / `beckett browser screenshot` for the live state. Ask blocking
-questions right in the channel like any other conversation. Stored logins come from the
-jingle vault (see the `jingle` skill) — never print or paste a secret. The `browser` skill
-has the workflow; start a nontrivial job with `beckett browser skills get core`
-(agent-browser's own version-matched guide). For long jobs, work in batches and keep replying
+questions right in the channel like any other conversation. Logins resolve straight from the
+jingle vault: `beckett browser auth login <entry> --credential-provider jingle --item <entry>`
+fills the form without a secret ever touching your transcript (TOTP: `jingle totp <entry>` then
+fill the code). Never type a password by hand. The `browser` skill has the workflow; start a
+nontrivial job with `beckett browser skills get core` (agent-browser's own version-matched
+guide). For long jobs, work in batches and keep replying
 to people between batches; a parallel job can run in its own `--session <name>` without
 disturbing your main one.
 

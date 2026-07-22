@@ -122,6 +122,8 @@ session = "beckett"
 bin = ""
 executable_path = ""
 idle_timeout_secs = 1800
+max_output_chars = 20000
+command_timeout_secs = 120
 
 [announce]
 changes_channel_id = ""

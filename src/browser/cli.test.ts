@@ -25,6 +25,8 @@ function makeConfig(dir: string, overrides: Partial<Config["browser"]> = {}): Co
       bin: "",
       executable_path: "",
       idle_timeout_secs: 1_800,
+      max_output_chars: 20_000,
+      command_timeout_secs: 120,
       ...overrides,
     },
   } as unknown as Config;
@@ -38,8 +40,27 @@ describe("buildBrowserInvocation", () => {
     expect(invocation.env.AGENT_BROWSER_SESSION).toBe("beckett");
     expect(invocation.env.AGENT_BROWSER_PROFILE).toBe(join(dir, "browser", "profiles", "beckett"));
     expect(invocation.env.AGENT_BROWSER_IDLE_TIMEOUT_MS).toBe("1800000");
+    expect(invocation.env.AGENT_BROWSER_MAX_OUTPUT).toBe("20000");
+    expect(invocation.timeoutMs).toBe(120_000);
     expect(existsSync(invocation.profileDir)).toBe(true);
     expect(invocation.cmd.slice(1)).toEqual(["open", "https://example.com"]);
+  });
+
+  test("registers the jingle credential-provider plugin unless the caller pre-set a registry", () => {
+    const dir = mkdtempSync(join(tmpdir(), "browser-cli-test-"));
+    const invocation = buildBrowserInvocation(makeConfig(dir), ["plugin", "list"], {});
+    const registry = JSON.parse(invocation.env.AGENT_BROWSER_PLUGINS ?? "[]") as Array<{ name: string; command: string; capabilities: string[] }>;
+    expect(registry).toHaveLength(1);
+    expect(registry[0]).toMatchObject({ name: "jingle", capabilities: ["credential.read"] });
+    expect(registry[0]!.command.endsWith("jingle-plugin.ts")).toBe(true);
+    const overridden = buildBrowserInvocation(makeConfig(dir), ["plugin", "list"], { AGENT_BROWSER_PLUGINS: "[]" });
+    expect(overridden.env.AGENT_BROWSER_PLUGINS).toBe("[]");
+  });
+
+  test("an explicit caller AGENT_BROWSER_MAX_OUTPUT wins over the config default", () => {
+    const dir = mkdtempSync(join(tmpdir(), "browser-cli-test-"));
+    const invocation = buildBrowserInvocation(makeConfig(dir), ["snapshot"], { AGENT_BROWSER_MAX_OUTPUT: "50000" });
+    expect(invocation.env.AGENT_BROWSER_MAX_OUTPUT).toBe("50000");
   });
 
   test("an explicit --session names the profile; argv passes through untouched", () => {

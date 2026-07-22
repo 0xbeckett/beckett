@@ -23,6 +23,8 @@ export interface BrowserInvocation {
   session: string;
   /** The persistent profile directory injected for that session (unless the caller overrode it). */
   profileDir: string;
+  /** Wall-clock ceiling for this one command; the caller kills the child past it. */
+  timeoutMs: number;
 }
 
 /** Read the value of a `--flag value` pair anywhere in the argv tail. */
@@ -49,6 +51,13 @@ export function resolveAgentBrowserBin(config: Config): string {
   return existsSync(pinned) ? pinned : "agent-browser";
 }
 
+/** The jingle credential-provider plugin shipped next to this module (see jingle-plugin.ts). */
+export function jinglePluginRegistry(): string | null {
+  const script = resolve(import.meta.dir, "jingle-plugin.ts");
+  if (!existsSync(script)) return null;
+  return JSON.stringify([{ name: "jingle", command: script, capabilities: ["credential.read"] }]);
+}
+
 export function buildBrowserInvocation(
   config: Config,
   argv: readonly string[],
@@ -73,12 +82,18 @@ export function buildBrowserInvocation(
     AGENT_BROWSER_PROFILE: profileDir,
     // An abandoned daemon (and its Chrome) shuts itself down instead of idling forever.
     AGENT_BROWSER_IDLE_TIMEOUT_MS: String(config.browser.idle_timeout_secs * 1000),
+    // A giant page must not flood the calling turn's context; explicit --max-output wins.
+    AGENT_BROWSER_MAX_OUTPUT: baseEnv.AGENT_BROWSER_MAX_OUTPUT ?? String(config.browser.max_output_chars),
   };
+  // Credentials resolve just-in-time from the jingle vault:
+  //   beckett browser auth login <entry> --credential-provider jingle --item <entry>
+  const plugins = jinglePluginRegistry();
+  if (plugins && !baseEnv.AGENT_BROWSER_PLUGINS) env.AGENT_BROWSER_PLUGINS = plugins;
   const cmd = [resolveAgentBrowserBin(config)];
   const executablePath = config.browser.executable_path.trim();
   if (executablePath && flagValue(argv, "--executable-path") === null) {
     cmd.push("--executable-path", executablePath);
   }
   cmd.push(...argv);
-  return { cmd, env, session, profileDir };
+  return { cmd, env, session, profileDir, timeoutMs: config.browser.command_timeout_secs * 1000 };
 }
