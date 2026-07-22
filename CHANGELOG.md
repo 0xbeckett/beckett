@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.10.0 (2026-07-22)
+
 ### Browser lane v2 — observable, steerable, context-fed
 
 - **Context sharing at dispatch.** `beckett browser "<task>" --context "<background>"` carries
