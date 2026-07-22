@@ -157,6 +157,11 @@ function fakeBrowserAgent(overrides: Partial<BrowserAgent> = {}): BrowserAgent {
   return {
     run: async () => ({ runId: "unused" }),
     resume: async () => {},
+    steer: async () => "queued" as const,
+    stop: async () => {},
+    drainSteers: () => [],
+    recordEval: () => {},
+    inspect: async () => null,
     evalSecrets: async () => null,
     recover: async () => {},
     stats: () => ({ running: 0, waiting: 1, runs: [] }),

@@ -1363,15 +1363,69 @@ async function runProactivity(argv: string[]): Promise<void> {
 // block for its report. The bus call must outlive the daemon's sync window (`sync_wait_secs`),
 // so this is the one command with a custom callBus timeout — past the window the daemon
 // answers `{detached, runId}` and the result arrives later as a Discord-routed update turn.
+const BROWSER_USAGE =
+  'usage: beckett browser "<task>" [--creds <jingle-entry>] [--context "<background>"] [--channel <id>]\n' +
+  "  |  beckett browser status\n" +
+  "  |  beckett browser watch <run-id> [--tail <n>] [--no-screenshot]\n" +
+  '  |  beckett browser steer <run-id> "<guidance>"\n' +
+  '  |  beckett browser stop <run-id> [--reason "<why>"]\n' +
+  '  |  beckett browser exec "<betterwright javascript>"';
+
 async function runBrowser(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (sub === "status") {
     await bus("browser.status", {});
   }
+  if (sub === "watch") {
+    const { _, flags } = parse(rest);
+    const runId = (_[0] ?? "").trim();
+    if (!runId) fail(BROWSER_USAGE);
+    try {
+      const res = await callBus(
+        SOCK,
+        "browser.watch",
+        {
+          runId,
+          tail: flags.tail ? Number(flags.tail) : undefined,
+          screenshot: flags["no-screenshot"] ? false : undefined,
+        },
+        60_000,
+      );
+      if (!res.ok) fail(res.error ?? "browser watch failed");
+      out(res.data ?? { ok: true });
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  }
+  if (sub === "steer") {
+    const { _ } = parse(rest);
+    const runId = (_[0] ?? "").trim();
+    const note = _.slice(1).join(" ").trim();
+    if (!runId || !note) fail(BROWSER_USAGE);
+    await bus("browser.steer", { runId, note });
+  }
+  if (sub === "stop") {
+    const { _, flags } = parse(rest);
+    const runId = (_[0] ?? "").trim();
+    if (!runId) fail(BROWSER_USAGE);
+    await bus("browser.stop", { runId, reason: flags.reason ? String(flags.reason) : undefined });
+  }
+  if (sub === "exec") {
+    const code = rest.join(" ").trim();
+    if (!code) fail(BROWSER_USAGE);
+    try {
+      // An inline script holds the browser for one evaluation; allow the full eval window.
+      const res = await callBus(SOCK, "browser.exec", { code }, 150_000);
+      if (!res.ok) fail(res.error ?? "inline browser script failed");
+      out(res.data ?? { ok: true });
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  }
   const { _, flags } = parse(sub === "run" ? rest : argv);
   const task = _.join(" ").trim();
   if (!task) {
-    fail('usage: beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]  |  beckett browser status');
+    fail(BROWSER_USAGE);
   }
   try {
     // The dispatch returns the moment the background agent takes the task; nothing here blocks.
@@ -1381,6 +1435,7 @@ async function runBrowser(argv: string[]): Promise<void> {
       {
         task,
         credsEntry: flags.creds ? String(flags.creds) : undefined,
+        context: flags.context ? String(flags.context) : undefined,
         channelId: flags.channel ? String(flags.channel) : undefined,
       },
       30_000,
@@ -1390,7 +1445,9 @@ async function runBrowser(argv: string[]): Promise<void> {
     out(
       `browser run ${data.runId} is working independently in the background - if it needs a human input ` +
       `it will ask ONE question in the channel with a page screenshot, and its outcome will come back ` +
-      `to you as a browser-agent update turn. Tell the person it is in progress and end this turn.`,
+      `to you as a browser-agent update turn. You can \`beckett browser watch ${data.runId}\` to see what ` +
+      `it is doing, \`steer\` it with mid-run guidance, or \`stop\` it. Tell the person it is in progress ` +
+      `and end this turn.`,
     );
   } catch (err) {
     fail((err as Error).message);
@@ -1977,14 +2034,16 @@ function buildCliCapabilities(): Capability[] {
     },
     {
       id: "browser",
-      summary: "the background browser agent: dispatch computer-use work and return immediately",
+      summary: "the browser lane: background agent dispatch + watch/steer/stop, and an inline one-off script lane",
       actionClass: ActionClass.FREE,
-      cliHelp: "browser <task>|status",
+      cliHelp: "browser <task>|status|watch|steer|stop|exec",
       cliVerbs: [
         {
           name: "browser",
-          summary: "hand a self-contained browser task to the background agent (pauses for humans, resumes, reports back)",
-          usage: 'beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]  |  beckett browser status',
+          summary:
+            "hand a self-contained browser task to the background agent (pauses for humans, resumes, reports back); " +
+            "watch/steer/stop a live run, or exec one inline BetterWright script while the browser is idle",
+          usage: BROWSER_USAGE,
           run: runBrowser,
         },
       ],

@@ -8,6 +8,7 @@ import type { BrowserRuntime } from "./runtime.ts";
 import type { Config, Logger } from "../types.ts";
 import type { KeychainReader } from "../secret/keychain-read.ts";
 import {
+  contextPreamble,
   createBrowserAgent,
   redactKnownBrowserInputs,
   secretsPreamble,
@@ -33,6 +34,7 @@ input="$(cat)"
 if [ "$is_resume" = "1" ]; then args_file=args-resume.txt; else args_file=args.txt; fi
 printf '%s\n' "$@" > "$PWD/$args_file"
 printf '%s' "$input" > "$PWD/input-$args_file"
+if [[ "$input" == *SLOW* ]]; then sleep 2; fi
 if [[ "$input" == *ASK_COLOR* ]]; then
   printf '%s\n' '{"session_id":"test","structured_output":{"status":"needs_input","summary":"I reached the color choice.","question":"Which color should I choose?","proofApplicable":true}}'
 elif [[ "$input" == *SECOND_QUESTION* ]]; then
@@ -40,7 +42,8 @@ elif [[ "$input" == *SECOND_QUESTION* ]]; then
 elif [[ "$input" == *BROWSER_FAIL* ]]; then
   printf '%s\n' '{"session_id":"test","structured_output":{"status":"failed","summary":"The site rejected the request.","question":null,"proofApplicable":false}}'
 else
-  printf '{"session_id":"test","structured_output":{"status":"completed","summary":"BROWSER:%s","question":null,"proofApplicable":true}}\n' "$input"
+  flat="\${input//\$'\\n'/ }"
+  printf '{"session_id":"test","structured_output":{"status":"completed","summary":"BROWSER:%s","question":null,"proofApplicable":true}}\n' "$flat"
 fi
 `,
   );
@@ -379,6 +382,158 @@ describe("durable outcomes and crash recovery", () => {
       }),
     ]);
     expect(agent.stats().waiting).toBe(0);
+  });
+});
+
+describe("context sharing", () => {
+  test("dispatch-time context rides below the task, framed as background", async () => {
+    const { dir, agent, outcomes } = setup();
+    const { runId } = await agent.run("post the thread", {
+      channelId: "chan",
+      requesterId: "owner",
+      context: "Jason wants it up before 9am ET; casual tone",
+    });
+    await waitUntil(() => outcomes.length === 1);
+    const input = readFileSync(join(dir, "browser-agent", runId, "input-args.txt"), "utf8");
+    expect(input.startsWith("post the thread")).toBe(true);
+    expect(input).toContain("Background from the requesting conversation");
+    expect(input).toContain("casual tone");
+  });
+
+  test("context sits above the secrets preamble and never displaces the task", async () => {
+    const keychain = fakeKeychain({ password: "sup3r-secret-pw" });
+    const { dir, agent, outcomes } = setup({}, { keychain });
+    const { runId } = await agent.run("log in", {
+      channelId: "chan",
+      requesterId: "owner",
+      credsEntry: "x.com",
+      context: "the person prefers the annual plan",
+    });
+    await waitUntil(() => outcomes.length === 1);
+    const input = readFileSync(join(dir, "browser-agent", runId, "input-args.txt"), "utf8");
+    expect(input.indexOf("log in")).toBe(0);
+    expect(input.indexOf("annual plan")).toBeLessThan(input.indexOf("keychain entry"));
+  });
+
+  test("contextPreamble marks the task as authoritative", () => {
+    expect(contextPreamble("background facts")).toContain("background facts");
+    expect(contextPreamble("background facts")).toContain("the task");
+  });
+});
+
+describe("steering", () => {
+  test("a running run queues notes for the next eval and the journal records them", async () => {
+    const { agent, outcomes } = setup();
+    const { runId } = await agent.run("SLOW lookup", { channelId: "chan", requesterId: "owner" });
+    expect(await agent.steer(runId, "prefer the annual plan")).toBe("queued");
+    expect(agent.drainSteers(runId)).toEqual(["prefer the annual plan"]);
+    // Drained means delivered: a second drain must not repeat the note.
+    expect(agent.drainSteers(runId)).toEqual([]);
+    const inspection = await agent.inspect(runId, { screenshot: false });
+    expect(inspection!.journal.map((event) => event.kind)).toContain("steer");
+    await waitUntil(() => outcomes.length === 1, 5_000);
+  });
+
+  test("steering a parked run resumes the same session with the note framed as guidance", async () => {
+    const { dir, agent, outcomes, questions } = setup();
+    const { runId } = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1 && agent.stats().waiting === 1);
+    expect(await agent.steer(runId, "skip the color step entirely")).toBe("resumed");
+    await waitUntil(() => outcomes.length === 1);
+    const resumeInput = readFileSync(join(dir, "browser-agent", runId, "input-args-resume.txt"), "utf8");
+    expect(resumeInput).toContain("STEERING from the dispatcher");
+    expect(resumeInput).toContain("skip the color step entirely");
+    expect(outcomes[0]!.state).toBe("done");
+  });
+
+  test("steering an unknown or finished run fails plainly", async () => {
+    const { agent, outcomes } = setup();
+    const { runId } = await agent.run("plain task", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => outcomes.length === 1);
+    await expect(agent.steer(runId, "too late")).rejects.toThrow(/not live/);
+    await expect(agent.steer("nope", "x")).rejects.toThrow(/not live/);
+  });
+});
+
+describe("stop", () => {
+  test("cancels a running leg, releases the browser, and reports state cancelled", async () => {
+    const browser = fakeBrowser();
+    const { agent, outcomes } = setup({}, { browser });
+    const { runId } = await agent.run("SLOW forever", { channelId: "chan", requesterId: "owner" });
+    await agent.stop(runId, "person cancelled the request");
+    await waitUntil(() => outcomes.length === 1);
+    expect(outcomes[0]).toMatchObject({ state: "cancelled" });
+    expect(outcomes[0]!.result).toContain("person cancelled");
+    expect(browser.hasLease(runId)).toBe(false);
+    expect(agent.stats().running + agent.stats().waiting).toBe(0);
+  });
+
+  test("cancels a parked run without waiting out its question timer", async () => {
+    const { agent, outcomes } = setup();
+    const { runId } = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => agent.stats().waiting === 1);
+    await agent.stop(runId);
+    await waitUntil(() => outcomes.length === 1);
+    expect(outcomes[0]!.state).toBe("cancelled");
+    expect(outcomes[0]!.result).toContain("stopped by the dispatcher");
+  });
+});
+
+describe("observability", () => {
+  test("the journal narrates the run and inspect returns it with the run state", async () => {
+    const { agent, outcomes, questions } = setup();
+    const { runId } = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1);
+    agent.recordEval(runId, { ok: true, ms: 120, url: "https://example.com", pages: 1, screenshots: 0 });
+    const parked = await agent.inspect(runId, { screenshot: false });
+    expect(parked!.run).toMatchObject({ runId, state: "waiting", question: "Which color should I choose?" });
+    const kinds = parked!.journal.map((event) => event.kind);
+    expect(kinds).toContain("dispatched");
+    expect(kinds).toContain("leg");
+    expect(kinds).toContain("eval");
+    expect(kinds).toContain("question");
+    await agent.resume(runId, "blue");
+    await waitUntil(() => outcomes.length === 1);
+    const done = await agent.inspect(runId);
+    expect(done!.run.state).toBe("done");
+    expect(done!.screenshot).toBeNull();
+    expect(done!.journal.map((event) => event.kind)).toContain("finished");
+    expect(await agent.inspect("unknown-run")).toBeNull();
+  });
+
+  test("inspect captures a fresh screenshot while the run holds the lease", async () => {
+    const { agent, questions } = setup();
+    const { runId } = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1);
+    const inspection = await agent.inspect(runId);
+    expect(inspection!.screenshot).toBeTruthy();
+    expect(existsSync(inspection!.screenshot!)).toBe(true);
+  });
+
+  test("the journal redacts keychain values and human answers", async () => {
+    const keychain = fakeKeychain({ password: "sup3r-secret-pw" });
+    const { dir, agent, outcomes, questions } = setup({}, { keychain });
+    const { runId } = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner", credsEntry: "x.com" });
+    await waitUntil(() => questions.length === 1);
+    agent.recordEval(runId, { ok: false, ms: 5, error: "typed sup3r-secret-pw into the wrong field" });
+    await agent.resume(runId, "the code is 998877");
+    await waitUntil(() => outcomes.length === 1);
+    const journal = readFileSync(join(dir, "browser-agent", runId, "journal.jsonl"), "utf8");
+    expect(journal).not.toContain("sup3r-secret-pw");
+    expect(journal).not.toContain("998877");
+  });
+
+  test("stats names each run's task, question, and finish time", async () => {
+    const { agent, questions } = setup();
+    const { runId } = await agent.run("ASK_COLOR pick something", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1);
+    const run = agent.stats().runs.find((candidate) => candidate.runId === runId);
+    expect(run).toMatchObject({
+      state: "waiting",
+      task: "ASK_COLOR pick something",
+      question: "Which color should I choose?",
+      finishedAt: null,
+    });
   });
 });
 

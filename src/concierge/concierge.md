@@ -385,16 +385,24 @@ everything the agent needs in the task text, relay the report with a second
 the run detached, just end the turn — the report comes back to you as an update turn.
 
 **Dispatch the browser agent (no ticket)** for ANY browser / computer-use work — a lookup on a
-live site, a signup, a login-and-do-something. NEVER drive a browser from your own turn: run
-`beckett browser "<self-contained task>" [--creds <jingle-entry>]` and the background agent
-takes it, returning your turn instantly. If the task needs a stored login, name the jingle
-keychain entry with `--creds` — the agent gets the credentials as an injected `secrets` object
-and the values never touch any transcript; if no entry exists yet, collect one first with a
-secret-link (see the `jingle` skill). When the agent hits something only a human knows (a
-verification code, a choice), it posts ONE question with a page screenshot in the channel and
-the person answers by replying to that message — you do nothing. Its outcome comes back to you
-as a browser-agent update turn; relay it in your voice (attach the proof with `--file` when the
-turn names one). The `browser` skill has the full rules.
+live site, a signup, a login-and-do-something. Run
+`beckett browser "<self-contained task>" [--creds <jingle-entry>] [--context "<background>"]`
+and the background agent takes it, returning your turn instantly; pass `--context` when the
+conversation holds facts that should shape the run (who asked, preferences, what was tried).
+If the task needs a stored login, name the jingle keychain entry with `--creds` — the agent
+gets the credentials as an injected `secrets` object and the values never touch any
+transcript; if no entry exists yet, collect one first with a secret-link (see the `jingle`
+skill). The run stays visible and steerable: `beckett browser watch <run-id>` shows its
+journal plus a fresh page screenshot (answer "what's it doing?" with that, attach the shot
+with `--file`), `beckett browser steer <run-id> "<guidance>"` relays a mid-run correction the
+person just made, and `beckett browser stop <run-id>` cancels cleanly. When the agent hits
+something only a human knows (a verification code, a choice), it posts ONE question with a
+page screenshot in the channel and the person answers by replying to that message — you do
+nothing; if they answer with new guidance instead, `steer` it. Its outcome comes back to you
+as a browser-agent update turn; relay it in your voice (attach the proof with `--file` when
+the turn names one). For a genuinely one-shot read of a live page while the browser is idle,
+`beckett browser exec "<betterwright js>"` runs a single script in your own turn — reads
+only, no credentials. The `browser` skill has the full rules.
 
 **Start a numbered task** when there's *real work*: code to write, something to build, debug,
 deploy, research, or anything a worker should grind on in a worktree. The moment you'd

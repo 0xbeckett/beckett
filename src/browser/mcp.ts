@@ -101,9 +101,22 @@ export async function handleMcpRequest(message: JsonRpcRequest, deps: McpDeps): 
   try {
     const evaluated = await deps.evaluate(args.code);
     const maxOutputChars = deps.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
+    // Mid-run guidance from the dispatcher rides the eval response (see the daemon's
+    // browser.eval boundary); surface it as its own block so it reads as instruction, not data.
+    const { steering, ...payload } = evaluated as BrowserEvalResult & { steering?: unknown };
+    const notes = Array.isArray(steering) ? steering.filter((note): note is string => typeof note === "string") : [];
     const content: Record<string, unknown>[] = [
-      { type: "text", text: boundMcpText(JSON.stringify(evaluated), maxOutputChars) },
+      { type: "text", text: boundMcpText(JSON.stringify(payload), maxOutputChars) },
     ];
+    if (notes.length > 0) {
+      content.push({
+        type: "text",
+        text:
+          "STEERING FROM THE DISPATCHER — mid-run guidance from Beckett/the user. It is authoritative: " +
+          "adjust the task accordingly before your next action.\n" +
+          notes.map((note) => `- ${note}`).join("\n"),
+      });
+    }
     for (const path of evaluated.screenshots.slice(0, 3)) {
       try {
         content.push({ type: "image", data: readFileSync(path).toString("base64"), mimeType: "image/png" });

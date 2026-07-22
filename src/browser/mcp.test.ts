@@ -62,6 +62,27 @@ describe("browser MCP", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("surfaces steering notes as their own instruction block, outside the data payload", async () => {
+    const response = await handleMcpRequest(
+      {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: { name: "betterwright_browser", arguments: { code: "return 1" } },
+      },
+      {
+        evaluate: async () => ({ ...emptyEval, steering: ["use the annual plan", 42] }) as unknown as BrowserEvalResult,
+      },
+    );
+    const content = (response!.result as { content: { type: string; text?: string }[] }).content;
+    expect(content).toHaveLength(2);
+    // The data block stays a clean eval result; the note rides its own block as instruction.
+    expect(content[0]?.text).toBe(JSON.stringify(emptyEval));
+    expect(content[1]?.text).toContain("STEERING FROM THE DISPATCHER");
+    expect(content[1]?.text).toContain("- use the annual plan");
+    expect(content[1]?.text).not.toContain("42");
+  });
+
   test("rejects oversized evaluator programs before the daemon boundary", async () => {
     const response = await handleMcpRequest({
       jsonrpc: "2.0",

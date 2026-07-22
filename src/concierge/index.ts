@@ -2845,10 +2845,25 @@ export class Concierge {
               }
               try {
                 const data = await this.browserRuntime.evaluate(runId, injected, controlToken);
-                return { ok: true, data: secretValues.length > 0 ? redactSecretValues(data, secretValues) : data };
+                const payload = secretValues.length > 0 ? redactSecretValues(data, secretValues) : data;
+                const activePage = payload.pages.find((page) => page.active) ?? payload.pages[0];
+                this.browserAgent?.recordEval(runId, {
+                  ok: true,
+                  ms: payload.elapsedMs,
+                  url: activePage?.url,
+                  title: activePage?.title,
+                  pages: payload.pages.length,
+                  screenshots: payload.screenshots.length,
+                });
+                // Steering notes ride the eval response so the MCP bridge can surface them in the
+                // same tool result the agent is already waiting on — no side channel needed.
+                const steering = this.browserAgent?.drainSteers(runId) ?? [];
+                return { ok: true, data: steering.length > 0 ? { ...payload, steering } : payload };
               } catch (error) {
                 const message = (error as Error).message;
-                return { ok: false, error: secretValues.length > 0 ? redactSecretText(message, secretValues) : message };
+                const redacted = secretValues.length > 0 ? redactSecretText(message, secretValues) : message;
+                this.browserAgent?.recordEval(runId, { ok: false, ms: 0, error: redacted });
+                return { ok: false, error: redacted };
               }
             },
           },
@@ -2866,10 +2881,14 @@ export class Concierge {
               const credsEntry = typeof req.args.credsEntry === "string" && req.args.credsEntry.trim()
                 ? req.args.credsEntry.trim()
                 : null;
+              const context = typeof req.args.context === "string" && req.args.context.trim() ? req.args.context.trim() : null;
               const requestedChannelId =
                 typeof req.args.channelId === "string" && req.args.channelId.trim() ? req.args.channelId.trim() : null;
               if (!task) {
-                return { ok: false, error: 'usage: beckett browser "<task>" [--creds <jingle-entry>] [--channel <id>]' };
+                return {
+                  ok: false,
+                  error: 'usage: beckett browser "<task>" [--creds <jingle-entry>] [--context "<background>"] [--channel <id>]',
+                };
               }
               // Resolve the ISSUING turn (token-exact; tokenless falls back to the sole live turn). The
               // target channel deliberately plays no part in WHO authorized this — the channel-match
@@ -2886,6 +2905,7 @@ export class Concierge {
                   channelId: mention.channelId,
                   requesterId: mention.userId,
                   credsEntry,
+                  context,
                 });
                 return { ok: true, data: { detached: true, runId } };
               } catch (err) {
@@ -2901,6 +2921,120 @@ export class Concierge {
                 return { ok: false, error: "the browser agent is unavailable - not wired" };
               }
               return { ok: true, data: this.browserAgent.stats() };
+            },
+          },
+          {
+            name: "browser.watch",
+            summary: "a run's activity journal, state, and (live) a fresh page screenshot",
+            handle: async (req) => {
+              if (!this.browserAgent) {
+                return { ok: false, error: "the browser agent is unavailable - not wired" };
+              }
+              const runId = typeof req.args.runId === "string" ? req.args.runId.trim() : "";
+              if (!runId) return { ok: false, error: "usage: beckett browser watch <run-id>" };
+              const tail = typeof req.args.tail === "number" && Number.isSafeInteger(req.args.tail) ? req.args.tail : 20;
+              const inspection = await this.browserAgent.inspect(runId, { tail });
+              if (!inspection) return { ok: false, error: `browser run ${runId} is unknown` };
+              return { ok: true, data: inspection };
+            },
+          },
+          {
+            name: "browser.steer",
+            summary: "send mid-run guidance to the background browser agent",
+            handle: async (req) => {
+              if (!this.browserAgent) {
+                return { ok: false, error: "the browser agent is unavailable - not wired" };
+              }
+              const runId = typeof req.args.runId === "string" ? req.args.runId.trim() : "";
+              const note = typeof req.args.note === "string" ? req.args.note.trim() : "";
+              if (!runId || !note) return { ok: false, error: 'usage: beckett browser steer <run-id> "<guidance>"' };
+              const mention = this.issuerMention(req.token);
+              if (!mention || !mention.userId) {
+                return { ok: false, error: "steering needs an authenticated authorized request" };
+              }
+              const inspection = await this.browserAgent.inspect(runId, { tail: 1, screenshot: false });
+              if (!inspection) return { ok: false, error: `browser run ${runId} is unknown` };
+              // Same rule as dispatch: a run belongs to the channel that started it.
+              if (inspection.run.channelId !== mention.channelId) {
+                return { ok: false, error: "browser runs can only be steered from the channel that dispatched them" };
+              }
+              try {
+                const delivery = await this.browserAgent.steer(runId, note);
+                return { ok: true, data: { runId, delivery } };
+              } catch (error) {
+                return { ok: false, error: (error as Error).message };
+              }
+            },
+          },
+          {
+            name: "browser.stop",
+            summary: "cancel a live browser run and release the browser",
+            handle: async (req) => {
+              if (!this.browserAgent) {
+                return { ok: false, error: "the browser agent is unavailable - not wired" };
+              }
+              const runId = typeof req.args.runId === "string" ? req.args.runId.trim() : "";
+              if (!runId) return { ok: false, error: 'usage: beckett browser stop <run-id> [--reason "<why>"]' };
+              const mention = this.issuerMention(req.token);
+              if (!mention || !mention.userId) {
+                return { ok: false, error: "stopping a run needs an authenticated authorized request" };
+              }
+              const inspection = await this.browserAgent.inspect(runId, { tail: 1, screenshot: false });
+              if (!inspection) return { ok: false, error: `browser run ${runId} is unknown` };
+              if (inspection.run.channelId !== mention.channelId) {
+                return { ok: false, error: "browser runs can only be stopped from the channel that dispatched them" };
+              }
+              const reason = typeof req.args.reason === "string" && req.args.reason.trim() ? req.args.reason.trim() : undefined;
+              try {
+                await this.browserAgent.stop(runId, reason);
+                return { ok: true, data: { runId, state: "cancelled" } };
+              } catch (error) {
+                return { ok: false, error: (error as Error).message };
+              }
+            },
+          },
+          {
+            name: "browser.exec",
+            summary: "run ONE BetterWright script inline on the shared persistent browser (idle lane only)",
+            handle: async (req) => {
+              // The one-off lane: the Concierge drives the browser itself for a quick look-up
+              // WITHOUT spinning up the background agent. It exists only while the browser is
+              // idle — a live background run always keeps its exclusive lease.
+              if (!this.browserRuntime) {
+                return { ok: false, error: "persistent browser unavailable - runtime is not wired" };
+              }
+              const code = typeof req.args.code === "string" ? req.args.code : "";
+              if (!code.trim()) return { ok: false, error: 'usage: beckett browser exec "<betterwright javascript>"' };
+              const mention = this.issuerMention(req.token);
+              if (!mention || !mention.userId) {
+                return { ok: false, error: "inline browser scripts need an authenticated authorized request" };
+              }
+              const stats = this.browserAgent?.stats();
+              const liveRun = stats?.runs.find((run) => run.state === "running" || run.state === "waiting");
+              if (liveRun) {
+                return {
+                  ok: false,
+                  error:
+                    `the background browser agent holds the browser (run ${liveRun.runId}, ${liveRun.state}) - ` +
+                    `use \`beckett browser watch/steer\` on that run instead, or wait for it to finish`,
+                };
+              }
+              const runId = `inline-${crypto.randomUUID()}`;
+              const controlToken = crypto.randomUUID();
+              const artifactsDir = join(buildPaths(this.config).beckettDir, "browser-agent", "inline", runId);
+              try {
+                await this.browserRuntime.acquire({ runId, channelId: mention.channelId, artifactsDir, controlToken });
+                const data = await this.browserRuntime.evaluate(runId, code, controlToken);
+                // Screenshot files stay on disk so the caller can Read or attach them; the
+                // 30-day browser-agent artifact sweep reclaims the inline directory later.
+                return { ok: true, data };
+              } catch (error) {
+                return { ok: false, error: (error as Error).message };
+              } finally {
+                if (this.browserRuntime.hasLease(runId)) {
+                  await this.browserRuntime.release(runId, false).catch(() => undefined);
+                }
+              }
             },
           },
         ],

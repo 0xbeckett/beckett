@@ -12,7 +12,7 @@
  * model's transcript as a `secrets` object (see {@link BrowserAgent.evalSecrets}).
  */
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { buildPaths } from "../paths.ts";
@@ -21,7 +21,7 @@ import type { Config, Logger } from "../types.ts";
 import type { BrowserRuntime } from "./runtime.ts";
 import type { KeychainEntrySecrets, KeychainReader } from "../secret/keychain-read.ts";
 
-export type BrowserAgentState = "running" | "waiting" | "done" | "error" | "timeout";
+export type BrowserAgentState = "running" | "waiting" | "done" | "error" | "timeout" | "cancelled";
 
 export interface BrowserAgentRun {
   runId: string;
@@ -62,12 +62,55 @@ export interface CreateBrowserAgentDeps {
 export interface BrowserAgentStats {
   running: number;
   waiting: number;
-  runs: Pick<BrowserAgentRun, "runId" | "state" | "startedAt" | "credsEntry">[];
+  runs: (Pick<BrowserAgentRun, "runId" | "state" | "startedAt" | "finishedAt" | "credsEntry" | "question"> & {
+    task: string;
+  })[];
+}
+
+/** One redacted line of a run's activity journal (journal.jsonl in the run directory). */
+export interface BrowserJournalEvent {
+  ts: number;
+  kind: "dispatched" | "leg" | "eval" | "steer" | "question" | "finished";
+  [key: string]: unknown;
+}
+
+export interface BrowserEvalRecord {
+  ok: boolean;
+  ms: number;
+  url?: string;
+  title?: string;
+  pages?: number;
+  screenshots?: number;
+  error?: string;
+}
+
+export interface BrowserRunInspection {
+  run: Pick<BrowserAgentRun, "runId" | "state" | "task" | "channelId" | "startedAt" | "finishedAt" | "question" | "result" | "proofFiles">;
+  journal: BrowserJournalEvent[];
+  /** Fresh screenshot of the live page, when the run still holds the browser lease. */
+  screenshot: string | null;
 }
 
 export interface BrowserAgent {
-  run(task: string, opts: { channelId: string; requesterId: string; credsEntry?: string | null }): Promise<{ runId: string }>;
+  run(
+    task: string,
+    opts: { channelId: string; requesterId: string; credsEntry?: string | null; context?: string | null },
+  ): Promise<{ runId: string }>;
   resume(runId: string, answer: string): Promise<void>;
+  /**
+   * Mid-run guidance from the dispatcher. A running run gets the note appended to its next
+   * browser tool result ("queued"); a run parked on a question is resumed with the note framed
+   * as steering rather than an answer ("resumed").
+   */
+  steer(runId: string, note: string): Promise<"queued" | "resumed">;
+  /** Cancel a live run: kill the active leg, release the browser, report state "cancelled". */
+  stop(runId: string, reason?: string): Promise<void>;
+  /** Pop queued steering notes for delivery in the current eval's tool result. */
+  drainSteers(runId: string): string[];
+  /** Journal one browser evaluation (called by the daemon's browser.eval boundary). */
+  recordEval(runId: string, record: BrowserEvalRecord): void;
+  /** A run's state, redacted journal tail, and (live) a fresh screenshot — for `browser watch`. */
+  inspect(runId: string, opts?: { tail?: number; screenshot?: boolean }): Promise<BrowserRunInspection | null>;
   /**
    * Resolve the `secrets` values for one evaluation of a live run: the entry's static fields
    * plus a freshly minted `totp` code when the entry stores a seed. Returns null when the run
@@ -111,6 +154,8 @@ interface LiveRun {
   questionTimer: ReturnType<typeof setTimeout> | null;
   sensitiveInputs: string[];
   secrets: KeychainEntrySecrets | null;
+  /** Dispatcher guidance waiting for the next browser eval to carry it into the transcript. */
+  pendingSteers: string[];
 }
 
 const PROMPT_PATH = join(import.meta.dir, "agent.md");
@@ -141,6 +186,14 @@ function browserMcpConfig(
       },
     },
   });
+}
+
+/** Frame dispatch-time conversation background so it informs the run without competing with the task. */
+export function contextPreamble(context: string): string {
+  return (
+    `Background from the requesting conversation (context to inform your choices — the task ` +
+    `above is what you must actually do):\n${context}`
+  );
 }
 
 /** The one line the first leg gets about its credentials: field NAMES only, never values. */
@@ -200,7 +253,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
           credsEntry: typeof value.credsEntry === "string" ? value.credsEntry : null,
           startedAt: typeof value.startedAt === "number" ? value.startedAt : Date.now(),
           finishedAt: typeof value.finishedAt === "number" ? value.finishedAt : null,
-          state: (["running", "waiting", "done", "error", "timeout"] as const).includes(value.state as BrowserAgentState)
+          state: (["running", "waiting", "done", "error", "timeout", "cancelled"] as const).includes(value.state as BrowserAgentState)
             ? (value.state as BrowserAgentState)
             : "error",
           result: typeof value.result === "string" ? value.result : null,
@@ -270,7 +323,38 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     entry.questionTimer = null;
   }
 
-  async function finalize(entry: LiveRun, state: "done" | "error" | "timeout", result: string, captureProof = false): Promise<void> {
+  /**
+   * Append one redacted event to the run's activity journal. The journal is the observability
+   * surface behind `beckett browser watch`: best-effort, never load-bearing for the run itself.
+   */
+  function journal(runId: string, sensitiveInputs: readonly string[], event: Omit<BrowserJournalEvent, "ts">): void {
+    try {
+      const line = redactKnownBrowserInputs(JSON.stringify({ ts: Date.now(), ...event }), sensitiveInputs);
+      appendFileSync(join(agentDir, runId, "journal.jsonl"), line + "\n", { mode: 0o600 });
+    } catch (error) {
+      logger.warn("browser journal write failed", { runId, error: String(error) });
+    }
+  }
+
+  function readJournal(runId: string, tail: number, sensitiveInputs: readonly string[]): BrowserJournalEvent[] {
+    try {
+      const lines = readFileSync(join(agentDir, runId, "journal.jsonl"), "utf8").trim().split("\n");
+      return lines
+        .slice(-Math.max(1, tail))
+        .map((line) => {
+          try {
+            return JSON.parse(redactKnownBrowserInputs(line, sensitiveInputs)) as BrowserJournalEvent;
+          } catch {
+            return null;
+          }
+        })
+        .filter((event): event is BrowserJournalEvent => event !== null);
+    } catch {
+      return [];
+    }
+  }
+
+  async function finalize(entry: LiveRun, state: "done" | "error" | "timeout" | "cancelled", result: string, captureProof = false): Promise<void> {
     const { run } = entry;
     if (run.state !== "running" && run.state !== "waiting") return;
     run.state = state;
@@ -293,6 +377,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     live.delete(run.runId);
     finished.push(run);
     persistLedger();
+    journal(run.runId, entry.sensitiveInputs, { kind: "finished", state: run.state, result: run.result });
     logger.info("browser agent run finished", {
       runId: run.runId,
       state: run.state,
@@ -323,6 +408,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
         );
       }, config.quick.browser_question_wait_secs * 1000);
       persistLedger();
+      journal(run.runId, entry.sensitiveInputs, { kind: "question", text: question });
       const messageId = await deps.onQuestion(run, { text: question, screenshot });
       // Shutdown or the wait deadline may have finalized the run while Discord was posting.
       if (run.state !== "waiting" || !browser.hasLease(run.runId)) return;
@@ -352,6 +438,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     run.question = null;
     run.questionMessageId = null;
     persistLedger();
+    journal(run.runId, entry.sensitiveInputs, { kind: "leg", resume });
     const args = [
       "-p",
       resume
@@ -497,6 +584,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
         questionTimer: null,
         sensitiveInputs: secrets ? Object.values(secrets.values) : [],
         secrets,
+        pendingSteers: [],
       };
 
       try {
@@ -517,7 +605,11 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
         throw error;
       }
       live.set(runId, entry);
-      const input = secrets ? `${task}\n\n${secretsPreamble(secrets)}` : task;
+      const context = opts.context?.trim() || null;
+      let input = task;
+      if (context) input += `\n\n${contextPreamble(context)}`;
+      if (secrets) input += `\n\n${secretsPreamble(secrets)}`;
+      journal(runId, entry.sensitiveInputs, { kind: "dispatched", task, context: context !== null });
       void spawnLeg(entry, input, false);
       return { runId };
     },
@@ -532,6 +624,89 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       if (entry.questionTimer) clearTimeout(entry.questionTimer);
       entry.questionTimer = null;
       void spawnLeg(entry, answer, true);
+    },
+
+    async steer(runId, note) {
+      const entry = live.get(runId);
+      if (!entry) throw new Error(`browser run ${runId} is not live`);
+      const trimmed = note.trim();
+      if (!trimmed) throw new Error("a steering note cannot be empty");
+      if (entry.run.state === "waiting") {
+        // The run is parked on a question. Steering outranks waiting: resume the same session
+        // with the note framed as guidance, and let the agent re-ask if it is still blocked.
+        if (entry.questionTimer) clearTimeout(entry.questionTimer);
+        entry.questionTimer = null;
+        journal(runId, entry.sensitiveInputs, { kind: "steer", note: trimmed, delivery: "resumed" });
+        void spawnLeg(
+          entry,
+          `STEERING from the dispatcher (not an answer to your question): ${trimmed}\n\n` +
+            `Apply this guidance to the task. If it resolves what you were asking, continue; if you ` +
+            `are still blocked on the same fact, finish with needs_input and ask again.`,
+          true,
+        );
+        return "resumed";
+      }
+      entry.pendingSteers.push(trimmed);
+      journal(runId, entry.sensitiveInputs, { kind: "steer", note: trimmed, delivery: "queued" });
+      return "queued";
+    },
+
+    async stop(runId, reason) {
+      const entry = live.get(runId);
+      if (!entry) throw new Error(`browser run ${runId} is not live`);
+      try {
+        entry.child?.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      entry.child = null;
+      await finalize(entry, "cancelled", reason?.trim() || "The run was stopped by the dispatcher before it finished.");
+    },
+
+    drainSteers(runId) {
+      const entry = live.get(runId);
+      if (!entry || entry.pendingSteers.length === 0) return [];
+      const notes = entry.pendingSteers.splice(0);
+      journal(runId, entry.sensitiveInputs, { kind: "steer", delivered: notes.length, delivery: "eval" });
+      return notes;
+    },
+
+    recordEval(runId, record) {
+      const entry = live.get(runId);
+      if (!entry) return;
+      journal(runId, entry.sensitiveInputs, { kind: "eval", ...record });
+    },
+
+    async inspect(runId, opts) {
+      const entry = live.get(runId);
+      const run = entry?.run ?? finished.find((candidate) => candidate.runId === runId);
+      if (!run) return null;
+      const sensitiveInputs = entry?.sensitiveInputs ?? [];
+      let screenshot: string | null = null;
+      // A fresh screenshot needs the lease; a parked or between-legs run can always serve one,
+      // and a capture racing the agent's own eval just queues behind it in the worker.
+      if (opts?.screenshot !== false && entry && browser.hasLease(runId)) {
+        try {
+          screenshot = await browser.capture(runId, "watch");
+        } catch (error) {
+          logger.warn("browser watch screenshot failed", { runId, error: String(error) });
+        }
+      }
+      return {
+        run: {
+          runId: run.runId,
+          state: run.state,
+          task: run.task,
+          channelId: run.channelId,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          question: run.question,
+          result: run.result,
+          proofFiles: run.proofFiles,
+        },
+        journal: readJournal(runId, opts?.tail ?? 20, sensitiveInputs),
+        screenshot,
+      };
     },
 
     async evalSecrets(runId) {
@@ -570,7 +745,15 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       return {
         running: [...live.values()].filter((entry) => entry.run.state === "running").length,
         waiting: [...live.values()].filter((entry) => entry.run.state === "waiting").length,
-        runs: all.map((run) => ({ runId: run.runId, state: run.state, startedAt: run.startedAt, credsEntry: run.credsEntry })),
+        runs: all.map((run) => ({
+          runId: run.runId,
+          state: run.state,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          credsEntry: run.credsEntry,
+          question: run.question,
+          task: truncate(run.task, 140),
+        })),
       };
     },
 

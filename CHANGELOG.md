@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Browser lane v2 — observable, steerable, context-fed
+
+- **Context sharing at dispatch.** `beckett browser "<task>" --context "<background>"` carries
+  conversation color (who asked, preferences, what was tried) into the run, framed below the
+  task as background rather than instructions, above the secrets preamble.
+- **Observability: run journal + `beckett browser watch <run-id>`.** Every browser evaluation
+  already crosses the daemon's `browser.eval` boundary; it now journals to
+  `browser-agent/<run>/journal.jsonl` (active page URL/title, duration, errors, steers,
+  questions, outcomes — keychain values and human answers redacted). `watch` returns the run
+  state, journal tail, and a fresh page screenshot while the run holds the lease;
+  `browser status` now names each run's task, parked question, and finish time.
+- **Steering and cancellation.** `beckett browser steer <run-id> "<guidance>"` delivers
+  mid-run guidance into the agent's next tool result as a distinct STEERING block (MCP
+  bridge); a run parked on a question is resumed with the note framed as guidance instead.
+  `beckett browser stop <run-id> [--reason]` kills the leg, releases the browser, and reports
+  a new terminal state `cancelled` through the normal outcome path. Both are same-channel
+  gated, matching dispatch.
+- **Inline one-off lane.** `beckett browser exec "<betterwright js>"` (bus `browser.exec`)
+  lets the Concierge run ONE script against the shared persistent browser in its own turn —
+  only while the background agent isn't holding the lease, no credentials, screenshots left
+  on disk for Read/attach. Honors OPS-43: still a CLI verb, no MCP in the concierge session.
+- Doctrine updates: browser skill + concierge.md teach the new verbs and when to use each
+  lane; the agent prompt treats steering as authoritative over the original task text.
+
 ## v5.5.0 (2026-07-20)
 
 ### Background browser agent with pause/surface/resume (#58)
