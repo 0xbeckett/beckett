@@ -103,13 +103,6 @@ exports[`bus: status assembles discord + concierge halves (no provider wired) 1`
 }
 `;
 
-exports[`bus: browser.eval without a wired runtime is refused 1`] = `
-{
-  "error": "persistent browser unavailable - runtime is not wired",
-  "ok": false,
-}
-`;
-
 exports[`bus: quick.run without a wired runner is refused 1`] = `
 {
   "error": "quick agents unavailable — the runner is not wired (v3 daemon only)",

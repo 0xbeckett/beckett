@@ -115,16 +115,13 @@ effort = "medium"
 sync_wait_secs = 240
 hard_timeout_secs = 900
 max_concurrent = 3
-browser_profile_dir = "browser/profile"
-browser_headless = true
-browser_viewport_width = 1440
-browser_viewport_height = 900
-browser_launch_timeout_ms = 30000
-browser_action_timeout_ms = 10000
-browser_navigation_timeout_ms = 30000
-browser_eval_timeout_ms = 60000
-browser_max_output_chars = 24000
-browser_question_wait_secs = 3600
+
+[browser]
+enabled = true
+session = "beckett"
+bin = ""
+executable_path = ""
+idle_timeout_secs = 1800
 
 [announce]
 changes_channel_id = ""

@@ -57,7 +57,7 @@ export type Schedule = z.infer<typeof ScheduleSchema>;
  *
  * - `agent`: invoke a registered agent ({@link ../agent/registry.ts}) with `input`; the agent
  *   AUTHORS the work (its taste lives in its prompt — all data, no code here) and the dispatcher
- *   hands what it authored to the privileged background browser lane. This is how the daily shitpost
+ *   hands what it authored to the Concierge to run with `beckett browser`. This is how the daily shitpost
  *   is driven THROUGH the `social-media` agent (issue #55/#72). Pointing a routine at a different
  *   agent (or editing the agent's prompt) needs no code change and no redeploy.
  * - `browser`: run an arbitrary, STATIC self-contained browser task each period (issue #62).

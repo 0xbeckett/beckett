@@ -1,7 +1,7 @@
 {
   "name": "beckett",
   "version": "5.9.0",
-  "description": "Beckett \u2014 an agentic coworker reached in Discord. A harness over harnesses.",
+  "description": "Beckett — an agentic coworker reached in Discord. A harness over harnesses.",
   "type": "module",
   "private": true,
   "module": "src/shell/main.ts",
@@ -9,7 +9,6 @@
     "v4": "bun src/shell/main.ts",
     "beckett": "bun src/cli/beckett.ts",
     "browser:smoke": "bun scripts/ops/browser-smoke.ts",
-    "eval:browser": "bun scripts/eval/browser-agent.ts",
     "eval:triage": "bun scripts/eval/triage-classifier.ts",
     "telemetry:refresh": "bun scripts/ops/telemetry-harvest.ts",
     "code-stats:refresh": "bun scripts/ops/code-stats-harvest.ts",
@@ -23,10 +22,9 @@
   },
   "dependencies": {
     "@moss-dev/moss-core": "0.8.7",
+    "agent-browser": "0.32.3",
     "agentmail": "^0.5.15",
-    "betterwright": "0.9.5",
     "discord.js": "^14.16.3",
-    "playwright": "^1.61.1",
     "smol-toml": "^1.3.1",
     "zod": "^3.24.1"
   },
@@ -37,5 +35,8 @@
     "@types/bun": "^1.1.14",
     "bun-types": "^1.1.42",
     "typescript": "^5.7.2"
-  }
+  },
+  "trustedDependencies": [
+    "agent-browser"
+  ]
 }

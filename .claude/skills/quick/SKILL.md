@@ -1,6 +1,6 @@
 ---
 name: quick
-description: Use for errands BETWEEN "answer inline" and "file a ticket" — a web lookup on a live site, a small one-off script, a repo you need summarized. Dispatches a short-lived specialist agent via `beckett quick` and hands you its report; no ticket, no worker, no worktree.
+description: Use for errands BETWEEN "answer inline" and "file a ticket" — a small one-off script, a repo you need summarized. Dispatches a short-lived specialist agent via `beckett quick` and hands you its report; no ticket, no worker, no worktree. (Web/browser errands are NOT dispatched — drive them yourself with the browser skill.)
 ---
 
 # quick — the no-ticket lane
@@ -18,9 +18,9 @@ dispatch a quick agent and relay its report.
 | `quick-code` | a small coding errand ("script that converts this CSV to JSON", "why does this snippet throw") | the answer + absolute paths of any files it made (in a scratch dir) |
 | `repo-explorer` | a repo + a question ("what does owner/name do, how do I run it") | a ~250-word brief answering the question, with file paths |
 
-`beckett quick list` prints this menu. **Browser / computer-use work is NOT in this lane** — it
-runs in the dedicated background browser agent (`beckett browser "<task>"`, see the `browser`
-skill), which can pause for a human answer mid-run and resume; quick agents cannot.
+`beckett quick list` prints this menu. **Browser / computer-use work is NOT in this lane** — you
+drive the persistent browser YOURSELF with `beckett browser <command…>` (see the `browser`
+skill); it keeps your context, stays observable, and can ask people questions in-channel.
 
 ## How to dispatch
 
@@ -52,8 +52,8 @@ beckett quick repo-explorer "clone anthropics/claude-code and tell me how its ho
   is still a whole model spin-up.
 - **Anything owner-gated or destructive** — approvals, account deletions, payments. Bring
   those to the owner instead of dispatching an agent at them.
-- **Anything touching a live website or browser** — that's the background browser agent
-  (`beckett browser`), never this lane.
+- **Anything touching a live website or browser** — drive it yourself with `beckett browser`
+  (browser skill), never this lane.
 - The lane holds a few concurrent runs; if it answers "quick lane is full", either wait or
   file a ticket — don't spam retries.
 

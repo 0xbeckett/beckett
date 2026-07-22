@@ -293,7 +293,7 @@ test("a slow first turn gets a progress ack without needing a busy channel", asy
 
   const realSetTimeout = globalThis.setTimeout;
   let fireProgressAck: (() => void) | null = null;
-  globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+  globalThis.setTimeout = ((handler: Parameters<typeof setTimeout>[0], delay?: number, ...args: unknown[]) => {
     if (delay === TURN_PROGRESS_ACK_MS && typeof handler === "function") {
       fireProgressAck = () => handler(...args);
       return 0 as unknown as ReturnType<typeof setTimeout>;

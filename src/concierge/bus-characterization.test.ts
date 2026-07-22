@@ -118,11 +118,8 @@ test("bus: status assembles discord + concierge halves (no provider wired)", asy
   expect(await run("status")).toMatchSnapshot();
 });
 
-// ── browser / quick lane ──────────────────────────────────────────────────────────────────
+// ── quick lane ────────────────────────────────────────────────────────────────────────────
 
-test("bus: browser.eval without a wired runtime is refused", async () => {
-  expect(await run("browser.eval", { runId: "r", controlToken: "t", code: "1" })).toMatchSnapshot();
-});
 
 test("bus: quick.run without a wired runner is refused", async () => {
   expect(await run("quick.run", { agent: "quick-code", task: "x" })).toMatchSnapshot();

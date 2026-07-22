@@ -9,7 +9,8 @@
  *
  * The `social-media` agent (issue #55/#72) is the acceptance vehicle: the daily-shitpost routine
  * invokes it through the generic invoke-lane ({@link ./invoke.ts}), it AUTHORS the post, and the
- * routine dispatcher hands the authored task to the background browser lane. The voice, the target
+ * routine dispatcher hands the authored task to the Concierge, which publishes it with its own
+ * browser (`beckett browser`). The voice, the target
  * handle, and the how-to-post shape all live in `systemPrompt` below — there is no `src/social`
  * module. Growing it (replies, follows, other platforms) is a prompt/skill edit, not new code.
  */
@@ -24,7 +25,7 @@ export const X_SOCIAL_ACCOUNT = "@beckposting";
 
 /**
  * The social-media agent's persona + operating instructions — ALL DATA. It composes an in-voice
- * post and then AUTHORS a self-contained instruction for the background browser lane to publish it.
+ * post and then AUTHORS a self-contained instruction the Concierge executes with `beckett browser`.
  * It never handles credentials (the lane injects the logged-in session from the keychain) and never
  * calls the browser itself — its OUTPUT is the browser task, which the caller routes onward. That
  * split is what lets a headless routine post without a Discord mention token.
@@ -43,7 +44,7 @@ const SOCIAL_MEDIA_SYSTEM_PROMPT = [
   "",
   "TASK: unless told otherwise, compose ONE fresh post in that voice — a single line, under 280",
   "characters, never one of the calibration lines above. Then author the instruction that publishes",
-  `it to X as ${X_SOCIAL_ACCOUNT} through the background browser tool.`,
+  `it to X as ${X_SOCIAL_ACCOUNT} through Beckett's browser.`,
   "",
   "The browser tool runs ALREADY LOGGED IN as the account (its session is injected below the",
   "transcript from the keychain). You never see, type, or ask for any credential. Do not attempt",
@@ -72,7 +73,7 @@ export function builtinAgentDefs(): Array<Omit<AgentDefinition, "createdAt" | "u
       description: "Runs X (@beckposting): composes in-voice posts and drives the background browser to publish them.",
       systemPrompt: SOCIAL_MEDIA_SYSTEM_PROMPT,
       model: { harness: "claude", model: "claude-sonnet-4-5", effort: "medium" },
-      // `browser` marks the seam: this agent's output feeds the background browser lane, and future
+      // `browser` marks the seam: this agent's output becomes a browser task the Concierge runs, and future
       // behaviors (replies, follows, other platforms) are prompt/skill edits, not new code.
       skills: ["browser"],
       tools: [],

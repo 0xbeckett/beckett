@@ -42,9 +42,6 @@ import { parsePrUrl } from "../github/types.ts";
 import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
 import { createQuickRunner, type QuickRunner } from "../quick/index.ts";
-import { createBrowserRuntime, type BrowserRuntime } from "../browser/runtime.ts";
-import { createBrowserAgent, type BrowserAgent } from "../browser/agent.ts";
-import { defaultKeychainReader } from "../secret/keychain-read.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createMemory } from "../memory/index.ts";
 import { startRoutineMaintenance } from "../memory/maintain.ts";
@@ -104,8 +101,6 @@ interface BootedSystem {
   dispatcher: Dispatcher;
   concierge: Concierge;
   quick: QuickRunner;
-  browserAgent: BrowserAgent;
-  browser: BrowserRuntime;
   memoryMaintenance: { stop(): void };
   routineScheduler: RoutineScheduler;
 }
@@ -422,29 +417,12 @@ async function boot(): Promise<BootedSystem> {
   // Quick agents — the no-ticket lane. The runner owns the short-lived specialist
   // harnesses; a run that outlives its sync window reports back through the Concierge as an
   // update turn, exactly like a ticket milestone.
-  const browser = createBrowserRuntime({
-    config,
-    logger: logger.child("browser"),
-  });
   const quick = createQuickRunner({
     config,
     logger: logger.child("quick"),
     onDetachedResult: (run) => concierge.notifyQuickResult(run),
   });
-  // The dedicated background browser agent (issue #58): intake dispatches and returns
-  // immediately; questions surface as ledgered Discord anchors, outcomes come back as update
-  // turns, and its durable run ledger re-reports anything a crash strands.
-  const browserAgent = createBrowserAgent({
-    config,
-    logger: logger.child("browser-agent"),
-    browser,
-    keychain: defaultKeychainReader,
-    onQuestion: (run, question) => concierge.notifyBrowserQuestion(run, question),
-    onOutcome: (run) => concierge.notifyBrowserOutcome(run),
-  });
-  concierge.setBrowserRuntime(browser);
   concierge.setQuickRunner(quick);
-  concierge.setBrowserAgent(browserAgent);
 
   // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
   // the daemon-wide halves the Concierge can't see itself. The Concierge merges in its own
@@ -457,8 +435,6 @@ async function boot(): Promise<BootedSystem> {
     uptimeSecs: Math.round((Date.now() - bootedAt) / 1000),
     workers: dispatcher.statusWorkers(),
     quick: quick.stats(),
-    browser: browser.stats(),
-    browserAgent: browserAgent.stats(),
     poller: {
       boards: Object.fromEntries([...pollers].map(([board, p]) => [board, p.stats()])),
       ...poller.stats(),
@@ -500,11 +476,6 @@ async function boot(): Promise<BootedSystem> {
   // crashed daemon orphaned, commit their ghost WIP, and arm session-resume hints so re-staffed
   // tickets continue their interrupted sessions instead of re-running from scratch.
   await dispatcher.recoverFromCrash();
-
-  // Browser-agent fail-safe (issue #58): any run the previous daemon left live on disk is now
-  // terminal — report it to the origin channel instead of leaving the person in silence, and
-  // re-deliver any outcome that never reached the Concierge.
-  await browserAgent.recover();
 
   // Blip-proofing (OPS-125): with recovery done, arm the periodic worktree-checkpoint loop so a
   // HARD crash (SIGKILL / OOM / power) — where the graceful shutdown drain never runs — loses at
@@ -593,8 +564,9 @@ async function boot(): Promise<BootedSystem> {
   // Routines (issue #62): named recurring tasks with HUMANIZED fire times. The store is the
   // durable source of truth (routines.json, same atomic-write spirit as the task registry); the
   // scheduler ticks, rolls each period's fuzzed fire time once, persists it, and fires idempotently.
-  // A firing routine's action runs OFF this process through the background browser lane
-  // (issue #50/#58) — the scheduler never blocks on browser work.
+  // A firing routine's action is handed to the Concierge as an update turn: the Concierge
+  // drives the persistent browser itself (`beckett browser`), so the scheduler never blocks
+  // on browser work and the run stays observable in the Concierge's own session.
   const routineStore = new RoutineStore(join(beckettDir, "routines.json"));
   const routineScheduler = startRoutineScheduler({
     store: routineStore,
@@ -629,14 +601,14 @@ async function boot(): Promise<BootedSystem> {
         }
         if (!browserTask) throw new Error("routine dispatch produced no browser task");
 
-        // Post via the PRIVILEGED in-process browser lane — the routine holds the channel/requester
-        // authorization, so a headless run can post without a Discord mention token. Credential
-        // injection (from the jingle entry NAMED by credsEntry), the X verification pause/resume,
-        // and the confirmation back to the origin channel are all the browser agent's job (issue #50).
-        await browserAgent.run(browserTask, {
+        // Hand the fire to the Concierge as an update turn. The Concierge works the task with
+        // its own `beckett browser` hands: credentials come from the jingle entry NAMED by
+        // credsEntry (vault-injected, never printed), blocking questions are ordinary channel
+        // messages, and the confirmation back to the origin channel is its normal reply flow.
+        await concierge.notifyRoutineFire(browserTask, {
           channelId,
           requesterId,
-          credsEntry: plan.credsEntry,
+          credsEntry: plan.credsEntry ?? null,
         });
       },
     },
@@ -652,7 +624,7 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance, routineScheduler };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, memoryMaintenance, routineScheduler };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -678,17 +650,6 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
     await sys.quick.stopAll();
   } catch (err) {
     sys.logger.warn("quick-runner shutdown failed", { error: (err as Error).message });
-  }
-  // The browser agent settles live runs as errors; its durable ledger re-reports them next boot.
-  try {
-    await sys.browserAgent.stopAll();
-  } catch (err) {
-    sys.logger.warn("browser-agent shutdown failed", { error: (err as Error).message });
-  }
-  try {
-    await sys.browser.stop();
-  } catch (err) {
-    sys.logger.warn("browser shutdown failed", { error: (err as Error).message });
   }
   try {
     await sys.concierge.stop();

@@ -11,7 +11,7 @@
  * system prompt appended and its granted tools scoped, block for the text output, and hand that back
  * to the caller. Unlike quick it does NOT own delivery — the CALLER decides what to do with the
  * output. That seam is what lets the daily-shitpost routine drive the `social-media` agent (which
- * AUTHORS a post) and then hand the authored task to the privileged background browser lane, so a
+ * AUTHORS a post) and then hand the authored task to the Concierge to run with its own browser, so a
  * headless routine can post to X without a Discord mention token.
  *
  * No secret ever flows through here — credential injection happens downstream in the browser lane,

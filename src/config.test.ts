@@ -9,7 +9,6 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfigToml, loadConfig, validateConfig } from "./config.ts";
-import { browserHostSettings } from "./browser/runtime.ts";
 
 /**
  * Run `fn` with process.env.CEREBRAS_API_KEY pinned (undefined = absent). The proactivity
@@ -205,37 +204,16 @@ test("shared_context defaults ship enabled with the OPS-80 bounds", () => {
   });
 });
 
-test("computer-use defaults to one stable full-Chromium profile and bounded tool output", () => {
-  expect(validateConfig({}).quick).toMatchObject({
-    browser_profile_dir: "browser/profile",
-    browser_headless: true,
-    browser_viewport_width: 1440,
-    browser_viewport_height: 900,
-    browser_eval_timeout_ms: 60_000,
-    browser_max_output_chars: 24_000,
-    browser_question_wait_secs: 3_600,
+test("the Concierge browser ships enabled with the beckett session and a shutdown-capable idle timeout", () => {
+  expect(validateConfig({}).browser).toEqual({
+    enabled: true,
+    session: "beckett",
+    bin: "",
+    executable_path: "",
+    idle_timeout_secs: 1_800,
   });
-  expect(() => validateConfig({ quick: { browser_max_output_chars: 4_095 } })).toThrow();
-  expect(() => validateConfig({ quick: { browser_max_output_chars: 1_000_001 } })).toThrow();
-});
-
-test("computer-use rejects profiles that expose Beckett state or traverse a symlink", () => {
-  const dir = mkdtempSync(join(tmpdir(), "beckett-browser-profile-test-"));
-  try {
-    for (const profile of [".", "..", dir]) {
-      expect(() => browserHostSettings(validateConfig({
-        paths: { beckett_dir: dir },
-        quick: { browser_profile_dir: profile },
-      }))).toThrow("dedicated directory");
-    }
-    symlinkSync(tmpdir(), join(dir, "browser"));
-    expect(() => browserHostSettings(validateConfig({
-      paths: { beckett_dir: dir },
-      quick: { browser_profile_dir: "browser/profile" },
-    }))).toThrow("must not contain symlinks");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  expect(() => validateConfig({ browser: { session: "" } })).toThrow();
+  expect(() => validateConfig({ browser: { idle_timeout_secs: 0 } })).toThrow();
 });
 
 test("proactivity runtime override merges over TOML", () => {
