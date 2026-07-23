@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { Config } from "../types.ts";
-import { hardCapSeconds, wrapProcessGroup, killGroup } from "./proc.ts";
+import { hardCapSeconds, wrapProcessGroup, killGroup, killProcessTree } from "./proc.ts";
 
 const cfgWith = (worker_hard_cap_s?: number): Config =>
   ({ supervise: worker_hard_cap_s === undefined ? {} : { worker_hard_cap_s } }) as unknown as Config;
@@ -61,4 +61,81 @@ describe("killGroup", () => {
     expect(() => killGroup(1, true)).not.toThrow();
     expect(() => killGroup(-5, true)).not.toThrow();
   });
+});
+
+/**
+ * The OPS-50 orphan bug, end-to-end: a wall-clock reap must kill the harness AND every descendant
+ * it forked (bash-tool runs, MCP servers, sub-agents), not just the harness pid. This spawns a REAL
+ * process tree the way {@link wrapProcessGroup} does at launch — a `setsid` group leader that forks a
+ * long-lived `sleep` descendant — then reaps it via {@link killProcessTree} and proves, via live
+ * `process.kill(pid, 0)` liveness probes, that the descendant does NOT survive as an orphan. Gated on
+ * `setsid` (Linux target); on an image without it the group-kill path is unreachable so the test is a
+ * no-op the runner reports as skipped.
+ */
+describe("killProcessTree (live process tree)", () => {
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const waitDead = async (pid: number, ms: number): Promise<void> => {
+    const deadline = Date.now() + ms;
+    while (alive(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+  };
+
+  test.if(Bun.which("setsid") !== null)(
+    "reaps the harness AND its forked descendant — no orphan survives the group kill",
+    async () => {
+      // A "harness" that forks a descendant (the long sleep) and then blocks — exactly the shape a
+      // real worker leaves behind (harness + bash-tool/MCP child) when the wall-clock cap trips.
+      const { cmd, groupKill } = wrapProcessGroup("bash", ["-c", "echo READY=$$; sleep 300 & echo CHILD=$!; wait"]);
+      expect(groupKill).toBe(true);
+
+      const child = Bun.spawn({ cmd, stdout: "pipe", stderr: "pipe" });
+      // Read stdout until the descendant announces its pid (or bail after a bounded window).
+      const reader = child.stdout.getReader();
+      const dec = new TextDecoder();
+      let out = "";
+      const deadline = Date.now() + 3000;
+      while (!out.includes("CHILD=") && Date.now() < deadline) {
+        const race = (await Promise.race([
+          reader.read(),
+          new Promise((r) => setTimeout(() => r({ value: undefined, done: false }), 100)),
+        ])) as { value: Uint8Array | undefined; done: boolean };
+        if (race.value) out += dec.decode(race.value);
+        if (race.done) break;
+      }
+      const harnessPid = child.pid;
+      const descendantPid = Number((out.match(/CHILD=(\d+)/) ?? [])[1]);
+      expect(Number.isInteger(descendantPid)).toBe(true);
+      expect(descendantPid).toBeGreaterThan(1);
+      // Both are live before the reap, and the descendant shares the leader's process group.
+      expect(alive(harnessPid)).toBe(true);
+      expect(alive(descendantPid)).toBe(true);
+
+      try {
+        await killProcessTree(
+          { pid: harnessPid, kill: (s) => child.kill(s as never), exited: child.exited },
+          { groupKill, graceMs: 500 },
+        );
+        // SIGKILL delivery to the group is asynchronous — poll briefly for both to die.
+        await waitDead(harnessPid, 2000);
+        await waitDead(descendantPid, 2000);
+
+        expect(alive(harnessPid)).toBe(false);
+        // The crux of OPS-50: the descendant is gone too, NOT reparented to init still running.
+        expect(alive(descendantPid)).toBe(false);
+      } finally {
+        // Belt-and-braces so a failed assertion never leaks a 5-minute sleep into the test host.
+        try {
+          process.kill(descendantPid, "SIGKILL");
+        } catch {
+          /* already reaped */
+        }
+      }
+    },
+  );
 });
