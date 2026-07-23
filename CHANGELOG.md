@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Deterministic browser MCP attach (#76)
+
+- **Root cause.** A browser leg spawns `claude -p` with `--mcp-config <run>/mcp.json
+  --strict-mcp-config --tools mcp__browser__betterwright_browser`. The `browser` MCP server is a
+  stdio process (`src/browser/mcp.ts`) that Bun cold-imports on each leg; under the CPU contention
+  of a live browser its boot + handshake intermittently lost the race against claude's default MCP
+  startup timeout. With `--strict-mcp-config`, a server that misses the deadline is dropped
+  silently — the leg then runs with ONLY the built-in json-schema output tool. The model, unable to
+  act, either bailed (`dc8ae3d8`: "the betterwright_browser tool … was not available") or emitted a
+  contentless `needs_input` that surfaced as the bogus "requested input without saying what it
+  needs" question (`aa97f1d3`). Both are the same no-tool condition; runs with the tool attached
+  showed 15–18 `eval` journal entries, tool-less ones showed zero.
+- **Fix — make attach deterministic.** The MCP server touches a per-run attach marker the instant
+  claude negotiates `initialize`/`tools/list` (proof the tool reached the toolset). The agent
+  clears the marker before each leg and, after the leg exits, refuses to interpret the result
+  unless the marker is present. A tool-less leg is discarded and re-spawned (bounded,
+  `LEG_MAX_ATTEMPTS = 3`, fresh session id per fresh attempt); exhausting the retries finalizes as a
+  clear infrastructure error — never a bogus "done" and never a human question. The raised
+  `MCP_TIMEOUT` (60s) lets the server win the race in the common case; the marker + retry catch the
+  residual failures.
+- **Kill the hollow-question path.** A `needs_input` with an empty question is finalized as a fault,
+  not parked as a person-answerable ask, closing the `aa97`-style path at its root.
+- Regression tests (`src/browser/agent.test.ts`): a leg whose tool never attaches fails fast as
+  infra (three legs, `attached:false` journalled, zero questions, never `done`/`waiting`); a
+  transient first-attempt miss is retried and then succeeds.
+
 ## v5.10.0 (2026-07-22)
 
 ### Browser lane v2 — observable, steerable, context-fed
