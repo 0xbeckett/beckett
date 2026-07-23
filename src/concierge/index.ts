@@ -184,6 +184,18 @@ const ACCESS_DENY_REPLY_MS = 5 * 60_000;
  */
 const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
 
+/**
+ * Idempotency window for milestone → concierge notifications (OPS-… notify re-fire loop). A `done`
+ * / milestone event can be re-delivered to {@link Concierge.notify} — the instant-milestone path
+ * racing the ≤5s poll re-emit, an advance-outbox replay, or an ambiguous `beckett discord reply`
+ * ack that upstream retries mistake for "not delivered". Suppressing a re-delivery of the SAME
+ * (ticket, milestone) inside this window collapses that storm to one update turn. Kept comfortably
+ * longer than the discord-reply ack budget (75s) + a poll gap so a same-second retry never slips,
+ * yet far shorter than any genuine re-entry (a design re-review after human feedback, or a real
+ * second milestone) — those land outside the window and fire once, as they should.
+ */
+const MILESTONE_NOTIFY_DEDUPE_MS = 5 * 60_000;
+
 interface BrowserQuestionRecord {
   runId: string;
   channelId: string;
@@ -1534,6 +1546,12 @@ export class Concierge {
     string,
     { promise: Promise<BusResponse>; completedAt?: number }
   >();
+  /**
+   * Per-(ticket, milestone) idempotency for {@link notify}: `key → epoch ms first surfaced`. A
+   * milestone re-delivered inside {@link MILESTONE_NOTIFY_DEDUPE_MS} is dropped so a delivered-but-
+   * unacked update is never re-queued as a second update turn (the done-update re-fire loop).
+   */
+  private readonly recentMilestoneNotifies = new Map<string, number>();
   /**
    * Dispatcher levers wired in AFTER construction (v4-main creates the Concierge first so its
    * progress sink can feed the dispatcher). Serves `beckett ticket restaff` from the control bus
@@ -3514,7 +3532,19 @@ export class Concierge {
     // event, while never polluting a human conversation session.
     const frames: Promise<TicketUpdate | null>[] = [];
     for (const event of batch) {
+      // Idempotency (notify re-fire loop): a `done`/milestone event can be re-delivered — the
+      // instant-milestone path racing the poll re-emit, an outbox replay, or an ambiguous
+      // discord-reply ack that upstream mistakes for a delivery failure. Suppress a re-delivery of
+      // the SAME (ticket, milestone) inside the dedupe window so it never becomes a second turn.
+      const key = milestoneKey(event);
+      if (key && this.milestoneRecentlyNotified(key)) {
+        this.log.debug("suppressed duplicate milestone notify (ambiguous ack / re-delivery)", {
+          key,
+        });
+        continue;
+      }
       if (event.kind === "state_changed" && event.to === "done") {
+        if (key) this.markMilestoneNotified(key);
         frames.push(
           this.buildDoneUpdate(event.ticket).catch((err) => {
             this.log.warn("done-update framing failed (skipped)", { err: String(err) });
@@ -3525,6 +3555,7 @@ export class Concierge {
       }
       const framed = this.frameUpdate(event);
       if (!framed) continue; // not worth surfacing, or no channel to route back to
+      if (key) this.markMilestoneNotified(key);
       frames.push(Promise.resolve(framed));
     }
     if (frames.length === 0) return;
