@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.10.2 (2026-07-23)
+
 ### Queue-free conversation UX + stale-memory fix
 
 - **The turn queue is invisible now.** A directed message that lands while the channel's session
