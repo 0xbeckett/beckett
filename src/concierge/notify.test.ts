@@ -240,3 +240,60 @@ test("routine noise (blockers-cleared start, retry heartbeat) never costs a turn
   await new Promise((r) => setTimeout(r, 0));
   expect(asks.length).toBe(0);
 });
+
+// ── notify re-fire idempotency (the done-update loop) ──────────────────────────────────────
+// A `done` event can be re-delivered to notify() — the instant-milestone path racing the ≤5s poll
+// re-emit, an outbox replay, or an ambiguous `beckett discord reply` ack that upstream retries
+// mistake for "not delivered". The dispatch dedupes per (ticket, milestone) so one milestone is one
+// turn even when it arrives repeatedly; a real, distinct milestone still fires.
+
+test("a re-delivered done event notifies at most once (ambiguous-ack re-fire loop)", async () => {
+  const { concierge, asks } = harness();
+  const done: PollEvent = { kind: "state_changed", ticket: ticket({ state: "done" }), from: "in_review", to: "done" };
+  // Four back-to-back deliveries of the SAME done milestone — exactly the observed 4x re-fire.
+  concierge.notify(done);
+  concierge.notify(done);
+  concierge.notify(done);
+  concierge.notify(done);
+  await new Promise((r) => setTimeout(r, 0)); // done pings frame async (artifact-link fetch)
+  expect(asks.length).toBe(1);
+  expect(asks[0]?.toLowerCase()).toContain("done");
+});
+
+test("dedupe is per-ticket — two different tickets reaching done each fire once", async () => {
+  const { concierge, asks } = harness();
+  concierge.notify({ kind: "state_changed", ticket: ticket({ id: "id-A", state: "done" }), from: "in_review", to: "done" });
+  concierge.notify({ kind: "state_changed", ticket: ticket({ id: "id-A", state: "done" }), from: "in_review", to: "done" });
+  concierge.notify({ kind: "state_changed", ticket: ticket({ id: "id-B", state: "done" }), from: "in_review", to: "done" });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(2); // one per distinct ticket, re-delivery of A suppressed
+});
+
+test("a genuinely-new milestone (a distinct dispatcher comment) still fires after a done ping", async () => {
+  const { concierge, asks } = harness();
+  concierge.notify({ kind: "state_changed", ticket: ticket({ state: "done" }), from: "in_review", to: "done" });
+  await new Promise((r) => setTimeout(r, 0));
+  // A different milestone on the same ticket — distinct comment id, so it is NOT the same key.
+  concierge.notify({
+    kind: "comment_added",
+    ticket: ticket(),
+    comment: { id: "c-later", ticketId: "id-1", author: "beckett", body: "<!-- beckett:dispatcher -->\nReview found issues → back to **in_progress** for re-work.", createdAt: "later" },
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(2);
+});
+
+test("outside the dedupe window a re-entry fires again (design re-review after human feedback)", async () => {
+  const clock = new FakeClock();
+  const { concierge, asks } = harness(clock);
+  const gate: PollEvent = { kind: "state_changed", ticket: ticket({ state: "design_review" }), from: "design", to: "design_review" };
+  concierge.notify(gate);
+  await new Promise((r) => setTimeout(r, 0));
+  concierge.notify(gate); // immediate re-delivery — suppressed
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(1);
+  clock.advance(6 * 60_000); // past the 5-minute window: a real second parked-for-review is legitimate
+  concierge.notify(gate);
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(2);
+});
