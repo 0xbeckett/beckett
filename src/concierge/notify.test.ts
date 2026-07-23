@@ -6,6 +6,7 @@
 
 import { expect, test } from "bun:test";
 import { Concierge, type ConciergeSession } from "./index.ts";
+import type { AmbientClock } from "./ambient.ts";
 import type { Config } from "../types.ts";
 import type { TicketComment, PollEvent, Ticket } from "../tracker/types.ts";
 
@@ -13,8 +14,23 @@ const CHAN = "1097283746520174592";
 
 const config = { concierge: { model: "m", rotate_at_tokens: 190_000 }, paths: {} } as unknown as Config;
 
+/** A hand-cranked clock so a test can walk past the milestone dedupe window deliberately. */
+class FakeClock implements AmbientClock {
+  t = Date.parse("2026-07-23T12:00:00Z");
+  now(): number {
+    return this.t;
+  }
+  advance(ms: number): void {
+    this.t += ms;
+  }
+  setTimeout(): unknown {
+    return 0;
+  }
+  clearTimeout(): void {}
+}
+
 /** A Concierge wired to a fake session that just records the turns notify() feeds it. */
-function harness() {
+function harness(clock?: AmbientClock) {
   const asks: string[] = [];
   const session = {
     ask: (m: string) => {
@@ -23,7 +39,7 @@ function harness() {
     },
   } as unknown as ConciergeSession;
   const gateway = {} as never; // notify never touches the gateway
-  const concierge = new Concierge({ config, session, gateway });
+  const concierge = new Concierge({ config, session, gateway, ...(clock ? { ambientClock: clock } : {}) });
   return { concierge, asks };
 }
 

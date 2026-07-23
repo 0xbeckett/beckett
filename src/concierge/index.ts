@@ -3575,6 +3575,21 @@ export class Concierge {
     });
   }
 
+  /** True when this milestone key was surfaced within the dedupe window; prunes stale keys as it goes. */
+  private milestoneRecentlyNotified(key: string): boolean {
+    const now = this.nowMs();
+    for (const [oldKey, at] of this.recentMilestoneNotifies) {
+      if (now - at >= MILESTONE_NOTIFY_DEDUPE_MS) this.recentMilestoneNotifies.delete(oldKey);
+    }
+    const at = this.recentMilestoneNotifies.get(key);
+    return at !== undefined && now - at < MILESTONE_NOTIFY_DEDUPE_MS;
+  }
+
+  /** Record that a milestone key has just been surfaced, opening its dedupe window. */
+  private markMilestoneNotified(key: string): void {
+    this.recentMilestoneNotifies.set(key, this.nowMs());
+  }
+
   /**
    * Run one daemon-origin update on the dedicated system session without blocking the poll loop;
    * retry ONCE on failure, then log loudly with the ticket id (issue #24 — a silently dropped
@@ -5116,6 +5131,28 @@ function frameAmbientTimeout(channelId: string, offerText: string, ttlSecs: numb
 
 /** The marker the dispatcher prepends to its own ticket comments (mirrors `BECKETT_COMMENT_MARKER`). */
 const DISPATCHER_COMMENT_PREFIX = "<!-- beckett";
+
+/**
+ * A stable idempotency key for a surfacing milestone event, or null for events that never surface
+ * (created, `→ in_review`/`→ in_progress` transitions the comment feed already covers) and so need
+ * no dedupe. Keyed on the ticket id + the SEMANTIC milestone, NOT on framed prose (which the model
+ * rewords each turn), so a re-delivered `done`/milestone collapses to one notify while a genuinely
+ * distinct milestone — a different ticket, a new dispatcher comment, a later re-entry outside the
+ * window — keeps its own key and fires. Comment ids are already unique per real comment, so a
+ * replayed comment dedupes and a fresh one passes without relying on the time window at all.
+ */
+function milestoneKey(event: PollEvent): string | null {
+  if (event.kind === "comment_added") return `${event.ticket.id}|comment:${event.comment.id}`;
+  if (event.kind === "cancelled") return `${event.ticket.id}|cancelled`;
+  if (event.kind === "state_changed") {
+    if (event.to === "done") return `${event.ticket.id}|state:done`;
+    if (event.to === "design_review") return `${event.ticket.id}|state:design_review`;
+    if (event.from === null && (event.to === "in_progress" || event.to === "in_review")) {
+      return `${event.ticket.id}|restaff:${event.to}`;
+    }
+  }
+  return null;
+}
 
 /** True when a comment was authored by Beckett's machinery (a milestone/error narration), not a human. */
 function isDispatcherComment(comment: TicketComment): boolean {
