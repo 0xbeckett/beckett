@@ -185,7 +185,7 @@ const ACCESS_DENY_REPLY_MS = 5 * 60_000;
 const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
 
 /**
- * Idempotency window for milestone → concierge notifications (OPS-… notify re-fire loop). A `done`
+ * Idempotency window for milestone → concierge notifications (issue #80, the notify re-fire loop). A `done`
  * / milestone event can be re-delivered to {@link Concierge.notify} — the instant-milestone path
  * racing the ≤5s poll re-emit, an advance-outbox replay, or an ambiguous `beckett discord reply`
  * ack that upstream retries mistake for "not delivered". Suppressing a re-delivery of the SAME
