@@ -8,7 +8,7 @@
  * plus controller-owned images.
  */
 
-import { readFileSync, unlinkSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { callBus } from "../shell/control-bus.ts";
 import type { BrowserEvalResult } from "./runtime.ts";
@@ -161,6 +161,22 @@ async function main(): Promise<void> {
     throw new Error("browser MCP needs its control socket, run id, and capability token");
   }
 
+  // The attach marker is the deterministic proof-of-registration the agent checks after each leg:
+  // the file exists iff claude actually negotiated with this server and pulled its tool list, so a
+  // leg that ran without `mcp__browser__betterwright_browser` is caught instead of flailing. Best
+  // effort — the leg-level retry still guards if the write itself fails.
+  const attachMarker = process.env.BECKETT_BROWSER_ATTACH_MARKER?.trim();
+  let attachMarked = false;
+  const markAttached = (): void => {
+    if (attachMarked || !attachMarker) return;
+    try {
+      writeFileSync(attachMarker, `${runId}\n`, { mode: 0o600 });
+      attachMarked = true;
+    } catch {
+      // The agent's per-leg retry covers a missed marker; never let this crash the handshake.
+    }
+  };
+
   const deps: McpDeps = {
     maxOutputChars: Number.isSafeInteger(maxOutputChars) && maxOutputChars >= 4_096
       ? maxOutputChars
@@ -190,6 +206,8 @@ async function main(): Promise<void> {
     const responses: Record<string, unknown>[] = [];
     for (const message of messages) {
       const response = await handleMcpRequest(message, deps);
+      // `initialize` proves claude connected; `tools/list` proves the tool reached its toolset.
+      if (message.method === "initialize" || message.method === "tools/list") markAttached();
       if (response) responses.push(response);
     }
     if (responses.length === 0) continue;
