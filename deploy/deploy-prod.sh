@@ -8,6 +8,31 @@ set -euo pipefail
 
 HOST="${BECKETT_HOST:-beckett@loom-desk}"
 
+# ── self-deploy survival guard (issue #81) ──────────────────────────────────────────────────
+# When beckett deploys ITSELF, the running daemon spawns this script, so it (and its ssh child)
+# land INSIDE beckett-v4.service's cgroup. The remote `systemctl --user restart beckett-v4.service`
+# below tears down that whole cgroup (systemd's default KillMode=control-group), which used to kill
+# this script mid-run — before the annotated release tag was created and pushed. Package.json got
+# bumped and main pushed, but `git ls-remote --tags origin vX.Y.Z` stayed empty and the log
+# truncated at the restart with no "deploy complete".
+#
+# The killer is cgroup MEMBERSHIP, so escape it: re-exec the whole script into a transient user
+# *scope* — a sibling of beckett-v4.service under the user manager, not a child of it. The restart
+# can no longer reach us, so the ssh client stays connected, the remote health gate returns
+# normally, and the post-restart tag push runs in order (no tag-before-successful-restart, no
+# double-tag — ordering is unchanged). This is a no-op off the daemon host (e.g. the Mac, or an
+# interactive shell on loom-desk), where this script isn't a child of beckett-v4.service.
+if [ -z "${BECKETT_DEPLOY_SCOPED:-}" ] && grep -qs 'beckett-v4\.service' /proc/self/cgroup; then
+  echo "== self-deploy detected: re-exec into a detached user scope so the restart can't kill us =="
+  command -v systemd-run >/dev/null || {
+    echo "FATAL: running inside beckett-v4.service's cgroup but systemd-run is unavailable; the" >&2
+    echo "restart would kill this script before the release tag is pushed. Install systemd-run" >&2
+    echo "(part of systemd) or run the deploy from a shell outside the daemon's cgroup." >&2
+    exit 1
+  }
+  exec env BECKETT_DEPLOY_SCOPED=1 systemd-run --user --scope --quiet -- "$0" "$@"
+fi
+
 # ── smart semver bump (OPS-188) ─────────────────────────────────────────────────────────────
 # BEFORE we ship the merge, decide whether this release is a MINOR (new capability) or a PATCH
 # (fix / internal / behavior-preserving) from the commits since the last deployed tag, then write
