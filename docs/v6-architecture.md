@@ -184,7 +184,7 @@ itself), **extension** (migrates onto the contract), **prune/merge** (dead or du
 Note the surprises the audit surfaced, now baked in above: **there is no `src/social/`** — the
 "social/star/publishing" organ lives in `src/agency/*` (`setRepoStar`, `ensurePublished`) plus
 `src/dispatch/publish-outbox.ts`. And **there is no standalone "review" module** — review is the
-`reviewStage` in `src/dispatch/stages.ts`, gated by `reviewTierFor`. The migration order (§8)
+`reviewStage` in `src/dispatch/stages.ts`, gated by `reviewTierFor`. The migration order (§6)
 names these by their real homes so nobody hunts for a directory that isn't there.
 
 ### Prune / merge
