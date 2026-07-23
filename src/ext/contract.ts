@@ -7,13 +7,16 @@
  * daemon path yet. See {@link ../../docs/v6-architecture.md} for the full boundary + migration.
  *
  * WHY a new contract when v5 already has plug-in tables:
- * v5 grew FOUR parallel registries, each a good local answer, none the same shape:
- *   - `src/drivers/index.ts`     — harness drivers (the original, and the one that always worked)
- *   - `src/capability/index.ts`  — capabilities (CLI verbs, bus commands, prompt blocks, config)
- *   - `src/agent/registry.ts`    — live agent registry (#66/#55: named worker personas)
- *   - `src/dispatch/stages.ts`   — worker stage registry (implement/review/design)
- * Four registration idioms, four discovery mechanisms, no single seam a new organ plugs into.
- * That IS the "shoddily stacked" shape in miniature. v6 unifies them: an {@link Extension} is
+ * v5 STARTED the unification with the capability spine but never finished it, and two adjacent
+ * mechanisms never joined:
+ *   - `src/capability/index.ts`  — the `CapabilityRegistry` spine (one class, reused 5×: CLI, bus,
+ *     stages, builtins, config). `src/dispatch/stages.ts` is `new CapabilityRegistry()`, not a
+ *     separate registry — but bus/CLI bodies still live in cascades the spine meant to absorb.
+ *   - `src/agent/registry.ts`    — live agent registry (#66/#55: named worker personas) — separate.
+ *   - `src/drivers/index.ts`     — harness drivers (the original good seam) — separate.
+ * One half-eaten spine plus two tables that never joined, plus no seam that carries lifecycle,
+ * invocation, or a discovery catalog. That IS the "shoddily stacked" shape. v6 unifies them: an
+ * {@link Extension} is
  * the v5 {@link Capability} GENERALIZED to also carry lifecycle, a discovery catalog, and a
  * single invocation entrypoint — the two things the @mention flow needs that the capability
  * spine never had. The existing facets (cliVerbs, busCommands, promptBlock, config) are carried

@@ -15,30 +15,39 @@
 
 ---
 
-## 1. The diagnosis: four registries, no seam
+## 1. The diagnosis: a half-finished spine, no seam for the @mention flow
 
 The north star for v6 is Jason's, said repeatedly: the codebase is *"shoddily stacked on top of
-stuff rather than plug n play."* That is not a vibe — it is visible in the tree. v5 grew **four
-parallel plug-in tables**, each a good local answer, none the same shape:
+stuff rather than plug n play."* That is not a vibe — it is visible in the tree. v5 already
+*started* the unification the right way with the capability spine (`src/capability/index.ts`), but
+the migration is explicitly half-finished, and two other plug-in mechanisms never joined it. The
+real picture:
 
-| Registry | File | What plugs in | Discovery | Registration idiom |
-|---|---|---|---|---|
-| Harness drivers | `src/drivers/index.ts` | a harness (claude/codex/pi) | `REGISTRY` record | one row in a `Record` |
-| Capabilities | `src/capability/index.ts` | CLI verbs, bus commands, prompt blocks, config | `CapabilityRegistry` walk | factory in `modules/index.ts` + a `createCapability` call site |
-| Agents | `src/agent/registry.ts` | a named worker persona | `LiveAgentRegistry` (live-reloads `agents.json`) | JSON store + builtins |
-| Worker stages | `src/dispatch/stages.ts` | implement/review/design | `StageDefinition[]` | a `StageDefinition` object |
+| Plug-in mechanism | File(s) | What plugs in | Status |
+|---|---|---|---|
+| **Capability spine** | `src/capability/index.ts` (one `CapabilityRegistry` class, instantiated 5×: CLI `cli/beckett.ts`, bus `concierge/index.ts`, stages `dispatch/stages.ts`, builtins `capability/builtins.ts`, config `config.ts`) | CLI verbs, bus commands, prompt blocks, config fragments — and worker stages, which are *built on top of* the same class | intended spine, **migration incomplete** |
+| Agent registry | `src/agent/registry.ts` + `src/agent/store.ts` | a named worker persona (`agents.json`, live-reloaded) | separate mechanism (#66/#55) |
+| Harness drivers | `src/drivers/index.ts` | a harness (claude/codex/pi) | separate mechanism (the original good seam) |
 
-Four registration idioms, four discovery mechanisms, four collision-checkers. Adding an organ
-means picking which of the four it half-fits, then hand-wiring the rest across `shell/main.ts`,
-`concierge/index.ts`, and `cli/beckett.ts`. **That is the stacking.** The capability spine
-(`src/capability/`) is the closest thing v5 has to "plug n play" — and it is genuinely good — but
-it only covers CLI/bus/prompt/config surfaces. It has no notion of **lifecycle** (a stateful
-organ that owns a subprocess or an index), no **invocation** entrypoint (how the concierge hands
-an @mention to an organ), and no **discovery catalog** (what an organ advertises so the concierge
-can *route* to it). Those three gaps are exactly what the @mention-first interaction flow needs
-and exactly what v6 adds.
+So it is not "four peer registries" — it is one good spine (`CapabilityRegistry`, which
+`dispatch/stages.ts` already reuses via `new CapabilityRegistry()`) that **hasn't finished eating
+the cascades it was built to replace**, plus two adjacent tables (agents, drivers) that never
+joined, plus a scatter of ad-hoc stores (`src/hooks/registry.ts`, `src/routine/store.ts`,
+`src/task/store.ts`, `src/discord/workspaces.ts`). The incompleteness is documented in the code
+itself: `Concierge.onBusRequest` still notes that a bus command's `handle` "is optional on the
+spine only so a declaration can exist before its body migrates out of a cascade"
+(`src/concierge/index.ts`), and `cli/beckett.ts` is a 2,272-line file still carrying verb bodies
+the spine was meant to absorb. **That half-migration is the stacking.**
 
-v6's answer is not a fifth registry. It is **one** contract that subsumes the four.
+The capability spine is genuinely good, but it only covers CLI/bus/prompt/config surfaces. It has
+no notion of **lifecycle** (a stateful organ that owns a subprocess or an index), no **invocation**
+entrypoint (how the concierge hands an @mention to an organ), and no **discovery catalog** (what an
+organ advertises so the concierge can *route* to it). Those three gaps are exactly what the
+@mention-first interaction flow needs and exactly what v6 adds — while *finishing* the unification
+the spine started and pulling agents + drivers into it.
+
+v6's answer is not another registry. It is **one** contract that finishes the spine and subsumes
+the agents and drivers tables into it.
 
 ---
 
@@ -180,20 +189,41 @@ names these by their real homes so nobody hunts for a directory that isn't there
 
 ### Prune / merge
 
-<!-- DEAD/DUP AUDIT: refined by the second explore pass; see §9-adjacent notes below. -->
+An audit pass (extension-aware importer counts, not a naive grep) found the tree is *less* dead
+than it looks — most flagged directories are alive. The real targets:
 
-- **Slash commands** — Jason: slash commands are dead. `src/concierge/commands.test.ts` and any
-  command-prefix handling in the concierge are pruned; discovery moves entirely to the catalog.
-  (Confirm the live handler's exact site during migration, not now — it is not on the critical
-  path for this foundation.)
-- **The four registries collapse into one.** `src/capability/index.ts` is not deleted — it is the
-  *ancestor* of `src/ext/`, and its facet types (`CliVerb`, `BusCommand`, `PromptBlock`) are
-  imported by the contract verbatim. During migration its modules move under the extension
-  contract and the standalone `CapabilityRegistry` retires once the last consumer (`cli/beckett.ts`,
-  `stages.ts::workerSystemAppend`) reads from the extension registry instead.
-- **Duplicated prompt-building and effort defaults** already got partly de-duplicated in v5.9
-  (`defaultEffortFor` centralized in `stages.ts`); v6 finishes it by making the worker system
-  append a single `registry.composePrompt()` over extension prompt blocks.
+- **Slash commands — a product cut, not yet reflected in code.** Jason: slash commands are dead as
+  the interaction model (@mention is the flow). But the audit is unambiguous that the Discord
+  slash surface is *fully live in code today*, so this must be pruned deliberately, not assumed
+  gone. The concrete sites: `BECKETT_SLASH_COMMANDS` + `syncSlashCommands()` + the `onCommand`
+  interaction routing in `src/discord/gateway.ts`; the `onCommand(command)` controller in
+  `src/concierge/index.ts` (handling `task create`/`workspace`/`show`/`branch`/`stats`); the
+  `onCommand`/`DiscordCommand` types in `src/types.ts`; and `src/concierge/commands.test.ts` (note:
+  there is *no* `commands.ts` — the behavior lives in `concierge/index.ts`). Removing these is a
+  **dedicated pre-v6 or Phase-4 ticket**, not part of this foundation, but the doc names the sites
+  so the cut is scoped, not archaeological. (Unrelated: the `--disable-slash-commands` flag at
+  `concierge/index.ts` disables the spawned `claude` CLI's *own* slash commands and stays.)
+- **`src/code-stats/` — the one genuinely dead-ish module.** Zero importers inside `src/`; reached
+  only by `scripts/ops/code-stats-harvest.ts` and the `code-stats:refresh` package script. It is a
+  standalone maintenance tool the daemon never touches. If the feature is abandoned, prune the dir
+  + its script + the package entry together. Everything else the north-star flagged (`bored`,
+  `mail`, `moss-local`, `eval`, `test`) is alive with real importers — **do not prune those.**
+- **Legacy on-disk shims, prunable once data is confirmed migrated:** `foldLegacyPlaneSection()`
+  (`src/config.ts`, the OPS-191 Plane→tracker fold), the `x-shitpost` legacy routine shape
+  (`src/routine/types.ts`, `plan.ts`), and the legacy single-session mode in
+  `src/concierge/session-pool.ts`. These are back-compat only; each drops when no live box carries
+  the old shape. Out of scope for this foundation; listed so they aren't forgotten.
+- **Finish the half-migration, don't add a registry.** `src/capability/index.ts` is not deleted —
+  it is the *ancestor* of `src/ext/`, and its facet types (`CliVerb`, `BusCommand`, `PromptBlock`)
+  are imported by the contract verbatim. The prune here is the *cascades the spine never finished
+  eating*: the remaining verb bodies in `cli/beckett.ts` and the `onBusRequest` handlers still
+  living outside the registry (the code admits it). They collapse into extension `invoke`s during
+  migration; the standalone `CapabilityRegistry` retires once its last consumer reads from the
+  extension registry.
+- **Deduplicate the three driver stream parsers.** `src/drivers/{claude,codex,pi}.ts` each hand-roll
+  their own `switch (obj.type)` NDJSON frame parser over a shared `base.ts`. Merging the per-frame
+  normalization into `drivers/base.ts` is a clean, contained speed/clarity win (see §8) — a driver
+  is an extension facet in v6, and this dedup rides that migration.
 - `src/rpc/daemon.ts` (Discord rich-presence "Playing Beckett") is a cosmetic side process, not in
   the routing path — it stays as-is, out of scope, neither core-critical nor an extension.
 
@@ -291,14 +321,22 @@ Where the stacking costs latency or duplicated work today, and what the core des
   Every new organ adds branches to the hot path. The catalog + single `invoke` collapse that to one
   dispatch, and — because the catalog is data — the concierge's routing prompt is composed once, not
   re-hand-edited per organ. Fewer branches on the turn, less prompt drift.
-- **Four discovery mechanisms → one.** Boot wiring in `shell/main.ts` hand-sequences each organ's
-  setup; the doctor probes each organ its own way. `initAll`/`startAll`/`health` over one registry
+- **Per-organ boot glue → one lifecycle.** Boot wiring in `shell/main.ts` hand-sequences each
+  organ's setup; the doctor probes each organ its own way. `initAll`/`startAll`/`health` over one registry
   removes the per-organ boot glue and gives the doctor (and v6.md's post-deploy observation window)
   one uniform health surface instead of N bespoke probes.
 - **Duplicated prompt/effort logic.** v5.9 already centralized `defaultEffortFor` after it was
   duplicated verbatim across `spawn.ts` and `dispatcher.ts`; the worker system append still composes
   capability prompt blocks. v6 makes that composition the *only* path (`registry.composePrompt`),
-  killing the last string-surgery prompt builders.
+  killing the last string-surgery prompt builders. Prompt construction is currently scattered across
+  `concierge/triage.ts`, `concierge/index.ts::composeSystemPrompt`, `memory/agent-recall.ts`,
+  `dispatch/stages.ts`, `quick/index.ts`, and `browser/agent.ts` with no shared composer — the
+  catalog + prompt-block composition give the concierge one.
+- **Three hand-rolled driver stream parsers.** `src/drivers/{claude,codex,pi}.ts` each re-implement
+  a `switch (obj.type)` NDJSON frame parser over the shared `base.ts`. That is triplicated
+  normalization on the hottest path (every model frame). Folding it into `drivers/base.ts` removes
+  the duplication with zero behavior change — a pure win, since the frames are already normalized
+  identically three times.
 - **Validation at the seam, not in every body.** Args are validated once by the registry against
   each capability's zod `input`, so organs stop re-parsing raw argv/bus payloads — less code, one
   place for the check.
@@ -324,7 +362,8 @@ golden-behavior suite, not through this refactor.
 
 - **No Chat/Concierge split.** One agent owns voice and judgment. The contract makes the concierge
   *thinner* (it dispatches to extensions) without splitting it.
-- **No fifth registry.** v6 *removes* registries by unifying four into one; it does not add.
+- **No new registry.** v6 *removes* registries by finishing the capability spine and folding the
+  agents + drivers tables into it; it does not add another.
 - **No big-bang.** Organs migrate one phase at a time, each shippable, behind green snapshots.
 - **No self-widening license.** The registry routes; the agency gate decides. They stay separate.
 - **No unified-memory flattening.** Working context, the knowledge graph, and lessons keep their
