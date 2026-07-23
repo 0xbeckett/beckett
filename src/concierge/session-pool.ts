@@ -45,6 +45,8 @@ export interface PoolSession {
   recycle?(reason: string): void;
   /** Cancel the turn generating right now (issue #117); false when nothing is live. */
   cancelLiveTurn?(reason: string): boolean;
+  /** Drop queued (not-yet-started) turns the predicate matches; count dropped (queue-free UX). */
+  supersedeQueuedTurns?(match: (meta: unknown) => boolean): number;
   /** Start a recycled child's relaunch without a turn (issue #153); no-op when live/stopped. */
   prewarm?(): void;
   hasLiveChild?(): boolean;
@@ -257,6 +259,17 @@ export class SessionPool {
     const meta = entry.session.getCurrentMeta?.() as { channelId?: string } | null | undefined;
     if (!meta || meta.channelId !== channelId) return false;
     return entry.session.cancelLiveTurn?.(reason) ?? false;
+  }
+
+  /**
+   * Drop queued same-channel turns the predicate matches (see ConciergeSession.supersedeQueuedTurns).
+   * Channel-scoped like {@link cancelLiveTurn}: in collapsed global/fixed-session mode the
+   * predicate's own meta checks keep other channels' turns untouched. Returns the count dropped.
+   */
+  supersedeQueuedTurns(channelId: string, match: (meta: unknown) => boolean): number {
+    const entry = this.entries.get(this.scopeKey(channelId));
+    if (!entry) return 0;
+    return entry.session.supersedeQueuedTurns?.(match) ?? 0;
   }
 
   /** The live sessionId for a channel's scope (watermarks + awareness suppression are keyed to it). */

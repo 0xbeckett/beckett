@@ -98,6 +98,7 @@ roster_max = 12
 profile_model = "claude-haiku-4-5"
 profile_update_messages = 20
 awareness_max_channels = 5
+reply_context_surrounding = 5
 
 [concierge]
 model = "claude-opus-4-8"

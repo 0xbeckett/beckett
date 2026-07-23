@@ -49,6 +49,7 @@ import type {
   DiscordCommand,
   DiscordCommandReply,
   IncomingMessage,
+  ReplyContextMessage,
   ReplyOptions,
   TaskThreadCreated,
   ThreadCreated,
@@ -343,6 +344,51 @@ export class DiscordJsGateway implements DiscordGateway {
   onCommand(cb: (command: DiscordCommand) => Promise<DiscordCommandReply>): void {
     if (this.commandHandler) this.logger.warn("discord onCommand handler replaced");
     this.commandHandler = cb;
+  }
+
+  /**
+   * The message a native reply points at, plus the conversation around it (default ±5).
+   * One REST call (`around` returns the target and its neighbours); oldest-first out, the
+   * target flagged. Any failure — deleted target, missing access, thread archived — resolves
+   * to null: reply-context injection is best-effort and must never break a turn.
+   */
+  async fetchMessageContext(
+    channelId: string,
+    messageId: string,
+    opts?: { surrounding?: number },
+  ): Promise<ReplyContextMessage[] | null> {
+    const client = this.client;
+    if (!client) return null;
+    const surrounding = Math.max(0, Math.min(25, Math.trunc(opts?.surrounding ?? 5)));
+    try {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel?.isTextBased()) return null;
+      const page = await channel.messages.fetch({ around: messageId, limit: surrounding * 2 + 1 });
+      const rows = [...page.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+      if (!rows.some((row) => row.id === messageId)) return null;
+      const botId = client.user?.id;
+      return rows.map((row) => ({
+        messageId: row.id,
+        ts: row.createdTimestamp,
+        authorId: row.author.id,
+        authorName:
+          row.member?.displayName || row.author.globalName || row.author.username || row.author.id,
+        // Attachments fold in as placeholders, same convention as the shared-context store —
+        // a bare "look at this" with the image silently dropped would mislead the turn.
+        content: [row.content, ...row.attachments.values().map((a) => `[file: ${a.name}]`)]
+          .filter(Boolean)
+          .join(" "),
+        isBeckett: botId !== undefined && row.author.id === botId,
+        isTarget: row.id === messageId,
+      }));
+    } catch (err) {
+      this.logger.warn("discord reply-context fetch failed", {
+        channelId,
+        messageId,
+        error: String(err),
+      });
+      return null;
+    }
   }
 
   // ── outbound ─────────────────────────────────────────────────────────────────────────

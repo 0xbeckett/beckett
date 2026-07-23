@@ -15,8 +15,14 @@ import { serveBus } from "../../src/shell/control-bus.ts";
 import type { BrowserEvalResult } from "../../src/browser/runtime.ts";
 import type { Logger } from "../../src/types.ts";
 
+// Diagnostics go to stderr, not /dev/null: the isolated browser host surfaces its stderr only
+// through logger.debug (isolated.ts), and a CI-only worker crash (issue #181) is undebuggable
+// when the smoke swallows it. Errors/warnings too — a smoke that fails silent helps nobody.
 const logger = (() => {
-  const log = { info() {}, warn() {}, error() {}, debug() {}, child() { return log; } };
+  const emit = (level: string) => (msg: unknown, meta?: unknown) => {
+    process.stderr.write(`[browser-smoke:${level}] ${String(msg)}${meta ? ` ${JSON.stringify(meta)}` : ""}\n`);
+  };
+  const log = { info: emit("info"), warn: emit("warn"), error: emit("error"), debug: emit("debug"), child() { return log; } };
   return log as unknown as Logger;
 })();
 

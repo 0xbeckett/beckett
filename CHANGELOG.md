@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Queue-free conversation UX + stale-memory fix
+
+- **The turn queue is invisible now.** A directed message that lands while the channel's session
+  is mid-turn already interrupted it (cancel-and-amend, issue #117); its queue-side converse is
+  new: a rapid follow-up from the same speaker **silently supersedes their own still-queued
+  earlier turn** (`ConciergeSession.supersedeQueuedTurns`, wired through the SessionPool). The
+  dropped turn resolves as a silent pass — its text still reaches the session via the shared
+  channel window, so nothing is lost — and other speakers' queued turns are never touched. The
+  `FAST_ACK_TEXT` ("…you're next in line") bubble and its per-channel dedupe are **gone**: a
+  mention never sits in a line, so nothing narrates one. The typing indicator is the only
+  waiting signal; the 25s "Still working on this" progress ack stays (it's what a person would
+  say). Doctrine bans schedule-narration and steer-meta-narration outright ("okay, that will be
+  steered" → just answer the new message).
+- **Threads for multitasking, in doctrine.** Parallel work fans out into task-workspace threads;
+  the concierge says it *started* a task, never "queued" it.
+- **Reply context reaches back** (`src/concierge/reply-context.ts`). A native reply whose target
+  is outside the session's window (the months-old-message case) fetches the target **plus the 5
+  messages before and after it** (`shared_context.reply_context_surrounding`, new) from Discord
+  and injects them stamped with the target's absolute date and compact age ("7mo ago" —
+  `formatMessageAge` now spans months/years and the awareness footer shares it). In-window
+  replies get a one-line pointer instead; a deleted/unreachable target degrades to an honest
+  "ask what they're pointing at" one-liner. Fetched history is framed as data, never authority,
+  with multi-line content nested so it can't forge frame structure.
+- **Memory is dated observations (alita-inspired).** Every node is an observation made at a
+  point in time — **never deleted for age**, never mistaken for current truth. New
+  `src/memory/freshness.ts` is the shared spine: recall scoring gently prefers the *newer*
+  observation on ties (×0.92 past 1y untouched, ×0.85 past 2y — ties sink, nothing drops;
+  boosts for ≤30d/≤180d unchanged); every render path stamps the observation date — recall CLI
+  text (`updated: … (7mo ago — an observation from then)`), recall JSON
+  (`updated`/`age_days`/`dated_observation`), the agent-recall candidate block (plus an
+  observation rule in its prompt: newer wins on conflict, anchor aged ones "as of …"), and the
+  always-loaded MEMORY.md (` · upd YYYY-MM-DD` on 90d+ lines, flowing from `IndexLine.updated`).
+  The daily maintenance pass now reports **aged observations** (no-ttl nodes untouched 180d+,
+  oldest first) — a report-only *re-observation queue*, never an archive-by-age list; the only
+  archive paths remain the explicit ones (ttl, supersede, merge). A `remember` update is a
+  fresh observation: verify an aged one against the world, save the outcome, and the graph's
+  current truth advances with history intact underneath. The concierge doctrine teaches exactly
+  that loop.
+
 ## v5.10.1 (2026-07-23)
 
 ### Deterministic browser MCP attach (#76)

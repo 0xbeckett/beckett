@@ -76,6 +76,7 @@ import {
   scoreNode,
 } from "./search.ts";
 import { MOSS_LEXICAL_SHARPENER_WEIGHT, mossScores, openMemoryMoss, syncMossWithGraph } from "./moss.ts";
+import { indexAgeFlag } from "./freshness.ts";
 import type { LocalMoss } from "../moss-local/index.ts";
 import { planMaintenance, type MaintainReport } from "./maintain.ts";
 import {
@@ -837,12 +838,24 @@ export function recallOver(
   };
 }
 
-/** Mild freshness multiplier: recently touched facts win ties, old ones aren't dropped. */
+/**
+ * Mild freshness shaping under the dated-observation model: every node is an observation made
+ * at a point in time, and a NEWER observation of the world should win ties against an older
+ * one — while the older one is never dropped (it's the honest record of then, and often still
+ * true). Recently touched observations keep their boost (≤30d ×1.15, ≤180d ×1.05); untouched
+ * ones gently sink past a year (0.92) and past two (0.85). This is presentation ordering, not
+ * judgment: `stale` (ttl-expired) remains the only hard demotion, and maintain.ts's aged-
+ * observation list is a re-observation queue, never an archive-by-age list.
+ */
 function recency(node: MemoryNode, now: number): number {
   const t = Date.parse(node.updated || node.created);
   if (!Number.isFinite(t)) return 1;
   const days = (now - t) / 86_400_000;
-  return days <= RECENT_DAYS ? 1.15 : days <= 180 ? 1.05 : 1;
+  if (days <= RECENT_DAYS) return 1.15;
+  if (days <= 180) return 1.05;
+  if (days <= 365) return 1;
+  if (days <= 730) return 0.92;
+  return 0.85;
 }
 
 function edgeWeight(e: MemoryEdge): number {
@@ -1068,7 +1081,7 @@ function buildIndex(nodes: Map<string, MemoryNode>): IndexLine[] {
   const lines: IndexLine[] = [];
   for (const n of nodes.values()) {
     if (n.phantom) continue;
-    lines.push({ name: n.name, type: n.type, description: n.description });
+    lines.push({ name: n.name, type: n.type, description: n.description, updated: n.updated });
   }
   return lines.sort((a, b) =>
     a.type === b.type ? a.name.localeCompare(b.name) : String(a.type).localeCompare(String(b.type)),
@@ -1088,13 +1101,18 @@ export function renderIndex(g: MemoryGraph): string {
   });
   let out = "# Beckett Memory Index\n";
   out += `<!-- GENERATED. Do not edit. Regenerated on every memory write. last: ${nowIso()}, ${lines.length} public nodes (scoped nodes are omitted — recall with an audience) -->\n`;
+  const now = Date.now();
   let lastType: string | null = null;
   for (const line of lines) {
     if (line.type !== lastType) {
       out += `\n## ${line.type}\n`;
       lastType = String(line.type);
     }
-    out += `- [[${line.name}]] — ${line.description}\n`;
+    // Age flag on old lines (dated observations, alita-style "current vs history" honesty):
+    // MEMORY.md is ALWAYS loaded, so it's the cheapest place to teach every session that a line
+    // untouched for 90+ days is an observation FROM THEN — still on the record, never deleted,
+    // just anchored to its time. The fact stays; its date travels with it.
+    out += `- [[${line.name}]] — ${line.description}${indexAgeFlag(line.updated, now)}\n`;
   }
   return out;
 }
