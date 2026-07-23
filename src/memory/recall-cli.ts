@@ -2,6 +2,7 @@
 
 import { parse } from "../cli/io.ts";
 import type { MemoryStore } from "./index.ts";
+import { freshnessLabel, indexAgeFlag, ageDays, AGED_OBSERVATION_DAYS } from "./freshness.ts";
 import {
   type Audience,
   provenanceOf,
@@ -50,15 +51,22 @@ export async function recallCliOutput(memory: MemoryStore, request: RecallCliReq
   });
 
   if (flags.json) {
+    const now = Date.now();
     return {
       hits: r.hits.map((h) => {
         const prov = provenanceOf(h.node);
+        const days = ageDays(h.node.updated, now);
         return {
           name: h.node.name,
           type: h.node.type,
           score: Number(h.score.toFixed(2)),
           path: h.node.path,
           description: h.node.description,
+          // Freshness travels with every hit: memories are dated OBSERVATIONS — a consumer
+          // anchors each one to its time instead of mistaking it for current truth.
+          updated: h.node.updated,
+          age_days: days === null ? null : Math.round(days),
+          dated_observation: days !== null && days >= AGED_OBSERVATION_DAYS,
           visibility: prov.visibility,
           provenance: renderProvenanceFrom(prov),
           body: h.node.body,
@@ -68,6 +76,7 @@ export async function recallCliOutput(memory: MemoryStore, request: RecallCliReq
         name: e.node.name,
         type: e.node.type,
         description: e.node.description,
+        updated: e.node.updated,
         visibility: provenanceOf(e.node).visibility,
         reason: e.reason,
       })),
@@ -76,6 +85,7 @@ export async function recallCliOutput(memory: MemoryStore, request: RecallCliReq
     };
   }
 
+  const now = Date.now();
   const lines: string[] = ["# hits"];
   if (r.hits.length === 0) lines.push("(none — see the index below for everything on file)");
   for (const h of r.hits) {
@@ -84,16 +94,19 @@ export async function recallCliOutput(memory: MemoryStore, request: RecallCliReq
     lines.push(
       `\n## ${h.node.name} (${h.node.type}, score ${h.score.toFixed(2)})`,
       `path: ${h.node.path}`,
+      // Every hit is anchored to its observation date — old observations are history, not
+      // current truth, and the reader judges from the date.
+      `updated: ${h.node.updated.slice(0, 10)} (${freshnessLabel(h.node.updated, now)})`,
       `visibility: ${prov.visibility}${source ? ` · ${source}` : ""}`,
       h.node.description,
       ...(h.node.body ? ["", h.node.body] : []),
     );
   }
-  if (r.expanded.length) lines.push("\n# related (linked)\n" + r.expanded.map((e) => `- ${e.node.name}: ${e.node.description} [${e.reason}]`).join("\n"));
+  if (r.expanded.length) lines.push("\n# related (linked)\n" + r.expanded.map((e) => `- ${e.node.name}: ${e.node.description}${indexAgeFlag(e.node.updated, now)} [${e.reason}]`).join("\n"));
   if (r.phantoms.length) lines.push("\n# phantoms: " + r.phantoms.join(", "));
   if (r.notes.length) lines.push("\n# notes: " + r.notes.join("; "));
   lines.push("\n# index");
-  for (const il of r.index) lines.push(`- ${il.name} (${il.type}): ${il.description}`);
+  for (const il of r.index) lines.push(`- ${il.name} (${il.type}): ${il.description}${indexAgeFlag(il.updated, now)}`);
   return lines.join("\n");
 }
 
@@ -128,7 +141,7 @@ async function agenticRecallOutput(memory: MemoryStore, request: RecallCliReques
       seat,
       answer: describe(agent.answer),
       followUp: followUp ? { question: followUpQ, ...describe(followUp) } : null,
-      candidates: base.hits.map((h) => ({ name: h.node.name, type: h.node.type, description: h.node.description })),
+      candidates: base.hits.map((h) => ({ name: h.node.name, type: h.node.type, description: h.node.description, updated: h.node.updated })),
     };
   }
 
@@ -140,7 +153,8 @@ async function agenticRecallOutput(memory: MemoryStore, request: RecallCliReques
   };
   const lines = render("recall", agent.answer);
   if (followUp) lines.push("", ...render(`follow-up: ${followUpQ}`, followUp));
-  lines.push("", "# candidates read", ...base.hits.map((h) => `- ${h.node.name} (${h.node.type}): ${h.node.description}`));
+  const now = Date.now();
+  lines.push("", "# candidates read", ...base.hits.map((h) => `- ${h.node.name} (${h.node.type}): ${h.node.description}${indexAgeFlag(h.node.updated, now)}`));
   return lines.join("\n");
 }
 

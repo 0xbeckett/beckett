@@ -439,6 +439,10 @@ export const configFragments = {
       profile_model: z.string().min(1).default("claude-haiku-4-5"),
       profile_update_messages: posInt.default(20),
       awareness_max_channels: posInt.default(5),
+      // Reply-context injection: a native reply to a message OUTSIDE the session's window gets
+      // the target plus this many messages before and after it fetched from Discord, stamped
+      // with how long ago the exchange happened. 5 gives the ±5 window around the target.
+      reply_context_surrounding: posInt.default(5),
     })
     .strict()
     .default({}),

@@ -364,7 +364,7 @@ test("startRoutineMaintenance runs the pass on its timer and stop() halts it", a
   const handle = startRoutineMaintenance({
     maintain: async () => {
       runs++;
-      return { scanned: 0, archives: [], merges: [], flagged: [], phantoms: [], dryRun: false };
+      return { scanned: 0, archives: [], merges: [], flagged: [], phantoms: [], agedObservations: [], dryRun: false };
     },
     logger: quietLog,
     initialDelayMs: 5,

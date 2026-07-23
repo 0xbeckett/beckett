@@ -25,8 +25,9 @@
  * `startRoutineMaintenance` is the daemon hook: one pass shortly after boot, then daily.
  */
 
-import type { Logger, MemoryGraph, MemoryNode } from "../types.ts";
+import type { Logger, MemoryGraph, MemoryNode, NodeType } from "../types.ts";
 import { DEDUP_THRESHOLD, MERGE_THRESHOLD, nodeSimilarity, provenanceOf } from "./search.ts";
+import { ageDays, AGED_OBSERVATION_DAYS } from "./freshness.ts";
 
 /** How long past its `ttl` a node survives before the pass archives it. */
 export const TTL_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -54,6 +55,22 @@ export interface FlaggedPair {
   similarity: number;
 }
 
+/**
+ * A no-ttl node whose last observation is {@link AGED_OBSERVATION_DAYS}+ days old. Aged does
+ * NOT mean wrong, and nothing here is ever deleted for age: an old node is an observation
+ * made at that point in time — the honest record of how things were, and often still are.
+ * This list is the RE-OBSERVATION queue (report-only): for each entry, verify it against the
+ * world and `remember` the outcome — a confirmed fact gets a fresh date, a changed one gets a
+ * new observation that supersedes by construction. The archive paths above stay the explicit
+ * ones (ttl expiry, supersede, merge); age alone never archives.
+ */
+export interface AgedObservation {
+  name: string;
+  type: NodeType;
+  updated: string;
+  ageDays: number;
+}
+
 /** What one maintenance pass decided (dry-run returns exactly this, executed or not). */
 export interface MaintainReport {
   scanned: number;
@@ -62,6 +79,8 @@ export interface MaintainReport {
   flagged: FlaggedPair[];
   /** Phantom names — referenced but never written; a to-do list, reported not pruned. */
   phantoms: string[];
+  /** Long-untouched no-ttl nodes (report-only — see {@link AgedObservation}), oldest first. */
+  agedObservations: AgedObservation[];
   dryRun: boolean;
 }
 
@@ -142,7 +161,21 @@ export function planMaintenance(
   }
 
   const phantoms = [...g.nodes.values()].filter((n) => n.phantom).map((n) => n.name).sort();
-  return { archives, merges, flagged, phantoms };
+
+  // 4. Aged observations (memories are dated observations, never deleted for age): no-ttl
+  //    survivors untouched for 180d+. Nodes with a ttl already have a lifecycle (detector 1
+  //    owns them); nodes being archived are spoken for. Everything else this old goes on the
+  //    re-observation queue — surfaced so it can be verified and re-`remember`ed, never acted on.
+  const agedObservations: AgedObservation[] = [];
+  for (const n of survivors) {
+    if (merging.has(n.name)) continue;
+    if (typeof n.metadata.ttl === "string" && n.metadata.ttl.trim() !== "") continue;
+    const days = ageDays(n.updated || n.created, now);
+    if (days === null || days < AGED_OBSERVATION_DAYS) continue;
+    agedObservations.push({ name: n.name, type: n.type, updated: n.updated, ageDays: Math.round(days) });
+  }
+  agedObservations.sort((a, b) => b.ageDays - a.ageDays);
+  return { archives, merges, flagged, phantoms, agedObservations };
 }
 
 /** Canonical = the older node (its name is what other memories already link to); ties break
@@ -191,13 +224,15 @@ export function startRoutineMaintenance(deps: RoutineMaintenanceDeps): { stop():
         merged: r.merges.length,
         flagged: r.flagged.length,
         phantoms: r.phantoms.length,
+        agedObservations: r.agedObservations.length,
       };
-      if (r.archives.length || r.merges.length || r.flagged.length) {
+      if (r.archives.length || r.merges.length || r.flagged.length || r.agedObservations.length) {
         deps.logger.info("memory maintenance pass", {
           ...summary,
           actions: [
             ...r.archives.map((a) => `archive ${a.name} (${a.detail})`),
             ...r.merges.map((m) => `merge ${m.duplicate} → ${m.canonical} (sim ${m.similarity})`),
+            ...r.agedObservations.map((s) => `re-observe? ${s.name} (last observed ${s.ageDays}d ago)`),
           ].join("; "),
         });
       } else {

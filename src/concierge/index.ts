@@ -96,6 +96,12 @@ import {
 import { createChannelProfiler, type ChannelProfiler } from "./channel-profiles.ts";
 import { TurnGate } from "./turn-gate.ts";
 import { SessionPool, GLOBAL_SCOPE } from "./session-pool.ts";
+import {
+  formatMessageAge,
+  renderFetchedReplyContext,
+  renderInWindowReplyPointer,
+  renderUnavailableReplyContext,
+} from "./reply-context.ts";
 import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
 import type { DiscordCommand, DiscordCommandReply, TaskThreadCreated } from "../types.ts";
 import { TaskStore, displayTaskName, type WorkTask } from "../task/store.ts";
@@ -332,11 +338,11 @@ const ROTATE_RETRY_COOLDOWN_MS = 10 * 60_000;
 /** Consecutive child crashes before the ops channel is alerted (bad auth/config, issue #24). */
 const CRASH_LOOP_THRESHOLD = 3;
 
-/** The immediate "you're seen" reply when a mention lands behind a busy session (issue #24). */
-const FAST_ACK_TEXT = "On it — I'm mid-task right now, you're next in line.";
-
-/** One fast ack per channel per this window — rapid mentions get one bubble, not one each (issue #128). */
-const FAST_ACK_DEDUPE_MS = 60_000;
+// There is deliberately NO fast-ack constant here anymore. A mention that lands while the
+// channel's session is mid-turn INTERRUPTS it (cancel-and-amend, issue #117) or jumps the
+// queue ahead of non-person turns — it never sits in line, so it never needs a "you're next
+// in line" bubble. The typing indicator is the whole waiting signal, the way a person
+// answering mid-thought needs no narration.
 
 /**
  * Hard cap on a model-authored early ack (`beckett discord ack`, issue #122). An ack is ONE short
@@ -680,6 +686,37 @@ export class ConciergeSession {
       sessionId: this.sessionId,
     });
     return true;
+  }
+
+  /**
+   * Drop QUEUED (not yet started) turns the caller considers superseded — the queue-free
+   * converse of {@link cancelLiveTurn}. A rapid-fire follow-up from the same author shouldn't
+   * produce two answers in a row: the earlier message's turn resolves as a silent pass and the
+   * newest message runs instead. Its text is NOT lost to the model — the shared channel store
+   * captured it at intake, so it rides the next turn's unseen-window block exactly as if the
+   * turn had run. Only queued turns match; the live turn is {@link cancelLiveTurn}'s job, and
+   * system/update turns never match (the caller's predicate only sees mention metas).
+   *
+   * Returns the number of turns dropped (0 = nothing queued matched; the caller just queues
+   * normally). Dropped turns resolve as a silent pass — never a reject — so their handlers
+   * post nothing, exactly like an interrupted live turn.
+   */
+  supersedeQueuedTurns(match: (meta: unknown) => boolean): number {
+    let dropped = 0;
+    for (let i = this.turnQueue.length - 1; i >= 0; i--) {
+      const entry = this.turnQueue[i]!;
+      if (!match(entry.meta)) continue;
+      this.turnQueue.splice(i, 1);
+      entry.resolve({ decision: "pass", message: null });
+      dropped += 1;
+    }
+    if (dropped > 0) {
+      this.log.info("superseded queued concierge turn(s)", {
+        dropped,
+        sessionId: this.sessionId,
+      });
+    }
+    return dropped;
   }
 
   /** Stop the session and reject any in-flight or queued turn. */
@@ -1568,8 +1605,6 @@ export class Concierge {
   private readonly inboundMessageIds = new Set<string>();
   /** Last static denial by channel+user, so denied DMs/mentions cannot spam Discord. */
   private readonly accessDenyAt = new Map<string, number>();
-  /** Last fast ack by channel, so rapid mentions get one ack bubble instead of one each (issue #128). */
-  private readonly fastAckAt = new Map<string, number>();
   /**
    * The ambient-interjection coordinator (proposal §4). Owns per-channel ring buffers, debounce,
    * cooldowns, and the offer ledger; calls back into {@link runAmbientTurn} to run a session turn.
@@ -3783,6 +3818,15 @@ export class Concierge {
         messageId: m.messageId,
       });
     }
+    // The queue-free converse of the interrupt above: this same speaker's earlier message may be
+    // sitting QUEUED behind another turn (a burst fires faster than turns drain). Answering it
+    // after this one would be two stale replies in a row — drop it; its text still reaches the
+    // session via this turn's shared-window block. Other speakers' queued turns are untouched
+    // (their questions still deserve their own answers), and system/update turns never match.
+    this.pool.supersedeQueuedTurns(
+      m.channelId,
+      (meta) => isMentionClaim(meta) && meta.userId === m.userId && meta.channelId === m.channelId,
+    );
 
     let keepTyping = true;
     const typing = setInterval(() => {
@@ -3790,21 +3834,9 @@ export class Concierge {
     }, TYPING_INTERVAL_MS);
     void this.gateway.sendTyping(m.channelId);
 
-    // Fast ack (issue #24): a channel's session is single-flight, so a mention landing while that
-    // channel already has a turn running (or queued), or while the pool's turn gate is saturated,
-    // would sit for minutes behind only a typing indicator. Acknowledge within seconds —
-    // code-level, no model turn. Deduped per channel (issue #128, same shape as accessDenyAt):
-    // three rapid mentions get ONE ack bubble, not three identical ones.
-    if ((this.pool.sessionFor(m.channelId).queueDepth?.() ?? 0) > 0 || this.turnGate.saturated()) {
-      const now = Date.now();
-      const last = this.fastAckAt.get(m.channelId) ?? 0;
-      if (now - last >= FAST_ACK_DEDUPE_MS) {
-        this.fastAckAt.set(m.channelId, now);
-        void this.gateway
-          .post(m.channelId, FAST_ACK_TEXT, { replyToMessageId: m.messageId, replyToUserId: m.userId })
-          .catch(() => undefined);
-      }
-    }
+    // No fast-ack bubble here by design: a directed message either interrupts the live turn or
+    // jumps the queue, so there is no line to narrate. Typing (above) is the whole ack — the way
+    // a person pausing mid-thought to hear you needs no "hold on" signage.
 
     let progressAckTimer: ReturnType<typeof setTimeout> | null = null;
     let awaitingAnswer = false;
@@ -3990,7 +4022,9 @@ export class Concierge {
       ticketPrefix +
       (this.channelStore
         ? this.sharedContextPrefix(m.channelId, m.messageId, onSharedContext)
-        : this.ambientContextPrefix(m.channelId));
+        : this.ambientContextPrefix(m.channelId)) +
+      // Reply-context rides last, right against the live turn it annotates.
+      (await this.replyContextPrefix(m, speaker));
     if (m.attachments.length === 0)
       return prefix + frameUserTurn(m.channelId, speaker, m.messageId, content);
     let images: TurnContentBlock[] = [];
@@ -4018,6 +4052,51 @@ export class Concierge {
     if (images.length === 0) return framed;
     // Otherwise: a text block (framed message + any non-image manifest) followed by the image blocks.
     return [{ type: "text", text: framed }, ...images];
+  }
+
+  /**
+   * The reply-context frame for a native Discord reply (src/concierge/reply-context.ts). Three
+   * cases: no reply → "" (the common path costs nothing); the target is inside the session's
+   * visible window → a one-line pointer correlates the reply to that line; the target is OUTSIDE
+   * the window (the months-old case) → fetch the message plus `reply_context_surrounding`
+   * messages before and after it from Discord and inject them with an absolute date + "how long
+   * ago" header, so an answer to an ancient message is anchored to its time instead of bluffed.
+   * Best-effort throughout: a fetch failure degrades to an honest one-liner, never a broken turn.
+   */
+  private async replyContextPrefix(m: IncomingMessage, speaker: SpeakerContext): Promise<string> {
+    if (!m.repliedToId) return "";
+    const inWindow = this.windowEntryFor(m.channelId, m.repliedToId);
+    if (inWindow) return renderInWindowReplyPointer(inWindow);
+    const surrounding = Math.max(0, this.config.shared_context?.reply_context_surrounding ?? 5);
+    const fetchContext = this.gateway.fetchMessageContext?.bind(this.gateway);
+    if (!fetchContext || surrounding === 0) return "";
+    const replierName =
+      resolveAddress(speaker.identity) ?? m.authorDisplayName?.trim() ?? "the speaker";
+    const fetched = await fetchContext(m.channelId, m.repliedToId, { surrounding }).catch(() => null);
+    if (!fetched || fetched.length === 0) return renderUnavailableReplyContext();
+    return renderFetchedReplyContext({
+      channelId: m.channelId,
+      replierName,
+      messages: fetched,
+      now: this.nowMs(),
+    });
+  }
+
+  /**
+   * The window line a reply target resolves to, or null when it's outside what the session can
+   * see: the durable store's bounded window when it's live, else the legacy ambient ring buffer.
+   * Reading is non-mutating on both paths (watermarks advance only after a successful turn).
+   */
+  private windowEntryFor(
+    channelId: string,
+    messageId: string,
+  ): { authorName: string; ts: number; content: string } | null {
+    if (this.channelStore) {
+      const hit = this.channelStore.recent(channelId).find((e) => e.messageId === messageId);
+      return hit ? { authorName: hit.authorName, ts: hit.ts, content: hit.content } : null;
+    }
+    const hit = this.ambient?.getTranscript(channelId).find((e) => e.messageId === messageId);
+    return hit ? { authorName: hit.authorDisplayName, ts: hit.ts, content: hit.content } : null;
   }
 
   /**
@@ -4867,13 +4946,9 @@ function singleLine(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-/** Compact relative age for awareness lines: "3m ago", "2h ago", "4d ago". */
+/** Compact relative age for awareness lines: "3m ago", "2h ago", "4d ago" (+ "3mo ago", "2y ago"). */
 function relAge(ms: number): string {
-  const mins = Math.max(0, Math.round(ms / 60_000));
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 48) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+  return formatMessageAge(ms);
 }
 
 /**

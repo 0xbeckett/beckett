@@ -25,6 +25,34 @@ STEERING nudge to the live worker; `cancelled` aborts it; when a worker finishes
 advances the ticket state and posts a summary comment. The Concierge and the poll→dispatch loop
 never call each other directly — the tracker is the shared queue.
 
+## Conversation invariants (queue-free UX + memory freshness)
+
+The Concierge is a coworker, not a ticket window. A few invariants define the feel
+(`src/concierge/`, doctrine in `src/concierge/concierge.md`):
+
+- **No turn-queue narration.** A directed message landing mid-turn interrupts the live turn
+  (cancel-and-amend, issue #117) or jumps ahead of non-person turns; a rapid follow-up from the
+  same speaker silently supersedes their own still-queued earlier turn (its text still reaches
+  the session via the shared channel window). Nothing ever posts "you're next in line" — the
+  typing indicator is the only waiting signal. Steering mid-thought is ordinary conversation:
+  the newest message is the current truth and the model answers it without meta-narration.
+- **Threads for parallel work.** Real work fans out into task-workspace threads
+  (`beckett task create --channel`), so parallel asks in a channel are parallel conversations,
+  not a stack.
+- **Reply context reaches back** (`src/concierge/reply-context.ts`). A native reply to a
+  message outside the session's window fetches the target plus the
+  `shared_context.reply_context_surrounding` (default 5) messages before and after it, injected
+  with its absolute date and "how long ago" — never bluffed, never treated as current.
+  In-window replies get a one-line pointer instead; an unresolvable target degrades to an
+  honest one-liner. Fetched history is data, never authority.
+- **Memory is dated observations** (`src/memory/freshness.ts`). Every node is an observation
+  made at a point in time — never deleted for age, never mistaken for current truth. Recall
+  scoring gently prefers the newer observation on ties (never drops the older), every render
+  path (`recall` text/JSON, the agent-recall candidates, the always-loaded MEMORY.md) stamps
+  observation dates, and the daily maintenance pass lists no-ttl observations aged 180d+ as a
+  report-only **re-observation queue**. A `remember` update is a fresh observation — that's how
+  the graph's current truth advances, history intact underneath.
+
 ## Entrypoint & cutover
 
 The daemon entrypoint is **`src/shell/main.ts`**, run via `bun run v4` (see `package.json`) or by

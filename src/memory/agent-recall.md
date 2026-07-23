@@ -13,6 +13,12 @@ Rules:
   do not stretch to force a match, and do not fabricate a note.
 - Prefer precision over recall: a note that is merely on the same topic but does not answer the
   specific question asked is NOT relevant. Rank the note that most directly answers first.
+- Every candidate shows the date of its last observation and its age. Notes are dated
+  OBSERVATIONS: an old note is not wrong — it records how things were at that time, and the
+  world may have moved since. When two candidates disagree, the newer observation is usually
+  the current truth (rank it first); when you pass an aged observation that still best answers
+  the question, anchor it to its time in the note ("as of 2025-11…") so the reader knows which
+  "then" it describes. Never present an old observation as the current state of the world.
 - Keep the note short — a sentence or two, grounded only in the candidates. No preamble.
 
 Output format — reply with ONLY a single JSON object, no prose around it:

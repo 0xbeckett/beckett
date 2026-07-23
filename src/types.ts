@@ -519,6 +519,8 @@ export interface IndexLine {
   name: string;
   type: NodeType;
   description: string;
+  /** Last substantive edit (ISO) — lets the always-loaded index self-flag old facts. */
+  updated?: string;
 }
 
 /** The hydrated memory graph (Spec 08 §2). */
@@ -763,6 +765,11 @@ export interface Config {
     profile_update_messages: number;
     /** Max other channels named in the cross-channel awareness footer. */
     awareness_max_channels: number;
+    /**
+     * Messages fetched either side of a reply target that sits outside the session's window
+     * (the "message plus N before and after" reply-context injection).
+     */
+    reply_context_surrounding: number;
   };
   /** v3 — the Concierge agent that owns Discord and files tickets. */
   concierge: {
@@ -927,6 +934,21 @@ export interface SpawnResult {
 }
 
 
+/** One message in a fetched reply-context window (see DiscordGateway.fetchMessageContext). */
+export interface ReplyContextMessage {
+  messageId: string;
+  /** Discord's own timestamp, epoch ms. */
+  ts: number;
+  authorId: string;
+  /** Display name at fetch time (render label only — never authoritative). */
+  authorName: string;
+  content: string;
+  /** True for Beckett's own posts (the gateway knows its bot id; the Concierge doesn't). */
+  isBeckett: boolean;
+  /** True on the single message the live turn is replying to. */
+  isTarget: boolean;
+}
+
 /** Holds the discord.js connection; ambient in→same-channel out (Spec 05). */
 export interface DiscordGateway {
   start(): Promise<void>;
@@ -944,6 +966,17 @@ export interface DiscordGateway {
    * Optional while older injected test transports are phased out.
    */
   fetchMessagesAfter?(channelId: string, after: string): Promise<IncomingMessage[]>;
+  /**
+   * Fetch one message plus up to `surrounding` messages before and after it (oldest first,
+   * the target flagged) — the context for a reply to a message outside the session's window.
+   * Returns null when the target is gone or unreachable (deleted, no access): the caller
+   * degrades to no injection. Optional so injected test transports need no fake.
+   */
+  fetchMessageContext?(
+    channelId: string,
+    messageId: string,
+    opts?: { surrounding?: number },
+  ): Promise<ReplyContextMessage[] | null>;
   /**
    * Register the handler for threads PEOPLE create (bot-created threads are filtered out at the
    * gateway). The Concierge registers each as a ticket workspace so messages inside it are

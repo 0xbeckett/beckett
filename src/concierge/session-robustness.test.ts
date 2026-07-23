@@ -3,7 +3,7 @@
  *   1. restart persistence (session id + handoff survive a deploy; unresumable → seeded fresh)
  *   2. cross-turn contamination (a superseded child's output/exit can't touch the current turn)
  *   3. reply-claim correlation (CLI replies claim the turn EXECUTING now, not a shared slot)
- *   4. fast ack when a mention lands behind a busy single-flight session
+ *   4. a mention behind a busy session is INTERRUPT-driven, never queue-narrated (no ack bubble)
  */
 
 import { afterEach, expect, test } from "bun:test";
@@ -205,7 +205,7 @@ test("a superseded child's exit does not tear down the current child or fail the
   expect(s.consecutiveCrashes).toBe(0); // not counted as a crash
 });
 
-// ── 3+4. concierge-level: fast ack + reply-claim correlation ─────────────────────────────
+// ── 3+4. concierge-level: no queue narration + reply-claim correlation ─────────────────────
 
 interface Post {
   channelId: string;
@@ -244,7 +244,9 @@ function msg(channelId: string, messageId: string): IncomingMessage {
   } as unknown as IncomingMessage;
 }
 
-test("a mention landing behind a busy session gets an immediate fast ack", async () => {
+test("a mention landing behind a busy session gets no bubble — typing is the whole ack", async () => {
+  // Queue-free UX: a directed message interrupts the live turn (or jumps the queue), so there is
+  // no line to narrate. The ONLY post is the real answer; nothing resembling "you're next" exists.
   const { concierge, posts } = conciergeHarness({
     ask: async () => ({ decision: "send", message: "the real answer" } as const),
     queueDepth: () => 1, // a turn is already running
@@ -252,12 +254,10 @@ test("a mention landing behind a busy session gets an immediate fast ack", async
   });
   await concierge.onMessage(msg("chan-1", "m-1"));
 
-  expect(posts[0]!.text).toContain("you're next");
-  expect(posts[0]!.replyTo).toBe("m-1");
-  expect(posts.at(-1)!.text).toBe("the real answer");
+  expect(posts).toEqual([{ channelId: "chan-1", text: "the real answer", replyTo: "m-1" }]);
 });
 
-test("rapid mentions behind a busy session get ONE fast ack, not one bubble each (issue #128)", async () => {
+test("rapid mentions behind a busy session get no ack bubbles — each still gets its answer", async () => {
   const { concierge, posts } = conciergeHarness({
     ask: async () => ({ decision: "send", message: "the real answer" } as const),
     queueDepth: () => 1, // a turn is already running the whole time
@@ -267,14 +267,8 @@ test("rapid mentions behind a busy session get ONE fast ack, not one bubble each
   await concierge.onMessage(msg("chan-1", "m-2"));
   await concierge.onMessage(msg("chan-1", "m-3"));
 
-  const acks = posts.filter((p) => p.text.includes("you're next"));
-  expect(acks).toHaveLength(1);
-  expect(acks[0]!.replyTo).toBe("m-1"); // the ack replies to the FIRST mention of the burst
   expect(posts.filter((p) => p.text === "the real answer")).toHaveLength(3); // replies unaffected
-
-  // The throttle is per channel — a busy OTHER channel still gets its own ack.
-  await concierge.onMessage(msg("chan-2", "m-4"));
-  expect(posts.filter((p) => p.text.includes("you're next"))).toHaveLength(2);
+  expect(posts).toHaveLength(3); // and nothing else was posted at all
 });
 
 test("a slow first turn gets a progress ack without needing a busy channel", async () => {
@@ -315,7 +309,7 @@ test("a slow first turn gets a progress ack without needing a busy channel", asy
   }
 });
 
-test("no fast ack when the session is idle", async () => {
+test("an idle session posts only the answer", async () => {
   const { concierge, posts } = conciergeHarness({
     ask: async () => ({ decision: "send", message: "the answer" } as const),
     queueDepth: () => 0,
@@ -324,6 +318,73 @@ test("no fast ack when the session is idle", async () => {
   await concierge.onMessage(msg("chan-1", "m-1"));
   expect(posts).toHaveLength(1);
   expect(posts[0]!.text).toBe("the answer");
+});
+
+// ── 5. queue-free supersession (a follow-up replaces your own still-queued turn) ─────────
+
+test("supersedeQueuedTurns drops only matching queued turns, resolving them as silent passes", () => {
+  tempBeckettDir();
+  const s = new ConciergeSession({ config, logger: quietLog }) as unknown as {
+    turnQueue: {
+      message: unknown;
+      meta: unknown;
+      priority: boolean;
+      resolve: (output: unknown) => void;
+      reject: (err: unknown) => void;
+    }[];
+    supersedeQueuedTurns(match: (meta: unknown) => boolean): number;
+  };
+  const settled: { which: string; output: unknown }[] = [];
+  const push = (which: string, meta: unknown) =>
+    s.turnQueue.push({
+      message: which,
+      meta,
+      priority: true,
+      resolve: (output) => settled.push({ which, output }),
+      reject: (err) => { throw err; },
+    });
+  push("older-same-speaker", { channelId: "c", messageId: "m1", userId: "u1" });
+  push("other-speaker", { channelId: "c", messageId: "m2", userId: "u2" });
+  push("update-turn", null);
+  push("newest-same-speaker", { channelId: "c", messageId: "m3", userId: "u1" });
+
+  const dropped = s.supersedeQueuedTurns((meta) => (meta as { userId?: string })?.userId === "u1");
+
+  expect(dropped).toBe(2);
+  // Other speakers and meta-less system/update turns are never superseded.
+  expect(s.turnQueue.map((q) => q.message)).toEqual(["other-speaker", "update-turn"]);
+  // Dropped turns RESOLVE as a silent pass (never reject) — their handlers post nothing.
+  expect(settled.map((x) => x.which).sort()).toEqual(["newest-same-speaker", "older-same-speaker"]);
+  for (const { output } of settled) {
+    expect(output).toEqual({ decision: "pass", message: null });
+  }
+});
+
+test("a mention asks the pool to supersede the same speaker's still-queued earlier turn", async () => {
+  const predicates: ((meta: unknown) => boolean)[] = [];
+  const { concierge, posts } = conciergeHarness({
+    ask: async () => ({ decision: "send", message: "answer" } as const),
+    queueDepth: () => 0,
+    getCurrentMeta: () => null,
+    supersedeQueuedTurns: (match: (meta: unknown) => boolean) => {
+      predicates.push(match);
+      return 1;
+    },
+  });
+  await concierge.onMessage(msg("chan-1", "m-1"));
+
+  expect(predicates).toHaveLength(1);
+  const match = predicates[0]!;
+  // Matches a queued mention from the SAME speaker in the SAME channel...
+  expect(match({ channelId: "chan-1", messageId: "m-0", userId: "111111111111111111" })).toBe(true);
+  // ...never the same speaker in a DIFFERENT channel (their DM isn't this conversation)...
+  expect(match({ channelId: "dm-9", messageId: "m-7", userId: "111111111111111111" })).toBe(false);
+  // ...never another speaker's queued mention...
+  expect(match({ channelId: "chan-1", messageId: "m-9", userId: "222222222222222222" })).toBe(false);
+  // ...and never a meta-less update turn (isMentionClaim requires channelId+messageId).
+  expect(match(null)).toBe(false);
+  expect(match({ ticket: "OPS-1" })).toBe(false);
+  expect(posts.map((p) => p.text)).toEqual(["answer"]);
 });
 
 test("a direct reply can say pass, while a structured pass posts nothing", async () => {
