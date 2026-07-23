@@ -32,19 +32,37 @@ for arg in "$@"; do
 done
 input="$(cat)"
 if [ "$is_resume" = "1" ]; then args_file=args-resume.txt; else args_file=args.txt; fi
-printf '%s\n' "$@" > "$PWD/$args_file"
+printf '%s\n' "$@" >> "$PWD/$args_file"
 printf '%s' "$input" > "$PWD/input-$args_file"
 if [[ "$input" == *SLOW* ]]; then sleep 2; fi
-if [[ "$input" == *ASK_COLOR* ]]; then
-  printf '%s\n' '{"session_id":"test","structured_output":{"status":"needs_input","summary":"I reached the color choice.","question":"Which color should I choose?","proofApplicable":true}}'
+# Stand in for the browser MCP server registering its tool during claude's startup handshake: a
+# real leg touches the attach marker, a leg whose tool went missing does not. NO_TOOL never
+# attaches; FLAKY misses the first attempt and attaches thereafter (proving retry recovers).
+attach=1
+bail='{"session_id":"test","structured_output":{"status":"needs_input","summary":"I have only the output tool.","question":"","proofApplicable":false}}'
+if [[ "$input" == *NO_TOOL* ]]; then
+  attach=0
+  out="$bail"
+elif [[ "$input" == *FLAKY* ]]; then
+  if [ -f "$PWD/flaky-attempted" ]; then
+    out='{"session_id":"test","structured_output":{"status":"completed","summary":"BROWSER:recovered","question":null,"proofApplicable":true}}'
+  else
+    printf 'x' > "$PWD/flaky-attempted"
+    attach=0
+    out="$bail"
+  fi
+elif [[ "$input" == *ASK_COLOR* ]]; then
+  out='{"session_id":"test","structured_output":{"status":"needs_input","summary":"I reached the color choice.","question":"Which color should I choose?","proofApplicable":true}}'
 elif [[ "$input" == *SECOND_QUESTION* ]]; then
-  printf '%s\n' '{"session_id":"test","structured_output":{"status":"needs_input","summary":"One more decision.","question":"The saved password is hunter2. Should I continue?","proofApplicable":false}}'
+  out='{"session_id":"test","structured_output":{"status":"needs_input","summary":"One more decision.","question":"The saved password is hunter2. Should I continue?","proofApplicable":false}}'
 elif [[ "$input" == *BROWSER_FAIL* ]]; then
-  printf '%s\n' '{"session_id":"test","structured_output":{"status":"failed","summary":"The site rejected the request.","question":null,"proofApplicable":false}}'
+  out='{"session_id":"test","structured_output":{"status":"failed","summary":"The site rejected the request.","question":null,"proofApplicable":false}}'
 else
   flat="\${input//\$'\\n'/ }"
-  printf '{"session_id":"test","structured_output":{"status":"completed","summary":"BROWSER:%s","question":null,"proofApplicable":true}}\n' "$flat"
+  out="$(printf '{"session_id":"test","structured_output":{"status":"completed","summary":"BROWSER:%s","question":null,"proofApplicable":true}}' "$flat")"
 fi
+[ "$attach" = "1" ] && printf 'x' > "$PWD/mcp-attached"
+printf '%s\n' "$out"
 `,
   );
   chmodSync(bin, 0o755);
@@ -476,6 +494,52 @@ describe("stop", () => {
     await waitUntil(() => outcomes.length === 1);
     expect(outcomes[0]!.state).toBe("cancelled");
     expect(outcomes[0]!.result).toContain("stopped by the dispatcher");
+  });
+});
+
+describe("browser tool attach", () => {
+  function countLegs(dir: string, runId: string): number {
+    const args = readFileSync(join(dir, "browser-agent", runId, "args.txt"), "utf8");
+    // One "--strict-mcp-config" token per leg spawn — the retry loop appends a fresh block each try.
+    return args.split("\n").filter((line) => line === "--strict-mcp-config").length;
+  }
+
+  test("mcp.json points the browser server at a per-run attach marker", async () => {
+    const { dir, agent, outcomes } = setup();
+    const { runId } = await agent.run("plain task", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => outcomes.length === 1);
+    const mcp = JSON.parse(readFileSync(join(dir, "browser-agent", runId, "mcp.json"), "utf8"));
+    expect(mcp.mcpServers.browser.env.BECKETT_BROWSER_ATTACH_MARKER).toBe(
+      join(dir, "browser-agent", runId, "mcp-attached"),
+    );
+  });
+
+  test("a leg whose browser tool never attaches fails fast as infra, never success or a question", async () => {
+    const { dir, agent, outcomes, questions } = setup();
+    const { runId } = await agent.run("NO_TOOL post the thread", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => outcomes.length === 1, 8_000);
+    // Never trusts the tool-less leg: not "done" (a bogus success), not "waiting" (a bogus question).
+    expect(outcomes[0]!.state).toBe("error");
+    expect(outcomes[0]!.result).toContain("failed to attach");
+    expect(outcomes[0]!.result).toContain("mcp__browser__betterwright_browser");
+    // The contentless needs_input from a tool-less leg must not surface as a human question.
+    expect(questions).toHaveLength(0);
+    expect(agent.stats().waiting).toBe(0);
+    // Bounded retry actually happened rather than a single silent pass-through.
+    expect(countLegs(dir, runId)).toBe(3);
+    const journal = readFileSync(join(dir, "browser-agent", runId, "journal.jsonl"), "utf8");
+    expect(journal).toContain('"attached":false');
+  });
+
+  test("a transient attach miss is retried and the run then succeeds", async () => {
+    const { dir, agent, outcomes, questions } = setup();
+    const { runId } = await agent.run("FLAKY do the thing", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => outcomes.length === 1);
+    expect(outcomes[0]!.state).toBe("done");
+    expect(outcomes[0]!.result).toBe("BROWSER:recovered");
+    expect(questions).toHaveLength(0);
+    // One retry: the first attempt missed the tool, the second attached and completed.
+    expect(countLegs(dir, runId)).toBe(2);
   });
 });
 
