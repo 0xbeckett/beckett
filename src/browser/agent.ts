@@ -163,6 +163,31 @@ const BROWSER_MCP_PATH = join(import.meta.dir, "mcp.ts");
 const ARTIFACT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const LEDGER_FINISHED_CAP = 50;
 const OUTCOME_RETRY_MS = 30_000;
+/** Filename (inside the run dir) the browser MCP server touches once claude has registered its tool. */
+const ATTACH_MARKER_NAME = "mcp-attached";
+/** How many times a leg re-spawns claude when the browser tool fails to attach before giving up. */
+const LEG_MAX_ATTEMPTS = 3;
+/**
+ * Milliseconds claude waits for the `browser` stdio MCP server to finish its cold bun boot +
+ * handshake before starting the model turn. The default is short enough that, under the CPU
+ * contention of a live browser, the tool intermittently isn't registered by the first turn and
+ * silently drops under `--strict-mcp-config` — the root cause of the missing-tool runs. Raising it
+ * lets the server win the race; the attach marker + retry below catch the residual failures.
+ */
+const MCP_STARTUP_TIMEOUT_MS = 60_000;
+const ATTACH_FAILURE_DIAGNOSTIC =
+  "The browser control tool (mcp__browser__betterwright_browser) failed to attach to the agent " +
+  `session across ${LEG_MAX_ATTEMPTS} attempts, so no browser actions were possible. This is an ` +
+  "infrastructure fault — the browser MCP server did not register its tool in time — not a task " +
+  "failure or a genuine question. Dispatch the task again.";
+
+/** One completed run of the claude leg subprocess, before the attach check decides how to read it. */
+type LegOutcome =
+  | { kind: "result"; stdout: string }
+  | { kind: "exit-nonzero"; code: number | null; stderr: string }
+  | { kind: "spawn-error"; message: string }
+  /** The child was killed or replaced (hard timeout, stop, shutdown) — already finalized elsewhere. */
+  | { kind: "superseded" };
 
 function browserMcpConfig(
   runId: string,
@@ -170,6 +195,7 @@ function browserMcpConfig(
   socket: string,
   timeoutMs: number,
   maxOutputChars: number,
+  attachMarker: string,
 ): string {
   return JSON.stringify({
     mcpServers: {
@@ -182,6 +208,7 @@ function browserMcpConfig(
           BECKETT_BROWSER_CONTROL_TOKEN: controlToken,
           BECKETT_BROWSER_EVAL_TIMEOUT_MS: String(timeoutMs + 30_000),
           BECKETT_BROWSER_MAX_OUTPUT_CHARS: String(maxOutputChars),
+          BECKETT_BROWSER_ATTACH_MARKER: attachMarker,
         },
       },
     },
@@ -393,7 +420,15 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     const { run } = entry;
     const question = redactKnownBrowserInputs(result.question?.trim() ?? "", entry.sensitiveInputs).trim();
     if (!question) {
-      await finalize(entry, "error", "The browser agent requested input without saying what it needs.");
+      // A needs_input with no actual question is not a person-answerable ask — historically this was
+      // the missing-browser-tool condition surfacing (the model, given only the output tool, bails
+      // with an empty question). The attach check upstream now catches the no-tool case; anything
+      // still reaching here is a malformed leg result and must read as a fault, never a question.
+      await finalize(
+        entry,
+        "error",
+        "The browser agent reported it needs input but named no question — a malformed result, not a genuine ask. Dispatch the task again.",
+      );
       return;
     }
     try {
@@ -429,16 +464,33 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     const home = process.env.HOME ?? "";
     const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");
     env.PATH = env.PATH ? `${extra}:${env.PATH}` : extra;
+    // Give claude time to boot the stdio browser MCP server before the model turn, so the tool
+    // isn't dropped under `--strict-mcp-config` when a busy host slows the cold bun import.
+    if (!env.MCP_TIMEOUT) env.MCP_TIMEOUT = String(MCP_STARTUP_TIMEOUT_MS);
+    if (!env.MCP_TOOL_TIMEOUT) {
+      env.MCP_TOOL_TIMEOUT = String(config.quick.browser_eval_timeout_ms + 60_000);
+    }
     return env;
   }
 
-  function spawnLeg(entry: LiveRun, input: string, resume: boolean): Promise<void> {
+  /** True once the browser MCP server has touched this leg's attach marker (see {@link ATTACH_MARKER_NAME}). */
+  function browserToolAttached(entry: LiveRun): boolean {
+    return existsSync(join(entry.runDir, ATTACH_MARKER_NAME));
+  }
+
+  /**
+   * Run one claude leg to completion and hand back its raw outcome. Never interprets the result or
+   * finalizes the run except for the hard-timeout path (which kills the child and finalizes itself,
+   * reported here as "superseded"). The attach marker is reset up front so its post-run presence
+   * reflects only this attempt.
+   */
+  async function executeLeg(entry: LiveRun, input: string, resume: boolean): Promise<LegOutcome> {
     const { run, runDir, systemPrompt } = entry;
-    run.state = "running";
-    run.question = null;
-    run.questionMessageId = null;
-    persistLedger();
-    journal(run.runId, entry.sensitiveInputs, { kind: "leg", resume });
+    try {
+      unlinkSync(join(runDir, ATTACH_MARKER_NAME));
+    } catch {
+      // Absent before the first attempt; only a prior attempt leaves one to clear.
+    }
     const args = [
       "-p",
       resume
@@ -481,7 +533,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       inputSink.write(input);
       inputSink.end();
     } catch (error) {
-      return finalize(entry, "error", `browser agent spawn failed: ${(error as Error).message}`);
+      return { kind: "spawn-error", message: `browser agent spawn failed: ${(error as Error).message}` };
     }
 
     entry.hardTimer = setTimeout(() => {
@@ -499,38 +551,82 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       );
     }, config.quick.hard_timeout_secs * 1000);
 
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout as ReadableStream).text().catch(() => ""),
+      new Response(child.stderr as ReadableStream).text().catch(() => ""),
+      child.exited,
+    ]);
+    if (entry.child !== child || run.state !== "running") return { kind: "superseded" };
+    if (entry.hardTimer) clearTimeout(entry.hardTimer);
+    entry.hardTimer = null;
+    entry.child = null;
+    if (code !== 0) return { kind: "exit-nonzero", code, stderr };
+    return { kind: "result", stdout };
+  }
+
+  /** Interpret a leg outcome whose browser tool was confirmed attached, and finalize/park the run. */
+  async function applyLegOutcome(entry: LiveRun, outcome: LegOutcome): Promise<void> {
+    if (outcome.kind === "exit-nonzero") {
+      await finalize(
+        entry,
+        "error",
+        `The browser agent exited with code ${outcome.code}${outcome.stderr.trim() ? ` - ${truncate(outcome.stderr.trim(), 500)}` : ""}`,
+      );
+      return;
+    }
+    if (outcome.kind !== "result") return; // spawn-error/superseded handled by the caller
+    let parsed: BrowserLegResult;
+    try {
+      parsed = parseBrowserResult(outcome.stdout);
+    } catch (error) {
+      await finalize(entry, "error", `The browser agent returned invalid structured output: ${(error as Error).message}`);
+      return;
+    }
+    if (parsed.status === "needs_input") {
+      await parkForQuestion(entry, parsed);
+    } else if (parsed.status === "failed") {
+      await finalize(entry, "error", parsed.summary);
+    } else {
+      await finalize(entry, "done", parsed.summary, parsed.proofApplicable);
+    }
+  }
+
+  /**
+   * Drive a leg with a bounded retry that makes browser attach deterministic. After each attempt we
+   * check whether the browser MCP server registered its tool (the attach marker). A leg that ran
+   * WITHOUT the tool never reaches the model's success/needs_input/failed interpretation — it would
+   * otherwise surface as the observed "tool not available" error or a contentless question — so we
+   * discard it and re-spawn; a fresh leg gets a fresh session id since a tool-less attempt may have
+   * already claimed the old one. Only once the tool is confirmed attached do we honor the outcome;
+   * exhausting the retries finalizes as a clear infrastructure error, never a success or a question.
+   */
+  function spawnLeg(entry: LiveRun, input: string, resume: boolean): Promise<void> {
+    const { run } = entry;
+    run.state = "running";
+    run.question = null;
+    run.questionMessageId = null;
+    persistLedger();
     return (async () => {
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(child.stdout as ReadableStream).text().catch(() => ""),
-        new Response(child.stderr as ReadableStream).text().catch(() => ""),
-        child.exited,
-      ]);
-      if (entry.child !== child || run.state !== "running") return;
-      if (entry.hardTimer) clearTimeout(entry.hardTimer);
-      entry.hardTimer = null;
-      entry.child = null;
-      if (code !== 0) {
-        await finalize(
-          entry,
-          "error",
-          `The browser agent exited with code ${code}${stderr.trim() ? ` - ${truncate(stderr.trim(), 500)}` : ""}`,
-        );
-        return;
+      for (let attempt = 1; attempt <= LEG_MAX_ATTEMPTS; attempt++) {
+        if (!resume && attempt > 1) run.sessionId = randomUUID();
+        journal(run.runId, entry.sensitiveInputs, { kind: "leg", resume, attempt });
+        const outcome = await executeLeg(entry, input, resume);
+        if (outcome.kind === "superseded") return;
+        if (outcome.kind === "spawn-error") {
+          await finalize(entry, "error", outcome.message);
+          return;
+        }
+        if (browserToolAttached(entry)) {
+          await applyLegOutcome(entry, outcome);
+          return;
+        }
+        // The tool was absent this attempt: the model saw only the output tool and either bailed or
+        // asked a hollow question. Journal it as infra, then retry rather than trust the outcome.
+        journal(run.runId, entry.sensitiveInputs, { kind: "leg", resume, attempt, attached: false });
+        logger.warn("browser MCP tool did not attach to the leg", { runId: run.runId, attempt });
+        if (attempt >= LEG_MAX_ATTEMPTS || run.state !== "running") break;
       }
-      let parsed: BrowserLegResult;
-      try {
-        parsed = parseBrowserResult(stdout);
-      } catch (error) {
-        await finalize(entry, "error", `The browser agent returned invalid structured output: ${(error as Error).message}`);
-        return;
-      }
-      if (parsed.status === "needs_input") {
-        await parkForQuestion(entry, parsed);
-      } else if (parsed.status === "failed") {
-        await finalize(entry, "error", parsed.summary);
-      } else {
-        await finalize(entry, "done", parsed.summary, parsed.proofApplicable);
-      }
+      await finalize(entry, "error", ATTACH_FAILURE_DIAGNOSTIC);
     })().catch((error) => finalize(entry, "error", `Browser agent run collapsed: ${String(error)}`));
   }
 
@@ -597,6 +693,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
             controlSocket,
             config.quick.browser_eval_timeout_ms,
             config.quick.browser_max_output_chars,
+            join(runDir, ATTACH_MARKER_NAME),
           ),
           { mode: 0o600 },
         );
