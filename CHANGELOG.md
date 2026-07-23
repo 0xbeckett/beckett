@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.10.1 (2026-07-23)
+
 ### Deterministic browser MCP attach (#76)
 
 - **Root cause.** A browser leg spawns `claude -p` with `--mcp-config <run>/mcp.json
