@@ -210,7 +210,7 @@ const BROWSER_QUESTION_MAX_RECORDS = 1_000;
 const BROWSER_DELETED_TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60_000;
 const DISCORD_SINGLE_MESSAGE_CHARS = 2_000;
 const ACCESS_DENY_TEXT =
-  "I can't run Beckett turns for you yet. Access is invite-only: the owner has to request it and approve it themselves.";
+  "This is invite-only and you're not on the list yet — ask the owner to add you.";
 
 export function redactBrowserSecrets(text: string): string {
   const label = "password|passcode|one[- ]time code|otp|recovery code|backup code|api key|access token|secret|token|credentials?|login details";
@@ -3951,7 +3951,7 @@ export class Concierge {
       await this.gateway
         .post(
           m.channelId,
-          "I couldn't safely remove that browser answer, so I didn't use it. Delete it manually and grant me Manage Messages before trying again.",
+          "I couldn't delete that message, so I didn't use what's in it. Remove it yourself and give me Manage Messages, then send it again.",
         )
         .catch(() => undefined);
       return true;
@@ -3961,7 +3961,7 @@ export class Concierge {
         await this.gateway
           .post(
             m.channelId,
-            "I couldn't safely verify that reply target, so I didn't retain your reply. Send it again as a fresh mention.",
+            "I couldn't verify what that reply was attached to, so I ignored it to be safe — send it again as a fresh @mention.",
           )
           .catch(() => undefined);
         return true;
@@ -3990,7 +3990,7 @@ export class Concierge {
       return true;
     }
     if (this.accessLevelFor(m.userId) === "outsider") {
-      await this.gateway.post(m.channelId, "That answer is no longer authorized.").catch(() => undefined);
+      await this.gateway.post(m.channelId, "Access changed since I asked — I can't take that answer.").catch(() => undefined);
       return true;
     }
     const answer = [

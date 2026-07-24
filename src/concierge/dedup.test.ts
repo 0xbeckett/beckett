@@ -538,7 +538,7 @@ test("an unverified bot-reference reply fails closed instead of entering chat co
     authorIsBot: false,
   });
   expect(deletedMessages).toContainEqual({ channelId: CHAN, messageId: "unverified-secret" });
-  expect(posts.some((post) => post.text.includes("didn't retain your reply"))).toBe(true);
+  expect(posts.some((post) => post.text.includes("I ignored it to be safe"))).toBe(true);
   expect(posts.some((post) => post.text.includes("must not enter chat"))).toBe(false);
 });
 
