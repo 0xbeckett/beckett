@@ -10,7 +10,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMemory, type MemoryStore } from "./index.ts";
+import { createMemory, recallOver, type MemoryStore } from "./index.ts";
 import { stem, scoreNode, nodeSimilarity } from "./search.ts";
 import { planMaintenance, startRoutineMaintenance, TTL_GRACE_MS } from "./maintain.ts";
 import type { Logger, MemoryNode } from "../types.ts";
@@ -150,6 +150,15 @@ test("remember coerces a reworded duplicate create into an update of the existin
   expect(g.nodes.has("the-marketing-team")).toBe(false);
 });
 
+test("remember rejects a description-less create instead of orphaning an unparseable file", async () => {
+  const { store, dir } = tempStore();
+  await expect(
+    store.remember({ op: "create", name: "no-desc", type: "reference", source: "manual", reason: "seed" }),
+  ).rejects.toThrow(/description/);
+  const files = readdirSync(dir, { recursive: true }) as string[];
+  expect(files.some((f) => String(f).includes("no-desc"))).toBe(false); // nothing landed on disk
+});
+
 // ── maintenance: staleness, supersede, dedup merge, dry-run, no data loss ────────────────
 
 test("maintain archives a node whose ttl expired past the grace window (file preserved)", async () => {
@@ -189,6 +198,24 @@ test("maintain keeps a node whose ttl expired but is still inside the grace wind
   const report = await store.maintain();
   expect(report.archives).toEqual([]);
   expect(store.buildGraph().nodes.get("fresh-expiry")?.stale).toBe(true); // deprioritized, not dropped
+});
+
+test("recall notices a ttl that expired AFTER the graph was built (warm daemon)", async () => {
+  const { store } = tempStore();
+  await store.remember({
+    op: "create",
+    name: "expiring-freeze",
+    type: "decision",
+    description: "Temporary feature freeze decision",
+    metadata: { ttl: new Date(Date.now() + 50).toISOString() },
+    source: "manual",
+    reason: "seed",
+  });
+  const g = store.buildGraph();
+  expect(g.nodes.get("expiring-freeze")!.stale).toBe(false); // not yet expired at parse time
+  await new Promise((r) => setTimeout(r, 120)); // ttl lapses while the graph sits cached
+  const r = recallOver({ text: "temporary feature freeze decision" }, g);
+  expect(r.notes.some((n) => n.startsWith("expiring-freeze is stale"))).toBe(true);
 });
 
 test("maintain archives a superseded decision", async () => {

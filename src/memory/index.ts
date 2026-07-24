@@ -50,7 +50,6 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import type {
   IndexLine,
@@ -302,7 +301,6 @@ export class MemoryStore implements Memory {
 
     // 1. Dedup: does a node already cover this fact? (Spec 08 §4.2)
     const existing = findExisting(intent, g);
-    const upgradingPhantom = Boolean(existing?.phantom);
     const usePrev = existing != null && !existing.phantom;
     const op: RememberIntent["op"] = usePrev
       ? intent.op === "create"
@@ -321,12 +319,12 @@ export class MemoryStore implements Memory {
     if (!type) {
       throw new Error(`memory.remember: 'type' is required to create node '${name}'`);
     }
-    const path =
-      usePrev && existing!.path
-        ? existing!.path
-        : upgradingPhantom
-          ? this.pathFor(name, type)
-          : this.pathFor(name, type);
+    // parseMemoryFile requires a description; writing without one would land an unparseable
+    // file on disk that every future graph build skips — an invisible, orphaned memory.
+    if (!built.description.trim()) {
+      throw new Error(`memory.remember: 'description' is required for node '${name}'`);
+    }
+    const path = usePrev && existing!.path ? existing!.path : this.pathFor(name, type);
 
     // 3. Atomic write of the primary file (Spec 08 §8.1). Its own ## Backlinks reflect the
     //    inbound edges already present in the graph (e.g. phantom links being filled in).
@@ -513,7 +511,10 @@ export class MemoryStore implements Memory {
     const stamp = this.graphStamp();
     if (this.warmGraph?.stamp === stamp) return this.warmGraph.graph;
     const graph = this.buildGraph();
-    this.warmGraph = { graph, stamp: this.graphStamp() };
+    // Cache the PRE-build stamp: a file edited mid-build then mismatches on the next recall
+    // and triggers one extra rebuild. Re-stamping after the build would fold that edit into
+    // the cached stamp without it being in the graph — a stale cache with no invalidation.
+    this.warmGraph = { graph, stamp };
     return graph;
   }
 
@@ -563,11 +564,14 @@ export class MemoryStore implements Memory {
     for (const { node } of parsed) {
       const prev = nodes.get(node.name);
       if (prev) {
+        // Newer mtime wins; an exact mtime tie breaks on path so the winner is deterministic
+        // regardless of readdir order.
+        const keepNew = node.mtime !== prev.mtime ? node.mtime > prev.mtime : node.path > prev.path;
         this.logger.warn("memory: duplicate node name; newer mtime wins", {
           name: node.name,
-          kept: node.mtime >= prev.mtime ? node.path : prev.path,
+          kept: keepNew ? node.path : prev.path,
         });
-        if (node.mtime < prev.mtime) continue;
+        if (!keepNew) continue;
       }
       nodes.set(node.name, node);
     }
@@ -732,6 +736,12 @@ export function recallOver(
   const audience = q.audience;
   const now = Date.now();
 
+  // Evaluate ttl expiry against recall-time `now`, not the parse-time `node.stale` flag: the
+  // warm daemon reuses a graph until the tree changes, so a ttl that lapses while the graph
+  // sits cached would otherwise keep full ranking indefinitely. Expiry is monotonic, so this
+  // is always a superset of the parse-time flag.
+  const staleNow = (node: MemoryNode): boolean => isExpired(node.metadata.ttl, now);
+
   // The single fail-closed visibility chokepoint: canView re-parses a node's provenance on
   // every call, and every node is gated up to three times per recall (seed, expansion, index).
   // Memoize the verdict per node name so provenanceOf runs at most once per node per recall.
@@ -779,7 +789,7 @@ export function recallOver(
       // compressed (a few % between adjacent ranks), so multiplying would let freshness leap
       // several relevance ranks; there it degrades to a pure tie-breaker (issue #20).
       s = scoreOf ? s + (recency(node, now) - 1) * 1e-3 : s * recency(node, now);
-      if (node.stale) s *= 0.5; // deprioritize, don't drop (Spec 08 §1.5)
+      if (staleNow(node)) s *= 0.5; // deprioritize, don't drop (Spec 08 §1.5)
       return { node, score: s, via: "match", reason: "relevance match" };
     })
     .filter((x): x is ScoredNode => x !== null)
@@ -821,7 +831,7 @@ export function recallOver(
 
   const notes: string[] = [];
   for (const x of [...seeds, ...expanded]) {
-    if (x.node.stale) notes.push(`${x.node.name} is stale (ttl ${String(x.node.metadata.ttl)})`);
+    if (staleNow(x.node)) notes.push(`${x.node.name} is stale (ttl ${String(x.node.metadata.ttl)})`);
   }
 
   return {
@@ -1525,10 +1535,10 @@ function asStringArray(v: unknown): string[] {
   return [String(v)];
 }
 
-function isExpired(ttl: unknown): boolean {
+function isExpired(ttl: unknown, now = Date.now()): boolean {
   if (typeof ttl !== "string" || ttl.trim() === "") return false;
   const t = Date.parse(ttl);
-  return Number.isFinite(t) && t < Date.now();
+  return Number.isFinite(t) && t < now;
 }
 
 function nowIso(): string {
@@ -1541,8 +1551,4 @@ function mtimeOf(path: string): number {
   } catch {
     return 0;
   }
-}
-
-function sha256(s: string): string {
-  return createHash("sha256").update(s).digest("hex");
 }

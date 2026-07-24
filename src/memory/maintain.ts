@@ -93,7 +93,12 @@ export function planMaintenance(
   g: MemoryGraph,
   now: number,
 ): Omit<MaintainReport, "dryRun" | "scanned"> {
-  const real = [...g.nodes.values()].filter((n) => !n.phantom);
+  // Sorted by name so the plan is deterministic: node iteration order otherwise follows
+  // readdir order, and in the pairwise scan below that order decides which of two eligible
+  // overlapping merges wins (the loser degrades to a flag) — same tree, different plans.
+  const real = [...g.nodes.values()]
+    .filter((n) => !n.phantom)
+    .sort((a, b) => a.name.localeCompare(b.name));
   const archives: ArchiveAction[] = [];
   const archiving = new Set<string>();
 
