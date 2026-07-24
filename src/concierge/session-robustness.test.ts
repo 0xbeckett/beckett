@@ -10,7 +10,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Concierge, ConciergeSession, TURN_PROGRESS_ACK_MS } from "./index.ts";
+import { Concierge, ConciergeSession } from "./index.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
 
@@ -271,7 +271,10 @@ test("rapid mentions behind a busy session get no ack bubbles — each still get
   expect(posts).toHaveLength(3); // and nothing else was posted at all
 });
 
-test("a slow first turn gets a progress ack without needing a busy channel", async () => {
+test("a slow turn posts NO canned progress bubble — the answer is the only message", async () => {
+  // The daemon-authored "Still working on this" ack is gone (it was schedule-narration the
+  // doctrine bans the model from writing — the daemon doesn't get to write it instead). A slow
+  // turn shows typing and then the answer, nothing between. This pins its absence.
   let startAsk!: () => void;
   let resolveAsk!: (output: { decision: "send"; message: string }) => void;
   const started = new Promise<void>((resolve) => { startAsk = resolve; });
@@ -285,28 +288,13 @@ test("a slow first turn gets a progress ack without needing a busy channel", asy
     getCurrentMeta: () => null,
   });
 
-  const realSetTimeout = globalThis.setTimeout;
-  let fireProgressAck: (() => void) | null = null;
-  globalThis.setTimeout = ((handler: Parameters<typeof setTimeout>[0], delay?: number, ...args: unknown[]) => {
-    if (delay === TURN_PROGRESS_ACK_MS && typeof handler === "function") {
-      fireProgressAck = () => handler(...args);
-      return 0 as unknown as ReturnType<typeof setTimeout>;
-    }
-    return realSetTimeout(handler, delay, ...args);
-  }) as typeof setTimeout;
-  try {
-    const handling = concierge.onMessage(msg("chan-idle", "m-slow"));
-    await started;
-    expect(fireProgressAck).not.toBeNull();
-    fireProgressAck!();
-    await Promise.resolve();
-    expect(posts).toEqual([{ channelId: "chan-idle", text: "Still working on this — I haven't forgotten you.", replyTo: "m-slow" }]);
+  const handling = concierge.onMessage(msg("chan-idle", "m-slow"));
+  await started;
+  expect(posts).toHaveLength(0); // slow turn in flight, nothing posted
 
-    resolveAsk({ decision: "send", message: "the eventual answer" });
-    await handling;
-  } finally {
-    globalThis.setTimeout = realSetTimeout;
-  }
+  resolveAsk({ decision: "send", message: "the eventual answer" });
+  await handling;
+  expect(posts.map((p) => p.text)).toEqual(["the eventual answer"]);
 });
 
 test("an idle session posts only the answer", async () => {

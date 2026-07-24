@@ -337,9 +337,10 @@ const HANDOFF_TIMEOUT_MS = 45_000;
 /** A turn gets this long to finish before its eventual result is visibly marked as late. */
 const TURN_TIMEOUT_MS = 240_000;
 
-/** A real turn that is taking a while gets a human acknowledgement, even on an idle channel. */
-export const TURN_PROGRESS_ACK_MS = 25_000;
-const TURN_PROGRESS_ACK_TEXT = "Still working on this — I haven't forgotten you.";
+// There is deliberately NO timed "still working" ack either (it lived here until v5.10.x):
+// a canned progress bubble is exactly the schedule-narration the doctrine bans the model from
+// writing, so the daemon doesn't get to write it instead. The typing indicator is the whole
+// waiting signal; a genuinely slow dig gets the model's own one-line `discord ack`, in voice.
 
 /** Prepended only to a real model answer that arrives after {@link TURN_TIMEOUT_MS}. */
 const LATE_TURN_FRAME = "Sorry, that took a while —";
@@ -3444,8 +3445,9 @@ export class Concierge {
                   };
                   const messageId = await this.gateway.post(channelId, text, opts);
                   // Deliberately NOT recorded into the shared context and NOT marked repliedViaCli: an ack
-                  // is a transient progress signal (like the daemon's fast/progress acks), so the turn's
-                  // real answer still flows through the terminal structured-output boundary untouched.
+                  // is a transient, model-authored progress signal (the only kind left — the daemon's
+                  // canned fast/progress acks are gone), so the turn's real answer still flows through
+                  // the terminal structured-output boundary untouched.
                   return { ok: true, data: { messageId } };
                 } catch (err) {
                   return { ok: false, error: (err as Error).message };
@@ -3884,32 +3886,13 @@ export class Concierge {
     // jumps the queue, so there is no line to narrate. Typing (above) is the whole ack — the way
     // a person pausing mid-thought to hear you needs no "hold on" signage.
 
-    let progressAckTimer: ReturnType<typeof setTimeout> | null = null;
-    let awaitingAnswer = false;
     try {
       const turn = await this.buildTurn(m, content, workspace, (watermark) => {
         mention.contextWatermark = watermark;
       });
       // The mention rides as the turn's meta so CLI replies correlate to THIS turn (issue #24);
       // person turns take PRIORITY over queued ticket-update turns (issue #25).
-      const answer = this.pool.ask(m.channelId, turn, mention, { priority: true });
-      awaitingAnswer = true;
-      // Unlike the fast ack above, this covers the ordinary first turn in an otherwise idle
-      // channel. It is deliberately daemon-authored: waiting feedback should not cost another
-      // model turn. A model reply already sent through the CLI is itself an acknowledgement.
-      progressAckTimer = setTimeout(() => {
-        if (!awaitingAnswer || mention.repliedViaCli) return;
-        void this.gateway
-          .post(m.channelId, TURN_PROGRESS_ACK_TEXT, {
-            replyToMessageId: m.messageId,
-            replyToUserId: m.userId,
-          })
-          .catch(() => undefined);
-      }, TURN_PROGRESS_ACK_MS);
-      const output = await answer;
-      awaitingAnswer = false;
-      clearTimeout(progressAckTimer);
-      progressAckTimer = null;
+      const output = await this.pool.ask(m.channelId, turn, mention, { priority: true });
       // Reading the shared transcript is non-mutating. Commit its cursor only after a valid model
       // result; rejected turns leave it untouched for the next attempt.
       if (mention.contextWatermark && mention.turnSucceeded !== false) {
@@ -3943,8 +3926,6 @@ export class Concierge {
         })
         .catch(() => undefined);
     } finally {
-      awaitingAnswer = false;
-      if (progressAckTimer) clearTimeout(progressAckTimer);
       if (this.activeMentions.get(m.channelId) === mention) this.activeMentions.delete(m.channelId);
     }
   }
