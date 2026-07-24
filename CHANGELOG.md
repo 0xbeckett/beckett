@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.0.2 (2026-07-24)
+
 ### Volition — Beckett finishes the motion instead of asking permission
 
 The babysitting posture is gone from the doctrine and the license table. Root
