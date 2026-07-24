@@ -218,12 +218,162 @@ describe("dispatch", () => {
     expect(outcomes[0]!.proofFiles).toHaveLength(1);
   });
 
-  test("rejects a second concurrent run and dispatches without channel/requester", async () => {
+  test("queues a second concurrent run and rejects a dispatch without channel/requester", async () => {
     const { agent, questions } = setup();
     await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
     await waitUntil(() => questions.length === 1);
-    await expect(agent.run("another", { channelId: "chan", requesterId: "owner" })).rejects.toThrow(/already working/);
+    // The lease is busy: the dispatch queues (never refuses) and names its position.
+    const second = await agent.run("another", { channelId: "chan", requesterId: "owner" });
+    expect(second.queued).toBe(1);
+    expect(agent.stats().queued).toBe(1);
     await expect(agent.run("x", { channelId: "", requesterId: "owner" })).rejects.toThrow(/origin channel/);
+  });
+});
+
+describe("dispatch queue", () => {
+  test("a queued run starts automatically when the lease releases, FIFO", async () => {
+    const { agent, outcomes, questions } = setup();
+    const first = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1);
+    const second = await agent.run("second task", { channelId: "chan", requesterId: "owner" });
+    const third = await agent.run("third task", { channelId: "chan", requesterId: "owner" });
+    expect(second).toMatchObject({ queued: 1 });
+    expect(third).toMatchObject({ queued: 2 });
+    const queuedView = await agent.inspect(second.runId, { screenshot: false });
+    expect(queuedView!.run.state).toBe("queued");
+    expect(queuedView!.journal.map((event) => event.kind)).toContain("queued");
+    await agent.resume(first.runId, "blue");
+    // Both queued runs drain in order without any re-dispatch.
+    await waitUntil(() => outcomes.length === 3, 8_000);
+    expect(outcomes.map((run) => run.runId)).toEqual([first.runId, second.runId, third.runId]);
+    expect(outcomes[1]).toMatchObject({ state: "done", result: "BROWSER:second task" });
+    expect(outcomes[2]).toMatchObject({ state: "done", result: "BROWSER:third task" });
+    expect(agent.stats().queued).toBe(0);
+  });
+
+  test("stopping a queued run cancels it without touching the live run's lease", async () => {
+    const browser = fakeBrowser();
+    const { agent, outcomes, questions } = setup({}, { browser });
+    const first = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1);
+    const second = await agent.run("never runs", { channelId: "chan", requesterId: "owner" });
+    await agent.stop(second.runId, "person cancelled the queued task");
+    await waitUntil(() => outcomes.length === 1);
+    expect(outcomes[0]).toMatchObject({ runId: second.runId, state: "cancelled" });
+    expect(outcomes[0]!.result).toContain("person cancelled");
+    // The live run is untouched: still parked on its question, still holding the lease.
+    expect(agent.stats().waiting).toBe(1);
+    expect(browser.hasLease(first.runId)).toBe(true);
+  });
+
+  test("steering a queued run folds the note into its launch input", async () => {
+    const { dir, agent, outcomes, questions } = setup();
+    const first = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1);
+    const second = await agent.run("book the flight", { channelId: "chan", requesterId: "owner" });
+    expect(await agent.steer(second.runId, "prefer the aisle seat")).toBe("queued");
+    await agent.resume(first.runId, "blue");
+    await waitUntil(() => outcomes.length === 2, 8_000);
+    const input = readFileSync(join(dir, "browser-agent", second.runId, "input-args.txt"), "utf8");
+    expect(input.startsWith("book the flight")).toBe(true);
+    expect(input).toContain("queued");
+    expect(input).toContain("prefer the aisle seat");
+  });
+
+  test("recover re-queues persisted queued runs in order and then drains them", async () => {
+    const { dir, agent, questions } = setup();
+    await agent.run("ASK_COLOR", { channelId: "chan-1", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1);
+    const q1 = await agent.run("first queued", { channelId: "chan-2", requesterId: "owner" });
+    const q2 = await agent.run("second queued", { channelId: "chan-3", requesterId: "owner" });
+    // The queue is durable: the ledger round-trips both queued records.
+    const ledger = JSON.parse(readFileSync(join(dir, "browser-agent", "runs.json"), "utf8")) as BrowserAgentRun[];
+    expect(ledger.filter((run) => run.state === "queued").map((run) => run.runId)).toEqual([q1.runId, q2.runId]);
+    // Simulate a hard crash: a fresh agent over the same beckett dir, no stopAll.
+    const revived = setup({}, { dir });
+    await revived.agent.recover();
+    // The live run is reported as an orphan error; the queued ones start, in order, unprompted.
+    await waitUntil(() => revived.outcomes.length === 3, 8_000);
+    expect(revived.outcomes[0]).toMatchObject({ channelId: "chan-1", state: "error" });
+    expect(revived.outcomes.slice(1).map((run) => run.runId)).toEqual([q1.runId, q2.runId]);
+    expect(revived.outcomes.slice(1).every((run) => run.state === "done")).toBe(true);
+    expect(revived.agent.stats().queued).toBe(0);
+  });
+
+  test("losing the lease race to an inline exec re-queues the run instead of erroring it", async () => {
+    const browser = fakeBrowser();
+    const originalAcquire = browser.acquire.bind(browser);
+    let stolen = false;
+    browser.acquire = async (lease) => {
+      // Model an inline exec sliding into the queue→live handoff: the first queued start
+      // finds the lease held. Contention must re-queue, never settle a terminal error —
+      // the dispatcher already told the person "never re-dispatch".
+      if (stolen) {
+        stolen = false;
+        throw new Error("computer-use is busy with run inline-1; retry after it finishes");
+      }
+      await originalAcquire(lease);
+    };
+    const { agent, outcomes, questions } = setup({}, { browser });
+    const first = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1);
+    const survivor = await agent.run("queued survivor", { channelId: "chan", requesterId: "owner" });
+    stolen = true;
+    await agent.resume(first.runId, "blue");
+    await waitUntil(() => outcomes.length === 2, 8_000);
+    expect(outcomes.map((run) => run.runId)).toEqual([first.runId, survivor.runId]);
+    expect(outcomes[1]).toMatchObject({ state: "done", result: "BROWSER:queued survivor" });
+  });
+
+  test("a queued credentialed dispatch drops the secret values and re-reads them at start", async () => {
+    let reads = 0;
+    const keychain: KeychainReader = {
+      async read(entry) {
+        reads++;
+        return { entry, fields: ["password"], values: { password: "sup3r-secret-pw" }, hasTotp: false };
+      },
+      async totp() {
+        throw new Error("unused");
+      },
+    };
+    const { dir, agent, outcomes, questions } = setup({}, { keychain });
+    const first = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1);
+    const second = await agent.run("log in", { channelId: "chan", requesterId: "owner", credsEntry: "x.com" });
+    // The dispatch-time read stays fail-fast validation only — values are NOT held in memory
+    // for the (unbounded) queue wait.
+    expect(reads).toBe(1);
+    await agent.resume(first.runId, "blue");
+    await waitUntil(() => outcomes.length === 2, 8_000);
+    // The run still launched credentialed: startDispatch re-read the entry when the lease freed.
+    expect(reads).toBe(2);
+    const input = readFileSync(join(dir, "browser-agent", second.runId, "input-args.txt"), "utf8");
+    expect(input).toContain('keychain entry "x.com"');
+  });
+
+  test("a queued run whose start fails settles as an error outcome and the queue moves on", async () => {
+    const browser = fakeBrowser();
+    const failNext = { on: false };
+    const originalAcquire = browser.acquire.bind(browser);
+    browser.acquire = async (lease) => {
+      if (failNext.on) {
+        failNext.on = false;
+        throw new Error("chromium exploded");
+      }
+      await originalAcquire(lease);
+    };
+    const { agent, outcomes, questions } = setup({}, { browser });
+    const first = await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 1);
+    const doomed = await agent.run("doomed", { channelId: "chan", requesterId: "owner" });
+    const survivor = await agent.run("survivor", { channelId: "chan", requesterId: "owner" });
+    failNext.on = true;
+    await agent.resume(first.runId, "blue");
+    await waitUntil(() => outcomes.length === 3, 8_000);
+    expect(outcomes.map((run) => run.runId)).toEqual([first.runId, doomed.runId, survivor.runId]);
+    expect(outcomes[1]).toMatchObject({ state: "error" });
+    expect(outcomes[1]!.result).toContain("could not start");
+    expect(outcomes[2]).toMatchObject({ state: "done" });
   });
 });
 

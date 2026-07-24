@@ -31,6 +31,11 @@ export { createSecretCapability } from "./secret.ts";
 // table entries above are the asCapability projections; these are the extensions themselves.
 export { createImageExtension } from "./image.ts";
 export { createSecretExtension } from "./secret.ts";
+// V6 Phase 2: the first STATEFUL organ — lifecycle wraps the browser host subprocess + the
+// background agent. Not in the v5 FACTORIES table: browser never had a spine slot (its CLI
+// verb and bus bodies live in cli/beckett.ts and the concierge respectively).
+export { createBrowserExtension } from "./browser.ts";
+export type { BrowserExtension, BrowserExtensionDeps } from "./browser.ts";
 
 /** The capability-id → factory table (the analog of `drivers/index.ts::FACTORIES`). */
 const FACTORIES: Record<string, CapabilityFactory> = {

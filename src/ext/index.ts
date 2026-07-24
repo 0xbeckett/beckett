@@ -9,7 +9,7 @@
  */
 
 export * from "./contract.ts";
-export { ExtensionRegistry } from "./registry.ts";
+export { ExtensionRegistry, renderCatalogBlock } from "./registry.ts";
 export type {
   CatalogEntry,
   ExtensionHealthReport,

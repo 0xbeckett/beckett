@@ -21,7 +21,7 @@ import type { Config, Logger } from "../types.ts";
 import type { BrowserRuntime } from "./runtime.ts";
 import type { KeychainEntrySecrets, KeychainReader } from "../secret/keychain-read.ts";
 
-export type BrowserAgentState = "running" | "waiting" | "done" | "error" | "timeout" | "cancelled";
+export type BrowserAgentState = "queued" | "running" | "waiting" | "done" | "error" | "timeout" | "cancelled";
 
 export interface BrowserAgentRun {
   runId: string;
@@ -30,6 +30,8 @@ export interface BrowserAgentRun {
   requesterId: string;
   /** Jingle entry backing this run's `secrets` object; the name only — values stay in memory. */
   credsEntry: string | null;
+  /** Dispatch-time conversation background; persisted so a queued run keeps it across a restart. */
+  context: string | null;
   startedAt: number;
   finishedAt: number | null;
   state: BrowserAgentState;
@@ -62,6 +64,7 @@ export interface CreateBrowserAgentDeps {
 export interface BrowserAgentStats {
   running: number;
   waiting: number;
+  queued: number;
   runs: (Pick<BrowserAgentRun, "runId" | "state" | "startedAt" | "finishedAt" | "credsEntry" | "question"> & {
     task: string;
   })[];
@@ -70,7 +73,7 @@ export interface BrowserAgentStats {
 /** One redacted line of a run's activity journal (journal.jsonl in the run directory). */
 export interface BrowserJournalEvent {
   ts: number;
-  kind: "dispatched" | "leg" | "eval" | "steer" | "question" | "finished";
+  kind: "dispatched" | "queued" | "leg" | "eval" | "steer" | "question" | "finished";
   [key: string]: unknown;
 }
 
@@ -92,18 +95,28 @@ export interface BrowserRunInspection {
 }
 
 export interface BrowserAgent {
+  /**
+   * Dispatch a background run. Always succeeds once the inputs validate: while another run
+   * holds the one-run-exclusive browser lease the dispatch queues durably instead of refusing,
+   * and `queued` carries its 1-based position. A queued run starts automatically the moment
+   * the lease frees — the caller must never re-dispatch.
+   */
   run(
     task: string,
     opts: { channelId: string; requesterId: string; credsEntry?: string | null; context?: string | null },
-  ): Promise<{ runId: string }>;
+  ): Promise<{ runId: string; queued?: number }>;
   resume(runId: string, answer: string): Promise<void>;
   /**
    * Mid-run guidance from the dispatcher. A running run gets the note appended to its next
    * browser tool result ("queued"); a run parked on a question is resumed with the note framed
-   * as steering rather than an answer ("resumed").
+   * as steering rather than an answer ("resumed"); a still-queued run folds the note into its
+   * launch input ("queued").
    */
   steer(runId: string, note: string): Promise<"queued" | "resumed">;
-  /** Cancel a live run: kill the active leg, release the browser, report state "cancelled". */
+  /**
+   * Cancel a run: a live one gets its active leg killed and the browser released; a queued one
+   * is removed from the queue without touching the lease. Both report state "cancelled".
+   */
   stop(runId: string, reason?: string): Promise<void>;
   /** Pop queued steering notes for delivery in the current eval's tool result. */
   drainSteers(runId: string): string[];
@@ -117,7 +130,11 @@ export interface BrowserAgent {
    * has no keychain entry. Values are for injection + redaction only — never log or persist.
    */
   evalSecrets(runId: string): Promise<Record<string, string> | null>;
-  /** Report runs a dead daemon stranded; call once at boot, after the concierge can take turns. */
+  /**
+   * Report runs a dead daemon stranded and re-queue persisted queued dispatches (order
+   * preserved — a queued run is never dropped); call once at boot, after the concierge can
+   * take turns.
+   */
   recover(): Promise<void>;
   stats(): BrowserAgentStats;
   stopAll(): Promise<void>;
@@ -158,11 +175,22 @@ interface LiveRun {
   pendingSteers: string[];
 }
 
+/** A dispatch accepted while the lease is held: everything needed to start the run later. */
+interface PendingDispatch {
+  run: BrowserAgentRun;
+  /** Resolved at dispatch time (fail-fast); null after a restart — re-read at start. */
+  secrets: KeychainEntrySecrets | null;
+  /** Steering notes accepted while queued; folded into the launch input at start. */
+  pendingSteers: string[];
+}
+
 const PROMPT_PATH = join(import.meta.dir, "agent.md");
 const BROWSER_MCP_PATH = join(import.meta.dir, "mcp.ts");
 const ARTIFACT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const LEDGER_FINISHED_CAP = 50;
 const OUTCOME_RETRY_MS = 30_000;
+/** How soon a queued start that lost the lease race (an inline exec slipped in) retries. */
+const QUEUE_START_RETRY_MS = 1_000;
 /** Filename (inside the run dir) the browser MCP server touches once claude has registered its tool. */
 const ATTACH_MARKER_NAME = "mcp-attached";
 /** How many times a leg re-spawns claude when the browser tool fails to attach before giving up. */
@@ -256,9 +284,20 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
   const ledgerPath = join(agentDir, "runs.json");
   const live = new Map<string, LiveRun>();
   const finished: BrowserAgentRun[] = [];
+  /**
+   * Dispatches waiting for the one-run-exclusive lease, oldest first. The queue exists so a
+   * busy browser never refuses a dispatch; the LEASE semantics are untouched — at most one
+   * run drives the browser at a time.
+   */
+  const queue: PendingDispatch[] = [];
+  /** The dispatch currently between queue and `live` (mid-acquire); still owed a ledger row. */
+  let starting: PendingDispatch | null = null;
   /** Runs a dead daemon left live on disk; {@link recover} turns them into error outcomes. */
   const orphans: BrowserAgentRun[] = [];
+  /** Runs persisted as "queued" by the previous daemon; {@link recover} re-queues them in order. */
+  const requeue: BrowserAgentRun[] = [];
   let outcomeRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let queueRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
 
   loadLedger();
@@ -278,9 +317,10 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
           channelId: value.channelId,
           requesterId: value.requesterId,
           credsEntry: typeof value.credsEntry === "string" ? value.credsEntry : null,
+          context: typeof value.context === "string" ? value.context : null,
           startedAt: typeof value.startedAt === "number" ? value.startedAt : Date.now(),
           finishedAt: typeof value.finishedAt === "number" ? value.finishedAt : null,
-          state: (["running", "waiting", "done", "error", "timeout", "cancelled"] as const).includes(value.state as BrowserAgentState)
+          state: (["queued", "running", "waiting", "done", "error", "timeout", "cancelled"] as const).includes(value.state as BrowserAgentState)
             ? (value.state as BrowserAgentState)
             : "error",
           result: typeof value.result === "string" ? value.result : null,
@@ -293,8 +333,10 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
           outcomeDelivered: value.outcomeDelivered === true,
         };
         // A Claude session and browser lease do not survive the daemon, so a run that was live
-        // when the process died is terminal now — it just has not told anyone yet.
-        if (run.state === "running" || run.state === "waiting") orphans.push(run);
+        // when the process died is terminal now — it just has not told anyone yet. A QUEUED run
+        // held nothing volatile: it survives intact and is re-queued by recover(), never dropped.
+        if (run.state === "queued") requeue.push(run);
+        else if (run.state === "running" || run.state === "waiting") orphans.push(run);
         else finished.push(run);
       }
     } catch (error) {
@@ -307,7 +349,13 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       const evictable = finished.findIndex((run) => run.outcomeDelivered);
       finished.splice(evictable >= 0 ? evictable : 0, 1);
     }
-    const records = [...[...live.values()].map((entry) => entry.run), ...finished];
+    // `starting` is included so a dispatch mid-acquire can never fall out of the durable ledger.
+    const records = [
+      ...[...live.values()].map((entry) => entry.run),
+      ...(starting ? [starting.run] : []),
+      ...queue.map((dispatch) => dispatch.run),
+      ...finished,
+    ];
     const temp = `${ledgerPath}.${process.pid}.tmp`;
     try {
       mkdirSync(dirname(ledgerPath), { recursive: true, mode: 0o700 });
@@ -414,6 +462,129 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     // Outcome delivery owns its own retry/ledger durability. Never let Discord or concierge
     // availability hold the browser lease, run cleanup, or daemon shutdown open.
     void deliverOutcome(run);
+    // The lease just freed: the oldest queued dispatch starts without anyone re-asking.
+    maybeStartNext();
+  }
+
+  /** Terminal bookkeeping for a run that never started — no lease, no child, no timers. */
+  function settleQueued(run: BrowserAgentRun, state: "error" | "cancelled", result: string): void {
+    run.state = state;
+    run.result = result;
+    run.finishedAt = Date.now();
+    finished.push(run);
+    persistLedger();
+    journal(run.runId, [], { kind: "finished", state: run.state, result: run.result });
+    void deliverOutcome(run);
+  }
+
+  /** Retry the queue head after a lost lease race, once the interloper has had time to release. */
+  function scheduleQueueRetry(): void {
+    if (stopping || queueRetryTimer) return;
+    queueRetryTimer = setTimeout(() => {
+      queueRetryTimer = null;
+      maybeStartNext();
+    }, QUEUE_START_RETRY_MS);
+  }
+
+  /**
+   * Hand the freed lease to the oldest queued dispatch. A queued run whose start fails
+   * (keychain entry gone, lease acquire error) has no dispatcher to throw to — it settles as
+   * a terminal error outcome and the next one gets its chance. The ONE exception is losing
+   * the acquire race to another lease holder (an inline exec sliding into the queue→live
+   * handoff): that is contention, not a dead dispatch — the run goes back to the head of the
+   * queue and retries, because a queued run must never be dropped ("never re-dispatch").
+   */
+  function maybeStartNext(): void {
+    if (stopping || starting || live.size > 0) return;
+    const next = queue.shift();
+    if (!next) return;
+    void startDispatch(next).catch((error) => {
+      const message = (error as Error).message ?? String(error);
+      if (/computer-use is busy/.test(message)) {
+        queue.unshift(next);
+        persistLedger();
+        logger.info("browser queue start lost the lease race; will retry", { runId: next.run.runId });
+        scheduleQueueRetry();
+        return;
+      }
+      settleQueued(
+        next.run,
+        "error",
+        `The queued browser run could not start: ${message}. Dispatch it again to retry.`,
+      );
+      maybeStartNext();
+    });
+  }
+
+  /**
+   * Take the exclusive browser lease and launch a dispatch's first leg. Throws (after
+   * releasing any half-taken lease) without registering the run as live, so the caller
+   * decides whether the failure surfaces as a dispatch rejection (the immediate path) or a
+   * terminal outcome (the queue auto-start path).
+   */
+  async function startDispatch(dispatch: PendingDispatch): Promise<void> {
+    const { run } = dispatch;
+    starting = dispatch;
+    try {
+      // A run re-queued across a restart lost its in-memory secrets; re-read them at start.
+      if (!dispatch.secrets && run.credsEntry) {
+        if (!keychain) throw new Error("keychain credentials are unavailable - jingle reader is not wired");
+        dispatch.secrets = await keychain.read(run.credsEntry);
+      }
+      const runDir = join(agentDir, run.runId);
+      const artifactsDir = join(runDir, "artifacts");
+      const controlToken = randomBytes(32).toString("base64url");
+      mkdirSync(runDir, { recursive: true, mode: 0o700 });
+      const systemPrompt = readFileSync(PROMPT_PATH, "utf8");
+      const entry: LiveRun = {
+        run,
+        runDir,
+        systemPrompt,
+        child: null,
+        hardTimer: null,
+        questionTimer: null,
+        sensitiveInputs: dispatch.secrets ? Object.values(dispatch.secrets.values) : [],
+        secrets: dispatch.secrets,
+        pendingSteers: [],
+      };
+      try {
+        await browser.acquire({ runId: run.runId, channelId: run.channelId, artifactsDir, controlToken });
+        writeFileSync(
+          join(runDir, "mcp.json"),
+          browserMcpConfig(
+            run.runId,
+            controlToken,
+            controlSocket,
+            config.quick.browser_eval_timeout_ms,
+            config.quick.browser_max_output_chars,
+            join(runDir, ATTACH_MARKER_NAME),
+          ),
+          { mode: 0o600 },
+        );
+      } catch (error) {
+        if (browser.hasLease(run.runId)) await browser.release(run.runId, false).catch(() => undefined);
+        throw error;
+      }
+      run.state = "running";
+      live.set(run.runId, entry);
+      // Cleared the moment the run is registered live, so a persistLedger fired from
+      // spawnLeg below cannot double-count it as both live and starting.
+      starting = null;
+      let input = run.task;
+      if (run.context) input += `\n\n${contextPreamble(run.context)}`;
+      if (dispatch.secrets) input += `\n\n${secretsPreamble(dispatch.secrets)}`;
+      // Steering that arrived while queued folds into the launch input — a queued run has no
+      // transcript yet for a tool-result delivery.
+      if (dispatch.pendingSteers.length > 0) {
+        input +=
+          `\n\nGuidance from the dispatcher, sent while this task was queued (apply it to the task):` +
+          `\n- ${dispatch.pendingSteers.join("\n- ")}`;
+      }
+      journal(run.runId, entry.sensitiveInputs, { kind: "dispatched", task: run.task, context: run.context !== null });
+      void spawnLeg(entry, input, false);
+    } finally {
+      starting = null;
+    }
   }
 
   async function parkForQuestion(entry: LiveRun, result: BrowserLegResult): Promise<void> {
@@ -637,36 +808,27 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       if (!opts.channelId || !opts.requesterId) {
         throw new Error("browser tasks need an origin channel and an authenticated requester");
       }
-      if (live.size > 0) {
-        // Model-facing, like quick-output.ts: the error text IS the recovery protocol.
-        throw new Error(
-          "the browser agent is already working or waiting for an answer - tell the person theirs is next (do not make them re-ask), and re-run this exact dispatch when the current run's update turn arrives, before relaying that run's outcome",
-        );
-      }
       const credsEntry = opts.credsEntry?.trim() || null;
       let secrets: KeychainEntrySecrets | null = null;
       if (credsEntry) {
         if (!keychain) throw new Error("keychain credentials are unavailable - jingle reader is not wired");
-        // Resolve before anything spawns so a bad entry fails the dispatch instantly instead of
-        // surfacing minutes later from inside the run.
+        // Resolve before anything spawns or queues so a bad entry fails the dispatch instantly
+        // instead of surfacing minutes later from inside the run.
         secrets = await keychain.read(credsEntry);
       }
 
       const runId = randomUUID();
-      const runDir = join(agentDir, runId);
-      const artifactsDir = join(runDir, "artifacts");
-      const controlToken = randomBytes(32).toString("base64url");
-      mkdirSync(runDir, { recursive: true, mode: 0o700 });
-      const systemPrompt = readFileSync(PROMPT_PATH, "utf8");
+      mkdirSync(join(agentDir, runId), { recursive: true, mode: 0o700 });
       const run: BrowserAgentRun = {
         runId,
         task,
         channelId: opts.channelId,
         requesterId: opts.requesterId,
         credsEntry,
+        context: opts.context?.trim() || null,
         startedAt: Date.now(),
         finishedAt: null,
-        state: "running",
+        state: "queued",
         result: null,
         sessionId: randomUUID(),
         proofFiles: [],
@@ -674,43 +836,25 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
         questionMessageId: null,
         outcomeDelivered: false,
       };
-      const entry: LiveRun = {
-        run,
-        runDir,
-        systemPrompt,
-        child: null,
-        hardTimer: null,
-        questionTimer: null,
-        sensitiveInputs: secrets ? Object.values(secrets.values) : [],
-        secrets,
-        pendingSteers: [],
-      };
-
-      try {
-        await browser.acquire({ runId, channelId: opts.channelId, artifactsDir, controlToken });
-        writeFileSync(
-          join(runDir, "mcp.json"),
-          browserMcpConfig(
-            runId,
-            controlToken,
-            controlSocket,
-            config.quick.browser_eval_timeout_ms,
-            config.quick.browser_max_output_chars,
-            join(runDir, ATTACH_MARKER_NAME),
-          ),
-          { mode: 0o600 },
-        );
-      } catch (error) {
-        if (browser.hasLease(runId)) await browser.release(runId, false).catch(() => undefined);
-        throw error;
+      const dispatch: PendingDispatch = { run, secrets, pendingSteers: [] };
+      // The lease is one-run-exclusive; a dispatch that arrives while it is held (or another
+      // dispatch is mid-acquire) queues durably instead of refusing, and starts automatically
+      // when the lease frees.
+      if (live.size > 0 || queue.length > 0 || starting) {
+        // The keychain read above stays fail-fast VALIDATION only: secret values must not sit
+        // in daemon memory for an unbounded queue wait, so they are dropped here and re-read
+        // by startDispatch when the lease frees (credsEntry set + secrets null — the same
+        // path a post-restart requeue takes).
+        dispatch.secrets = null;
+        queue.push(dispatch);
+        persistLedger();
+        const position = queue.length;
+        journal(runId, [], { kind: "queued", position });
+        logger.info("browser agent queued a dispatch", { runId, position });
+        return { runId, queued: position };
       }
-      live.set(runId, entry);
-      const context = opts.context?.trim() || null;
-      let input = task;
-      if (context) input += `\n\n${contextPreamble(context)}`;
-      if (secrets) input += `\n\n${secretsPreamble(secrets)}`;
-      journal(runId, entry.sensitiveInputs, { kind: "dispatched", task, context: context !== null });
-      void spawnLeg(entry, input, false);
+      // Immediate path: a start failure (lease, mcp config) still rejects the dispatch, as before.
+      await startDispatch(dispatch);
       return { runId };
     },
 
@@ -727,9 +871,21 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     },
 
     async steer(runId, note) {
+      const trimmed = note.trim();
+      const queuedDispatch = queue.find((dispatch) => dispatch.run.runId === runId);
+      if (queuedDispatch) {
+        if (!trimmed) throw new Error("a steering note cannot be empty");
+        // A queued run has no transcript yet: the note folds into its launch input instead.
+        queuedDispatch.pendingSteers.push(trimmed);
+        journal(runId, queuedDispatch.secrets ? Object.values(queuedDispatch.secrets.values) : [], {
+          kind: "steer",
+          note: trimmed,
+          delivery: "queued",
+        });
+        return "queued";
+      }
       const entry = live.get(runId);
       if (!entry) throw new Error(`browser run ${runId} is not live`);
-      const trimmed = note.trim();
       if (!trimmed) throw new Error("a steering note cannot be empty");
       if (entry.run.state === "waiting") {
         // The run is parked on a question. Steering outranks waiting: resume the same session
@@ -752,6 +908,17 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     },
 
     async stop(runId, reason) {
+      const queuedIndex = queue.findIndex((dispatch) => dispatch.run.runId === runId);
+      if (queuedIndex >= 0) {
+        // A queued run never held the lease: cancelling it is pure bookkeeping.
+        const [dispatch] = queue.splice(queuedIndex, 1);
+        settleQueued(
+          dispatch!.run,
+          "cancelled",
+          reason?.trim() || "The run was stopped by the dispatcher before it finished.",
+        );
+        return;
+      }
       const entry = live.get(runId);
       if (!entry) throw new Error(`browser run ${runId} is not live`);
       try {
@@ -779,9 +946,12 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
 
     async inspect(runId, opts) {
       const entry = live.get(runId);
-      const run = entry?.run ?? finished.find((candidate) => candidate.runId === runId);
+      const queuedDispatch =
+        starting?.run.runId === runId ? starting : queue.find((dispatch) => dispatch.run.runId === runId);
+      const run = entry?.run ?? queuedDispatch?.run ?? finished.find((candidate) => candidate.runId === runId);
       if (!run) return null;
-      const sensitiveInputs = entry?.sensitiveInputs ?? [];
+      const sensitiveInputs =
+        entry?.sensitiveInputs ?? (queuedDispatch?.secrets ? Object.values(queuedDispatch.secrets.values) : []);
       let screenshot: string | null = null;
       // A fresh screenshot needs the lease; a parked or between-legs run can always serve one,
       // and a capture racing the agent's own eval just queues behind it in the worker.
@@ -834,17 +1004,31 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
         finished.push(run);
         logger.warn("browser agent recovered an orphaned run", { runId: run.runId, channelId: run.channelId });
       }
+      // Queued runs held nothing volatile: re-queue every one in ledger order — a restart may
+      // delay a queued dispatch but never drops it. Secrets re-resolve at start.
+      for (const run of requeue.splice(0)) {
+        queue.push({ run, secrets: null, pendingSteers: [] });
+        journal(run.runId, [], { kind: "queued", position: queue.length, requeued: true });
+        logger.info("browser agent re-queued a persisted run", { runId: run.runId, position: queue.length });
+      }
       persistLedger();
       for (const run of [...finished]) {
         if (!run.outcomeDelivered) await deliverOutcome(run);
       }
+      maybeStartNext();
     },
 
     stats() {
-      const all = [...[...live.values()].map((entry) => entry.run), ...finished];
+      const all = [
+        ...[...live.values()].map((entry) => entry.run),
+        ...(starting ? [starting.run] : []),
+        ...queue.map((dispatch) => dispatch.run),
+        ...finished,
+      ];
       return {
         running: [...live.values()].filter((entry) => entry.run.state === "running").length,
         waiting: [...live.values()].filter((entry) => entry.run.state === "waiting").length,
+        queued: queue.length,
         runs: all.map((run) => ({
           runId: run.runId,
           state: run.state,
@@ -861,6 +1045,10 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       stopping = true;
       if (outcomeRetryTimer) clearTimeout(outcomeRetryTimer);
       outcomeRetryTimer = null;
+      if (queueRetryTimer) clearTimeout(queueRetryTimer);
+      queueRetryTimer = null;
+      // Queued runs stay "queued" in the durable ledger: the next boot's recover() re-queues
+      // them instead of settling them as errors — a shutdown never costs a queued dispatch.
       await Promise.all(
         [...live.values()].map(async (entry) => {
           try {

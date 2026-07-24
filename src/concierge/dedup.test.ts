@@ -164,7 +164,7 @@ function fakeBrowserAgent(overrides: Partial<BrowserAgent> = {}): BrowserAgent {
     inspect: async () => null,
     evalSecrets: async () => null,
     recover: async () => {},
-    stats: () => ({ running: 0, waiting: 1, runs: [] }),
+    stats: () => ({ running: 0, waiting: 1, queued: 0, runs: [] }),
     stopAll: async () => {},
     ...overrides,
   };
@@ -279,6 +279,35 @@ test("an authenticated request dispatches the browser agent, stamped and channel
   expect(mismatched.error).toContain("where the authorized request began");
 });
 
+test("an inline exec is refused while a dispatch is queued for the browser lease", async () => {
+  const { concierge } = harness({
+    replyViaCli: false,
+    turnText: "",
+    currentMeta: {
+      channelId: CHAN,
+      messageId: MSG,
+      userId: USER,
+      isOwner: false,
+      repliedViaCli: false,
+      ackMessageId: null,
+    },
+  });
+  concierge.setBrowserRuntime({} as unknown as BrowserRuntime);
+  // A run in state "queued" (also the mid-acquire handoff) must keep exec off the lease —
+  // exec winning that race would error the queued run the person was told never to re-dispatch.
+  concierge.setBrowserAgent(fakeBrowserAgent({
+    stats: () => ({
+      running: 0,
+      waiting: 0,
+      queued: 1,
+      runs: [{ runId: "q-1", state: "queued", startedAt: 1, finishedAt: null, credsEntry: null, question: null, task: "t" }],
+    }),
+  }));
+  const result = await concierge.onBusRequest({ cmd: "browser.exec", args: { code: "return 1" } });
+  expect(result.ok).toBe(false);
+  expect(result.error).toContain("run q-1 queued for the browser");
+});
+
 function agentRun(overrides: Partial<BrowserAgentRun> = {}): BrowserAgentRun {
   return {
     runId: "browser-1",
@@ -286,6 +315,7 @@ function agentRun(overrides: Partial<BrowserAgentRun> = {}): BrowserAgentRun {
     channelId: CHAN,
     requesterId: USER,
     credsEntry: null,
+    context: null,
     startedAt: Date.now(),
     finishedAt: null,
     state: "waiting",

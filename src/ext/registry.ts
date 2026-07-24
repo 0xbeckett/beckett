@@ -56,6 +56,25 @@ export interface ExtensionHealthReport extends ExtensionHealth {
   extensionId: string;
 }
 
+/**
+ * Render the discovery catalog as the ONE compact block the concierge's system prompt carries
+ * (docs/v6-architecture.md §6, Phase 2+): capability id + router prose, one line each.
+ * Deterministic — entries arrive in registration order — so the composed prompt is stable
+ * across launches and never thrashes the prompt cache. An empty catalog renders to "" so an
+ * unwired/empty registry leaves the prompt byte-identical.
+ */
+export function renderCatalogBlock(entries: CatalogEntry[]): string {
+  if (entries.length === 0) return "";
+  const lines = entries.map((entry) => `- ${entry.capabilityId} — ${entry.description}`);
+  return (
+    `<extension-catalog>\n` +
+    `Capabilities registered with the daemon's extension registry. This is the discovery ` +
+    `surface — when a request fits one, dispatch it through its usual beckett verb/skill:\n` +
+    `${lines.join("\n")}\n` +
+    `</extension-catalog>`
+  );
+}
+
 export class ExtensionRegistry {
   private readonly byId = new Map<string, Extension>();
   private readonly byCapabilityId = new Map<string, ResolvedCapability>();

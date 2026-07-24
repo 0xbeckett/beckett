@@ -1453,13 +1453,21 @@ async function runBrowser(argv: string[]): Promise<void> {
       30_000,
     );
     if (!res.ok) fail(res.error ?? "browser dispatch failed");
-    const data = res.data as { runId: string };
+    const data = res.data as { runId: string; queued?: number };
+    // Model-facing: the message IS the protocol. Dispatch always succeeds; a busy browser
+    // queues the run, and it starts by itself — the person is told, never asked to wait/re-ask.
     out(
-      `browser run ${data.runId} is working independently in the background - if it needs a human input ` +
-      `it will ask ONE question in the channel with a page screenshot, and its outcome will come back ` +
-      `to you as a browser-agent update turn. You can \`beckett browser watch ${data.runId}\` to see what ` +
-      `it is doing, \`steer\` it with mid-run guidance, or \`stop\` it. Tell the person it is in progress ` +
-      `and end this turn.`,
+      data.queued !== undefined
+        ? `browser run ${data.runId} is queued at position ${data.queued} - the browser is mid-run on ` +
+          `something else, and this run starts AUTOMATICALLY the moment the current one finishes (do NOT ` +
+          `re-dispatch it, and do not make the person re-ask). Tell the person theirs is lined up and ` +
+          `will start on its own, then end this turn. You can \`beckett browser watch ${data.runId}\` to ` +
+          `see its state, \`steer\` it (folded into its start), or \`stop\` it while it waits.`
+        : `browser run ${data.runId} is working independently in the background - if it needs a human input ` +
+          `it will ask ONE question in the channel with a page screenshot, and its outcome will come back ` +
+          `to you as a browser-agent update turn. You can \`beckett browser watch ${data.runId}\` to see what ` +
+          `it is doing, \`steer\` it with mid-run guidance, or \`stop\` it. Tell the person it is in progress ` +
+          `and end this turn.`,
     );
   } catch (err) {
     fail((err as Error).message);

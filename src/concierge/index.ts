@@ -43,7 +43,7 @@ import { buildPaths } from "../paths.ts";
 import { formatDispatchEvent, type DispatchEvent } from "../dispatch/events.ts";
 import { serveBus, type BusRequest, type BusResponse } from "../shell/control-bus.ts";
 import { ActionClass, CapabilityRegistry, type Capability } from "../capability/index.ts";
-import type { ExtensionContext, ExtensionRegistry, InvocationOrigin } from "../ext/index.ts";
+import { effectiveActionClass, renderCatalogBlock, type ExtensionContext, type ExtensionRegistry, type InvocationOrigin } from "../ext/index.ts";
 import { createDiscordGateway, type DiscordGateway } from "../discord/gateway.ts";
 import {
   downloadAttachments,
@@ -464,6 +464,13 @@ export interface ConciergeSessionOptions {
   gate?: TurnGate;
   /** Bounded durable channel-store window to carry across a transcript rotation. */
   handoffWindow?: () => string;
+  /**
+   * The rendered extension-catalog block (v6 discovery, docs/v6-architecture.md §6), read
+   * LAZILY at prompt-compose time so a registry wired after construction still shows up at the
+   * next launch. Absent or returning "" → no block, and the composed prompt is byte-identical
+   * to the pre-catalog shape.
+   */
+  catalogBlock?: () => string;
 }
 
 /**
@@ -487,6 +494,8 @@ export class ConciergeSession {
   private readonly gate: TurnGate | null;
   /** The durable channel-store window survives the transcript and enriches a handoff. */
   private readonly handoffWindow: () => string;
+  /** The lazily-read extension-catalog block; "" (the default) composes no block at all. */
+  private readonly catalogBlock: () => string;
   /**
    * Unforgeable per-process issuer credential (OPS-80 §9.3): exported into the child's env as
    * `BECKETT_SESSION_TOKEN`, echoed back on every `beckett …` bus call, and resolved by the
@@ -557,6 +566,7 @@ export class ConciergeSession {
     this.scope = opts.scope?.trim() || GLOBAL_SCOPE;
     this.gate = opts.gate ?? null;
     this.handoffWindow = opts.handoffWindow ?? (() => "");
+    this.catalogBlock = opts.catalogBlock ?? (() => "");
     this.sessionId = crypto.randomUUID();
   }
 
@@ -1408,8 +1418,14 @@ export class ConciergeSession {
     if (this.staticPrompt !== undefined) return this.staticPrompt;
     const doctrine = readDoctrine(this.config);
     const persona = readOrSeedPersona(this.personaFilePath());
-    const doctrineBlock = `<doctrine>\n${doctrine}\n</doctrine>`;
-    return persona.trim() ? `${doctrineBlock}\n\n<persona>\n${persona}\n</persona>` : doctrineBlock;
+    const blocks = [`<doctrine>\n${doctrine}\n</doctrine>`];
+    // The v6 discovery catalog sits AFTER doctrine, BEFORE persona (persona stays last): the
+    // doctrine explains how to work, the catalog what is dispatchable, the persona how to
+    // sound. Empty (no registry wired) → no block, so the composed prompt is byte-identical.
+    const catalog = this.catalogBlock().trim();
+    if (catalog) blocks.push(catalog);
+    if (persona.trim()) blocks.push(`<persona>\n${persona}\n</persona>`);
+    return blocks.join("\n\n");
   }
 
   /** Absolute path to the editable persona file (runtime dir; same dir as the control socket). */
@@ -1505,12 +1521,17 @@ function isMentionClaim(meta: unknown): meta is MentionClaim {
   );
 }
 
-/** Pick the recognized {@link InvocationOrigin} fields off an untyped `ext.invoke` bus payload. */
+/**
+ * Pick the recognized PROVENANCE fields off an untyped `ext.invoke` bus payload. Deliberately
+ * excludes `userId`/`channelId`: identity is derived from the issuing turn (issuer token),
+ * never declared by the caller — the control socket is reachable by prompt-injected worker
+ * children, so a payload-supplied identity would be a channel-lock/auth bypass.
+ */
 function readInvocationOrigin(raw: unknown): InvocationOrigin | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const source = raw as Record<string, unknown>;
   const origin: InvocationOrigin = {};
-  for (const key of ["surface", "channelId", "userId", "ticket"] as const) {
+  for (const key of ["surface", "ticket"] as const) {
     const value = source[key];
     if (typeof value === "string" && value.trim()) origin[key] = value.trim();
   }
@@ -1708,6 +1729,8 @@ export class Concierge {
           gate: this.turnGate,
           // Rotation's small handoff gets the persisted channel window, not the dying transcript.
           handoffWindow: () => this.handoffWindowForScope(scope),
+          // v6 discovery: read lazily so the registry (wired post-construction) is seen at launch.
+          catalogBlock: () => this.extensionCatalogBlock(),
           // Crash-loop alarm (issue #24): a repeating child crash (bad auth/config) pings the ops
           // channel instead of surfacing only as per-message "something broke" replies.
           onCrashLoop: (info) => {
@@ -1919,6 +1942,15 @@ export class Concierge {
   /** Wire the v6 extension registry + its dispatch context (v4-main). See {@link extensions}. */
   setExtensionRegistry(registry: ExtensionRegistry, ctx: ExtensionContext): void {
     this.extensions = { registry, ctx };
+  }
+
+  /**
+   * The rendered extension-catalog block each session composes into its system prompt
+   * (docs/v6-architecture.md §6): the concierge SEEING every advertised capability. "" until
+   * the registry is wired, which leaves the composed prompt byte-identical.
+   */
+  extensionCatalogBlock(): string {
+    return this.extensions ? renderCatalogBlock(this.extensions.registry.catalog()) : "";
   }
 
   /** Wire the instant-tick hook for freshly-filed tickets (v4-main, issue #33). See {@link ticketFiledListener}. */
@@ -2825,7 +2857,26 @@ export class Concierge {
                 req.args.args && typeof req.args.args === "object" && !Array.isArray(req.args.args)
                   ? (req.args.args as Record<string, unknown>)
                   : {};
-              const origin = readInvocationOrigin(req.args.origin);
+              // WHO is invoking comes from the issuing turn (token-exact, the same resolution
+              // every browser.* bus verb uses) — a caller-supplied origin contributes only
+              // surface/ticket provenance, never an identity it could spoof.
+              const mention = this.issuerMention(req.token);
+              const provenance = readInvocationOrigin(req.args.origin);
+              const origin: InvocationOrigin | null =
+                mention && mention.userId
+                  ? { ...provenance, channelId: mention.channelId, userId: mention.userId }
+                  : provenance;
+              // A non-FREE capability acts outward: it requires the same authenticated issuer
+              // its v5 bus verb demands. An unknown capability falls through so the registry's
+              // standard refusal names it.
+              const resolved = wired.registry.resolveCapability(capabilityId);
+              if (
+                resolved &&
+                effectiveActionClass(resolved.extension, resolved.capability) !== ActionClass.FREE &&
+                (!mention || !mention.userId)
+              ) {
+                return { ok: false, error: `ext.invoke: capability "${capabilityId}" needs an authenticated authorized request` };
+              }
               const result = await wired.registry.invoke(
                 { capabilityId, args, ...(origin ? { origin } : {}) },
                 wired.ctx,
@@ -3037,13 +3088,15 @@ export class Concierge {
                 return { ok: false, error: "browser tasks must return to the channel where the authorized request began" };
               }
               try {
-                const { runId } = await this.browserAgent.run(task, {
+                const { runId, queued } = await this.browserAgent.run(task, {
                   channelId: mention.channelId,
                   requesterId: mention.userId,
                   credsEntry,
                   context,
                 });
-                return { ok: true, data: { detached: true, runId } };
+                // A busy browser queues the dispatch instead of refusing; the position rides the
+                // return so the caller can tell the person theirs is lined up (never re-dispatch).
+                return { ok: true, data: { detached: true, runId, ...(queued !== undefined ? { queued } : {}) } };
               } catch (err) {
                 return { ok: false, error: (err as Error).message };
               }
@@ -3145,14 +3198,21 @@ export class Concierge {
               if (!mention || !mention.userId) {
                 return { ok: false, error: "inline browser scripts need an authenticated authorized request" };
               }
+              // "queued" includes a dispatch mid-acquire (queue→live handoff): exec must not
+              // race it for the lease — losing that race would error a queued run.
               const stats = this.browserAgent?.stats();
-              const liveRun = stats?.runs.find((run) => run.state === "running" || run.state === "waiting");
-              if (liveRun) {
+              const busyRun = stats?.runs.find(
+                (run) => run.state === "running" || run.state === "waiting" || run.state === "queued",
+              );
+              if (busyRun) {
                 return {
                   ok: false,
                   error:
-                    `the background browser agent holds the browser (run ${liveRun.runId}, ${liveRun.state}) - ` +
-                    `use \`beckett browser watch/steer\` on that run instead, or wait for it to finish`,
+                    busyRun.state === "queued"
+                      ? `the background browser agent has run ${busyRun.runId} queued for the browser - ` +
+                        `it starts the moment the lease frees; wait for the queue to drain or dispatch this as a background task`
+                      : `the background browser agent holds the browser (run ${busyRun.runId}, ${busyRun.state}) - ` +
+                        `use \`beckett browser watch/steer\` on that run instead, or wait for it to finish`,
                 };
               }
               const runId = `inline-${crypto.randomUUID()}`;

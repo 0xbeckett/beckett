@@ -42,8 +42,8 @@ import { parsePrUrl } from "../github/types.ts";
 import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
 import { createQuickRunner, type QuickRunner } from "../quick/index.ts";
-import { createBrowserRuntime, type BrowserRuntime } from "../browser/runtime.ts";
-import { createBrowserAgent, type BrowserAgent } from "../browser/agent.ts";
+import type { BrowserRuntime } from "../browser/runtime.ts";
+import type { BrowserAgent } from "../browser/agent.ts";
 import { defaultKeychainReader } from "../secret/keychain-read.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createMemory } from "../memory/index.ts";
@@ -59,7 +59,7 @@ import { reconcileTaskTickets } from "../task/reconcile.ts";
 import { createAgentMailApi, defaultMailStateFile, safeMailError } from "../mail/index.ts";
 import { createAgentMailPoller, defaultMailListenerStateFile, type AgentMailPoller } from "../mail/listener.ts";
 import { ExtensionRegistry, type ExtensionContext } from "../ext/index.ts";
-import { createImageExtension, createSecretExtension } from "../capability/modules/index.ts";
+import { createBrowserExtension, createImageExtension, createSecretExtension } from "../capability/modules/index.ts";
 
 /**
  * Root under which every ticket builds its OWN project repo — one directory per code project,
@@ -425,29 +425,12 @@ async function boot(): Promise<BootedSystem> {
   // Quick agents — the no-ticket lane. The runner owns the short-lived specialist
   // harnesses; a run that outlives its sync window reports back through the Concierge as an
   // update turn, exactly like a ticket milestone.
-  const browser = createBrowserRuntime({
-    config,
-    logger: logger.child("browser"),
-  });
   const quick = createQuickRunner({
     config,
     logger: logger.child("quick"),
     onDetachedResult: (run) => concierge.notifyQuickResult(run),
   });
-  // The dedicated background browser agent (issue #58): intake dispatches and returns
-  // immediately; questions surface as ledgered Discord anchors, outcomes come back as update
-  // turns, and its durable run ledger re-reports anything a crash strands.
-  const browserAgent = createBrowserAgent({
-    config,
-    logger: logger.child("browser-agent"),
-    browser,
-    keychain: defaultKeychainReader,
-    onQuestion: (run, question) => concierge.notifyBrowserQuestion(run, question),
-    onOutcome: (run) => concierge.notifyBrowserOutcome(run),
-  });
-  concierge.setBrowserRuntime(browser);
   concierge.setQuickRunner(quick);
-  concierge.setBrowserAgent(browserAgent);
 
   // The v6 extension seam (docs/v6-architecture.md §6): the ONE runtime registry the daemon
   // dispatches extensions through — `ext.invoke`/`ext.catalog` on the control bus read it via
@@ -458,7 +441,29 @@ async function boot(): Promise<BootedSystem> {
   const extCtx: ExtensionContext = { config, paths, logger };
   extensions.register(createImageExtension({ config, paths, logger: logger.child("image") }));
   extensions.register(createSecretExtension({ config, paths, logger: logger.child("secret") }));
+  // Phase 2 — the browser organ's lifecycle lives in the extension: init constructs the (inert)
+  // runtime + background agent, start rides startAll (after concierge.start + crash recovery),
+  // stop rides stopAll (agent legs settle, then the host dies). The concierge callbacks close
+  // over the already-constructed concierge, which is why this registers here and not earlier.
+  const browserExtension = createBrowserExtension({
+    keychain: defaultKeychainReader,
+    onQuestion: (run, question) => concierge.notifyBrowserQuestion(run, question),
+    onOutcome: (run) => concierge.notifyBrowserOutcome(run),
+  })({ config, paths, logger });
+  extensions.register(browserExtension);
   concierge.setExtensionRegistry(extensions, extCtx);
+
+  // Extensions init before any live part starts (build state, open connections). Per-organ
+  // isolation lives in the registry; only a fail-fast organ can abort the boot here.
+  await extensions.initAll(extCtx);
+
+  // The browser extension's init built the runtime + agent (the host subprocess itself stays
+  // unspawned until the first acquire). Phase 2 keeps the concierge's seven browser.* bus
+  // command bodies v5-shaped, so they still receive both through the setters.
+  const browser = browserExtension.runtime();
+  const browserAgent = browserExtension.agent();
+  concierge.setBrowserRuntime(browser);
+  concierge.setBrowserAgent(browserAgent);
 
   // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
   // the daemon-wide halves the Concierge can't see itself. The Concierge merges in its own
@@ -488,10 +493,6 @@ async function boot(): Promise<BootedSystem> {
     },
   }));
 
-  // Extensions init before any live part starts (build state, open connections). Per-organ
-  // isolation lives in the registry; only a fail-fast organ can abort the boot here.
-  await extensions.initAll(extCtx);
-
   // Start the Concierge FIRST (of the live parts) so a bad claude launch fails the whole boot
   //    before we begin polling. (Constructed above so its progress sink could be wired in.)
   await concierge.start();
@@ -520,11 +521,6 @@ async function boot(): Promise<BootedSystem> {
   // tickets continue their interrupted sessions instead of re-running from scratch.
   await dispatcher.recoverFromCrash();
 
-  // Browser-agent fail-safe (issue #58): any run the previous daemon left live on disk is now
-  // terminal — report it to the origin channel instead of leaving the person in silence, and
-  // re-deliver any outcome that never reached the Concierge.
-  await browserAgent.recover();
-
   // Blip-proofing (OPS-125): with recovery done, arm the periodic worktree-checkpoint loop so a
   // HARD crash (SIGKILL / OOM / power) — where the graceful shutdown drain never runs — loses at
   // most one checkpoint window of in-flight WIP, not the whole session. The graceful path
@@ -533,7 +529,8 @@ async function boot(): Promise<BootedSystem> {
 
   // Extension background loops start here — after crash recovery (so a migrated organ never
   // races the recovery block) and BEFORE the pollers, which stay last so events only flow once
-  // everything else is ready to consume them.
+  // everything else is ready to consume them. The browser agent's recover() rides this sweep
+  // (issue #58): stranded runs re-report into the now-live concierge, queued runs re-queue.
   await extensions.startAll(extCtx);
 
   // Fan each board's poll batch to BOTH the dispatcher (acts on the work) and the Concierge
@@ -690,6 +687,8 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   for (const p of sys.pollers.values()) p.stop();
   // Mirrors startAll's boot position (just before the pollers started). The registry sweep is
   // best-effort per organ — a throwing stop is logged, never blocks the rest of the drain.
+  // The browser organ tears down inside this sweep: agent.stopAll settles live runs as errors
+  // (their outcomes still route through the still-live concierge below), THEN the host dies.
   await sys.extensions.stopAll(sys.logger);
   try {
     const drain = await sys.dispatcher.drainForShutdown(signal, 20_000);
@@ -705,17 +704,6 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
     await sys.quick.stopAll();
   } catch (err) {
     sys.logger.warn("quick-runner shutdown failed", { error: (err as Error).message });
-  }
-  // The browser agent settles live runs as errors; its durable ledger re-reports them next boot.
-  try {
-    await sys.browserAgent.stopAll();
-  } catch (err) {
-    sys.logger.warn("browser-agent shutdown failed", { error: (err as Error).message });
-  }
-  try {
-    await sys.browser.stop();
-  } catch (err) {
-    sys.logger.warn("browser shutdown failed", { error: (err as Error).message });
   }
   try {
     await sys.concierge.stop();

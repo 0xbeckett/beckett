@@ -37,7 +37,7 @@ function extCtx(): ExtensionContext {
   };
 }
 
-function harness() {
+function harness(opts: { currentMeta?: Record<string, unknown> } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "beckett-ext-bus-"));
   dirs.push(dir);
   process.env.BECKETT_DIR = dir;
@@ -45,7 +45,11 @@ function harness() {
     onMessage() {}, async start() {}, async stop() {}, sendTyping() {},
     async post() { return "message"; }, isConnected: () => true, lastEventAgeMs: () => 0,
   } as unknown as DiscordGateway;
-  const session = { async start() {}, async stop() {}, ask: async () => "", stats: () => ({}) } as unknown as ConciergeSession;
+  const session = {
+    async start() {}, async stop() {}, ask: async () => "", stats: () => ({}),
+    // With a meta, the harness models a live issuing turn — the identity ext.invoke derives.
+    ...(opts.currentMeta ? { getCurrentMeta: () => opts.currentMeta } : {}),
+  } as unknown as ConciergeSession;
   return { concierge: new Concierge({ config: validateConfig({}), gateway, session }) };
 }
 
@@ -105,7 +109,7 @@ test("ext.invoke round-trips a dispatch and maps ExtensionResult onto the BusRes
   expect(missing).toEqual({ ok: false, error: "ext.invoke needs a capabilityId" });
 });
 
-test("ext.invoke threads the recognized origin fields through and drops junk", async () => {
+test("ext.invoke keeps origin provenance but strips caller-declared identity (spoof-proof)", async () => {
   const { concierge } = harness();
   const ctx = extCtx();
   const registry = new ExtensionRegistry();
@@ -120,16 +124,80 @@ test("ext.invoke threads the recognized origin fields through and drops junk", a
   });
   concierge.setExtensionRegistry(registry, ctx);
 
+  // userId/channelId ride the same socket a prompt-injected worker child can reach: with no
+  // issuing turn to derive an identity from, they are STRIPPED, never trusted.
   await concierge.onBusRequest({
     cmd: "ext.invoke",
     args: {
       capabilityId: "probe.capture",
-      origin: { surface: "discord", userId: "u1", bogus: "dropped", channelId: 42 },
+      origin: { surface: "discord", userId: "u1", bogus: "dropped", channelId: "42", ticket: "OPS-1" },
     },
   });
   await concierge.onBusRequest({
     cmd: "ext.invoke",
     args: { capabilityId: "probe.capture", origin: "not-an-object" },
   });
-  expect(seen).toEqual([{ surface: "discord", userId: "u1" }, undefined]);
+  expect(seen).toEqual([{ surface: "discord", ticket: "OPS-1" }, undefined]);
+});
+
+test("ext.invoke derives the origin identity from the issuing turn, overriding any spoof", async () => {
+  const { concierge } = harness({
+    currentMeta: {
+      channelId: "chan-live",
+      messageId: "msg-1",
+      userId: "owner-live",
+      isOwner: true,
+      repliedViaCli: false,
+      ackMessageId: null,
+    },
+  });
+  const ctx = extCtx();
+  const registry = new ExtensionRegistry();
+  const seen: Array<ExtensionInvocation["origin"]> = [];
+  registry.register({
+    manifest: { id: "probe", version: "1.0.0", summary: "origin capture", actionClass: ActionClass.ALWAYS_ASK },
+    capabilities: [{ id: "probe.act", description: "captures the invocation origin" }],
+    invoke: async (call) => {
+      seen.push(call.origin);
+      return { ok: true };
+    },
+  });
+  concierge.setExtensionRegistry(registry, ctx);
+
+  const res = await concierge.onBusRequest({
+    cmd: "ext.invoke",
+    args: { capabilityId: "probe.act", origin: { surface: "cli", userId: "attacker", channelId: "elsewhere" } },
+  });
+  expect(res.ok).toBeTrue();
+  expect(seen).toEqual([{ surface: "cli", channelId: "chan-live", userId: "owner-live" }]);
+});
+
+test("ext.invoke refuses a non-FREE capability without an authenticated issuing turn", async () => {
+  const { concierge } = harness();
+  const ctx = extCtx();
+  const registry = new ExtensionRegistry();
+  let invoked = 0;
+  registry.register({
+    manifest: { id: "danger", version: "1.0.0", summary: "outward action", actionClass: ActionClass.ALWAYS_ASK },
+    capabilities: [{ id: "danger.act", description: "acts outward under stored credentials" }],
+    invoke: async () => {
+      invoked++;
+      return { ok: true };
+    },
+  });
+  concierge.setExtensionRegistry(registry, ctx);
+
+  const refused = await concierge.onBusRequest({
+    cmd: "ext.invoke",
+    args: { capabilityId: "danger.act", origin: { userId: "attacker", channelId: "anywhere" } },
+  });
+  expect(refused).toEqual({
+    ok: false,
+    error: 'ext.invoke: capability "danger.act" needs an authenticated authorized request',
+  });
+  expect(invoked).toBe(0);
+
+  // An unknown capability still gets the registry's own refusal, not the auth gate's.
+  const unknown = await concierge.onBusRequest({ cmd: "ext.invoke", args: { capabilityId: "danger.nope" } });
+  expect(unknown.error).toMatch(/no capability "danger.nope"/);
 });
