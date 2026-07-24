@@ -101,15 +101,17 @@ cliExtensions.register(createQuickExtension({ onDetachedResult: () => {} })(capa
 // hook (no store, no scheduler armed), so it passes NO dispatch deps — the verb reads
 // routines.json directly and routes a real fire through the bus, exactly as before.
 cliExtensions.register(createRoutinesExtension({})(capabilityDeps));
-// V6 Phase 4: the remaining bespoke modules — github/dns/deploy/mail (real capabilities[]+invoke)
-// and memory (thin, CLI-projection-only). Self-contained factories, so they register in this top
-// block; each projects into its existing buildCliCapabilities spine slot via asCapability, so
-// dispatch + help order stay byte-identical.
+// V6 Phase 4: the remaining bespoke modules — github/dns/deploy/mail (real capabilities[]+invoke).
+// Self-contained factories, so they register in this top block; each projects into its existing
+// buildCliCapabilities spine slot via asCapability, so dispatch + help order stay byte-identical.
 cliExtensions.register(createGithubExtension(capabilityDeps));
 cliExtensions.register(createDnsExtension(capabilityDeps));
 cliExtensions.register(createDeployExtension(capabilityDeps));
 cliExtensions.register(createMailExtension(capabilityDeps));
-cliExtensions.register(createMemoryExtension(capabilityDeps));
+// V6 Phase 6: the memory organ proper. The CLI process never runs any lifecycle hook (no warm
+// store, no maintain timer) and passes NO deps — the verbs read cold per-call stores and route
+// warm recall through the bus, exactly as before.
+cliExtensions.register(createMemoryExtension({})(capabilityDeps));
 
 /**
  * The one code-project slug that targets Beckett's OWN source repo (`0xbeckett/beckett`). Filing work

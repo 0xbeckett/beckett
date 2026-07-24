@@ -47,8 +47,6 @@ import type { BrowserRuntime } from "../browser/runtime.ts";
 import type { BrowserAgent } from "../browser/agent.ts";
 import { defaultKeychainReader } from "../secret/keychain-read.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
-import { createMemory } from "../memory/index.ts";
-import { startRoutineMaintenance } from "../memory/maintain.ts";
 import { LiveAgentRegistry } from "../agent/registry.ts";
 import { createAgentRunner } from "../agent/invoke.ts";
 import { TaskStore } from "../task/store.ts";
@@ -60,7 +58,7 @@ import { createAgentMailPoller, defaultMailListenerStateFile, type AgentMailPoll
 import { ExtensionRegistry, type ExtensionContext } from "../ext/index.ts";
 // NOTE: the Phase 4 organs (github/dns/deploy/mail) are deliberately NOT daemon-registered yet —
 // deploy.create's in-daemon host side effects (cloudflared + ~/.cloudflared/config.yml) need
-// sign-off first (cli-cascade spec, open question 5); memory stays with Zoom until Phase 6.
+// sign-off first (cli-cascade spec, open question 5).
 import {
   createBrowserExtension,
   createImageExtension,
@@ -70,6 +68,8 @@ import {
 import { createQuickExtension } from "../capability/modules/quick.ts";
 // Phase 3b routines wiring: same additive-import posture.
 import { createRoutinesExtension } from "../capability/modules/routines.ts";
+// Phase 6 memory wiring (the LAST organ): same additive-import posture.
+import { createMemoryExtension } from "../capability/modules/memory.ts";
 
 /**
  * Root under which every ticket builds its OWN project repo — one directory per code project,
@@ -118,7 +118,6 @@ interface BootedSystem {
   quick: QuickRunner;
   browserAgent: BrowserAgent;
   browser: BrowserRuntime;
-  memoryMaintenance: { stop(): void };
   extensions: ExtensionRegistry;
 }
 
@@ -186,14 +185,6 @@ async function boot(): Promise<BootedSystem> {
   // relays, never replies or merges. Skipped without a PAT (nothing to read GitHub with).
   const paths = buildPaths(config);
   const beckettDir = paths.beckettDir;
-  // One daemon-owned store serves bus recall and routine maintenance. Its warm graph/Moss handle
-  // survives each short-lived `beckett recall` process.
-  const memory = createMemory({
-    memoryDir: paths.memoryDir,
-    logger: logger.child("memory"),
-    git: true,
-    warm: true,
-  });
   const tasks = new TaskStore(join(beckettDir, "tasks.json"));
   const syncTaskBranch = async (ticket: Ticket, board: string, snapshot = false): Promise<void> => {
     if (!ticket.branchRef) return;
@@ -261,7 +252,6 @@ async function boot(): Promise<BootedSystem> {
       ...(githubReader ? { github: githubReader } : {}),
       githubOwner: identity.github.owner,
     }),
-    memory,
   });
 
   // 3. Pollers — one per board, all feeding the same dispatcher. `start()` primes the
@@ -493,6 +483,18 @@ async function boot(): Promise<BootedSystem> {
     }),
   })({ config, paths, logger });
   extensions.register(routinesExtension);
+  // Phase 6 — the memory organ, the LAST organ (docs/v6-architecture.md §6-§7): init builds the
+  // ONE daemon-owned warm MemoryStore (warm graph + Moss handle survive each short-lived
+  // `beckett recall` process); the nightly maintain loop arms in the LATE startAll sweep below
+  // and stops inside the registry teardown. Registered LAST so its stop runs FIRST in the
+  // stopAll sweep — the position closest to the old first-line memoryMaintenance.stop(). The
+  // owner id is bound from env here (like the routines origin) so the extension stays env-free;
+  // it grants the owner audience for `memory.recall`/`memory.remember` ext.invoke calls, whose
+  // Audience is derived INSIDE the extension from the token-derived origin — never from args.
+  const memoryExtension = createMemoryExtension({
+    ownerId: () => process.env.DISCORD_OWNER_ID?.trim() ?? null,
+  })({ config, paths, logger });
+  extensions.register(memoryExtension);
   concierge.setExtensionRegistry(extensions, extCtx);
 
   // Extensions init before any live part starts (build state, open connections). Per-organ
@@ -512,6 +514,12 @@ async function boot(): Promise<BootedSystem> {
   // their not-wired refusal), so the runner still arrives through the setter.
   const quick = quickExtension.runner();
   concierge.setQuickRunner(quick);
+
+  // The memory extension's init built the ONE warm store. Phase 6 keeps the concierge's
+  // `memory.recall` bus command body v5-shaped (like the browser.* verbs), so the store still
+  // arrives through a setter — the lazy in-concierge construction is gone (a second warm graph
+  // would silently diverge from this one).
+  concierge.setMemoryStore(memoryExtension.store());
 
   // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
   // the daemon-wide halves the Concierge can't see itself. The Concierge merges in its own
@@ -638,13 +646,8 @@ async function boot(): Promise<BootedSystem> {
     logger.info("AgentMail incoming-email poller disabled (AGENTMAIL_API_KEY is not set)");
   }
 
-  // Memory self-healing (OPS-121): one maintenance pass shortly after boot, then daily —
-  // archives expired/superseded facts and merges near-duplicates so the knowledge graph
-  // doesn't rot between deploys. Failures log and never affect the rest of the daemon.
-  const memoryMaintenance = startRoutineMaintenance({
-    maintain: (opts) => memory.maintain(opts),
-    logger: logger.child("memory.maintain"),
-  });
+  // Memory self-healing (OPS-121) now lives in the memory extension (Phase 6): the daily
+  // maintain loop arms in the LATE startAll sweep below and stops inside extensions.stopAll.
 
   // Agent registry (issue #66): reusable worker personas defined/added WITHOUT a daemon redeploy —
   // agents.json is read LIVE (defensively; a bad/partial file logs-and-skips, never crashes the
@@ -670,25 +673,26 @@ async function boot(): Promise<BootedSystem> {
     fire: (id, opts) => routinesExtension.scheduler().fireNow(id, opts),
   });
 
-  // LATE extension background loops start here — the whole live system (pollers, mail, memory
-  // maintenance, agent registry/runner) is up, so a scheduler whose fires DISPATCH into it can
-  // never race its own dependencies. This is the sanctioned start position for startPhase:
-  // "late" organs (the routine cron scheduler, Phase 3b; memory's maintain loop in Phase 6).
+  // LATE extension background loops start here — the whole live system (pollers, mail, agent
+  // registry/runner) is up, so a scheduler whose fires DISPATCH into it can never race its own
+  // dependencies. This is the sanctioned start position for startPhase: "late" organs (the
+  // routine cron scheduler, Phase 3b; the memory maintain loop, Phase 6).
   await extensions.startAll(extCtx, "late");
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance, extensions };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, extensions };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
 async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   sys.logger.info("shutting down beckett v3", { signal });
-  // The routine scheduler (Phase 3b) now stops inside the extensions.stopAll sweep below —
-  // AFTER the pollers stop, not before them as the hand-wired first-line stop used to. A cron
-  // clearInterval landing a beat later is accepted (sanctioned in the v6 design resolution):
-  // per-period idempotency means a straggler tick can never double-fire.
-  sys.memoryMaintenance.stop();
+  // The routine scheduler (Phase 3b) and the memory maintain loop (Phase 6) now stop inside
+  // the extensions.stopAll sweep below — AFTER the pollers stop, not before them as the
+  // hand-wired first-line stops used to. A clearInterval landing a beat later is accepted
+  // (sanctioned in the v6 design resolution): routine fires stay per-period idempotent, and a
+  // straggler maintain pass is serialized + best-effort by construction. Memory registered
+  // LAST, so its stop runs FIRST in the reverse sweep.
   sys.prPoller?.stop();
   sys.activityPoller?.stop();
   sys.mailPoller?.stop();

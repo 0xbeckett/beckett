@@ -44,9 +44,21 @@ migrating an organ or touching the registry. Phase 1 (`image`, `secret` in
    shape (see `src/capability/modules/extensions.test.ts`), and run both characterization
    suites.
 
-## Phase order (docs/v6-architecture.md §6)
+## Phase order (docs/v6-architecture.md §6) — ALL PHASES SHIPPED
 
-0 skeleton ✅ · 1 image+secret ✅ · 2 browser (first lifecycle) · 3 quick+routines ·
-4 catalog cutover + retire `CapabilityRegistry`/`asCapability` · 5 worker stages as facets ·
-6 memory (last; only after the in-flight memory lane lands — visibility stays fail-closed,
-recall never blocks a turn on writes).
+0 skeleton ✅ · 1 image+secret ✅ · 2 browser + dispatch queue + catalog block ✅ ·
+3 quick+routines + staged start (early/late) ✅ · 4 catalog cutover + slash prune ✅ ·
+5 stages as a core facet, byte-identical ✅ · 6 memory, origin-bound audience ✅.
+Remaining cleanups: the `asCapability` projection (dies with its last consumer), daemon
+registration of deploy/github/mail (host side effects need explicit sanction), and the v5 bus
+memory.recall argv audience (needs an issuer-role gate).
+
+## Security lessons the reviews taught (binding on new extensions)
+
+- ext.invoke identity is TOKEN-DERIVED; never read userId/channelId from caller args.
+- Non-FREE capabilities refuse without an authenticated issuing turn; sensitive organs
+  re-enforce channel-lock in the body (defense in depth).
+- Never round-trip structured args through argv (flag injection escalates audience).
+- Scope/visibility args are CREATE-ONLY on invoke paths; no origin may write what it
+  cannot view.
+- Queued work drops resolved secret VALUES; re-read at start.

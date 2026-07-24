@@ -17,7 +17,7 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function harness() {
+function harness(opts: { wire?: "constructor" | "setter" | "none" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "beckett-warm-recall-"));
   dirs.push(dir);
   process.env.BECKETT_DIR = dir;
@@ -27,7 +27,16 @@ function harness() {
     async post() { return "message"; }, isConnected: () => true, lastEventAgeMs: () => 0,
   } as unknown as DiscordGateway;
   const session = { async start() {}, async stop() {}, ask: async () => "", stats: () => ({}) } as unknown as ConciergeSession;
-  return { memory, concierge: new Concierge({ config: validateConfig({}), memory, gateway, session }) };
+  const wire = opts.wire ?? "constructor";
+  const concierge = new Concierge({
+    config: validateConfig({}),
+    ...(wire === "constructor" ? { memory } : {}),
+    gateway,
+    session,
+  });
+  // The daemon path since Phase 6: v4-main wires the memory EXTENSION's warm store post-init.
+  if (wire === "setter") concierge.setMemoryStore(memory);
+  return { memory, concierge };
 }
 
 test("memory.recall uses the daemon's cached graph and preserves the JSON result", async () => {
@@ -59,4 +68,19 @@ test("memory.recall keeps the audience gate in the shared recall engine", async 
   });
   expect((hidden.data as { hits: Array<{ name: string }> }).hits.map((hit) => hit.name)).not.toContain("owner-plan");
   expect((visible.data as { hits: Array<{ name: string }> }).hits.map((hit) => hit.name)).toContain("owner-plan");
+});
+
+test("memory.recall serves the extension store wired through setMemoryStore (the Phase 6 daemon path)", async () => {
+  const { concierge } = harness({ wire: "setter" });
+  const res = await concierge.onBusRequest({ cmd: "memory.recall", args: { argv: ["deploy", "--json"] } });
+  expect(res.ok).toBeTrue();
+});
+
+test("memory.recall refuses when no store is wired — the lazy second warm store is gone", async () => {
+  const { concierge } = harness({ wire: "none" });
+  const res = await concierge.onBusRequest({ cmd: "memory.recall", args: { argv: ["deploy", "--json"] } });
+  expect(res).toEqual({
+    ok: false,
+    error: "memory.recall unavailable — the memory extension store is not wired (v3 daemon only)",
+  });
 });

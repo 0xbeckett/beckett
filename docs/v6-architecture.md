@@ -280,24 +280,26 @@ breaks: `@beckett do X` works identically at every phase.
   the shared throwing cores that make `invoke` daemon-safe (no `out`/`fail` process exits).
 - **Phase 2 — `browser`.** First stateful organ: `lifecycle.{init,start,stop,health}` wraps the
   host subprocess (`isolated.ts`/`host.ts`). The concierge dispatches to `browser.exec` via the
-  catalog instead of shelling a hard-coded path. Proves lifecycle + health under the doctor.
+  catalog instead of shelling a hard-coded path. Proves lifecycle + health under the doctor. ✅ Shipped: first stateful extension + the dispatch queue + the catalog block; ext.invoke identity hardened token-exact in review.
 - **Phase 3 — `quick` + `routines`.** `quick.run` through `invoke`; `routines` proves a `start()`
   background loop (`scheduler.ts`) under registry orchestration. Both are concierge-dispatched, not
-  state-machine organs, so they exercise the invocation path without touching the dispatcher.
+  state-machine organs, so they exercise the invocation path without touching the dispatcher. ✅ Shipped, plus staged start (startPhase early/late) — the flat-startAll TDZ hazard the doc did not foresee.
 - **Phase 4 — `social`/`image`/`dns`/`deploy`/`github`/`mail` catalog cutover.** Move the remaining
   capability modules and retire the standalone `CapabilityRegistry`: the CLI, the bus, and the
   worker system append all read from `ExtensionRegistry`. Slash-command handling is pruned here;
-  discovery is fully the catalog.
+  discovery is fully the catalog. ✅ Shipped: CLI 100% extension-backed, slash commands deleted; daemon registration of the outward organs held pending side-effect sanction.
 - **Phase 5 — worker stages become an extension facet.** `implement`/`review`/`design`/`design_check`
   register as stage facets; `reviewStage`/`reviewTierFor` become data. This is the enabler for
   v6.md's per-ticket **flows** (a DAG over registry stages) — but flows themselves are a separate
   v6.5 ticket. Accuracy guard: the four built-in stages migrate **byte-identical** (every comment,
-  transition, cap default), the way v5.9 moved them into `stages.ts`.
+  transition, cap default), the way v5.9 moved them into `stages.ts`. ✅ Shipped byte-identical (review proved zero prompt-byte drift; entry states are collision-guarded).
 - **Phase 6 — `memory`.** Last, and deliberately so: **Zoom owns the live memory/session lane**
   (retrieval, stale-session, reply-context injection) right now. Memory migrates onto the contract
   only after Zoom's in-flight work lands, and the migration is a pure re-home of an already-working
   organ (capabilities `memory.recall`/`memory.remember`, lifecycle around the index + nightly
-  `maintain`), with visibility scoping unchanged and fail-closed (§7).
+  `maintain`), with visibility scoping unchanged and fail-closed (§7). ✅ Shipped as a pure
+  re-home with ORIGIN-BOUND audience (create-only scoping on invoke; no origin writes a node it
+  cannot view); engine code untouched.
 - **Concierge is never "migrated."** It is core. What changes is that it *reads the catalog and
   dispatches* instead of hard-coding each organ. That change rides Phases 1–4 incrementally (each
   organ it stops hard-coding), not a big-bang concierge rewrite.

@@ -108,7 +108,7 @@ import type { DiscordEmbed, DiscordLinkButton, TaskThreadCreated } from "../type
 import { TaskStore, displayTaskName, type WorkTask } from "../task/store.ts";
 import type { BranchStatusService } from "../task/status.ts";
 import { renderBranchEmbed } from "../discord/cards.ts";
-import { createMemory, type MemoryStore } from "../memory/index.ts";
+import type { MemoryStore } from "../memory/index.ts";
 import { parseRecallCliRequest, recallCliOutput } from "../memory/recall-cli.ts";
 
 /**
@@ -1466,7 +1466,7 @@ export interface ConciergeOptions {
   tasks?: TaskStore;
   /** On-demand local/GitHub branch status provider, normally wired by v4-main. */
   branchStatus?: BranchStatusService;
-  /** Daemon-owned warm memory store, injected by v4-main so maintenance and recall share it. */
+  /** The warm memory store (tests). The daemon wires the memory extension's via {@link Concierge.setMemoryStore}. */
   memory?: MemoryStore;
 }
 
@@ -1566,7 +1566,9 @@ export class Concierge {
   /** User-facing `#N` / `#N.x` organization; tracker ticket ids stay behind this boundary. */
   private readonly tasks: TaskStore;
   private branchStatus: BranchStatusService | null;
-  /** One long-lived graph/Moss owner for `memory.recall` control-bus requests (lazy for partial test configs). */
+  /** The ONE long-lived graph/Moss owner for `memory.recall` control-bus requests — the memory
+   *  extension's warm store, wired by v4-main via {@link setMemoryStore} (or injected in tests).
+   *  Null until wired: the bus command then answers with a clear "not wired" error. */
   private memory: MemoryStore | null;
   private readonly taskThreadCreates = new Map<number, Promise<TaskThreadCreated>>();
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
@@ -1817,14 +1819,17 @@ export class Concierge {
     for (const capability of this.buildBusCapabilities()) this.busRegistry.register(capability);
   }
 
-  /** Create the daemon-owned warm store on first recall, keeping partial test configs construction-only. */
+  /**
+   * The daemon-owned warm store: the memory EXTENSION's, wired by v4-main through
+   * {@link setMemoryStore} (or injected in tests). Phase 6 removed the lazy in-concierge
+   * construction — a second warm store here would silently diverge from the extension's
+   * graph/Moss handle. Throws (→ the bus handler's ok:false) when nothing is wired.
+   */
   private memoryForRecall(): MemoryStore {
-    return (this.memory ??= createMemory({
-      memoryDir: buildPaths(this.config).memoryDir,
-      logger: this.log.child("memory"),
-      git: true,
-      warm: true,
-    }));
+    if (!this.memory) {
+      throw new Error("memory.recall unavailable — the memory extension store is not wired (v3 daemon only)");
+    }
+    return this.memory;
   }
 
   /**
@@ -1934,6 +1939,11 @@ export class Concierge {
   /** Wire the v6 extension registry + its dispatch context (v4-main). See {@link extensions}. */
   setExtensionRegistry(registry: ExtensionRegistry, ctx: ExtensionContext): void {
     this.extensions = { registry, ctx };
+  }
+
+  /** Wire the memory extension's daemon-owned warm store (v4-main, Phase 6). See {@link memory}. */
+  setMemoryStore(store: MemoryStore): void {
+    this.memory = store;
   }
 
   /**

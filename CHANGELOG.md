@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+### v6 — the plug n play release (Phases 2–6 complete)
+
+Every organ now lives on the ONE extension contract (docs/v6-architecture.md);
+the daemon boots them in staged sweeps, health-checks them, and drains them in
+reverse. Built wave by wave, each implemented by one model and adversarially
+reviewed by another; the reviewers refused two waves outright and killed four
+real security holes before merge (unauthenticated credentialed-browser
+dispatch via ext.invoke; a recall audience escalation via argv injection; a
+browser queue lease race; a memory rescope leak that let any origin flip an
+owner-scoped node public). Every wave shipped behind byte-identical
+characterization suites.
+
+- **Phase 2 — browser** is the first stateful extension (lifecycle re-homes
+  the Chromium host + agent), plus the DISPATCH QUEUE: a busy-lease browser
+  ask queues durably, survives restarts, auto-starts, is steerable while
+  queued; queued credentialed runs hold no secret values. ext.invoke derives
+  identity from the issuer token; non-FREE capabilities refuse without an
+  authenticated turn. The concierge prompt now renders the live capability
+  catalog.
+- **Phase 3 — quick + routines**; ExtensionLifecycle gains
+  startPhase "early"|"late" (crash recovery before the pollers, schedulers
+  after the live system — a flat startAll was a real TDZ boot hazard).
+- **Phase 4 — catalog cutover**: github/dns/deploy/mail on the contract with
+  shared throwing cores; the CLI is 100% extension-backed with byte-identical
+  help; SLASH COMMANDS DELETED (the sanctioned product cut — @mention is the
+  interface; /stats retired without successor).
+- **Phase 5 — worker stages are a core-kind extension facet**, byte-identical
+  (prompts, transitions, reviewTierFor untouched); stage names + entry states
+  are collision-guarded global namespaces. The enabler for per-ticket flows.
+- **Phase 6 — memory**: the warm store + nightly maintain loop live on the
+  contract (late stage); memory.recall/memory.remember are ORIGIN-BOUND —
+  audience derived in code from the token-derived origin, caller-supplied
+  viewer/role args refused loudly, dm context unreachable via ext.invoke
+  (fail-closed), scoping create-only on the invoke path, and no origin can
+  write a node it cannot view. Engine code untouched.
+- **Multitasking** (concierge core): the in-flight interrupt is a policy —
+  own-ask amendments cancel-and-amend while composing; tool-using turns
+  finish and independent asks queue as priority turns; a teammate's message
+  never cancels yours. Canned progress acks are gone; doctrine bans trailing
+  questions and busy-narration. Daemon-authored messages humanized.
+- **Drivers**: the triplicated NDJSON frame normalization unified in
+  BaseDriver behind golden frame tests proven against the pre-refactor tree.
+- Open items, deliberately not silently widened: deploy/github/mail daemon
+  registration awaits sanction of their host side effects; the v5 bus
+  memory.recall argv audience (pre-existing) flagged for an issuer-role
+  gate; the asCapability projection layer retires when its last consumer
+  cuts over.
+
 ## v5.10.5 (2026-07-24)
 
 ### v6 Phase 1 — image + secret on the extension contract (#82 follow-on)
