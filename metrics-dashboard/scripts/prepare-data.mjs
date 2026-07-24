@@ -32,6 +32,8 @@ const RECALL_OUT = resolve(__dirname, "..", "src", "generated", "recall.json");
 // Display label + dither-kit palette colour per model. Any model the harvester
 // emits that we don't recognise still renders — it falls through to "grey".
 const MODEL_META = {
+  "claude-opus-5": { label: "opus-5", color: "red" },
+  // Kept so historical runs harvested before the Opus 5 swap still render labelled.
   "claude-opus-4-8": { label: "opus-4.8", color: "red" },
   "claude-sonnet-5": { label: "sonnet-5", color: "blue" },
   "claude-haiku-4-5-20251001": { label: "haiku-4.5", color: "green" },

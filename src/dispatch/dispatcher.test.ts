@@ -234,7 +234,7 @@ function cfg(max_workers = 2): Config {
   return {
     identity: { github_user: "test-account", gmail_address: "" },
     concurrency: { max_workers },
-    models: { reviewer: "claude-opus-4-8" },
+    models: { reviewer: "claude-opus-5" },
     harness: {
       claude: { enabled: true },
       codex: { enabled: true },
@@ -327,7 +327,7 @@ describe("INT intensive flow", () => {
       projectId: "INT",
       state: "design",
       casting: {
-        design: { harness: "claude", model: "claude-opus-4-8", effort: "high" },
+        design: { harness: "claude", model: "claude-opus-5", effort: "high" },
         implement: { harness: "pi", effort: "medium" },
         review: { harness: "claude", model: "claude-sonnet-5", effort: "high" },
       },
@@ -418,7 +418,7 @@ describe("spawn on state change", () => {
     // Model from config.models.reviewer; effort defaults to "high" (never the xhigh fall-through).
     expect(spawnCalls[0]).toMatchObject({
       stage: "review",
-      harness: { harness: "claude", model: "claude-opus-4-8", effort: "high" },
+      harness: { harness: "claude", model: "claude-opus-5", effort: "high" },
     });
   });
 
@@ -436,13 +436,13 @@ describe("spawn on state change", () => {
 
   test("an explicit review cast keeps its effort; one without gets the scaled default", async () => {
     const { d } = newDispatcher();
-    const pinned = makeTicket({ id: "t-p", identifier: "OPS-P", state: "in_review", casting: { review: { harness: "claude", model: "claude-opus-4-8", effort: "xhigh" } } });
+    const pinned = makeTicket({ id: "t-p", identifier: "OPS-P", state: "in_review", casting: { review: { harness: "claude", model: "claude-opus-5", effort: "xhigh" } } });
     await d.handle(stateChanged(pinned, "in_review"));
     await tick();
     const bare = makeTicket({ id: "t-b", identifier: "OPS-B", state: "in_review", casting: { review: { harness: "claude" } } });
     await d.handle(stateChanged(bare, "in_review"));
     await tick();
-    expect(spawnCalls[0]!.harness).toMatchObject({ model: "claude-opus-4-8", effort: "xhigh" });
+    expect(spawnCalls[0]!.harness).toMatchObject({ model: "claude-opus-5", effort: "xhigh" });
     expect(spawnCalls[1]!.harness.effort).toBe("high");
   });
 

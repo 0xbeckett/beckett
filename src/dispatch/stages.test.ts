@@ -92,7 +92,7 @@ describe("per-stage default casts", () => {
     expect(stageRegistry.resolveCast("implement", undefined, ticket, config)).toEqual({ harness: "claude" });
     expect(stageRegistry.resolveCast("design", undefined, ticket, config)).toEqual({
       harness: "claude",
-      model: "claude-opus-4-8",
+      model: "claude-opus-5",
       effort: "high",
     });
     expect(stageRegistry.resolveCast("design_check", undefined, ticket, config)).toEqual({
@@ -114,8 +114,8 @@ describe("per-stage default casts", () => {
     // An explicit review cast that names no effort still gets the scaled default…
     const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
     expect(
-      stageRegistry.resolveCast("review", { harness: "claude", model: "claude-opus-4-8" }, ticket, config),
-    ).toEqual({ harness: "claude", model: "claude-opus-4-8", effort: "medium" });
+      stageRegistry.resolveCast("review", { harness: "claude", model: "claude-opus-5" }, ticket, config),
+    ).toEqual({ harness: "claude", model: "claude-opus-5", effort: "medium" });
     // …while an explicit effort wins untouched.
     expect(
       stageRegistry.resolveCast("review", { harness: "claude", effort: "xhigh" }, ticket, config),

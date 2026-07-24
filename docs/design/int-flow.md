@@ -237,7 +237,7 @@ Sensible defaults, by the nature of each stage:
 
 - **`design` → judgment/research-heavy → Opus tier.** Writing a design doc is taste, trade-off
   analysis, and reading unfamiliar code — terra's weak spot (fuzzy specs, real-repo reasoning; see
-  `cast-presets.md` §2). Default **`claude-opus-4-8` at `high`** (Fable for genuinely foundational
+  `cast-presets.md` §2). Default **`claude-opus-5` at `high`** (Fable for genuinely foundational
   work, confirm-first as always).
 - **`implement` → terra default.** Once the design is approved the spec is crisp — terra's home
   turf. Default the house `{harness:"pi", effort:"medium"}`.
@@ -248,7 +248,7 @@ Example INT cast JSON (the `beckett-cast` block on an INT ticket):
 
 ```json
 {
-  "design":    { "harness": "claude", "model": "claude-opus-4-8", "effort": "high" },
+  "design":    { "harness": "claude", "model": "claude-opus-5", "effort": "high" },
   "implement": { "harness": "pi",     "model": "gpt-5.6-terra",   "effort": "medium" },
   "review":    { "harness": "claude", "model": "claude-sonnet-5", "effort": "high" }
 }
@@ -349,7 +349,7 @@ handle arbitrary stage names today, `src/plane/presets.ts`). Add a seed preset:
 ```json
 {
   "intensive": {
-    "design":    { "harness": "claude", "model": "claude-opus-4-8", "effort": "high" },
+    "design":    { "harness": "claude", "model": "claude-opus-5", "effort": "high" },
     "implement": { "harness": "pi",     "effort": "medium" },
     "review":    { "harness": "claude", "model": "claude-sonnet-5", "effort": "high" }
   }

@@ -43,7 +43,7 @@ function harness() {
 test("normalizes a full claude run: init → assistant(text+tool) → user(tool_result) → result", () => {
   const { events, feed } = harness();
 
-  feed({ type: "system", subtype: "init", session_id: "sess-xyz", model: "claude-opus-4-8" });
+  feed({ type: "system", subtype: "init", session_id: "sess-xyz", model: "claude-opus-5" });
   feed({
     type: "assistant",
     message: {
@@ -82,7 +82,7 @@ test("normalizes a full claude run: init → assistant(text+tool) → user(tool_
   ]);
 
   const session = events.find((e) => e.kind === "session_started");
-  expect(session).toMatchObject({ sessionId: "sess-xyz", model: "claude-opus-4-8" });
+  expect(session).toMatchObject({ sessionId: "sess-xyz", model: "claude-opus-5" });
 
   // The load-bearing token field-map: input_tokens→input, cache_creation_input_tokens→cacheCreate.
   const turn = events.find((e) => e.kind === "turn_completed") as { usage: { input: number; output: number; cacheRead: number; cacheCreate: number } };

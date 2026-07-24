@@ -21,7 +21,7 @@ const SAMPLE: Omit<AgentDefinition, "createdAt" | "updatedAt" | "builtin"> = {
   id: "release-notes-writer",
   description: "drafts release notes from a changelog",
   systemPrompt: "You write crisp release notes.",
-  model: { harness: "claude", model: "claude-opus-4-8", effort: "high" },
+  model: { harness: "claude", model: "claude-opus-5", effort: "high" },
   skills: ["github"],
   tools: ["Read", "Edit"],
   persistent: false,
@@ -35,7 +35,7 @@ test("add captures the full agent schema and stamps builtin:false + timestamps",
   expect(added.updatedAt).toBeTruthy();
   expect(added.description).toBe("drafts release notes from a changelog");
   expect(added.systemPrompt).toBe("You write crisp release notes.");
-  expect(added.model).toEqual({ harness: "claude", model: "claude-opus-4-8", effort: "high" });
+  expect(added.model).toEqual({ harness: "claude", model: "claude-opus-5", effort: "high" });
   expect(added.skills).toEqual(["github"]);
   expect(added.tools).toEqual(["Read", "Edit"]);
   expect(added.persistent).toBe(false);

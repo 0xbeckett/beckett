@@ -145,7 +145,7 @@ driven mostly by output price and whether a fresh reviewer runs — not a promis
 | **gpt-5.6-luna** | `pi` | **$1 / $6** | Fastest | Rote/mechanical grind: bulk renames, obvious edits, boilerplate, codemods where even terra is overkill | Anything needing judgment, design, or a non-trivial decision; visual work |
 | **gpt-5.6-terra** | `pi` (default) | **$2.50 / $15** | Fast | Crisp-spec backend/systems: APIs, parsers, data layers, migrations, test suites, scripts, infra; long-diff "was it done?" review | Visual/UI; fuzzy/vibe specs; unproven on real-repo patching; hard problems at xhigh (poor reasoning-scale) |
 | **claude-sonnet-5** | `claude` | **$2 / $10** intro (→ **$3 / $15** after 2026-08-31) | Fast | The default **review** seat — reads a diff vs criteria excellently cheap; mechanical implement in the claude toolchain | Review gate on critical work; anything at `xhigh` (burns time, no smarter) |
-| **claude-opus-4-8** | `claude` (default) | **$5 / $25** | Medium | Taste & frontend: visual, interaction, component architecture, copy, UX; judgment-heavy backend with a fuzzy spec; stronger-than-default reviewer | Rote spec-grind pi does faster/cheaper; running below `high` |
+| **claude-opus-5** | `claude` (default) | **$5 / $25** (carried from the 4.8 Opus tier — unconfirmed for Opus 5) | Medium | Taste & frontend: visual, interaction, component architecture, copy, UX; judgment-heavy backend with a fuzzy spec; stronger-than-default reviewer | Rote spec-grind pi does faster/cheaper; running below `high` |
 | **claude-fable-5** | `claude` | **$10 / $50** | Slowest | The heavy seat: review on correctness-critical / hard-to-reverse / `--project beckett`; implement on the rare genuinely-hard design problem (sweeping refactor, subtle concurrency, foundational API). **Leads real-repo patching evals.** | Routine implement or review; anything a cheaper seat handles — casting it is pure burn. **Confirm with the human first, always.** |
 
 Not castable, for completeness: **Sol** and bare **gpt-5.6** are hard-blocked on our tier;
@@ -197,10 +197,10 @@ gate it implies, and a rough cost profile. Presets are ordered cheapest → most
 
 ### 4.4 `taste-lane` — frontend / visual / design
 ```json
-{"implement":{"harness":"claude","effort":"high","reviewTier":"self"}}
+{"implement":{"harness":"claude","model":"claude-opus-5","effort":"high","reviewTier":"self"}}
 ```
 - **When:** anything judged by eye — UI, canvas/animation, landing pages, layout, copy, "make it
-  look like X." Opus 4.8 implements; **explicit `reviewTier:"self"`** keeps it one-pass (a cold
+  look like X." Opus 5 implements; **explicit `reviewTier:"self"`** keeps it one-pass (a cold
   code reviewer can't judge pixels anyway).
 - **Gate:** one pass, forced via `reviewTier` (Opus never runs below `high`, which would otherwise
   trip the fresh gate).
