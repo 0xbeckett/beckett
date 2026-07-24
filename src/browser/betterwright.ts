@@ -44,9 +44,13 @@ export function createBetterWrightRuntime(settings: BrowserHostSettings, logger:
   const home = join(resolve(settings.profileDir), "betterwright");
   const browser = new BetterWright({
     home,
-    // 0.9.x ships a single managed CloakBrowser backend and provisions its own
-    // signed binary via `betterwright setup`, so the host no longer picks a
-    // browser flavor or hands in a Playwright executable path.
+    // 1.x keeps `browser: "cloak"` as the only pluggable flavor and provisions
+    // its own signed CloakBrowser binary via `betterwright setup --cloak-only`,
+    // so the host neither picks a browser flavor nor hands in a Playwright
+    // executable path. (`betterwright setup`/`update` can also install a native
+    // Chromium fork under ~/.betterwright, but that artifact is never bound into
+    // this bubblewrap sandbox — see isolated.ts — so the managed CloakBrowser
+    // cache stays the only browser reachable inside it.)
     headless: settings.headless,
     defaultTimeout: Math.max(5, Math.ceil(settings.evalTimeoutMs / 1_000)),
     // Pin the open private-network and loopback defaults explicitly so Beckett's
@@ -71,7 +75,7 @@ export function createBetterWrightRuntime(settings: BrowserHostSettings, logger:
   function copyArtifacts(result: BetterWrightResult, lease: ActiveLease): string[] {
     mkdirSync(lease.artifactsDir, { recursive: true, mode: 0o700 });
     const copied: string[] = [];
-    // 0.9.x exposes screenshot files through the artifact's `MEDIA:`-prefixed
+    // 1.x exposes screenshot files through the artifact's `MEDIA:`-prefixed
     // `media` field; piImageArtifacts resolves that (and legacy `path`) to real
     // local image paths, so copy those rather than reading `artifact.path`.
     for (const image of piImageArtifacts(result)) {

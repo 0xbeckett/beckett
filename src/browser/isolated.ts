@@ -878,7 +878,7 @@ function addBrowserRuntimeMounts(args: string[], repoRoot: string, hostPath: str
     hostPath,
     "/repo/node_modules/.cache/beckett-browser/host.mjs",
   );
-  // betterwright 0.9.x drives the managed CloakBrowser as its only backend, so
+  // betterwright 1.x drives the managed CloakBrowser as this host's backend, so
   // the sandbox must now expose that whole runtime dependency closure: tldts
   // (+ tldts-core) for the credential-vault URL scoping betterwright pulls in,
   // and cloakbrowser's tar extractor (+ its minipass/chownr subtree), which

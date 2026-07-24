@@ -78,9 +78,13 @@ git fetch origin
 git checkout main
 git pull --ff-only origin main
 bun install --frozen-lockfile
-# BetterWright's documented setup provisions its managed runtime. Beckett deliberately
-# uses BetterWright's explicit pinned-Playwright Chromium fallback inside bubblewrap.
-bun x betterwright setup
+# BetterWright's documented setup provisions its managed runtime. In 1.x, a bare
+# `betterwright setup` also fetches the native Chromium fork into ~/.betterwright and
+# makes discovery prefer it; that artifact is never bound into the browser-host
+# bubblewrap sandbox, so pin --cloak-only to provision just the managed CloakBrowser
+# binary the sandbox actually reaches. Beckett's own pinned-Playwright Chromium
+# (the default backend + evaluator) is installed separately below.
+bun x betterwright setup --cloak-only
 bun x playwright install --no-shell chromium
 browser_smoke() {
   bun -e 'import { chromium } from "playwright"; const browser = await chromium.launch({ headless: true, channel: "chromium" }); await browser.close();'

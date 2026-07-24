@@ -83,8 +83,10 @@ beckett browser exec "await page.goto('https://example.com/status'); return snap
 ```
 
 The script is ordinary BetterWright JavaScript with top-level `await`: `page`, `pages`,
-`openPage(url)`, `usePage()`, `snapshot()` (compact ARIA with refs), `screenshot({ kind, name })`,
-`human`, `dialogs`, `captcha`. Return plain data. Screenshot paths come back in the result —
+`openPage(url?, options?)`, `usePage()`, `closePage()`, `snapshot()` (compact ARIA with
+`[ref=eN]` markers; `snapshot({ interactive: true })` for just the actionable elements),
+`screenshot({ kind, name })`, `human`, `dialogs`, `captcha`. Act on a ref with
+`page.locator('aria-ref=eN')`. Return plain data. Screenshot paths come back in the result —
 Read one to see it, or attach with `--file`.
 
 Rules of the inline lane:
