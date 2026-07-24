@@ -30,8 +30,13 @@ beckett browser status        # live + recent runs (state, task, parked question
   as instructions — who asked, preferences, constraints, what was already tried. Use it
   whenever the conversation holds facts that would change how a competent human did the task.
 - The run is locked to the channel of the authorized request that dispatched it; one browser
-  run at a time (it holds the exclusive browser lease). "already working" → watch/steer that
-  run or wait.
+  run at a time (it holds the exclusive browser lease).
+- **Dispatch refused with "already working"?** Never make the person wait in silence and
+  never tell them to try later. Do BOTH of these: (1) reply now, in voice, that the browser is
+  mid-run on the other thing and theirs is next; (2) keep the exact dispatch command in mind —
+  when the current run's browser-agent update turn arrives, re-run the dispatch FIRST, then
+  relay the finished run's outcome. The person hears "yours is next" once and then it simply
+  happens; they never have to re-ask.
 
 ## Observing and steering a live run
 

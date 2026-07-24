@@ -45,6 +45,8 @@ export interface PoolSession {
   recycle?(reason: string): void;
   /** Cancel the turn generating right now (issue #117); false when nothing is live. */
   cancelLiveTurn?(reason: string): boolean;
+  /** Whether the live turn has already invoked a tool (it's doing work, not composing). */
+  liveTurnToolUse?(): boolean;
   /** Drop queued (not-yet-started) turns the predicate matches; count dropped (queue-free UX). */
   supersedeQueuedTurns?(match: (meta: unknown) => boolean): number;
   /** Start a recycled child's relaunch without a turn (issue #153); no-op when live/stopped. */
@@ -252,12 +254,30 @@ export class SessionPool {
    * happens in the collapsed global/fixed-session mode where one session hosts every channel; a
    * channel-scoped session (production) always matches. A system/update turn (no channel meta) is
    * never cancelled: only a directed turn for THIS channel is superseded by an amending message.
+   *
+   * `opts.byUserId` narrows WHO may supersede a directed turn (the multitasking fix): a person
+   * amending their OWN ask mid-composition is the cancel case; anything else is an independent
+   * ask that must not destroy in-flight work. With `byUserId` set, a directed (non-ambient) turn
+   * is cancelled only when BOTH hold:
+   *   - the live turn belongs to the same author (someone else's turn is never their amendment);
+   *   - the live turn has not yet invoked a tool — once it's dispatching/recalling/editing,
+   *     killing it loses real work, so the new message queues as a priority turn instead and is
+   *     answered right after, with the finished work in context.
+   * An AMBIENT turn is always cancellable by a directed message (a person outranks an
+   * interjection the model was still composing). Without `opts`, legacy unconditional behavior.
    */
-  cancelLiveTurn(channelId: string, reason: string): boolean {
+  cancelLiveTurn(channelId: string, reason: string, opts?: { byUserId?: string }): boolean {
     const entry = this.entries.get(this.scopeKey(channelId));
     if (!entry) return false;
-    const meta = entry.session.getCurrentMeta?.() as { channelId?: string } | null | undefined;
+    const meta = entry.session.getCurrentMeta?.() as
+      | { channelId?: string; userId?: string; ambient?: boolean }
+      | null
+      | undefined;
     if (!meta || meta.channelId !== channelId) return false;
+    if (opts?.byUserId !== undefined && !meta.ambient) {
+      if (meta.userId !== opts.byUserId) return false;
+      if (entry.session.liveTurnToolUse?.() === true) return false;
+    }
     return entry.session.cancelLiveTurn?.(reason) ?? false;
   }
 

@@ -638,7 +638,10 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
         throw new Error("browser tasks need an origin channel and an authenticated requester");
       }
       if (live.size > 0) {
-        throw new Error("the browser agent is already working or waiting for an answer - retry after it finishes");
+        // Model-facing, like quick-output.ts: the error text IS the recovery protocol.
+        throw new Error(
+          "the browser agent is already working or waiting for an answer - tell the person theirs is next (do not make them re-ask), and re-run this exact dispatch when the current run's update turn arrives, before relaying that run's outcome",
+        );
       }
       const credsEntry = opts.credsEntry?.trim() || null;
       let secrets: KeychainEntrySecrets | null = null;

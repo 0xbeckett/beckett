@@ -537,6 +537,8 @@ export class ConciergeSession {
   // ── turn bookkeeping (issue #24) ─────────────────────────────────────────────────────────
   /** Caller-supplied metadata of the CURRENTLY EXECUTING turn (reply-claim correlation). */
   private currentMeta: unknown = null;
+  /** True once the LIVE turn has invoked any tool — it's doing work, not just composing. */
+  private liveTurnToolUsed = false;
 
   // launch plumbing. NOTE: `claude -p --input-format stream-json` emits `system/init` only AFTER
   // the first stdin line arrives, so start() must NOT block waiting for init (that deadlocks —
@@ -701,6 +703,11 @@ export class ConciergeSession {
     return true;
   }
 
+  /** Whether the turn executing right now has already invoked a tool (see onAssistant). */
+  liveTurnToolUse(): boolean {
+    return this.pending !== null && this.liveTurnToolUsed;
+  }
+
   /**
    * Drop QUEUED (not yet started) turns the caller considers superseded — the queue-free
    * converse of {@link cancelLiveTurn}. A rapid-fire follow-up from the same author shouldn't
@@ -762,6 +769,7 @@ export class ConciergeSession {
     const child = this.child;
     if (!child) throw new Error("concierge session has no live process");
     this.currentMeta = meta ?? null;
+    this.liveTurnToolUsed = false;
     // A timeout, write failure, or malformed result must leave the shared-context cursor where
     // it was. Fakes predate this signal and leave it undefined, which remains successful parity.
     if (isMentionClaim(meta)) meta.turnSucceeded = false;
@@ -1114,6 +1122,10 @@ export class ConciergeSession {
       if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
         this.pending.parts.push(block.text);
       }
+      // The multitasking signal: once a turn invokes any tool, it has moved from composing to
+      // DOING (a dispatch, a recall, an edit). The pool reads this to decide whether a newer
+      // same-channel message may cancel-and-amend this turn or must queue behind it.
+      if (block.type === "tool_use") this.liveTurnToolUsed = true;
     }
   }
 
@@ -3852,15 +3864,18 @@ export class Concierge {
     };
     this.activeMentions.set(m.channelId, mention);
 
-    // In-flight interrupt (issue #117): this directed message landed while the channel's turn was
-    // still generating, so that turn's answer is already stale (the person amended the ask). Cancel
-    // the doomed generation now — its stale reply is suppressed and the session id retained — so
-    // THIS message is answered promptly as the next turn (resuming the same conversation, the
-    // original question intact in context), instead of the stale reply posting and the correction
-    // running as a separate full turn minutes later. No-op when the channel has no live turn, so
-    // the normal single-turn path is untouched. This mention already overwrote activeMentions
-    // above, so the superseded turn's handler won't clear the new claim when its ask() resolves.
-    if (this.pool.cancelLiveTurn(m.channelId, "superseded by same-channel message")) {
+    // In-flight interrupt (issue #117), narrowed to real amendments (the multitasking fix): a
+    // person correcting their OWN ask while the turn is still composing gets cancel-and-amend —
+    // the stale reply is suppressed, the session id retained, and THIS message answers promptly
+    // with the original question intact in context. But a different person's message, or any
+    // message landing after the live turn has started DOING work (invoked a tool — a dispatch,
+    // a recall, an edit), is an independent ask: killing the turn would destroy in-flight work
+    // and force one serialized mega-turn. Those queue as priority turns below instead — the live
+    // turn finishes, and the new ask is answered right after with the outcome in context. That
+    // is how a coworker multitasks: finish the sentence, then answer. No-op when the channel has
+    // no live turn. (activeMentions was overwritten above; production reply-correlation is
+    // token-exact per session, so a surviving live turn still claims its own replies.)
+    if (this.pool.cancelLiveTurn(m.channelId, "superseded by same-channel message", { byUserId: m.userId })) {
       this.log.info("cancelled stale in-flight turn superseded by same-channel message", {
         channelId: m.channelId,
         messageId: m.messageId,

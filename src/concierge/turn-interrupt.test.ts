@@ -101,17 +101,20 @@ test("cancelLiveTurn is a no-op when no turn is live (normal path untouched)", (
 interface FakePoolSession extends PoolSession {
   cancels: string[];
   meta: unknown;
+  toolUsed: boolean;
 }
 
 function fakePoolSession(scope: string): FakePoolSession {
   const s: FakePoolSession = {
     cancels: [],
     meta: null,
+    toolUsed: false,
     start: async () => {},
     stop: async () => {},
     ask: () => Promise.resolve(`reply:${scope}`),
     getCurrentMeta: () => s.meta,
     hasLiveChild: () => true,
+    liveTurnToolUse: () => s.toolUsed,
     cancelLiveTurn: (reason: string) => {
       s.cancels.push(reason);
       return true;
@@ -161,6 +164,56 @@ test("pool cancelLiveTurn never cancels a turn belonging to another channel or a
   // An unknown channel (no session) is a clean no-op.
   expect(p.cancelLiveTurn("chan-none", "x")).toBe(false);
   expect(chanA.cancels).toEqual([]);
+});
+
+// ── 2b. The multitasking policy: amendments cancel; independent asks queue ────────────────
+
+test("a different author's message never cancels someone else's live turn", async () => {
+  const made: FakePoolSession[] = [];
+  const p = poolWith(made);
+  await p.ask("chan-a", "hi");
+  const chanA = made[0]!;
+  chanA.meta = { channelId: "chan-a", messageId: "m-1", userId: "alice" };
+
+  expect(p.cancelLiveTurn("chan-a", "x", { byUserId: "bob" })).toBe(false); // bob's ask is his own turn
+  expect(p.cancelLiveTurn("chan-a", "amend", { byUserId: "alice" })).toBe(true); // alice amends alice
+  expect(chanA.cancels).toEqual(["amend"]);
+});
+
+test("a turn that already invoked a tool is never cancelled — the new ask queues instead", async () => {
+  const made: FakePoolSession[] = [];
+  const p = poolWith(made);
+  await p.ask("chan-a", "hi");
+  const chanA = made[0]!;
+  chanA.meta = { channelId: "chan-a", messageId: "m-1", userId: "alice" };
+  chanA.toolUsed = true; // mid-dispatch: a browser task / recall / edit is in flight
+
+  expect(p.cancelLiveTurn("chan-a", "x", { byUserId: "alice" })).toBe(false); // work survives
+  chanA.toolUsed = false;
+  expect(p.cancelLiveTurn("chan-a", "amend", { byUserId: "alice" })).toBe(true); // composing → amend
+});
+
+test("an ambient turn is always cancellable by a directed message, whoever sent it", async () => {
+  const made: FakePoolSession[] = [];
+  const p = poolWith(made);
+  await p.ask("chan-a", "hi");
+  const chanA = made[0]!;
+  chanA.meta = { channelId: "chan-a", messageId: "m-amb", userId: "alice", ambient: true };
+  chanA.toolUsed = true; // even a tool-using ambient turn yields to a person
+
+  expect(p.cancelLiveTurn("chan-a", "person outranks interjection", { byUserId: "bob" })).toBe(true);
+  expect(chanA.cancels).toEqual(["person outranks interjection"]);
+});
+
+test("without opts the legacy unconditional cancel is preserved", async () => {
+  const made: FakePoolSession[] = [];
+  const p = poolWith(made);
+  await p.ask("chan-a", "hi");
+  const chanA = made[0]!;
+  chanA.meta = { channelId: "chan-a", messageId: "m-1", userId: "alice" };
+  chanA.toolUsed = true;
+
+  expect(p.cancelLiveTurn("chan-a", "legacy")).toBe(true);
 });
 
 // ── 3. Concierge.onMessage — supersede-and-answer end to end ──────────────────────────────
