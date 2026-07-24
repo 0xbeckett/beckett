@@ -51,7 +51,7 @@ import { excludeFromGit, installScaffoldingGuardHook, SCAFFOLDING_DIR } from "..
 import { scopeGuardSpec } from "../hooks/scope-guard.ts";
 import { renderClaudeSettings } from "../hooks/registry.ts";
 import { buildResumeBrief } from "./resume-brief.ts";
-import { defaultEffortFor, stageRegistry } from "./stages.ts";
+import { defaultEffortFor, stageRegistry, type StageView } from "./stages.ts";
 
 // =======================================================================================
 // Handle contract
@@ -183,6 +183,12 @@ export interface SpawnWorkerArgs {
    * judges code instead of running git. Absent → the reviewer diffs for itself (old behavior).
    */
   reviewDiff?: string;
+  /**
+   * Stage lookup the prompt/system-append resolve through (v6 Phase 5): the dispatcher threads
+   * its ExtensionRegistry-backed {@link StageView} here so staffing and prompting can never read
+   * diverging stage tables. Absent (tests / embedders) → the shared default view.
+   */
+  stages?: StageView;
   logger?: Logger;
 }
 
@@ -297,6 +303,8 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
 export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHandle> {
   const { ticket, stage, harness, config, repoRoot, workspace, branch, baseRef, resumeSessionId, onProgress, steering, reviewDiff } =
     args;
+  // v6 Phase 5: stage resolution rides the SAME registry view that staffed this ticket.
+  const stages = args.stages ?? stageRegistry;
   const logger = (args.logger ?? log.child("dispatch.spawn")).child(`ticket.${ticket.identifier}`);
 
   const id = mintWorkerId();
@@ -403,8 +411,8 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
       workerId: id,
       prompt: resumeSessionId
         ? buildResumeBrief(ticket, stage, baseRef, steering)
-        : stageRegistry.prompt(stage, { ticket, baseRef, steering, reviewDiff }),
-      systemAppend: stageRegistry.systemAppend(stage, { ticket, config, baseRef }),
+        : stages.prompt(stage, { ticket, baseRef, steering, reviewDiff }),
+      systemAppend: stages.systemAppend(stage, { ticket, config, baseRef }),
       workspace,
       scope,
       envelope,

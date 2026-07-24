@@ -83,9 +83,9 @@ import {
   parseDoneSignal,
   retryCapsFor,
   stageRegistry,
-  StageRegistry,
   type RetryCaps,
   type StageOps,
+  type StageView,
 } from "./stages.ts";
 
 // =======================================================================================
@@ -135,8 +135,11 @@ export interface DispatcherDeps {
   /** Resolve the board-scoped client for a tracker board id. Falls back to client. */
   clientForProjectId?: (projectId: string) => TrackerClientLike | undefined;
   config: Config;
-  /** Stage registry override (tests / embedders); defaults to the shared built-in registry. */
-  stages?: StageRegistry;
+  /**
+   * Stage lookup override (tests / embedders); defaults to the shared built-in view. v6 Phase 5:
+   * production (`shell/main.ts`) threads the BootedSystem ExtensionRegistry's stage view here.
+   */
+  stages?: StageView;
   /** Override any git op (tests inject fakes here); unset ops use the real worktree.ts impl. */
   gitOps?: Partial<GitOps>;
   /** Resolve the absolute path of a ticket's own project repo (`~/Projects/<slug>`). */
@@ -431,7 +434,7 @@ export class Dispatcher {
   /** OPS-167's only transition telemetry chokepoint; persistence happens inside `emit`. */
   private readonly dispatchEvents: DispatchEventBus;
   /** The stage lookup (OPS-180): staffing, casting, done-parsing, and finish handling all resolve here. */
-  private readonly stages: StageRegistry;
+  private readonly stages: StageView;
   /** Config-resolved retry/rework bounds (`[supervise] max_*`; defaults = the old constants). */
   private readonly caps: RetryCaps;
   /** The narrow dispatcher surface stage finish handlers run against (see stages.ts#StageOps). */
@@ -1763,6 +1766,9 @@ export class Dispatcher {
       onProgress,
       steering,
       reviewDiff,
+      // v6 Phase 5: spawn resolves the prompt/system-append through the SAME stage view that
+      // staffed this ticket — one registry, no staffing/prompting divergence.
+      stages: this.stages,
       logger: this.logger,
     };
 

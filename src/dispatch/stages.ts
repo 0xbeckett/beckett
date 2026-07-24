@@ -32,7 +32,9 @@
  */
 
 import type { Config, DoneSignal, Effort, Logger } from "../types.ts";
+import { ActionClass } from "../types.ts";
 import type { HarnessSpec, Ticket, TicketState } from "../tracker/types.ts";
+import { ExtensionRegistry, type Extension, type ExtensionFactory } from "../ext/index.ts";
 import type { DispatchOutcome } from "./events.ts";
 import type { TicketWorkerHandle } from "./spawn.ts";
 import { projectSlug } from "../tracker/cast.ts";
@@ -272,6 +274,10 @@ export interface StageDefinition {
  * Unknown stage names keep their pre-registry behavior: generic task prompt, worker
  * persona, plain-claude cast, and a generic finish comment (the dispatcher handles the
  * missing-definition case).
+ *
+ * v6 Phase 5: production resolution moved to the {@link ExtensionRegistry} (the stages facet,
+ * read through {@link stageViewOf}); this class remains the standalone, test-constructible
+ * implementation of the same {@link StageView} surface and retires with its last consumer.
  */
 export class StageRegistry {
   private readonly stages = new Map<string, StageDefinition>();
@@ -748,12 +754,105 @@ const designCheckStage: StageDefinition = {
 };
 
 // =======================================================================================
+// The v6 stages facet (Phase 5) — the built-ins as ONE core-kind extension
+// =======================================================================================
+
+/**
+ * The exact stage-lookup surface consumers program against — the {@link StageRegistry} API,
+ * now also servable as a view over an {@link ExtensionRegistry}'s stage facet
+ * ({@link stageViewOf}). The dispatcher takes this by DI and threads it into the spawn helper,
+ * so a test-constructed {@link StageRegistry} and the production extension-backed view are
+ * interchangeable at every call site.
+ */
+export interface StageView {
+  /** The stage definition for `name`, or undefined for an unregistered stage. */
+  get(name: string): StageDefinition | undefined;
+  /** The stage a ticket entering `state` should staff, if any. */
+  forState(state: TicketState): StageDefinition | undefined;
+  /** Registered stage names (diagnostics). */
+  names(): string[];
+  /** A stage's task brief; unregistered stages get the generic task prompt (old fallback). */
+  prompt(stage: string, args: StagePromptArgs): string;
+  /** A stage's system append; unregistered stages get the worker persona (old fallback). */
+  systemAppend(stage: string, args: StageAppendArgs): string;
+  /** A stage's resolved cast; unregistered stages default to plain claude (old fallback). */
+  resolveCast(stage: string, explicit: HarnessSpec | undefined, ticket: Ticket, config: Config): HarnessSpec;
+}
+
+/**
+ * A {@link StageView} over an {@link ExtensionRegistry}'s registered stage facets — the Phase 5
+ * consumer seam: the dispatcher and the spawn helper keep their exact old call sites while
+ * stage resolution routes through the ONE extension registry. The unknown-stage fallbacks are
+ * preserved verbatim (generic task prompt, worker persona, plain-claude cast). The contract's
+ * narrow structural `StageFacet` is widened back to the full {@link StageDefinition} here:
+ * dispatch owns the stage vocabulary, and every stage facet registered with the daemon IS a
+ * StageDefinition at runtime — the contract keeps `src/ext` dependency-clean, not the shape loose.
+ */
+export function stageViewOf(registry: ExtensionRegistry): StageView {
+  const get = (name: string): StageDefinition | undefined =>
+    registry.stage(name) as StageDefinition | undefined;
+  return {
+    get,
+    forState: (state) => registry.stageForState(state) as StageDefinition | undefined,
+    names: () => registry.stageNames(),
+    prompt: (stage, args) => {
+      const def = get(stage);
+      return def ? def.buildPrompt(args) : genericTaskPrompt(args);
+    },
+    systemAppend: (stage, args) => {
+      const def = get(stage);
+      return def ? def.buildSystemAppend(args) : workerSystemAppend(args);
+    },
+    resolveCast: (stage, explicit, ticket, config) => {
+      const def = get(stage);
+      return def ? def.resolveCast(explicit, ticket, config) : explicit ?? { harness: "claude" };
+    },
+  };
+}
+
+/**
+ * The built-in worker stages as ONE core-kind extension (v6 Phase 5, docs/v6-architecture.md
+ * §6): implement / review / design / design_check registered through the contract's stages
+ * facet — the SAME four objects the pre-Phase-5 singleton held, byte-identical (the accuracy
+ * floor, docs §8: every prompt string, transition, comment, effort default, and cap; the
+ * review tiers stay dispatcher data via `reviewTierFor`). No capabilities/invoke (stages are
+ * staffed by the dispatcher's state machine, never @mention-routed) and no lifecycle
+ * (stateless data), so registration order never constrains the stateful organs' boot.
+ */
+function buildStagesExtension(): Extension {
+  return {
+    manifest: {
+      id: "stages",
+      version: "1.0.0",
+      summary: "The dispatcher's built-in worker stages (implement / review / design / design_check).",
+      actionClass: ActionClass.FREE,
+      kind: "core",
+    },
+    stages: [implementStage, reviewStage, designStage, designCheckStage],
+  };
+}
+
+/**
+ * The stages extension factory the daemon boot registers (`shell/main.ts`, into the ONE
+ * BootedSystem registry). Context-free by nature: a stage resolves config per call through its
+ * builder args, so the factory ignores the runtime ctx.
+ */
+export const createStagesExtension: ExtensionFactory = () => buildStagesExtension();
+
+// =======================================================================================
 // The default registry — built-ins registered exactly once at module load
 // =======================================================================================
 
-/** The registry production code shares (tests may construct their own {@link StageRegistry}). */
-export const stageRegistry = new StageRegistry();
-stageRegistry.register(implementStage);
-stageRegistry.register(reviewStage);
-stageRegistry.register(designStage);
-stageRegistry.register(designCheckStage);
+/**
+ * The module-level host backing {@link stageRegistry} — the byte-safe Phase 5 sharing move:
+ * the spawn helper's default and the dispatcher's default DI both read ONE
+ * ExtensionRegistry-backed view (the old singleton semantics, resolution now through the
+ * extension seam). Production boot (`shell/main.ts`) registers {@link createStagesExtension}
+ * in ITS registry and threads that view into the dispatcher (which threads it to spawn), so
+ * the live daemon never reads this host — it serves tests and embedders that pass no DI.
+ */
+const defaultStagesHost = new ExtensionRegistry();
+defaultStagesHost.register(buildStagesExtension());
+
+/** The stage view production code shares by default (tests may construct their own {@link StageRegistry}). */
+export const stageRegistry: StageView = stageViewOf(defaultStagesHost);

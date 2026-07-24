@@ -96,6 +96,31 @@ export interface ExtensionCapability {
 }
 
 // =======================================================================================
+// Worker stages — the dispatcher facet an extension can contribute (v6 Phase 5)
+// =======================================================================================
+
+/**
+ * One worker stage an extension contributes to the dispatcher's state machine. Deliberately a
+ * STRUCTURAL marker — the same discipline as `Capability`'s `BusRequestLike` — so this contract
+ * never imports dispatch-domain types: the real stage shape (`src/dispatch/stages.ts`'s
+ * `StageDefinition`, carrying prompt builders, cast defaults, and finish/transition handlers)
+ * structurally satisfies this, and dispatch-side consumers widen back to it through their own
+ * stage view (`stageViewOf`). Stage names and entry states are GLOBAL namespaces across all
+ * extensions (like capability ids); the registry refuses collisions loudly so no stage — and no
+ * state→stage staffing — can silently shadow another.
+ *
+ * Stages are NOT discovery: they never appear in {@link ExtensionRegistry.catalog}. The
+ * dispatcher staffs a stage when a ticket enters its state; the concierge never routes an
+ * @mention to one.
+ */
+export interface StageFacet {
+  /** Unique stage name ("implement", "review"). The registry key. */
+  readonly name: string;
+  /** Ticket state whose entry staffs this stage; absent for follow-on stages a finish handler spawns. */
+  readonly entryState?: string;
+}
+
+// =======================================================================================
 // Invocation — the ONE dispatch entrypoint
 // =======================================================================================
 
@@ -221,6 +246,15 @@ export interface Extension {
 
   // --- v6: lifecycle (stateful extensions) ---
   lifecycle?: ExtensionLifecycle;
+
+  // --- v6: worker stages (Phase 5 — the dispatcher's pluggable stage facet) ---
+  /**
+   * Worker stages this extension contributes ({@link StageFacet}). Registered into the global
+   * stage-name and entry-state namespaces (loud refusal on collision, like capability ids), and
+   * deliberately excluded from the discovery catalog — the dispatcher staffs stages from ticket
+   * states; the concierge never routes an @mention to one.
+   */
+  stages?: readonly StageFacet[];
 
   // --- v5 facets, subsumed unchanged ---
   cliVerbs?: CliVerb[];

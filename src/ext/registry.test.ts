@@ -247,3 +247,78 @@ test("effectiveActionClass falls back to the extension default, else the overrid
   expect(effectiveActionClass(e, {})).toBe(ActionClass.FREE);
   expect(effectiveActionClass(e, { actionClass: ActionClass.ALWAYS_ASK })).toBe(ActionClass.ALWAYS_ASK);
 });
+
+// --- worker stages (v6 Phase 5): the dispatcher facet ---
+// The registry indexes the contract's structural StageFacet; the fixtures here are bare
+// facets on purpose — dispatch's full StageDefinition satisfies the same shape structurally.
+
+test("stage facets index by name and entry state, in registration order", () => {
+  const registry = new ExtensionRegistry();
+  registry.register(
+    ext("stages", {
+      stages: [
+        { name: "implement", entryState: "in_progress" },
+        { name: "review", entryState: "in_review" },
+        { name: "design_check" }, // follow-on stage: name-lookup only, never staffed by a state
+      ],
+    }),
+  );
+  expect(registry.stageNames()).toEqual(["implement", "review", "design_check"]);
+  expect(registry.stage("review")?.name).toBe("review");
+  expect(registry.stage("mystery")).toBeUndefined();
+  expect(registry.stageForState("in_progress")?.name).toBe("implement");
+  expect(registry.stageForState("in_review")?.name).toBe("review");
+  // A stage without an entryState must stay unreachable via state lookup (design_check).
+  expect(registry.stageForState("design_check")).toBeUndefined();
+  expect(registry.stageForState("done")).toBeUndefined();
+});
+
+test("a stage name collision across extensions is refused, attributing both", () => {
+  const registry = new ExtensionRegistry();
+  registry.register(ext("stages", { stages: [{ name: "implement", entryState: "in_progress" }] }));
+  const clash = ext("flows", { stages: [{ name: "implement" }] });
+  expect(() => registry.register(clash)).toThrow(
+    /stage "implement" is already registered by extension "stages" \(extension "flows" tried to register it too\)/,
+  );
+  // The refusal is atomic — nothing of the clashing extension landed in any index.
+  expect(registry.has("flows")).toBeFalse();
+  expect(registry.stageNames()).toEqual(["implement"]);
+});
+
+test("an entry-state collision is refused even under distinct stage names", () => {
+  const registry = new ExtensionRegistry();
+  registry.register(ext("stages", { stages: [{ name: "implement", entryState: "in_progress" }] }));
+  const shadow = ext("flows", { stages: [{ name: "build", entryState: "in_progress" }] });
+  expect(() => registry.register(shadow)).toThrow(
+    /entry state "in_progress" already staffs stage "implement" of extension "stages"/,
+  );
+  expect(registry.stageForState("in_progress")?.name).toBe("implement");
+});
+
+test("an extension declaring a duplicate stage name, duplicate entry state, or empty name is refused", () => {
+  const registry = new ExtensionRegistry();
+  expect(() =>
+    registry.register(ext("dup", { stages: [{ name: "implement" }, { name: "implement" }] })),
+  ).toThrow(/extension "dup" declares stage "implement" twice/);
+  expect(() =>
+    registry.register(
+      ext("dup-state", {
+        stages: [
+          { name: "a", entryState: "in_progress" },
+          { name: "b", entryState: "in_progress" },
+        ],
+      }),
+    ),
+  ).toThrow(/extension "dup-state" declares two stages staffing entry state "in_progress"/);
+  expect(() => registry.register(ext("empty", { stages: [{ name: "  " }] }))).toThrow(
+    /extension "empty" declares a stage with an empty name/,
+  );
+});
+
+test("stage facets never leak into the discovery catalog", () => {
+  const registry = new ExtensionRegistry();
+  registry.register(ext("stages", { stages: [{ name: "implement", entryState: "in_progress" }] }));
+  // Stages are staffed by the dispatcher's state machine, not @mention-routed: the concierge's
+  // routing prompt must not grow a row for them.
+  expect(registry.catalog()).toEqual([]);
+});

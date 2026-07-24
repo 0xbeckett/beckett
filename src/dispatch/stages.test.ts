@@ -16,7 +16,10 @@ import {
   defaultEffortFor,
   reviewEffortFor,
   isIntTicket,
+  createStagesExtension,
+  stageViewOf,
 } from "./stages.ts";
+import { ActionClass, ExtensionRegistry, type ExtensionContext } from "../ext/index.ts";
 
 function makeTicket(over: Partial<Ticket> = {}): Ticket {
   return {
@@ -219,5 +222,61 @@ describe("defaultEffortFor — the one source of truth", () => {
     expect(defaultEffortFor("claude", config)).toBe("xhigh");
     expect(defaultEffortFor("codex", config)).toBe("high");
     expect(defaultEffortFor("pi", config)).toBe("medium");
+  });
+});
+
+describe("the stages extension (v6 Phase 5)", () => {
+  // The factory is context-free (stages resolve config per call); a bare ctx suffices.
+  const extCtx = { config, paths: {}, logger: {} } as unknown as ExtensionContext;
+
+  test("createStagesExtension carries the four built-ins as a core-kind extension", () => {
+    const extension = createStagesExtension(extCtx);
+    expect(extension.manifest.id).toBe("stages");
+    expect(extension.manifest.kind).toBe("core");
+    expect(extension.manifest.actionClass).toBe(ActionClass.FREE);
+    // Stages are a dispatch facet, not discovery: no capabilities, no invoke, no lifecycle.
+    expect(extension.capabilities).toBeUndefined();
+    expect(extension.invoke).toBeUndefined();
+    expect(extension.lifecycle).toBeUndefined();
+    expect((extension.stages ?? []).map((s) => s.name)).toEqual([
+      "implement",
+      "review",
+      "design",
+      "design_check",
+    ]);
+  });
+
+  test("a boot-style ExtensionRegistry view resolves the SAME definitions as the default view", () => {
+    // shell/main.ts's wiring in miniature: register the extension, read through stageViewOf.
+    const registry = new ExtensionRegistry();
+    registry.register(createStagesExtension(extCtx));
+    const view = stageViewOf(registry);
+
+    expect(view.names().sort()).toEqual(["design", "design_check", "implement", "review"]);
+    // Identity, not equality: the facet carries the ONE set of built-in stage objects, so the
+    // boot view and the module default can never diverge on a definition.
+    for (const name of ["implement", "review", "design", "design_check"]) {
+      expect(view.get(name)).toBe(stageRegistry.get(name)!);
+    }
+    expect(view.forState("in_progress")?.name).toBe("implement");
+    expect(view.forState("in_review")?.name).toBe("review");
+    expect(view.forState("design")?.name).toBe("design");
+    // design_check stays name-lookup only — spawned by design's finish, never staffed by a state.
+    expect(view.forState("design_review" as never)).toBeUndefined();
+
+    // The unknown-stage fallbacks ride the view identically (generic brief, worker persona,
+    // plain-claude cast) — byte-equal to the default singleton's output.
+    const ticket = makeTicket();
+    expect(view.prompt("mystery", { ticket })).toBe(stageRegistry.prompt("mystery", { ticket }));
+    expect(view.systemAppend("mystery", { ticket, config, env: {} })).toBe(
+      stageRegistry.systemAppend("mystery", { ticket, config, env: {} }),
+    );
+    expect(view.resolveCast("mystery", undefined, ticket, config)).toEqual({ harness: "claude" });
+  });
+
+  test("registering the stages extension twice in one registry is refused loudly", () => {
+    const registry = new ExtensionRegistry();
+    registry.register(createStagesExtension(extCtx));
+    expect(() => registry.register(createStagesExtension(extCtx))).toThrow(/already registered/);
   });
 });

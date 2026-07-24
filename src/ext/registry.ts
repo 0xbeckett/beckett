@@ -35,6 +35,7 @@ import {
   type ExtensionInvocation,
   type ExtensionResult,
   type LifecycleStartPhase,
+  type StageFacet,
 } from "./contract.ts";
 
 /** A resolved capability plus the extension that owns it. */
@@ -76,11 +77,22 @@ export function renderCatalogBlock(entries: CatalogEntry[]): string {
   );
 }
 
+/** A registered stage facet plus the id of the extension that contributed it. */
+interface ResolvedStage {
+  extensionId: string;
+  stage: StageFacet;
+}
+
 export class ExtensionRegistry {
   private readonly byId = new Map<string, Extension>();
   private readonly byCapabilityId = new Map<string, ResolvedCapability>();
   private readonly byCliVerb = new Map<string, string>(); // verb name → extension id
   private readonly byBusCommand = new Map<string, string>(); // command name → extension id
+  // Worker stages (v6 Phase 5). Two indices because staffing resolves state→stage: a duplicate
+  // ENTRY STATE is as dangerous as a duplicate name (insertion-order lookup would silently
+  // shadow the first claimant), so both are global namespaces guarded at registration.
+  private readonly byStageName = new Map<string, ResolvedStage>();
+  private readonly byStageEntryState = new Map<string, ResolvedStage>();
 
   /**
    * Register an extension, validating the WHOLE module before touching any index — a
@@ -162,6 +174,41 @@ export class ExtensionRegistry {
       }
     }
 
+    // --- validate stage facets (global stage-name + entry-state namespaces, v6 Phase 5) ---
+    const seenStages = new Set<string>();
+    const seenEntryStates = new Set<string>();
+    for (const stage of extension.stages ?? []) {
+      if (!stage.name.trim()) {
+        throw new Error(`beckett: extension "${id}" declares a stage with an empty name`);
+      }
+      if (seenStages.has(stage.name)) {
+        throw new Error(`beckett: extension "${id}" declares stage "${stage.name}" twice`);
+      }
+      seenStages.add(stage.name);
+      const stageHolder = this.byStageName.get(stage.name);
+      if (stageHolder) {
+        throw new Error(
+          `beckett: stage "${stage.name}" is already registered by extension "${stageHolder.extensionId}" ` +
+            `(extension "${id}" tried to register it too)`,
+        );
+      }
+      if (stage.entryState !== undefined) {
+        if (seenEntryStates.has(stage.entryState)) {
+          throw new Error(
+            `beckett: extension "${id}" declares two stages staffing entry state "${stage.entryState}"`,
+          );
+        }
+        seenEntryStates.add(stage.entryState);
+        const stateHolder = this.byStageEntryState.get(stage.entryState);
+        if (stateHolder) {
+          throw new Error(
+            `beckett: entry state "${stage.entryState}" already staffs stage "${stateHolder.stage.name}" of ` +
+              `extension "${stateHolder.extensionId}" (extension "${id}" stage "${stage.name}" tried to claim it too)`,
+          );
+        }
+      }
+    }
+
     // --- validate config key ---
     const configKey = extension.configKey ?? id;
     if (extension.configSchema) {
@@ -180,6 +227,12 @@ export class ExtensionRegistry {
     for (const cap of capabilities) this.byCapabilityId.set(cap.id, { extension, capability: cap });
     for (const verb of extension.cliVerbs ?? []) this.byCliVerb.set(verb.name, id);
     for (const command of extension.busCommands ?? []) this.byBusCommand.set(command.name, id);
+    for (const stage of extension.stages ?? []) {
+      this.byStageName.set(stage.name, { extensionId: id, stage });
+      if (stage.entryState !== undefined) {
+        this.byStageEntryState.set(stage.entryState, { extensionId: id, stage });
+      }
+    }
   }
 
   has(id: string): boolean {
@@ -205,6 +258,27 @@ export class ExtensionRegistry {
   /** Resolve a capability by its namespaced id, or null. */
   resolveCapability(capabilityId: string): ResolvedCapability | null {
     return this.byCapabilityId.get(capabilityId) ?? null;
+  }
+
+  // --- worker stages (v6 Phase 5) ---
+  // The registry indexes the CONTRACT's structural {@link StageFacet}; dispatch widens it back
+  // to its full StageDefinition through its own view (`dispatch/stages.ts#stageViewOf`), keeping
+  // `src/ext` free of dispatch-domain types. Stages never appear in {@link catalog} — they are
+  // staffed by the dispatcher's state machine, not routed from an @mention.
+
+  /** The registered stage facet named `name`, or undefined for an unregistered stage. */
+  stage(name: string): StageFacet | undefined {
+    return this.byStageName.get(name)?.stage;
+  }
+
+  /** The stage a ticket entering `state` should staff, if any (unique — enforced at register()). */
+  stageForState(state: string): StageFacet | undefined {
+    return this.byStageEntryState.get(state)?.stage;
+  }
+
+  /** Registered stage names, in registration order (diagnostics). */
+  stageNames(): string[] {
+    return [...this.byStageName.keys()];
   }
 
   /**

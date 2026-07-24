@@ -36,6 +36,7 @@ import { createTrackerClient, type TrackerClient } from "../tracker/client.ts";
 import { boredBaseUrl } from "../bored/client.ts";
 import { createTrackerPoller, type TrackerPoller } from "../tracker/poll.ts";
 import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
+import { createStagesExtension, stageViewOf } from "../dispatch/stages.ts";
 import { createGitHubPrPoller, type GitHubPrPoller } from "../github/poll.ts";
 import { createGitHubActivityPoller, type GitHubActivityPoller } from "../github/activity.ts";
 import { parsePrUrl } from "../github/types.ts";
@@ -323,6 +324,19 @@ async function boot(): Promise<BootedSystem> {
     }
   };
 
+  // The v6 extension seam (docs/v6-architecture.md §6): the ONE runtime registry the daemon
+  // dispatches extensions through — `ext.invoke`/`ext.catalog` on the control bus read it via
+  // the concierge. Constructed BEFORE the dispatcher (Phase 5: worker stages resolve through
+  // this registry); the stateful organs register further down, once their collaborators exist.
+  // Registration order is teardown-reverse, and must honor concierge-first/pollers-last for
+  // organs that migrate.
+  const extensions = new ExtensionRegistry();
+  const extCtx: ExtensionContext = { config, paths, logger };
+  // Phase 5 — the worker-stages facet: the four built-ins (implement/review/design/design_check)
+  // as ONE core-kind extension. Stateless, no capabilities (never @mention-routed, absent from
+  // the catalog), so registering it first constrains no lifecycle ordering below.
+  extensions.register(createStagesExtension(extCtx));
+
   // 4. Dispatcher — consumes PollEvents, owns the worker lifecycle. Its workers' granular event
   //    streams are mirrored into each ticket's Discord thread via the Concierge's progress hub.
   const dispatcher = createDispatcher({
@@ -330,6 +344,9 @@ async function boot(): Promise<BootedSystem> {
     clients: [...clients.values()],
     clientForProjectId: (projectId) => clientByProjectId.get(projectId),
     config,
+    // v6 Phase 5: staff/cast/prompt worker stages through the boot registry's stage view — the
+    // one ExtensionRegistry — instead of the module-local default table.
+    stages: stageViewOf(extensions),
     resolveRepoRoot,
     publishRepo,
     progress: concierge.progressSink(),
@@ -430,13 +447,9 @@ async function boot(): Promise<BootedSystem> {
     for (const p of pollers.values()) p.poke();
   });
 
-  // The v6 extension seam (docs/v6-architecture.md §6): the ONE runtime registry the daemon
-  // dispatches extensions through — `ext.invoke`/`ext.catalog` on the control bus read it via
-  // the concierge. Phase 1 organs (stateless) register here; later phases move a migrating
-  // organ's setup into lifecycle.{init,start} instead of adding boot lines. Registration order
-  // is teardown-reverse, and must honor concierge-first/pollers-last for organs that migrate.
-  const extensions = new ExtensionRegistry();
-  const extCtx: ExtensionContext = { config, paths, logger };
+  // Extension registration (the registry itself is constructed above, pre-dispatcher — Phase 5).
+  // Phase 1 organs (stateless) register here; later phases move a migrating organ's setup into
+  // lifecycle.{init,start} instead of adding boot lines.
   extensions.register(createImageExtension({ config, paths, logger: logger.child("image") }));
   extensions.register(createSecretExtension({ config, paths, logger: logger.child("secret") }));
   // Phase 4's github/dns/deploy/mail extensions carry daemon-safe invoke bodies but are NOT
