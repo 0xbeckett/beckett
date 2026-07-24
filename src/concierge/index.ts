@@ -104,14 +104,10 @@ import {
   renderUnavailableReplyContext,
 } from "./reply-context.ts";
 import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
-import type { DiscordCommand, DiscordCommandReply, TaskThreadCreated } from "../types.ts";
+import type { DiscordEmbed, DiscordLinkButton, TaskThreadCreated } from "../types.ts";
 import { TaskStore, displayTaskName, type WorkTask } from "../task/store.ts";
 import type { BranchStatusService } from "../task/status.ts";
-import { renderBranchEmbed, renderSubscriptionUsageEmbeds, renderTaskEmbed } from "../discord/cards.ts";
-import {
-  createSubscriptionUsageReader,
-  type SubscriptionUsageReader,
-} from "../subscription-usage.ts";
+import { renderBranchEmbed } from "../discord/cards.ts";
 import { createMemory, type MemoryStore } from "../memory/index.ts";
 import { parseRecallCliRequest, recallCliOutput } from "../memory/recall-cli.ts";
 
@@ -1470,8 +1466,6 @@ export interface ConciergeOptions {
   tasks?: TaskStore;
   /** On-demand local/GitHub branch status provider, normally wired by v4-main. */
   branchStatus?: BranchStatusService;
-  /** On-demand subscription quota reader; no provider command runs until `/stats`. */
-  subscriptionUsage?: SubscriptionUsageReader;
   /** Daemon-owned warm memory store, injected by v4-main so maintenance and recall share it. */
   memory?: MemoryStore;
 }
@@ -1572,7 +1566,6 @@ export class Concierge {
   /** User-facing `#N` / `#N.x` organization; tracker ticket ids stay behind this boundary. */
   private readonly tasks: TaskStore;
   private branchStatus: BranchStatusService | null;
-  private readonly subscriptionUsage: SubscriptionUsageReader;
   /** One long-lived graph/Moss owner for `memory.recall` control-bus requests (lazy for partial test configs). */
   private memory: MemoryStore | null;
   private readonly taskThreadCreates = new Map<number, Promise<TaskThreadCreated>>();
@@ -1716,7 +1709,6 @@ export class Concierge {
     this.gateway = opts.gateway ?? createDiscordGateway({ config: this.config, logger: this.log });
     this.tasks = opts.tasks ?? new TaskStore(tasksStateFile(this.config, this.log));
     this.branchStatus = opts.branchStatus ?? null;
-    this.subscriptionUsage = opts.subscriptionUsage ?? createSubscriptionUsageReader(this.config);
     this.memory = opts.memory ?? null;
     this.turnGate = new TurnGate(Math.max(1, this.config.concierge?.max_concurrent_turns ?? 3));
     const makeSession =
@@ -2275,7 +2267,6 @@ export class Concierge {
     if (typeof this.gateway.onThreadCreate === "function") {
       this.gateway.onThreadCreate((t) => this.onThreadCreated(t));
     }
-    this.gateway.onCommand?.((command) => this.onCommand(command));
     const systemWarm = this.pool.warm(SYSTEM_SCOPE);
     const gatewayReady = this.gateway.start();
     const workspaceRecovery = gatewayReady.then(async () => {
@@ -2332,82 +2323,11 @@ export class Concierge {
     this.branchStatus = provider;
   }
 
-  /** Native Discord command controller. Slash interaction timing/visibility stays in the gateway. */
-  async onCommand(command: DiscordCommand): Promise<DiscordCommandReply> {
-    const access = this.accessLevelFor(command.userId);
-    if (access === "outsider") return { content: "You don't have access to Beckett's tasks." };
-
-    if (command.name === "task" && command.subcommand === "create") {
-      const title = typeof command.options.name === "string" ? command.options.name : "";
-      const created = await this.tasks.createTask({ title, originChannelId: command.channelId });
-      const task = this.tasks.getTask(created.task.number)!;
-      let thread: TaskThreadCreated;
-      try {
-        thread = await this.ensureTaskThread(created.task.number, command.channelId);
-      } catch (err) {
-        this.log.warn("task allocated but Discord workspace creation failed", {
-          task: created.task.number,
-          error: String(err),
-        });
-        await this.postCards([renderTaskEmbed(task)], `Task card for ${displayTaskName(task)}`);
-        return {
-          content:
-            `Created ${displayTaskName(task)}, but I couldn't create its workspace. ` +
-            `Nothing was lost; retry with \`/task workspace number:${task.number}\`.`,
-        };
-      }
-      await this.postCards(
-        [renderTaskEmbed(this.tasks.getTask(created.task.number)!)],
-        `Task card for ${displayTaskName(task)}`,
-      );
-      return { content: `Created ${displayTaskName(task)} in <#${thread.threadId}>.` };
-    }
-    if (command.name === "task" && command.subcommand === "workspace") {
-      const raw = String(command.options.number ?? "");
-      const task = this.tasks.getTask(raw);
-      if (!task) throw new Error(`no such task: ${raw}`);
-      const thread = await this.ensureTaskThread(task.number, command.channelId);
-      await this.postCards(
-        [renderTaskEmbed(this.tasks.getTask(task.number)!)],
-        `Task card for ${displayTaskName(task)}`,
-      );
-      return { content: `Workspace ready for ${displayTaskName(task)}: <#${thread.threadId}>.` };
-    }
-    if (command.name === "task" && command.subcommand === "show") {
-      const raw = String(command.options.number ?? "");
-      const task = this.tasks.getTask(raw);
-      if (!task) throw new Error(`no such task: ${raw}`);
-      await this.postCards([renderTaskEmbed(task)], `Task card for ${displayTaskName(task)}`);
-      return { content: `Posted ${displayTaskName(task)} card in <#${cardsChannelId()}>.` };
-    }
-    if (command.name === "branch") {
-      if (!this.branchStatus) throw new Error("branch status provider is unavailable");
-      const card = await this.branchStatus.read(String(command.options.reference ?? ""));
-      const buttons = card.pullRequest
-        ? [{ label: "Open PR", url: card.pullRequest.url }]
-        : card.publication
-          ? [{ label: "Open repository", url: card.publication.url }]
-          : undefined;
-      await this.postCards([renderBranchEmbed(card)], `Branch card for #${card.ref}`, buttons);
-      return { content: `Posted branch card in <#${cardsChannelId()}>.` };
-    }
-    if (command.name === "stats") {
-      const ownerId = this.ownerId();
-      if (!ownerId || command.userId !== ownerId) {
-        return { content: "Subscription usage is private to Beckett's owner." };
-      }
-      const usages = await this.subscriptionUsage.readAll();
-      await this.postCards(renderSubscriptionUsageEmbeds(usages), "Subscription usage cards");
-      return { content: `Posted subscription usage cards in <#${cardsChannelId()}>.` };
-    }
-    throw new Error(`unsupported Discord command: ${command.name} ${command.subcommand ?? ""}`.trim());
-  }
-
   /** Post every rich status card in the dedicated cards channel, never the triggering channel. */
   private async postCards(
-    embeds: NonNullable<DiscordCommandReply["embeds"]>,
+    embeds: DiscordEmbed[],
     recordText: string,
-    buttons?: DiscordCommandReply["buttons"],
+    buttons?: DiscordLinkButton[],
     replyToMessageId?: string,
     replyToUserId?: string,
   ): Promise<string> {
@@ -2422,7 +2342,7 @@ export class Concierge {
     return messageId;
   }
 
-  /** Exactly-once task workspace creation across slash commands and repeated CLI bus notifications. */
+  /** Exactly-once task workspace creation across repeated CLI bus notifications and startup recovery. */
   private async ensureTaskThread(taskNumber: number, fallbackChannelId?: string): Promise<TaskThreadCreated> {
     const running = this.taskThreadCreates.get(taskNumber);
     if (running) return running;

@@ -57,7 +57,14 @@ import { reconcileTaskTickets } from "../task/reconcile.ts";
 import { createAgentMailApi, defaultMailStateFile, safeMailError } from "../mail/index.ts";
 import { createAgentMailPoller, defaultMailListenerStateFile, type AgentMailPoller } from "../mail/listener.ts";
 import { ExtensionRegistry, type ExtensionContext } from "../ext/index.ts";
-import { createBrowserExtension, createImageExtension, createSecretExtension } from "../capability/modules/index.ts";
+// NOTE: the Phase 4 organs (github/dns/deploy/mail) are deliberately NOT daemon-registered yet —
+// deploy.create's in-daemon host side effects (cloudflared + ~/.cloudflared/config.yml) need
+// sign-off first (cli-cascade spec, open question 5); memory stays with Zoom until Phase 6.
+import {
+  createBrowserExtension,
+  createImageExtension,
+  createSecretExtension,
+} from "../capability/modules/index.ts";
 // Phase 3 quick wiring: a separate import line so concurrent organ migrations stay additive.
 import { createQuickExtension } from "../capability/modules/quick.ts";
 // Phase 3b routines wiring: same additive-import posture.
@@ -432,6 +439,10 @@ async function boot(): Promise<BootedSystem> {
   const extCtx: ExtensionContext = { config, paths, logger };
   extensions.register(createImageExtension({ config, paths, logger: logger.child("image") }));
   extensions.register(createSecretExtension({ config, paths, logger: logger.child("secret") }));
+  // Phase 4's github/dns/deploy/mail extensions carry daemon-safe invoke bodies but are NOT
+  // registered here yet: exposing them through in-daemon `ext.invoke` (notably deploy.create's
+  // cloudflared/host side effects) is an unresolved product decision (cli-cascade spec, open
+  // question 5). The CLI registers them in its own ExtensionRegistry (cli/beckett.ts).
   // Phase 2 — the browser organ's lifecycle lives in the extension: init constructs the (inert)
   // runtime + background agent, start rides startAll (after concierge.start + crash recovery),
   // stop rides stopAll (agent legs settle, then the host dies). The concierge callbacks close

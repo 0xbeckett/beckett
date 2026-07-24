@@ -1,17 +1,23 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateConfig } from "../config.ts";
 import type { DiscordGateway, ReplyOptions } from "../types.ts";
-import type { SubscriptionUsageReader } from "../subscription-usage.ts";
 import { TaskStore } from "../task/store.ts";
 import type { BranchStatusService } from "../task/status.ts";
 import type { WorkspaceRegistry } from "../discord/workspaces.ts";
 import { branchCardReference, CARDS_CHANNEL_ID, Concierge, type ConciergeSession } from "./index.ts";
 
+// The Discord slash surface (`onCommand` — /task create|show|workspace, /stats, /branch) was
+// deleted in the v6 Phase-4 product cut: @mention + CLI are the flow. These tests pin the
+// SURVIVING task-workspace logic — `ensureTaskThread` stored-thread validation, deleted-thread
+// recreation, sibling threads, startup reconciliation, and the conversational branch card — which
+// were previously reachable ONLY through the removed slash controller. They drive the live
+// entrypoints instead: the `task.created` control-bus command (what `beckett task create` calls),
+// `restoreTaskWorkspaces` (startup recovery), and `onMessage`.
+
 const OWNER = "111111111111111111";
-const MEMBER = "222222222222222222";
 const savedDir = process.env.BECKETT_DIR;
 const savedOwner = process.env.DISCORD_OWNER_ID;
 const dirs: string[] = [];
@@ -25,7 +31,6 @@ afterEach(() => {
 });
 
 function harness(
-  usage?: SubscriptionUsageReader,
   opts: {
     failThreadOnce?: boolean;
     branchStatus?: BranchStatusService;
@@ -77,55 +82,24 @@ function harness(
     tasks,
     channelProfiler: null,
     ...(opts.branchStatus ? { branchStatus: opts.branchStatus } : {}),
-    ...(usage ? { subscriptionUsage: usage } : {}),
   });
   return { concierge, tasks, createdNames, createdChannels, threadCalls, asks, posts, dir };
 }
 
-test("/task create allocates #N, creates its named thread once, and routes its card", async () => {
-  const { concierge, tasks, createdNames, posts } = harness();
-  const reply = await concierge.onCommand({
-    name: "task",
-    subcommand: "create",
-    userId: OWNER,
-    channelId: "channel-1",
-    options: { name: "  Build   voting  " },
-  });
+test("task.created allocates the numbered thread and routes it under its channel", async () => {
+  const { concierge, tasks, createdNames } = harness();
+  await tasks.createTask({ title: "Build voting", originChannelId: "channel-1" });
 
+  const first = await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 1, channelId: "channel-1" } });
+  expect(first).toMatchObject({ ok: true, data: { taskRef: "#1", threadId: "thread-1", name: "#1 - Build voting" } });
   expect(createdNames).toEqual(["#1 - Build voting"]);
-  expect(reply.content).toContain("Created #1 - Build voting in <#thread-1>");
-  expect(reply.embeds).toBeUndefined();
-  expect(posts[0]).toMatchObject({
-    channelId: CARDS_CHANNEL_ID,
-    options: { embeds: [{ title: "#1 - Build voting" }] },
-  });
   expect(tasks.getTask(1)).toMatchObject({ number: 1, threadId: "thread-1" });
-
-  const shown = await concierge.onCommand({
-    name: "task",
-    subcommand: "show",
-    userId: OWNER,
-    channelId: "channel-1",
-    options: { number: "#1" },
-  });
-  expect(shown.embeds).toBeUndefined();
-  expect(shown.content).toContain(`<#${CARDS_CHANNEL_ID}>`);
-  expect(posts[1]).toMatchObject({
-    channelId: CARDS_CHANNEL_ID,
-    options: { embeds: [{ title: "#1 - Build voting" }] },
-  });
-  expect(createdNames).toHaveLength(1);
 });
 
 test("a numbered task thread is directed context and a new task inside it gets a sibling thread", async () => {
   const { concierge, tasks, createdChannels, asks } = harness();
-  await concierge.onCommand({
-    name: "task",
-    subcommand: "create",
-    userId: OWNER,
-    channelId: "parent-1",
-    options: { name: "First task" },
-  });
+  await tasks.createTask({ title: "First task", originChannelId: "parent-1" });
+  await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 1, channelId: "parent-1" } });
 
   await concierge.onMessage({
     messageId: "m1",
@@ -145,64 +119,47 @@ test("a numbered task thread is directed context and a new task inside it gets a
   expect(asks[0]).toContain("#1.1");
   expect(asks[0]).toContain("do not create a duplicate task");
 
-  await concierge.onCommand({
-    name: "task",
-    subcommand: "create",
-    userId: OWNER,
-    channelId: "thread-1",
-    options: { name: "Second task" },
-  });
+  // A task filed from inside an existing task's thread gets a sibling thread under the durable
+  // parent, not a nested thread. This is the `currentWorkspace?.taskRef → parentChannelId` branch.
+  await tasks.createTask({ title: "Second task", originChannelId: "thread-1" });
+  await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 2, channelId: "thread-1" } });
   expect(createdChannels).toEqual(["parent-1", "parent-1"]);
   expect(tasks.getTask(2)?.originChannelId).toBe("parent-1");
 });
 
-test("a Discord thread failure reports the durable task and `/task workspace` repairs it", async () => {
-  const { concierge, tasks, createdNames } = harness(undefined, { failThreadOnce: true });
-  const partial = await concierge.onCommand({
-    name: "task",
-    subcommand: "create",
-    userId: OWNER,
-    channelId: "channel-1",
-    options: { name: "Durable task" },
-  });
-  expect(partial.content).toContain("Created #1 - Durable task");
-  expect(partial.content).toContain("/task workspace number:1");
+test("task.created reports a durable task when the thread fails and repairs it on retry", async () => {
+  const { concierge, tasks, createdNames } = harness({ failThreadOnce: true });
+  await tasks.createTask({ title: "Durable task", originChannelId: "channel-1" });
+
+  const partial = await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 1, channelId: "channel-1" } });
+  expect(partial).toMatchObject({ ok: false });
   expect(tasks.getTask(1)?.threadId).toBeUndefined();
 
-  const repaired = await concierge.onCommand({
-    name: "task",
-    subcommand: "workspace",
-    userId: OWNER,
-    channelId: "channel-1",
-    options: { number: "1" },
-  });
-  expect(repaired.content).toContain("<#thread-1>");
+  const repaired = await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 1, channelId: "channel-1" } });
+  expect(repaired).toMatchObject({ ok: true, data: { threadId: "thread-1" } });
   expect(tasks.getTask(1)?.threadId).toBe("thread-1");
   expect(createdNames).toEqual(["#1 - Durable task"]);
 });
 
-test("/task workspace gateway-validates a stored thread instead of blindly recreating it", async () => {
-  const { concierge, tasks, createdNames, threadCalls } = harness(undefined, {
+test("task.created gateway-validates a stored thread instead of blindly recreating it", async () => {
+  const { concierge, tasks, createdNames, threadCalls } = harness({
     existingThreads: { "thread-live": "parent-1" },
   });
   await tasks.createTask({ title: "Live task", originChannelId: "parent-1" });
   await tasks.setThread(1, "thread-live", "parent-1");
 
-  const reply = await concierge.onCommand({
-    name: "task",
-    subcommand: "workspace",
-    userId: OWNER,
-    channelId: "different-channel",
-    options: { number: "1" },
+  const reply = await concierge.onBusRequest({
+    cmd: "task.created",
+    args: { taskNumber: 1, channelId: "different-channel" },
   });
 
   expect(threadCalls).toEqual(["thread-live"]);
   expect(createdNames).toEqual([]);
-  expect(reply.content).toContain("<#thread-live>");
+  expect(reply).toMatchObject({ ok: true, data: { threadId: "thread-live" } });
 });
 
-test("/task workspace replaces a deleted stored thread under its durable parent", async () => {
-  const { concierge, tasks, createdChannels, threadCalls } = harness(undefined, {
+test("task.created replaces a deleted stored thread under its durable parent", async () => {
+  const { concierge, tasks, createdChannels, threadCalls } = harness({
     unavailableThreadIds: ["thread-deleted"],
   });
   await tasks.createTask({ title: "Repair task", originChannelId: "parent-1" });
@@ -214,12 +171,9 @@ test("/task workspace replaces a deleted stored thread under its durable parent"
     ["1.1"],
   );
 
-  const reply = await concierge.onCommand({
-    name: "task",
-    subcommand: "workspace",
-    userId: OWNER,
-    channelId: "different-channel",
-    options: { number: "1" },
+  const reply = await concierge.onBusRequest({
+    cmd: "task.created",
+    args: { taskNumber: 1, channelId: "different-channel" },
   });
 
   expect(threadCalls).toEqual(["thread-deleted", "parent-1"]);
@@ -227,7 +181,7 @@ test("/task workspace replaces a deleted stored thread under its durable parent"
   expect(tasks.getTask(1)?.threadId).toBe("thread-1");
   expect(workspaces.contextFor("thread-deleted")).toBeNull();
   expect(workspaces.channelForTask("1")).toBe("thread-1");
-  expect(reply.content).toContain("<#thread-1>");
+  expect(reply).toMatchObject({ ok: true, data: { threadId: "thread-1" } });
 });
 
 test("startup workspace reconciliation creates a task thread missed while the daemon was offline", async () => {
@@ -241,7 +195,7 @@ test("startup workspace reconciliation creates a task thread missed while the da
 });
 
 test("startup repairs a deleted task thread and restores linked-ticket routing", async () => {
-  const { concierge, tasks, threadCalls } = harness(undefined, {
+  const { concierge, tasks, threadCalls } = harness({
     unavailableThreadIds: ["thread-deleted"],
   });
   await tasks.createTask({ title: "Offline repair", originChannelId: "parent-1" });
@@ -267,55 +221,6 @@ test("startup repairs a deleted task thread and restores linked-ticket routing",
   expect(workspaces.channelForTicket("OPS-321")).toBe("thread-1");
 });
 
-test("/stats is owner-only and routes every connected subscription card", async () => {
-  let reads = 0;
-  const usage: SubscriptionUsageReader = {
-    readAll: async () => {
-      reads++;
-      return [
-        {
-          provider: "claude",
-          plan: "Max",
-          status: "ok",
-          windows: [{ label: "Weekly", usedPercent: 20, remainingPercent: 80, reset: null }],
-          observedAt: 1_784_000_000_000,
-        },
-        {
-          provider: "codex",
-          plan: "Pro",
-          status: "ok",
-          windows: [{ label: "5-hour", usedPercent: 10, remainingPercent: 90, reset: null }],
-          observedAt: 1_784_000_000_000,
-        },
-      ];
-    },
-  };
-  const { concierge, dir, posts } = harness(usage);
-  writeFileSync(join(dir, "access.txt"), `${MEMBER}\n`, "utf8");
-
-  const denied = await concierge.onCommand({
-    name: "stats",
-    userId: MEMBER,
-    channelId: "channel-1",
-    options: {},
-  });
-  expect(denied.content).toContain("private");
-  expect(reads).toBe(0);
-
-  const reply = await concierge.onCommand({
-    name: "stats",
-    userId: OWNER,
-    channelId: "channel-1",
-    options: {},
-  });
-  expect(reads).toBe(1);
-  expect(reply.embeds).toBeUndefined();
-  expect(reply.content).toContain(`<#${CARDS_CHANNEL_ID}>`);
-  expect(posts[0]).toMatchObject({ channelId: CARDS_CHANNEL_ID });
-  expect(posts[0]?.options?.embeds?.map((embed) => embed.title)).toEqual(["Claude usage", "Codex usage"]);
-  expect(JSON.stringify(posts[0]?.options?.embeds)).toContain("80% left");
-});
-
 test("a conversational branch-status reference returns the rich card without an LLM turn", async () => {
   const branchStatus = {
     read: async () => ({
@@ -331,7 +236,7 @@ test("a conversational branch-status reference returns the rich card without an 
       updatedAt: "2026-07-12T00:00:00.000Z",
     }),
   } as unknown as BranchStatusService;
-  const { concierge, asks, posts } = harness(undefined, { branchStatus });
+  const { concierge, asks, posts } = harness({ branchStatus });
   await concierge.onMessage({
     messageId: "branch-question",
     userId: OWNER,
@@ -351,18 +256,5 @@ test("a conversational branch-status reference returns the rich card without an 
   expect(posts[0]?.options?.replyToMessageId).toBeUndefined();
   expect(posts[0]?.options?.embeds?.[0]?.title).toBe("#42.1 - Voting API");
   expect(posts[0]?.options?.buttons?.[0]?.label).toBe("Open PR");
-
-  const reply = await concierge.onCommand({
-    name: "branch",
-    userId: OWNER,
-    channelId: "channel-1",
-    options: { reference: "42.1" },
-  });
-  expect(reply.embeds).toBeUndefined();
-  expect(reply.content).toContain(`<#${CARDS_CHANNEL_ID}>`);
-  expect(posts[1]).toMatchObject({
-    channelId: CARDS_CHANNEL_ID,
-    options: { embeds: [{ title: "#42.1 - Voting API" }] },
-  });
   expect(branchCardReference("please change #42.1 instead")).toBeNull();
 });

@@ -1,16 +1,23 @@
 /**
- * Beckett v5 — the memory capability module (`src/capability/modules/memory.ts`)
+ * Beckett v6 — the memory extension (`src/capability/modules/memory.ts`)
  * =======================================================================================
  * The in-process markdown memory graph's CLI surface — BOTH `beckett recall …` (the
  * first-class targeted tool, OPS-121) and `beckett memory recall|remember|show|maintain …`
- * (the original spelling — kept working) — normalized onto the common factory shape
- * (V5 Phase 2). Handler bodies and the audience/provenance flag plumbing are the former
- * `cli/beckett.ts` code moved verbatim; the CLI characterization suite pins the observable
- * behavior byte-for-byte.
+ * (the original spelling — kept working) — on the v6 extension contract.
+ *
+ * This is a DELIBERATELY THIN migration (Phase 6 / the Zoom live-memory lane owns the organ
+ * proper, docs/v6-architecture.md §6-§7): it carries ONLY the v5 facets — the two CLI verbs
+ * verbatim plus `cliHelp` — and declares NO capabilities, NO invoke, and NO lifecycle. Building
+ * an invoke here would collide with Zoom's in-flight memory/session lane and duplicate the
+ * circular in-daemon bus recall, so the extension exists purely so the CLI can register it in
+ * `cliExtensions` and project it with {@link asCapability} at its historical spine slot. The
+ * organ proper (warm store lifecycle, `memory.*` capabilities, audience built in memory code)
+ * lands in Phase 6.
  */
 
-import { join } from "node:path";
-import { ActionClass, type Capability, type CapabilityDeps } from "../index.ts";
+import { ActionClass, type Extension, type ExtensionFactory } from "../../ext/contract.ts";
+import { asCapability } from "../../ext/compat.ts";
+import type { Capability, CapabilityDeps } from "../index.ts";
 import { createMemory } from "../../memory/index.ts";
 import { provenanceOf, renderProvenanceFrom, IdSchema, VisibilitySchema } from "../../memory/search.ts";
 import { parseRecallCliRequest, recallCliOutput } from "../../memory/recall-cli.ts";
@@ -18,35 +25,54 @@ import { fail, out, parse } from "../../cli/io.ts";
 import type { NodeType, RememberIntent } from "../../types.ts";
 
 /**
- * Build the provenance/visibility metadata a `remember` write carries (multiplayer §7), from
- * CLI flags. Only flags actually passed produce keys — an absent flag writes nothing, so the
- * engine merge preserves existing scope on an update. Fails fast on a bad visibility value or
- * a `dm` scope with no partner (`--visibility dm` is meaningless without `--dm-with`).
+ * Build the provenance/visibility metadata a `remember` write carries (multiplayer §7), THROWING
+ * the historical message on a bad value. Only fields actually passed produce keys — an absent
+ * field writes nothing, so the engine merge preserves existing scope on an update. Reached from
+ * the CLI wrapper via {@link provenanceMetadataFromFlags}, which catches → `fail`.
  */
-function provenanceMetadataFromFlags(flags: Record<string, string | boolean>): Record<string, unknown> {
+function buildProvenanceMetadata(input: {
+  visibility?: string;
+  dmWith?: string;
+  by?: string;
+  byName?: string;
+}): Record<string, unknown> {
   const meta: Record<string, unknown> = {};
   // Same id/visibility shapes the engine enforces (search.ts) — validate against them, don't
   // re-hand-roll the regex/enum here.
   const asId = (flag: string, raw: string): string => {
     const parsed = IdSchema.safeParse(raw);
-    if (!parsed.success) fail(`--${flag} must be a Discord user id (1–20 digits)`);
+    if (!parsed.success) throw new Error(`--${flag} must be a Discord user id (1–20 digits)`);
     return parsed.data;
   };
-  if (flags.visibility !== undefined) {
-    const vis = VisibilitySchema.safeParse(String(flags.visibility));
-    if (!vis.success) fail("--visibility must be one of: public, owner, dm");
-    if (vis.data === "dm" && flags["dm-with"] === undefined) {
-      fail("--visibility dm requires --dm-with <discordUserId>");
+  if (input.visibility !== undefined) {
+    const vis = VisibilitySchema.safeParse(input.visibility);
+    if (!vis.success) throw new Error("--visibility must be one of: public, owner, dm");
+    if (vis.data === "dm" && input.dmWith === undefined) {
+      throw new Error("--visibility dm requires --dm-with <discordUserId>");
     }
     meta.visibility = vis.data;
   }
-  if (flags["dm-with"] !== undefined) meta.dm_with = asId("dm-with", String(flags["dm-with"]));
-  if (flags.by !== undefined) meta.source_user = asId("by", String(flags.by));
-  if (flags["by-name"] !== undefined) meta.source_name = String(flags["by-name"]);
+  if (input.dmWith !== undefined) meta.dm_with = asId("dm-with", input.dmWith);
+  if (input.by !== undefined) meta.source_user = asId("by", input.by);
+  if (input.byName !== undefined) meta.source_name = input.byName;
   return meta;
 }
 
-export function createMemoryCapability({ paths }: CapabilityDeps): Capability {
+/** The CLI adapter: read the flags, run the shared core, adapt a throw to the historical `fail`. */
+function provenanceMetadataFromFlags(flags: Record<string, string | boolean>): Record<string, unknown> {
+  try {
+    return buildProvenanceMetadata({
+      visibility: flags.visibility !== undefined ? String(flags.visibility) : undefined,
+      dmWith: flags["dm-with"] !== undefined ? String(flags["dm-with"]) : undefined,
+      by: flags.by !== undefined ? String(flags.by) : undefined,
+      byName: flags["by-name"] !== undefined ? String(flags["by-name"]) : undefined,
+    });
+  } catch (err) {
+    fail((err as Error).message);
+  }
+}
+
+export const createMemoryExtension: ExtensionFactory = ({ paths }): Extension => {
   /** Serve the exact same parser/renderer on the direct path when no daemon is listening. */
   async function runRecall(argv: string[]): Promise<never> {
     let request;
@@ -59,6 +85,7 @@ export function createMemoryCapability({ paths }: CapabilityDeps): Capability {
 
     try {
       const { callBus } = await import("../../shell/control-bus.ts");
+      const { join } = await import("node:path");
       // Agentic recall may spend up to 45s in its model seat; unlike channels, this bus request
       // needs to preserve that established command budget rather than declaring the daemon dead.
       const res = await callBus(join(paths.beckettDir, "control.sock"), "memory.recall", { argv }, 60_000);
@@ -146,9 +173,18 @@ export function createMemoryCapability({ paths }: CapabilityDeps): Capability {
   }
 
   return {
-    id: "memory",
-    summary: "the in-process markdown memory graph",
-    actionClass: ActionClass.FREE,
+    manifest: {
+      id: "memory",
+      version: "1.0.0",
+      summary: "the in-process markdown memory graph",
+      actionClass: ActionClass.FREE,
+      kind: "extension",
+    },
+
+    // NO capabilities/invoke/lifecycle (the Phase 6 / Zoom live-lane fence): this extension is
+    // v5 facets only until the memory organ proper migrates.
+
+    // --- v5 facets, carried through unchanged ---
     cliHelp:
       'recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain',
     cliVerbs: [
@@ -169,4 +205,9 @@ export function createMemoryCapability({ paths }: CapabilityDeps): Capability {
     ],
     busCommands: [],
   };
+};
+
+/** The v5 factory-table shape: the {@link asCapability} projection of the extension above. */
+export function createMemoryCapability(deps: CapabilityDeps): Capability {
+  return asCapability(createMemoryExtension(deps));
 }

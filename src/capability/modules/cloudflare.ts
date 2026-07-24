@@ -1,32 +1,102 @@
 /**
- * Beckett v5 — the dns+deploy capability modules (`src/capability/modules/cloudflare.ts`)
+ * Beckett v6 — the dns + deploy extensions (`src/capability/modules/cloudflare.ts`)
  * =======================================================================================
  * The two Cloudflare-backed surfaces — `beckett dns …` (zone-scoped records via
  * `agency/cloudflare.ts::CfDns`) and `beckett deploy …` (cloudflared named-tunnel ingress +
- * a CNAME via `shell/deploy.ts::TunnelDeployer`) — normalized onto the common factory shape
- * (V5 Phase 2). They stay two registered capabilities (two ids, two help tokens, exactly the
+ * a CNAME via `shell/deploy.ts::TunnelDeployer`) — on the v6 extension contract (Phase 4,
+ * docs/v6-architecture.md §6). They stay TWO extensions (two ids, two help tokens, exactly the
  * command list the CLI has always advertised) but live together here because they share the
- * credential gate and the CfDns client, the same pairing as their implementations. Handler
- * bodies are the former `cli/beckett.ts::runDns`/`runDeploy` moved verbatim; the CLI
- * characterization suite pins their observable behavior byte-for-byte.
+ * credential gate and the CfDns client, the same pairing as their implementations.
+ *
+ * Each surface has two entrypoints over shared throwing cores (client construction + env
+ * preflight):
+ *   - the CLI verb keeps its historical flag parse + `out`/`fail` byte-for-byte (the CLI
+ *     characterization suite pins it; thrown core errors surface via `main().catch(fail)`), and
+ *   - the `dns.*` / `deploy.*` capabilities are the v6 dispatch surface: zod-validated args in,
+ *     an {@link ExtensionResult} out — never `out`/`fail`, so the daemon can dispatch them.
+ *
+ * DNS is FREE (a record is a reversible proposal you can delete). DEPLOY acts OUTWARD (it stands
+ * a public URL up), so its mutating capabilities carry a non-FREE per-capability posture (forward
+ * ext.invoke catalog metadata) and an in-body authenticated-origin backstop — while the manifest
+ * action-class stays FREE so the {@link asCapability} projection the v5 spine registers is
+ * byte-identical. `createDnsCapability`/`createDeployCapability` remain the projections for the
+ * v5 factory table.
  */
 
-import { ActionClass, type Capability, type CapabilityDeps } from "../index.ts";
+import { z } from "zod";
+import { ActionClass, type Extension, type ExtensionFactory } from "../../ext/contract.ts";
+import { asCapability } from "../../ext/compat.ts";
+import type { Capability, CapabilityDeps } from "../index.ts";
 import { CfDns, DEFAULT_APEX_DOMAIN, apexDomain } from "../../agency/cloudflare.ts";
 import { TunnelDeployer } from "../../shell/deploy.ts";
 import { fail, out, parse } from "../../cli/io.ts";
+import type { Logger } from "../../types.ts";
 
-export function createDnsCapability({ logger }: CapabilityDeps): Capability {
-  // Reads CLOUDFLARE_API_TOKEN + CLOUDFLARE_ZONE_ID from ~/.beckett/.env (via loadConfig). DNS
-  // is FREE: a record is a reversible proposal you can delete. Short names expand to the zone
-  // apex (e.g. `x-tool` → `x-tool.<zone apex>`). Output is JSON. (See the `deploy` skill.)
+/** Throwing preflight + CfDns construction, shared by the CLI wrapper and `dns.*` invoke. */
+function buildDnsClient(logger: Logger): CfDns {
+  const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
+  const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
+  if (!token) throw new Error("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare DNS is unavailable");
+  if (!zoneId) throw new Error("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to your Cloudflare zone id");
+  return new CfDns({ token, zoneId, logger });
+}
+
+/** Throwing preflight + TunnelDeployer construction, shared by the CLI wrapper and `deploy.*` invoke. */
+function buildDeployer(logger: Logger): TunnelDeployer {
+  const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
+  const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
+  if (!token) throw new Error("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare is unavailable");
+  if (!zoneId) throw new Error("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to your Cloudflare zone id");
+  const dns = new CfDns({ token, zoneId, logger });
+  return new TunnelDeployer({ tunnelId: process.env.CLOUDFLARE_TUNNEL_ID, dns, logger });
+}
+
+// ── dns invocation schemas ───────────────────────────────────────────────────────────────────
+
+const DnsListArgs = z.object({
+  name: z.string().optional(),
+  type: z.string().optional(),
+});
+
+const DnsUpsertArgs = z.object({
+  name: z.string().trim().min(1, "dns.upsert needs a record name"),
+  content: z.string().trim().min(1, "dns.upsert needs record content"),
+  type: z.string().optional(),
+  /** Cloudflare-proxied (orange cloud). Defaults true, matching the CLI. */
+  proxied: z.boolean().optional(),
+  ttl: z.number().int().positive().optional(),
+});
+
+const DnsRemoveArgs = z.object({
+  name: z.string().trim().min(1, "dns.remove needs a record name"),
+  type: z.string().optional(),
+});
+
+// ── deploy invocation schemas ──────────────────────────────────────────────────────────────
+
+const DeployCreateArgs = z
+  .object({
+    name: z.string().trim().min(1, "deploy.create needs a name"),
+    /** Local port to expose (becomes http://localhost:<port>). */
+    port: z.number().int().min(1).max(65535).optional(),
+    /** Full local service URL (alternative to `port`). */
+    service: z.string().optional(),
+  })
+  .refine((a) => Boolean(a.service?.trim()) || a.port !== undefined, {
+    message: "deploy.create needs a port or a service url",
+  });
+
+const DeployRemoveArgs = z.object({
+  name: z.string().trim().min(1, "deploy.remove needs a name"),
+});
+
+export const createDnsExtension: ExtensionFactory = ({ logger }): Extension => {
+  // The former `cli/beckett.ts::runDns`, observable behavior unchanged: flag parse + out/fail
+  // stay here; the env gate + client construction come from the shared {@link buildDnsClient}
+  // core, whose throws surface via main().catch(fail) with the same messages.
   async function runDns(argv: string[]): Promise<void> {
     const [sub, ...rest] = argv;
-    const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
-    const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
-    if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare DNS is unavailable");
-    if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to your Cloudflare zone id");
-    const dns = new CfDns({ token, zoneId, logger });
+    const dns = buildDnsClient(logger);
     const { _, flags } = parse(rest);
 
     if (sub === "ls") {
@@ -59,10 +129,77 @@ export function createDnsCapability({ logger }: CapabilityDeps): Capability {
   }
 
   return {
-    id: "dns",
-    summary: "zone-scoped Cloudflare DNS, token from env (see the deploy skill)",
-    actionClass: ActionClass.FREE,
+    manifest: {
+      id: "dns",
+      version: "1.0.0",
+      summary: "zone-scoped Cloudflare DNS, token from env (see the deploy skill)",
+      actionClass: ActionClass.FREE,
+      kind: "extension",
+    },
+
+    // --- v6 discovery + dispatch (DNS records are reversible — every capability stays FREE) ---
+    capabilities: [
+      {
+        id: "dns.list",
+        description:
+          "List DNS records on the configured Cloudflare zone, optionally filtered by name or " +
+          "type. A pure read — use to check what hostnames resolve or whether a record exists.",
+        input: DnsListArgs,
+        examples: ["what DNS records point at the zone?", "is there a CNAME for x-tool?"],
+      },
+      {
+        id: "dns.upsert",
+        description:
+          "Create or update one DNS record on the zone (CNAME by default, proxied by default). " +
+          "Reversible — you can remove it. Short names expand to the zone apex. Use to point a " +
+          "hostname somewhere.",
+        input: DnsUpsertArgs,
+        examples: ["point x-tool at my-tunnel as a proxied CNAME"],
+      },
+      {
+        id: "dns.remove",
+        description:
+          "Delete a DNS record from the zone by name (and optional type). Use to tear down a " +
+          "hostname you no longer serve.",
+        input: DnsRemoveArgs,
+        examples: ["remove the x-tool DNS record"],
+      },
+    ],
+    invoke: async (call) => {
+      try {
+        switch (call.capabilityId) {
+          case "dns.list": {
+            const a = call.args as z.infer<typeof DnsListArgs>;
+            const data = await buildDnsClient(logger).list({ name: a.name, type: a.type });
+            return { ok: true, data };
+          }
+          case "dns.upsert": {
+            const a = call.args as z.infer<typeof DnsUpsertArgs>;
+            const data = await buildDnsClient(logger).upsert({
+              name: a.name,
+              type: a.type ?? "CNAME",
+              content: a.content,
+              proxied: a.proxied ?? true,
+              ttl: a.ttl,
+            });
+            return { ok: true, data };
+          }
+          case "dns.remove": {
+            const a = call.args as z.infer<typeof DnsRemoveArgs>;
+            const data = await buildDnsClient(logger).remove(a.name, a.type);
+            return { ok: true, data };
+          }
+          default:
+            return { ok: false, error: `dns: unknown capability "${call.capabilityId}"` };
+        }
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+
+    // --- v5 facets, carried through unchanged ---
     cliHelp: "dns ls|add|rm",
+    skillDoc: ".claude/skills/deploy/SKILL.md",
     cliVerbs: [
       {
         name: "dns",
@@ -72,26 +209,16 @@ export function createDnsCapability({ logger }: CapabilityDeps): Capability {
       },
     ],
     busCommands: [],
-    skillDoc: ".claude/skills/deploy/SKILL.md",
   };
-}
+};
 
-export function createDeployCapability({ logger }: CapabilityDeps): Capability {
-  // Throws a locally-running app up at <name>.<zone apex>. Reversible/FREE (a record + ingress
-  // rule you can delete) but outward — announce the URL in voice. Requires CLOUDFLARE_TUNNEL_ID
-  // (a one-time human prereq); fails clearly if absent. (See the `deploy` skill.)
+export const createDeployExtension: ExtensionFactory = ({ logger }): Extension => {
+  // The former `cli/beckett.ts::runDeploy`, observable behavior unchanged: flag parse + out/fail
+  // stay here; the env gate + deployer construction come from the shared {@link buildDeployer}
+  // core, whose throws surface via main().catch(fail) with the same messages.
   async function runDeploy(argv: string[]): Promise<void> {
     const [sub, ...rest] = argv;
-    const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
-    const zoneId = process.env.CLOUDFLARE_ZONE_ID ?? "";
-    if (!token) fail("no CLOUDFLARE_API_TOKEN in ~/.beckett/.env — Cloudflare is unavailable");
-    if (!zoneId) fail("no CLOUDFLARE_ZONE_ID in ~/.beckett/.env — set it to your Cloudflare zone id");
-    const dns = new CfDns({ token, zoneId, logger });
-    const deployer = new TunnelDeployer({
-      tunnelId: process.env.CLOUDFLARE_TUNNEL_ID,
-      dns,
-      logger,
-    });
+    const deployer = buildDeployer(logger);
     const { _, flags } = parse(rest);
 
     if (sub === "ls") {
@@ -117,10 +244,75 @@ export function createDeployCapability({ logger }: CapabilityDeps): Capability {
   }
 
   return {
-    id: "deploy",
-    summary: "cloudflared named-tunnel ingress + a CNAME via CfDns (see the deploy skill)",
-    actionClass: ActionClass.FREE,
+    manifest: {
+      id: "deploy",
+      version: "1.0.0",
+      summary: "cloudflared named-tunnel ingress + a CNAME via CfDns (see the deploy skill)",
+      // FREE at the manifest layer for the byte-identical projection; deploy acts outward, so
+      // its mutating capabilities carry a non-FREE per-capability posture below.
+      actionClass: ActionClass.FREE,
+      kind: "extension",
+    },
+
+    // --- v6 discovery + dispatch ---
+    capabilities: [
+      {
+        id: "deploy.list",
+        description:
+          "List the named tunnel deployments currently configured (name → public URL). A pure " +
+          "read — use to see what apps are already thrown up at <name>.<zone apex>.",
+        examples: ["what's currently deployed?"],
+      },
+      {
+        id: "deploy.create",
+        description:
+          `Throw a locally-running app up at <name>.${apexDomain()} — creates BOTH the cloudflared ` +
+          "tunnel ingress AND the public DNS record in one call. Acts outward (a live public URL), " +
+          "so announce the URL in voice. Give a local port or a full service url.",
+        actionClass: ActionClass.HANDSHAKE_GATED,
+        input: DeployCreateArgs,
+        examples: ["deploy the app on port 3000 at my-demo", "put the mockup up at staging --service http://localhost:8080"],
+      },
+      {
+        id: "deploy.remove",
+        description:
+          "Tear down a named deployment — removes its tunnel ingress and DNS record. Use to take a " +
+          "previously-deployed app offline.",
+        actionClass: ActionClass.HANDSHAKE_GATED,
+        input: DeployRemoveArgs,
+        examples: ["take down the my-demo deployment"],
+      },
+    ],
+    invoke: async (call) => {
+      try {
+        switch (call.capabilityId) {
+          case "deploy.list": {
+            return { ok: true, data: buildDeployer(logger).list() };
+          }
+          case "deploy.create": {
+            if (!call.origin?.userId) return { ok: false, error: "deploy: standing up a public URL needs an authenticated authorized request" };
+            const a = call.args as z.infer<typeof DeployCreateArgs>;
+            const service = a.service?.trim() ? a.service.trim() : `http://localhost:${a.port}`;
+            const data = await buildDeployer(logger).deploy({ name: a.name, service });
+            return { ok: true, data };
+          }
+          case "deploy.remove": {
+            if (!call.origin?.userId) return { ok: false, error: "deploy: removing a deployment needs an authenticated authorized request" };
+            const a = call.args as z.infer<typeof DeployRemoveArgs>;
+            const data = await buildDeployer(logger).remove(a.name);
+            return { ok: true, data };
+          }
+          default:
+            return { ok: false, error: `deploy: unknown capability "${call.capabilityId}"` };
+        }
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+
+    // --- v5 facets, carried through unchanged ---
     cliHelp: "deploy <name>|ls|rm",
+    skillDoc: ".claude/skills/deploy/SKILL.md",
     cliVerbs: [
       {
         name: "deploy",
@@ -130,10 +322,9 @@ export function createDeployCapability({ logger }: CapabilityDeps): Capability {
       },
     ],
     busCommands: [],
-    skillDoc: ".claude/skills/deploy/SKILL.md",
-    // The deploy-durability recipe in a worker persona (Phase 4: composed into the system
-    // append by `stages.ts::workerSystemAppend`). Priority 30 keeps the historical persona
-    // order: github guidance (10) → stage extras (20) → this recipe last.
+    // The deploy-durability recipe in a worker persona (composed into the system append by
+    // `stages.ts::workerSystemAppend`). Priority 30 keeps the historical persona order: github
+    // guidance (10) → stage extras (20) → this recipe last. asCapability projects it.
     promptBlock: {
       id: "deploy",
       priority: 30,
@@ -141,6 +332,15 @@ export function createDeployCapability({ logger }: CapabilityDeps): Capability {
         ticket && slug && ticketMentionsDeploy(ticket) ? deployDurabilityNote(slug, apexDomain()) : "",
     },
   };
+};
+
+/** The v5 factory-table shapes: the {@link asCapability} projections of the extensions above. */
+export function createDnsCapability(deps: CapabilityDeps): Capability {
+  return asCapability(createDnsExtension(deps));
+}
+
+export function createDeployCapability(deps: CapabilityDeps): Capability {
+  return asCapability(createDeployExtension(deps));
 }
 
 /**

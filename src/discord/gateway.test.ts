@@ -411,24 +411,3 @@ test("createTaskThread opens a named workspace from a text channel", async () =>
   expect(created).toEqual({ threadId: "thread-1", parentChannelId: "parent-1", name: "#9 - Ship export" });
   expect(requests[0]).toMatchObject({ name: "#9 - Ship export", reason: "Beckett task workspace" });
 });
-
-test("slash-command replies disable mentions in user-controlled task titles", async () => {
-  const gateway = new DiscordJsGateway();
-  gateway.onCommand(async () => ({ content: "Created #1 - <@&123> @everyone" }));
-  const edits: Array<Record<string, unknown>> = [];
-  const interaction = {
-    commandName: "task",
-    user: { id: "user-1" },
-    channelId: "channel-1",
-    options: {
-      getSubcommand: () => "create",
-      data: [{ name: "create", options: [{ name: "name", value: "<@&123> @everyone" }] }],
-    },
-    deferReply: async () => {},
-    editReply: async (payload: Record<string, unknown>) => { edits.push(payload); },
-  };
-  await (
-    gateway as unknown as { handleCommandInteraction(value: unknown): Promise<void> }
-  ).handleCommandInteraction(interaction);
-  expect(edits[0]).toMatchObject({ allowedMentions: { parse: [] } });
-});

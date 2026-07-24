@@ -321,20 +321,6 @@ export interface DiscordLinkButton {
   url: string;
 }
 
-export interface DiscordCommand {
-  name: "stats" | "task" | "branch";
-  subcommand?: string;
-  userId: string;
-  channelId: string;
-  options: Record<string, string | number | boolean>;
-}
-
-export interface DiscordCommandReply {
-  content?: string;
-  embeds?: DiscordEmbed[];
-  buttons?: DiscordLinkButton[];
-}
-
 export interface TaskThreadCreated {
   threadId: string;
   parentChannelId: string;
@@ -984,8 +970,6 @@ export interface DiscordGateway {
    * activity/progress threads are gone; the worker firehose goes to the private ticket journal.
    */
   onThreadCreate(cb: (t: ThreadCreated) => void | Promise<void>): void;
-  /** Register native slash-command handling. Optional on legacy injected test gateways. */
-  onCommand?(cb: (command: DiscordCommand) => Promise<DiscordCommandReply>): void;
   /** Create or rename the dedicated Discord workspace for a numbered task. */
   createTaskThread?(channelId: string, name: string): Promise<TaskThreadCreated>;
   isConnected(): boolean;

@@ -8,9 +8,16 @@
  */
 
 import { expect, test } from "bun:test";
-import { CapabilityRegistry } from "../index.ts";
+import { ActionClass, CapabilityRegistry } from "../index.ts";
 import { asCapability, ExtensionRegistry, type ExtensionContext } from "../../ext/index.ts";
-import { createImageExtension, createSecretExtension } from "./index.ts";
+import {
+  createDeployExtension,
+  createDnsExtension,
+  createGithubExtension,
+  createImageExtension,
+  createMailExtension,
+  createSecretExtension,
+} from "./index.ts";
 import { validateConfig } from "../../config.ts";
 import { buildPaths } from "../../paths.ts";
 import type { Logger } from "../../types.ts";
@@ -145,4 +152,158 @@ test("asCapability projects the carried v5 facets so the CLI spine slot is uncha
   spine.register(secret);
   expect(spine.resolveCliVerb(["image", "a", "cat"])!.capability.id).toBe("image");
   expect(spine.resolveCliVerb(["secret", "request"])!.capability.id).toBe("secret");
+});
+
+// ── V6 Phase 4 — github + dns + deploy + mail (catalog cutover) ─────────────────────────────
+
+function registryWithPhase4(): { registry: ExtensionRegistry; deps: ExtensionContext } {
+  const deps = ctx();
+  const registry = new ExtensionRegistry();
+  registry.register(createGithubExtension(deps));
+  registry.register(createDnsExtension(deps));
+  registry.register(createDeployExtension(deps));
+  registry.register(createMailExtension(deps));
+  return { registry, deps };
+}
+
+test("github/dns/deploy/mail register and advertise their capabilities with real routing prose", () => {
+  const { registry } = registryWithPhase4();
+  expect(registry.list()).toEqual(["github", "dns", "deploy", "mail"]);
+  const catalog = registry.catalog();
+  expect(catalog.map((e) => e.capabilityId)).toEqual([
+    "github.repo-create", "github.repo-star", "github.pr-open", "github.pr-merge",
+    "github.pr-close", "github.pr-status", "github.pr-review", "github.push",
+    "dns.list", "dns.upsert", "dns.remove",
+    "deploy.list", "deploy.create", "deploy.remove",
+    "mail.inbox", "mail.send", "mail.list", "mail.read",
+  ]);
+  for (const entry of catalog) {
+    expect(entry.description.length).toBeGreaterThan(40);
+    expect(entry.examples.length).toBeGreaterThan(0);
+  }
+});
+
+test("all four leaf organs are stateless: the health surface is empty", async () => {
+  const { registry } = registryWithPhase4();
+  expect(await registry.health()).toEqual([]);
+});
+
+test("outward capabilities carry non-FREE catalog postures; reads stay FREE", () => {
+  const { registry } = registryWithPhase4();
+  const posture = new Map(registry.catalog().map((e) => [e.capabilityId, e.actionClass]));
+  // The real postures ride per-capability; the manifest stays FREE for the projection (below).
+  expect(posture.get("github.push")).toBe(ActionClass.ALWAYS_ASK);
+  expect(posture.get("github.pr-merge")).toBe(ActionClass.HANDSHAKE_GATED);
+  expect(posture.get("github.pr-status")).toBe(ActionClass.FREE);
+  expect(posture.get("deploy.create")).toBe(ActionClass.HANDSHAKE_GATED);
+  expect(posture.get("deploy.list")).toBe(ActionClass.FREE);
+  expect(posture.get("mail.send")).toBe(ActionClass.HANDSHAKE_GATED);
+  expect(posture.get("mail.list")).toBe(ActionClass.FREE);
+  expect(posture.get("dns.upsert")).toBe(ActionClass.FREE);
+});
+
+test("invoke validates args at the seam across the four organs (refusals, never exits)", async () => {
+  const { registry, deps } = registryWithPhase4();
+  const repo = await registry.invoke({ capabilityId: "github.repo-create", args: {} }, deps);
+  expect(repo.ok).toBeFalse();
+  expect(repo.error).toContain("invalid args");
+
+  const dnsUpsert = await registry.invoke({ capabilityId: "dns.upsert", args: { name: "x" } }, deps);
+  expect(dnsUpsert.ok).toBeFalse();
+  expect(dnsUpsert.error).toContain("invalid args");
+
+  const deployCreate = await registry.invoke({ capabilityId: "deploy.create", args: { name: "x" } }, deps);
+  expect(deployCreate.ok).toBeFalse();
+  expect(deployCreate.error).toContain("port or a service");
+
+  const mailSend = await registry.invoke({ capabilityId: "mail.send", args: { to: "a@b.c" } }, deps);
+  expect(mailSend.ok).toBeFalse();
+  expect(mailSend.error).toContain("invalid args");
+});
+
+test("preflight refusals fire BEFORE any side effect, from every organ's invoke", async () => {
+  const { registry, deps } = registryWithPhase4();
+  const dnsR = await withoutEnv(["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID"], () =>
+    registry.invoke({ capabilityId: "dns.list", args: {} }, deps),
+  );
+  expect(dnsR.ok).toBeFalse();
+  expect(dnsR.error).toContain("CLOUDFLARE_API_TOKEN");
+
+  const deployR = await withoutEnv(["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID"], () =>
+    registry.invoke({ capabilityId: "deploy.list", args: {} }, deps),
+  );
+  expect(deployR.ok).toBeFalse();
+  expect(deployR.error).toContain("CLOUDFLARE_API_TOKEN");
+
+  const mailR = await withoutEnv(["AGENTMAIL_API_KEY"], () =>
+    registry.invoke({ capabilityId: "mail.inbox", args: {} }, deps),
+  );
+  expect(mailR.ok).toBeFalse();
+  expect(mailR.error).toContain("AGENTMAIL_API_KEY");
+
+  // repo-star is FREE (no origin gate), so it reaches the PAT preflight in buildGh. Provide an
+  // account so identity resolution gets PAST the account check and lands on the PAT preflight.
+  const savedAccount = process.env.GITHUB_ACCOUNT;
+  process.env.GITHUB_ACCOUNT = "beckett";
+  try {
+    const ghR = await withoutEnv(["GITHUB_PAT"], () =>
+      registry.invoke({ capabilityId: "github.repo-star", args: { repo: "a/b", starred: true } }, deps),
+    );
+    expect(ghR.ok).toBeFalse();
+    expect(ghR.error).toContain("GITHUB_PAT");
+  } finally {
+    if (savedAccount === undefined) delete process.env.GITHUB_ACCOUNT;
+    else process.env.GITHUB_ACCOUNT = savedAccount;
+  }
+});
+
+test("outward mutating capabilities refuse without an authenticated origin (defense in depth)", async () => {
+  const { registry, deps } = registryWithPhase4();
+  // The origin gate runs BEFORE the client is built, so this is env-independent.
+  const push = await registry.invoke(
+    { capabilityId: "github.push", args: { repo: "a/b", branch: "x", dir: "/tmp" } },
+    deps,
+  );
+  expect(push.ok).toBeFalse();
+  expect(push.error).toContain("authenticated authorized request");
+
+  const deployCreate = await registry.invoke(
+    { capabilityId: "deploy.create", args: { name: "x", port: 3000 } },
+    deps,
+  );
+  expect(deployCreate.ok).toBeFalse();
+  expect(deployCreate.error).toContain("authenticated authorized request");
+});
+
+test("asCapability projects the phase-4 organs' v5 facets (incl. the worker-append promptBlocks)", () => {
+  const deps = ctx();
+  const github = asCapability(createGithubExtension(deps));
+  const dns = asCapability(createDnsExtension(deps));
+  const deploy = asCapability(createDeployExtension(deps));
+  const mail = asCapability(createMailExtension(deps));
+
+  // Manifest action-class stays FREE so the CLI spine slot is byte-identical.
+  expect(github.actionClass).toBe(ActionClass.FREE);
+  expect(github.id).toBe("github");
+  expect(github.cliHelp).toBe("gh repo|pr|push");
+  expect(github.cliVerbs.map((v) => v.name)).toEqual(["gh"]);
+  // The worker-append promptBlocks must survive the projection (the characterization suite
+  // never exercises workerSystemAppend, so a drop would be silent).
+  expect(github.promptBlock?.priority).toBe(10);
+  expect(typeof github.promptBlock?.render).toBe("function");
+  expect(deploy.promptBlock?.priority).toBe(30);
+
+  expect(dns.cliHelp).toBe("dns ls|add|rm");
+  expect(deploy.cliHelp).toBe("deploy <name>|ls|rm");
+  expect(mail.cliHelp).toBe("mail inbox|send|ls|read");
+
+  // All four project cleanly into the v5 spine (the CLI's exact move).
+  const spine = new CapabilityRegistry();
+  spine.register(github);
+  spine.register(dns);
+  spine.register(deploy);
+  spine.register(mail);
+  expect(spine.resolveCliVerb(["gh", "repo"])!.capability.id).toBe("github");
+  expect(spine.resolveCliVerb(["deploy", "ls"])!.capability.id).toBe("deploy");
+  expect(spine.resolveCliVerb(["mail", "inbox"])!.capability.id).toBe("mail");
 });
