@@ -22,7 +22,7 @@ import { ActionClass, CapabilityRegistry, type Capability } from "../capability/
 import { loadConfig, resolveBoardName } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus, ControlBusTimeoutError } from "../shell/control-bus.ts";
-import { createCapability, createImageExtension, createQuickExtension, createSecretExtension } from "../capability/modules/index.ts";
+import { createCapability, createImageExtension, createQuickExtension, createRoutinesExtension, createSecretExtension } from "../capability/modules/index.ts";
 import { asCapability, ExtensionRegistry } from "../ext/index.ts";
 import { fail, out, parse, quietLogger } from "./io.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
@@ -34,10 +34,6 @@ import type { Casting, Ticket, TicketState } from "../tracker/types.ts";
 import { projectSlug } from "../tracker/cast.ts";
 import { parseSince, readSpendLedger, summarizeSpend } from "../spend.ts";
 import { TaskStore, displayTaskName, normalizeBranchRef, normalizeTaskNumber } from "../task/store.ts";
-import { RoutineStore } from "../routine/store.ts";
-import { buildDispatchPlan } from "../routine/plan.ts";
-import { nextFireAt, isValidTimeZone } from "../routine/schedule.ts";
-import type { Routine } from "../routine/types.ts";
 import { AgentStore } from "../agent/store.ts";
 import { createAgentRunner } from "../agent/invoke.ts";
 import { AGENT_HARNESSES, AGENT_EFFORTS, type AgentDefinition } from "../agent/types.ts";
@@ -91,6 +87,10 @@ cliExtensions.register(createSecretExtension(capabilityDeps));
 // so no runner is ever constructed here — the detached-result callback is dead wiring the
 // deps type requires (delivery is the daemon instance's job in shell/main.ts).
 cliExtensions.register(createQuickExtension({ onDetachedResult: () => {} })(capabilityDeps));
+// V6 Phase 3b: routine's verb rides the extension. The CLI process never runs any lifecycle
+// hook (no store, no scheduler armed), so it passes NO dispatch deps — the verb reads
+// routines.json directly and routes a real fire through the bus, exactly as before.
+cliExtensions.register(createRoutinesExtension({})(capabilityDeps));
 
 /**
  * The one code-project slug that targets Beckett's OWN source repo (`0xbeckett/beckett`). Filing work
@@ -1477,156 +1477,9 @@ async function runBrowser(argv: string[]): Promise<void> {
   }
 }
 
-function routineStore(): RoutineStore {
-  return new RoutineStore(join(paths.beckettDir, "routines.json"));
-}
-
-/** "12:34 America/Los_Angeles on 2026-07-20" — a routine's next concrete fire, humanized. */
-function describeNextFire(routine: Routine): string {
-  const at = nextFireAt(routine.schedule, routine.state, new Date(), Math.random);
-  const tz = routine.schedule.window.tz;
-  const local = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).format(at);
-  const rolled = routine.state.periodKey && routine.state.chosenFireAt ? "" : " (window; exact time not rolled yet)";
-  return `${local} ${tz}${rolled}`;
-}
-
-function summarizeRoutine(routine: Routine): Record<string, unknown> {
-  const w = routine.schedule.window;
-  return {
-    id: routine.id,
-    name: routine.name,
-    builtin: routine.builtin,
-    enabled: routine.enabled,
-    action: routine.action.kind,
-    cadence: routine.schedule.cadence.kind,
-    window: `${w.start}-${w.end} ${w.tz}`,
-    nextFire: describeNextFire(routine),
-    lastFiredAt: routine.state.lastFiredAt ?? null,
-  };
-}
-
-/**
- * `beckett routine` (issue #62): add/list/remove/inspect humanized recurring routines and show
- * each one's next concrete fire time. Definitions live in `routines.json` (read here directly,
- * same as the task registry); `fire --force` routes a real live dispatch through the daemon.
- */
-async function runRoutine(argv: string[]): Promise<void> {
-  const [sub, ...rest] = argv;
-  const store = routineStore();
-
-  if (!sub || sub === "list") {
-    const routines = await store.list();
-    out(routines.map(summarizeRoutine));
-  }
-
-  if (sub === "inspect") {
-    const id = rest[0];
-    if (!id) fail("usage: beckett routine inspect <id>");
-    const routine = await store.get(id!);
-    if (!routine) fail(`no such routine: ${id}`);
-    out({ ...summarizeRoutine(routine!), state: routine!.state, createdAt: routine!.createdAt });
-  }
-
-  if (sub === "add") {
-    const { _, flags } = parse(rest);
-    const id = _[0];
-    if (!id) {
-      fail('usage: beckett routine add <id> --window 12:00-13:00 --tz <IANA> --task "<browser task>" [--name <n>] [--creds <entry>] [--channel <id>]');
-    }
-    const windowRaw = String(flags.window ?? "");
-    const m = windowRaw.match(/^(\d{2}:\d{2})-(\d{2}:\d{2})$/);
-    if (!m) fail("--window must look like 12:00-13:00 (24h HH:MM-HH:MM)");
-    const tz = String(flags.tz ?? "");
-    if (!tz || !isValidTimeZone(tz)) fail("--tz must be a valid IANA timezone, e.g. America/Los_Angeles");
-    const task = flags.task ? String(flags.task) : "";
-    if (!task.trim()) fail('a routine needs a --task "<self-contained browser task>"');
-    try {
-      const routine = await store.add({
-        id: id!,
-        name: flags.name ? String(flags.name) : id!,
-        enabled: true,
-        action: {
-          kind: "browser",
-          task,
-          credsEntry: flags.creds ? String(flags.creds) : undefined,
-          channelId: flags.channel ? String(flags.channel) : undefined,
-        },
-        schedule: {
-          cadence: { kind: "daily" },
-          window: { start: m[1]!, end: m[2]!, tz },
-        },
-      });
-      out(summarizeRoutine(routine));
-    } catch (err) {
-      fail((err as Error).message);
-    }
-  }
-
-  if (sub === "remove" || sub === "rm") {
-    const id = rest[0];
-    if (!id) fail("usage: beckett routine remove <id>");
-    const removed = await store.remove(id!);
-    if (!removed) fail(`no such routine: ${id}`);
-    out(`removed routine ${id}`);
-  }
-
-  if (sub === "enable" || sub === "disable") {
-    const id = rest[0];
-    if (!id) fail(`usage: beckett routine ${sub} <id>`);
-    try {
-      const routine = await store.setEnabled(id!, sub === "enable");
-      out(summarizeRoutine(routine));
-    } catch (err) {
-      fail((err as Error).message);
-    }
-  }
-
-  if (sub === "fire") {
-    const { _, flags } = parse(rest);
-    const id = _[0];
-    if (!id) fail("usage: beckett routine fire <id> [--dry-run | --force]");
-    const dryRun = flags["dry-run"] === true || flags.dryrun === true;
-    const force = flags.force === true;
-    const routine = await store.get(id!);
-    if (!routine) fail(`no such routine: ${id}`);
-    if (dryRun) {
-      // Build the exact dispatch plan WITHOUT running the agent or posting — proves the wiring,
-      // no live post. For the agent lane the post text is authored at fire time, so it's not shown.
-      const plan = buildDispatchPlan(routine!);
-      out({
-        dryRun: true,
-        routine: id,
-        lane: plan.lane,
-        wouldDispatchTo:
-          plan.lane === "agent"
-            ? `invoke agent ${plan.agentId} → beckett browser (background lane)`
-            : "beckett browser (background lane)",
-        preview: plan.preview,
-        agentId: plan.agentId,
-        agentInput: plan.agentInput,
-        credsEntry: plan.credsEntry,
-        browserTask: plan.browserTask,
-        note: "dry-run did NOT run the agent or post. To fire for real: beckett routine fire " + id + " --force",
-      });
-    }
-    // A real fire routes through the daemon so it dispatches on the browser lane, off this process.
-    try {
-      const res = await callBus(SOCK, "routine.fire", { id, force }, 30_000);
-      if (!res.ok) fail(res.error ?? "routine fire failed");
-      out(res.data);
-    } catch (err) {
-      fail((err as Error).message);
-    }
-  }
-
-  fail(
-    "usage: beckett routine list | inspect <id> | add <id> ... | remove <id> | enable <id> | disable <id> | fire <id> [--dry-run|--force]",
-  );
-}
+// `beckett routine` (issue #62) moved verbatim into the routines extension (V6 Phase 3b,
+// src/capability/modules/routines.ts); its verb projects back into the same spine slot below
+// via asCapability, so the pinned help token and every usage/failure string are unchanged.
 
 function agentStore(): AgentStore {
   return new AgentStore(join(paths.beckettDir, "agents.json"));
@@ -2032,22 +1885,7 @@ function buildCliCapabilities(): Capability[] {
       ],
       busCommands: [],
     },
-    {
-      id: "routine",
-      summary: "humanized recurring routines: add/list/remove/inspect + fire (dry-run or --force)",
-      actionClass: ActionClass.FREE,
-      cliHelp: "routine list|inspect|add|remove|fire",
-      cliVerbs: [
-        {
-          name: "routine",
-          summary: "named recurring tasks that fire at a fuzzed time inside a daily window",
-          usage:
-            'beckett routine list | inspect <id> | add <id> --window 12:00-13:00 --tz <IANA> --task "<task>" [--creds <entry>] | remove <id> | enable|disable <id> | fire <id> [--dry-run|--force]',
-          run: runRoutine,
-        },
-      ],
-      busCommands: [],
-    },
+    asCapability(cliExtensions.get("routines")),
     {
       id: "agent",
       summary: "live agent registry: define/add/new/list/show/invoke/remove reusable worker personas (issue #55/#66)",

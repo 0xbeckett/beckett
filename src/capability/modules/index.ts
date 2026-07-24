@@ -41,6 +41,12 @@ export type { BrowserExtension, BrowserExtensionDeps } from "./browser.ts";
 // browser, quick never had one (its bus bodies live in the concierge).
 export { createQuickExtension } from "./quick.ts";
 export type { QuickExtension, QuickExtensionDeps } from "./quick.ts";
+// V6 Phase 3b: the routines organ — the first extension whose lifecycle.start runs a
+// BACKGROUND LOOP (the cron scheduler, startPhase "late"); the CLI verb is carried and
+// projected into its spine slot. Not in the v5 FACTORIES table: like browser/quick, routine
+// never had one (its spine slot was an inline literal in cli/beckett.ts).
+export { createRoutinesExtension } from "./routines.ts";
+export type { RoutinesExtension, RoutinesExtensionDeps } from "./routines.ts";
 
 /** The capability-id → factory table (the analog of `drivers/index.ts::FACTORIES`). */
 const FACTORIES: Record<string, CapabilityFactory> = {

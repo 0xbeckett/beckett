@@ -48,8 +48,6 @@ import { defaultKeychainReader } from "../secret/keychain-read.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createMemory } from "../memory/index.ts";
 import { startRoutineMaintenance } from "../memory/maintain.ts";
-import { RoutineStore } from "../routine/store.ts";
-import { startRoutineScheduler, type RoutineScheduler } from "../routine/scheduler.ts";
 import { LiveAgentRegistry } from "../agent/registry.ts";
 import { createAgentRunner } from "../agent/invoke.ts";
 import { TaskStore } from "../task/store.ts";
@@ -62,6 +60,8 @@ import { ExtensionRegistry, type ExtensionContext } from "../ext/index.ts";
 import { createBrowserExtension, createImageExtension, createSecretExtension } from "../capability/modules/index.ts";
 // Phase 3 quick wiring: a separate import line so concurrent organ migrations stay additive.
 import { createQuickExtension } from "../capability/modules/quick.ts";
+// Phase 3b routines wiring: same additive-import posture.
+import { createRoutinesExtension } from "../capability/modules/routines.ts";
 
 /**
  * Root under which every ticket builds its OWN project repo — one directory per code project,
@@ -111,7 +111,6 @@ interface BootedSystem {
   browserAgent: BrowserAgent;
   browser: BrowserRuntime;
   memoryMaintenance: { stop(): void };
-  routineScheduler: RoutineScheduler;
   extensions: ExtensionRegistry;
 }
 
@@ -453,6 +452,23 @@ async function boot(): Promise<BootedSystem> {
     onDetachedResult: (run) => concierge.notifyQuickResult(run),
   })({ config, paths, logger });
   extensions.register(quickExtension);
+  // Phase 3b — the routines organ (issue #62): init builds the store + scheduler deps INERT;
+  // the cron loop arms only in the LATE startAll sweep below (startPhase "late"), after the
+  // agent registry/runner and the rest of the live system exist. The dispatcher's dependencies
+  // are LAZY accessors resolved at FIRE time — agentRegistry/agentRunner are consts declared
+  // further down the boot, which is safe because nothing calls these before the late start.
+  const routinesExtension = createRoutinesExtension({
+    browserAgent: () => browserExtension.agent(),
+    agentRegistry: () => agentRegistry,
+    agentRunner: () => agentRunner,
+    // Resolve the origin channel/requester at fire time from env so no id is baked into a
+    // routine definition (BECKETT_ROUTINE_CHANNEL_ID / DISCORD_OWNER_ID).
+    defaultOrigin: () => ({
+      channelId: process.env.BECKETT_ROUTINE_CHANNEL_ID?.trim() ?? null,
+      requesterId: process.env.DISCORD_OWNER_ID?.trim() ?? null,
+    }),
+  })({ config, paths, logger });
+  extensions.register(routinesExtension);
   concierge.setExtensionRegistry(extensions, extCtx);
 
   // Extensions init before any live part starts (build state, open connections). Per-organ
@@ -621,81 +637,33 @@ async function boot(): Promise<BootedSystem> {
   // already knows how to run it, no core edit.
   const agentRunner = createAgentRunner({ config, logger: logger.child("agent-run") });
 
-  // Routines (issue #62): named recurring tasks with HUMANIZED fire times. The store is the
-  // durable source of truth (routines.json, same atomic-write spirit as the task registry); the
-  // scheduler ticks, rolls each period's fuzzed fire time once, persists it, and fires idempotently.
-  // A firing routine's action runs OFF this process through the background browser lane
-  // (issue #50/#58) — the scheduler never blocks on browser work.
-  const routineStore = new RoutineStore(join(beckettDir, "routines.json"));
-  const routineScheduler = startRoutineScheduler({
-    store: routineStore,
-    logger: logger.child("routine"),
-    dispatcher: {
-      async dispatch(plan) {
-        // Resolve the origin channel/requester at fire time from env so no id is baked into a
-        // routine definition (BECKETT_ROUTINE_CHANNEL_ID / DISCORD_OWNER_ID).
-        const channelId = plan.channelId ?? process.env.BECKETT_ROUTINE_CHANNEL_ID?.trim() ?? null;
-        const requesterId = plan.requesterId ?? process.env.DISCORD_OWNER_ID?.trim() ?? null;
-        if (!channelId || !requesterId) {
-          throw new Error(
-            "routine dispatch needs an origin channel + requester " +
-              "(set BECKETT_ROUTINE_CHANNEL_ID and DISCORD_OWNER_ID, or the routine's channelId/requesterId)",
-          );
-        }
-
-        // The task string posted to the browser lane. For the `browser` lane it's the routine's
-        // static task; for the `agent` lane the agent AUTHORS it live (issue #55/#72).
-        let browserTask = plan.browserTask;
-        if (plan.lane === "agent") {
-          if (!plan.agentId) throw new Error("agent-lane routine is missing an agentId");
-          // Resolve the agent LIVE from the registry, so editing its prompt (or the routine's target
-          // agent) takes effect with no redeploy. A removed/unknown agent fails loudly here.
-          const def = agentRegistry.get(plan.agentId);
-          if (!def) throw new Error(`routine references unknown agent: ${plan.agentId}`);
-          const outcome = await agentRunner.run(def, plan.agentInput ?? "", { channelId, requesterId });
-          if (outcome.state !== "done" || !outcome.output.trim()) {
-            throw new Error(`agent ${plan.agentId} did not author a post: ${outcome.error ?? outcome.state}`);
-          }
-          browserTask = outcome.output.trim();
-        }
-        if (!browserTask) throw new Error("routine dispatch produced no browser task");
-
-        // Post via the PRIVILEGED in-process browser lane — the routine holds the channel/requester
-        // authorization, so a headless run can post without a Discord mention token. Credential
-        // injection (from the jingle entry NAMED by credsEntry), the X verification pause/resume,
-        // and the confirmation back to the origin channel are all the browser agent's job (issue #50).
-        await browserAgent.run(browserTask, {
-          channelId,
-          requesterId,
-          credsEntry: plan.credsEntry,
-        });
-      },
-    },
-  });
-  // Serve `beckett routine fire … --force` from the control bus (a real, live dispatch). The
-  // dry-run path is CLI-local (build the plan, no daemon) so it can prove wiring with no post.
+  // Routines (issue #62) live in the routines extension (Phase 3b): store, dispatcher closure,
+  // cron loop, and the 5s prime all moved there — the loop arms in the LATE startAll sweep just
+  // below, after the agent registry/runner above exist. Serve `beckett routine fire … --force`
+  // from the control bus (a real, live dispatch) through the extension's scheduler accessor;
+  // the dry-run path is CLI-local (build the plan, no daemon) so it can prove wiring with no post.
   concierge.setRoutineOps({
-    fire: (id, opts) => routineScheduler.fireNow(id, opts),
+    fire: (id, opts) => routinesExtension.scheduler().fireNow(id, opts),
   });
-  // Prime once shortly after boot so a routine whose window is live right now is caught up
-  // without waiting a full tick. Best-effort; failures are logged inside the scheduler.
-  setTimeout(() => void routineScheduler.tick().catch(() => {}), 5_000).unref?.();
 
   // LATE extension background loops start here — the whole live system (pollers, mail, memory
   // maintenance, agent registry/runner) is up, so a scheduler whose fires DISPATCH into it can
   // never race its own dependencies. This is the sanctioned start position for startPhase:
-  // "late" organs (the routine scheduler as it migrates; memory's maintain loop in Phase 6).
+  // "late" organs (the routine cron scheduler, Phase 3b; memory's maintain loop in Phase 6).
   await extensions.startAll(extCtx, "late");
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance, routineScheduler, extensions };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance, extensions };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
 async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   sys.logger.info("shutting down beckett v3", { signal });
-  sys.routineScheduler.stop();
+  // The routine scheduler (Phase 3b) now stops inside the extensions.stopAll sweep below —
+  // AFTER the pollers stop, not before them as the hand-wired first-line stop used to. A cron
+  // clearInterval landing a beat later is accepted (sanctioned in the v6 design resolution):
+  // per-period idempotency means a straggler tick can never double-fire.
   sys.memoryMaintenance.stop();
   sys.prPoller?.stop();
   sys.activityPoller?.stop();
