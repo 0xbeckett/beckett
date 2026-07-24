@@ -17,12 +17,14 @@
  * silently shadow one another, and an extension advertising a capability it cannot service is
  * refused at registration rather than failing at dispatch.
  *
- * SKELETON SCOPE (issue #82): lifecycle orchestration, discovery, and dispatch are real and
- * tested, but NOTHING here is wired into the live daemon path. The core's own dispatch call
- * site (the concierge) and the license enforcement (`src/agency`) are referenced, not moved.
+ * LIVE since the v6 boot wiring: `shell/main.ts` holds the ONE runtime instance (registered
+ * organs, initAll/startAll/stopAll folded into boot/shutdown) and the concierge serves
+ * `ext.invoke`/`ext.catalog` from it over the control bus. The license enforcement
+ * (`src/agency`) stays upstream — the registry routes, it never widens.
  */
 
 import type { z } from "zod";
+import type { Logger } from "../types.ts";
 import {
   effectiveActionClass,
   type ActionClass,
@@ -244,29 +246,76 @@ export class ExtensionRegistry {
 
   // --- lifecycle orchestration (stateful extensions) ---
 
-  /** Run every extension's `init` in registration order. */
+  /**
+   * One init/start pass in registration order, with per-organ error isolation: a throwing
+   * `best-effort` organ (the default) is logged and skipped so one broken extension cannot
+   * take the rest of the boot down; a `fail-fast` organ ({@link LifecycleFailPolicy}) rethrows
+   * and aborts the sweep — concierge-grade organs opt in.
+   */
+  private async sweep(hook: "init" | "start", ctx: ExtensionContext): Promise<void> {
+    for (const extension of this.byId.values()) {
+      const fn = extension.lifecycle?.[hook];
+      if (!fn) continue;
+      try {
+        await fn(ctx);
+      } catch (err) {
+        if ((extension.lifecycle?.failPolicy ?? "best-effort") === "fail-fast") throw err;
+        ctx.logger.warn(`extension ${hook} failed`, {
+          extension: extension.manifest.id,
+          error: (err as Error).message ?? String(err),
+        });
+      }
+    }
+  }
+
+  /** Run every extension's `init` in registration order (per-organ isolation, see {@link sweep}). */
   async initAll(ctx: ExtensionContext): Promise<void> {
-    for (const extension of this.byId.values()) await extension.lifecycle?.init?.(ctx);
+    await this.sweep("init", ctx);
   }
 
-  /** Run every extension's `start` in registration order. */
+  /** Run every extension's `start` in registration order (per-organ isolation, see {@link sweep}). */
   async startAll(ctx: ExtensionContext): Promise<void> {
-    for (const extension of this.byId.values()) await extension.lifecycle?.start?.(ctx);
+    await this.sweep("start", ctx);
   }
 
-  /** Run every extension's `stop` in REVERSE registration order (teardown mirrors setup). */
-  async stopAll(): Promise<void> {
-    for (const extension of [...this.byId.values()].reverse()) await extension.lifecycle?.stop?.();
+  /**
+   * Run every extension's `stop` in REVERSE registration order (teardown mirrors setup).
+   * Always best-effort — a throwing stop is logged and never blocks the rest of the drain,
+   * matching the daemon shutdown's hand-wired per-organ try/catch.
+   */
+  async stopAll(logger?: Logger): Promise<void> {
+    for (const extension of [...this.byId.values()].reverse()) {
+      try {
+        await extension.lifecycle?.stop?.();
+      } catch (err) {
+        logger?.warn("extension shutdown failed", {
+          extension: extension.manifest.id,
+          error: (err as Error).message ?? String(err),
+        });
+      }
+    }
   }
 
-  /** Collect a health verdict from every extension that declares one. */
+  /**
+   * Collect a health verdict from every extension that declares one. A THROWING probe is a
+   * verdict too — it becomes `ok:false` with the error as detail, and collection continues,
+   * so one broken probe can never blind the doctor to the rest.
+   */
   async health(): Promise<ExtensionHealthReport[]> {
     const reports: ExtensionHealthReport[] = [];
     for (const extension of this.byId.values()) {
       const probe = extension.lifecycle?.health;
       if (!probe) continue;
-      const verdict = await probe();
-      reports.push({ extensionId: extension.manifest.id, ...verdict });
+      try {
+        const verdict = await probe();
+        reports.push({ extensionId: extension.manifest.id, ...verdict });
+      } catch (err) {
+        reports.push({
+          extensionId: extension.manifest.id,
+          ok: false,
+          detail: (err as Error).message ?? String(err),
+        });
+      }
     }
     return reports;
   }

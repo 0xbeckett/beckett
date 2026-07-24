@@ -111,7 +111,11 @@ export abstract class BaseDriver {
 
   /** Short harness name ("claude" | "codex" | "pi") for log/error text. */
   protected abstract harnessName(): string;
-  /** Parse one raw stdout line and fan out normalized events. MUST tolerate anything. */
+  /**
+   * Parse one raw stdout line and fan out normalized events. MUST tolerate anything. Drivers
+   * delegate the shared parse/try-catch envelope to {@link normalizeLine} and keep only their
+   * `type` switch — this stays abstract so base.test.ts's no-op TestDriver can override it.
+   */
   protected abstract handleLine(line: string): void;
   /** Driver-specific $ estimate for {@link getTelemetry} (stream cost / price table / null). */
   protected abstract usdEstimate(): number | null;
@@ -536,6 +540,76 @@ export abstract class BaseDriver {
 
   protected str(v: unknown): string | undefined {
     return typeof v === "string" ? v : undefined;
+  }
+
+  /**
+   * The shared per-line envelope every harness parser wore verbatim (issue #19): parse-guard a raw
+   * stdout line — a malformed line emits `unknown` carrying `raw: line` (the STRING) and returns —
+   * then run the driver's `dispatch` inside a catch that routes a surprising-but-parseable line to
+   * `unknown` carrying `raw: obj` (the PARSED object) with the fixed warn string, so one bad frame
+   * never takes down the read loop (Spec 02 §7.2 / Risk-A). Each driver's `handleLine` delegates
+   * here; the driver-specific `type` switch stays inside `dispatch` (its own `default:`/ignore set).
+   * `handleLine` stays the abstract subclass surface (base.test.ts's TestDriver overrides it).
+   */
+  protected normalizeLine(line: string, dispatch: (obj: Record<string, unknown>) => void): void {
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      this.emit({ kind: "unknown", raw: line, ts: Date.now() });
+      return;
+    }
+    try {
+      dispatch(obj);
+    } catch (err) {
+      // A surprising-but-parseable line must never take down the loop (Spec 02 §7.2 / Risk-A).
+      this.log.warn("event normalization error (routed to unknown)", { err: String(err) });
+      this.emit({ kind: "unknown", raw: obj, ts: Date.now() });
+    }
+  }
+
+  /**
+   * Map a harness `usage` block onto the shared {@link TokenUsage} shape (issue #19): the three
+   * parsers differed ONLY in field names. `cacheCreate` is optional — a harness with no cache-
+   * creation counter (codex) omits it and the field reads 0. Absent/non-numeric fields read 0; an
+   * all-zero block returns null (the zero-sum guard — a usage-less line must not count as a turn).
+   */
+  protected mapTokenUsage(
+    raw: unknown,
+    map: { input: string; output: string; cacheRead: string; cacheCreate?: string },
+  ): TokenUsage | null {
+    if (!raw || typeof raw !== "object") return null;
+    const u = raw as Record<string, unknown>;
+    const n = (v: unknown): number => (typeof v === "number" ? v : 0);
+    const usage: TokenUsage = {
+      input: n(u[map.input]),
+      output: n(u[map.output]),
+      cacheRead: n(u[map.cacheRead]),
+      cacheCreate: map.cacheCreate ? n(u[map.cacheCreate]) : 0,
+    };
+    if (usage.input + usage.output + usage.cacheRead + usage.cacheCreate === 0) return null;
+    return usage;
+  }
+
+  /**
+   * The shared session-handshake tail (issue #19): capture the id (when truthy), mark the handshake
+   * seen, emit `session_started`, clear the spawn-timeout, go running, and resolve the armed spawn
+   * promise. Each driver extracts its own id field (claude `session_id` / codex `thread_id` / pi
+   * `id`) and model, then calls this with the handler's own `ts`. Emits `sessionId ?? ""` — claude's
+   * old `sessionId!` is equivalent here (it minted the id at spawn, so it is never null by init).
+   */
+  protected emitSessionStarted(id: string | null, model: string, ts: number): void {
+    if (id) this.sessionId = id;
+    this.sessionEmitted = true;
+    this.emit({ kind: "session_started", sessionId: this.sessionId ?? "", model, ts });
+    if (this.spawnTimer) {
+      clearTimeout(this.spawnTimer);
+      this.spawnTimer = null;
+    }
+    this.setState("running");
+    this.resolveSession?.({ sessionId: this.sessionId ?? "", pid: this.pid ?? -1 });
+    this.resolveSession = null;
+    this.rejectSession = null;
   }
 }
 

@@ -58,6 +58,8 @@ import { readLocalBranchStats } from "../git/branch-stats.ts";
 import { reconcileTaskTickets } from "../task/reconcile.ts";
 import { createAgentMailApi, defaultMailStateFile, safeMailError } from "../mail/index.ts";
 import { createAgentMailPoller, defaultMailListenerStateFile, type AgentMailPoller } from "../mail/listener.ts";
+import { ExtensionRegistry, type ExtensionContext } from "../ext/index.ts";
+import { createImageExtension, createSecretExtension } from "../capability/modules/index.ts";
 
 /**
  * Root under which every ticket builds its OWN project repo — one directory per code project,
@@ -108,6 +110,7 @@ interface BootedSystem {
   browser: BrowserRuntime;
   memoryMaintenance: { stop(): void };
   routineScheduler: RoutineScheduler;
+  extensions: ExtensionRegistry;
 }
 
 /**
@@ -446,6 +449,17 @@ async function boot(): Promise<BootedSystem> {
   concierge.setQuickRunner(quick);
   concierge.setBrowserAgent(browserAgent);
 
+  // The v6 extension seam (docs/v6-architecture.md §6): the ONE runtime registry the daemon
+  // dispatches extensions through — `ext.invoke`/`ext.catalog` on the control bus read it via
+  // the concierge. Phase 1 organs (stateless) register here; later phases move a migrating
+  // organ's setup into lifecycle.{init,start} instead of adding boot lines. Registration order
+  // is teardown-reverse, and must honor concierge-first/pollers-last for organs that migrate.
+  const extensions = new ExtensionRegistry();
+  const extCtx: ExtensionContext = { config, paths, logger };
+  extensions.register(createImageExtension({ config, paths, logger: logger.child("image") }));
+  extensions.register(createSecretExtension({ config, paths, logger: logger.child("secret") }));
+  concierge.setExtensionRegistry(extensions, extCtx);
+
   // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
   // the daemon-wide halves the Concierge can't see itself. The Concierge merges in its own
   // (Discord gateway, session) when serving the command.
@@ -459,6 +473,7 @@ async function boot(): Promise<BootedSystem> {
     quick: quick.stats(),
     browser: browser.stats(),
     browserAgent: browserAgent.stats(),
+    extensions: await extensions.health(),
     poller: {
       boards: Object.fromEntries([...pollers].map(([board, p]) => [board, p.stats()])),
       ...poller.stats(),
@@ -472,6 +487,10 @@ async function boot(): Promise<BootedSystem> {
       ...client.stats(),
     },
   }));
+
+  // Extensions init before any live part starts (build state, open connections). Per-organ
+  // isolation lives in the registry; only a fail-fast organ can abort the boot here.
+  await extensions.initAll(extCtx);
 
   // Start the Concierge FIRST (of the live parts) so a bad claude launch fails the whole boot
   //    before we begin polling. (Constructed above so its progress sink could be wired in.)
@@ -511,6 +530,11 @@ async function boot(): Promise<BootedSystem> {
   // most one checkpoint window of in-flight WIP, not the whole session. The graceful path
   // (drainForShutdown) still commits WIP itself and stops this loop first.
   dispatcher.startCheckpointLoop();
+
+  // Extension background loops start here — after crash recovery (so a migrated organ never
+  // races the recovery block) and BEFORE the pollers, which stay last so events only flow once
+  // everything else is ready to consume them.
+  await extensions.startAll(extCtx);
 
   // Fan each board's poll batch to BOTH the dispatcher (acts on the work) and the Concierge
   // (surfaces milestones/errors back to the Discord conversation that filed the ticket).
@@ -652,7 +676,7 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance, routineScheduler };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance, routineScheduler, extensions };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -664,6 +688,9 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   sys.activityPoller?.stop();
   sys.mailPoller?.stop();
   for (const p of sys.pollers.values()) p.stop();
+  // Mirrors startAll's boot position (just before the pollers started). The registry sweep is
+  // best-effort per organ — a throwing stop is logged, never blocks the rest of the drain.
+  await sys.extensions.stopAll(sys.logger);
   try {
     const drain = await sys.dispatcher.drainForShutdown(signal, 20_000);
     if (drain.timedOut) {

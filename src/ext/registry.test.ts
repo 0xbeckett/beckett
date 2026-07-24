@@ -122,6 +122,98 @@ test("lifecycle orchestration drives init/start/health/stop across extensions", 
   expect(health[0]?.ok).toBeFalse();
 });
 
+test("initAll/startAll isolate a throwing best-effort organ and keep sweeping", async () => {
+  const registry = new ExtensionRegistry();
+  const calls: string[] = [];
+  const warns: string[] = [];
+  registry.register(
+    ext("broken", {
+      lifecycle: {
+        init() {
+          throw new Error("init exploded");
+        },
+        start() {
+          throw new Error("start exploded");
+        },
+      },
+    }),
+  );
+  registry.register(
+    ext("healthy", {
+      lifecycle: { init: () => void calls.push("init"), start: () => void calls.push("start") },
+    }),
+  );
+  const c = ctx();
+  (c.logger as { warn: (msg: string) => void }).warn = (msg) => void warns.push(msg);
+
+  await registry.initAll(c); // does not throw — the broken organ is isolated
+  await registry.startAll(c);
+  expect(calls).toEqual(["init", "start"]);
+  expect(warns).toEqual(["extension init failed", "extension start failed"]);
+});
+
+test("a fail-fast organ's init/start throw aborts the sweep", async () => {
+  const registry = new ExtensionRegistry();
+  const calls: string[] = [];
+  registry.register(
+    ext("concierge-grade", {
+      lifecycle: {
+        failPolicy: "fail-fast",
+        start() {
+          throw new Error("bad claude launch");
+        },
+      },
+    }),
+  );
+  registry.register(ext("later", { lifecycle: { start: () => void calls.push("start") } }));
+
+  await expect(registry.startAll(ctx())).rejects.toThrow("bad claude launch");
+  expect(calls).toEqual([]); // the sweep aborted before later organs started
+});
+
+test("stopAll swallows and logs a throwing stop, still stopping the rest", async () => {
+  const registry = new ExtensionRegistry();
+  const stopped: string[] = [];
+  const warns: Array<Record<string, unknown> | undefined> = [];
+  registry.register(ext("first", { lifecycle: { stop: () => void stopped.push("first") } }));
+  registry.register(
+    ext("broken", {
+      lifecycle: {
+        stop() {
+          throw new Error("stop exploded");
+        },
+      },
+    }),
+  );
+  registry.register(ext("last", { lifecycle: { stop: () => void stopped.push("last") } }));
+
+  const logger = ctx().logger;
+  (logger as unknown as { warn: (msg: string, meta?: Record<string, unknown>) => void }).warn =
+    (_msg, meta) => void warns.push(meta);
+  await registry.stopAll(logger); // best-effort: never throws
+  expect(stopped).toEqual(["last", "first"]); // reverse registration order, broken organ skipped over
+  expect(warns).toEqual([{ extension: "broken", error: "stop exploded" }]);
+});
+
+test("health keeps collecting past a throwing probe (thrown → ok:false with the error)", async () => {
+  const registry = new ExtensionRegistry();
+  registry.register(
+    ext("broken", {
+      lifecycle: {
+        health() {
+          throw new Error("probe exploded");
+        },
+      },
+    }),
+  );
+  registry.register(ext("healthy", { lifecycle: { health: () => ({ ok: true, detail: "fine" }) } }));
+
+  expect(await registry.health()).toEqual([
+    { extensionId: "broken", ok: false, detail: "probe exploded" },
+    { extensionId: "healthy", ok: true, detail: "fine" },
+  ]);
+});
+
 test("config fragments compose under the extension's key", () => {
   const registry = new ExtensionRegistry();
   registry.register(createPingExtension(ctx()));

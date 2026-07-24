@@ -365,77 +365,63 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
    * Parse one raw JSONL line and fan out normalized {@link WorkerEvent}s. Tolerant by contract:
    * a malformed line or unknown `type` becomes `kind:'unknown'` — never a throw.
    */
+  // Public (widened from the protected abstract): pi.test.ts drives the parser through
+  // `driver.handleLine(...)` directly. The shared parse/try-catch envelope lives in base.
   handleLine(line: string): void {
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      this.emit({ kind: "unknown", raw: line, ts: Date.now() });
-      return;
-    }
-    try {
-      switch (obj.type) {
-        case "session":
-          this.handleSession(obj);
-          break;
-        case "turn_start":
-          this.turns += 1;
-          this.emit({ kind: "turn_started", ts: Date.now() });
-          break;
-        case "tool_execution_start":
-          this.handleToolStart(obj);
-          break;
-        case "tool_execution_end":
-          this.handleToolEnd(obj);
-          break;
-        case "message_end":
-          this.handleMessageEnd(obj);
-          break;
-        case "turn_end":
-          this.handleTurnEnd(obj);
-          break;
-        case "agent_end":
-          this.handleAgentEnd();
-          break;
-        case "error":
-          this.emit({ kind: "error", message: this.str(obj.message) ?? "error", ts: Date.now() });
-          break;
-        // High-frequency streaming / lifecycle chatter we deliberately DON'T surface: the per-token
-        // `message_update` alone fires hundreds of times a turn, so routing these to `unknown` would
-        // flood the event bus. Explicitly ignored (not unknown) — only a genuinely unrecognized
-        // `type` falls through to `unknown`.
-        case "agent_start":
-        case "message_start":
-        case "message_update":
-        case "tool_execution_update":
-        case "queue_update":
-        case "compaction_start":
-        case "compaction_end":
-        case "auto_retry_start":
-        case "auto_retry_end":
-          break;
-        default:
-          this.emit({ kind: "unknown", raw: obj, ts: Date.now() });
-      }
-    } catch (err) {
-      this.log.warn("event normalization error (routed to unknown)", { err: String(err) });
-      this.emit({ kind: "unknown", raw: obj, ts: Date.now() });
+    this.normalizeLine(line, (obj) => this.dispatchFrame(obj));
+  }
+
+  /** Route one parsed `--mode json` frame by `type` (shared envelope in normalizeLine). */
+  private dispatchFrame(obj: Record<string, unknown>): void {
+    switch (obj.type) {
+      case "session":
+        this.handleSession(obj);
+        break;
+      case "turn_start":
+        this.turns += 1;
+        this.emit({ kind: "turn_started", ts: Date.now() });
+        break;
+      case "tool_execution_start":
+        this.handleToolStart(obj);
+        break;
+      case "tool_execution_end":
+        this.handleToolEnd(obj);
+        break;
+      case "message_end":
+        this.handleMessageEnd(obj);
+        break;
+      case "turn_end":
+        this.handleTurnEnd(obj);
+        break;
+      case "agent_end":
+        this.handleAgentEnd();
+        break;
+      case "error":
+        this.emit({ kind: "error", message: this.str(obj.message) ?? "error", ts: Date.now() });
+        break;
+      // High-frequency streaming / lifecycle chatter we deliberately DON'T surface: the per-token
+      // `message_update` alone fires hundreds of times a turn, so routing these to `unknown` would
+      // flood the event bus. Explicitly ignored (not unknown) — only a genuinely unrecognized
+      // `type` falls through to `unknown`.
+      case "agent_start":
+      case "message_start":
+      case "message_update":
+      case "tool_execution_update":
+      case "queue_update":
+      case "compaction_start":
+      case "compaction_end":
+      case "auto_retry_start":
+      case "auto_retry_end":
+        break;
+      default:
+        this.emit({ kind: "unknown", raw: obj, ts: Date.now() });
     }
   }
 
   private handleSession(obj: Record<string, unknown>): void {
+    // Shared handshake tail in base: capture id, emit session_started, clear spawn timer, resolve.
     const id = this.str(obj.id) ?? this.sessionId;
-    if (id) this.sessionId = id;
-    this.sessionEmitted = true;
-    this.emit({ kind: "session_started", sessionId: this.sessionId ?? "", model: this.resolvedModel(), ts: Date.now() });
-    if (this.spawnTimer) {
-      clearTimeout(this.spawnTimer);
-      this.spawnTimer = null;
-    }
-    this.setState("running");
-    this.resolveSession?.({ sessionId: this.sessionId ?? "", pid: this.pid ?? -1 });
-    this.resolveSession = null;
-    this.rejectSession = null;
+    this.emitSessionStarted(id, this.resolvedModel(), Date.now());
   }
 
   private handleToolStart(obj: Record<string, unknown>): void {
@@ -618,18 +604,13 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
     return null;
   }
 
-  /** Map pi's `usage` block → the shared {@link TokenUsage} shape. */
+  /** Map pi's `usage` block → the shared {@link TokenUsage} shape (field-map in base). */
   private mapUsage(raw: unknown): TokenUsage | null {
-    if (!raw || typeof raw !== "object") return null;
-    const u = raw as Record<string, unknown>;
-    const n = (v: unknown): number => (typeof v === "number" ? v : 0);
-    const usage: TokenUsage = {
-      input: n(u.input),
-      output: n(u.output),
-      cacheRead: n(u.cacheRead),
-      cacheCreate: n(u.cacheWrite),
-    };
-    if (usage.input + usage.output + usage.cacheRead + usage.cacheCreate === 0) return null;
-    return usage;
+    return this.mapTokenUsage(raw, {
+      input: "input",
+      output: "output",
+      cacheRead: "cacheRead",
+      cacheCreate: "cacheWrite",
+    });
   }
 }

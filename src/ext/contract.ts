@@ -153,6 +153,16 @@ export interface ExtensionHealth {
 }
 
 /**
+ * How the registry's init/start sweeps treat this extension when a hook throws.
+ *   - `best-effort` (default) — log and keep sweeping, mirroring the daemon's hand-wired
+ *     per-organ try/catch (a broken mail poller must not take Discord/tickets down).
+ *   - `fail-fast` — rethrow and abort the boot, for concierge-grade organs whose failed
+ *     start must fail the whole daemon.
+ * `stop` is always best-effort: teardown never blocks on one organ's failure.
+ */
+export type LifecycleFailPolicy = "best-effort" | "fail-fast";
+
+/**
  * Optional lifecycle hooks. Stateless extensions (github, image) declare none. Stateful ones
  * (memory holds retrieval indices, browser owns a subprocess) implement what they need:
  *   - `init`  — build state, open connections; may run before the daemon accepts traffic.
@@ -162,6 +172,8 @@ export interface ExtensionHealth {
  * The registry orchestrates these across all extensions in registration order.
  */
 export interface ExtensionLifecycle {
+  /** Sweep error policy for `init`/`start`. Defaults to `best-effort`. */
+  failPolicy?: LifecycleFailPolicy;
   init?: (ctx: ExtensionContext) => Promise<void> | void;
   start?: (ctx: ExtensionContext) => Promise<void> | void;
   stop?: () => Promise<void> | void;

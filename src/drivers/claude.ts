@@ -389,62 +389,42 @@ export class ClaudeDriver extends BaseDriver implements HarnessDriver {
    * subtype becomes a `kind:'unknown'` event — never a throw.
    */
   protected handleLine(line: string): void {
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      this.emit({ kind: "unknown", raw: line, ts: Date.now() });
-      return;
-    }
+    this.normalizeLine(line, (obj) => this.dispatchFrame(obj));
+  }
 
-    try {
-      switch (obj.type) {
-        case "system":
-          this.handleSystem(obj);
-          break;
-        case "assistant":
-          this.handleAssistant(obj);
-          break;
-        case "user":
-          this.handleUser(obj);
-          break;
-        case "stream_event":
-          this.handleStreamEvent(obj);
-          break;
-        case "result":
-          this.handleResult(obj);
-          break;
-        case "error":
-          this.emit({ kind: "error", message: this.str(obj.message) ?? "error", ts: Date.now() });
-          break;
-        default:
-          this.emit({ kind: "unknown", raw: obj, ts: Date.now() });
-      }
-    } catch (err) {
-      // A surprising-but-parseable line must never take down the loop (Risk-A).
-      this.log.warn("event normalization error (routed to unknown)", { err: String(err) });
-      this.emit({ kind: "unknown", raw: obj, ts: Date.now() });
+  /** Route one parsed stream-json frame by `type` (the shared envelope lives in normalizeLine). */
+  private dispatchFrame(obj: Record<string, unknown>): void {
+    switch (obj.type) {
+      case "system":
+        this.handleSystem(obj);
+        break;
+      case "assistant":
+        this.handleAssistant(obj);
+        break;
+      case "user":
+        this.handleUser(obj);
+        break;
+      case "stream_event":
+        this.handleStreamEvent(obj);
+        break;
+      case "result":
+        this.handleResult(obj);
+        break;
+      case "error":
+        this.emit({ kind: "error", message: this.str(obj.message) ?? "error", ts: Date.now() });
+        break;
+      default:
+        this.emit({ kind: "unknown", raw: obj, ts: Date.now() });
     }
   }
 
   private handleSystem(obj: Record<string, unknown>): void {
     const ts = Date.now();
     if (obj.subtype === "init") {
+      // The launch is confirmed running once init streams (shared handshake tail in base).
       const sid = this.str(obj.session_id) ?? this.sessionId;
       const model = this.str(obj.model) ?? this.resolvedModel();
-      if (sid) this.sessionId = sid;
-      this.sessionEmitted = true;
-      this.emit({ kind: "session_started", sessionId: this.sessionId!, model, ts });
-
-      // The launch is confirmed running once init streams.
-      if (this.spawnTimer) {
-        clearTimeout(this.spawnTimer);
-        this.spawnTimer = null;
-      }
-      this.setState("running");
-      this.resolveSession?.({ sessionId: this.sessionId!, pid: this.pid ?? -1 });
-      this.resolveSession = null;
-      this.rejectSession = null;
+      this.emitSessionStarted(sid, model, ts);
       return;
     }
 
@@ -739,18 +719,13 @@ export class ClaudeDriver extends BaseDriver implements HarnessDriver {
     }
   }
 
-  /** Map claude's `usage` block → the shared {@link TokenUsage} shape. */
+  /** Map claude's `usage` block → the shared {@link TokenUsage} shape (field-map in base). */
   private mapUsage(raw: unknown): TokenUsage | null {
-    if (!raw || typeof raw !== "object") return null;
-    const u = raw as Record<string, unknown>;
-    const n = (v: unknown): number => (typeof v === "number" ? v : 0);
-    const usage: TokenUsage = {
-      input: n(u.input_tokens),
-      output: n(u.output_tokens),
-      cacheRead: n(u.cache_read_input_tokens),
-      cacheCreate: n(u.cache_creation_input_tokens),
-    };
-    if (usage.input + usage.output + usage.cacheRead + usage.cacheCreate === 0) return null;
-    return usage;
+    return this.mapTokenUsage(raw, {
+      input: "input_tokens",
+      output: "output_tokens",
+      cacheRead: "cache_read_input_tokens",
+      cacheCreate: "cache_creation_input_tokens",
+    });
   }
 }

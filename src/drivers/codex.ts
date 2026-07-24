@@ -281,72 +281,46 @@ export class CodexDriver extends OneShotDriver implements HarnessDriver {
    * or an unknown `item.type` becomes a `kind:'unknown'` event — never a throw.
    */
   protected handleLine(line: string): void {
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      this.emit({ kind: "unknown", raw: line, ts: Date.now() });
-      return;
-    }
+    this.normalizeLine(line, (obj) => this.dispatchFrame(obj));
+  }
 
-    try {
-      switch (obj.type) {
-        case "thread.started":
-          this.handleThreadStarted(obj);
-          break;
-        case "turn.started":
-          this.turns += 1;
-          this.emit({ kind: "turn_started", ts: Date.now() });
-          break;
-        case "turn.completed":
-          this.handleTurnCompleted(obj);
-          break;
-        case "turn.failed":
-          this.handleTurnFailed(obj);
-          break;
-        case "item.started":
-          this.handleItem("started", obj.item);
-          break;
-        case "item.updated":
-          this.handleItem("updated", obj.item);
-          break;
-        case "item.completed":
-          this.handleItem("completed", obj.item);
-          break;
-        case "error":
-          this.emit({ kind: "error", message: this.str(obj.message) ?? "error", ts: Date.now() });
-          break;
-        default:
-          this.emit({ kind: "unknown", raw: obj, ts: Date.now() });
-      }
-    } catch (err) {
-      // A surprising-but-parseable line must never take down the loop (Spec 02 §7.2).
-      this.log.warn("event normalization error (routed to unknown)", { err: String(err) });
-      this.emit({ kind: "unknown", raw: obj, ts: Date.now() });
+  /** Route one parsed `--json` thread/item frame by `type` (shared envelope in normalizeLine). */
+  private dispatchFrame(obj: Record<string, unknown>): void {
+    switch (obj.type) {
+      case "thread.started":
+        this.handleThreadStarted(obj);
+        break;
+      case "turn.started":
+        this.turns += 1;
+        this.emit({ kind: "turn_started", ts: Date.now() });
+        break;
+      case "turn.completed":
+        this.handleTurnCompleted(obj);
+        break;
+      case "turn.failed":
+        this.handleTurnFailed(obj);
+        break;
+      case "item.started":
+        this.handleItem("started", obj.item);
+        break;
+      case "item.updated":
+        this.handleItem("updated", obj.item);
+        break;
+      case "item.completed":
+        this.handleItem("completed", obj.item);
+        break;
+      case "error":
+        this.emit({ kind: "error", message: this.str(obj.message) ?? "error", ts: Date.now() });
+        break;
+      default:
+        this.emit({ kind: "unknown", raw: obj, ts: Date.now() });
     }
   }
 
   private handleThreadStarted(obj: Record<string, unknown>): void {
-    const ts = Date.now();
+    // The launch is confirmed running once the thread starts (shared handshake tail in base).
     const tid = this.str(obj.thread_id) ?? this.sessionId;
-    if (tid) this.sessionId = tid;
-    this.sessionEmitted = true;
-    this.emit({
-      kind: "session_started",
-      sessionId: this.sessionId ?? "",
-      model: this.resolvedModel(),
-      ts,
-    });
-
-    // The launch is confirmed running once the thread starts.
-    if (this.spawnTimer) {
-      clearTimeout(this.spawnTimer);
-      this.spawnTimer = null;
-    }
-    this.setState("running");
-    this.resolveSession?.({ sessionId: this.sessionId ?? "", pid: this.pid ?? -1 });
-    this.resolveSession = null;
-    this.rejectSession = null;
+    this.emitSessionStarted(tid, this.resolvedModel(), Date.now());
   }
 
   private handleTurnCompleted(obj: Record<string, unknown>): void {
@@ -537,18 +511,15 @@ export class CodexDriver extends OneShotDriver implements HarnessDriver {
     }
   }
 
-  /** Map codex `turn.completed.usage` → the shared {@link TokenUsage} shape (Spec 02 §7.3). */
+  /**
+   * Map codex `turn.completed.usage` → the shared {@link TokenUsage} shape (Spec 02 §7.3). codex
+   * has no cache-creation token field (my-docs/codex-exec.md §1.5) — cacheCreate is omitted → 0.
+   */
   private mapUsage(raw: unknown): TokenUsage | null {
-    if (!raw || typeof raw !== "object") return null;
-    const u = raw as Record<string, unknown>;
-    const n = (v: unknown): number => (typeof v === "number" ? v : 0);
-    const usage: TokenUsage = {
-      input: n(u.input_tokens),
-      output: n(u.output_tokens),
-      cacheRead: n(u.cached_input_tokens),
-      cacheCreate: 0, // codex has no cache-creation token field (my-docs/codex-exec.md §1.5)
-    };
-    if (usage.input + usage.output + usage.cacheRead + usage.cacheCreate === 0) return null;
-    return usage;
+    return this.mapTokenUsage(raw, {
+      input: "input_tokens",
+      output: "output_tokens",
+      cacheRead: "cached_input_tokens",
+    });
   }
 }

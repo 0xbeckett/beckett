@@ -43,6 +43,7 @@ import { buildPaths } from "../paths.ts";
 import { formatDispatchEvent, type DispatchEvent } from "../dispatch/events.ts";
 import { serveBus, type BusRequest, type BusResponse } from "../shell/control-bus.ts";
 import { ActionClass, CapabilityRegistry, type Capability } from "../capability/index.ts";
+import type { ExtensionContext, ExtensionRegistry, InvocationOrigin } from "../ext/index.ts";
 import { createDiscordGateway, type DiscordGateway } from "../discord/gateway.ts";
 import {
   downloadAttachments,
@@ -1504,6 +1505,18 @@ function isMentionClaim(meta: unknown): meta is MentionClaim {
   );
 }
 
+/** Pick the recognized {@link InvocationOrigin} fields off an untyped `ext.invoke` bus payload. */
+function readInvocationOrigin(raw: unknown): InvocationOrigin | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const source = raw as Record<string, unknown>;
+  const origin: InvocationOrigin = {};
+  for (const key of ["surface", "channelId", "userId", "ticket"] as const) {
+    const value = source[key];
+    if (typeof value === "string" && value.trim()) origin[key] = value.trim();
+  }
+  return Object.keys(origin).length > 0 ? origin : null;
+}
+
 /** A framed automated ticket-update turn, addressed to an origin channel via CLI from SYSTEM_SCOPE. */
 interface TicketUpdate {
   channel: string;
@@ -1596,6 +1609,13 @@ export class Concierge {
    * command then answers with the Concierge-local half only.
    */
   private statusProvider: (() => Record<string, unknown> | Promise<Record<string, unknown>>) | null = null;
+  /**
+   * The v6 extension registry plus the runtime context it dispatches with, wired in by v4-main.
+   * Serves `ext.invoke`/`ext.catalog` on the control bus. Null until wired — the commands then
+   * answer with a clear "not wired" error. Handlers read this field LAZILY at call time:
+   * {@link buildBusCapabilities} runs in the constructor, before the setter fires.
+   */
+  private extensions: { registry: ExtensionRegistry; ctx: ExtensionContext } | null = null;
   /**
    * Fired on every `ticket.filed` bus ping (issue #33): v4-main wires this to `poller.poke()` so a
    * freshly-filed `in_progress` ticket is staffed in well under a second instead of waiting out
@@ -1894,6 +1914,11 @@ export class Concierge {
   /** Wire the daemon-wide status assembler (v4-main, issue #30). See {@link statusProvider}. */
   setStatusProvider(fn: NonNullable<Concierge["statusProvider"]>): void {
     this.statusProvider = fn;
+  }
+
+  /** Wire the v6 extension registry + its dispatch context (v4-main). See {@link extensions}. */
+  setExtensionRegistry(registry: ExtensionRegistry, ctx: ExtensionContext): void {
+    this.extensions = { registry, ctx };
   }
 
   /** Wire the instant-tick hook for freshly-filed tickets (v4-main, issue #33). See {@link ticketFiledListener}. */
@@ -2774,6 +2799,51 @@ export class Concierge {
               } catch (err) {
                 return { ok: false, error: `status assembly failed: ${(err as Error).message}` };
               }
+            },
+          },
+        ],
+      },
+      {
+        id: "ext",
+        summary: "the v6 extension seam: capability discovery + validated dispatch",
+        actionClass: ActionClass.FREE,
+        cliVerbs: [],
+        busCommands: [
+          {
+            name: "ext.invoke",
+            summary: "dispatch a registered extension capability through the v6 registry",
+            handle: async (req) => {
+              // The registry validates args and routes; it never widens a license — action-class
+              // enforcement stays upstream of dispatch (docs/v6-architecture.md §3).
+              const wired = this.extensions;
+              if (!wired) {
+                return { ok: false, error: "ext.invoke unavailable — the extension registry is not wired (v3 daemon only)" };
+              }
+              const capabilityId = typeof req.args.capabilityId === "string" ? req.args.capabilityId.trim() : "";
+              if (!capabilityId) return { ok: false, error: "ext.invoke needs a capabilityId" };
+              const args =
+                req.args.args && typeof req.args.args === "object" && !Array.isArray(req.args.args)
+                  ? (req.args.args as Record<string, unknown>)
+                  : {};
+              const origin = readInvocationOrigin(req.args.origin);
+              const result = await wired.registry.invoke(
+                { capabilityId, args, ...(origin ? { origin } : {}) },
+                wired.ctx,
+              );
+              return result.ok
+                ? { ok: true, data: result.data }
+                : { ok: false, error: result.error ?? `extension invoke failed for "${capabilityId}"` };
+            },
+          },
+          {
+            name: "ext.catalog",
+            summary: "every advertised extension capability — the concierge's discovery read",
+            handle: async () => {
+              const wired = this.extensions;
+              if (!wired) {
+                return { ok: false, error: "ext.catalog unavailable — the extension registry is not wired (v3 daemon only)" };
+              }
+              return { ok: true, data: { entries: wired.registry.catalog() } };
             },
           },
         ],
