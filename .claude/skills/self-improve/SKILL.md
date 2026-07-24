@@ -28,9 +28,12 @@ The checkout you run from (`~/beckett`) is the **deploy checkout** — it only e
 fast-forwarding to `origin/main`, and a deploy REFUSES a dirty tree. Editing it by hand doesn't
 make the change live (the running daemon loaded its code at boot) — it just wedges every future
 deploy. The real path: a `--project beckett` ticket builds in `~/Projects/beckett` on a branch,
-lands through PR + review to main, and goes live at the next deploy. That flow gives your
-self-modifications the same review gate as any other code — which is exactly what changes to your
-own brain deserve.
+lands through PR + review to main, **and then you run the guarded deploy** — the flow that
+refuses dirty trees, typechecks, and health-checks itself. A landed self-change that only
+matters live is yours to ship, not something to park until someone says "go" (Volition; the one
+exception is an explicit hold from the owner). The review gate is what earns that license:
+your self-modifications get the same scrutiny as any other code — which is exactly what changes
+to your own brain deserve.
 
 ## The loop
 

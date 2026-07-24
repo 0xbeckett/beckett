@@ -37,3 +37,4 @@ package-lock.json
 my-docs/
 report-fable.md
 proposal.md
+.claude/worktrees/

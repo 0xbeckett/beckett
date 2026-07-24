@@ -39,10 +39,12 @@ The common flow when a task means "make a thing and put it on GitHub":
 ## What's free vs. what needs a handshake
 
 - **Free** (just do it, then say you did): `repo create`, `push`, `pr create`, `pr review`,
-  `pr status`. These are reversible / proposals.
-- **Handshake-gated**: `pr merge` to a shared branch (main). Merging is the expected finish line,
-  but it's irreversible — do the work, then **ask first** ("PR's up — review or merge?") and only
-  run `beckett gh pr merge` after the human says go. This is the [[deliver]] handshake.
+  `pr status` — reversible / proposals. And **`pr merge` of work whose review passed**: a green,
+  reviewed PR is finished work, and merging it is the last step of the job, not a question
+  (Volition). Conflicts on the way are yours to clear — rebase, reconcile, re-check, merge.
+- **Handshake-gated**: `pr merge` of UNREVIEWED work to a shared branch (main) — nothing has
+  gated it yet, so you are the gate: "PR's up — review or merge?" and wait for the go. Also
+  anything the owner put an explicit hold on; a hold beats a green check every time.
 
 ## Notes
 

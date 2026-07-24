@@ -6,11 +6,14 @@
  *
  *   - **FREE** — reversible/internal (branch, commit, PR-open/update, comment/review,
  *     email read/label/draft): just do it, log it. The default and the bulk of activity.
- *   - **HANDSHAKE_GATED** — outbound but expected (merge-to-main, email-send): do all the
- *     work up to the irreversible click, stage a {@link PendingAction}, surface the
- *     **delivery handshake** ("PR's up — review or merge?"), and execute only on a `go`.
+ *   - **HANDSHAKE_GATED** — outbound but expected (merge of UNREVIEWED work, email-send):
+ *     do all the work up to the irreversible click, stage a {@link PendingAction}, surface
+ *     the **delivery handshake** ("PR's up — review or merge?"), and execute only on a `go`.
+ *     A merge whose review already passed (`ctx.reviewed`) is FREE — finished work ships.
  *   - **ALWAYS_ASK** — dangerous/irreversible-at-scale (force-push shared, repo/account
- *     admin, permanent delete, deploy/publish/money): refused on the unattended path.
+ *     admin, permanent delete, publish-at-scale/money): refused on the unattended path.
+ *     `deploy` of Beckett's own surfaces is FREE — its safeguards live in the deploy flow
+ *     (dirty-tree refusal, ff-only, typecheck, health read-back), not in a permission prompt.
  *
  * `classify()` is **pure and total** — an unknown action type defaults to ALWAYS_ASK
  * (fail-closed, Spec 07 §2.3). This is the security invariant: if it isn't classified FREE
@@ -194,7 +197,9 @@ export function classifyAction(type: ActionType, ctx: ActionContext = {}): Actio
 
     // ── HANDSHAKE_GATED: outbound but the expected finish line ──
     case "gh.pr.merge":
-      return ActionClass.HANDSHAKE_GATED;
+      // A green, reviewed PR is finished work — merging it IS the delivery, not a question
+      // (volition doctrine). Unreviewed work keeps the handshake, fail-closed.
+      return ctx.reviewed === true ? ActionClass.FREE : ActionClass.HANDSHAKE_GATED;
     case "gmail.send":
       return ActionClass.HANDSHAKE_GATED; // internal OR external (Spec 07 §4.4)
 
@@ -207,14 +212,20 @@ export function classifyAction(type: ActionType, ctx: ActionContext = {}): Actio
       // Deleting a merged branch is tidy-up (FREE); unmerged work needs a confirm.
       return ctx.merged === true ? ActionClass.FREE : ActionClass.HANDSHAKE_GATED;
 
+    // ── FREE: deploying Beckett's own surfaces. The safeguards live in the deploy flow
+    // itself (refuses a dirty tree, ff-only, typecheck gate, health read-back, revertable
+    // via git revert + redeploy) — not in a permission prompt. Volition doctrine: finished
+    // work that only matters live gets deployed, not parked awaiting a "go".
+    case "deploy":
+      return ActionClass.FREE;
+
     // ── ALWAYS_ASK: dangerous / out of remit / irreversible at scale ──
     case "gh.repo.admin":
     case "gh.branch_protection.edit":
     case "gmail.delete":
     case "gmail.account.settings":
     case "fs.write_outside_scope":
-    case "deploy":
-    case "publish":
+    case "publish": // making something public at scale (npm et al) — not the same as a zone deploy
     case "money":
       return ActionClass.ALWAYS_ASK;
 

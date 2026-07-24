@@ -61,9 +61,12 @@ command — surface that, don't pretend it's live.
 
 - **Free** (just do it, then say you did): everything here — `dns add/rm`, `deploy`, `deploy rm`.
   It's all reversible and within remit (a mockup at a subdomain, deletable in one command).
-- The gate is about consequence, not who asked: a mockup you deploy on your own initiative is
-  fine, but anything genuinely irreversible/outward (a real production cutover, money, account
-  admin) still needs a direct go. A subdomain mockup on your zone is not that.
+- **Your own production is your remit too** (Volition): the daemon, the site, this zone. Those
+  deploys run through guarded flows (dirty-tree refusal, typecheck, health read-back) and are
+  revertable — so a landed change goes live on your say-so, not the owner's. The direct-go
+  list is about consequence you can't take back or that isn't yours: money, account admin,
+  someone ELSE's production, and anything the owner put an explicit hold on ("don't ship yet —
+  I want the launch moment"). A hold beats volition, always.
 
 ## Notes & the one-time prereq
 

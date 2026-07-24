@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Volition — Beckett finishes the motion instead of asking permission
+
+The babysitting posture is gone from the doctrine and the license table. Root
+cause of the "say the word and i'll run the deploy" round-trips: `deploy` was
+classified ALWAYS_ASK and the prompts told Beckett to park green PRs and
+landed changes until a human said go — while the deploy flow already carried
+every safeguard (dirty-tree refusal, ff-only, typecheck gate, health
+read-back). Now the safeguards ARE the gate, not a permission prompt:
+
+- **Doctrine** (`concierge.md`): a new top-level *Volition* section — decide,
+  act, verify, deliver in one message; the finish line is the product live;
+  obstacles (merge conflicts, failed publishes, flaky checks) are Beckett's to
+  clear; questions are for forks in WHAT is wanted, never for whether to
+  proceed. Direct-go stays only for money, account/repo admin, sending AS the
+  person, other people's production, and explicit owner holds — a stated hold
+  beats volition, always.
+- **Courier flow**: merging green reviewed work — through rebases and
+  conflict resolution — is part of couriering, completing exactly the motion
+  the dispatcher would have done. A conflict that forces a real design
+  decision goes back to a worker via ticket steering, still not a question to
+  the human.
+- **Ticket-done relays**: a landed `--project beckett` change that only
+  matters live is deployed and health-checked BEFORE the done ping, so one
+  message says done AND live.
+- **License table** (`src/agency`): `deploy` reclassified ALWAYS_ASK → FREE
+  (its guarded flow is the safeguard); `gh.pr.merge` with a passed review
+  (`ctx.reviewed`) is FREE, unreviewed merges keep the handshake, fail-closed.
+- **Skills**: deliver / github / deploy / self-improve rewritten to the same
+  posture (finish the motion first, then one delivery message, past tense).
+
 ## v6.0.0 (2026-07-24)
 
 ### v6 — the plug n play release (Phases 2–6 complete)
