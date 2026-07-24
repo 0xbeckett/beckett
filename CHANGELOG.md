@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.10.5 (2026-07-24)
+
 ### v6 Phase 1 — image + secret on the extension contract (#82 follow-on)
 
 - **The first two organs live on the v6 seam.** `image` and `secret` are now extensions
