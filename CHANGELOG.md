@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.11.0 (2026-07-24)
+
 ### v6 — the plug n play release (Phases 2–6 complete)
 
 Every organ now lives on the ONE extension contract (docs/v6-architecture.md);
