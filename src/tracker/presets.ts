@@ -39,14 +39,14 @@ export type PresetMap = Record<string, Casting>;
 export const SEED_PRESETS: PresetMap = {
   // INT's full three-stage chain: independent design, cheap implementation, fresh review.
   intensive: {
-    design: { harness: "claude", model: "claude-opus-4-8", effort: "high" },
+    design: { harness: "claude", model: "claude-opus-5", effort: "high" },
     implement: { harness: "pi", effort: "medium" },
     review: { harness: "claude", model: "claude-sonnet-5", effort: "high" },
   },
   // Mechanical grind — cheapest seat, one pass (design doc §4.1).
   "cheap-lane": { implement: { harness: "pi", model: "gpt-5.6-luna", effort: "low" } },
   // Frontend / visual / taste — Opus implements, forced one-pass (design doc §4.4).
-  "taste-lane": { implement: { harness: "claude", effort: "high", reviewTier: "self" } },
+  "taste-lane": { implement: { harness: "claude", model: "claude-opus-5", effort: "high", reviewTier: "self" } },
   // Critical but cost-aware — terra implements cheap, Fable adjudicates (design doc §4.7). ⚠ confirm Fable first.
   "fable-review+terra-work": {
     implement: { harness: "pi", effort: "high" },

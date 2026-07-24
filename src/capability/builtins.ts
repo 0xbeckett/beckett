@@ -346,7 +346,7 @@ export const configFragments = {
     .object({
       // Default reviewer model (issue #27): Sonnet reads a diff against criteria extremely well
       // at a fraction of Opus cost/latency. Opus reviews remain one explicit cast away
-      // (`review: {model: "claude-opus-4-8", effort: "xhigh"}`) for correctness-critical work.
+      // (`review: {model: "claude-opus-5", effort: "xhigh"}`) for correctness-critical work.
       reviewer: z.string().min(1).default("claude-sonnet-5"),
     })
     .default({}),
@@ -449,7 +449,7 @@ export const configFragments = {
   // v3 — the Concierge (long-lived `claude -p` Opus agent that owns Discord, files tickets).
   concierge: z
     .object({
-      model: z.string().min(1).default("claude-opus-4-8"),
+      model: z.string().min(1).default("claude-opus-5"),
       // Proactive idle-rotation watermark (summed input tokens). This sits below Claude's 200k
       // hard edge so compaction normally happens with nobody waiting; configurable for tests.
       rotate_at_tokens: z.number().int().positive().default(160_000),

@@ -101,7 +101,7 @@ awareness_max_channels = 5
 reply_context_surrounding = 5
 
 [concierge]
-model = "claude-opus-4-8"
+model = "claude-opus-5"
 rotate_at_tokens = 160000
 effort = ""
 session_scope = "channel"

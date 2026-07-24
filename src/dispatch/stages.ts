@@ -655,7 +655,7 @@ const designStage: StageDefinition = {
   // from accidentally spending a design worker.
   entryState: "design",
   entryGuard: isIntTicket,
-  resolveCast: (explicit) => explicit ?? { harness: "claude", model: "claude-opus-4-8", effort: "high" },
+  resolveCast: (explicit) => explicit ?? { harness: "claude", model: "claude-opus-5", effort: "high" },
   buildPrompt({ ticket, steering }): string {
     const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";
     const path = designDocPath(ticket);

@@ -82,7 +82,7 @@ const VALUE_FLAGS = new Set([
 /** Claude resolves bare model aliases to full ids (loom-desk: `sonnet` → claude-sonnet-4-6). */
 const MODEL_ALIASES: Record<string, string> = {
   sonnet: "claude-sonnet-4-5",
-  opus: "claude-opus-4-8",
+  opus: "claude-opus-5",
   haiku: "claude-haiku-4-5",
 };
 

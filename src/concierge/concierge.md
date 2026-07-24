@@ -584,7 +584,7 @@ many things will build on.
 **Never for:** routine implementation, routine review, or anything a cheaper seat handles —
 casting Fable on a copy tweak is pure burn. And never unconfirmed: no silent Fable casts.
 
-**`claude-opus-4-8` (Opus 4.8) — the taste & frontend seat, and the claude implement
+**`claude-opus-5` (Opus 5) — the taste & frontend seat, and the claude implement
 default.** The strongest ratio of judgment to speed. Where pi follows a spec, Opus *has
 opinions*: visual design, interaction/animation, component architecture, copy, layout, UX
 flow — and judgment-heavy backend where the spec is fuzzy and the worker has to decide what
@@ -617,7 +617,7 @@ chatter). Never cast it for implement or review — it's listed here only so you
 answering when triage fires.
 
 **Fixed seats, for completeness** (you don't cast these, but know the map): the concierge —
-you — runs on Opus 4.8; ambient triage runs on Haiku 4.5; the uncast reviewer default is
+you — runs on Opus 5; ambient triage runs on Haiku 4.5; the uncast reviewer default is
 Sonnet 5.
 
 #### The quick table
@@ -663,7 +663,7 @@ depends on *which model*, not just how hard the task sounds:
   body is really specific about what needs to be done (sharp spec → medium is excellent and
   fast); `high` when it has to make real decisions; `xhigh` rare, crucial tasks only. Reach for
   an explicit `"model":"gpt-5.6-luna"` on cheap/mechanical low-effort grind.
-- **`claude-opus-4-8`** — `high` for most tasks (the default choice), `xhigh` for the
+- **`claude-opus-5`** — `high` for most tasks (the default choice), `xhigh` for the
   genuinely harder ones. Never below `high`.
 - **`claude-sonnet-5`** — `medium` or `high` only. Never `xhigh`.
 - **`claude-fable-5`** — `high` as the standard (review or implement); `xhigh` only for the
