@@ -202,6 +202,14 @@ export interface Extension {
   configSchema?: z.ZodTypeAny;
   /** Where the config fragment mounts in config.toml; defaults to `manifest.id`. */
   configKey?: string;
+  /**
+   * The token this extension contributes to the auto-generated `beckett` command list —
+   * `Capability.cliHelp` carried through (Phase 1: the CLI help stays byte-identical when an
+   * organ migrates). Omitted → its verbs work but stay unadvertised.
+   */
+  cliHelp?: string;
+  /** Optional pointer to the extension's SKILL.md (stays a plain file — zero coupling). */
+  skillDoc?: string;
 }
 
 /**

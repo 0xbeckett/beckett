@@ -12,6 +12,14 @@
 > and a trivial example extension ([`example.ts`](../src/ext/example.ts)) proving it dispatches.
 > Nothing under `src/ext/` is wired into the live daemon. This ticket is the foundation, **not**
 > the migration — the migration is filed separately once this lands.
+>
+> **Update — Phase 1 shipped.** `image` + `secret` live on the extension contract
+> (`createImageExtension` / `createSecretExtension` in `src/capability/modules/`), each with a
+> real `capabilities[]` + `invoke` (zod-validated, never process-exiting), and the CLI is the
+> one live call site reading them from an `ExtensionRegistry` — projected into its existing
+> spine slots by [`asCapability`](../src/ext/compat.ts) so dispatch, help order, and collision
+> checks stayed byte-identical (characterization suites green). The contract additionally
+> carries `cliHelp` / `skillDoc`, two v5 facets the skeleton had missed.
 
 ---
 
@@ -111,7 +119,7 @@ interface Extension {
   lifecycle?: { init?; start?; stop?; health? };
 
   // --- v5 facets, subsumed UNCHANGED ---
-  cliVerbs?; busCommands?; promptBlock?; configSchema?; configKey?;
+  cliVerbs?; busCommands?; promptBlock?; configSchema?; configKey?; cliHelp?; skillDoc?;
 }
 ```
 
@@ -266,7 +274,10 @@ breaks: `@beckett do X` works identically at every phase.
 - **Phase 1 — `image` + `secret` (leaf, stateless).** Migrate the two simplest existing
   `Capability` modules onto the extension contract, add their `capabilities[]` + `invoke`, and have
   **one** live call site (`cli/beckett.ts`) read from the extension registry for them. Proves the
-  seam end-to-end on organs that cannot break a turn. Characterization snapshots stay green.
+  seam end-to-end on organs that cannot break a turn. Characterization snapshots stay green. ✅
+  Shipped: `createImageExtension`/`createSecretExtension` (`src/capability/modules/`), the
+  `asCapability` projection (`src/ext/compat.ts`) bridging them into the CLI's spine slots, and
+  the shared throwing cores that make `invoke` daemon-safe (no `out`/`fail` process exits).
 - **Phase 2 — `browser`.** First stateful organ: `lifecycle.{init,start,stop,health}` wraps the
   host subprocess (`isolated.ts`/`host.ts`). The concierge dispatches to `browser.exec` via the
   catalog instead of shelling a hard-coded path. Proves lifecycle + health under the doctor.

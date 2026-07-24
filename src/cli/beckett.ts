@@ -22,7 +22,8 @@ import { ActionClass, CapabilityRegistry, type Capability } from "../capability/
 import { loadConfig, resolveBoardName } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus, ControlBusTimeoutError } from "../shell/control-bus.ts";
-import { createCapability } from "../capability/modules/index.ts";
+import { createCapability, createImageExtension, createSecretExtension } from "../capability/modules/index.ts";
+import { asCapability, ExtensionRegistry } from "../ext/index.ts";
 import { fail, out, parse, quietLogger } from "./io.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
 import { bundledMaintainersFile, loadMaintainers, requestMaintainerGrant, revokeMaintainer } from "../discord/maintainers.ts";
@@ -76,6 +77,17 @@ function discordReplyAckTimeoutMs(): number {
 
 /** What the normalized capability modules get to build themselves (V5 Phase 2). */
 const capabilityDeps = { config, paths, logger: quietLogger };
+
+/**
+ * V6 Phase 1 (docs/v6-architecture.md §6): image + secret live on the extension contract, and
+ * the CLI is the one live call site that reads them from the ExtensionRegistry. In
+ * `buildCliCapabilities` below, {@link asCapability} projects their carried v5 facets into the
+ * existing spine slots, so dispatch, help order, and collision checks stay byte-identical
+ * (the characterization suite pins it) until Phase 4 retires the projection.
+ */
+const cliExtensions = new ExtensionRegistry();
+cliExtensions.register(createImageExtension(capabilityDeps));
+cliExtensions.register(createSecretExtension(capabilityDeps));
 
 /**
  * The one code-project slug that targets Beckett's OWN source repo (`0xbeckett/beckett`). Filing work
@@ -2081,7 +2093,7 @@ function buildCliCapabilities(): Capability[] {
       ],
       busCommands: [],
     },
-    createCapability("image", capabilityDeps),
+    asCapability(cliExtensions.get("image")),
     {
       id: "eval",
       summary: "provider-agnostic model evals through OpenRouter; no daemon path",
@@ -2175,7 +2187,7 @@ function buildCliCapabilities(): Capability[] {
     createCapability("github", capabilityDeps),
     createCapability("dns", capabilityDeps),
     createCapability("deploy", capabilityDeps),
-    createCapability("secret", capabilityDeps),
+    asCapability(cliExtensions.get("secret")),
     createCapability("memory", capabilityDeps),
     {
       id: "spend",

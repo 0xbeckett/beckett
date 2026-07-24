@@ -15,4 +15,5 @@ export type {
   ExtensionHealthReport,
   ResolvedCapability,
 } from "./registry.ts";
+export { asCapability } from "./compat.ts";
 export { createPingExtension } from "./example.ts";

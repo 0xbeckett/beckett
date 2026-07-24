@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### v6 Phase 1 — image + secret on the extension contract (#82 follow-on)
+
+- **The first two organs live on the v6 seam.** `image` and `secret` are now extensions
+  (`createImageExtension`/`createSecretExtension`, `src/capability/modules/`): each declares a
+  discoverable capability with routing prose + examples (`image.generate`, `secret.request`),
+  a zod input schema validated by the registry at the seam, and a single `invoke` that returns
+  `ok/error` results instead of process-exiting — daemon-safe from day one, so the concierge
+  can dispatch them in-process when its call site cuts over (Phase 2+).
+- **The CLI is the one live call site reading from the `ExtensionRegistry`.** The new
+  `asCapability` projection (`src/ext/compat.ts`) bridges an extension's carried v5 facets
+  into the existing `CapabilityRegistry` slots, so CLI dispatch, help order, and collision
+  checks stayed byte-identical — both characterization suites green, untouched. The projection
+  (and the v5 factory-table entries, now thin wrappers over the extensions) retire in Phase 4.
+- **Contract completion:** `Extension` now carries `cliHelp` + `skillDoc`, the two v5
+  capability facets the #82 skeleton had missed — without them a migrated organ would drop out
+  of the auto-generated `beckett` command list.
+- **Shared throwing cores.** The secret flow's `resolveRequestSpec`/`mintAndDeliver` (and
+  `runQuiet`) now throw instead of calling `fail()`; the CLI surfaces identical `error: …`
+  output via `main()`'s catch, and the invoke path can never exit the daemon. Env preflight
+  (`CLOUDFLARE_*`) stays ahead of any systemd/tunnel side effect.
+- **Memory hardening (same push, pre-Phase-6 lane):** `remember` rejects description-less
+  creates that previously orphaned unparseable files; warm-graph stamping is race-safe; ttl
+  expiry is evaluated at recall time so the warm daemon demotes lapsed facts; maintenance
+  plans are deterministic (name-sorted pair scan); plus `src/memory/CLAUDE.md` documenting the
+  invariants and extension points for building on memory.
+
 ## v5.10.2 (2026-07-23)
 
 ### Queue-free conversation UX + stale-memory fix

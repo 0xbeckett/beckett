@@ -27,6 +27,10 @@ export { createImageCapability } from "./image.ts";
 export { createMailCapability } from "./mail.ts";
 export { createMemoryCapability } from "./memory.ts";
 export { createSecretCapability } from "./secret.ts";
+// V6 Phase 1 (docs/v6-architecture.md §6): the first organs on the extension contract. Their
+// table entries above are the asCapability projections; these are the extensions themselves.
+export { createImageExtension } from "./image.ts";
+export { createSecretExtension } from "./secret.ts";
 
 /** The capability-id → factory table (the analog of `drivers/index.ts::FACTORIES`). */
 const FACTORIES: Record<string, CapabilityFactory> = {
