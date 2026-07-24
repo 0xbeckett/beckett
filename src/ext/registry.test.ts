@@ -122,6 +122,27 @@ test("lifecycle orchestration drives init/start/health/stop across extensions", 
   expect(health[0]?.ok).toBeFalse();
 });
 
+test("startAll stages: early and late organs start only in their own sweep; no phase starts all", async () => {
+  const started: string[] = [];
+  const organ = (id: string, startPhase?: "early" | "late") => ({
+    manifest: { id, version: "1.0.0", summary: id, actionClass: ActionClass.FREE },
+    lifecycle: { ...(startPhase ? { startPhase } : {}), start: () => void started.push(id) },
+  });
+  const registry = new ExtensionRegistry();
+  registry.register(organ("recoverer")); // default → early (the browser-agent shape)
+  registry.register(organ("scheduler", "late")); // dispatches into the live system (routines)
+  const c = ctx();
+
+  await registry.startAll(c, "early");
+  expect(started).toEqual(["recoverer"]); // the scheduler must not race its dependencies
+  await registry.startAll(c, "late");
+  expect(started).toEqual(["recoverer", "scheduler"]);
+
+  started.length = 0;
+  await registry.startAll(c); // no phase — the pre-staging single-sweep behavior
+  expect(started).toEqual(["recoverer", "scheduler"]);
+});
+
 test("initAll/startAll isolate a throwing best-effort organ and keep sweeping", async () => {
   const registry = new ExtensionRegistry();
   const calls: string[] = [];

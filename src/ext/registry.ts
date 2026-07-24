@@ -34,6 +34,7 @@ import {
   type ExtensionHealth,
   type ExtensionInvocation,
   type ExtensionResult,
+  type LifecycleStartPhase,
 } from "./contract.ts";
 
 /** A resolved capability plus the extension that owns it. */
@@ -271,10 +272,15 @@ export class ExtensionRegistry {
    * take the rest of the boot down; a `fail-fast` organ ({@link LifecycleFailPolicy}) rethrows
    * and aborts the sweep — concierge-grade organs opt in.
    */
-  private async sweep(hook: "init" | "start", ctx: ExtensionContext): Promise<void> {
+  private async sweep(
+    hook: "init" | "start",
+    ctx: ExtensionContext,
+    phase?: LifecycleStartPhase,
+  ): Promise<void> {
     for (const extension of this.byId.values()) {
       const fn = extension.lifecycle?.[hook];
       if (!fn) continue;
+      if (phase && (extension.lifecycle?.startPhase ?? "early") !== phase) continue;
       try {
         await fn(ctx);
       } catch (err) {
@@ -292,9 +298,15 @@ export class ExtensionRegistry {
     await this.sweep("init", ctx);
   }
 
-  /** Run every extension's `start` in registration order (per-organ isolation, see {@link sweep}). */
-  async startAll(ctx: ExtensionContext): Promise<void> {
-    await this.sweep("start", ctx);
+  /**
+   * Run `start` for every extension in the given boot stage ({@link LifecycleStartPhase}), in
+   * registration order with per-organ isolation. The daemon calls this twice: `"early"` before
+   * the pollers prime (crash recovery), `"late"` once the live system is up (schedulers whose
+   * fires dispatch into it). Calling with no phase starts everything — the pre-staging behavior,
+   * kept for tests and single-stage embedders.
+   */
+  async startAll(ctx: ExtensionContext, phase?: LifecycleStartPhase): Promise<void> {
+    await this.sweep("start", ctx, phase);
   }
 
   /**

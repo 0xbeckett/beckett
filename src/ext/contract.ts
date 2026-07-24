@@ -163,10 +163,23 @@ export interface ExtensionHealth {
 export type LifecycleFailPolicy = "best-effort" | "fail-fast";
 
 /**
+ * WHEN in the boot sequence an extension's `start` runs. The daemon's organs genuinely start
+ * at two different stages, and the v5 ordering is load-bearing:
+ *   - `early` (default) — before the pollers prime: crash recovery that must land before the
+ *     tracker re-staffs work (the browser agent's stranded-run re-report).
+ *   - `late` — after the pollers, mail, and the rest of the live system are up: schedulers
+ *     whose fires DISPATCH into that system (the routine cron loop; memory's nightly
+ *     maintain in Phase 6). Starting these early would race their own dependencies.
+ * One flat startAll could not honor both without silently reordering the boot.
+ */
+export type LifecycleStartPhase = "early" | "late";
+
+/**
  * Optional lifecycle hooks. Stateless extensions (github, image) declare none. Stateful ones
  * (memory holds retrieval indices, browser owns a subprocess) implement what they need:
  *   - `init`  — build state, open connections; may run before the daemon accepts traffic.
- *   - `start` — begin any background loops (a poller, a nightly maintain pass).
+ *   - `start` — begin any background loops (a poller, a nightly maintain pass), at
+ *               `startPhase` in the boot order.
  *   - `stop`  — tear down cleanly on daemon shutdown / hot-reload.
  *   - `health`— the doctor/observation-window probe.
  * The registry orchestrates these across all extensions in registration order.
@@ -174,6 +187,8 @@ export type LifecycleFailPolicy = "best-effort" | "fail-fast";
 export interface ExtensionLifecycle {
   /** Sweep error policy for `init`/`start`. Defaults to `best-effort`. */
   failPolicy?: LifecycleFailPolicy;
+  /** Which boot stage runs this extension's `start`. Defaults to `early`. */
+  startPhase?: LifecycleStartPhase;
   init?: (ctx: ExtensionContext) => Promise<void> | void;
   start?: (ctx: ExtensionContext) => Promise<void> | void;
   stop?: () => Promise<void> | void;

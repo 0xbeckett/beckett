@@ -36,6 +36,11 @@ export { createSecretExtension } from "./secret.ts";
 // verb and bus bodies live in cli/beckett.ts and the concierge respectively).
 export { createBrowserExtension } from "./browser.ts";
 export type { BrowserExtension, BrowserExtensionDeps } from "./browser.ts";
+// V6 Phase 3: the quick organ — lifecycle wraps the short-lived specialist runner; the CLI
+// verb is carried and projected into its spine slot. Not in the v5 FACTORIES table: like
+// browser, quick never had one (its bus bodies live in the concierge).
+export { createQuickExtension } from "./quick.ts";
+export type { QuickExtension, QuickExtensionDeps } from "./quick.ts";
 
 /** The capability-id → factory table (the analog of `drivers/index.ts::FACTORIES`). */
 const FACTORIES: Record<string, CapabilityFactory> = {

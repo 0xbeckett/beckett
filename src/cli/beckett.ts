@@ -22,7 +22,7 @@ import { ActionClass, CapabilityRegistry, type Capability } from "../capability/
 import { loadConfig, resolveBoardName } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { callBus, ControlBusTimeoutError } from "../shell/control-bus.ts";
-import { createCapability, createImageExtension, createSecretExtension } from "../capability/modules/index.ts";
+import { createCapability, createImageExtension, createQuickExtension, createSecretExtension } from "../capability/modules/index.ts";
 import { asCapability, ExtensionRegistry } from "../ext/index.ts";
 import { fail, out, parse, quietLogger } from "./io.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
@@ -42,7 +42,6 @@ import { AgentStore } from "../agent/store.ts";
 import { createAgentRunner } from "../agent/invoke.ts";
 import { AGENT_HARNESSES, AGENT_EFFORTS, type AgentDefinition } from "../agent/types.ts";
 import { startTaskBranch } from "./task-start.ts";
-import { quickDetachedMessage } from "./quick-output.ts";
 import { formatDispatchTrace, readDispatchEvents } from "../dispatch/events.ts";
 import {
   commitVersion,
@@ -88,6 +87,10 @@ const capabilityDeps = { config, paths, logger: quietLogger };
 const cliExtensions = new ExtensionRegistry();
 cliExtensions.register(createImageExtension(capabilityDeps));
 cliExtensions.register(createSecretExtension(capabilityDeps));
+// V6 Phase 3: quick's verb rides the extension. The CLI process never runs lifecycle.init,
+// so no runner is ever constructed here — the detached-result callback is dead wiring the
+// deps type requires (delivery is the daemon instance's job in shell/main.ts).
+cliExtensions.register(createQuickExtension({ onDetachedResult: () => {} })(capabilityDeps));
 
 /**
  * The one code-project slug that targets Beckett's OWN source repo (`0xbeckett/beckett`). Filing work
@@ -1788,34 +1791,8 @@ async function runAgent(argv: string[]): Promise<void> {
   );
 }
 
-async function runQuick(argv: string[]): Promise<void> {
-  const [sub, ...rest] = argv;
-  if (sub === "list") {
-    await bus("quick.list", {});
-  }
-  const { _, flags } = parse(rest);
-  const agent = sub?.trim();
-  const task = _.join(" ").trim();
-  if (!agent || !task) {
-    fail('usage: beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list');
-  }
-  try {
-    const res = await callBus(
-      SOCK,
-      "quick.run",
-      { agent, task, channelId: flags.channel ? String(flags.channel) : undefined },
-      (config.quick.sync_wait_secs + 30) * 1000,
-    );
-    if (!res.ok) fail(res.error ?? "quick run failed");
-    const data = res.data as { done?: boolean; detached?: boolean; runId: string; state?: string; result?: string };
-    if (data.detached) {
-      out(quickDetachedMessage(agent, data.runId, config.quick.sync_wait_secs));
-    }
-    out(`[quick:${data.runId} state:${data.state}]\n${data.result ?? ""}`);
-  } catch (err) {
-    fail((err as Error).message);
-  }
-}
+// runQuick moved onto the quick extension (V6 Phase 3, src/capability/modules/quick.ts);
+// its verb projects back into the same spine slot below via asCapability.
 
 // ── rpc (in-process: write status file for the RPC daemon) ──────────────────────────────
 async function runRpc(argv: string[]): Promise<void> {
@@ -2037,21 +2014,7 @@ function buildCliCapabilities(): Capability[] {
       ],
       busCommands: [],
     },
-    {
-      id: "quick",
-      summary: "the NO-TICKET lane: dispatch a short-lived specialist harness",
-      actionClass: ActionClass.FREE,
-      cliHelp: "quick <agent>|list",
-      cliVerbs: [
-        {
-          name: "quick",
-          summary: "run quick-code | repo-explorer and block for its report",
-          usage: 'beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list',
-          run: runQuick,
-        },
-      ],
-      busCommands: [],
-    },
+    asCapability(cliExtensions.get("quick")),
     {
       id: "browser",
       summary: "the browser lane: background agent dispatch + watch/steer/stop, and an inline one-off script lane",

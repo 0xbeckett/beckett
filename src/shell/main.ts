@@ -41,7 +41,7 @@ import { createGitHubActivityPoller, type GitHubActivityPoller } from "../github
 import { parsePrUrl } from "../github/types.ts";
 import { preflightFor } from "../drivers/index.ts";
 import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
-import { createQuickRunner, type QuickRunner } from "../quick/index.ts";
+import type { QuickRunner } from "../quick/index.ts";
 import type { BrowserRuntime } from "../browser/runtime.ts";
 import type { BrowserAgent } from "../browser/agent.ts";
 import { defaultKeychainReader } from "../secret/keychain-read.ts";
@@ -60,6 +60,8 @@ import { createAgentMailApi, defaultMailStateFile, safeMailError } from "../mail
 import { createAgentMailPoller, defaultMailListenerStateFile, type AgentMailPoller } from "../mail/listener.ts";
 import { ExtensionRegistry, type ExtensionContext } from "../ext/index.ts";
 import { createBrowserExtension, createImageExtension, createSecretExtension } from "../capability/modules/index.ts";
+// Phase 3 quick wiring: a separate import line so concurrent organ migrations stay additive.
+import { createQuickExtension } from "../capability/modules/quick.ts";
 
 /**
  * Root under which every ticket builds its OWN project repo — one directory per code project,
@@ -422,16 +424,6 @@ async function boot(): Promise<BootedSystem> {
     for (const p of pollers.values()) p.poke();
   });
 
-  // Quick agents — the no-ticket lane. The runner owns the short-lived specialist
-  // harnesses; a run that outlives its sync window reports back through the Concierge as an
-  // update turn, exactly like a ticket milestone.
-  const quick = createQuickRunner({
-    config,
-    logger: logger.child("quick"),
-    onDetachedResult: (run) => concierge.notifyQuickResult(run),
-  });
-  concierge.setQuickRunner(quick);
-
   // The v6 extension seam (docs/v6-architecture.md §6): the ONE runtime registry the daemon
   // dispatches extensions through — `ext.invoke`/`ext.catalog` on the control bus read it via
   // the concierge. Phase 1 organs (stateless) register here; later phases move a migrating
@@ -451,6 +443,16 @@ async function boot(): Promise<BootedSystem> {
     onOutcome: (run) => concierge.notifyBrowserOutcome(run),
   })({ config, paths, logger });
   extensions.register(browserExtension);
+  // Phase 3 — the quick organ (the no-ticket lane) rides the extension lifecycle: init
+  // constructs the runner (the quick-dir mkdir + artifact-retention sweep boot always did),
+  // stop kills straggler runs on the teardown sweep — which runs BEFORE concierge.stop(), so
+  // their "daemon shut down" results still route. A run that outlives its sync window reports
+  // back through the Concierge as an update turn, exactly like a ticket milestone; that
+  // detached-result callback closes over the concierge, which is why this registers here.
+  const quickExtension = createQuickExtension({
+    onDetachedResult: (run) => concierge.notifyQuickResult(run),
+  })({ config, paths, logger });
+  extensions.register(quickExtension);
   concierge.setExtensionRegistry(extensions, extCtx);
 
   // Extensions init before any live part starts (build state, open connections). Per-organ
@@ -464,6 +466,12 @@ async function boot(): Promise<BootedSystem> {
   const browserAgent = browserExtension.agent();
   concierge.setBrowserRuntime(browser);
   concierge.setBrowserAgent(browserAgent);
+
+  // The quick extension's init built the ONE runner every surface shares. Phase 3 keeps the
+  // concierge's quick.run/quick.list bus command bodies v5-shaped (bus-characterization pins
+  // their not-wired refusal), so the runner still arrives through the setter.
+  const quick = quickExtension.runner();
+  concierge.setQuickRunner(quick);
 
   // Ops visibility (issue #30): the `beckett status` bus command answers from this assembler —
   // the daemon-wide halves the Concierge can't see itself. The Concierge merges in its own
@@ -527,11 +535,13 @@ async function boot(): Promise<BootedSystem> {
   // (drainForShutdown) still commits WIP itself and stops this loop first.
   dispatcher.startCheckpointLoop();
 
-  // Extension background loops start here — after crash recovery (so a migrated organ never
-  // races the recovery block) and BEFORE the pollers, which stay last so events only flow once
-  // everything else is ready to consume them. The browser agent's recover() rides this sweep
-  // (issue #58): stranded runs re-report into the now-live concierge, queued runs re-queue.
-  await extensions.startAll(extCtx);
+  // EARLY extension background loops start here — after crash recovery (so a migrated organ
+  // never races the recovery block) and BEFORE the pollers, which stay last so events only flow
+  // once everything else is ready to consume them. The browser agent's recover() rides this
+  // sweep (issue #58): stranded runs re-report into the now-live concierge, queued runs
+  // re-queue. Organs whose loops DISPATCH into the live system (schedulers) start in the
+  // "late" sweep further down instead — see LifecycleStartPhase.
+  await extensions.startAll(extCtx, "early");
 
   // Fan each board's poll batch to BOTH the dispatcher (acts on the work) and the Concierge
   // (surfaces milestones/errors back to the Discord conversation that filed the ticket).
@@ -671,6 +681,12 @@ async function boot(): Promise<BootedSystem> {
   // without waiting a full tick. Best-effort; failures are logged inside the scheduler.
   setTimeout(() => void routineScheduler.tick().catch(() => {}), 5_000).unref?.();
 
+  // LATE extension background loops start here — the whole live system (pollers, mail, memory
+  // maintenance, agent registry/runner) is up, so a scheduler whose fires DISPATCH into it can
+  // never race its own dependencies. This is the sanctioned start position for startPhase:
+  // "late" organs (the routine scheduler as it migrates; memory's maintain loop in Phase 6).
+  await extensions.startAll(extCtx, "late");
+
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
   return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, memoryMaintenance, routineScheduler, extensions };
@@ -689,6 +705,8 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   // best-effort per organ — a throwing stop is logged, never blocks the rest of the drain.
   // The browser organ tears down inside this sweep: agent.stopAll settles live runs as errors
   // (their outcomes still route through the still-live concierge below), THEN the host dies.
+  // The quick organ (Phase 3) drains here too: stragglers are killed ahead of concierge.stop
+  // below, so their "daemon shut down" results can still route through it.
   await sys.extensions.stopAll(sys.logger);
   try {
     const drain = await sys.dispatcher.drainForShutdown(signal, 20_000);
@@ -697,13 +715,6 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
     }
   } catch (err) {
     sys.logger.warn("dispatcher shutdown drain failed", { error: (err as Error).message });
-  }
-  // Quick agents are ephemeral by contract — kill any stragglers before the Concierge goes down
-  // so their "daemon shut down" results can still route through it.
-  try {
-    await sys.quick.stopAll();
-  } catch (err) {
-    sys.logger.warn("quick-runner shutdown failed", { error: (err as Error).message });
   }
   try {
     await sys.concierge.stop();
