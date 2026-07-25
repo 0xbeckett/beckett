@@ -1,0 +1,69 @@
+`~$1/$6`
+`~$2.50/$15`
+`#42`
+`#42.1`
+`#42.2`
+` (always review). **`
+`beckett browser exec "<betterwright js>"`
+`beckett browser "<self-contained task>" [--creds <jingle-entry>] [--context "<background>"]`
+`beckett browser steer <run-id> "<guidance>"`
+`beckett browser stop <run-id>`
+`beckett browser watch <run-id>`
+`beckett discord reply`
+`beckett quick <agent> "<self-contained task>" --channel <id>`
+`beckett task`
+`browser`
+`--cast`
+`claude`
+`claude-fable-5`
+`claude-haiku-4-5`
+`claude-opus-5`
+`claude-sonnet-5`
+`codex`
+`--confirm-beckett`
+`--context`
+`--creds <jingle-entry>`
+`done`
+`--effort`
+`effort`
+`--file`
+`{{github_owner}}/beckett`
+`{{github_owner}}/<slug>`
+`gpt-5.6`
+`gpt-5.6-luna`
+`harness`
+`"harness":"claude"`
+`{"harness":"pi"}`
+`high`
+`implement`
+`{"implement":{"harness":"pi","model":"gpt-5.6-luna","effort":"low"}}`
+`jingle`
+`low`
+`medium`
+`model`
+`_N turns · M tool calls · X tokens · ~$Y_`
+` (one pass) or `
+`OPS-N`
+`pi`
+`--project`
+`--project beckett`
+`--project probabilities`
+`~/Projects/beckett`
+`--project <slug>`
+`~/Projects/<slug>`
+`quick`
+`quick-code`
+`remember`
+`repo-explorer`
+`review`
+`"review":{"harness":"claude","model":"claude-fable-5","effort":"high"}`
+`reviewTier`
+`"reviewTier":"self"`
+`reviewTier:"self"`
+`secrets`
+`{ "<stage>": { "harness": "...", "model": "...", "effort": "..." } }`
+`steer`
+`task create`
+`task start`
+`--thinking`
+`xhigh`
