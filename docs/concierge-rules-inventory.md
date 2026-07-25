@@ -3,7 +3,11 @@
 *This file is the PR body for the #93 branch — paste it verbatim into `beckett gh pr create --body`.*
 
 `src/concierge/concierge.md` is prepended to every turn of every channel session. This pass cut the
-explanation and kept the rules: **11,453 → 6,482 words (‑43.4%)**.
+explanation and kept the rules: **11,453 → 6,633 words (‑42.1%)**.
+
+The file sits ~130 words above the original ~6,500-word target, deliberately. The audit below found
+qualifiers and one policy that the compression had shortened away; restoring them verbatim cost
+those words. Per ro: the word budget is the **soft** criterion, **zero rules lost** is the hard one.
 
 Baseline for every comparison below is the pre-task file at commit `83b138f`
 (`git show 83b138f:src/concierge/concierge.md`).
@@ -51,6 +55,44 @@ condition rather than just prose:
 | *What you never do* → poke the dispatcher | `directly`, which keeps that bullet consistent with the one permitting internal `beckett ticket` steering |
 | *When the machinery stalls* → relay the impasse | `to the human` — the recipient |
 | *The private worker journal* → summary | the content spec: what's done, what it's on now, anything stuck |
+
+### Second audit pass — six independent auditors, ~600 rules re-enumerated
+
+Every section was re-audited a second time against `83b138f`, one auditor per group of sections,
+each required to grep the whole compressed file before calling anything lost (the compression
+legitimately de-duplicated rules stated two or three times). Five of six groups came back clean.
+The sixth — the casting sections — plus a sweep of the auditors' sub-threshold notes produced
+**16 carries that had shortened away a qualifier, a condition, or an imperative**. All 16 are now
+restored *verbatim from the baseline*, and nothing else in the file was touched:
+
+| Section | Restored verbatim |
+|---|---|
+| *Delivery protocol* | "Your terminal response is schema-validated before it can reach Discord." |
+| *Delivery protocol* | "Think and use tools as needed, but the delivery object is not a scratchpad." |
+| *Access* | "access is owner-approved"; "The approval wall would stop it anyway — but don't lean on the wall; refuse at the door." |
+| *Who you're talking to* | `display:` — "(shown when it differs from `address`)" |
+| *The shared channel window* | reply-context frame shows the message "(and its neighbors)" |
+| *Memory has dates* | "(aged ones marked as observations *from then*)" |
+| *Dynamic effort* | `beckett browser watch` — "answer \"what's it doing?\" with that, attach the shot with `--file`" |
+| *Dynamic effort* | the scope guard "denies every write outside their worktree" and a ticketed redeploy "dies at the permission gate **every time**" |
+| *The roster* → pi | "this is the default implementer, **most tickets should land here**" |
+| *Cost* | "(the $ figure appears whenever the driver has real cost data)" |
+| *Splitting work* | "When in doubt, one branch." |
+| *Proactive updates* | "by running, **from your Bash tool**" |
+| *The private worker journal* | play-by-play "(tool calls, file edits, hook blocks, verdicts)" |
+| *What you never do* | "The **two** exceptions" (the count) |
+| *What you never do* | "quick reads **to answer a question**" (the qualifier on the Bash allowance) |
+| *Filing* | **the policy revert — see below** |
+
+#### The one policy change, reverted
+
+The compression had replaced the original's three named cast deviations with a pointer at *The
+quick table*. Two of the three survive verbatim in that table, but **visual/judgment-heavy →
+`reviewTier:"self"`** did not: the table's judgment-heavy row says "default (don't cast)" review.
+The original contradicted itself here, and the compression silently resolved the contradiction in
+favour of the table — moving every judgment-heavy ticket onto a fresh cold reviewer. That is a
+behaviour change, not a compression. The original sentence is restored verbatim, contradiction and
+all; resolving it is a policy decision for ro, not this pass.
 
 ---
 
@@ -410,7 +452,7 @@ carries the identical ladder for every model; those rows point at their survivin
 | `--criteria` is `;`-separated, one acceptance bullet each | bullet 2 |
 | `--cast` is JSON on one argument; default `{"implement":{"harness":"pi","effort":"medium"}}`; always an explicit `effort` (omitted selects the expensive fresh-review tier) | bullet 3 |
 | don't cast `review` for normal work (dispatcher supplies Sonnet @ scaled effort with the diff) | bullet 3 |
-| deviations: visual/judgment-heavy → claude + `reviewTier:"self"`; long ticket → pi `review`; correctness-critical → Fable 5 `review`, confirmed first | bullet 3 now points at *The quick table*, whose rows 3–6 carry all three deviations verbatim (including "**confirm with the human first**") |
+| deviations: visual/judgment-heavy → claude + `reviewTier:"self"`; long ticket → pi `review`; correctness-critical → Fable 5 `review`, confirmed first | bullet 3, verbatim — restored in the second audit pass after the compression had replaced it with a pointer at *The quick table*, which does not carry the judgment-heavy mapping |
 | `task create` spends no worker; `task start '#N.x'` → `in_progress`; `--needs` holds in `backlog`; `--state todo` only to park | bullet 4 |
 | long body → `--body-stdin` | bullet 5 |
 | quote `'#42'`/`'#42.1'` in Bash (unquoted `#` starts a comment) | bullet 6 |
@@ -524,7 +566,7 @@ carries the identical ladder for every model; those rows point at their survivin
 |---|---|
 | never run the engineering work yourself; start a task branch | bullet 1 |
 | exceptions: couriering finished work (publish/merge only, never writing code) and the guarded deploy per *Volition* | bullet 1 |
-| Bash is fine for `beckett task`, internal `beckett ticket` steering, and quick reads — never building | bullet 1 |
+| Bash is fine for `beckett task`, internal `beckett ticket` steering, and quick reads **to answer a question** — never building | bullet 1 |
 | never dump logs, transcripts or tool output into Discord | bullet 2 |
 | never create a vague or duplicate task; check `beckett task list` first | bullet 3 |
 | never spawn workers, touch worktrees, or poke the dispatcher **directly** — your lever is the task branch | bullet 4 |

@@ -23,9 +23,12 @@ if ! git show "$BASE_REF:$NEW" > "$ORIG" 2>/dev/null; then
 fi
 
 echo "== word count =="
+# The ~6500-word budget is the SOFT criterion; "zero rules lost" is the hard one (ro, #93).
+# Restoring the qualifiers the audit found missing pushed the file back over 6500 on purpose,
+# so exceeding the budget warns and does not fail the run. The checks below are the hard gates.
 w=$(wc -w < "$NEW")
 echo "new: $w words (baseline $BASE_REF: $(wc -w < "$ORIG"))"
-[ "$w" -lt 6500 ] || { echo "FAIL: over 6500 words"; fail=1; }
+[ "$w" -lt 6500 ] || echo "WARN: over the 6500-word soft budget — accepted to keep every rule intact"
 
 echo "== headings identical and in order =="
 if diff <(grep '^#' "$ORIG") <(grep '^#' "$NEW") > "$TMP/heading.diff" 2>&1; then
