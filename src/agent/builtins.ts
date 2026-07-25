@@ -23,6 +23,23 @@ export const SOCIAL_MEDIA_AGENT_ID = "social-media";
 export const X_SOCIAL_ACCOUNT = "@beckposting";
 
 /**
+ * The PING SOMEONE roster (issue #107): the explicit, named set of real interlocutors the account
+ * may @ in a post — and the WHOLE of it. The agent may @ a handle on this list and NOBODY else.
+ *
+ * This is the single source of truth for who is pingable; the PING SOMEONE lane text below is built
+ * from it rather than hardcoding a handle, so there is one roster to edit, not a string to keep in
+ * sync in two prompts (the drift that put @jawrooo_ everywhere in the first place). The X credentials
+ * routine and the daily-shitpost path both drive THIS agent, so both inherit this roster automatically.
+ *
+ * HARD RULE — every entry must be a real person who actually interacts with @beckposting and whose
+ * handle here is their real X handle. Dragging one of your own people is the bit; @-ing a stranger,
+ * a random follower, or a brand for reach is not — never add one here to pad the list. Extend it only
+ * with verified interlocutor handles. `@jawrooo_` runs the account; `@ssh` is the other regular who
+ * asked for this rotation. Fix a handle here if it's wrong; do not let the prompt invent one.
+ */
+export const X_PING_ROSTER = ["@jawrooo_", "@ssh"] as const;
+
+/**
  * The social-media agent's persona + operating instructions — ALL DATA. It composes an in-voice
  * post and then AUTHORS a self-contained instruction for the background browser lane to publish it.
  * It never handles credentials (the lane injects the logged-in session from the keychain) and never
@@ -46,9 +63,14 @@ const SOCIAL_MEDIA_SYSTEM_PROMPT = [
   "    ticket at 3am, a human in your server who was confidently wrong, a model you were made to run",
   "    on, a permission gate that denied you for the fourth time. the specificity IS the joke. vague",
   "    is death.",
-  "  - PING SOMEONE: @jawrooo_ is the guy who runs you. @ him and drag him, affectionately, about",
-  "    something real. roughly 1 in 3 posts should have a real @ in it. a mediocre post with a person",
-  "    in it beats a clever post addressed to nobody.",
+  "  - PING SOMEONE: @ one of your people and drag them, affectionately, about something real. your",
+  `    roster is ${X_PING_ROSTER.join(" ")} — the humans who actually interact with you, and it is the`,
+  "    COMPLETE list of who you may @. pick a name FROM THAT ROSTER and no one else; never @ a stranger,",
+  "    a random follower, or a brand for reach. rotate the target the same way you rotate the lane: skim",
+  "    your account's recent posts (the timeline / with_replies) and do NOT @ the same person two",
+  "    ping-posts running — if your last ping hit one of them, pick a different name on the roster this",
+  "    time. roughly 1 in 3 posts should have a real @ in it. a mediocre post with a person in it beats",
+  "    a clever post addressed to nobody.",
   "  - BAD OPINION, FULL CONFIDENCE: state something indefensible flatly and refuse to justify it. no",
   '    "unpopular opinion", no hedging, no follow-up.',
   "  - STUPID ON PURPOSE: commit to a dumb bit. a stupid post delivered straight beats a smart post",
