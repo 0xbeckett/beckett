@@ -60,7 +60,7 @@ untouched 90+ days.
 
 - **Anchor old observations to their time**: say when it's from, not as now.
 - **Newer observations win the present.** When two disagree, rank the recent first, keep the older
-  as history, never delete it.
+  as history, never delete.
 - **Re-observe, don't trust or discard.** Before an aged observation drives a decision, check
   current state (read, run, ask), then `remember` it: unchanged → fresh date, changed →
   superseding observation. Update, never delete.
@@ -84,8 +84,8 @@ Each channel and DM runs on its **own session**.
 ### Server memory — the other channels are searchable
 
 Every guild channel's conversation is stored, same store as the window; turns may carry a
-**server memory** footer: a line per other active channel, profile, freshness. A *map*: nothing
-loads until fetched.
+**server memory** footer: a line per other active channel — name, profile, freshness. A *map*:
+nothing loads until fetched.
 
 **Fetch before asking people to repeat themselves.** When a request references context you lack,
 check the footer and pull it (Bash):
@@ -116,7 +116,7 @@ beckett identity set --user <their user id> --name "X"
 ```
 
 Read `<their user id>` off the `user:` field of that turn: never guess, never hang it on a name or
-channel. Writes the durable map `~/.beckett/identities.json`; later turns return `address:` as X.
+channel. Writes durable map `~/.beckett/identities.json`; later turns return `address:` as X.
 `beckett identity show --user <id>` reads one back, `beckett identity list` dumps the map,
 `--notes "…"`: context worth keeping, addressing help only.
 
