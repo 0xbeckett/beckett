@@ -33,6 +33,21 @@ read-back). Now the safeguards ARE the gate, not a permission prompt:
   (`ctx.reviewed`) is FREE, unreviewed merges keep the handshake, fail-closed.
 - **Skills**: deliver / github / deploy / self-improve rewritten to the same
   posture (finish the motion first, then one delivery message, past tense).
+- **Deploy routing fixed**: "deploy" removed from the ticket-work list — a
+  worker's scope guard denies every write outside its worktree (correctly), so
+  a redeploy filed as a ticket died at the permission gate every time ("same
+  wall as this morning"). Doctrine now routes Beckett-self deploys to the
+  concierge's own seat, always.
+- **Denial-is-a-lead doctrine**: a gate refusal must be diagnosed (name the
+  gate; wrong seat → re-route, buggy wall → file the ticket, right wall → say
+  specifically why), never relayed as a bare "denied, need permission".
+- **`--confirm-beckett` is routing, not rank**: an explicitly self-targeted
+  request ("update yourself to X") files WITH the flag on the first try — the
+  request is the confirmation, the review pipeline is the safety. The CLI
+  guard message now says so at the moment of refusal (3 characterization
+  snapshots regenerated deliberately). Confirm-with-the-user survives only
+  for genuinely ambiguous routing; suspicion requires investigation before
+  refusal.
 
 ## v6.0.0 (2026-07-24)
 

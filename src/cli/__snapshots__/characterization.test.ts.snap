@@ -1039,7 +1039,7 @@ exports[`cli: task: create against the restricted self-project is bounced 1`] = 
 {
   "exit": 1,
   "stderr": 
-"error: "--project beckett" targets Beckett's OWN source repo (beckett) — a RESTRICTED project. Most work should build in its own repo, NOT edit Beckett itself. Confirm with the user once more that this genuinely belongs in the beckett codebase; if they say yes, re-file the exact same command with --confirm-beckett.
+"error: "--project beckett" targets Beckett's OWN source repo (beckett) — a RESTRICTED project. This is a ROUTING check, not a permission ask: most work should build in its own repo, NOT edit Beckett itself. If the request explicitly targets Beckett ("update yourself", "change your doctrine"), the routing is already answered — re-file the exact same command with --confirm-beckett now, without asking again. Only if it's genuinely ambiguous whether this belongs in the beckett codebase do you confirm with the user first.
 "
 ,
   "stdout": "",
@@ -1171,7 +1171,7 @@ exports[`cli: ticket: create against the restricted self-project is bounced 1`] 
 {
   "exit": 1,
   "stderr": 
-"error: "--project beckett" targets Beckett's OWN source repo (beckett) — a RESTRICTED project. Most work should build in its own repo, NOT edit Beckett itself. Confirm with the user once more that this genuinely belongs in the beckett codebase; if they say yes, re-file the exact same command with --confirm-beckett.
+"error: "--project beckett" targets Beckett's OWN source repo (beckett) — a RESTRICTED project. This is a ROUTING check, not a permission ask: most work should build in its own repo, NOT edit Beckett itself. If the request explicitly targets Beckett ("update yourself", "change your doctrine"), the routing is already answered — re-file the exact same command with --confirm-beckett now, without asking again. Only if it's genuinely ambiguous whether this belongs in the beckett codebase do you confirm with the user first.
 "
 ,
   "stdout": "",
@@ -1483,7 +1483,7 @@ exports[`cli: plan: the restricted self-project is bounced 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: "--project beckett" targets Beckett's OWN source repo (beckett) — a RESTRICTED project. Most work should build in its own repo, NOT edit Beckett itself. Confirm with the user once more that this genuinely belongs in the beckett codebase; if they say yes, re-file the exact same command with --confirm-beckett.
+"error: "--project beckett" targets Beckett's OWN source repo (beckett) — a RESTRICTED project. This is a ROUTING check, not a permission ask: most work should build in its own repo, NOT edit Beckett itself. If the request explicitly targets Beckett ("update yourself", "change your doctrine"), the routing is already answered — re-file the exact same command with --confirm-beckett now, without asking again. Only if it's genuinely ambiguous whether this belongs in the beckett codebase do you confirm with the user first.
 "
 ,
   "stdout": "",

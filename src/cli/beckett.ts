@@ -123,9 +123,10 @@ const RESTRICTED_PROJECT = (process.env.BECKETT_SELF_PROJECT?.trim() || "beckett
 
 /**
  * Refuse to file a ticket against the restricted self-repo unless `confirmed` (the `--confirm-beckett`
- * flag). The message is aimed at the Concierge: it must re-confirm with the user that the work really
- * belongs in Beckett's codebase before re-filing with the flag. A speed bump against mis-routing, not
- * a cryptographic gate — the Concierge is instructed to add the flag ONLY after the user says yes.
+ * flag). A speed bump against MIS-ROUTING, not a permission tier: the message tells the Concierge to
+ * re-file with the flag immediately when the request explicitly targets Beckett itself ("update
+ * yourself"), and to confirm with the user only when the routing is genuinely ambiguous (volition
+ * doctrine — the request is the confirmation; the review pipeline is the safety).
  */
 function guardRestrictedProject(project: string | undefined, confirmed: boolean): void {
   if (!project) return; // no project → per-ticket sandbox, never the self-repo
@@ -133,9 +134,11 @@ function guardRestrictedProject(project: string | undefined, confirmed: boolean)
   if (confirmed) return;
   fail(
     `"--project ${project}" targets Beckett's OWN source repo (${RESTRICTED_PROJECT}) — a RESTRICTED ` +
-      `project. Most work should build in its own repo, NOT edit Beckett itself. Confirm with the user ` +
-      `once more that this genuinely belongs in the beckett codebase; if they say yes, re-file the exact ` +
-      `same command with --confirm-beckett.`,
+      `project. This is a ROUTING check, not a permission ask: most work should build in its own repo, ` +
+      `NOT edit Beckett itself. If the request explicitly targets Beckett ("update yourself", "change ` +
+      `your doctrine"), the routing is already answered — re-file the exact same command with ` +
+      `--confirm-beckett now, without asking again. Only if it's genuinely ambiguous whether this ` +
+      `belongs in the beckett codebase do you confirm with the user first.`,
   );
 }
 
