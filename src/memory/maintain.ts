@@ -73,6 +73,8 @@ export interface AgedObservation {
 
 /** What one maintenance pass decided (dry-run returns exactly this, executed or not). */
 export interface MaintainReport {
+  /** How many memory `.md` files the pass enumerated (the whole store — including any that
+   *  failed to parse), so the total never hides that the store is bigger than the graph. */
   scanned: number;
   archives: ArchiveAction[];
   merges: MergeAction[];

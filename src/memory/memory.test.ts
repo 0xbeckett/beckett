@@ -573,6 +573,8 @@ test("maintain does not report a name with a broken file on disk as a phantom", 
   writeFileSync(join(dir, "courier-note.md"), '---\nname: ""\nmetadata:\n  node_type: memory\n---\n\nbody only.\n');
   const report = await store.maintain({ dryRun: true });
   expect(report.phantoms).not.toContain("courier-note");
+  // The pass still SEES the broken file — it counts toward scanned, not silently dropped.
+  expect(report.scanned).toBe(mdFileCount(dir));
 });
 
 test("maintain lists a memory whose updated date is past the aged threshold", async () => {

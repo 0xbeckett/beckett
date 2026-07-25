@@ -382,14 +382,19 @@ export class MemoryStore implements Memory {
     this.mossSyncedGraph = undefined;
     await this.ensureDir();
     let g = this.buildGraph();
-    const scanned = [...g.nodes.values()].filter((n) => !n.phantom).length;
+    // `scanned` is how many memory files the pass SAW, not how many parsed cleanly — the ticket's
+    // contract (issue #97) is that maintain sees the whole store. Count the enumerated tree, so a
+    // file that failed to parse still shows up in the total (buildGraph logged why it dropped)
+    // rather than silently shrinking the number and hiding that the store is bigger than the graph.
+    const files = this.listMarkdownFiles();
+    const scanned = files.length;
     const plan = planMaintenance(g, Date.now());
     // A phantom is a link to a name with NO file. A name that DOES have a file on disk but
     // failed to parse (e.g. a truncated write) is a broken file, not a missing one — reporting
     // it as a phantom sends a re-`remember` down the wrong path and manufactures a false gap in
     // the graph (issue #97). Drop those from the phantom list here, where the filesystem is in
     // reach; buildGraph already logged the parse failure that made the node invisible.
-    const onDisk = new Set(this.listMarkdownFiles().map((p) => basename(p, ".md")));
+    const onDisk = new Set(files.map((p) => basename(p, ".md")));
     const phantoms = plan.phantoms.filter((name) => !onDisk.has(name));
     const report: MaintainReport = { scanned, ...plan, phantoms, dryRun: Boolean(opts.dryRun) };
     if (report.dryRun || (plan.archives.length === 0 && plan.merges.length === 0)) return report;
