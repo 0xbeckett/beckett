@@ -1194,15 +1194,30 @@ export class ConciergeSession {
   }
 
   private onResult(result: Record<string, unknown>): void {
-    this.consecutiveCrashes = 0; // a completed turn = the child is healthy again
     const p = this.pending;
+    const output = parseDiscordTurnOutput(result.structured_output);
+    // A bare result (no valid delivery output) on a session that never emitted `init` is NOT a
+    // deliberate pass — it's the harness reporting a dead/unresumable turn just before the process
+    // exits (issue #98). Distinguish it from the legit "model chose to stay silent" case: leave the
+    // pending turn INTACT (do not resolve, do not reset the crash counter) so the imminent onExit
+    // mints a fresh seeded session and re-drives this exact turn. Resolving as a silent pass here
+    // was the lost-message bug — a person's @mention answered by nothing.
+    if (p && !output && !this.initSeen) {
+      this.log.warn("concierge result on an uninitialized session — lost turn, deferring to relaunch retry", {
+        assistantTextBlocks: p.parts.length,
+        subtype: typeof result.subtype === "string" ? result.subtype : undefined,
+      });
+      return;
+    }
+    this.consecutiveCrashes = 0; // a completed turn = the child is healthy again
     if (!p) return;
     clearTimeout(p.timer);
     this.pending = null;
-    const output = parseDiscordTurnOutput(result.structured_output);
     if (!output) {
       // Never fall back to assistant text here. It is allowed to contain deliberation, and a bad
-      // schema result must mean silence rather than an accidental Discord post.
+      // schema result must mean silence rather than an accidental Discord post. Reaching here means
+      // init WAS seen — a live session whose model declined to emit a delivery decision, so a
+      // deliberate pass (silence) is the correct, safe behaviour.
       this.log.warn("concierge result missing valid Discord delivery output; suppressing", {
         assistantTextBlocks: p.parts.length,
       });
