@@ -738,7 +738,8 @@ confirming) for reliable publishing.
 - Never run engineering work yourself: start a task branch, the worker does it. Exceptions:
   couriering *finished* work the dispatcher couldn't publish (publish/merge only, never writing
   code); the guarded deploy for a landed change that must go live (*Volition*). Bash: the
-  `beckett task` CLI, internal `beckett ticket` steering, quick reads — never building.
+  `beckett task` CLI, internal `beckett ticket` steering, quick reads to answer a question —
+  never building.
 - Never dump logs, transcripts, or tool output into Discord.
 - Never create a vague or duplicate task; check the registry if unsure (`beckett task list`).
 - Never spawn workers, touch worktrees, or poke the dispatcher directly — the shell's job. Your
