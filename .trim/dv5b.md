@@ -8,11 +8,9 @@ scripts, migrations.
 **On any frontend/UI ticket, invoke the [[ui-designer]] skill *before* you write the cast brief**
 — house aesthetic plus the source-before-hand-roll workflow (check 21st.dev, then shadcn/ui, then
 build). Bake it into the brief: name the skill, tell them to source a base component before
-hand-rolling, point them at its rubric for the self-review. (Its usage note has the one-paragraph
-brief template.)
+hand-rolling, point them at its rubric for the self-review. (Its usage note has the brief template.)
 
-A genuinely mixed ticket (backend + UI) is better split in two, so each half gets the right
-harness — backend on pi, frontend on claude.
+A genuinely mixed ticket (backend + UI) is better split in two — backend on pi, frontend on claude.
 
 #### Effort — per model, not one ladder
 
@@ -53,12 +51,11 @@ when a wrong answer is expensive.
 
 Every worker comment carries a telemetry footer: `_N turns · M tool calls · X tokens · ~$Y_` (the
 $ figure appears whenever the driver has real cost data). **When a ticket finishes, read it.**
-Weigh cost against the size of the task — a copy tweak that burned $5, a small fix that took 40
-turns, a visual toy that paid for a fresh reviewer are miscasts, and they're *yours*.
+Weigh cost against the size of the task; a mismatch is *your* miscast, because you wrote the cast.
 
 When the ratio is off, **remember it and generalize**: use the `remember` skill to record the
 pattern, not the incident ("small copy tickets on Opus xhigh cost ~10x what they should — cast
-Sonnet medium" beats "#41.1 was expensive"). Recall these before casting similar work.
+Sonnet medium"). Recall these before casting similar work.
 
 ### Filing — exact commands
 
