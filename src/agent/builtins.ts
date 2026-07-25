@@ -9,8 +9,8 @@
  *
  * The `social-media` agent (issue #55/#72) is the acceptance vehicle: the daily-shitpost routine
  * invokes it through the generic invoke-lane ({@link ./invoke.ts}), it AUTHORS the post, and the
- * routine dispatcher hands the authored task to the background browser lane. The voice, the target
- * handle, and the how-to-post shape all live in `systemPrompt` below — there is no `src/social`
+ * routine dispatcher hands the authored task to the background browser lane. The voice, the ping
+ * roster ({@link X_PING_ROSTER}), and the how-to-post shape all live in `systemPrompt` below — there is no `src/social`
  * module. Growing it (replies, follows, other platforms) is a prompt/skill edit, not new code.
  */
 
