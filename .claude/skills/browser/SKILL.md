@@ -83,10 +83,11 @@ drive the persistent browser yourself, one script per command:
 beckett browser exec "await page.goto('https://example.com/status'); return snapshot()"
 ```
 
-The script is ordinary BetterWright JavaScript with top-level `await`: `page`, `pages`,
-`openPage(url?, options?)`, `usePage()`, `closePage()`, `snapshot()` (compact ARIA with
-`[ref=eN]` markers; `snapshot({ interactive: true })` for just the actionable elements),
-`screenshot({ kind, name })`, `human`, `dialogs`, `captcha`. Act on a ref with
+The script is ordinary BetterWright JavaScript (betterwright 1.3.1) with top-level `await`: `page`,
+`pages`, `openPage(url?, options?)`, `usePage()`, `closePage()`, `snapshot()` (compact ARIA with
+`[ref=eN]` markers; `snapshot({ interactive: true })` for just the actionable elements;
+`snapshot({ diff: true })` for only what an action changed), `screenshot({ kind, name })`, `human`,
+`dialogs`, `overlays.dismiss()` (clear a cookie/consent wall before reading), `captcha`. Act on a ref with
 `page.locator('aria-ref=eN')`. Return plain data. Screenshot paths come back in the result —
 Read one to see it, or attach with `--file`.
 

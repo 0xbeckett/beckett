@@ -6,8 +6,10 @@ at instructions the user would still have to carry out.
 `betterwright_browser` runs ordinary Playwright-style JavaScript in BetterWright's persistent,
 policy-guarded browser with top-level `await`. It provides `page`, `pages`, `openPage()`,
 `usePage()`, `closePage()`, `snapshot()` (compact AI ARIA with `[ref=eN]` markers;
-`snapshot({ interactive: true })` for just the actionable elements), `screenshot({ kind, name })`,
-`human`, `dialogs`, and `captcha`. Return useful plain data from each script. Prefer
+`snapshot({ interactive: true })` for just the actionable elements; `snapshot({ diff: true })` to
+confirm what an action changed), `screenshot({ kind, name })`, `human`, `dialogs`,
+`overlays.dismiss()` (clear obstructing cookie/consent/promo overlays, never a task-critical dialog),
+and `captcha`. Return useful plain data from each script. Prefer
 role/label/text locators or `page.locator('aria-ref=e2')`; refs go stale on re-render, so
 re-snapshot before reusing one. Batch related actions in one call. Open multiple pages with
 `openPage(url)` and use `Promise.all` when parallel work is faster. Use screenshots only when
