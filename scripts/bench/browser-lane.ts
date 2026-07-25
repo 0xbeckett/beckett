@@ -171,7 +171,7 @@ const scriptedInteraction = `
   return text.length + (out === 'clicked' ? 1 : 0);
 `;
 
-let sampler: ReturnType<typeof createTreeSampler> | null = null;
+let sampler: ReturnType<typeof createTreeSampler> | undefined;
 try {
   const coldStarted = performance.now();
   const acquirePromise = runtime.acquire({
@@ -180,13 +180,12 @@ try {
     artifactsDir: join(dir, "browser-agent", runId, "artifacts"),
     controlToken: token,
   });
-  // Start sampling as soon as the host child PID is known, so cold-start CPU/RSS counts too.
-  const waitForPid = (async () => {
-    while (!capturedPid) await Bun.sleep(2);
-    sampler = createTreeSampler(capturedPid);
-  })();
+  // Bun.spawn runs synchronously inside acquire() before its RPC round trips
+  // resolve, so the host child PID is available while acquire is still pending.
+  // Start sampling now so cold-start CPU/RSS is counted too.
+  while (!capturedPid) await Bun.sleep(2);
+  sampler = createTreeSampler(capturedPid);
   await acquirePromise;
-  await waitForPid;
   const coldAcquireMs = performance.now() - coldStarted;
 
   const warmSamples: number[] = [];
