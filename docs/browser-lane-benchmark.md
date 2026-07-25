@@ -158,3 +158,9 @@ equivalent option). Nothing we can change from our side today moved CPU-seconds 
 peak RSS, so — per the ticket's own rule — nothing was kept. The benchmark
 (`bun run browser:bench`) is the durable deliverable: re-run it after any
 betterwright upgrade to see if a passthrough has appeared and to re-measure.
+
+> **Follow-up (#95):** the GPU-process claim above was tested directly via a
+> `CLOAKBROWSER_BINARY_PATH` shim that injects `--disable-gpu`. The shim works,
+> but `--disable-gpu` does **not** remove the gpu-process on chromium 146, and the
+> gpu-process is not a meaningful per-run CPU cost (~0.24 CPU-s). No win; cold-launch
+> regressed ~14%; change reverted. See [browser-lane-gpu-shim-95.md](./browser-lane-gpu-shim-95.md).
