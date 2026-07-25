@@ -8,11 +8,15 @@
  *   - the CLI `--dry-run`, which builds the SAME plan and prints it WITHOUT dispatching, so the
  *     wiring is provable without a real live post.
  *
- * Two lanes:
+ * Three lanes:
  *   - `agent`  → invoke a registered agent with `agentInput`; the agent AUTHORS the browser task at
  *      dispatch time (its taste lives in its prompt, not here), so the plan carries the invocation,
  *      not composed text. The authored post is not knowable until the agent runs.
  *   - `browser`→ a STATIC self-contained browser task, known at plan time.
+ *   - `deps-update` → the LOCAL maintenance lane (issue #85): no agent, no browser, no credentials.
+ *      The executor runs the dependency-update job in a throwaway clone and its output is a PR.
+ *      This lane exists precisely so a maintenance job is NOT smuggled through the privileged
+ *      browser lane, which would hand a local chore a web session it has no use for.
  *
  * The pre-#72 `x-shitpost` action is folded onto the `agent` lane here (target: the `social-media`
  * agent), so a legacy routines.json fires through exactly ONE path with no bespoke composition code.
@@ -23,20 +27,35 @@
 import type { Routine } from "./types.ts";
 import { SOCIAL_MEDIA_AGENT_ID } from "../agent/builtins.ts";
 
+/** The `deps-update` lane's parameters, resolved from the action (defaults filled at fire time). */
+export interface DepsUpdateTarget {
+  /** `owner/name` the PR opens on; null → the executor resolves it from the GitHub identity. */
+  repo: string | null;
+  /** The branch the PR TARGETS. Never pushed to, never merged into. */
+  base: string;
+  /** Checkout to clone FROM (read-only); null → the daemon's own source root. */
+  sourceRepo: string | null;
+}
+
 /** The instruction handed to the social-media agent when a legacy `x-shitpost` routine fires. */
 export const LEGACY_SHITPOST_INPUT =
   "Compose today's shitpost — one fresh, in-voice line — and author the browser task that posts it to X.";
 
 export interface RoutineDispatchPlan {
   routineId: string;
-  /** Which lane executes this: run an agent that authors the post, or a static browser task. */
-  lane: "agent" | "browser";
+  /**
+   * Which lane executes this: an agent that authors a post, a static browser task, or the local
+   * dependency-update job. Only the first two reach the browser.
+   */
+  lane: "agent" | "browser" | "deps-update";
   /** agent lane: the registry id to invoke LIVE at dispatch (null for the browser lane). */
   agentId: string | null;
   /** agent lane: the instruction handed to that agent (null for the browser lane). */
   agentInput: string | null;
   /** browser lane: the static task string (null for the agent lane, which authors its task live). */
   browserTask: string | null;
+  /** deps-update lane: what to update and where the PR goes (null on the other lanes). */
+  depsUpdate: DepsUpdateTarget | null;
   /** Human-readable summary shown in a dry-run + logs. */
   preview: string;
   /** jingle keychain entry passed to the browser lane via --creds (a NAME, never a secret). */
@@ -58,6 +77,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       agentId: action.agentId,
       agentInput: action.input,
       browserTask: null,
+      depsUpdate: null,
       preview: `invoke agent ${action.agentId}: ${action.input}`,
       credsEntry: action.credsEntry ?? null,
       channelId: action.channelId ?? null,

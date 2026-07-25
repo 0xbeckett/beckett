@@ -36,11 +36,36 @@ export const FuzzWindowSchema = z
 export type FuzzWindow = z.infer<typeof FuzzWindowSchema>;
 
 /**
- * The base cadence. Only `daily` is implemented today; the discriminated union is the seam
- * for `weekly` / `interval` to slot in without touching the rest of the engine.
+ * Weekday names in ISO-8601 week order (Monday first, Sunday last). The order IS load-bearing:
+ * {@link ./schedule.ts} indexes into it to place a `weekly` routine's fire day inside its ISO
+ * week, so Sunday is day 7 of the week it fires in, not day 1 of the next one.
+ */
+export const WEEKDAYS = [
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+] as const;
+export const WeekdaySchema = z.enum(WEEKDAYS);
+export type Weekday = z.infer<typeof WeekdaySchema>;
+
+/**
+ * The base cadence — the seam this discriminated union was built for (issue #85 took it):
+ *
+ *   - `daily`  — one period per tz-local calendar date; the period key is that date.
+ *   - `weekly` — one period per ISO week, firing on `weekday`; the period key is the ISO week
+ *     ("2026-W30"), so the once-per-period idempotency guard in {@link ./scheduler.ts} works
+ *     EXACTLY as daily's does: a restart mid-week neither double-fires nor re-rolls the time
+ *     already chosen inside that week's window.
+ *
+ * `interval` can still slot in the same way — a key derivation + an advance step, nothing else.
  */
 export const CadenceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("daily") }),
+  z.object({ kind: z.literal("weekly"), weekday: WeekdaySchema }),
 ]);
 export type Cadence = z.infer<typeof CadenceSchema>;
 
@@ -61,6 +86,10 @@ export type Schedule = z.infer<typeof ScheduleSchema>;
  *   is driven THROUGH the `social-media` agent (issue #55/#72). Pointing a routine at a different
  *   agent (or editing the agent's prompt) needs no code change and no redeploy.
  * - `browser`: run an arbitrary, STATIC self-contained browser task each period (issue #62).
+ * - `deps-update`: the LOCAL maintenance lane (issue #85). The only action that does NOT touch the
+ *   browser: it clones the source repo, applies in-range dependency updates, runs typecheck + the
+ *   test suite, and opens a PR a human merges. Nothing about it wants a browser, credentials, or a
+ *   privileged web session, so it must never be routed through that lane.
  * - `x-shitpost` (LEGACY): the pre-#72 shape. Still parsed so a routines.json seeded by an older
  *   build keeps loading; {@link ./plan.ts} transparently routes it through the `social-media` agent,
  *   so there is exactly ONE runtime path. New routines should use `agent`.
@@ -88,6 +117,25 @@ export const RoutineActionSchema = z.discriminatedUnion("kind", [
     requesterId: z.string().optional(),
   }),
   z.object({
+    kind: z.literal("deps-update"),
+    /**
+     * `owner/name` the PR is opened on. Omitted → resolved at fire time from the GitHub identity
+     * (`<owner>/beckett`), so no account id is baked into a routine definition.
+     */
+    repo: z.string().min(1).optional(),
+    /** Branch the PR TARGETS. It is never pushed to, never merged into — a human does that. */
+    base: z.string().min(1).default("main"),
+    /**
+     * Absolute path of the checkout the update is cloned FROM, read-only. Omitted → the daemon's
+     * own source root. The clone is what gets mutated; the live tree never is.
+     */
+    sourceRepo: z.string().min(1).optional(),
+    /** Discord channel the one-line summary is posted to (optional; env fallback). */
+    channelId: z.string().optional(),
+    /** Authenticated requester the run is attributed to (optional; owner env fallback). */
+    requesterId: z.string().optional(),
+  }),
+  z.object({
     kind: z.literal("x-shitpost"),
     /** Handle posted as, for the browser task narrative (e.g. "@beckposting"). */
     account: z.string().min(1),
@@ -108,7 +156,7 @@ export type RoutineAction = z.infer<typeof RoutineActionSchema>;
  * matches the current period.
  */
 export const RoutineStateSchema = z.object({
-  /** Period key the current `chosenFireAt` belongs to (e.g. "2026-07-20" for daily). */
+  /** Period key the current `chosenFireAt` belongs to ("2026-07-20" daily, "2026-W30" weekly). */
   periodKey: z.string().nullable().default(null),
   /** The concrete fire instant chosen for `periodKey`, ISO-8601 UTC. */
   chosenFireAt: z.string().nullable().default(null),
