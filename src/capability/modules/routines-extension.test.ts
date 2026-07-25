@@ -58,6 +58,7 @@ function fakeScheduler(log: string[]): RoutineScheduler {
         agentId: null,
         agentInput: null,
         browserTask: "check the thing",
+        depsUpdate: null,
         preview: "check the thing",
         credsEntry: "x.com",
         channelId: null,
@@ -363,13 +364,20 @@ test("asCapability projects the carried v5 facets into the pinned CLI spine slot
   expect(projected.id).toBe("routines");
   expect(projected.summary).toBe("humanized recurring routines: add/list/remove/inspect + fire (dry-run or --force)");
   expect(projected.actionClass).toBe(ActionClass.FREE);
+  // The advertised help token is UNCHANGED by #85's deps-update verb: that verb is a routine's
+  // body, launched by the scheduler, so it stays unadvertised (like spend/journal/config) and the
+  // composed `beckett` command list the CLI characterization suite pins is byte-identical.
   expect(projected.cliHelp).toBe("routine list|inspect|add|remove|fire");
-  expect(projected.cliVerbs.map((v) => v.name)).toEqual(["routine"]);
-  expect(typeof projected.cliVerbs[0]!.run).toBe("function");
+  expect(projected.cliVerbs.map((v) => v.name)).toEqual(["routine deps-update", "routine"]);
+  expect(projected.cliVerbs.every((v) => typeof v.run === "function")).toBe(true);
   expect(projected.busCommands).toEqual([]);
 
   // The projection registers cleanly into the v5 spine (the CLI's exact move).
   const spine = new CapabilityRegistry();
   spine.register(projected);
   expect(spine.resolveCliVerb(["routine", "list"])!.capability.id).toBe("routines");
+  // Longest-verb-first resolution: `routine deps-update` must win over the bare `routine`, or the
+  // scheduler's subprocess would land in runRoutine's usage cascade.
+  expect(spine.resolveCliVerb(["routine", "deps-update", "--base", "main"])!.verb.name)
+    .toBe("routine deps-update");
 });
