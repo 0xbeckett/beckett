@@ -14,7 +14,7 @@ import {
   zonedWallToUtc,
 } from "./schedule.ts";
 import { seededRng } from "./schedule.ts";
-import type { RoutineState, Schedule } from "./types.ts";
+import type { RoutineState, Schedule, Weekday } from "./types.ts";
 
 const PT = "America/Los_Angeles";
 const schedule: Schedule = {
@@ -137,6 +137,31 @@ describe("ISO week keys (the weekly period key)", () => {
     expect(isoWeekKeyOfDate(isoWeekDate("2026-W30", "sunday"))).toBe("2026-W30");
     // Across the year boundary: W53's Sunday falls in the next calendar year.
     expect(isoWeekDate("2026-W53", "sunday")).toBe("2027-01-03");
+  });
+
+  test("key→date→key round-trips for every day across four years, week 53s included", () => {
+    // The invariant the idempotency guard rests on: a date's ISO week, resolved back to that
+    // date's own weekday, must land on the same date. Walks 2024–2027 so it crosses a leap year,
+    // both 52- and 53-week years, and every New Year split.
+    let ms = Date.UTC(2024, 0, 1);
+    const end = Date.UTC(2028, 0, 1);
+    let checked = 0;
+    const weeks = new Set<string>();
+    for (; ms < end; ms += 86_400_000) {
+      const at = new Date(ms);
+      const dateKey = at.toISOString().slice(0, 10);
+      const weekday = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][
+        at.getUTCDay()
+      ] as Weekday;
+      const key = isoWeekKeyOfDate(dateKey);
+      weeks.add(key);
+      expect(isoWeekDate(key, weekday)).toBe(dateKey);
+      checked++;
+    }
+    expect(checked).toBe(1461); // 4 years incl. the 2024 leap day
+    // 2026 has 53 ISO weeks; the set must contain that key and never a W00 or W54.
+    expect(weeks.has("2026-W53")).toBe(true);
+    expect([...weeks].some((k) => k.endsWith("-W00") || k.endsWith("-W54"))).toBe(false);
   });
 
   test("periodDateKey resolves a period to the date its window sits on", () => {

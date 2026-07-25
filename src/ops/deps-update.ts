@@ -51,6 +51,10 @@ export interface PackageManager {
    * The in-range update command. Deliberately the bare `update` verb for all three — every one of
    * them means "newest version the package.json range allows". Adding `--latest` (bun) or
    * `--latest`/`-L` (pnpm) would jump majors, which this job is not allowed to decide.
+   *
+   * Note that bun's `update` saves by default, so it also RAISES the floors it wrote (`^0.5.15` →
+   * `^0.5.17`). That is still in-range: the version installed satisfied the original range, and the
+   * range was narrowed rather than widened. No major ever moves.
    */
   update: string[];
   /** How this manager runs a `package.json` script (`typecheck`, `test`). */
