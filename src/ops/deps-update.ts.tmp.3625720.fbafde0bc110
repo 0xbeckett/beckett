@@ -419,7 +419,8 @@ function prBody(req: DepsUpdateRequest, params: {
     "Weekly dependency update — in-range only.",
     "",
     `- Managers detected from lockfiles: ${params.managers.join(", ")}`,
-    `- Changed: ${params.changedFiles.map((f) => `\`${f}\``).join(", ")}`,
+    `- Changed: ${params.changedFiles.slice(0, 20).map((f) => `\`${f}\``).join(", ")}` +
+      (params.changedFiles.length > 20 ? ` (+${params.changedFiles.length - 20} more)` : ""),
     `- Checks run in the clone: \`${CHECK_SCRIPTS.join("\`, \`")}\` — both green`,
     "",
     "```",
