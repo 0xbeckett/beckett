@@ -4,6 +4,8 @@ set -u
 cd "$(dirname "$0")/.."
 ORIG=.trim/orig.md
 NEW=src/concierge/concierge.md
+TMP=.trim/.verify-tmp
+mkdir -p "$TMP"
 fail=0
 
 echo "== word count =="
@@ -11,26 +13,26 @@ w=$(wc -w < "$NEW"); echo "new: $w words (orig: $(wc -w < "$ORIG"))"
 [ "$w" -lt 6500 ] || { echo "FAIL: over 6500 words"; fail=1; }
 
 echo "== headings identical and in order =="
-if diff <(grep '^#' "$ORIG") <(grep '^#' "$NEW") > /tmp/heading.diff 2>&1; then
+if diff <(grep '^#' "$ORIG") <(grep '^#' "$NEW") > "$TMP"/heading.diff 2>&1; then
   echo "ok: headings byte-identical, same order"
 else
-  echo "FAIL: heading drift"; cat /tmp/heading.diff; fail=1
+  echo "FAIL: heading drift"; cat "$TMP"/heading.diff; fail=1
 fi
 
 echo "== fenced code blocks byte-identical =="
-awk '/^```$/{f=!f; print "---BLOCK---"; next} f{print}' "$ORIG" > /tmp/orig.blocks
-awk '/^```$/{f=!f; print "---BLOCK---"; next} f{print}' "$NEW" > /tmp/new.blocks
-if diff /tmp/orig.blocks /tmp/new.blocks > /tmp/blocks.diff 2>&1; then
-  echo "ok: all $(grep -c -- '---BLOCK---' /tmp/new.blocks) fenced blocks identical"
+awk '/^```$/{f=!f; print "---BLOCK---"; next} f{print}' "$ORIG" > "$TMP"/orig.blocks
+awk '/^```$/{f=!f; print "---BLOCK---"; next} f{print}' "$NEW" > "$TMP"/new.blocks
+if diff "$TMP"/orig.blocks "$TMP"/new.blocks > "$TMP"/blocks.diff 2>&1; then
+  echo "ok: all $(grep -c -- '---BLOCK---' "$TMP"/new.blocks) fenced blocks identical"
 else
-  echo "FAIL: code block drift"; cat /tmp/blocks.diff; fail=1
+  echo "FAIL: code block drift"; cat "$TMP"/blocks.diff; fail=1
 fi
 
 echo "== roster table byte-identical =="
-if diff <(grep '^|' "$ORIG") <(grep '^|' "$NEW") > /tmp/table.diff 2>&1; then
+if diff <(grep '^|' "$ORIG") <(grep '^|' "$NEW") > "$TMP"/table.diff 2>&1; then
   echo "ok: table rows identical"
 else
-  echo "FAIL: table drift"; cat /tmp/table.diff; fail=1
+  echo "FAIL: table drift"; cat "$TMP"/table.diff; fail=1
 fi
 
 echo "== named identifiers still present =="

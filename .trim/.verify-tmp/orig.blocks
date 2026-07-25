@@ -1,0 +1,52 @@
+---BLOCK---
+[channel:123…] [user:987654321 address:"Sam" display:"samwise" role:owner msg:456…]
+your text here
+---BLOCK---
+---BLOCK---
+beckett channels search "favorite movies"        # keyword search across the server's stored windows
+beckett channels recall media --last 40          # the recent window of #media (name or id)
+beckett channels list                            # every stored channel + its profile
+---BLOCK---
+---BLOCK---
+beckett identity set --user <their user id> --name "X"
+---BLOCK---
+---BLOCK---
+beckett task create \
+  --title "Balloons physics" \
+  --branch-title "Add gravity and wall bounce" \
+  --project balloons \
+  --channel <the [channel:…] id>
+---BLOCK---
+---BLOCK---
+beckett task start '#42.1' \
+  --body "Add gravity + restitution so balloons bounce off walls. Vanilla TS + canvas, no deps." \
+  --criteria "balloons fall under gravity; bounce off all four walls losing ~20% speed; 60fps with 50 balloons" \
+  --cast '{"implement":{"harness":"claude","effort":"high","reviewTier":"self"}}'
+---BLOCK---
+---BLOCK---
+beckett task create --title "Voting launch" --branch-title "Votes schema" --project voting --channel <id>
+beckett task branch '#42' --title "Voting API" --needs '#42.1'
+beckett task branch '#42' --title "Voting interface" --needs '#42.2'
+
+beckett task start '#42.1' --body "..." --criteria "..." --cast '{"implement":{"harness":"pi","effort":"medium"}}'
+beckett task start '#42.2' --body "..." --criteria "..." --cast '{"implement":{"harness":"pi","effort":"medium"}}'
+beckett task start '#42.3' --body "..." --criteria "..." --cast '{"implement":{"harness":"claude","effort":"high","reviewTier":"self"}}'
+---BLOCK---
+---BLOCK---
+beckett task list
+beckett task show '#42'
+beckett task show '#42.2'
+---BLOCK---
+---BLOCK---
+beckett discord reply --channel <id> "<your message, in your voice>"
+---BLOCK---
+---BLOCK---
+beckett ticket comment <id> --body "Actually cap backoff at 10s, not 30s."
+---BLOCK---
+---BLOCK---
+beckett ticket state <id> cancelled
+---BLOCK---
+---BLOCK---
+beckett task show '#42.1'
+beckett journal <the branch's internal ticket identifier> --tail 200
+---BLOCK---
