@@ -50,7 +50,7 @@ function cli(opts: {
       spawns.push({ cmd, cwd: o.cwd, env: o.env });
       return { exited: Promise.resolve(opts.spawnExit ?? 0) };
     },
-    run: (async (cmd, o) => {
+    run: (async (cmd: string[], o?: { cwd?: string; env?: Record<string, string | undefined> }) => {
       runs.push({ cmd, cwd: o?.cwd, env: o?.env });
       return opts.route?.(cmd.join(" ")) ?? { code: 0, stdout: "", stderr: "" };
     }) as never,
