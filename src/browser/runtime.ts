@@ -142,8 +142,6 @@ export interface BrowserHostSettings {
   navigationTimeoutMs: number;
   evalTimeoutMs: number;
   maxOutputChars: number;
-  /** Launch the managed CloakBrowser through a --disable-gpu shim (see isolated.ts). */
-  disableGpu: boolean;
 }
 
 interface ActiveLease extends BrowserLease {
@@ -236,7 +234,6 @@ export function browserHostSettings(config: Config): BrowserHostSettings {
     navigationTimeoutMs: config.quick.browser_navigation_timeout_ms,
     evalTimeoutMs: config.quick.browser_eval_timeout_ms,
     maxOutputChars: config.quick.browser_max_output_chars,
-    disableGpu: config.quick.browser_disable_gpu,
   };
 }
 

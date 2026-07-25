@@ -68,22 +68,9 @@ function readProcStat(pid: number): ProcStat | null {
   }
 }
 
-/** Read a process's argv (NUL-separated in /proc/<pid>/cmdline) as a plain string. */
-function readProcCmdline(pid: number): string {
-  try {
-    return readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
-  } catch {
-    return "";
-  }
-}
-
 /** Sample the host child + all its descendants: peak tree RSS and per-PID CPU. */
 function createTreeSampler(rootPid: number) {
   const cpuByPid = new Map<number, number>();
-  // Classify each PID once (a chromium child never changes --type mid-life); the gpu
-  // process is the one the --disable-gpu shim is meant to eliminate, so account it out.
-  const gpuPids = new Set<number>();
-  const classified = new Set<number>();
   let peakRssBytes = 0;
 
   function sample(): void {
@@ -111,21 +98,12 @@ function createTreeSampler(rootPid: number) {
       if (!stat) continue;
       rssBytes += stat.rssPages * PAGE_SIZE;
       cpuByPid.set(pid, stat.cpuTicks); // monotonic; survives a PID that later exits.
-      if (!classified.has(pid)) {
-        classified.add(pid);
-        if (/--type=gpu-process\b/.test(readProcCmdline(pid))) gpuPids.add(pid);
-      }
     }
     if (rssBytes > peakRssBytes) peakRssBytes = rssBytes;
   }
 
   const timer = setInterval(sample, SAMPLE_INTERVAL_MS);
   timer.unref?.();
-  const sumTicks = (pids: Iterable<number>) => {
-    let ticks = 0;
-    for (const pid of pids) ticks += cpuByPid.get(pid) ?? 0;
-    return ticks;
-  };
   return {
     sample,
     stop() {
@@ -133,8 +111,6 @@ function createTreeSampler(rootPid: number) {
     },
     peakRssBytes: () => peakRssBytes,
     cpuSeconds: () => [...cpuByPid.values()].reduce((sum, ticks) => sum + ticks, 0) / CLK_TCK,
-    gpuProcessCount: () => gpuPids.size,
-    gpuCpuSeconds: () => sumTicks(gpuPids) / CLK_TCK,
   };
 }
 
@@ -172,16 +148,9 @@ const spawn = ((options: Parameters<typeof Bun.spawn>[0]) => {
   return child;
 }) as typeof Bun.spawn;
 
-// Flip the opt-in --disable-gpu shim from the environment so before/after runs use the
-// exact same instrument: BROWSER_BENCH_DISABLE_GPU=1 bun run browser:bench.
-const disableGpu = /^(1|true|yes|on)$/i.test(process.env.BROWSER_BENCH_DISABLE_GPU ?? "");
 const config = validateConfig({
   paths: { beckett_dir: dir },
-  quick: {
-    browser_profile_dir: "browser/profile",
-    browser_eval_timeout_ms: 30_000,
-    browser_disable_gpu: disableGpu,
-  },
+  quick: { browser_profile_dir: "browser/profile", browser_eval_timeout_ms: 30_000 },
 });
 const runtime = createIsolatedBrowserRuntime({
   settings: browserHostSettings(config),
@@ -235,7 +204,6 @@ try {
     fixture: baseUrl,
     backend: "betterwright/CloakBrowser (isolated host)",
     headless: config.quick.browser_headless,
-    disableGpu,
     warmIterations: WARM_ITERATIONS,
     coldAcquireMs: Number(coldAcquireMs.toFixed(1)),
     warmEvalMs: {
@@ -246,8 +214,6 @@ try {
     },
     peakRssMb: Number((sampler!.peakRssBytes() / (1024 * 1024)).toFixed(1)),
     cpuSeconds: Number(sampler!.cpuSeconds().toFixed(2)),
-    gpuProcessCpuSeconds: Number(sampler!.gpuCpuSeconds().toFixed(2)),
-    gpuProcessCount: sampler!.gpuProcessCount(),
     hostLaunches: stats.launches,
     evaluations: stats.evaluations,
   };

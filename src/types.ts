@@ -794,8 +794,6 @@ export interface Config {
     browser_profile_dir: string;
     /** The production browser is headless; false is useful only for local diagnosis. */
     browser_headless: boolean;
-    /** Inject --disable-gpu into the managed CloakBrowser via a CLOAKBROWSER_BINARY_PATH shim. */
-    browser_disable_gpu: boolean;
     browser_viewport_width: number;
     browser_viewport_height: number;
     browser_launch_timeout_ms: number;

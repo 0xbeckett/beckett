@@ -484,10 +484,6 @@ export const configFragments = {
       // boundary and stay warm for a task, while that task may drive many tabs concurrently.
       browser_profile_dir: z.string().min(1).default("browser/profile"),
       browser_headless: z.boolean().default(true),
-      // Inject `--disable-gpu --disable-software-rasterizer` into the managed CloakBrowser
-      // via a CLOAKBROWSER_BINARY_PATH shim (see src/browser/isolated.ts). Opt-in and
-      // reversible: flip it off here to launch exactly as betterwright would unassisted.
-      browser_disable_gpu: z.boolean().default(false),
       browser_viewport_width: posInt.default(1440),
       browser_viewport_height: posInt.default(900),
       browser_launch_timeout_ms: posInt.default(30_000),

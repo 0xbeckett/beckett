@@ -49,7 +49,6 @@ function fixturePaths(): {
       navigationTimeoutMs: 30_000,
       evalTimeoutMs: 60_000,
       maxOutputChars: 24_000,
-      disableGpu: false,
     },
   };
 }
