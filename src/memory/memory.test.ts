@@ -7,7 +7,7 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemory, recallOver, type MemoryStore } from "./index.ts";
@@ -217,15 +217,17 @@ test("a new memory still appends exactly one index line; a deleted one drops its
   expect(before.match(/^- \[\[/gm)!.length).toBe(3);
 
   await store.remember({
-    op: "create", name: "new-fact", type: "reference",
-    description: "a brand new one-liner", body: "b", source: "manual", reason: "add",
+    op: "create", name: "new-fact", type: "decision",
+    description: "a brand new one-liner",
+    metadata: { ttl: new Date(Date.now() - TTL_GRACE_MS - 86_400_000).toISOString() },
+    source: "manual", reason: "add",
   });
   const after = readFileSync(join(dir, "MEMORY.md"), "utf8");
   expect(after.match(/^- \[\[/gm)!.length).toBe(4); // one line appended
   expect(indexHook(dir, "new-fact")).toBe("a brand new one-liner");
 
-  // Archiving (the only "delete" — nothing is ever hard-removed) drops the line from the index.
-  await store.archive("new-fact", "superseded by test");
+  // Retiring a node (archived on ttl expiry — nothing is ever hard-removed) drops its index line.
+  await store.maintain();
   const pruned = readFileSync(join(dir, "MEMORY.md"), "utf8");
   expect(pruned.match(/^- \[\[/gm)!.length).toBe(3);
   expect(pruned).not.toContain("[[new-fact]]");
@@ -234,30 +236,28 @@ test("a new memory still appends exactly one index line; a deleted one drops its
 test("preserves ordering and the · upd freshness flag when an update rewrites a hook", async () => {
   const { store, dir } = tempStore();
   await seedWorld(store);
-  // Backdate loom-desk's file so its index line carries the 90d+ ` · upd YYYY-MM-DD` flag.
+  // Backdate loom-desk's `updated` so its index line earns the 90d+ ` · upd YYYY-MM-DD` flag.
   const desk = store.buildGraph().nodes.get("loom-desk")!;
   const stale = "2020-01-01";
   writeFileSync(
     desk.path,
     readFileSync(desk.path, "utf8").replace(/updated: .*/, `updated: ${stale}`),
   );
-  utimesSync(desk.path, new Date(), new Date(`${stale}T00:00:00Z`));
+  utimesSync(desk.path, new Date(`${stale}T00:00:00Z`), new Date(`${stale}T00:00:00Z`));
 
-  const before = readFileSync(join(dir, "MEMORY.md"), "utf8");
-  const beforeLines = before.match(/^- \[\[.*$/gm)!;
-  expect(before).toContain(`· upd ${stale}`); // the aged flag is present up front
-
-  // An UNRELATED update elsewhere regenerates the whole index — the aged flag must survive.
+  // An unrelated update regenerates the WHOLE index — loom-desk's aged flag must survive it,
+  // and the deterministic type→name ordering must be untouched.
   await store.remember({
     op: "update", name: "jason", type: "person",
     description: "Primary user and owner — talks casual lowercase", body: "still here",
     source: "manual", reason: "touch",
   });
   const after = readFileSync(join(dir, "MEMORY.md"), "utf8");
-  expect(after).toContain(`· upd ${stale}`); // loom-desk still self-flags as aged
-  // Ordering is stable (grouped by type, then name) — jason moved neither section nor slot.
-  expect(after.match(/^- \[\[.*$/gm)!.map((l) => l.replace(/ · upd .*/, "")))
-    .toEqual(beforeLines.map((l) => l.replace(/ · upd .*/, "")));
+  expect(after).toContain(`· upd ${stale}`); // loom-desk still self-flags as an aged observation
+  // Ordering is stable: grouped by type, then name — [env] loom-desk, [person] jason, [project] docs-site.
+  expect(after.match(/^- \[\[[a-z-]+\]\]/gm)).toEqual([
+    "- [[loom-desk]]", "- [[jason]]", "- [[docs-site]]",
+  ]);
 });
 
 // ── maintenance: staleness, supersede, dedup merge, dry-run, no data loss ────────────────
