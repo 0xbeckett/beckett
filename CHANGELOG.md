@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### `beckett gh` gets a passthrough, and release tags can finally ship (#88)
+
+`beckett gh push` could only ever push **branches** — it rewrote any ref into
+`refs/heads/<branch>`, so publishing a release tag (`v6.0.3`/`v6.0.4`) was
+structurally impossible through the sanctioned path. And the curated verb list
+(`repo`, `pr`, `push`) was a permanent reimplementation treadmill against `gh`'s real
+surface. Two openers, both on the wrapper that *already* injects the PAT per
+invocation — this widens the aperture, it doesn't widen the blast radius.
+
+**`beckett gh raw -- <any gh args>`.** A passthrough that runs the real `gh` binary
+verbatim with the token injected through the environment (`GH_TOKEN` + the inline git
+credential helper, never argv), in `--dir` if given, streaming stdout/stderr and
+propagating `gh`'s exit code. That's the whole `gh` feature suite — releases, issues,
+gists, `gh api`, arbitrary flags — with zero per-verb maintenance. The curated verbs
+stay byte-for-byte (the characterization suite and the deps-update `['gh','push']` /
+`['gh','pr','create']` argv shapes are unchanged); passthrough is purely additive.
+
+**Release tags.** `beckett gh push --repo <r> --tag <t>` pushes
+`refs/tags/<t>:refs/tags/<t>` explicitly, so a tag lands as a tag. Pushing `v6.0.4`
+now works end to end.
+
+The token stays out of argv, out of `~/.git-credentials`, and out of every worker's
+inherited environment — deliberately **not** the bashrc-alias variant, which would
+export the PAT into every interactive shell and every subprocess.
+
+On the live symptom: the `v6.0.3`/`v6.0.4` "pre-receive hook declined" failures were
+the **ref-rewrite bug alone**, not a repo ruleset or a PAT tag-scope problem. Checked
+against the real repo: `0xbeckett/beckett` has **no rulesets** and no legacy tag
+protection (only branch protection on `main`, which never touches `refs/tags/*`), and
+the PAT has tag-write scope — a probe tag pushed through the new `--tag` path landed
+and was cleanly deleted. The sanctioned path simply could not express a `refs/tags/*`
+destination; now it can.
+
 ## v6.0.3 (2026-07-24)
 
 ### Weekly routines, and a dependency update that PRs itself (#85)
