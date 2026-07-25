@@ -85,6 +85,29 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
     };
   }
 
+  if (action.kind === "deps-update") {
+    // Its own lane, deliberately: nothing here names an agent, a browser task, or a creds entry,
+    // so there is no shape a dispatcher could mistake for browser work.
+    return {
+      routineId: routine.id,
+      lane: "deps-update",
+      agentId: null,
+      agentInput: null,
+      browserTask: null,
+      depsUpdate: {
+        repo: action.repo ?? null,
+        base: action.base,
+        sourceRepo: action.sourceRepo ?? null,
+      },
+      preview:
+        `update in-range dependencies in an isolated clone, run typecheck + tests, ` +
+        `open a PR against ${action.base}${action.repo ? ` on ${action.repo}` : ""}`,
+      credsEntry: null,
+      channelId: action.channelId ?? null,
+      requesterId: action.requesterId ?? null,
+    };
+  }
+
   if (action.kind === "x-shitpost") {
     // Legacy shape → the same agent lane. The account/voice/how-to-post now live in the agent's
     // prompt; the routine only supplies the creds entry the browser lane injects.
@@ -94,6 +117,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       agentId: SOCIAL_MEDIA_AGENT_ID,
       agentInput: LEGACY_SHITPOST_INPUT,
       browserTask: null,
+      depsUpdate: null,
       preview: `invoke agent ${SOCIAL_MEDIA_AGENT_ID}: ${LEGACY_SHITPOST_INPUT}`,
       credsEntry: action.credsEntry ?? null,
       channelId: action.channelId ?? null,
@@ -108,6 +132,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
     agentId: null,
     agentInput: null,
     browserTask: action.task,
+    depsUpdate: null,
     preview: action.task,
     credsEntry: action.credsEntry ?? null,
     channelId: action.channelId ?? null,
