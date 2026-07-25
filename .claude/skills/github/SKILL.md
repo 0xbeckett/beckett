@@ -11,21 +11,46 @@ Beckett has a real identity on GitHub (its own account — this install: `0xbeck
 
 ## The one rule
 
-**Never run raw `gh` or `gh auth status` / `gh auth login`.** You are already authenticated —
-the token is passed per-invocation. Raw `gh` (without the token in env) will see "not logged
-in" and you'll waste turns trying to fix auth that isn't broken. Always use `beckett gh`:
+**Never call the bare `gh` binary, and never `gh auth status` / `gh auth login`.** You are
+already authenticated — the token is passed per-invocation. Bare `gh` (without the token in env)
+will see "not logged in" and you'll waste turns trying to fix auth that isn't broken. Always go
+through `beckett gh` — either a curated verb or the `raw` passthrough (both inject the token):
 
 | Want to… | Run |
 |---|---|
 | Make a new repo | `beckett gh repo create <name> [--public] [--desc "<d>"] [--source <dir>] [--push]` |
 | Push a branch | `beckett gh push --repo <owner/name> --branch <remoteBranch> [--ref HEAD] [--dir <worktree>]` |
+| Push a release tag | `beckett gh push --repo <owner/name> --tag <tag> [--dir <worktree>]` |
 | Open a PR | `beckett gh pr create --repo <owner/name> --base main --head <branch> --title "<t>" --body "<b>" [--draft]` |
 | Check PR is green | `beckett gh pr status <num> --repo <owner/name>` |
 | Comment / review | `beckett gh pr review <num> --repo <owner/name> --event COMMENT|APPROVE|REQUEST_CHANGES --body "<b>"` |
 | Merge a PR | `beckett gh pr merge <num> --repo <owner/name> [--strategy squash|merge|rebase]` |
+| **Anything else** | `beckett gh raw -- <any gh args>` (see below) |
 
 All output is JSON on stdout. `--private` is the default for `repo create`; pass `--public` to
 override.
+
+## Anything the table doesn't cover: `beckett gh raw`
+
+The curated verbs are a convenience layer, not the whole of `gh`. For anything they don't cover —
+releases, issues, gists, labels, workflow runs, `gh api`, arbitrary flags — forward it verbatim to
+the real `gh` binary with the token already injected:
+
+```
+beckett gh raw -- <any gh args>
+beckett gh raw --dir <worktree> -- <any gh args>   # run gh inside a specific checkout
+```
+
+Everything after `--` is passed to `gh` untouched (including gh's own `--flags`); stdout/stderr
+stream live and gh's exit code is propagated. Examples:
+
+- `beckett gh raw -- release create v6.0.4 --generate-notes --repo 0xbeckett/beckett`
+- `beckett gh raw -- api repos/0xbeckett/beckett/rulesets --paginate`
+- `beckett gh raw -- issue list --repo 0xbeckett/beckett`
+
+This is `beckett`'s sanctioned passthrough, **not** the bare `gh` binary — the one rule still
+holds: reach for `beckett gh raw`, never a bare `gh`, and never `gh auth …`. Prefer a curated verb
+when one fits (its JSON output and posture gating are load-bearing); use `raw` for the rest.
 
 ## Spinning up a new project repo
 
