@@ -208,8 +208,11 @@ export interface ExecResult {
 
 /** Everything the job touches outside itself, injected so the whole run is testable. */
 export interface DepsUpdateDeps {
-  /** Run a command in `cwd`. Never inherits stdin; must not throw on a non-zero exit. */
-  exec(cmd: string[], opts: { cwd: string; timeoutMs?: number }): Promise<ExecResult>;
+  /**
+   * Run a command in `cwd`, with `env` layered over the ambient environment. Never inherits stdin;
+   * must not throw on a non-zero exit (a non-zero exit is data here, not an exception).
+   */
+  exec(cmd: string[], opts: { cwd: string; timeoutMs?: number; env?: Record<string, string> }): Promise<ExecResult>;
   /**
    * Run `beckett <args>` — the ONLY GitHub path (`beckett gh push` / `beckett gh pr create`), so
    * the PAT injection stays where it belongs and no raw `gh` or `git push` is ever issued.
@@ -315,20 +318,47 @@ async function cloneSource(req: DepsUpdateRequest, deps: DepsUpdateDeps): Promis
   return workDir;
 }
 
-/** Run typecheck then the test suite through the primary manager. Returns the FIRST failure. */
+/**
+ * Run typecheck then the test suite through the primary manager. Returns the FIRST failure.
+ *
+ * These two are the only commands that run ARBITRARY project code, so they get a scratch
+ * `BECKETT_DIR`/`BECKETT_HOME` (`stateDir`, deliberately OUTSIDE the clone). Beckett's own suite is
+ * the thing being tested here: a test that forgets to relocate its state would otherwise write into
+ * the LIVE `~/.beckett` the daemon is reading from — the same class of mistake as updating the live
+ * checkout in place, and just as unacceptable in an unattended weekly job.
+ */
 async function runChecks(
   workDir: string,
+  stateDir: string,
   primary: PackageManager,
   deps: DepsUpdateDeps,
 ): Promise<{ failed: string; detail: string } | null> {
+  const env = { BECKETT_DIR: stateDir, BECKETT_HOME: stateDir, CI: "1" };
   for (const script of CHECK_SCRIPTS) {
     const cmd = primary.runScript(script);
-    const r = await deps.exec(cmd, { cwd: workDir, timeoutMs: CHECK_TIMEOUT_MS });
+    const r = await deps.exec(cmd, { cwd: workDir, timeoutMs: CHECK_TIMEOUT_MS, env });
     if (r.code !== 0) {
       return { failed: cmd.join(" "), detail: firstLine(r.stderr || r.stdout) };
     }
   }
   return null;
+}
+
+/**
+ * Repo-relative paths out of `git status --porcelain`. A rename entry (`R  old -> new`) yields the
+ * NEW path, and a quoted path is unquoted. Used to stage EXACTLY what the update changed — see
+ * {@link runDepsUpdate}, where `git add -A` would also sweep up anything the test suite left behind.
+ */
+export function parsePorcelainPaths(stdout: string): string[] {
+  const paths: string[] = [];
+  for (const line of stdout.split("\n")) {
+    if (line.length < 4) continue;
+    const rest = line.slice(3);
+    const arrow = rest.indexOf(" -> ");
+    const path = (arrow >= 0 ? rest.slice(arrow + 4) : rest).trim().replace(/^"(.*)"$/, "$1");
+    if (path) paths.push(path);
+  }
+  return [...new Set(paths)].sort();
 }
 
 /** The PR body — enough for a human to merge (or not) without re-deriving the run. */
@@ -377,8 +407,13 @@ export async function runDepsUpdate(
     failedCheck: null,
   };
   let workDir: string | null = null;
+  // Scratch state for the check commands, alongside the clone rather than inside it — see
+  // runChecks. Being OUTSIDE the clone is what keeps it out of `git status` and out of the commit.
+  let stateDir: string | null = null;
   try {
     workDir = await cloneSource(req, deps);
+    stateDir = `${workDir}-state`;
+    deps.removeDir(stateDir);
     deps.logger.info("deps-update working in an isolated clone", {
       workDir,
       source: req.sourceRepo,
@@ -411,11 +446,7 @@ export async function runDepsUpdate(
     }
 
     const changed = await deps.exec(["git", "status", "--porcelain"], { cwd: workDir });
-    base.changedFiles = changed.stdout
-      .split("\n")
-      .map((line) => line.slice(3).trim())
-      .filter(Boolean)
-      .sort();
+    base.changedFiles = parsePorcelainPaths(changed.stdout);
     if (base.changedFiles.length === 0) {
       return {
         ...base,
@@ -425,7 +456,7 @@ export async function runDepsUpdate(
     }
 
     // Prove it BEFORE publishing anything. A red PR is worse than no PR.
-    const failure = await runChecks(workDir, managers[0]!, deps);
+    const failure = await runChecks(workDir, stateDir, managers[0]!, deps);
     if (failure) {
       return {
         ...base,
@@ -439,7 +470,10 @@ export async function runDepsUpdate(
 
     // Commit in the clone. `-c user.*` keeps the identity per-invocation: no global git config is
     // written, and the live checkout's config is never read or touched.
-    const add = await deps.exec(["git", "add", "-A"], { cwd: workDir });
+    // Stage EXACTLY the paths the update changed, captured before the checks ran. `git add -A` here
+    // would also commit whatever the test suite happened to drop in the tree — a coverage file, a
+    // stray artifact — turning a two-line lockfile PR into junk.
+    const add = await deps.exec(["git", "add", "--", ...base.changedFiles], { cwd: workDir });
     if (add.code !== 0) throw new Error(`git add failed: ${firstLine(add.stderr)}`);
     const message =
       `chore(deps): weekly in-range update (${base.managers.join(", ")})\n\n` +
@@ -506,11 +540,12 @@ export async function runDepsUpdate(
     };
   } finally {
     // The clone is disposable by design; leaving it behind would accumulate a full checkout a week.
-    if (workDir) {
+    for (const dir of [workDir, stateDir]) {
+      if (!dir) continue;
       try {
-        deps.removeDir(workDir);
+        deps.removeDir(dir);
       } catch (err) {
-        deps.logger.warn("deps-update could not remove its clone", { workDir, error: String(err) });
+        deps.logger.warn("deps-update could not remove its scratch dir", { dir, error: String(err) });
       }
     }
   }
