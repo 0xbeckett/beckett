@@ -9,6 +9,7 @@ import {
   dependencyRanges,
   detectPackageManagers,
   findHeldBack,
+  checkFailureDetail,
   parsePorcelainPaths,
   parsePrUrl,
   runDepsUpdate,
@@ -311,6 +312,36 @@ describe("a red PR is worse than no PR", () => {
     expect(result.summary).toContain("no PR");
     // The test suite is not even attempted once typecheck is red.
     expect(h.ran.some((l) => l.includes("bun run test"))).toBe(false);
+  });
+
+  test("the failure detail names the failure, not the log noise before it", () => {
+    // Real shape: `bun test` opens with pages of application logging, so the FIRST lines say
+    // nothing. This is the exact noise the first live rehearsal quoted.
+    const noisy = [
+      "$ bun test",
+      '{"level":"info","component":"e2e-resume.driver.claude","msg":"spawning claude worker"}',
+      '{"level":"info","component":"concierge.pool","msg":"evicted idle session"}',
+      "(fail) routines > weekly fires once per ISO week",
+      " 1600 pass",
+      " 1 fail",
+    ].join("\n");
+    const detail = checkFailureDetail(noisy, "");
+    expect(detail).toContain("(fail) routines > weekly fires once per ISO week");
+    expect(detail).toContain("1 fail");
+    expect(detail).not.toContain("spawning claude worker");
+    expect(detail).not.toContain("\n");
+  });
+
+  test("with no failure lines to find, the detail falls back to the tail, not the head", () => {
+    const detail = checkFailureDetail("line one\nline two\nline three\nthe last thing it said", "");
+    expect(detail).toContain("the last thing it said");
+    expect(detail).not.toContain("line one");
+  });
+
+  test("typecheck errors are named too, and empty output still says something", () => {
+    expect(checkFailureDetail("src/x.ts(1,1): error TS2322: Type 'string' is not assignable", ""))
+      .toContain("error TS2322");
+    expect(checkFailureDetail("", "")).toBe("(the check failed but printed nothing)");
   });
 
   test("a failing test suite aborts the same way", async () => {

@@ -275,6 +275,23 @@ function firstLine(text: string): string {
   return oneLine(text).slice(0, 240);
 }
 
+/** Lines a test runner or compiler uses to name a failure, rather than to narrate progress. */
+const FAILURE_LINE = /^\s*(\(fail\)|error[: ]|FAIL\b|✗|✘)|\berror TS\d+|\b\d+ fail\b/i;
+
+/**
+ * The part of a failed check's output worth putting in a one-line report. Taking the FIRST 240
+ * characters is wrong for a test runner: `bun test` opens with pages of application log noise, so
+ * the report ends up quoting a routine "spawning worker" line and saying nothing about the failure.
+ * Prefer the lines that actually name failures; fall back to the TAIL, where every runner puts its
+ * summary. Only ever one line, and always something a person can act on.
+ */
+export function checkFailureDetail(stdout: string, stderr: string): string {
+  const lines = `${stdout}\n${stderr}`.split("\n").map((l) => l.trim()).filter(Boolean);
+  const named = lines.filter((l) => FAILURE_LINE.test(l));
+  const chosen = named.length > 0 ? named.slice(0, 3) : lines.slice(-3);
+  return firstLine(chosen.join(" · ")) || "(the check failed but printed nothing)";
+}
+
 /** "zod ^3.24.1→4.1.0" — how a held-back dependency reads in the summary. */
 function heldBackClause(held: HeldBackDependency[]): string {
   if (held.length === 0) return "";
@@ -338,7 +355,7 @@ async function runChecks(
     const cmd = primary.runScript(script);
     const r = await deps.exec(cmd, { cwd: workDir, timeoutMs: CHECK_TIMEOUT_MS, env });
     if (r.code !== 0) {
-      return { failed: cmd.join(" "), detail: firstLine(r.stderr || r.stdout) };
+      return { failed: cmd.join(" "), detail: checkFailureDetail(r.stdout, r.stderr) };
     }
   }
   return null;
