@@ -49,7 +49,7 @@ import { nextFireAt, isValidTimeZone } from "../../routine/schedule.ts";
 import { WeekdaySchema, type Cadence, type Routine } from "../../routine/types.ts";
 import { defaultDepsUpdateDeps, runDepsUpdate } from "../../ops/deps-update.ts";
 import { defaultRepoRoot } from "../../version/index.ts";
-import { resolveGitHubOwner } from "../../github/owner.ts";
+import { loadIdentity } from "../../agency/index.ts";
 import type { AgentDefinition, AgentRunner } from "../../agent/index.ts";
 import type { BrowserAgent } from "../../browser/agent.ts";
 import { callBus } from "../../shell/control-bus.ts";
@@ -76,6 +76,12 @@ export interface RoutinesExtensionDeps {
    * routine definition and the extension itself stays env-free.
    */
   defaultOrigin?: () => { channelId: string | null; requesterId: string | null };
+  /**
+   * How the `deps-update` lane is launched. Default: a detached `beckett routine deps-update`
+   * subprocess. Injected so a test can assert the lane launches WITHOUT running git or npm — and
+   * so it is visible in one place that this lane never reaches `browserAgent`.
+   */
+  spawnDepsUpdate?: (argv: string[]) => void;
   /** Test seams — the scheduler's injectable clock/RNG/cadence (see {@link RoutineSchedulerDeps}). */
   now?: () => Date;
   rng?: () => number;
@@ -156,6 +162,8 @@ const AddArgs = z.object({
     .regex(/^\d{2}:\d{2}-\d{2}:\d{2}$/, "window must look like 12:00-13:00 (24h HH:MM-HH:MM)"),
   tz: z.string().refine(isValidTimeZone, "tz must be a valid IANA timezone, e.g. America/Los_Angeles"),
   task: z.string().trim().min(1, "a routine needs a self-contained browser task"),
+  /** Present → a WEEKLY routine firing on that weekday; absent → daily (issue #85). */
+  weekday: WeekdaySchema.optional(),
   name: z.string().optional(),
   /** jingle keychain entry NAME the browser lane injects at fire time — never a secret value. */
   credsEntry: z.string().optional(),
@@ -166,6 +174,9 @@ const AddArgs = z.object({
 const RemoveArgs = z.object({
   id: z.string().trim().min(1, "routines.remove needs a routine id"),
 });
+
+/** Beckett's own CLI entry, resolved off this module so nothing has to guess where it is. */
+const BECKETT_CLI_ENTRY = join(import.meta.dir, "../../cli/beckett.ts");
 
 const FireArgs = z.object({
   id: z.string().trim().min(1, "routines.fire needs a routine id"),
@@ -191,6 +202,42 @@ export const createRoutinesExtension =
     function requireScheduler(): RoutineScheduler {
       if (!scheduler) throw new Error("the routine scheduler is not started (lifecycle.start has not run)");
       return scheduler;
+    }
+
+    /**
+     * Launch the `deps-update` lane as its own `beckett routine deps-update` process (issue #85).
+     * Detached and NOT awaited: it resolves as soon as the lane has TAKEN the work, exactly like
+     * the browser lane's enqueue, so a multi-minute clone/install/test cycle never sits inside a
+     * scheduler tick. The subprocess owns its own reporting — it posts the single summary line to
+     * `channelId` itself, so a daemon restart mid-run loses the report but never the daemon.
+     */
+    function spawnDepsUpdate(
+      plan: RoutineDispatchPlan,
+      origin: { channelId: string; requesterId: string },
+    ): void {
+      const target = plan.depsUpdate;
+      if (!target) throw new Error("deps-update routine is missing its update target");
+      const argv = [
+        "routine", "deps-update",
+        "--routine", plan.routineId,
+        "--base", target.base,
+        "--channel", origin.channelId,
+        "--requester", origin.requesterId,
+        ...(target.repo ? ["--repo", target.repo] : []),
+        ...(target.sourceRepo ? ["--source", target.sourceRepo] : []),
+      ];
+      if (deps.spawnDepsUpdate) {
+        deps.spawnDepsUpdate(argv);
+        return;
+      }
+      const proc = Bun.spawn([process.execPath, BECKETT_CLI_ENTRY, ...argv], {
+        cwd: ctx.paths.home,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      proc.unref?.();
+      ctx.logger.info("deps-update lane launched off-process", { routineId: plan.routineId, pid: proc.pid });
     }
 
     /**
@@ -268,6 +315,76 @@ export const createRoutinesExtension =
       return new RoutineStore(join(ctx.paths.beckettDir, "routines.json"));
     }
 
+    /**
+     * `beckett routine deps-update` — the `deps-update` action's BODY, run as its own process by
+     * {@link spawnDepsUpdate} (and by a human who wants to run the weekly job by hand). It owns the
+     * three things the routine promises:
+     *
+     *   - the update happens in a throwaway clone of `--source` (default: the daemon's own source
+     *     root), so the live checkout at that path is only ever READ;
+     *   - publishing is `beckett gh push` + `beckett gh pr create` against `--base`, and there is no
+     *     deploy step anywhere in the path — the deliverable is a PR;
+     *   - EXACTLY ONE line goes to `--channel`, whatever the outcome. An unattended weekly job that
+     *     fails silently is indistinguishable from one that never ran, so a failure reports too —
+     *     it just says "no PR" instead of a link.
+     */
+    async function runRoutineDepsUpdate(argv: string[]): Promise<void> {
+      const { flags } = parse(argv);
+      const logger = ctx.logger.child("deps-update");
+
+      // One identity load serves both the default repo and the commit author.
+      let identity: { account: string; owner: string; noreplyEmail: string };
+      try {
+        const loaded = loadIdentity(ctx.config);
+        identity = {
+          account: loaded.github.account,
+          owner: loaded.github.owner ?? loaded.github.account,
+          noreplyEmail: loaded.github.noreplyEmail,
+        };
+      } catch (err) {
+        fail(`deps-update cannot resolve Beckett's GitHub identity: ${(err as Error).message}`);
+        return;
+      }
+
+      const selfRepo = process.env.BECKETT_SELF_PROJECT?.trim() || "beckett";
+      const repo = flags.repo ? String(flags.repo) : `${identity.owner}/${selfRepo}`;
+      const base = flags.base ? String(flags.base) : "main";
+      const sourceRepo = flags.source ? String(flags.source) : defaultRepoRoot();
+      const channelId = flags.channel
+        ? String(flags.channel)
+        : (process.env.BECKETT_ROUTINE_CHANNEL_ID ?? "").trim();
+
+      // Date-stamped so a week's run is identifiable in `gh pr list` and a re-run collides loudly
+      // rather than silently stacking branches.
+      const stamp = new Date().toISOString().slice(0, 10);
+      const workRoot = join(tmpdir(), "beckett-deps-update");
+      mkdirSync(workRoot, { recursive: true });
+
+      const result = await runDepsUpdate(
+        {
+          repo,
+          base,
+          sourceRepo,
+          workRoot,
+          branch: `beckett/deps-update-${stamp}`,
+          author: { name: identity.account, email: identity.noreplyEmail },
+        },
+        defaultDepsUpdateDeps({ beckettCli: [process.execPath, BECKETT_CLI_ENTRY], logger }),
+      );
+      logger.info("deps-update finished", { status: result.status, prUrl: result.prUrl });
+
+      // ONE line, terse, then done. A failed post must not fail the run — the update either landed
+      // as a PR or it didn't, and that fact is already true regardless of Discord.
+      if (channelId) {
+        try {
+          await callBus(join(ctx.paths.beckettDir, "control.sock"), "discord.reply", { channelId, text: result.summary }, 30_000);
+        } catch (err) {
+          logger.warn("deps-update could not post its summary", { error: String(err) });
+        }
+      }
+      out(result);
+    }
+
     async function runRoutine(argv: string[]): Promise<void> {
       const sock = join(ctx.paths.beckettDir, "control.sock");
       const [sub, ...rest] = argv;
@@ -290,7 +407,7 @@ export const createRoutinesExtension =
         const { _, flags } = parse(rest);
         const id = _[0];
         if (!id) {
-          fail('usage: beckett routine add <id> --window 12:00-13:00 --tz <IANA> --task "<browser task>" [--name <n>] [--creds <entry>] [--channel <id>]');
+          fail('usage: beckett routine add <id> --window 12:00-13:00 --tz <IANA> --task "<browser task>" [--weekly <weekday>] [--name <n>] [--creds <entry>] [--channel <id>]');
         }
         const windowRaw = String(flags.window ?? "");
         const m = windowRaw.match(/^(\d{2}:\d{2})-(\d{2}:\d{2})$/);
@@ -299,6 +416,15 @@ export const createRoutinesExtension =
         if (!tz || !isValidTimeZone(tz)) fail("--tz must be a valid IANA timezone, e.g. America/Los_Angeles");
         const task = flags.task ? String(flags.task) : "";
         if (!task.trim()) fail('a routine needs a --task "<self-contained browser task>"');
+        // No --weekly → daily, exactly as before. A typo'd weekday fails HERE, at add time, for
+        // the same reason a bad --tz does: a cadence that can't resolve must never reach the store.
+        let cadence: Cadence;
+        try {
+          cadence = cadenceFrom(flags.weekly ? String(flags.weekly) : undefined);
+        } catch {
+          fail("--weekly must be a weekday name, e.g. sunday");
+          return;
+        }
         try {
           const routine = await store.add({
             id: id!,
@@ -311,7 +437,7 @@ export const createRoutinesExtension =
               channelId: flags.channel ? String(flags.channel) : undefined,
             },
             schedule: {
-              cadence: { kind: "daily" },
+              cadence,
               window: { start: m[1]!, end: m[2]!, tz },
             },
           });
@@ -356,15 +482,13 @@ export const createRoutinesExtension =
             dryRun: true,
             routine: id,
             lane: plan.lane,
-            wouldDispatchTo:
-              plan.lane === "agent"
-                ? `invoke agent ${plan.agentId} → beckett browser (background lane)`
-                : "beckett browser (background lane)",
+            wouldDispatchTo: describeLaneTarget(plan),
             preview: plan.preview,
             agentId: plan.agentId,
             agentInput: plan.agentInput,
             credsEntry: plan.credsEntry,
             browserTask: plan.browserTask,
+            depsUpdate: plan.depsUpdate,
             note: "dry-run did NOT run the agent or post. To fire for real: beckett routine fire " + id + " --force",
           });
         }
@@ -381,6 +505,13 @@ export const createRoutinesExtension =
       fail(
         "usage: beckett routine list | inspect <id> | add <id> ... | remove <id> | enable <id> | disable <id> | fire <id> [--dry-run|--force]",
       );
+    }
+
+    /** Kept for the CLI dry-run/plan output: which executor a lane actually hands the work to. */
+    function describeLaneTarget(plan: RoutineDispatchPlan): string {
+      if (plan.lane === "deps-update") return "beckett routine deps-update (local maintenance subprocess)";
+      if (plan.lane === "agent") return `invoke agent ${plan.agentId} → beckett browser (background lane)`;
+      return "beckett browser (background lane)";
     }
 
     return {
@@ -418,12 +549,16 @@ export const createRoutinesExtension =
           id: "routines.add",
           description:
             "Schedule a NEW named recurring routine: a self-contained browser task that fires " +
-            "once per day at a fuzzed time inside a 24h HH:MM-HH:MM window in a given IANA " +
-            "timezone, dispatched through the background browser lane. Use when someone asks " +
-            "for something to happen every day (\"post this daily around noon\").",
+            "once per day — or once per week on a named weekday — at a fuzzed time inside a 24h " +
+            "HH:MM-HH:MM window in a given IANA timezone, dispatched through the background " +
+            "browser lane. Use when someone asks for something to happen every day (\"post this " +
+            "daily around noon\") or every week (\"check this every Sunday morning\").",
           actionClass: ActionClass.HANDSHAKE_GATED,
           input: AddArgs,
-          examples: ["every day between 12:00 and 13:00 PT, check the status page and post a summary"],
+          examples: [
+            "every day between 12:00 and 13:00 PT, check the status page and post a summary",
+            "every Sunday morning between 08:00 and 10:00 PT, check the status page",
+          ],
         },
         {
           id: "routines.remove",
@@ -492,7 +627,7 @@ export const createRoutinesExtension =
                   ...(requestedChannelId ? { channelId: requestedChannelId } : {}),
                 },
                 schedule: {
-                  cadence: { kind: "daily" },
+                  cadence: cadenceFrom(a.weekday),
                   window: { start: m[1]!, end: m[2]!, tz: a.tz },
                 },
               });
@@ -609,11 +744,22 @@ export const createRoutinesExtension =
       // cli/beckett.ts spine slot via asCapability. The routine.fire bus command stays
       // concierge-owned (its body binds this.routineOps — see the header).
       cliVerbs: [
+        // `routine deps-update` is declared FIRST only for readability; resolveCliVerb matches the
+        // longest verb, so the two-word name always wins over the bare `routine` below it. It
+        // carries no `cliHelp` token of its own (like spend/journal/config): it is a routine's BODY
+        // launched by the scheduler, not a surface a person is meant to browse to.
+        {
+          name: "routine deps-update",
+          summary: "run the weekly dependency update in an isolated clone and open a PR",
+          usage:
+            "beckett routine deps-update [--repo <owner/name>] [--base main] [--source <checkout>] [--channel <id>]",
+          run: runRoutineDepsUpdate,
+        },
         {
           name: "routine",
           summary: "named recurring tasks that fire at a fuzzed time inside a daily window",
           usage:
-            'beckett routine list | inspect <id> | add <id> --window 12:00-13:00 --tz <IANA> --task "<task>" [--creds <entry>] | remove <id> | enable|disable <id> | fire <id> [--dry-run|--force]',
+            'beckett routine list | inspect <id> | add <id> --window 12:00-13:00 --tz <IANA> --task "<task>" [--weekly <weekday>] [--creds <entry>] | remove <id> | enable|disable <id> | fire <id> [--dry-run|--force]',
           run: runRoutine,
         },
       ],
