@@ -1,0 +1,715 @@
+bun test v1.3.13 (bf2e2cec)
+{"level":"info","ts":"2026-07-25T05:00:22.907Z","component":"e2e-resume.driver.claude","msg":"spawning claude worker","bin":"/tmp/beckett-resume-CwYZ0T/fake-claude.sh","workspace":"/tmp/beckett-resume-CwYZ0T/worktree","isResume":false,"sessionId":"8ebffab8-940a-44df-9393-e8bd3f7875dd","model":"claude-sonnet-4-5","effort":"low"}
+{"level":"info","ts":"2026-07-25T05:00:23.582Z","component":"e2e-resume.driver.claude","msg":"relaunching with --resume","sessionId":"8ebffab8-940a-44df-9393-e8bd3f7875dd"}
+{"level":"info","ts":"2026-07-25T05:00:23.583Z","component":"e2e-resume.driver.claude","msg":"spawning claude worker","bin":"/tmp/beckett-resume-CwYZ0T/fake-claude.sh","workspace":"/tmp/beckett-resume-CwYZ0T/worktree","isResume":true,"sessionId":"8ebffab8-940a-44df-9393-e8bd3f7875dd","model":"claude-sonnet-4-5","effort":"low"}
+{"level":"warn","ts":"2026-07-25T05:00:24.395Z","component":"e2e-resume.driver.claude","msg":"aborting worker","reason":"test teardown","sessionId":"8ebffab8-940a-44df-9393-e8bd3f7875dd"}
+{"level":"info","ts":"2026-07-25T05:00:26.754Z","component":"concierge.workspaces","msg":"task workspace registered","threadId":"thread-1","task":"1","branches":["1.1"],"replacedThreadIds":[]}
+{"level":"info","ts":"2026-07-25T05:00:26.758Z","component":"concierge.workspaces","msg":"task workspace registered","threadId":"thread-1","task":"1","branches":["1.1"],"replacedThreadIds":[]}
+{"level":"info","ts":"2026-07-25T05:00:26.761Z","component":"concierge.workspaces","msg":"task workspace registered","threadId":"thread-2","task":"2","branches":["2.1"],"replacedThreadIds":[]}
+{"level":"info","ts":"2026-07-25T05:00:26.764Z","component":"concierge.workspaces","msg":"task workspace registered","threadId":"thread-1","task":"1","branches":["1.1"],"replacedThreadIds":[]}
+{"level":"info","ts":"2026-07-25T05:00:26.766Z","component":"concierge.workspaces","msg":"task workspace registered","threadId":"thread-live","task":"1","branches":["1.1"],"replacedThreadIds":[]}
+{"level":"info","ts":"2026-07-25T05:00:26.768Z","component":"concierge.workspaces","msg":"task workspace registered","threadId":"thread-deleted","task":"1","branches":["1.1"],"replacedThreadIds":[]}
+{"level":"warn","ts":"2026-07-25T05:00:26.768Z","component":"concierge","msg":"stored task workspace is unavailable; recreating from its parent","task":1,"threadId":"thread-deleted","parentChannelId":"parent-1","error":"Error: Unknown Channel"}
+{"level":"info","ts":"2026-07-25T05:00:26.768Z","component":"concierge.workspaces","msg":"task workspace registered","threadId":"thread-1","task":"1","branches":["1.1"],"replacedThreadIds":["thread-deleted"]}
+{"level":"info","ts":"2026-07-25T05:00:26.771Z","component":"concierge.workspaces","msg":"task workspace registered","threadId":"thread-1","task":"1","branches":["1.1"],"replacedThreadIds":[]}
+{"level":"warn","ts":"2026-07-25T05:00:26.775Z","component":"concierge","msg":"stored task workspace is unavailable; recreating from its parent","task":1,"threadId":"thread-deleted","parentChannelId":"parent-1","error":"Error: Unknown Channel"}
+{"level":"info","ts":"2026-07-25T05:00:26.776Z","component":"concierge.workspaces","msg":"task workspace registered","threadId":"thread-1","task":"1","branches":["1.1"],"replacedThreadIds":[]}
+{"level":"warn","ts":"2026-07-25T05:00:26.915Z","component":"concierge","msg":"discord access denied","userId":"222222222222222222","channelId":"1097283746520174592","guildId":null,"messageId":"msg-1"}
+{"level":"info","ts":"2026-07-25T05:00:26.918Z","component":"concierge","msg":"access approval attempt","action":"approve","byUserId":"444444444444444444","channelId":"1097283746520174592","queue":"access","status":"approved","grantedId":"555555555555555555"}
+{"level":"info","ts":"2026-07-25T05:00:26.920Z","component":"concierge","msg":"access approval attempt","action":"approve","byUserId":"333333333333333333","channelId":"1097283746520174592","queue":"access","status":"not-owner"}
+{"level":"info","ts":"2026-07-25T05:00:26.920Z","component":"concierge","msg":"access approval attempt","action":"deny","byUserId":"444444444444444444","channelId":"1097283746520174592","queue":"access","status":"denied","grantedId":"555555555555555555"}
+{"level":"info","ts":"2026-07-25T05:00:26.923Z","component":"concierge","msg":"access approval attempt","action":"approve","byUserId":"444444444444444444","channelId":"1097283746520174592","queue":"access","status":"unknown-code"}
+{"level":"info","ts":"2026-07-25T05:00:27.488Z","component":"concierge","msg":"coalesced duplicate discord.reply after an ambiguous acknowledgement"}
+{"level":"info","ts":"2026-07-25T05:00:27.550Z","component":"concierge.ambient","msg":"ambient engaged continuation","channel":"1097283746520174592","burst":1}
+{"level":"debug","ts":"2026-07-25T05:00:27.558Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":2,"chars":135,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:27.561Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":64,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:27.561Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":26,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:27.562Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":26,"droppedForBudget":0}
+{"level":"info","ts":"2026-07-25T05:00:27.565Z","component":"concierge.ambient","msg":"ambient engaged continuation","channel":"1097283746520174592","burst":1}
+{"level":"info","ts":"2026-07-25T05:00:27.567Z","component":"concierge.ambient","msg":"ambient engaged human reply skipped","channel":"1097283746520174592","burst":2}
+{"level":"info","ts":"2026-07-25T05:00:27.570Z","component":"concierge.ambient","msg":"ambient engaged human reply validated","channel":"1097283746520174592","burst":2}
+{"level":"info","ts":"2026-07-25T05:00:27.635Z","component":"concierge","msg":"coalesced duplicate discord.reply after an ambiguous acknowledgement"}
+{"level":"info","ts":"2026-07-25T05:00:27.646Z","component":"concierge.pool","msg":"recycled idle concierge session child (live cap)","scope":"chan-a"}
+{"level":"info","ts":"2026-07-25T05:00:27.646Z","component":"concierge.pool","msg":"recycled idle concierge session child (idle timer)","scope":"chan-live"}
+{"level":"info","ts":"2026-07-25T05:00:27.646Z","component":"concierge.pool","msg":"evicted idle concierge session entry","scope":"chan-dead"}
+{"level":"info","ts":"2026-07-25T05:00:27.659Z","component":"concierge.pool","msg":"recycled idle concierge session child (live cap)","scope":"chan-a"}
+{"level":"info","ts":"2026-07-25T05:00:28.279Z","component":"concierge","msg":"cancelled stale in-flight turn superseded by same-channel message","channelId":"chan-1","messageId":"m-2"}
+{"level":"debug","ts":"2026-07-25T05:00:28.290Z","component":"concierge","msg":"shared context injected","channelId":"chan-reply","entries":1,"chars":80,"droppedForBudget":0}
+{"level":"info","ts":"2026-07-25T05:00:29.024Z","component":"concierge","msg":"concierge control bus listening","socket":"/tmp/beckett-multisession-gc1cEt/control.sock"}
+{"level":"info","ts":"2026-07-25T05:00:29.026Z","component":"concierge","msg":"concierge online","model":"claude-opus-5"}
+{"level":"info","ts":"2026-07-25T05:00:29.029Z","component":"concierge","msg":"migrated legacy concierge session to the system scope","scope":"system"}
+{"level":"debug","ts":"2026-07-25T05:00:29.032Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":64,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.033Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174599","entries":1,"chars":64,"droppedForBudget":0}
+{"level":"warn","ts":"2026-07-25T05:00:29.070Z","component":"concierge","msg":"browser answer could not be removed from Discord","channelId":"1097283746520174592","messageId":"undeletable-answer","error":"Error: missing Manage Messages"}
+{"level":"warn","ts":"2026-07-25T05:00:29.070Z","component":"concierge","msg":"browser question ledger write failed","error":"Error: EISDIR: illegal operation on a directory, rename '/tmp/beckett-dedup-knlbXN/browser-questions.json.4129639.tmp' -> '/tmp/beckett-dedup-knlbXN/browser-questions.json'"}
+{"level":"info","ts":"2026-07-25T05:00:29.076Z","component":"concierge","msg":"concierge control bus listening","socket":"/tmp/beckett-dedup-GQqk1h/control.sock"}
+{"level":"info","ts":"2026-07-25T05:00:29.077Z","component":"concierge","msg":"concierge online","model":"m"}
+{"level":"info","ts":"2026-07-25T05:00:29.100Z","component":"concierge","msg":"concierge control bus listening","socket":"/tmp/beckett-dedup-L38J7O/control.sock"}
+{"level":"info","ts":"2026-07-25T05:00:29.100Z","component":"concierge","msg":"concierge online","model":"m"}
+{"level":"warn","ts":"2026-07-25T05:00:29.107Z","component":"concierge","msg":"concierge update turn dropped after retry","ticket":"browser:browser-1","err":"Error: system session down"}
+{"level":"info","ts":"2026-07-25T05:00:29.120Z","component":"concierge","msg":"coalesced duplicate discord.reply after an ambiguous acknowledgement"}
+{"level":"info","ts":"2026-07-25T05:00:29.125Z","component":"concierge","msg":"posted startup banner","channelId":"1520658476974735490","commit":"9b31f57"}
+{"level":"info","ts":"2026-07-25T05:00:29.125Z","component":"concierge","msg":"posted startup banner","channelId":"1520658476974735490","commit":"9b31f57"}
+{"level":"info","ts":"2026-07-25T05:00:29.125Z","component":"concierge","msg":"posted startup banner","channelId":"1520658476974735490","commit":"9b31f57"}
+{"level":"info","ts":"2026-07-25T05:00:29.129Z","component":"concierge.workspaces","msg":"workspace registered from user thread","threadId":"user-thread-1","name":"OPS-40 auth refresh","creatorId":"111111111111111111","tickets":["OPS-40"]}
+{"level":"warn","ts":"2026-07-25T05:00:29.130Z","component":"concierge","msg":"discord access denied","userId":"222222222222222222","channelId":"user-thread-1","guildId":"g1","messageId":"outsider-workspace-msg"}
+{"level":"info","ts":"2026-07-25T05:00:29.131Z","component":"concierge.workspaces","msg":"workspace registered from user thread","threadId":"user-thread-2","name":"csv export corner","creatorId":"111111111111111111","tickets":[]}
+{"level":"info","ts":"2026-07-25T05:00:29.131Z","component":"concierge.workspaces","msg":"ticket bound to workspace","threadId":"user-thread-2","ticket":"OPS-41"}
+{"level":"info","ts":"2026-07-25T05:00:29.132Z","component":"concierge.workspaces","msg":"workspace registered from user thread","threadId":"user-thread-3","name":"OPS-50 perf work","creatorId":"111111111111111111","tickets":["OPS-50"]}
+{"level":"info","ts":"2026-07-25T05:00:29.146Z","component":"concierge.attachments","msg":"attachment downloaded","name":"shot.png","bytes":33,"type":"image/png"}
+{"level":"info","ts":"2026-07-25T05:00:29.146Z","component":"concierge.attachments","msg":"inlined image into model turn","name":"shot.png","media":"image/png","bytes":33}
+{"level":"info","ts":"2026-07-25T05:00:29.148Z","component":"concierge.attachments","msg":"attachment downloaded","name":"shot.png","bytes":33,"type":"image/png"}
+{"level":"info","ts":"2026-07-25T05:00:29.148Z","component":"concierge.attachments","msg":"inlined image into model turn","name":"shot.png","media":"image/png","bytes":33}
+{"level":"info","ts":"2026-07-25T05:00:29.149Z","component":"concierge.attachments","msg":"attachment downloaded","name":"notes.pdf","bytes":4,"type":"application/pdf"}
+{"level":"info","ts":"2026-07-25T05:00:29.152Z","component":"concierge","msg":"concierge online","model":"m"}
+{"level":"info","ts":"2026-07-25T05:00:29.163Z","component":"concierge","msg":"concierge control bus listening","socket":"/tmp/beckett-concierge-RCj4Yp/control.sock"}
+{"level":"info","ts":"2026-07-25T05:00:29.163Z","component":"concierge","msg":"concierge online","model":"m"}
+{"level":"info","ts":"2026-07-25T05:00:29.167Z","component":"concierge","msg":"posted startup banner","channelId":"ops-chan-test","commit":"9b31f57"}
+{"level":"info","ts":"2026-07-25T05:00:29.175Z","component":"concierge","msg":"concierge control bus listening","socket":"/tmp/beckett-concierge-rQggac/control.sock"}
+{"level":"info","ts":"2026-07-25T05:00:29.175Z","component":"concierge","msg":"concierge online","model":"m"}
+{"level":"info","ts":"2026-07-25T05:00:29.183Z","component":"concierge","msg":"posted startup banner","channelId":"1520658476974735490","commit":"9b31f57"}
+{"level":"warn","ts":"2026-07-25T05:00:29.203Z","component":"concierge","msg":"discord access denied","userId":"222222222222222222","channelId":"1097283746520174592","guildId":"guild-1","messageId":"msg-1"}
+{"level":"info","ts":"2026-07-25T05:00:29.204Z","component":"concierge","msg":"access approval attempt","action":"approve","byUserId":"666666666666666666","channelId":"1097283746520174592","queue":"access","status":"not-owner"}
+{"level":"info","ts":"2026-07-25T05:00:29.204Z","component":"concierge","msg":"access approval attempt","action":"approve","byUserId":"444444444444444444","channelId":"1097283746520174592","queue":"maintainer","status":"approved","grantedId":"555555555555555555"}
+{"level":"warn","ts":"2026-07-25T05:00:29.226Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.226Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.226Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.226Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.226Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.226Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.227Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.227Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.227Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"debug","ts":"2026-07-25T05:00:29.227Z","component":"concierge","msg":"PR update dropped — no origin channel","repo":"0xbeckett/foo","number":96,"kind":"merged"}
+{"level":"warn","ts":"2026-07-25T05:00:29.227Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.227Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.227Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.227Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.227Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.227Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"debug","ts":"2026-07-25T05:00:29.390Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":2,"chars":76,"droppedForBudget":0}
+{"level":"info","ts":"2026-07-25T05:00:29.393Z","component":"concierge","msg":"reconciling missed Discord messages","channelId":"1097283746520174592","after":"stored-before-restart","count":2}
+{"level":"debug","ts":"2026-07-25T05:00:29.393Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":2,"chars":130,"droppedForBudget":0}
+{"level":"info","ts":"2026-07-25T05:00:29.394Z","component":"concierge","msg":"concierge control bus listening","socket":"/tmp/beckett-shared-context-m4B8Wc/control.sock"}
+{"level":"info","ts":"2026-07-25T05:00:29.394Z","component":"concierge","msg":"concierge online","model":"claude-opus-5"}
+{"level":"debug","ts":"2026-07-25T05:00:29.397Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":59,"droppedForBudget":0}
+{"level":"error","ts":"2026-07-25T05:00:29.397Z","component":"concierge","msg":"concierge turn failed","messageId":"m2","err":"Error: test turn failure"}
+{"level":"debug","ts":"2026-07-25T05:00:29.397Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":2,"chars":116,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.399Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":29,"droppedForBudget":0}
+{"level":"info","ts":"2026-07-25T05:00:29.401Z","component":"concierge","msg":"access approval attempt","action":"approve","byUserId":"999888777666555444","channelId":"1097283746520174592","queue":"access","status":"unknown-code"}
+{"level":"debug","ts":"2026-07-25T05:00:29.401Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":67,"droppedForBudget":0}
+{"level":"warn","ts":"2026-07-25T05:00:29.403Z","component":"concierge","msg":"discord access denied","userId":"999999999999999999","channelId":"1097283746520174592","guildId":"guild-1","messageId":"m1"}
+{"level":"debug","ts":"2026-07-25T05:00:29.403Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":63,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.405Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":35,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.408Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":66,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.411Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":57,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.412Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":35,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.422Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":3,"chars":181,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.424Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":121,"droppedForBudget":2}
+{"level":"debug","ts":"2026-07-25T05:00:29.428Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":60,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.428Z","component":"concierge","msg":"shared context injected","channelId":"2097283746520174593","entries":1,"chars":31,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.474Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":64,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.475Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":26,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.475Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":5,"chars":225,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.483Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":22,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.484Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":22,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.484Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":6,"chars":236,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.507Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":146,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.510Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":3,"chars":377,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.511Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":22,"droppedForBudget":0}
+{"level":"info","ts":"2026-07-25T05:00:29.513Z","component":"concierge","msg":"access approval attempt","action":"approve","byUserId":"333333333333333333","channelId":"1097283746520174592","queue":"access","status":"not-owner"}
+{"level":"info","ts":"2026-07-25T05:00:29.513Z","component":"concierge","msg":"access approval attempt","action":"deny","byUserId":"444444444444444444","channelId":"1097283746520174592","queue":"access","status":"denied","grantedId":"555555555555555555"}
+{"level":"debug","ts":"2026-07-25T05:00:29.515Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":117,"droppedForBudget":0}
+{"level":"debug","ts":"2026-07-25T05:00:29.517Z","component":"concierge","msg":"shared context injected","channelId":"1097283746520174592","entries":1,"chars":146,"droppedForBudget":0}
+{"level":"info","ts":"2026-07-25T05:00:29.526Z","component":"concierge","msg":"posted startup banner","channelId":"1520658476974735490","commit":"9b31f57"}
+{"level":"warn","ts":"2026-07-25T05:00:29.545Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.545Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.545Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.547Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.547Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.547Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.547Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.547Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.547Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.548Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.548Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.548Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.549Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.549Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.549Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.549Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.549Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.549Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.551Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.551Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.551Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.553Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.553Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.553Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.555Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.555Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.555Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.557Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.557Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.557Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.557Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.557Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.557Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.557Z","component":"concierge","msg":"ticket update dropped — no origin channel on ticket (was it filed without --channel?)","ticket":"BEC-1"}
+{"level":"warn","ts":"2026-07-25T05:00:29.558Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.558Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.558Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.559Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.559Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.559Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"debug","ts":"2026-07-25T05:00:29.559Z","component":"concierge","msg":"routine dispatcher comment not surfaced","ticket":"BEC-1","head":"All blockers done (OPS-7) → starting now."}
+{"level":"debug","ts":"2026-07-25T05:00:29.559Z","component":"concierge","msg":"routine dispatcher comment not surfaced","ticket":"BEC-1","head":"The worker stopped without finishing. I committed its work-in-progress and am re"}
+{"level":"warn","ts":"2026-07-25T05:00:29.563Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.563Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.563Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"debug","ts":"2026-07-25T05:00:29.564Z","component":"concierge","msg":"suppressed duplicate milestone notify (ambiguous ack / re-delivery)","key":"id-1|state:done"}
+{"level":"debug","ts":"2026-07-25T05:00:29.564Z","component":"concierge","msg":"suppressed duplicate milestone notify (ambiguous ack / re-delivery)","key":"id-1|state:done"}
+{"level":"debug","ts":"2026-07-25T05:00:29.564Z","component":"concierge","msg":"suppressed duplicate milestone notify (ambiguous ack / re-delivery)","key":"id-1|state:done"}
+{"level":"warn","ts":"2026-07-25T05:00:29.565Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.565Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.565Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"debug","ts":"2026-07-25T05:00:29.565Z","component":"concierge","msg":"suppressed duplicate milestone notify (ambiguous ack / re-delivery)","key":"id-A|state:done"}
+{"level":"warn","ts":"2026-07-25T05:00:29.567Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.567Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.567Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.571Z","component":"concierge","msg":"task state path unavailable; using an ephemeral test path","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.571Z","component":"concierge","msg":"journal dir unavailable; worker progress journal disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"warn","ts":"2026-07-25T05:00:29.571Z","component":"concierge","msg":"workspace state path unavailable; persistence disabled","error":"TypeError [ERR_INVALID_ARG_TYPE]: The \"path\" property must be of type string, got undefined"}
+{"level":"debug","ts":"2026-07-25T05:00:29.573Z","component":"concierge","msg":"suppressed duplicate milestone notify (ambiguous ack / re-delivery)","key":"id-1|state:design_review"}
+{"level":"info","ts":"2026-07-25T05:00:29.747Z","component":"discord","msg":"discord user thread created","threadId":"thread-1","parentChannelId":"parent-1","name":"OPS-7 auth rework","creatorId":"user-1"}
+{"level":"info","ts":"2026-07-25T05:00:31.775Z","component":"worktree","msg":"worktree created","workspace":"/tmp/beckett-wt-fzEACe/clone/.beckett/worktrees/t1","branch":"beckett/t1","baseRef":"origin/main"}
+{"level":"info","ts":"2026-07-25T05:00:31.866Z","component":"worktree","msg":"worktree created","workspace":"/tmp/beckett-wt-NlxOss/clone/.beckett/worktrees/t1","branch":"beckett/t1","baseRef":"origin/main"}
+{"level":"info","ts":"2026-07-25T05:00:31.955Z","component":"worktree","msg":"worktree created","workspace":"/tmp/beckett-wt-RFPD2l/clone/.beckett/worktrees/t1","branch":"beckett/t1","baseRef":"origin/main"}
+{"level":"info","ts":"2026-07-25T05:00:32.058Z","component":"worktree","msg":"worktree created","workspace":"/tmp/beckett-wt-beb1Ox/clone/.beckett/worktrees/t1","branch":"beckett/t1","baseRef":"origin/main"}
+{"level":"info","ts":"2026-07-25T05:00:32.059Z","component":"worktree","msg":"reusing existing worktree","workspace":"/tmp/beckett-wt-beb1Ox/clone/.beckett/worktrees/t1","branch":"beckett/t1"}
+{"level":"info","ts":"2026-07-25T05:00:32.137Z","component":"worktree","msg":"worktree created","workspace":"/tmp/beckett-wt-xuMofW/clone/.beckett/worktrees/t1","branch":"beckett/t1","baseRef":"origin/main"}
+{"level":"info","ts":"2026-07-25T05:00:32.140Z","component":"worktree","msg":"worktree removed","workspace":"/tmp/beckett-wt-xuMofW/clone/.beckett/worktrees/t1"}
+{"level":"info","ts":"2026-07-25T05:00:32.216Z","component":"worktree","msg":"worktree created","workspace":"/tmp/beckett-wt-sLCFNi/clone/.beckett/worktrees/first","branch":"beckett/task-1-1","baseRef":"origin/main"}
+{"level":"info","ts":"2026-07-25T05:00:32.245Z","component":"worktree","msg":"worktree created","workspace":"/tmp/beckett-wt-sLCFNi/clone/.beckett/worktrees/second","branch":"beckett/task-1-2","baseRef":"origin/main"}
+{"level":"info","ts":"2026-07-25T05:00:32.273Z","component":"worktree","msg":"worktree created","workspace":"/tmp/beckett-wt-sLCFNi/clone/.beckett/worktrees/dependent","branch":"beckett/task-1-3","baseRef":"beckett/task-1-1"}
+{"level":"info","ts":"2026-07-25T05:00:32.451Z","component":"worktree","msg":"worktree created","workspace":"/tmp/beckett-wt-QHnJG2/clone/.beckett/worktrees/t1","branch":"beckett/t1","baseRef":"HEAD"}
+{"level":"info","ts":"2026-07-25T05:00:32.490Z","component":"worktree","msg":"installed scaffolding-guard pre-commit hook","hookPath":"/tmp/beckett-scaffold-Ei7GLY/.git/hooks/pre-commit"}
+{"level":"info","ts":"2026-07-25T05:00:32.541Z","component":"worktree","msg":"installed scaffolding-guard pre-commit hook","hookPath":"/tmp/beckett-scaffold-EvBZhc/.git/hooks/pre-commit"}
+{"level":"info","ts":"2026-07-25T05:00:32.558Z","component":"worktree","msg":"worktree committed","workspace":"/tmp/beckett-scaffold-EvBZhc","sha":"348a420ede4dd89775dcafe9812b19f8c5cb29d6"}
+{"level":"info","ts":"2026-07-25T05:00:32.585Z","component":"worktree","msg":"installed scaffolding-guard pre-commit hook","hookPath":"/tmp/beckett-scaffold-uUqNXZ/.git/hooks/pre-commit"}
+{"level":"info","ts":"2026-07-25T05:00:32.623Z","component":"worktree","msg":"installed scaffolding-guard pre-commit hook","hookPath":"/tmp/beckett-scaffold-4vbfUB/.git/hooks/pre-commit"}
+{"level":"info","ts":"2026-07-25T05:00:32.649Z","component":"worktree","msg":"worktree committed","workspace":"/tmp/beckett-scaffold-4vbfUB","sha":"348a420ede4dd89775dcafe9812b19f8c5cb29d6"}
+{"level":"info","ts":"2026-07-25T05:00:32.674Z","component":"worktree","msg":"installed scaffolding-guard pre-commit hook","hookPath":"/tmp/beckett-scaffold-vukBjd/.git/hooks/pre-commit"}
+{"level":"info","ts":"2026-07-25T05:00:32.704Z","component":"worktree","msg":"installed scaffolding-guard pre-commit hook","hookPath":"/tmp/beckett-scaffold-PiRnOY/.git/hooks/pre-commit"}
+{"level":"warn","ts":"2026-07-25T05:00:32.712Z","component":"worktree","msg":"pre-commit hook exists and isn't ours — leaving it; commit-path strip still guards","hookPath":"/tmp/beckett-hook-Huuz5N/.git/hooks/pre-commit"}
+{"level":"info","ts":"2026-07-25T05:00:32.735Z","component":"worktree","msg":"installed scaffolding-guard pre-commit hook","hookPath":"/tmp/beckett-scaffold-gaHWy1/.git/hooks/pre-commit"}
+{"level":"info","ts":"2026-07-25T05:00:32.737Z","component":"worktree","msg":"installed scaffolding-guard pre-commit hook","hookPath":"/tmp/beckett-scaffold-gaHWy1/.git/hooks/pre-commit"}
+
+src/shell/deploy.test.ts:
+deployed {
+  hostname: "demo.0xbeckett.me",
+  service: "http://localhost:5173",
+}
+deployed {
+  hostname: "demo.0xbeckett.me",
+  service: "http://localhost:1",
+}
+deployed {
+  hostname: "demo.0xbeckett.me",
+  service: "http://localhost:2",
+}
+undeployed {
+  hostname: "a.0xbeckett.me",
+  removedRule: true,
+  deletedRecords: 0,
+}
+{"level":"info","ts":"2026-07-25T05:00:36.318Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.322Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.324Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"INT-7","from":null,"to":"design"}
+{"level":"info","ts":"2026-07-25T05:00:36.324Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"INT-7","stage":"design","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.329Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"INT-7","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.330Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"INT-7","stage":"design_check","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.338Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"INT-7","from":"design_review","to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.338Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"INT-7","stage":"implement","workerId":"wk_3","harness":"pi"}
+{"level":"info","ts":"2026-07-25T05:00:36.340Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"INT-8","from":"design","to":"design_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.341Z","component":"dispatch.dispatcher","msg":"ticket parked (no live worker)","ticket":"INT-8","state":"design_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.346Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-8","from":null,"to":"design"}
+{"level":"info","ts":"2026-07-25T05:00:36.352Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.352Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"codex"}
+{"level":"info","ts":"2026-07-25T05:00:36.355Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"warn","ts":"2026-07-25T05:00:36.355Z","component":"dispatch.dispatcher","msg":"cast harness is disabled in config — falling back to claude","ticket":"OPS-1","stage":"implement","cast":"codex"}
+{"level":"info","ts":"2026-07-25T05:00:36.355Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.356Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.357Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.361Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.361Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.363Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-L","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.363Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-L","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.365Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-H","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.365Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-H","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.367Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-P","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.367Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-P","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.369Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-B","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.369Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-B","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.371Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.371Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.376Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.376Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.377Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.379Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.380Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.382Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.382Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.382Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.384Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.384Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.386Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.386Z","component":"dispatch.dispatcher.advance-outbox","msg":"queued tracker advance for retry","id":"078cc8d8-e468-4453-939a-3efc1bbb26d0","ticketId":"tkt-1","state":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.386Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.389Z","component":"dispatch.dispatcher","msg":"replayed queued tracker advances","count":1}
+{"level":"info","ts":"2026-07-25T05:00:36.391Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.392Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.395Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.395Z","component":"dispatch.dispatcher.advance-outbox","msg":"queued tracker advance for retry","id":"28391c1a-b456-4b8f-8dcf-8f03a81f6959","ticketId":"tkt-1","state":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.395Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"warn","ts":"2026-07-25T05:00:36.397Z","component":"dispatch.dispatcher","msg":"skipping queued tracker advance because ticket is terminal","ticket":"OPS-1","current":"cancelled","requested":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.397Z","component":"dispatch.dispatcher","msg":"replayed queued tracker advances","count":1}
+{"level":"info","ts":"2026-07-25T05:00:36.398Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.398Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.400Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.400Z","component":"dispatch.dispatcher","msg":"implement incomplete — retrying","ticket":"OPS-1","attempts":1,"timedOut":false}
+{"level":"info","ts":"2026-07-25T05:00:36.400Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.417Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.418Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.419Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.419Z","component":"dispatch.dispatcher","msg":"implement incomplete — retrying","ticket":"OPS-1","attempts":1,"timedOut":true}
+{"level":"info","ts":"2026-07-25T05:00:36.419Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.437Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.438Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.455Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.455Z","component":"dispatch.dispatcher","msg":"implement incomplete — retrying","ticket":"OPS-1","attempts":1,"timedOut":true}
+{"level":"info","ts":"2026-07-25T05:00:36.455Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.475Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.475Z","component":"dispatch.dispatcher","msg":"implement incomplete — retrying","ticket":"OPS-1","attempts":2,"timedOut":true}
+{"level":"info","ts":"2026-07-25T05:00:36.475Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_3","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.492Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.492Z","component":"dispatch.dispatcher","msg":"implement incomplete — retrying","ticket":"OPS-1","attempts":3,"timedOut":true}
+{"level":"info","ts":"2026-07-25T05:00:36.492Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_4","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.510Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.511Z","component":"dispatch.dispatcher","msg":"implement retries exhausted — returned ticket to todo","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.529Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.530Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.531Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":"in_progress","to":"cancelled"}
+{"level":"warn","ts":"2026-07-25T05:00:36.532Z","component":"dispatch.dispatcher","msg":"ticket cancelled — aborting worker","ticket":"OPS-1","workerId":"wk_1"}
+{"level":"info","ts":"2026-07-25T05:00:36.550Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.550Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.551Z","component":"dispatch.dispatcher","msg":"implement worker exited for a no-longer-active ticket — not retrying","ticket":"OPS-1","state":"cancelled"}
+{"level":"info","ts":"2026-07-25T05:00:36.569Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.569Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.571Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":"in_progress","to":"cancelled"}
+{"level":"warn","ts":"2026-07-25T05:00:36.571Z","component":"dispatch.dispatcher","msg":"ticket cancelled — aborting worker","ticket":"OPS-1","workerId":"wk_1"}
+{"level":"info","ts":"2026-07-25T05:00:36.590Z","component":"dispatch.dispatcher","msg":"implement worker exited for a no-longer-active ticket — not retrying","ticket":"OPS-1","state":"cancelled"}
+{"level":"info","ts":"2026-07-25T05:00:36.608Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.609Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.611Z","component":"dispatch.dispatcher","msg":"review gate failed for a no-longer-active ticket — not retrying","ticket":"OPS-1","state":"cancelled"}
+{"level":"info","ts":"2026-07-25T05:00:36.630Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.630Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.632Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.633Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.634Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.635Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.636Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.636Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.636Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.638Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.639Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-A","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.643Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-A","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.644Z","component":"dispatch.dispatcher","msg":"promoting unblocked dependent → in_progress","ticket":"OPS-B","after":"OPS-A"}
+{"level":"info","ts":"2026-07-25T05:00:36.644Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-B","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.644Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-A"}
+{"level":"info","ts":"2026-07-25T05:00:36.645Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.645Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.647Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.648Z","component":"dispatch.dispatcher","msg":"project published to github","ticket":"OPS-1","url":"https://github.com/0xbeckett/balloons-game","kind":"pushed"}
+{"level":"info","ts":"2026-07-25T05:00:36.648Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.650Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.650Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.652Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.653Z","component":"dispatch.dispatcher","msg":"project published to github","ticket":"OPS-1","url":"https://github.com/0xbeckett/beckett","kind":"pushed"}
+{"level":"info","ts":"2026-07-25T05:00:36.653Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.655Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.656Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.663Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.663Z","component":"dispatch.dispatcher","msg":"project published to github","ticket":"OPS-1","url":"https://github.com/acme/voting","kind":"pushed"}
+{"level":"info","ts":"2026-07-25T05:00:36.663Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.665Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.665Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.667Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.668Z","component":"dispatch.dispatcher","msg":"project published to github","ticket":"OPS-1","url":"https://github.com/SSHdotCodes/probabilities","kind":"pr"}
+{"level":"info","ts":"2026-07-25T05:00:36.668Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.670Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.670Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.671Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.671Z","component":"dispatch.dispatcher","msg":"github publish failed","ticket":"OPS-1","error":"gh down"}
+{"level":"info","ts":"2026-07-25T05:00:36.680Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.680Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.682Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.683Z","component":"dispatch.dispatcher","msg":"github publish failed","ticket":"OPS-1","error":"ETIMEDOUT github"}
+{"level":"warn","ts":"2026-07-25T05:00:36.684Z","component":"dispatch.dispatcher.publish-outbox","msg":"queued GitHub publish for retry","id":"ff746e69-5b75-4516-9d03-a74274ff87c8","ticket":"OPS-1","attempt":1,"nextAttemptAt":1784955696683}
+{"level":"warn","ts":"2026-07-25T05:00:36.685Z","component":"dispatch.dispatcher","msg":"publish failed — queued durable retry","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.686Z","component":"dispatch.dispatcher","msg":"project published to github","ticket":"OPS-1","url":"https://github.com/0xbeckett/ops-1","kind":"pushed"}
+{"level":"info","ts":"2026-07-25T05:00:36.687Z","component":"dispatch.dispatcher","msg":"replayed queued GitHub publishes","count":1}
+{"level":"info","ts":"2026-07-25T05:00:36.689Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.690Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.697Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.698Z","component":"dispatch.dispatcher","msg":"github publish failed","ticket":"OPS-1","error":"ETIMEDOUT github"}
+{"level":"warn","ts":"2026-07-25T05:00:36.698Z","component":"dispatch.dispatcher.publish-outbox","msg":"queued GitHub publish for retry","id":"c6512e10-f81b-43e6-a144-3c4ed9abd112","ticket":"OPS-1","attempt":1,"nextAttemptAt":1784955696698}
+{"level":"warn","ts":"2026-07-25T05:00:36.698Z","component":"dispatch.dispatcher","msg":"publish failed — queued durable retry","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.699Z","component":"dispatch.dispatcher","msg":"project published to github","ticket":"OPS-1","url":"https://github.com/acme/voting/pull/9","kind":"pr"}
+{"level":"info","ts":"2026-07-25T05:00:36.700Z","component":"dispatch.dispatcher","msg":"replayed queued GitHub publishes","count":1}
+{"level":"info","ts":"2026-07-25T05:00:36.700Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.701Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.702Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.702Z","component":"dispatch.dispatcher","msg":"github publish failed","ticket":"OPS-1","error":"ETIMEDOUT github"}
+{"level":"warn","ts":"2026-07-25T05:00:36.703Z","component":"dispatch.dispatcher.publish-outbox","msg":"queued GitHub publish for retry","id":"b1881551-b248-4908-8628-7afd67067901","ticket":"OPS-1","attempt":1,"nextAttemptAt":1784955696702}
+{"level":"error","ts":"2026-07-25T05:00:36.703Z","component":"dispatch.dispatcher","msg":"post-finish handling failed","ticket":"OPS-1","stage":"implement","error":"ticket state write failed"}
+{"level":"info","ts":"2026-07-25T05:00:36.708Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.709Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.720Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.721Z","component":"dispatch.dispatcher","msg":"github publish failed","ticket":"OPS-1","error":"GitHub returned 503"}
+{"level":"warn","ts":"2026-07-25T05:00:36.721Z","component":"dispatch.dispatcher.publish-outbox","msg":"queued GitHub publish for retry","id":"c4333ac8-8373-472a-acd2-2b84688dd8d1","ticket":"OPS-1","attempt":1,"nextAttemptAt":1784955696721}
+{"level":"warn","ts":"2026-07-25T05:00:36.721Z","component":"dispatch.dispatcher","msg":"publish failed — queued durable retry","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.725Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.725Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.726Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.727Z","component":"dispatch.dispatcher","msg":"github publish failed","ticket":"OPS-1","error":"gh api failed (403): cross-fork PAT limit"}
+{"level":"warn","ts":"2026-07-25T05:00:36.727Z","component":"dispatch.dispatcher.publish-outbox","msg":"queued GitHub publish for retry","id":"db06c056-4c4a-4bcd-ae03-b6aea3293693","ticket":"OPS-1","attempt":1,"nextAttemptAt":9007199254740991}
+{"level":"warn","ts":"2026-07-25T05:00:36.727Z","component":"dispatch.dispatcher","msg":"publish failed — queued durable retry","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.736Z","component":"dispatch.dispatcher.publish-outbox","msg":"cancelled queued GitHub publish for human courier","ticketId":"tkt-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.737Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.738Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.739Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.739Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.739Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.741Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.741Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.747Z","component":"dispatch.dispatcher","msg":"ticket advanced to done","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.749Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"VID-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.749Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"VID-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.751Z","component":"dispatch.dispatcher","msg":"ticket advanced to done","ticket":"VID-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.753Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.753Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.755Z","component":"dispatch.dispatcher","msg":"ticket sent back to in_progress (review fail)","ticket":"OPS-1","cycle":1}
+{"level":"info","ts":"2026-07-25T05:00:36.755Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.756Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.756Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.761Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.761Z","component":"dispatch.dispatcher","msg":"self-tier implement reported incomplete — sent to review","ticket":"OPS-1","status":"blocked"}
+{"level":"info","ts":"2026-07-25T05:00:36.762Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.763Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.764Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.765Z","component":"dispatch.dispatcher","msg":"review infra/schema failure — retrying review","ticket":"OPS-1","attempts":1,"reason":"Reviewer finished without a schema-valid structured verdict."}
+{"level":"info","ts":"2026-07-25T05:00:36.765Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.769Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.770Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.771Z","component":"dispatch.dispatcher","msg":"review infra/schema failure — retrying review","ticket":"OPS-1","attempts":1,"reason":"Reviewer exited with error."}
+{"level":"info","ts":"2026-07-25T05:00:36.771Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.778Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.778Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.780Z","component":"dispatch.dispatcher","msg":"self-review withheld: zero-diff implementation","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.780Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.782Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-7","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.782Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-7","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.784Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.784Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.786Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.786Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.788Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.788Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.795Z","component":"dispatch.dispatcher","msg":"worker stalled — sending status-check nudge (strike 1)","ticket":"OPS-1","stage":"implement","workerId":"wk_1","idleMin":5}
+{"level":"info","ts":"2026-07-25T05:00:36.798Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.798Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.799Z","component":"dispatch.dispatcher","msg":"worker stalled — sending status-check nudge (strike 1)","ticket":"OPS-1","stage":"implement","workerId":"wk_1","idleMin":5}
+{"level":"warn","ts":"2026-07-25T05:00:36.801Z","component":"dispatch.dispatcher","msg":"worker stalled through its status check — aborting for retry (strike 2)","ticket":"OPS-1","stage":"implement","workerId":"wk_1","idleMin":11}
+{"level":"info","ts":"2026-07-25T05:00:36.801Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.801Z","component":"dispatch.dispatcher","msg":"implement incomplete — retrying","ticket":"OPS-1","attempts":1,"timedOut":false}
+{"level":"info","ts":"2026-07-25T05:00:36.801Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.806Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.806Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.812Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.812Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.812Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.815Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.816Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.818Z","component":"dispatch.dispatcher","msg":"restaff: aborting live worker","ticket":"OPS-1","workerId":"wk_1","stage":"implement"}
+{"level":"info","ts":"2026-07-25T05:00:36.818Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.818Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.820Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.821Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.827Z","component":"dispatch.dispatcher","msg":"restaff: aborting live worker","ticket":"OPS-1","workerId":"wk_1","stage":"implement"}
+{"level":"info","ts":"2026-07-25T05:00:36.827Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.827Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"pi"}
+{"level":"info","ts":"2026-07-25T05:00:36.831Z","component":"dispatch.dispatcher","msg":"steering comment held for next worker","ticket":"OPS-1","pending":1}
+{"level":"info","ts":"2026-07-25T05:00:36.831Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.831Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.833Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.834Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.835Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.835Z","component":"dispatch.dispatcher","msg":"steering comment held for next worker","ticket":"OPS-1","pending":1}
+{"level":"info","ts":"2026-07-25T05:00:36.836Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.836Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.842Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.842Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.844Z","component":"dispatch.dispatcher","msg":"steering live worker from comment","ticket":"OPS-1","workerId":"wk_1","author":"jawrooo"}
+{"level":"info","ts":"2026-07-25T05:00:36.844Z","component":"dispatch.dispatcher","msg":"steering comment held for next worker","ticket":"OPS-1","pending":1}
+{"level":"info","ts":"2026-07-25T05:00:36.844Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.845Z","component":"dispatch.dispatcher","msg":"implement incomplete — retrying","ticket":"OPS-1","attempts":1,"timedOut":false}
+{"level":"info","ts":"2026-07-25T05:00:36.845Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.849Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.849Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"codex"}
+{"level":"info","ts":"2026-07-25T05:00:36.851Z","component":"dispatch.dispatcher","msg":"steering live worker from comment","ticket":"OPS-1","workerId":"wk_1","author":"jawrooo"}
+{"level":"info","ts":"2026-07-25T05:00:36.852Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.852Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.853Z","component":"dispatch.dispatcher","msg":"steering comment held for next worker","ticket":"OPS-1","pending":1}
+{"level":"info","ts":"2026-07-25T05:00:36.853Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.853Z","component":"dispatch.dispatcher","msg":"implement incomplete — retrying","ticket":"OPS-1","attempts":1,"timedOut":false}
+{"level":"info","ts":"2026-07-25T05:00:36.854Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.862Z","component":"dispatch.dispatcher","msg":"steering comment held for next worker","ticket":"OPS-1","pending":1}
+{"level":"info","ts":"2026-07-25T05:00:36.862Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":"in_review","to":"done"}
+{"level":"info","ts":"2026-07-25T05:00:36.862Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.862Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.864Z","component":"dispatch.dispatcher","msg":"steering live worker from comment","ticket":"OPS-1","workerId":"wk_1","author":"jawrooo"}
+{"level":"info","ts":"2026-07-25T05:00:36.865Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.865Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.867Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.868Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.869Z","component":"dispatch.dispatcher","msg":"ticket cancelled — aborting worker","ticket":"OPS-1","workerId":"wk_1"}
+{"level":"info","ts":"2026-07-25T05:00:36.870Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.870Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.873Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":"in_progress","to":"todo"}
+{"level":"warn","ts":"2026-07-25T05:00:36.873Z","component":"dispatch.dispatcher","msg":"ticket parked — stopping live worker","ticket":"OPS-1","workerId":"wk_1","state":"todo"}
+{"level":"info","ts":"2026-07-25T05:00:36.873Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.873Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.874Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-A","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.875Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-B","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.875Z","component":"dispatch.dispatcher","msg":"spawn queued (concurrency cap reached)","ticket":"OPS-B","stage":"implement","repoRoot":"/tmp/repo/OPS-B","inUse":1,"cap":1,"queueDepth":1}
+{"level":"warn","ts":"2026-07-25T05:00:36.879Z","component":"dispatch.dispatcher","msg":"dispatcher shutdown drain: stopping live workers","liveWorkers":1,"queuedSpawns":1,"timeoutMs":1000,"reason":"SIGTERM"}
+{"level":"info","ts":"2026-07-25T05:00:36.880Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-A","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.880Z","component":"dispatch.dispatcher","msg":"shutdown drained worker","ticket":"OPS-A","workerId":"wk_1","wipSha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.883Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.883Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.885Z","component":"dispatch.dispatcher","msg":"ticket sent back to in_progress (review fail)","ticket":"OPS-1","cycle":1}
+{"level":"info","ts":"2026-07-25T05:00:36.885Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.890Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.890Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.890Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_3","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.892Z","component":"dispatch.dispatcher","msg":"ticket sent back to in_progress (review fail)","ticket":"OPS-1","cycle":2}
+{"level":"info","ts":"2026-07-25T05:00:36.892Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_4","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.894Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.894Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.894Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_5","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.896Z","component":"dispatch.dispatcher","msg":"rework cap reached — leaving for human","ticket":"OPS-1","cycles":3}
+{"level":"info","ts":"2026-07-25T05:00:36.899Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.899Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.901Z","component":"dispatch.dispatcher","msg":"rework cap reached — leaving for human","ticket":"OPS-1","cycles":1}
+{"level":"info","ts":"2026-07-25T05:00:36.907Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.907Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.911Z","component":"dispatch.dispatcher","msg":"ticket sent back to in_progress (review fail)","ticket":"OPS-1","cycle":1}
+{"level":"info","ts":"2026-07-25T05:00:36.912Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.913Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.913Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.913Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_3","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.915Z","component":"dispatch.dispatcher","msg":"ticket sent back to in_progress (review fail)","ticket":"OPS-1","cycle":2}
+{"level":"info","ts":"2026-07-25T05:00:36.916Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_4","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.916Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.916Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.918Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_5","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.919Z","component":"dispatch.dispatcher","msg":"loaded dispatcher runtime state","path":"/tmp/beckett-dispatch-state-qbfset/dispatcher-state.json","tickets":1}
+{"level":"info","ts":"2026-07-25T05:00:36.919Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.920Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_6","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.931Z","component":"dispatch.dispatcher","msg":"rework cap reached — leaving for human","ticket":"OPS-1","cycles":3}
+{"level":"info","ts":"2026-07-25T05:00:36.934Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.936Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.936Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.937Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.937Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.942Z","component":"dispatch.dispatcher","msg":"loaded dispatcher runtime state","path":"/tmp/beckett-dispatch-base-gh8O4H/dispatcher-state.json","tickets":1}
+{"level":"info","ts":"2026-07-25T05:00:36.942Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.944Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_3","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.945Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.946Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.948Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.949Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:36.951Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.952Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.953Z","component":"dispatch.dispatcher","msg":"loaded dispatcher runtime state","path":"/tmp/beckett-dispatch-recover-YQKDL5/dispatcher-state.json","tickets":1}
+{"level":"info","ts":"2026-07-25T05:00:36.956Z","component":"dispatch.dispatcher","msg":"committed ghost WIP from interrupted worker","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.957Z","component":"dispatch.dispatcher","msg":"crash recovery complete","interrupted":1,"sweptOrphans":1,"resumable":1}
+{"level":"info","ts":"2026-07-25T05:00:36.957Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.958Z","component":"dispatch.dispatcher","msg":"resuming interrupted worker session after restart","ticket":"OPS-1","stage":"implement","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.958Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.964Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:36.964Z","component":"dispatch.dispatcher","msg":"implement incomplete — retrying","ticket":"OPS-1","attempts":1,"timedOut":false}
+{"level":"info","ts":"2026-07-25T05:00:36.964Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_3","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.966Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.966Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.968Z","component":"dispatch.dispatcher","msg":"loaded dispatcher runtime state","path":"/tmp/beckett-dispatch-resumefail-FwYPJl/dispatcher-state.json","tickets":1}
+{"level":"info","ts":"2026-07-25T05:00:36.968Z","component":"dispatch.dispatcher","msg":"committed ghost WIP from interrupted worker","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.969Z","component":"dispatch.dispatcher","msg":"crash recovery complete","interrupted":1,"sweptOrphans":0,"resumable":1}
+{"level":"info","ts":"2026-07-25T05:00:36.969Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.970Z","component":"dispatch.dispatcher","msg":"resuming interrupted worker session after restart","ticket":"OPS-1","stage":"implement","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:36.970Z","component":"dispatch.dispatcher","msg":"session resume failed — falling back to a fresh worker","ticket":"OPS-1","stage":"implement","error":"stale session — cannot resume"}
+{"level":"info","ts":"2026-07-25T05:00:36.970Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.972Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.972Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.973Z","component":"dispatch.dispatcher","msg":"loaded dispatcher runtime state","path":"/tmp/beckett-dispatch-stagemismatch-FoSBAe/dispatcher-state.json","tickets":1}
+{"level":"info","ts":"2026-07-25T05:00:36.973Z","component":"dispatch.dispatcher","msg":"committed ghost WIP from interrupted worker","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.974Z","component":"dispatch.dispatcher","msg":"crash recovery complete","interrupted":1,"sweptOrphans":0,"resumable":1}
+{"level":"info","ts":"2026-07-25T05:00:36.974Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.974Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.982Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.982Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.983Z","component":"dispatch.dispatcher","msg":"loaded dispatcher runtime state","path":"/tmp/beckett-dispatch-midreview-QfbSkV/dispatcher-state.json","tickets":0}
+{"level":"info","ts":"2026-07-25T05:00:36.983Z","component":"dispatch.dispatcher","msg":"committed ghost WIP from interrupted worker","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.984Z","component":"dispatch.dispatcher","msg":"crash recovery complete","interrupted":1,"sweptOrphans":0,"resumable":1}
+{"level":"info","ts":"2026-07-25T05:00:36.984Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_review"}
+{"level":"info","ts":"2026-07-25T05:00:36.984Z","component":"dispatch.dispatcher","msg":"resuming interrupted worker session after restart","ticket":"OPS-1","stage":"review","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.985Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.987Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.987Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-A","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.988Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-B","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.989Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-B","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.990Z","component":"dispatch.dispatcher","msg":"worktree checkpoint committed","ticket":"OPS-A","stage":"implement","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.990Z","component":"dispatch.dispatcher","msg":"worktree checkpoint committed","ticket":"OPS-B","stage":"implement","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:36.991Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.991Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.997Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:36.998Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-A","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:36.999Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-B","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.000Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-B","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:37.001Z","component":"dispatch.dispatcher","msg":"worktree checkpoint failed (skipping this worker)","ticket":"OPS-A","error":"index.lock: worker mid-commit"}
+{"level":"info","ts":"2026-07-25T05:00:37.001Z","component":"dispatch.dispatcher","msg":"worktree checkpoint committed","ticket":"OPS-B","stage":"implement","sha":"commitOK"}
+{"level":"info","ts":"2026-07-25T05:00:37.002Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.003Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.004Z","component":"dispatch.dispatcher","msg":"periodic worktree checkpointing disabled","worker_checkpoint_s":0}
+{"level":"info","ts":"2026-07-25T05:00:37.004Z","component":"dispatch.dispatcher","msg":"periodic worktree checkpointing disabled","worker_checkpoint_s":0}
+{"level":"info","ts":"2026-07-25T05:00:37.005Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"warn","ts":"2026-07-25T05:00:37.005Z","component":"dispatch.dispatcher","msg":"cast harness failed preflight — substituting","ticket":"OPS-1","stage":"implement","cast":"codex","substitute":"claude","problems":["no codex login"]}
+{"level":"info","ts":"2026-07-25T05:00:37.005Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.007Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"error","ts":"2026-07-25T05:00:37.008Z","component":"dispatch.dispatcher","msg":"no healthy harness for spawn","ticket":"OPS-1","stage":"implement","cast":"claude","problems":["everything is down"]}
+{"level":"error","ts":"2026-07-25T05:00:37.008Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-1","stage":"implement","error":"no healthy harness available (all preflights failed — check `beckett doctor`)"}
+{"level":"info","ts":"2026-07-25T05:00:37.013Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"error","ts":"2026-07-25T05:00:37.013Z","component":"dispatch.dispatcher","msg":"project repo provisioning failed","ticket":"OPS-1","repoRoot":"/tmp/repo/OPS-1","error":"clone exploded"}
+{"level":"error","ts":"2026-07-25T05:00:37.013Z","component":"dispatch.dispatcher","msg":"no healthy harness for spawn","ticket":"OPS-1","stage":"implement","cast":"claude","problems":["everything is down"]}
+{"level":"error","ts":"2026-07-25T05:00:37.013Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-1","stage":"implement","error":"could not provision the project repo at `/tmp/repo/OPS-1`: clone exploded"}
+{"level":"info","ts":"2026-07-25T05:00:37.015Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.016Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.017Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:37.018Z","component":"dispatch.dispatcher","msg":"auth failure — parked ticket for re-login","ticket":"OPS-1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.019Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.020Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.021Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:37.021Z","component":"dispatch.dispatcher","msg":"classed failure — substituting harness","ticket":"OPS-1","errorClass":"auth","failed":"claude","substitute":"pi"}
+{"level":"info","ts":"2026-07-25T05:00:37.022Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"pi"}
+{"level":"info","ts":"2026-07-25T05:00:37.024Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.024Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.030Z","component":"dispatch.dispatcher","msg":"committed WIP","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:37.034Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.035Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-A","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.036Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-B","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.036Z","component":"dispatch.dispatcher","msg":"spawn queued (concurrency cap reached)","ticket":"OPS-B","stage":"implement","repoRoot":"/tmp/repo/OPS-B","inUse":1,"cap":1,"queueDepth":1}
+{"level":"info","ts":"2026-07-25T05:00:37.038Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-A","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:37.038Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-A"}
+{"level":"info","ts":"2026-07-25T05:00:37.039Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-B","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.040Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.041Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-A","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.045Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-B","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.045Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-B","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.048Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.049Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-A","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.050Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-B","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.050Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-B","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.052Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-C","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.052Z","component":"dispatch.dispatcher","msg":"spawn queued (concurrency cap reached)","ticket":"OPS-C","stage":"implement","repoRoot":"/tmp/repo/OPS-C","inUse":2,"cap":2,"queueDepth":1}
+{"level":"warn","ts":"2026-07-25T05:00:37.054Z","component":"dispatch.dispatcher","msg":"ticket cancelled — aborting worker","ticket":"OPS-A","workerId":"wk_1"}
+{"level":"info","ts":"2026-07-25T05:00:37.055Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-C","stage":"implement","workerId":"wk_3","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.056Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.057Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.057Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.057Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.057Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.057Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.061Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-0","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.061Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.061Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-2","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.061Z","component":"dispatch.dispatcher","msg":"spawn queued (concurrency cap reached)","ticket":"OPS-2","stage":"implement","repoRoot":"/tmp/repo/OPS-2","inUse":2,"cap":2,"queueDepth":1}
+{"level":"info","ts":"2026-07-25T05:00:37.061Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-3","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.061Z","component":"dispatch.dispatcher","msg":"spawn queued (concurrency cap reached)","ticket":"OPS-3","stage":"implement","repoRoot":"/tmp/repo/OPS-3","inUse":2,"cap":2,"queueDepth":2}
+{"level":"info","ts":"2026-07-25T05:00:37.061Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-4","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.061Z","component":"dispatch.dispatcher","msg":"spawn queued (concurrency cap reached)","ticket":"OPS-4","stage":"implement","repoRoot":"/tmp/repo/OPS-4","inUse":2,"cap":2,"queueDepth":3}
+{"level":"info","ts":"2026-07-25T05:00:37.063Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-0","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.063Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.065Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.066Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.067Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:37.067Z","component":"dispatch.dispatcher","msg":"ticket advanced to in_review","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:37.067Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"review","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.069Z","component":"dispatch.dispatcher","msg":"ticket advanced to done","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:37.071Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.071Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:37.076Z","component":"dispatch.dispatcher","msg":"ticket cancelled — aborting worker","ticket":"OPS-1","workerId":"wk_1"}
+{"level":"info","ts":"2026-07-25T05:00:37.078Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.078Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.080Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:37.081Z","component":"dispatch.dispatcher","msg":"github publish failed","ticket":"OPS-1","error":"gh down"}
+{"level":"info","ts":"2026-07-25T05:00:37.083Z","component":"dispatch.dispatcher","msg":"promoting unblocked dependent → in_progress","ticket":"OPS-B","after":"boot reconciliation"}
+{"level":"info","ts":"2026-07-25T05:00:37.083Z","component":"dispatch.dispatcher","msg":"promoting unblocked dependent → design","ticket":"INT-2","after":"boot reconciliation"}
+{"level":"info","ts":"2026-07-25T05:00:37.084Z","component":"dispatch.dispatcher","msg":"reconciled ready dependents","count":2}
+{"level":"error","ts":"2026-07-25T05:00:37.084Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"OPS-B","repoRoot":"/tmp/repo/OPS-B","error":"dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-25T05:00:37.084Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-B","stage":"implement","error":"could not allocate a worktree under `/tmp/repo/OPS-B`: dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-25T05:00:37.084Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"INT-2","repoRoot":"/tmp/repo/INT-2","error":"dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-25T05:00:37.084Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"INT-2","stage":"design","error":"could not allocate a worktree under `/tmp/repo/INT-2`: dependency OPS-A is not a numbered task branch"}
+{"level":"info","ts":"2026-07-25T05:00:37.084Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":"in_review","to":"done"}
+{"level":"info","ts":"2026-07-25T05:00:37.085Z","component":"dispatch.dispatcher","msg":"promoting unblocked dependent → in_progress","ticket":"OPS-B","after":"OPS-A"}
+{"level":"info","ts":"2026-07-25T05:00:37.085Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-B","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.086Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":"in_review","to":"done"}
+{"level":"info","ts":"2026-07-25T05:00:37.086Z","component":"dispatch.dispatcher","msg":"dependent still blocked — leaving held","ticket":"OPS-C","waitingOn":["OPS-B"]}
+{"level":"info","ts":"2026-07-25T05:00:37.088Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":"in_review","to":"done"}
+{"level":"info","ts":"2026-07-25T05:00:37.094Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.095Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-A","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.096Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-A","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:37.098Z","component":"dispatch.dispatcher","msg":"project published to github","ticket":"OPS-A","url":"https://github.com/acme/voting","kind":"pushed"}
+{"level":"info","ts":"2026-07-25T05:00:37.098Z","component":"dispatch.dispatcher","msg":"promoting unblocked dependent → in_progress","ticket":"OPS-B","after":"OPS-A"}
+{"level":"info","ts":"2026-07-25T05:00:37.098Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-A"}
+{"level":"info","ts":"2026-07-25T05:00:37.099Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-B","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.102Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-B","from":"backlog","to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.104Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"INT-1","from":"design_review","to":"done"}
+{"level":"info","ts":"2026-07-25T05:00:37.104Z","component":"dispatch.dispatcher","msg":"promoting unblocked dependent → design","ticket":"INT-2","after":"INT-1"}
+{"level":"error","ts":"2026-07-25T05:00:37.105Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"INT-2","repoRoot":"/tmp/repo/INT-2","error":"dependency INT-1 belongs to a different project"}
+{"level":"error","ts":"2026-07-25T05:00:37.105Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"INT-2","stage":"design","error":"could not allocate a worktree under `/tmp/repo/INT-2`: dependency INT-1 belongs to a different project"}
+{"level":"info","ts":"2026-07-25T05:00:37.109Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-A","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.110Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-A","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.111Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-A","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:37.111Z","component":"dispatch.dispatcher","msg":"promoting unblocked dependent → in_progress","ticket":"OPS-B","after":"OPS-A"}
+{"level":"warn","ts":"2026-07-25T05:00:37.112Z","component":"dispatch.dispatcher","msg":"github publish failed","ticket":"OPS-A","error":"gh down"}
+{"level":"info","ts":"2026-07-25T05:00:37.112Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-B","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.114Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.114Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.115Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"info","ts":"2026-07-25T05:00:37.115Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:37.118Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.118Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.120Z","component":"dispatch.dispatcher","msg":"committed implementation","ticket":"OPS-1","sha":"commit000"}
+{"level":"warn","ts":"2026-07-25T05:00:37.120Z","component":"dispatch.dispatcher","msg":"onAdvance listener failed (ignored)","error":"listener exploded"}
+{"level":"info","ts":"2026-07-25T05:00:37.120Z","component":"dispatch.dispatcher","msg":"ticket self-reviewed → done","ticket":"OPS-1"}
+{"level":"info","ts":"2026-07-25T05:00:37.127Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-1","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.127Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.129Z","component":"dispatch.dispatcher","msg":"steering live worker from comment","ticket":"OPS-1","workerId":"wk_1","author":"jawrooo"}
+{"level":"info","ts":"2026-07-25T05:00:37.129Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-BAD","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.129Z","component":"dispatch.dispatcher","msg":"ticket state changed","ticket":"OPS-OK","from":null,"to":"in_progress"}
+{"level":"info","ts":"2026-07-25T05:00:37.130Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-BAD","stage":"implement","workerId":"wk_1","harness":"claude"}
+{"level":"info","ts":"2026-07-25T05:00:37.130Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-OK","stage":"implement","workerId":"wk_2","harness":"claude"}
+{"level":"warn","ts":"2026-07-25T05:00:37.131Z","component":"dispatch.dispatcher","msg":"ticket cancelled — aborting worker","ticket":"OPS-BAD","workerId":"wk_1"}
+{"level":"error","ts":"2026-07-25T05:00:37.131Z","component":"dispatch.dispatcher","msg":"event handling failed — continuing with the rest of the batch","kind":"cancelled","ticket":"OPS-BAD","error":"abort exploded"}
+{"level":"warn","ts":"2026-07-25T05:00:37.131Z","component":"dispatch.dispatcher","msg":"ticket cancelled — aborting worker","ticket":"OPS-OK","workerId":"wk_2"}
