@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { createMemory, recallOver, type MemoryStore } from "./index.ts";
 import { stem, scoreNode, nodeSimilarity } from "./search.ts";
 import { planMaintenance, startRoutineMaintenance, TTL_GRACE_MS } from "./maintain.ts";
+import { AGED_OBSERVATION_DAYS } from "./freshness.ts";
 import type { Logger, MemoryNode } from "../types.ts";
 
 const tmpDirs: string[] = [];
@@ -504,6 +505,91 @@ test("startRoutineMaintenance runs the pass on its timer and stop() halts it", a
   expect(runs).toBeGreaterThanOrEqual(2);
   await new Promise((r) => setTimeout(r, 40));
   expect(runs).toBe(after);
+});
+
+// ── maintenance: SEE the whole store, report accurately (issue #97) ──────────────────────
+
+/** The store's on-disk memory count, the same way the graph build enumerates it. */
+function mdFileCount(dir: string): number {
+  return (readdirSync(dir, { recursive: true }) as string[]).filter(
+    (r) => r.endsWith(".md") && r !== "MEMORY.md" && !r.split(/[\\/]/).includes("archive"),
+  ).length;
+}
+
+test("maintain scans every memory file; a linked memory that exists on disk is not a phantom", async () => {
+  const { store, dir } = tempStore();
+  await seedWorld(store); // jason's body links [[loom-desk]] — a real, on-disk target
+  const report = await store.maintain({ dryRun: true });
+  // Every .md the store holds is scanned — no fraction of the tree left unseen.
+  expect(report.scanned).toBe(mdFileCount(dir));
+  // The linked-and-present node resolves to a real node, never a manufactured phantom.
+  expect(report.phantoms).not.toContain("loom-desk");
+  expect(store.buildGraph().nodes.get("loom-desk")?.phantom ?? true).toBe(false);
+});
+
+test("maintain does not mint phantoms from literal [[name]] examples inside code spans/fences", async () => {
+  const { store } = tempStore();
+  await seedWorld(store);
+  // A note that DOCUMENTS the memory format: illustrative links live in backticks and a fence,
+  // one genuine dangling link lives in prose. Only the prose link is a real (phantom) edge.
+  await store.remember({
+    op: "create",
+    name: "memory-format-note",
+    type: "reference",
+    description: "How wikilinks work in this store",
+    body: [
+      "A `[[name]]` in frontmatter is a graph edge; `[[wikilinks]]` resolve by name.",
+      "",
+      "```",
+      "example: [[fenced-placeholder]] is not a real link",
+      "```",
+      "",
+      "But this one is genuine: ask [[unmet-person]] about it.",
+    ].join("\n"),
+    source: "manual",
+    reason: "seed",
+  });
+  const report = await store.maintain({ dryRun: true });
+  expect(report.phantoms).not.toContain("name");
+  expect(report.phantoms).not.toContain("wikilinks");
+  expect(report.phantoms).not.toContain("fenced-placeholder");
+  expect(report.phantoms).toContain("unmet-person"); // a real prose link still counts
+});
+
+test("maintain does not report a name with a broken file on disk as a phantom", async () => {
+  const { store, dir } = tempStore();
+  await seedWorld(store);
+  // A real memory links to `[[courier-note]]`, whose file exists but failed to parse (a
+  // truncated write: empty name, no type). That's a broken file, not a missing one.
+  await store.remember({
+    op: "create",
+    name: "references-courier",
+    type: "reference",
+    description: "Points at the courier note",
+    body: "See [[courier-note]] for the details.",
+    source: "manual",
+    reason: "seed",
+  });
+  writeFileSync(join(dir, "courier-note.md"), '---\nname: ""\nmetadata:\n  node_type: memory\n---\n\nbody only.\n');
+  const report = await store.maintain({ dryRun: true });
+  expect(report.phantoms).not.toContain("courier-note");
+});
+
+test("maintain lists a memory whose updated date is past the aged threshold", async () => {
+  const { store } = tempStore();
+  await seedWorld(store);
+  const desk = store.buildGraph().nodes.get("loom-desk")!;
+  const aged = new Date(Date.now() - (AGED_OBSERVATION_DAYS + 30) * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  writeFileSync(
+    desk.path,
+    readFileSync(desk.path, "utf8").replace(/updated: .*/, `updated: ${aged}`),
+  );
+  const report = await store.maintain({ dryRun: true });
+  expect(report.agedObservations.map((a) => a.name)).toContain("loom-desk");
+  const entry = report.agedObservations.find((a) => a.name === "loom-desk")!;
+  expect(entry.ageDays).toBeGreaterThanOrEqual(AGED_OBSERVATION_DAYS);
 });
 
 test("nodeSimilarity treats reworded same facts as near-identical", () => {
