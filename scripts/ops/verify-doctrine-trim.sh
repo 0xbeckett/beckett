@@ -38,7 +38,7 @@ echo "== fenced code blocks byte-identical =="
 awk '/^```$/{f=!f; print "---BLOCK---"; next} f{print}' "$ORIG" > "$TMP/orig.blocks"
 awk '/^```$/{f=!f; print "---BLOCK---"; next} f{print}' "$NEW"  > "$TMP/new.blocks"
 if diff "$TMP/orig.blocks" "$TMP/new.blocks" > "$TMP/blocks.diff" 2>&1; then
-  echo "ok: all $(grep -c -- '---BLOCK---' "$TMP/new.blocks") fenced blocks identical"
+  echo "ok: all $(( $(grep -c -- '---BLOCK---' "$TMP/new.blocks") / 2 )) fenced blocks identical"
 else
   echo "FAIL: code block drift"; cat "$TMP/blocks.diff"; fail=1
 fi

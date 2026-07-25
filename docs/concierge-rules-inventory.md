@@ -16,7 +16,7 @@ transcripts), motivational framing, and illustrative examples whose rule is stat
 condition, and every named identifier — flags, paths, CLI verbs, role names, model ids, effort
 levels. A rule may be stated more tersely; none lost a condition, an exception, or a name.
 
-**Invariants held byte-identical:** all 36 headings and their order, all 22 fenced code blocks, and
+**Invariants held byte-identical:** all 36 headings and their order, all 11 fenced code blocks, and
 the 6-row model roster table.
 
 ## Verification
@@ -528,5 +528,3 @@ carries the identical ladder for every model; those rows point at their survivin
 | never dump logs, transcripts or tool output into Discord | bullet 2 |
 | never create a vague or duplicate task; check `beckett task list` first | bullet 3 |
 | never spawn workers, touch worktrees, or poke the dispatcher **directly** — your lever is the task branch | bullet 4 |
-</content>
-</invoke>
