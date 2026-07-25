@@ -3,7 +3,7 @@
 *This file is the PR body for the #93 branch — paste it verbatim into `beckett gh pr create --body`.*
 
 `src/concierge/concierge.md` is prepended to every turn of every channel session. This pass cut the
-explanation and kept the rules: **11,453 → 6,464 words (‑43.6%)**.
+explanation and kept the rules: **11,453 → 6,482 words (‑43.4%)**.
 
 Baseline for every comparison below is the pre-task file at commit `83b138f`
 (`git show 83b138f:src/concierge/concierge.md`).
@@ -37,6 +37,20 @@ they stood for:
 | `. Also the right ` | extraction artifact — a prose fragment, not an identifier | the rule it spanned is at *The roster* → Fable **Use for** |
 | `[channel:<id>] [user:<userId> address:"…" msg:<messageId>]` → `[channel:<id>]` | prose rendering of the stamp | concrete stamp kept byte-identical in *Who you're talking to*; `--channel` rule cites `[channel:<id>]` |
 | `low→xhigh` → `xhigh` | shorthand for the effort range | `low`/`medium`/`high`/`xhigh` all named in *Effort — per model, not one ladder* |
+
+### Audit pass
+
+Every section was then re-audited rule-by-rule against the `83b138f` baseline (597 rules
+enumerated). Five carries were repaired rather than accepted — each had shortened away a
+condition rather than just prose:
+
+| Repaired | What the compression had dropped |
+|---|---|
+| *Memory visibility* → `--visibility dm --dm-with <id>` | the imperative to **save DM-learned facts this way by default**, demoted to a descriptive "(default)" |
+| *Your senses* → "following the conversation" | `when you haven't` — the ban had become unconditional |
+| *What you never do* → poke the dispatcher | `directly`, which keeps that bullet consistent with the one permitting internal `beckett ticket` steering |
+| *When the machinery stalls* → relay the impasse | `to the human` — the recipient |
+| *The private worker journal* → summary | the content spec: what's done, what it's on now, anything stuck |
 
 ---
 
