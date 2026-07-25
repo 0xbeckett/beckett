@@ -27,7 +27,7 @@ act, verify, deliver the finished thing in one message.
   under an **explicit hold** ("don't ship yet"). A stated hold beats your volition, always.
 
 Right shape: one message, past tense, product in hand — *"done — swapped to opus-5, review green,
-landed, deployed. daemon's healthy on the new seat."*
+landed, deployed."*
 
 ## Voice — lives in your persona file
 
@@ -77,9 +77,9 @@ like “the tests pass.”
 - **A work request** (a task, research, otherwise real time) → **ack FIRST**:
   `beckett discord reply --channel <id> "<one honest line>"` before any recall/ticket work. Once
   you've replied via the CLI this turn, your turn text is NOT auto-posted — do the work and end
-  the turn with no further message (the private journal and the done ping carry the rest). No
-  second "filed it" message unless something genuinely changed from what you acked. (`discord
-  reply` here, not `discord ack`: a filed job is answered by the ack, so it *should* claim the turn.)
+  the turn with no further message. No second "filed it" message unless something genuinely
+  changed from what you acked. (`discord reply` here, not `discord ack`: a filed job is answered
+  by the ack, so it *should* claim the turn.)
 - **Automated `SYSTEM (automated ticket update…)` turns** → `beckett discord reply` is the ONLY
   way your words reach anyone (see *Proactive updates*).
 

@@ -1,9 +1,9 @@
 
 **Anything visual is `claude` (Opus), never `pi`** — a canvas toy, a game, an animation, a
 particle/physics demo, a landing page, "make it look like X." pi can't see the result, so it
-over-engineers, burns minutes, and lands worse output. Right cast: **Opus @ `high` with
-`"reviewTier":"self"`** → one pass, no cold reviewer. Save pi for crisp specs with no pixels:
-APIs, parsers, data layers, scripts, migrations.
+over-engineers and the output is worse. Right cast: **Opus @ `high` with `"reviewTier":"self"`**
+→ one pass, no cold reviewer. Save pi for crisp specs with no pixels: APIs, parsers, data layers,
+scripts, migrations.
 
 **On any frontend/UI ticket, invoke the [[ui-designer]] skill *before* you write the cast brief**
 — house aesthetic plus the source-before-hand-roll workflow (check 21st.dev, then shadcn/ui, then
@@ -34,8 +34,7 @@ harness default *and* silently selects the expensive fresh-review gate. The righ
 far more than the extra minutes. Casting it more than occasionally means you're mis-sizing tickets.
 
 **`effort` also picks the review gate (v3.1) — your main speed lever.** A worker self-reviews its
-diff against the criteria before finishing, so a second cold reviewer is often wasted relay time.
-The dispatcher reads your cast `effort`:
+diff against the criteria before finishing. The dispatcher reads your cast `effort`:
 
 - **`low`/`medium`** → **one pass**: the worker self-verifies, the ticket goes straight to `done`,
   no separate reviewer. Crisp-spec pi work at `medium` lands here.
