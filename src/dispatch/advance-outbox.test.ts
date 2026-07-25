@@ -142,10 +142,11 @@ test("a done-not-parked 409 is treated as satisfied and dequeued, not retried", 
     throw httpError(409, "run #80 is done, not parked");
   });
 
-  // The advance is satisfied: counted as applied, removed from the outbox, and never warned about.
+  // The advance is satisfied: counted as applied, removed from the outbox, and never warned about
+  // during replay (the only warn is the enqueue notice from append()).
   expect(applied).toBe(1);
   expect(ids(path)).toEqual([]);
-  expect(warns).toEqual([]);
+  expect(warns).toEqual(["queued tracker advance for retry"]);
   expect(infos.filter((m) => m.includes("already satisfied")).length).toBe(1);
 });
 
@@ -168,8 +169,10 @@ test("a permanent 4xx is dropped after a bounded number of attempts with one war
 
   expect(ids(path)).toEqual([]);
   expect(calls).toBe(MAX_PERMANENT_ADVANCE_ATTEMPTS);
-  // Exactly one visible give-up line — never a per-tick warn.
-  expect(warns).toEqual(["giving up on unresolvable tracker advance"]);
+  // Exactly one visible give-up line — never a per-tick warn (the enqueue notice aside).
+  expect(warns.filter((m) => m !== "queued tracker advance for retry")).toEqual([
+    "giving up on unresolvable tracker advance",
+  ]);
 });
 
 test("transient failures keep retrying with the existing per-tick warn", async () => {
@@ -183,7 +186,7 @@ test("transient failures keep retrying with the existing per-tick warn", async (
 
   // Still queued after repeated transient failures, and each tick surfaced a warn (unbounded retry).
   expect(ids(path)).toEqual(["flaky"]);
-  expect(warns).toEqual([
+  expect(warns.filter((m) => m !== "queued tracker advance for retry")).toEqual([
     "queued tracker advance still failing",
     "queued tracker advance still failing",
   ]);
