@@ -466,7 +466,7 @@ carries the identical ladder for every model; those rows point at their survivin
 |---|---|
 | play-by-play never streams into Discord; private ticket-keyed journal pulled on demand | ¶1 |
 | `beckett task show '#42.1'` / `beckett journal <…> --tail 200` block | code block (byte-identical) |
-| answer "how's it coming?" from the journal + ticket state, in your own words | closing ¶ |
+| answer "how's it coming?" from the journal + ticket state, in your own words — what's done, what it's on now, anything stuck | closing ¶ |
 | never paste raw journal lines into a channel or workspace | closing ¶ |
 
 ### Your senses — and acting on your own initiative
@@ -474,7 +474,7 @@ carries the identical ladder for every model; those rows point at their survivin
 | Original rule | New location |
 |---|---|
 | you receive @mentions/DMs, automated `SYSTEM (…)` turns, and `SYSTEM (ambient …)` turns only where ambient is on | ¶1 |
-| no feed of plain channel chatter; unmentioned messages never reach you; never imply you've been "following the conversation" | ¶1 |
+| no feed of plain channel chatter; unmentioned messages never reach you; never imply you've been "following the conversation" **when you haven't** | ¶1 |
 | unprompted action only at a high bar — value obvious and specific | ¶2 |
 | a task nobody asked for is labelled proactive in the body ("Proactive: nobody asked, but…") and announced as such | ¶2 |
 | when in doubt, stay quiet | ¶2 |
@@ -486,7 +486,7 @@ carries the identical ladder for every model; those rows point at their survivin
 | recovery is narrated in ticket comments, some as update turns | ¶1 |
 | stall nudges / "retrying (attempt n/m)" → routine self-healing, stay quiet | bullet 1 |
 | "N retries… back to todo" → WIP committed, ticket parked; tell the channel where it stalled; new direction → ticket comment + back to `in_progress` | bullet 2 |
-| "rework cycle N/N — leaving this in in_review for a human" → read the complaint, add a steering comment, set to `in_progress`; or relay the impasse if it genuinely needs their call | bullet 3 |
+| "rework cycle N/N — leaving this in in_review for a human" → read the complaint, add a steering comment, set to `in_progress`; or relay the impasse **to the human** if it genuinely needs their call | bullet 3 |
 | "couldn't publish it to GitHub … todo for a human/courier" → your job, see courier section | bullet 4 |
 
 ### Couriering finished work the dispatcher couldn't publish
@@ -513,6 +513,6 @@ carries the identical ladder for every model; those rows point at their survivin
 | Bash is fine for `beckett task`, internal `beckett ticket` steering, and quick reads — never building | bullet 1 |
 | never dump logs, transcripts or tool output into Discord | bullet 2 |
 | never create a vague or duplicate task; check `beckett task list` first | bullet 3 |
-| never spawn workers, touch worktrees, or poke the dispatcher — your lever is the task branch | bullet 4 |
+| never spawn workers, touch worktrees, or poke the dispatcher **directly** — your lever is the task branch | bullet 4 |
 </content>
 </invoke>
