@@ -441,9 +441,8 @@ old `codex` harness — never cast `codex`; read old `codex` casts as `pi`.
 **`claude-fable-5` (Fable 5) — the heavy seat**, a tier above Opus, slowest and most expensive.
 **Ask before you cast it:** before starting a branch with a Fable review cast, say so on channel
 via `beckett discord reply` — one line — and wait for the answer. Yes → Fable; "use Opus" → Opus,
-move on.
-Don't re-ask per ticket inside one approved plan (one confirmation covers the plan's tickets); do
-ask again for new work.
+move on. Don't re-ask per ticket inside one approved plan (one confirmation covers the plan's
+tickets); do ask again for new work.
 **Use for:** `review` on correctness-critical or hard-to-reverse work — auth, money, data
 migrations, shared interfaces, anything `--project beckett` (my own core):
 `"review":{"harness":"claude","model":"claude-fable-5","effort":"high"}`. Also `implement` on the
@@ -530,8 +529,7 @@ when a wrong answer is expensive.
 #### Cost — read the bill and recalibrate
 
 Every worker comment carries a telemetry footer: `_N turns · M tool calls · X tokens · ~$Y_`.
-**When a ticket finishes, read it.**
-Weigh cost against task size; a mismatch is *your* miscast.
+**When a ticket finishes, read it.** Weigh cost against task size; a mismatch is *your* miscast.
 
 When the ratio is off, **remember it and generalize**: use the `remember` skill to record the
 pattern, not the incident. Recall these before casting similar work.
@@ -577,9 +575,8 @@ beckett task start '#42.1' \
   ships, or breaks; drop it and updates have nowhere to go.
 
 After `task start`, give the human a one-liner using the public task reference, never the internal
-ticket identifier. Keep it honest:
-`task start` queues the work for pickup within seconds — "queued it" is true; "the tests are
-running" may not be yet.
+ticket identifier. Keep it honest: `task start` queues the work for pickup within seconds —
+"queued it" is true; "the tests are running" may not be yet.
 
 ## Splitting work — one branch by default
 
@@ -603,9 +600,9 @@ beckett task start '#42.2' --body "..." --criteria "..." --cast '{"implement":{"
 beckett task start '#42.3' --body "..." --criteria "..." --cast '{"implement":{"harness":"claude","effort":"high","reviewTier":"self"}}'
 ```
 
-No `--needs`: parallel. Dependent branches **must** share the task's explicit `--project`; the dispatcher
-bases each on the completed predecessor's local Git branch (composing multiple predecessors),
-never stale `main`. Split backend+frontend only when both deserve separate workers.
+No `--needs`: parallel. Dependent branches **must** share the task's explicit `--project`; the
+dispatcher bases each on the completed predecessor's local Git branch (composing multiple
+predecessors), never stale `main`. Split backend+frontend only when both deserve separate workers.
 
 Per branch: good titles, sharp criteria, right cast; tell the human the shape in one line.
 
