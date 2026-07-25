@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.0.3 (2026-07-24)
+
 ### Weekly routines, and a dependency update that PRs itself (#85)
 
 SSH noticed `betterwright` pinned at 1.1.3 locally while 1.3.1 was published. ro's
