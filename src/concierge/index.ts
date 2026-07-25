@@ -420,6 +420,21 @@ function handoffTextFromOutput(stdout: string): string {
 /** The bun subprocess handle type (mirrors ClaudeDriver — avoids importing the bun symbol). */
 type Child = ReturnType<typeof Bun.spawn>;
 
+/**
+ * Thrown when a `--resume` launch dies (or reports a bare result) before ever emitting `init`:
+ * the persisted transcript is gone / unresumable. By the time this reaches
+ * {@link ConciergeSession.runTurn}, onExit has already minted a fresh session id, seeded the last
+ * handoff note, and armed `freshNextLaunch` — so the in-flight turn is re-driven ONCE on that
+ * fresh session rather than dropped (issue #98). Any other exit rejects with a plain Error, which
+ * is not retried: it surfaces to the channel and trips crash-loop detection as before.
+ */
+class ResumeBeforeInitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResumeBeforeInitError";
+  }
+}
+
 /** A turn waiting for its `result` boundary. Single-flight: at most one is live at a time. */
 interface PendingTurn {
   /** Assistant text blocks are diagnostic only; outbound delivery reads structured_output at result. */
@@ -772,6 +787,25 @@ export class ConciergeSession {
 
   private async runTurn(message: TurnMessage, meta?: unknown): Promise<DiscordTurnOutput> {
     if (this.stopped) throw new Error("concierge session stopped");
+    try {
+      return await this.driveTurn(message, meta);
+    } catch (err) {
+      if (!(err instanceof ResumeBeforeInitError)) throw err;
+      // The `--resume` transcript was gone and the in-flight turn died before init. onExit has
+      // already minted a fresh session id, re-seeded the last handoff note, and armed
+      // `freshNextLaunch`, so re-drive THIS SAME turn once on the fresh session instead of losing
+      // the person's message (issue #98). Exactly ONE re-drive: the relaunch is not a resume, so a
+      // genuinely broken harness (bad auth, missing binary) throws a plain Error on this second
+      // attempt — surfaced to the channel and counted toward crash-loop detection — never looping.
+      this.log.warn("re-driving the lost turn on the freshly-seeded session after an unresumable --resume", {
+        sessionId: this.sessionId,
+      });
+      return await this.driveTurn(message, meta);
+    }
+  }
+
+  /** Drive one attempt: (re)launch if needed, write the user line, await the `result` boundary. */
+  private async driveTurn(message: TurnMessage, meta?: unknown): Promise<DiscordTurnOutput> {
     if (!this.child) await this.ensureChild();
     const child = this.child;
     if (!child) throw new Error("concierge session has no live process");
@@ -1010,23 +1044,33 @@ export class ConciergeSession {
 
     // A `--resume` launch that died before ever initializing means the persisted session is
     // unresumable (deleted transcript, harness drift). Fall back to a FRESH session seeded with
-    // the last handoff note — the user re-explains nothing (issue #24).
-    if (this.lastLaunchWasResume && !this.initSeen) {
+    // the last handoff note — the user re-explains nothing (issue #24). The in-flight turn is
+    // re-driven on this fresh session rather than dropped (issue #98).
+    const resumeUnrecoverable = this.lastLaunchWasResume && !this.initSeen;
+    if (resumeUnrecoverable) {
       this.sessionId = crypto.randomUUID();
       this.freshNextLaunch = true;
       if (this.lastHandoff) this.seedPending = this.lastHandoff;
       this.persistSessionState();
-      this.log.warn("session resume failed before init — next launch starts fresh, seeded with the last handoff note", {
+      this.log.warn("session resume failed before init — re-driving the in-flight turn on a fresh seeded session", {
         newSessionId: this.sessionId,
         hasHandoff: Boolean(this.lastHandoff),
       });
     }
 
-    // The current process is gone; the next ask() relaunches (resume or seeded-fresh). Any
-    // turn that was in flight is failed so the human gets an error rather than a hang.
+    // The current process is gone; the next ask() relaunches (resume or seeded-fresh). Any turn
+    // that was in flight is failed so the human gets an error rather than a hang — EXCEPT the
+    // resume-before-init case, whose typed error tells runTurn to re-drive the turn ONCE on the
+    // fresh session it just seeded (issue #98), so the person's message is answered, not lost.
     if (this.pending) {
       clearTimeout(this.pending.timer);
-      this.pending.reject(new Error(`concierge: claude exited (code ${code}) mid-turn`));
+      this.pending.reject(
+        resumeUnrecoverable
+          ? new ResumeBeforeInitError(
+              `concierge: --resume session unrecoverable (exit ${code} before init)`,
+            )
+          : new Error(`concierge: claude exited (code ${code}) mid-turn`),
+      );
       this.pending = null;
     }
   }
