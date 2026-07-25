@@ -1,40 +1,25 @@
-#!/usr/bin/env bun
 /**
- * Beckett v2 — the `beckett` CLI (`src/cli/beckett.ts`)
+ * Beckett — the `beckett` CLI's CORE verb handlers (`src/cli/core.ts`)
  * =======================================================================================
- * The small command surface the PARENT agent drives via Bash (Spec 05). Stateful commands
- * (worker control, discord reply, integrate, inject, status) forward to the shell over the
- * control bus (unix socket); memory commands run in-process over the markdown graph.
+ * Every in-CLI verb body (status, task, ticket, access, plan, …) plus the shared helpers they
+ * close over (config/paths/SOCK via `./context.ts`, the bus wrappers, cast/criteria parsing).
+ * The entry (`src/cli/beckett.ts`) routes the argv FIRST against a static spine (`./spine.ts`)
+ * and only then `import()`s this module, so a single `beckett <verb>` pays for this graph and
+ * nothing else — the browser runtime (playwright) and Discord gateway (discord.js) are reached
+ * ONLY through the capability extensions, which the spine lazy-loads per verb (issue #91).
  *
- * Output is JSON on stdout (the parent reads it); errors go to stderr with a non-zero exit.
- * Install a PATH shim so the parent can call `beckett ...`:
- *   exec bun /home/beckett/beckett/src/cli/beckett.ts "$@"
- *
- * Dispatch (V5 Phase 1a): every verb is a capability registered in `buildCliCapabilities`,
- * `main()` is a walk over the CapabilityRegistry, and the `beckett` command list is composed
- * from the registry — never hand-maintained. The CLI characterization suite
- * (`src/cli/characterization.test.ts`) pins the observable behavior byte-for-byte.
+ * These bodies are load-time-refactored, not behavior-changed: output is JSON on stdout, errors
+ * go to stderr with a non-zero exit, and the CLI characterization suite
+ * (`src/cli/characterization.test.ts`) pins every message/exit-code byte-for-byte. The verb-name
+ * → handler wiring and the composed `beckett` command list live in `./spine.ts`.
  */
 
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { ActionClass, CapabilityRegistry, type Capability } from "../capability/index.ts";
-import { loadConfig, resolveBoardName } from "../config.ts";
-import { buildPaths } from "../paths.ts";
+import { resolveBoardName } from "../config.ts";
 import { callBus, ControlBusTimeoutError } from "../shell/control-bus.ts";
-import {
-  createDeployExtension,
-  createDnsExtension,
-  createGithubExtension,
-  createImageExtension,
-  createMailExtension,
-  createMemoryExtension,
-  createQuickExtension,
-  createRoutinesExtension,
-  createSecretExtension,
-} from "../capability/modules/index.ts";
-import { asCapability, ExtensionRegistry, type Extension } from "../ext/index.ts";
 import { fail, out, parse, quietLogger } from "./io.ts";
+import { config, paths, SOCK } from "./context.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
 import { bundledMaintainersFile, loadMaintainers, requestMaintainerGrant, revokeMaintainer } from "../discord/maintainers.ts";
 import { loadPeers, addPeer, removePeer } from "../discord/peers.ts";
@@ -61,10 +46,6 @@ import {
   type BumpLevel,
 } from "../version/index.ts";
 
-const config = loadConfig();
-const paths = buildPaths(config);
-const SOCK = join(paths.beckettDir, "control.sock");
-
 // A Discord reply can wait for native chunk cadence or a gateway reconnect. Keep the
 // acknowledgement budget comfortably beyond that delivery time; operators can tune it for a slow
 // host without changing the generic bus timeout.
@@ -79,39 +60,6 @@ function discordReplyAckTimeoutMs(): number {
   }
   return value;
 }
-
-/** What the normalized capability modules get to build themselves (V5 Phase 2). */
-const capabilityDeps = { config, paths, logger: quietLogger };
-
-/**
- * V6 Phase 1 (docs/v6-architecture.md §6): image + secret live on the extension contract, and
- * the CLI is the one live call site that reads them from the ExtensionRegistry. In
- * `buildCliCapabilities` below, {@link asCapability} projects their carried v5 facets into the
- * existing spine slots, so dispatch, help order, and collision checks stay byte-identical
- * (the characterization suite pins it) until Phase 4 retires the projection.
- */
-const cliExtensions = new ExtensionRegistry();
-cliExtensions.register(createImageExtension(capabilityDeps));
-cliExtensions.register(createSecretExtension(capabilityDeps));
-// V6 Phase 3: quick's verb rides the extension. The CLI process never runs lifecycle.init,
-// so no runner is ever constructed here — the detached-result callback is dead wiring the
-// deps type requires (delivery is the daemon instance's job in shell/main.ts).
-cliExtensions.register(createQuickExtension({ onDetachedResult: () => {} })(capabilityDeps));
-// V6 Phase 3b: routine's verb rides the extension. The CLI process never runs any lifecycle
-// hook (no store, no scheduler armed), so it passes NO dispatch deps — the verb reads
-// routines.json directly and routes a real fire through the bus, exactly as before.
-cliExtensions.register(createRoutinesExtension({})(capabilityDeps));
-// V6 Phase 4: the remaining bespoke modules — github/dns/deploy/mail (real capabilities[]+invoke).
-// Self-contained factories, so they register in this top block; each projects into its existing
-// buildCliCapabilities spine slot via asCapability, so dispatch + help order stay byte-identical.
-cliExtensions.register(createGithubExtension(capabilityDeps));
-cliExtensions.register(createDnsExtension(capabilityDeps));
-cliExtensions.register(createDeployExtension(capabilityDeps));
-cliExtensions.register(createMailExtension(capabilityDeps));
-// V6 Phase 6: the memory organ proper. The CLI process never runs any lifecycle hook (no warm
-// store, no maintain timer) and passes NO deps — the verbs read cold per-call stores and route
-// warm recall through the bus, exactly as before.
-cliExtensions.register(createMemoryExtension({})(capabilityDeps));
 
 /**
  * The one code-project slug that targets Beckett's OWN source repo (`0xbeckett/beckett`). Filing work
@@ -261,7 +209,7 @@ function csvFlag(value: string | boolean | undefined): string[] {
 }
 
 // ── spend (in-process: the local spend ledger) ─────────────────────────────────────────
-async function runSpend(argv: string[]): Promise<void> {
+export async function runSpend(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { flags } = parse([sub, ...rest].filter((v): v is string => v !== undefined));
   let since: number | undefined;
@@ -279,7 +227,7 @@ async function runSpend(argv: string[]): Promise<void> {
 // `beckett version bump` computes a MINOR/PATCH suggestion from the commits merged since the last
 // deployed tag, surfaces the "why", then applies + commits the chosen version. MAJOR is owner-only:
 // it never comes out of the auto-classifier, only an explicit `--major` (or an explicit X.Y.Z).
-async function runVersion(argv: string[]): Promise<void> {
+export async function runVersion(argv: string[]): Promise<void> {
   // The subcommand is the first POSITIONAL — a leading flag like `--json` is NOT a subcommand — so
   // `beckett version --json` reports the version instead of tripping the unknown-subcommand path.
   const { _: positionals, flags: topFlags } = parse(argv);
@@ -384,7 +332,7 @@ function promptForBump(s: Awaited<ReturnType<typeof computeBumpSuggestion>>): Bu
 // The verbose worker play-by-play that used to stream into a user-facing Discord thread now
 // lives in `<beckettDir>/journal/<ticket>.log`. This is the Concierge's on-demand context pull:
 // read it privately when someone asks how a ticket is going, answer with a clean summary.
-async function runJournal(argv: string[]): Promise<void> {
+export async function runJournal(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (!sub) fail("usage: beckett journal <ticket> [--tail N]");
   const { flags } = parse(rest);
@@ -399,7 +347,7 @@ async function runJournal(argv: string[]): Promise<void> {
 // How Beckett records "call me X" durably against a Discord user id, and reads back who an id
 // is. Keyed on the user id from the turn stamp `[user:<id> ...]`. Addressing only — never store
 // contact info (email/phone) here; that must never surface in channel (OPS-42 privacy rule).
-async function runIdentity(argv: string[]): Promise<void> {
+export async function runIdentity(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const file = paths.identitiesFile;
   // Bind the configured owner when this map is first touched (the daemon also does this at
@@ -443,7 +391,7 @@ async function runIdentity(argv: string[]): Promise<void> {
 // work get interrupted?" even after a restart, with the shell down, before spinning up anything.
 
 // ── eval (in-process: provider-agnostic model evals through OpenRouter; no daemon path) ───
-async function runEval(argv: string[]): Promise<void> {
+export async function runEval(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { model, mode } = parseEvalArgs([sub, ...rest].filter((x): x is string => typeof x === "string"));
   const { runModelEval, renderEvalReport } = await import("../eval/run.ts");
@@ -460,7 +408,7 @@ async function runEval(argv: string[]): Promise<void> {
 }
 
 // ── site (in-process: deploy Beckett's own edge site via wrangler, token from env) ────────
-async function runSite(argv: string[]): Promise<void> {
+export async function runSite(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { flags } = parse([sub, ...rest].filter(Boolean) as string[]);
   const repoRoot = join(import.meta.dir, "..", "..");
@@ -503,7 +451,7 @@ async function runSite(argv: string[]): Promise<void> {
 // daemon, not here) applies it. There is deliberately NO approve/deny subcommand — if the
 // CLI could approve, anything that can run the CLI (a prompt-injected concierge included)
 // could bypass the owner. Emergency escape hatch: edit ~/.beckett/access.txt by hand.
-async function runAccess(argv: string[]): Promise<void> {
+export async function runAccess(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const ownerId = process.env.DISCORD_OWNER_ID;
   if (sub === "ls" || sub === "status") {
@@ -556,7 +504,7 @@ async function runAccess(argv: string[]): Promise<void> {
 // approve/deny subcommand exists here — a prompt-injected concierge, or a maintainer
 // shelling this CLI, cannot mint maintainers. The bundled baseline (repo maintainers.txt)
 // is source-controlled: `revoke` refuses to touch it.
-async function runMaintainer(argv: string[]): Promise<void> {
+export async function runMaintainer(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const ownerId = process.env.DISCORD_OWNER_ID;
   if (sub === "ls" || sub === "status") {
@@ -607,7 +555,7 @@ async function runMaintainer(argv: string[]): Promise<void> {
 // to my peers"). The Concierge shells these; owner-gating is the Concierge's job (doctrine) —
 // this is a plain file editor, like `access grant`. Takes effect with no restart: the gateway
 // reads the file fresh on the next peer-bot message. Accepts a raw bot id or a "<@id>" mention.
-async function runFederation(argv: string[]): Promise<void> {
+export async function runFederation(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   // Tolerate a pasted Discord mention: "<@123…>" / "<@!123…>" → the bare id.
   const bareId = (s: string | undefined): string => (s ?? "").replace(/^<@!?/, "").replace(/>$/, "").trim();
@@ -633,7 +581,7 @@ async function runFederation(argv: string[]): Promise<void> {
 }
 
 // ── channels (OPS-80 + server memory v4.1: the shared channel-context store) ──────────────
-async function runChannels(argv: string[]): Promise<void> {
+export async function runChannels(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   // Direct at-rest reader for when the daemon is down. Appends flush to JSONL immediately,
   // so at-rest reads are complete; the daemon path is still preferred (one live cache).
@@ -745,7 +693,7 @@ async function runChannels(argv: string[]): Promise<void> {
 // ── task (local public identity + tracker-backed executable branches) ────────────────────
 // `#N` and `#N.x` are the human-facing organization layer. A started branch is still a normal
 // tracker ticket underneath, so the established poller/dispatcher/review pipeline stays untouched.
-async function runTask(argv: string[]): Promise<void> {
+export async function runTask(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const store = new TaskStore(join(paths.beckettDir, "tasks.json"));
   const { _, flags } = parse(rest);
@@ -932,7 +880,7 @@ async function runTask(argv: string[]): Promise<void> {
 // The Concierge shells these from its Bash tool to file/inspect/steer tickets. Output is
 // JSON on stdout (the Concierge reads it). The bored client speaks HTTP to the loopback
 // tracker (BECKETT_BORED_URL). Imported dynamically so the rest of the CLI stays cheap.
-async function runTicket(argv: string[]): Promise<void> {
+export async function runTicket(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { _, flags } = parse(rest);
   // OPS-167: forensic trace is intentionally a direct local JSONL read, not a daemon/tracker
@@ -1065,7 +1013,7 @@ async function runTicket(argv: string[]): Promise<void> {
 // Presets are named cast "flows" edited directly in ~/.beckett/presets.json (no rebuild/restart
 // to add or change one). `ls` lists every name + its expanded cast; `show <name>` prints one.
 // Both read the file FRESH and validate it, so a malformed presets.json fails here loudly too.
-async function runPreset(argv: string[]): Promise<void> {
+export async function runPreset(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { loadPresets, requirePreset } = await import("../tracker/presets.ts");
   let presets;
@@ -1095,7 +1043,7 @@ async function runPreset(argv: string[]): Promise<void> {
 // start NOW (in_progress), dependents wait in `backlog` with a blocked-by edge. The dispatcher
 // promotes each dependent to in_progress once all its blockers reach `done`. For anything that
 // is one cohesive unit, DON'T plan — file a single `beckett ticket create`.
-async function runPlan(argv: string[]): Promise<void> {
+export async function runPlan(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { flags } = parse([sub, ...rest].filter((x) => x !== undefined) as string[]);
   const raw = flags.file
@@ -1266,7 +1214,7 @@ async function runPlan(argv: string[]): Promise<void> {
 // ── status (control bus → the live daemon; issue #30) ─────────────────────────────────────
 // One command answering "is prod healthy and what is it doing right now". From the Mac:
 //   ssh beckett@loom-desk 'cd beckett && bun src/cli/beckett.ts status --pretty'
-async function runStatus(argv: string[]): Promise<void> {
+export async function runStatus(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { flags } = parse([sub, ...rest].filter(Boolean) as string[]);
   let res;
@@ -1316,7 +1264,7 @@ async function runStatus(argv: string[]): Promise<void> {
 }
 
 // ── doctor (in-process health probe; works with the daemon down; issue #30) ────────────────
-async function runDoctor(argv: string[]): Promise<void> {
+export async function runDoctor(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { flags } = parse([sub, ...rest].filter(Boolean) as string[]);
   const { runDoctor, renderReport, daemonPath } = await import("../ops/doctor.ts");
@@ -1330,7 +1278,7 @@ async function runDoctor(argv: string[]): Promise<void> {
 }
 
 // ── config (in-process; issue #34) ─────────────────────────────────────────────────────────
-async function runConfig(argv: string[]): Promise<void> {
+export async function runConfig(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (sub === "print-default") {
     const { defaultConfigToml } = await import("../config.ts");
@@ -1341,7 +1289,7 @@ async function runConfig(argv: string[]): Promise<void> {
 }
 
 // ── top-level (control bus) ──────────────────────────────────────────────────────────────
-async function runDiscordReply(argv: string[]): Promise<void> {
+export async function runDiscordReply(argv: string[]): Promise<void> {
   const { _, flags } = parse(argv);
   const files = flags.file
     ? (Array.isArray(flags.file) ? flags.file.map(String) : [String(flags.file)])
@@ -1356,7 +1304,7 @@ async function runDiscordReply(argv: string[]): Promise<void> {
 // Early ack (issue #122): drop ONE immediate "digging in" line at the top of a slow turn so the
 // person hears from you in seconds instead of after the whole 15–90s of tool work. Unlike
 // `discord reply` this does NOT claim the turn — your real answer still posts terminally afterwards.
-async function runDiscordAck(argv: string[]): Promise<void> {
+export async function runDiscordAck(argv: string[]): Promise<void> {
   const { _, flags } = parse(argv);
   await discordReplyBus(
     { channelId: flags.channel ? String(flags.channel) : undefined, text: _.join(" ") },
@@ -1367,7 +1315,7 @@ async function runDiscordAck(argv: string[]): Promise<void> {
 // Hold-and-cancel backstop (OPS-101 / OPS-99 §5.3): abort the ambient turn you're running and
 // post NOTHING — "on reflection this wasn't for me." Only valid mid-ambient-turn; the bus rejects
 // it on a direct @mention/DM (those are never declined) or once you've already replied.
-async function runDiscordDecline(argv: string[]): Promise<void> {
+export async function runDiscordDecline(argv: string[]): Promise<void> {
   // `--channel` disambiguates when several ambient turns are live at once (OPS-80 §9.3).
   const { flags } = parse(argv);
   const channelId = flags.channel ? String(flags.channel).trim() : "";
@@ -1377,7 +1325,7 @@ async function runDiscordDecline(argv: string[]): Promise<void> {
 // ── proactivity (control bus: ambient-interjection posture) ─────────────────────────────
 // Beckett's own "chill out in here" / "you can jump in here" lever, routed to the running
 // Concierge over the control bus (§4.6). `set … auto` is owner-gated in the bus handler.
-async function runProactivity(argv: string[]): Promise<void> {
+export async function runProactivity(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (sub === "status") {
     await bus("proactivity.status", {});
@@ -1410,7 +1358,7 @@ const BROWSER_USAGE =
   '  |  beckett browser stop <run-id> [--reason "<why>"]\n' +
   '  |  beckett browser exec "<betterwright javascript>"';
 
-async function runBrowser(argv: string[]): Promise<void> {
+export async function runBrowser(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (sub === "status") {
     await bus("browser.status", {});
@@ -1596,7 +1544,7 @@ async function createAgentFromFlags(
  * Definitions live in `agents.json` (read here directly, same as routines/tasks); the
  * running daemon picks up adds/removes with no restart via its live loader (src/agent/registry.ts).
  */
-async function runAgent(argv: string[]): Promise<void> {
+export async function runAgent(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const store = agentStore();
 
@@ -1672,7 +1620,7 @@ async function runAgent(argv: string[]): Promise<void> {
 // its verb projects back into the same spine slot below via asCapability.
 
 // ── rpc (in-process: write status file for the RPC daemon) ──────────────────────────────
-async function runRpc(argv: string[]): Promise<void> {
+export async function runRpc(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const { _, flags } = parse([sub, ...rest].filter(Boolean) as string[]);
   if (sub === "status") {
@@ -1687,397 +1635,12 @@ async function runRpc(argv: string[]): Promise<void> {
   fail("usage: beckett rpc status \"<details>\" [<state>]");
 }
 
-/**
- * Register a core CLI organ as an extension in `cliExtensions` (V6 Phase 4,
- * docs/v6-architecture.md §6). The daemon's core surfaces (status, tickets, discord, …) now LIVE
- * on the extension contract too, tagged `kind:"core"`, projected back into their existing
- * buildCliCapabilities spine slot via {@link asCapability} — so dispatch and the composed help
- * stay byte-identical. All are FREE with no bus commands at THIS layer (the CLI carries no agency
- * gate; the per-action classification lives in `classifyAction`, `agency/index.ts`). Verbs whose
- * literal embeds a `const` (BROWSER_USAGE) force this registration to sit AFTER those consts, not
- * in the module-top extension block — hence it lives here, next to the projection builder.
- */
-function registerCoreCliExtension(spec: {
-  id: string;
-  summary: string;
-  cliHelp?: string;
-  cliVerbs: Extension["cliVerbs"];
-}): void {
-  cliExtensions.register({
-    manifest: { id: spec.id, version: "1.0.0", summary: spec.summary, actionClass: ActionClass.FREE, kind: "core" },
-    cliHelp: spec.cliHelp,
-    cliVerbs: spec.cliVerbs,
-    busCommands: [],
-  });
-}
-
-registerCoreCliExtension({
-  id: "status",
-  summary: "live daemon health over the control bus (issue #30)",
-  cliHelp: "status [--pretty]",
-  cliVerbs: [
-    {
-      name: "status",
-      summary: "is prod healthy and what is it doing right now",
-      usage: "beckett status [--pretty]",
-      run: runStatus,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "version",
-  summary: "Beckett's own semver (source of truth) + deploy-time smart bump (OPS-188)",
-  cliHelp: "version [bump]",
-  cliVerbs: [
-    {
-      name: "version",
-      summary: "print the current version, or `bump` to classify+apply a MINOR/PATCH at deploy",
-      usage: "beckett version | beckett version bump [--minor|--patch|--major|--set X.Y.Z] [--yes] [--no-commit]",
-      run: runVersion,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "doctor",
-  summary: "in-process host health probe; works with the daemon down (issue #30)",
-  cliHelp: "doctor [--json]",
-  cliVerbs: [
-    {
-      name: "doctor",
-      summary: "probe binaries, versions, and auth artifacts under the daemon's PATH",
-      usage: "beckett doctor [--json]",
-      run: runDoctor,
-    },
-  ],
-});
+// ── concierge self-management (control bus) ──────────────────────────────────────────────
 // Self-improvement: apply edits to your persona/doctrine/skills WITHOUT a service restart.
-registerCoreCliExtension({
-  id: "concierge",
-  summary: "the concierge's self-management: live persona reload and inspection",
-  cliHelp: "reload | persona",
-  cliVerbs: [
-    {
-      name: "reload",
-      summary: "re-spawn the parent (resume) with the new self",
-      usage: "beckett reload",
-      run: () => bus("reload", {}),
-    },
-    {
-      name: "persona",
-      summary: "print the persona path + current contents",
-      usage: "beckett persona",
-      run: () => bus("persona", {}),
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "access",
-  summary: "whitelist inspection + owner-approved grant requests",
-  cliHelp: "access ls|grant|revoke",
-  cliVerbs: [
-    {
-      name: "access",
-      summary: "inspect the whitelist, file a grant request, revoke an id",
-      usage: "beckett access ls | grant <id> | revoke <id>",
-      run: runAccess,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "maintainer",
-  summary: "the owner-managed elevated role (OPS-144)",
-  cliHelp: "maintainer ls|grant|revoke",
-  cliVerbs: [
-    {
-      name: "maintainer",
-      summary: "inspect maintainers, file a grant request, revoke a granted id",
-      usage: "beckett maintainer ls | grant <id> | revoke <id>",
-      run: runMaintainer,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "federation",
-  summary: "the living peer-Beckett list (peers.txt)",
-  cliHelp: "federation ls|add|remove",
-  cliVerbs: [
-    {
-      name: "federation",
-      summary: "list, add, or remove peer bot ids",
-      usage: "beckett federation ls | add <id> | remove <id>",
-      run: runFederation,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "channels",
-  summary: "the shared channel-context store (OPS-80 + server memory v4.1)",
-  cliHelp: "channels list|search|recall|wipe",
-  cliVerbs: [
-    {
-      name: "channels",
-      summary: "list/search/recall stored channel context; wipe is the privacy nuclear option",
-      usage:
-        'beckett channels list | search "<terms>" [--channel <id>] [--limit <n>] | recall <#name|id> [--last <n>] | wipe [<channelId>]',
-      run: runChannels,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "identity",
-  summary: "per-user Discord name map (~/.beckett/identities.json)",
-  cliHelp: "identity set|show|list",
-  cliVerbs: [
-    {
-      name: "identity",
-      summary: 'record "call me X" durably against a Discord user id, and read it back',
-      usage: 'beckett identity set --user <discordId> [--name "X"] [--known "Y"] [--notes "..."] | show --user <discordId> | list',
-      run: runIdentity,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "discord",
-  summary: "top-level Discord actions over the control bus",
-  cliHelp: "discord reply|ack|decline",
-  cliVerbs: [
-    {
-      name: "discord reply",
-      summary: "post a reply into a channel via the running daemon",
-      usage: "beckett discord reply [--channel <id>] [--file <path>] <text>",
-      run: runDiscordReply,
-    },
-    {
-      name: "discord ack",
-      summary: "post an immediate one-line progress ack without claiming the turn (issue #122)",
-      usage: 'beckett discord ack [--channel <id>] "<one honest line>"',
-      run: runDiscordAck,
-    },
-    {
-      name: "discord decline",
-      summary: "abort the ambient turn you're running and post nothing (OPS-101)",
-      usage: "beckett discord decline [--channel <id>]",
-      run: runDiscordDecline,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "proactivity",
-  summary: "ambient-interjection posture, routed to the running Concierge (§4.6)",
-  cliHelp: "proactivity status|set|off",
-  cliVerbs: [
-    {
-      name: "proactivity",
-      summary: '"chill out in here" / "you can jump in here" per channel',
-      usage: "beckett proactivity status | set <channel-id> off|suggest|auto | off",
-      run: runProactivity,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "browser",
-  summary: "the browser lane: background agent dispatch + watch/steer/stop, and an inline one-off script lane",
-  cliHelp: "browser <task>|status|watch|steer|stop|exec",
-  cliVerbs: [
-    {
-      name: "browser",
-      summary:
-        "hand a self-contained browser task to the background agent (pauses for humans, resumes, reports back); " +
-        "watch/steer/stop a live run, or exec one inline BetterWright script while the browser is idle",
-      usage: BROWSER_USAGE,
-      run: runBrowser,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "agent",
-  summary: "live agent registry: define/add/new/list/show/invoke/remove reusable worker personas (issue #55/#66)",
-  cliHelp: "agent ls|show|add|new|invoke|rm",
-  cliVerbs: [
-    {
-      name: "agent",
-      summary: "reusable worker personas (system prompt + harness/model/effort + skills/tools) read live by the daemon; `invoke` runs ANY of them; `new --name` is name-first sugar over `add`",
-      usage:
-        'beckett agent ls | show <id> | add <id> --description "<what>" --prompt "<system prompt>" --model <model> [--harness claude|codex|pi] [--effort low|medium|high|xhigh] [--skills a,b] [--tools a,b] [--persistent] | new --name "<name>" [same flags as add] | invoke <id> "<input>" [--timeout <secs>] | rm <id>',
-      run: runAgent,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "eval",
-  summary: "provider-agnostic model evals through OpenRouter; no daemon path",
-  cliHelp: "eval <author/model> [--short|--full]",
-  cliVerbs: [
-    {
-      name: "eval",
-      summary: "run the eval suite against a model and print the report",
-      usage: 'beckett eval "author/model" [--short|--full]',
-      run: runEval,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "site",
-  summary: "deploy Beckett's own edge site via wrangler, token from env",
-  cliHelp: "site deploy",
-  cliVerbs: [
-    {
-      name: "site",
-      summary: "wrangler-deploy the apex site",
-      usage: "beckett site deploy [--dir <path>]",
-      run: runSite,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "task",
-  summary: "local public identity + tracker-backed executable branches (#N / #N.x)",
-  cliHelp: "task create|branch|start|show|list",
-  cliVerbs: [
-    {
-      name: "task",
-      summary: "allocate numbered tasks/branches and start them as tracker tickets",
-      usage: "beckett task create|branch|start|show|list <...>",
-      run: runTask,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "ticket",
-  summary: "the Concierge's door to the ticket tracker",
-  cliHelp: "ticket create|comment|state|list|show|trace",
-  cliVerbs: [
-    {
-      name: "ticket",
-      summary: "file/inspect/steer tickets; trace reads the local dispatch journal",
-      usage: "beckett ticket create|comment|state|list|show|trace|restaff|courier <...> (use --board int or --intensive for intensive tickets)",
-      run: runTicket,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "preset",
-  summary: "inspect the user-defined cast presets in ~/.beckett/presets.json",
-  cliHelp: "preset ls|show",
-  cliVerbs: [
-    {
-      name: "preset",
-      summary: "list every preset or print one, validating the file fresh",
-      usage: "beckett preset ls | show <name>",
-      run: runPreset,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "plan",
-  summary: "file a whole dependency DAG at once (BIG, multi-part work only)",
-  cliHelp: "plan",
-  cliVerbs: [
-    {
-      name: "plan",
-      summary: "validate a JSON DAG and file its tickets in dependency order",
-      usage: "beckett plan [--file <f>] < dag.json",
-      run: runPlan,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "spend",
-  summary: "summarize the local spend ledger",
-  cliVerbs: [
-    {
-      name: "spend",
-      summary: "totals from ~/.beckett/spend, optionally since a window",
-      usage: "beckett spend [--since <ISO|24h|7d>]",
-      run: runSpend,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "journal",
-  summary: "the private per-ticket worker progress log",
-  cliVerbs: [
-    {
-      name: "journal",
-      summary: "read a ticket's worker play-by-play from <beckettDir>/journal",
-      usage: "beckett journal <ticket> [--tail N]",
-      run: runJournal,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "config",
-  summary: "config tooling (issue #34)",
-  cliVerbs: [
-    {
-      name: "config",
-      summary: "print the generated default config TOML",
-      usage: "beckett config print-default  (regenerates deploy/config.toml.example)",
-      run: runConfig,
-    },
-  ],
-});
-registerCoreCliExtension({
-  id: "rpc",
-  summary: "write the status file for the RPC daemon",
-  cliVerbs: [
-    {
-      name: "rpc",
-      summary: "update rpc-status.json with details + state",
-      usage: 'beckett rpc status "<details>" [<state>]',
-      run: runRpc,
-    },
-  ],
-});
-
-/**
- * The CLI command surface (V6 Phase 4, docs/v6-architecture.md §6): every `beckett <verb>` is now
- * an {@link asCapability} projection of an extension registered in `cliExtensions` — the core
- * surfaces (registered just above, tagged `kind:"core"`) plus the migrated capability modules
- * (image, secret, quick, routines, github, dns, deploy, mail, memory). NOTHING here is an inline
- * capability literal anymore; every CLI organ LIVES on the extension contract.
- *
- * The array ORDER is the help order, unchanged from the v5 spine, so the composed `beckett`
- * command list ({@link CapabilityRegistry.composeCliHelp}) stays byte-identical (the CLI
- * characterization suite pins it). The standalone {@link CapabilityRegistry} stays the projection
- * target this phase — the worker stages still read one (Phase 5's job) — so `buildCliCapabilities`
- * keeps returning `Capability[]`, just sourced entirely from projections now. Organs without a
- * `cliHelp` token (spend, journal, config, rpc) stay unadvertised, exactly as before. Their
- * declared action-classes stay FREE at this layer because the CLI carries no agency gate.
- */
-const CLI_SPINE_ORDER = [
-  "status", "version", "doctor", "concierge", "mail", "access", "maintainer", "federation",
-  "channels", "identity", "discord", "proactivity", "quick", "browser", "routines", "agent",
-  "image", "eval", "site", "task", "ticket", "preset", "plan", "github", "dns", "deploy",
-  "secret", "memory", "spend", "journal", "config", "rpc",
-] as const;
-
-function buildCliCapabilities(): Capability[] {
-  return CLI_SPINE_ORDER.map((id) => asCapability(cliExtensions.get(id)));
-}
-
-const cliRegistry = new CapabilityRegistry();
-for (const capability of buildCliCapabilities()) cliRegistry.register(capability);
-
-/**
- * Thin dispatch (V5 Phase 1a): resolve the argv against the registry (longest verb first, so
- * "discord reply" wins over a bare "discord") and hand the matched verb the raw tail. A miss
- * keeps the cascade's exact unknown-command refusal — with the command list composed from the
- * registry instead of the old hand-maintained string.
- */
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  const hit = cliRegistry.resolveCliVerb(argv);
-  if (hit) {
-    // Every verb in buildCliCapabilities defines its run; `run` is optional on the spine only
-    // so a declaration can exist before its body migrates out of a cascade.
-    await hit.verb.run!(hit.rest, { config, logger: quietLogger });
-    return;
-  }
-  const [group, sub] = argv;
-  fail(`unknown command: beckett ${group ?? ""} ${sub ?? ""}\n` +
-    `commands: ${cliRegistry.composeCliHelp()}`);
-}
+/** Re-spawn the parent (resume) with the new self. */
+export const runReload = (): Promise<never> => bus("reload", {});
+/** Print the persona path + current contents. */
+export const runPersona = (): Promise<never> => bus("persona", {});
 
 /** "3742" → "1h 2m 22s" (status rendering only). */
 function fmtSecs(secs: unknown): string {
@@ -2088,5 +1651,3 @@ function fmtSecs(secs: unknown): string {
   const s = n % 60;
   return h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
-
-main().catch((err) => fail((err as Error).message));
