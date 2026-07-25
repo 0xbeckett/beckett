@@ -330,7 +330,11 @@ export const createRoutinesExtension =
      */
     async function runRoutineDepsUpdate(argv: string[]): Promise<void> {
       const { flags } = parse(argv);
-      const logger = ctx.logger.child("deps-update");
+      // `--routine` / `--requester` are provenance only — nothing about the update branches on
+      // them. They ride the log so an unattended run is traceable back to the routine that fired
+      // it and the identity it was attributed to.
+      const logger = ctx.logger.child("deps-update").child(String(flags.routine ?? "manual"));
+      logger.info("deps-update starting", { requester: flags.requester ? String(flags.requester) : null });
 
       // One identity load serves both the default repo and the commit author.
       let identity: { account: string; owner: string; noreplyEmail: string };
