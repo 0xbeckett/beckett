@@ -284,6 +284,49 @@ describe("the run never touches the live checkout", () => {
     expect(parsePorcelainPaths("")).toEqual([]);
   });
 
+  test("an installed dependency tree is never staged, however deep or however tracked", () => {
+    // Observed against a real fixture repo with no .gitignore: `bun update` installs, `git status`
+    // reports all 44 vendored files, and the PR becomes 3290 lines of somebody else's code. The
+    // manifest and the lockfile ARE the change; the tree is a build product.
+    const porcelain = [
+      " M bun.lock",
+      " M package.json",
+      "?? node_modules/",
+      " M node_modules/smol-toml/dist/index.js",
+      " M packages/api/node_modules/left-pad/index.js",
+      "?? .yarn/cache/thing.zip",
+      "?? .pnpm-store/v3/files/00/abc",
+    ].join("\n");
+    expect(parsePorcelainPaths(porcelain)).toEqual(["bun.lock", "package.json"]);
+  });
+
+  test("a path that merely mentions node_modules is not mistaken for one", () => {
+    expect(parsePorcelainPaths(" M docs/node_modules-policy.md\n M src/nodes.ts"))
+      .toEqual(["docs/node_modules-policy.md", "src/nodes.ts"]);
+  });
+
+  test("vendored files are dropped from the whole run, not just the staging call", async () => {
+    const h = harness({ statusPorcelain: " M bun.lock\n M node_modules/x/index.js\n" });
+    const result = await runDepsUpdate(request(), h.deps);
+    expect(result.changedFiles).toEqual(["bun.lock"]);
+    expect(result.summary).not.toContain("node_modules");
+    const add = h.calls.find((c) => c.cmd[1] === "add")!;
+    expect(add.cmd).toEqual(["git", "add", "--", "bun.lock"]);
+  });
+
+  test("a long changed-file list is capped so the one line stays one line", async () => {
+    const many = Array.from({ length: 30 }, (_, i) => ` M pkg${String(i).padStart(2, "0")}/lock.json`);
+    const h = harness({ statusPorcelain: `${many.join("\n")}\n` });
+    const result = await runDepsUpdate(request(), h.deps);
+    expect(result.changedFiles.length).toBe(30);
+    // Every path staged and committed…
+    expect(h.calls.find((c) => c.cmd[1] === "add")!.cmd.length).toBe(33);
+    // …but the report names a few and counts the rest. Terse is the requirement.
+    expect(result.summary).toContain("+26 more");
+    expect(result.summary.length).toBeLessThan(320);
+    expect(result.summary).not.toContain("\n");
+  });
+
   test("the clone is removed even when the run blows up", async () => {
     const h = harness({ respond: { "git clone": { code: 128, stdout: "", stderr: "boom" } } });
     const result = await runDepsUpdate(request(), h.deps);
