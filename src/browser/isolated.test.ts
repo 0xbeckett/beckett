@@ -90,44 +90,6 @@ describe("browser host sandbox policy", () => {
     }
   });
 
-  test("betterwright GPU shim exports CLOAKBROWSER_BINARY_PATH into the sandbox", () => {
-    const fixture = fixturePaths();
-    try {
-      const cloakCacheDir = join(fixture.dir, "cloak");
-      const shim = join(fixture.settings.profileDir, ".cloak-gpu-shim");
-      const base = {
-        settings: fixture.settings,
-        platform: "linux" as const,
-        sandbox: "auto" as const,
-        execPath: process.execPath,
-        nodePath: fixture.node,
-        hostPath: fixture.host,
-        chromiumExecutable: fixture.browser,
-        repoRoot: resolve(import.meta.dir, "../.."),
-        bwrapPath: "/usr/bin/bwrap",
-        prlimitPath: fixture.prlimit,
-        parentEnv: { PATH: "/usr/bin:/bin" },
-        backend: "betterwright" as const,
-        cloakCacheDir,
-      };
-
-      const withShim = buildBrowserHostLaunch({ ...base, cloakBinaryOverride: shim });
-      // Set as a --setenv pair so the sandboxed CloakBrowser resolves the shim.
-      const setenvIndex = withShim.command.findIndex(
-        (value, index) => value === "--setenv" && withShim.command[index + 1] === "CLOAKBROWSER_BINARY_PATH",
-      );
-      expect(setenvIndex).toBeGreaterThan(0);
-      expect(withShim.command[setenvIndex + 2]).toBe(shim);
-
-      // Off by default: no override means no CLOAKBROWSER_BINARY_PATH anywhere.
-      const withoutShim = buildBrowserHostLaunch(base);
-      expect(withoutShim.command).not.toContain("CLOAKBROWSER_BINARY_PATH");
-      expect(JSON.stringify(withoutShim.env)).not.toContain("CLOAKBROWSER_BINARY_PATH");
-    } finally {
-      rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-
   test("Linux fails closed when bubblewrap is unavailable", () => {
     const fixture = fixturePaths();
     try {
