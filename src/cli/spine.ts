@@ -15,7 +15,12 @@
  * and their `cliHelp` tokens are mirrored here from those modules (kept honest by the suite).
  */
 
-import type { CapabilityDeps } from "../capability/index.ts";
+/**
+ * What a capability factory is handed. Typed off `./context.ts` via `typeof import(...)` (a TYPE
+ * position — no static `from`, so it neither loads at runtime nor pulls context into the entry's
+ * eval-time graph; the entry stays io + spine only).
+ */
+type CapabilityDeps = (typeof import("./context.ts"))["capabilityDeps"];
 
 /** A verb body, fully bound to its context — the entry just hands it the argv tail. */
 export type RunFn = (argv: string[]) => Promise<unknown>;
