@@ -14,6 +14,7 @@ import {
   satisfiesRange,
   type DepsUpdateDeps,
   type DepsUpdateRequest,
+  type DepsUpdateStatus,
   type ExecResult,
 } from "./deps-update.ts";
 import { quietLogger } from "../cli/io.ts";
@@ -356,7 +357,7 @@ describe("publishing goes through beckett gh — a PR, never main, never a deplo
 });
 
 describe("the report is exactly one terse line, whatever happens", () => {
-  const outcomes: Array<[string, Harness]> = [
+  const outcomes: Array<[DepsUpdateStatus, Harness]> = [
     ["opened", harness({ latest: { zod: "4.1.0", betterwright: "1.3.1" } })],
     ["no-changes", harness({ statusPorcelain: "" })],
     ["no-managers", harness({ lockfiles: [] })],
