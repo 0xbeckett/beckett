@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.1.0 (2026-07-24)
+
 ### `beckett gh` gets a passthrough, and release tags can finally ship (#88)
 
 `beckett gh push` could only ever push **branches** — it rewrote any ref into
