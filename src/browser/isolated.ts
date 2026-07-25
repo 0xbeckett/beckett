@@ -16,12 +16,14 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readlinkSync,
   readSync,
   realpathSync,
   renameSync,
   rmSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -72,6 +74,15 @@ export interface CreateIsolatedBrowserRuntimeDeps {
   chromiumExecutable?: string;
   /** Managed CloakBrowser cache dir bound into the betterwright sandbox. */
   cloakCacheDir?: string;
+  /**
+   * Opt-in (#95): route the managed CloakBrowser launch through a shim binary
+   * that prepends `--disable-gpu --disable-software-rasterizer`, killing the
+   * software-compositing gpu-process on GPU-less hosts. betterwright exposes no
+   * way to pass chromium args on the managed path, but CloakBrowser resolves its
+   * binary from CLOAKBROWSER_BINARY_PATH, so the shim is the only local lever.
+   * Defaults to the BECKETT_BROWSER_DISABLE_GPU env flag; betterwright backend only.
+   */
+  cloakDisableGpu?: boolean;
   repoRoot?: string;
   bwrapPath?: string;
   sandboxExecPath?: string;
@@ -100,6 +111,8 @@ interface BuildBrowserHostLaunchOptions {
   hostPath: string;
   chromiumExecutable: string;
   cloakCacheDir?: string;
+  /** Path to the #95 GPU shim; when set, exported as CLOAKBROWSER_BINARY_PATH. */
+  cloakBinaryOverride?: string;
   repoRoot: string;
   bwrapPath?: string;
   sandboxExecPath?: string;
@@ -135,7 +148,13 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
   // isolated session never tries to (and fails to) rewrite a read-only mount.
   const cloakEnv: Record<string, string> =
     options.backend === "betterwright" && options.cloakCacheDir
-      ? { CLOAKBROWSER_CACHE_DIR: options.cloakCacheDir, CLOAKBROWSER_AUTO_UPDATE: "false" }
+      ? {
+          CLOAKBROWSER_CACHE_DIR: options.cloakCacheDir,
+          CLOAKBROWSER_AUTO_UPDATE: "false",
+          // #95: CloakBrowser launches this shim (which execs the real chrome with
+          // --disable-gpu prepended) instead of resolving the binary itself.
+          ...(options.cloakBinaryOverride ? { CLOAKBROWSER_BINARY_PATH: options.cloakBinaryOverride } : {}),
+        }
       : {};
   const baseEnv: Record<string, string> = {
     PATH: "/usr/bin:/bin",
@@ -344,6 +363,29 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
   // mirror cloakbrowser's own resolution (CLOAKBROWSER_CACHE_DIR, else ~/.cloakbrowser).
   const cloakCacheDir = deps.cloakCacheDir ?? (process.env.CLOAKBROWSER_CACHE_DIR?.trim() || join(homedir(), ".cloakbrowser"));
   const repoRoot = deps.repoRoot ?? resolve(MODULE_DIR, "../..");
+  // #95: opt-in --disable-gpu shim for the managed CloakBrowser lane. Off unless
+  // BECKETT_BROWSER_DISABLE_GPU is set (or a caller passes cloakDisableGpu), so the
+  // production posture is unchanged until the bench proves a win.
+  const cloakDisableGpu = deps.cloakDisableGpu ?? envFlagEnabled(process.env.BECKETT_BROWSER_DISABLE_GPU);
+  let cloakBinaryOverride: string | undefined;
+  let cloakBinaryOverrideResolved = false;
+  function resolveCloakBinaryOverride(): string | undefined {
+    if (cloakBinaryOverrideResolved) return cloakBinaryOverride;
+    cloakBinaryOverrideResolved = true;
+    if (!cloakDisableGpu || backend !== "betterwright") return undefined;
+    // Fail loudly if the real binary is missing rather than launching a shim that
+    // execs nothing. Resolve it from the cache dir so a CloakBrowser version bump
+    // stays correct without a code change.
+    const realBinary = resolveManagedCloakBinary(cloakCacheDir);
+    mkdirSync(settings.profileDir, { recursive: true, mode: 0o700 });
+    // profileDir is bind-mounted into the sandbox at its own path, so a shim here
+    // is reachable by the same absolute path CLOAKBROWSER_BINARY_PATH names.
+    const shimPath = join(settings.profileDir, ".cloak-gpu-shim");
+    writeCloakGpuShim(shimPath, realBinary);
+    logger.info("browser lane: --disable-gpu shim active", { shim: shimPath, binary: realBinary });
+    cloakBinaryOverride = shimPath;
+    return cloakBinaryOverride;
+  }
 
   let child: HostChild | null = null;
   let hostIsolation: BrowserHostLaunch["isolation"] | null = null;
@@ -516,6 +558,7 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
       hostPath,
       chromiumExecutable,
       cloakCacheDir,
+      cloakBinaryOverride: resolveCloakBinaryOverride(),
       repoRoot,
       bwrapPath: deps.bwrapPath,
       sandboxExecPath: deps.sandboxExecPath,
@@ -829,6 +872,79 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
       pages = 0;
     },
   };
+}
+
+function envFlagEnabled(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized !== "" && normalized !== "0" && normalized !== "false" && normalized !== "off" && normalized !== "no";
+}
+
+/**
+ * Resolve the chrome binary the managed CloakBrowser lane would launch. Each
+ * build lives at `<cacheDir>/chromium-<version>[-pro]/chrome`; pick the build
+ * betterwright itself prefers (cached Pro over free, then highest version) so the
+ * shim execs exactly what would have run. Throws if none is installed.
+ */
+function resolveManagedCloakBinary(cloakCacheDir: string): string {
+  let best: { path: string; version: number[]; pro: boolean } | null = null;
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(cloakCacheDir);
+  } catch {
+    entries = [];
+  }
+  for (const entry of entries) {
+    const match = /^chromium-([\d.]+)(-pro)?$/.exec(entry);
+    if (!match) continue;
+    const candidate = join(cloakCacheDir, entry, "chrome");
+    if (!existsSync(candidate)) continue;
+    const version = match[1]!.split(".").map((part) => Number(part));
+    const pro = Boolean(match[2]);
+    if (!best || managedCloakBuildIsNewer({ version, pro }, best)) {
+      best = { path: candidate, version, pro };
+    }
+  }
+  if (!best) {
+    throw new Error(
+      `browser lane GPU shim requires a managed CloakBrowser chromium build under ${cloakCacheDir}; run 'betterwright setup' first`,
+    );
+  }
+  return best.path;
+}
+
+function managedCloakBuildIsNewer(
+  a: { version: number[]; pro: boolean },
+  b: { version: number[]; pro: boolean },
+): boolean {
+  if (a.pro !== b.pro) return a.pro; // betterwright prefers a cached Pro build
+  const len = Math.max(a.version.length, b.version.length);
+  for (let i = 0; i < len; i++) {
+    const av = a.version[i] ?? 0;
+    const bv = b.version[i] ?? 0;
+    if (av !== bv) return av > bv;
+  }
+  return false;
+}
+
+/**
+ * Write the #95 GPU shim: a POSIX-sh script that execs (never forks) the real
+ * chrome with `--disable-gpu --disable-software-rasterizer` prepended. exec keeps
+ * the pid/process-group/signal behavior identical to launching chrome directly,
+ * which betterwright relies on to kill the browser by pid.
+ */
+function writeCloakGpuShim(shimPath: string, realBinary: string): void {
+  const script =
+    "#!/bin/sh\n" +
+    "# Beckett browser lane #95: inject --disable-gpu into the managed CloakBrowser\n" +
+    "# launch, which betterwright exposes no other way to pass. exec, never fork.\n" +
+    `exec ${shellSingleQuote(realBinary)} --disable-gpu --disable-software-rasterizer "$@"\n`;
+  writeFileSync(shimPath, script, { mode: 0o700 });
+  chmodSync(shimPath, 0o700);
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function pathIsWithin(root: string, target: string): boolean {
