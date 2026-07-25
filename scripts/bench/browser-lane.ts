@@ -159,13 +159,16 @@ const runtime = createIsolatedBrowserRuntime({
   spawn,
 });
 
-// The scripted interaction: navigate, wait for the DOM to settle, read a node, screenshot.
+// The scripted interaction: navigate, wait for a visible node, click, read the
+// DOM, screenshot. Deterministic and identical every iteration so runs compare.
 const scriptedInteraction = `
   await page.goto(${JSON.stringify(baseUrl)});
-  await page.waitForSelector('#ready');
+  await page.locator('#content').waitFor({ state: 'visible' });
+  await page.getByRole('button', { name: 'Go' }).click();
   const text = await page.locator('#content').innerText();
+  const out = await page.locator('#out').innerText();
   await screenshot({ kind: 'question', name: 'bench-warm' });
-  return text.length;
+  return text.length + (out === 'clicked' ? 1 : 0);
 `;
 
 let sampler: ReturnType<typeof createTreeSampler> | null = null;
