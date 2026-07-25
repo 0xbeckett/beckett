@@ -118,6 +118,7 @@ hard_timeout_secs = 900
 max_concurrent = 3
 browser_profile_dir = "browser/profile"
 browser_headless = true
+browser_disable_gpu = false
 browser_viewport_width = 1440
 browser_viewport_height = 900
 browser_launch_timeout_ms = 30000
