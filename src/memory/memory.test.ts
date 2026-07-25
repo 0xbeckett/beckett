@@ -159,6 +159,107 @@ test("remember rejects a description-less create instead of orphaning an unparse
   expect(files.some((f) => String(f).includes("no-desc"))).toBe(false); // nothing landed on disk
 });
 
+// ── remember: the always-loaded MEMORY.md index tracks the current claim (issue #96) ─────
+
+/** The MEMORY.md line for `name`, minus the `- [[name]] — ` prefix (age flag included). */
+function indexHook(dir: string, name: string): string | undefined {
+  const line = readFileSync(join(dir, "MEMORY.md"), "utf8")
+    .split("\n")
+    .find((l) => l.startsWith(`- [[${name}]]`));
+  return line?.replace(new RegExp(`^- \\[\\[${name}\\]\\] — `), "");
+}
+
+test("update-then-read-index shows the NEW hook, not the old description", async () => {
+  const { store, dir } = tempStore();
+  await store.remember({
+    op: "create", name: "gh-token-note", type: "reference",
+    description: "old claim about the token", body: "orig", source: "manual", reason: "seed",
+  });
+  expect(indexHook(dir, "gh-token-note")).toBe("old claim about the token");
+
+  await store.remember({
+    op: "update", name: "gh-token-note", type: "reference",
+    description: "the refreshed one-line claim", body: "restated body", source: "manual", reason: "re-observe",
+  });
+
+  const idx = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(indexHook(dir, "gh-token-note")).toBe("the refreshed one-line claim");
+  expect(idx).not.toContain("old claim about the token"); // the stale hook is gone
+  expect(idx.match(/\[\[gh-token-note\]\]/g)!.length).toBe(1); // still exactly one line
+});
+
+test("regression (#96): a re-observation that restates the body drags the index hook with it", async () => {
+  const { store, dir } = tempStore();
+  // The exact shape that bit us: index says the thing is broken.
+  await store.remember({
+    op: "create", name: "cross-fork-pr-limit", type: "reference",
+    description: "PAT can't open PRs on external repos; hand a compare link",
+    body: "Tried it, got a 403.", source: "manual", reason: "seed",
+  });
+  expect(indexHook(dir, "cross-fork-pr-limit")).toContain("can't open PRs");
+
+  // Re-observed and CONFIRMED WORKING — body restated, but the caller forgot the description.
+  await store.remember({
+    op: "update", name: "cross-fork-pr-limit", type: "reference",
+    body: "CONFIRMED WORKING under the classic PAT — open cross-fork PRs natively.",
+    source: "manual", reason: "re-observed 2026-07-02",
+  });
+
+  const idx = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(idx).not.toContain("can't open PRs"); // the always-loaded line no longer lies
+  expect(indexHook(dir, "cross-fork-pr-limit")).toContain("CONFIRMED WORKING");
+});
+
+test("a new memory still appends exactly one index line; a deleted one drops its line", async () => {
+  const { store, dir } = tempStore();
+  await seedWorld(store); // jason, loom-desk, docs-site
+  const before = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(before.match(/^- \[\[/gm)!.length).toBe(3);
+
+  await store.remember({
+    op: "create", name: "new-fact", type: "reference",
+    description: "a brand new one-liner", body: "b", source: "manual", reason: "add",
+  });
+  const after = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(after.match(/^- \[\[/gm)!.length).toBe(4); // one line appended
+  expect(indexHook(dir, "new-fact")).toBe("a brand new one-liner");
+
+  // Archiving (the only "delete" — nothing is ever hard-removed) drops the line from the index.
+  await store.archive("new-fact", "superseded by test");
+  const pruned = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(pruned.match(/^- \[\[/gm)!.length).toBe(3);
+  expect(pruned).not.toContain("[[new-fact]]");
+});
+
+test("preserves ordering and the · upd freshness flag when an update rewrites a hook", async () => {
+  const { store, dir } = tempStore();
+  await seedWorld(store);
+  // Backdate loom-desk's file so its index line carries the 90d+ ` · upd YYYY-MM-DD` flag.
+  const desk = store.buildGraph().nodes.get("loom-desk")!;
+  const stale = "2020-01-01";
+  writeFileSync(
+    desk.path,
+    readFileSync(desk.path, "utf8").replace(/updated: .*/, `updated: ${stale}`),
+  );
+  utimesSync(desk.path, new Date(), new Date(`${stale}T00:00:00Z`));
+
+  const before = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  const beforeLines = before.match(/^- \[\[.*$/gm)!;
+  expect(before).toContain(`· upd ${stale}`); // the aged flag is present up front
+
+  // An UNRELATED update elsewhere regenerates the whole index — the aged flag must survive.
+  await store.remember({
+    op: "update", name: "jason", type: "person",
+    description: "Primary user and owner — talks casual lowercase", body: "still here",
+    source: "manual", reason: "touch",
+  });
+  const after = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(after).toContain(`· upd ${stale}`); // loom-desk still self-flags as aged
+  // Ordering is stable (grouped by type, then name) — jason moved neither section nor slot.
+  expect(after.match(/^- \[\[.*$/gm)!.map((l) => l.replace(/ · upd .*/, "")))
+    .toEqual(beforeLines.map((l) => l.replace(/ · upd .*/, "")));
+});
+
 // ── maintenance: staleness, supersede, dedup merge, dry-run, no data loss ────────────────
 
 test("maintain archives a node whose ttl expired past the grace window (file preserved)", async () => {

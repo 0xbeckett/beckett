@@ -946,11 +946,32 @@ function mergeInto(existing: MemoryNode, intent: RememberIntent): NodeContent {
     body = intent.op === "append" ? `${body}\n\n${intent.body.trim()}`.trim() : intent.body.trim();
   }
 
-  return {
-    metadata,
-    description: intent.description?.trim() ?? existing.description,
-    body,
-  };
+  // The MEMORY.md one-liner is derived from `description`, and it's the ONLY thing loaded into
+  // every session (the body is invisible until a recall pulls the file). So a re-observation
+  // that restates the body but forgets to restate the description leaves the always-loaded hook
+  // asserting the OLD, now-contradicted claim — the corrected body never reaches the reader
+  // until something forces a recall (issue #96: a node's body said cross-fork PRs were CONFIRMED
+  // WORKING while its index line still read "PAT can't open PRs", and that stale hook drove a
+  // wrong answer three weeks later). An `op: "update"` REPLACES the body, so it's a full
+  // re-statement: when it carries a new body but no new description, refresh the hook FROM that
+  // new body's leading line so the index can never contradict it. `append` is accretion (the
+  // body still leads with the prior statement), so its existing hook stays.
+  const restatedHook =
+    intent.op === "update" && intent.body != null && body ? leadLine(body) : "";
+  const description = intent.description?.trim() || restatedHook || existing.description;
+
+  return { metadata, description, body };
+}
+
+/** First substantive line of a body as a one-line hook: strips a leading list/heading/quote
+ *  marker, collapses whitespace. Empty when the body has no prose line (keeps the caller's
+ *  fallback in play). Used to refresh a restated memory's index one-liner (issue #96). */
+function leadLine(body: string): string {
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.replace(/^\s*(?:[-*>]|#{1,6}|\d+[.)])\s+/, "").trim();
+    if (line && !/^\[\[[a-z0-9-]+\]\]$/.test(line)) return line.replace(/\s+/g, " ");
+  }
+  return "";
 }
 
 /** Materialize `links` into the content so the next graph build re-extracts them (Spec 08 §2.2). */
