@@ -1,0 +1,172 @@
+ (one pass) or 
+"harness":"claude"
+"model":"gpt-5.6-luna"
+"reviewTier":"self"
+#
+#42
+#42.1
+#42.2
+#42.3
+#N - Task title
+#N.1
+'#42'
+'#42.1'
+--body-stdin
+--by <their user id> --by-name <their display name>
+--cast
+--channel
+--channel <id>
+--confirm-beckett
+--context
+--creds
+--criteria
+--effort
+--file
+--needs
+--notes "…"
+--parent
+--project
+--project <slug>
+--project balloons
+--project beckett
+--project probabilities
+--state todo
+--thinking
+--viewer
+--visibility
+--visibility dm --dm-with <id>
+--visibility owner
+. 
+;
+<@987654321098765432>
+<@…>
+<slug>
+<their user id>
+OPS-N
+PASS
+SYSTEM (ambient continuation …)
+SYSTEM (ambient follow-up)
+SYSTEM (ambient timeout)
+SYSTEM (ambient …)
+SYSTEM (automated ticket update …)
+SYSTEM (automated ticket update…)
+SYSTEM (reply context …)
+SYSTEM (…)
+[channel:<id>]
+[channel:…]
+address
+address:
+address:"…"
+approve <code>
+auto
+backlog
+beckett access grant <discord-user-id>
+beckett access ls
+beckett access revoke <discord-user-id>
+beckett browser "<self-contained task>" [--creds <jingle-entry>] [--context "<background>"]
+beckett browser exec "<betterwright js>"
+beckett browser steer <run-id> "<guidance>"
+beckett browser stop <run-id>
+beckett browser watch <run-id>
+beckett discord ack --channel <id> "<one honest line>"
+beckett discord reply
+beckett discord reply --channel <id> "<one honest line>"
+beckett federation add <botId>
+beckett federation ls
+beckett federation remove <botId>
+beckett gh
+beckett identity list
+beckett identity show --user <id>
+beckett maintainer grant <discord-user-id>
+beckett maintainer ls
+beckett maintainer revoke <id>
+beckett memory maintain
+beckett memory remember
+beckett proactivity set <channel-id> off
+beckett quick <agent> "<self-contained task>" --channel <id>
+beckett recall "<query>" --viewer <the live stamp's user id> --viewer-role <owner|maintainer|member> --context <guild|dm>
+beckett reload
+beckett remember
+beckett task
+beckett task create --channel <id>
+beckett task list
+beckett task show '#N.x'
+beckett ticket
+browser
+cancelled
+claude
+claude-fable-5
+claude-haiku-4-5
+claude-opus-5
+claude-sonnet-5
+codex
+deny <code>
+discord ack
+discord reply
+display:
+display:"…"
+done
+effort
+gh
+git push
+gpt-5.6
+gpt-5.6-luna
+harness
+high
+implement
+in_progress
+jingle
+low
+xhigh
+main
+maintainers.txt
+medium
+message
+model
+msg:
+msg:<id>
+origin/main
+pass
+pi
+quick
+quick-code
+ready
+recall
+remember
+repo-explorer
+review
+reviewTier
+reviewTier:"self"
+role:maintainer
+role:owner
+running
+secrets
+steer
+task create
+task start
+task start '#N.x'
+todo
+type: feedback
+updated
+user:
+user:<id>
+waiting
+xhigh
+{ "<stage>": { "harness": "...", "model": "...", "effort": "..." } }
+{ "decision": "pass", "message": null }
+{ "decision": "send", "message": "the human-facing Discord message" }
+{"harness":"pi"}
+{"implement":{"harness":"pi","effort":"medium"}}
+{"implement":{"harness":"pi","model":"gpt-5.6-luna","effort":"low"}}
+{{github_owner}}/<slug>
+{{github_owner}}/balloons
+{{github_owner}}/beckett
+~$1/$6
+~$2.50/$15
+~/.beckett/access.txt
+~/.beckett/identities.json
+~/.beckett/maintainers.txt
+~/.beckett/persona.md
+~/Projects/<slug>
+~/Projects/balloons
+~/Projects/beckett
