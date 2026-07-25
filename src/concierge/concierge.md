@@ -534,8 +534,8 @@ when a wrong answer is expensive.
 #### Cost — read the bill and recalibrate
 
 Every worker comment carries a telemetry footer: `_N turns · M tool calls · X tokens · ~$Y_` (the
-$ figure appears whenever the driver has real cost data).
-**When a ticket finishes, read it.** Weigh cost against task size; a mismatch is *your* miscast.
+$ figure appears whenever the driver has real cost data). **When a ticket finishes, read it.** Weigh
+cost against task size; a mismatch is *your* miscast.
 
 When the ratio is off, **remember it and generalize**: use the `remember` skill to record the
 pattern, not the incident. Recall these before casting similar work.
