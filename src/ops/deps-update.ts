@@ -338,22 +338,25 @@ async function cloneSource(req: DepsUpdateRequest, deps: DepsUpdateDeps): Promis
 /**
  * Run typecheck then the test suite through the primary manager. Returns the FIRST failure.
  *
- * These two are the only commands that run ARBITRARY project code, so they get a scratch
- * `BECKETT_DIR`/`BECKETT_HOME` (`stateDir`, deliberately OUTSIDE the clone). Beckett's own suite is
- * the thing being tested here: a test that forgets to relocate its state would otherwise write into
- * the LIVE `~/.beckett` the daemon is reading from — the same class of mistake as updating the live
- * checkout in place, and just as unacceptable in an unattended weekly job.
+ * Deliberately runs with the AMBIENT environment. The obvious hardening — point `BECKETT_DIR` at a
+ * scratch dir so the suite can't write live state — was tried and reverted: `BECKETT_DIR` is the
+ * highest-precedence path override ({@link ../paths.ts}), so it also overrides the `paths.beckett_dir`
+ * that 34 browser/config tests set for themselves, and every one of them fails. A guard that makes
+ * this routine abort every single week is worse than what it prevents.
+ *
+ * What that leaves: the suite writes its own per-run artifact dirs (`browser-agent/`, `quick/`, …)
+ * under the resolved beckettDir, exactly as it does when a human runs `bun test`. That is state-dir
+ * residue, not a mutation of the SOURCE checkout — which is the thing this job must never touch, and
+ * which the clone guarantees. Nothing here writes routines.json, the DB, or config.
  */
 async function runChecks(
   workDir: string,
-  stateDir: string,
   primary: PackageManager,
   deps: DepsUpdateDeps,
 ): Promise<{ failed: string; detail: string } | null> {
-  const env = { BECKETT_DIR: stateDir, BECKETT_HOME: stateDir, CI: "1" };
   for (const script of CHECK_SCRIPTS) {
     const cmd = primary.runScript(script);
-    const r = await deps.exec(cmd, { cwd: workDir, timeoutMs: CHECK_TIMEOUT_MS, env });
+    const r = await deps.exec(cmd, { cwd: workDir, timeoutMs: CHECK_TIMEOUT_MS });
     if (r.code !== 0) {
       return { failed: cmd.join(" "), detail: checkFailureDetail(r.stdout, r.stderr) };
     }
@@ -424,13 +427,8 @@ export async function runDepsUpdate(
     failedCheck: null,
   };
   let workDir: string | null = null;
-  // Scratch state for the check commands, alongside the clone rather than inside it — see
-  // runChecks. Being OUTSIDE the clone is what keeps it out of `git status` and out of the commit.
-  let stateDir: string | null = null;
   try {
     workDir = await cloneSource(req, deps);
-    stateDir = `${workDir}-state`;
-    deps.removeDir(stateDir);
     deps.logger.info("deps-update working in an isolated clone", {
       workDir,
       source: req.sourceRepo,
@@ -473,7 +471,7 @@ export async function runDepsUpdate(
     }
 
     // Prove it BEFORE publishing anything. A red PR is worse than no PR.
-    const failure = await runChecks(workDir, stateDir, managers[0]!, deps);
+    const failure = await runChecks(workDir, managers[0]!, deps);
     if (failure) {
       return {
         ...base,
@@ -558,12 +556,11 @@ export async function runDepsUpdate(
     };
   } finally {
     // The clone is disposable by design; leaving it behind would accumulate a full checkout a week.
-    for (const dir of [workDir, stateDir]) {
-      if (!dir) continue;
+    if (workDir) {
       try {
-        deps.removeDir(dir);
+        deps.removeDir(workDir);
       } catch (err) {
-        deps.logger.warn("deps-update could not remove its scratch dir", { dir, error: String(err) });
+        deps.logger.warn("deps-update could not remove its clone", { workDir, error: String(err) });
       }
     }
   }

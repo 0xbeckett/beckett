@@ -145,12 +145,9 @@ What one run does, in order ([`src/ops/deps-update.ts`](../src/ops/deps-update.t
    `package.json` ranges are respected. Nothing outside the ranges is applied.
 4. **Prove it.** `<manager> run typecheck` then `<manager> run test`, in the clone. If either goes
    red the run **stops here**: no branch pushed, no PR opened, and the summary names the failed
-   check. A red PR is worse than no PR. These are the only commands that run arbitrary project code,
-   so they get a scratch `BECKETT_DIR`/`BECKETT_HOME` *outside* the clone — a test that forgot to
-   relocate its own state would otherwise write into the live `~/.beckett` the daemon is reading
-   from, which is the same mistake as updating the live checkout in place. Being outside the clone
-   also keeps that scratch dir invisible to git, and staging is limited to the paths the update
-   itself changed, so nothing the suite leaves behind can end up in the PR.
+   check. A red PR is worse than no PR. Staging (step 5) is limited to the paths the update itself
+   changed — captured *before* the checks ran — so nothing the suite leaves in the tree can end up in
+   the PR.
 5. **Publish a proposal.** `beckett gh push` of a `beckett/deps-update-<date>` branch, then
    `beckett gh pr create --base main`. Never raw `gh`, never `git push`, never a push to `main`, and
    there is no deploy anywhere in the path. The output is a PR a human merges.
@@ -161,6 +158,21 @@ What one run does, in order ([`src/ops/deps-update.ts`](../src/ops/deps-update.t
 Anything the ranges refuse — a major-version jump, or an exact pin the package has outgrown, like
 `betterwright: "1.1.3"` → 1.3.1 — is reported as **available, not applied**, in both the summary
 line and the PR body. Applying it is a human decision.
+
+### Known limit: the checks are not state-sandboxed
+
+`bun run test` runs Beckett's own suite, which writes per-run artifact dirs (`browser-agent/`,
+`quick/`, `agent-runs/`, …) under the resolved `beckettDir` — so a weekly run leaves the same residue
+under `~/.beckett` that a developer's own `bun test` does. The obvious fix, pointing `BECKETT_DIR` at
+a scratch dir for the check phase, was tried and **reverted**: `BECKETT_DIR` is the
+highest-precedence path override ([`src/paths.ts`](../src/paths.ts)), so it also overrides the
+`paths.beckett_dir` that 34 browser/config tests set for themselves, and the suite goes red — a guard
+that aborts the routine every week is worse than the residue.
+
+The constraint that matters is intact: the **source checkout** is never mutated (that is what the
+clone is for), and nothing in the run writes `routines.json`, the database, or config. True isolation
+here needs a sandbox (`bwrap`, already an install dependency) rather than an env var; it is not worth
+it for additive artifact dirs.
 
 ### Prove the whole job without touching GitHub
 

@@ -256,23 +256,17 @@ describe("the run never touches the live checkout", () => {
     expect(clone).toContain("--no-hardlinks");
   });
 
-  test("the check commands get their own BECKETT_DIR, outside the clone", async () => {
+  test("the checks run with the ambient env — BECKETT_DIR is NOT overridden", async () => {
     const h = harness();
     await runDepsUpdate(request(), h.deps);
-    const clonePath = "/tmp/deps-work/beckett-deps-update-2026-07-26";
     const checks = h.calls.filter((c) => c.cmd.includes("run"));
     expect(checks.map((c) => c.cmd.join(" "))).toEqual(["bun run typecheck", "bun run test"]);
-    for (const check of checks) {
-      // The one place arbitrary project code runs — it must not be able to write the LIVE state.
-      expect(check.env?.BECKETT_DIR).toBe(`${clonePath}-state`);
-      expect(check.env?.BECKETT_HOME).toBe(`${clonePath}-state`);
-      // Outside the clone, so `git status` can never see it and the commit can never contain it.
-      expect(check.env!.BECKETT_DIR!.startsWith(`${clonePath}/`)).toBe(false);
-    }
-    // Only the check commands get the override; git and the update run with the ambient env.
-    expect(h.calls.filter((c) => c.env).length).toBe(2);
-    // ...and the scratch dir is cleaned up alongside the clone.
-    expect(h.removed).toContain(`${clonePath}-state`);
+    // Pinning a deliberate REVERSAL: pointing BECKETT_DIR at a scratch dir looks like obvious
+    // hardening, but it is the highest-precedence path override, so it also overrides the
+    // `paths.beckett_dir` that 34 browser/config tests set for themselves — every one of them fails
+    // and the routine aborts every week for a reason that has nothing to do with the update. If this
+    // assertion is ever "fixed" by adding the override back, run the suite in a fresh clone first.
+    expect(h.calls.some((c) => c.env)).toBe(false);
   });
 
   test("only the paths the UPDATE changed are staged, never a blanket `git add -A`", async () => {
