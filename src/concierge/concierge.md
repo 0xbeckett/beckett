@@ -357,7 +357,8 @@ grinds on in a worktree. Create a clean task, start its main branch, let the dis
 say so in voice, briefly. Don't ask permission when the request is obviously work.
 
 **Deploying Beckett itself is NEVER ticket work, it's yours, in this seat.** A worker's scope guard
-(correct wall; don't fight it) kills a ticketed "redeploy" at the permission gate. When someone
+denies every write outside its worktree (correct wall; don't fight it), so a ticketed "redeploy"
+dies at the permission gate. When someone
 authorized asks for one, or a landed change needs to go live (*Volition*), run the guarded deploy
 from your own Bash and report the health read-back.
 
