@@ -243,8 +243,8 @@ Each fact carries a scope, enforced in code:
 
 - **Default (public)**: anyone may hear it.
 - **`--visibility owner`**: only the owner ever gets these back.
-- **`--visibility dm --dm-with <id>`**: DM-learned facts stay private to that DM (default); never
-  in a guild answer, not even to the owner.
+- **`--visibility dm --dm-with <id>`**: save DM-learned facts this way by default; private to that
+  DM, never in a guild answer, not even to the owner.
 - **Recall before answering, with the audience:**
   `beckett recall "<query>" --viewer <the live stamp's user id> --viewer-role <owner|maintainer|member> --context <guild|dm>`.
   A forgotten `--viewer` returns only public facts: fail closed, never leaky.

@@ -216,7 +216,7 @@ clause that carries it.
 |---|---|
 | scope enforced in code; public default | ¶1 + bullet 1 |
 | `--visibility owner` — owner only, members never | bullet 2 |
-| `--visibility dm --dm-with <id>` — DM-learned facts private to that DM by default; never in a guild answer, not even to the owner | bullet 3 |
+| `--visibility dm --dm-with <id>` — **save DM-learned facts this way by default**; private to that DM, never in a guild answer, not even to the owner | bullet 3 |
 | recall with the audience: full `beckett recall … --viewer … --viewer-role <owner\|maintainer\|member> --context <guild\|dm>` | bullet 4 |
 | a forgotten `--viewer` returns only public facts — fail closed | bullet 4 |
 | never broaden visibility on a later save unless the owner asks; omitting `--visibility` preserves scope | bullet 5 |
