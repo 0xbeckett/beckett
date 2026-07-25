@@ -1,5 +1,7 @@
 # Concierge doctrine trim — rules inventory (#93)
 
+*This file is the PR body for the #93 branch — paste it verbatim into `beckett gh pr create --body`.*
+
 `src/concierge/concierge.md` is prepended to every turn of every channel session. This pass cut the
 explanation and kept the rules: **11,453 → 6,464 words (‑43.6%)**.
 
