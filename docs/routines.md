@@ -145,7 +145,12 @@ What one run does, in order ([`src/ops/deps-update.ts`](../src/ops/deps-update.t
    `package.json` ranges are respected. Nothing outside the ranges is applied.
 4. **Prove it.** `<manager> run typecheck` then `<manager> run test`, in the clone. If either goes
    red the run **stops here**: no branch pushed, no PR opened, and the summary names the failed
-   check. A red PR is worse than no PR.
+   check. A red PR is worse than no PR. These are the only commands that run arbitrary project code,
+   so they get a scratch `BECKETT_DIR`/`BECKETT_HOME` *outside* the clone — a test that forgot to
+   relocate its own state would otherwise write into the live `~/.beckett` the daemon is reading
+   from, which is the same mistake as updating the live checkout in place. Being outside the clone
+   also keeps that scratch dir invisible to git, and staging is limited to the paths the update
+   itself changed, so nothing the suite leaves behind can end up in the PR.
 5. **Publish a proposal.** `beckett gh push` of a `beckett/deps-update-<date>` branch, then
    `beckett gh pr create --base main`. Never raw `gh`, never `git push`, never a push to `main`, and
    there is no deploy anywhere in the path. The output is a PR a human merges.

@@ -468,13 +468,14 @@ export async function runDepsUpdate(
       };
     }
 
-    // Commit in the clone. `-c user.*` keeps the identity per-invocation: no global git config is
-    // written, and the live checkout's config is never read or touched.
     // Stage EXACTLY the paths the update changed, captured before the checks ran. `git add -A` here
     // would also commit whatever the test suite happened to drop in the tree — a coverage file, a
     // stray artifact — turning a two-line lockfile PR into junk.
     const add = await deps.exec(["git", "add", "--", ...base.changedFiles], { cwd: workDir });
     if (add.code !== 0) throw new Error(`git add failed: ${firstLine(add.stderr)}`);
+
+    // Commit in the clone. `-c user.*` keeps the identity per-invocation: no global git config is
+    // written, and the live checkout's config is never read or touched.
     const message =
       `chore(deps): weekly in-range update (${base.managers.join(", ")})\n\n` +
       `Updated: ${base.changedFiles.join(", ")}. typecheck + tests green in an isolated clone.`;
