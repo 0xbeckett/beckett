@@ -439,13 +439,16 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
 
   /**
    * Env for the `gh` passthrough ({@link raw}): {@link gitEnv} (the inline credential helper, so gh
-   * subcommands that shell out to git — clone/checkout/sync — authenticate) LAYERED with {@link ghEnv}
-   * (GH_TOKEN/GITHUB_TOKEN, so gh's own API calls authenticate). Both carry the PAT through the
-   * environment only — never argv, never `~/.git-credentials` — so the passthrough opens the full gh
-   * surface without widening where the token can leak.
+   * subcommands that shell out to git — clone/checkout/sync — authenticate) with GH_TOKEN/GITHUB_TOKEN
+   * layered on top (so gh's own API calls authenticate). The gh keys are layered EXPLICITLY rather than
+   * spreading {@link ghEnv} — ghEnv re-spreads {@link sanitizedEnv}, which would re-introduce (and win
+   * over) any ambient GH_TOKEN/GITHUB_PAT from the host, so the injected PAT must be applied last to
+   * always win. Every key carries the PAT through the environment only — never argv, never
+   * `~/.git-credentials` — so the passthrough opens the full gh surface without widening where the
+   * token can leak.
    */
   private rawEnv(): Record<string, string | undefined> {
-    return { ...this.gitEnv(), ...this.ghEnv() };
+    return { ...this.gitEnv(), GH_TOKEN: this.opts.pat, GITHUB_TOKEN: this.opts.pat };
   }
 
   /**
