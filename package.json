@@ -9,6 +9,7 @@
     "v4": "bun src/shell/main.ts",
     "beckett": "bun src/cli/beckett.ts",
     "browser:smoke": "bun scripts/ops/browser-smoke.ts",
+    "browser:bench": "bun scripts/bench/browser-lane.ts",
     "eval:browser": "bun scripts/eval/browser-agent.ts",
     "eval:triage": "bun scripts/eval/triage-classifier.ts",
     "telemetry:refresh": "bun scripts/ops/telemetry-harvest.ts",
