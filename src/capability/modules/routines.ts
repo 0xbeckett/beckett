@@ -33,6 +33,8 @@
  * backing `fire()` is re-sourced from this extension's scheduler accessor.
  */
 
+import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { ActionClass, type Extension, type ExtensionContext } from "../../ext/contract.ts";
@@ -44,7 +46,10 @@ import {
 } from "../../routine/scheduler.ts";
 import { buildDispatchPlan, type RoutineDispatchPlan } from "../../routine/plan.ts";
 import { nextFireAt, isValidTimeZone } from "../../routine/schedule.ts";
-import type { Routine } from "../../routine/types.ts";
+import { WeekdaySchema, type Cadence, type Routine } from "../../routine/types.ts";
+import { defaultDepsUpdateDeps, runDepsUpdate } from "../../ops/deps-update.ts";
+import { defaultRepoRoot } from "../../version/index.ts";
+import { resolveGitHubOwner } from "../../github/owner.ts";
 import type { AgentDefinition, AgentRunner } from "../../agent/index.ts";
 import type { BrowserAgent } from "../../browser/agent.ts";
 import { callBus } from "../../shell/control-bus.ts";
@@ -89,17 +94,27 @@ export interface RoutinesExtension extends Extension {
 
 // ── shared display helpers (moved verbatim from cli/beckett.ts) ─────────────────────────────
 
-/** "12:34 America/Los_Angeles on 2026-07-20" — a routine's next concrete fire, humanized. */
+/**
+ * "Sun 2026-07-26, 09:14 America/Los_Angeles" — a routine's next concrete fire, humanized. The
+ * weekday is spelled out because a weekly routine's whole point is WHICH day, and reading that off
+ * a bare date is exactly the check a person wants to make at a glance.
+ */
 function describeNextFire(routine: Routine): string {
   const at = nextFireAt(routine.schedule, routine.state, new Date(), Math.random);
   const tz = routine.schedule.window.tz;
   const local = new Intl.DateTimeFormat("en-CA", {
     timeZone: tz,
+    weekday: "short",
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", hourCycle: "h23",
   }).format(at);
   const rolled = routine.state.periodKey && routine.state.chosenFireAt ? "" : " (window; exact time not rolled yet)";
   return `${local} ${tz}${rolled}`;
+}
+
+/** "daily" / "weekly (sunday)" — the cadence as a person reads it in `routine ls`. */
+function describeCadence(cadence: Cadence): string {
+  return cadence.kind === "weekly" ? `weekly (${cadence.weekday})` : cadence.kind;
 }
 
 function summarizeRoutine(routine: Routine): Record<string, unknown> {
@@ -110,11 +125,21 @@ function summarizeRoutine(routine: Routine): Record<string, unknown> {
     builtin: routine.builtin,
     enabled: routine.enabled,
     action: routine.action.kind,
-    cadence: routine.schedule.cadence.kind,
+    cadence: describeCadence(routine.schedule.cadence),
     window: `${w.start}-${w.end} ${w.tz}`,
     nextFire: describeNextFire(routine),
     lastFiredAt: routine.state.lastFiredAt ?? null,
   };
+}
+
+/**
+ * The cadence a `routine add` asked for. `weekday` present → weekly on that day, else daily. One
+ * resolver so the CLI flag and the `routines.add` capability can never disagree about what
+ * "--weekly sunday" means.
+ */
+function cadenceFrom(weekday: string | undefined): Cadence {
+  if (!weekday) return { kind: "daily" };
+  return { kind: "weekly", weekday: WeekdaySchema.parse(weekday.trim().toLowerCase()) };
 }
 
 // ── v6 invocation schemas ──────────────────────────────────────────────────────────────────
@@ -185,6 +210,18 @@ export const createRoutinesExtension =
             "(set BECKETT_ROUTINE_CHANNEL_ID and DISCORD_OWNER_ID, or the routine's channelId/requesterId)",
         );
       }
+
+      // The LOCAL maintenance lane (issue #85) forks BEFORE every browser dependency below: a
+      // dependency update wants a checkout and a package manager, not a web session, so it must
+      // never resolve — let alone require — the browser agent or the agent registry. It runs as its
+      // OWN `beckett routine deps-update` subprocess off this process: an unattended job that
+      // clones, installs, and runs a full test suite for minutes on end has no business holding a
+      // scheduler tick, and a crash in it can't reach the daemon.
+      if (plan.lane === "deps-update") {
+        spawnDepsUpdate(plan, { channelId, requesterId });
+        return;
+      }
+
       if (!deps.browserAgent || !deps.agentRegistry || !deps.agentRunner) {
         // Only reachable in a process that armed the scheduler without the daemon's deps —
         // the CLI never starts it, and the daemon always injects all three.
