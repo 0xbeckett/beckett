@@ -34,10 +34,12 @@ export const X_SOCIAL_ACCOUNT = "@beckposting";
  * HARD RULE — every entry must be a real person who actually interacts with @beckposting and whose
  * handle here is their real X handle. Dragging one of your own people is the bit; @-ing a stranger,
  * a random follower, or a brand for reach is not — never add one here to pad the list. Extend it only
- * with verified interlocutor handles. `@jawrooo_` runs the account; `@ssh` is the other regular who
- * asked for this rotation. Fix a handle here if it's wrong; do not let the prompt invent one.
+ * with verified interlocutor handles. `@jawrooo_` runs the account. A second regular (ro's server
+ * regular SSH) asked to be on this rotation but has not yet supplied his real X handle, so he is NOT
+ * listed — a guessed handle would @ a stranger. Add him back only once he gives his actual handle.
+ * Fix a handle here if it's wrong; do not let the prompt invent one.
  */
-export const X_PING_ROSTER = ["@jawrooo_", "@ssh"] as const;
+export const X_PING_ROSTER = ["@jawrooo_"] as const;
 
 /**
  * The social-media agent's persona + operating instructions — ALL DATA. It composes an in-voice

@@ -29,9 +29,13 @@ test("PING SOMEONE names an explicit roster, rotates the target, and never @s a 
   const prompt = builtinAgentDefs().find((a) => a.id === SOCIAL_MEDIA_AGENT_ID)!.systemPrompt;
   const flat = prompt.toLowerCase().replace(/\s+/g, " "); // collapse the wrapped lane text
 
-  // The roster is real, plural, and led by the two established interlocutors — not a lone hardcoded handle.
-  expect(X_PING_ROSTER.length).toBeGreaterThan(1);
+  // The roster is real and led by the established interlocutor — a single verified handle is valid
+  // (and strictly safer than one padded with an unverified guess).
+  expect(X_PING_ROSTER.length).toBeGreaterThanOrEqual(1);
   expect(X_PING_ROSTER).toContain("@jawrooo_");
+
+  // No entry is a bare unverified placeholder: every roster handle is a real, specific X handle.
+  for (const handle of X_PING_ROSTER) expect(handle).not.toBe("@ssh");
 
   // The prompt is BUILT from the roster (single source of truth), so every handle appears in the lane text.
   for (const handle of X_PING_ROSTER) expect(prompt).toContain(handle);
