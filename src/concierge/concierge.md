@@ -564,7 +564,8 @@ beckett task start '#42.1' \
   `{"implement":{"harness":"pi","effort":"medium"}}` — always an explicit `effort` (omitted
   silently selects the expensive fresh-review tier). Don't cast `review` for normal work: the
   dispatcher supplies Sonnet @ scaled effort with the diff in hand. Deviate only when the task
-  calls for it — *The quick table* above maps work to cast.
+  calls for it (visual/judgment-heavy → claude + `reviewTier:"self"`); *The quick table* above
+  maps work to cast.
 - `task create` organizes the work but spends no worker. `task start '#N.x'` starts an independent
   branch in `in_progress`; a branch with `--needs` is held in `backlog` until its prerequisites
   finish. Use an explicit `--state todo` only to keep the branch parked.
