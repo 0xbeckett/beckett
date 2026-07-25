@@ -11,7 +11,9 @@
  *   1. **Never mutate the live daemon checkout.** `sourceRepo` is only ever a `git clone` SOURCE
  *      ({@link cloneSource}); every mutating command runs with `cwd` inside the throwaway clone
  *      under `workRoot`, which is removed in a `finally`. An in-place `npm update` on the tree the
- *      daemon is running out of is the exact failure mode this job exists to avoid.
+ *      daemon is running out of is the exact failure mode this job exists to avoid. This covers the
+ *      SOURCE tree; see {@link runChecks} for the one thing it does not cover (the suite's own
+ *      artifact dirs under `beckettDir`) and why sandboxing that made things worse.
  *   2. **Never push to the base branch, never deploy.** The only writes to GitHub are a push of a
  *      fresh `beckett/deps-*` branch and a PR opened against `base` — both through the `beckett gh`
  *      CLI ({@link DepsUpdateDeps.beckett}), never raw `gh` and never `git push`. There is no code

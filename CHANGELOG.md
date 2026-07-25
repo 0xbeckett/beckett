@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Weekly routines, and a dependency update that PRs itself (#85)
+
+SSH noticed `betterwright` pinned at 1.1.3 locally while 1.3.1 was published. ro's
+call: stop hand-bumping deps forever. Two pieces.
+
+**The `weekly` cadence.** `CadenceSchema` always advertised itself as "the seam for
+weekly / interval to slot in without touching the rest of the engine" — this took
+it. A weekly routine carries a weekday and keys its period to the tz-local **ISO
+week** (`2026-W30`), so the once-per-period idempotency guard in `scheduler.ts`
+works exactly as daily's does: a restart mid-week neither double-fires nor re-rolls
+the minute already chosen inside that week's window. ISO weeks run Monday→Sunday
+and belong to the year holding their Thursday, so a Sunday routine fires on day 7
+of the week it is keyed to, and a New Year that splits a week (2026-12-28 through
+2027-01-03 are all `2026-W53`) still gets exactly one fire. The fuzz-window
+humanization is unchanged — a random minute inside the window, persisted per
+period. `beckett routine add --weekly sunday` creates one; `routine ls` shows
+`weekly (sunday)` and spells the weekday out in the next fire time.
+
+`nextFireAt` now actually reads `lastFiredPeriodKey` (it always took the argument
+and never used it): a period that already fired points at the *next* one, so a
+fired Sunday stops reading as "next fire" for the six days after it.
+
+**The `deps-update` action.** A new routine action, and the first that does **not**
+go through the privileged browser lane — it is a local maintenance chore with no
+use for a web session, so it gets its own dispatch lane and the dispatcher forks on
+that lane *before* it resolves the browser agent at all. It runs as its own
+`beckett routine deps-update` subprocess, because a clone plus install plus a full
+test suite has no business inside a scheduler tick.
+
+One run: clone the source read-only (`--no-hardlinks`; the live checkout is only
+ever a clone *source*), detect package managers from the lockfiles actually present
+(npm/bun/pnpm — all supported, only the ones in use ever run; Beckett's own repo is
+bun-only), apply **in-range** updates only (the bare `update` verb, never
+`--latest`), then prove it with typecheck and the test suite. If either goes red the
+run stops there — no push, no PR, and the summary names the failed check. On green
+it opens a PR against `main` via `beckett gh` and posts exactly one terse line with
+the link. Anything the ranges refuse — a major jump, or an outgrown exact pin like
+`betterwright` — is reported as *available, not applied*.
+
+Seeded as `weekly-deps-update`, Sunday mornings 08:00–10:00 PT.
+
+Verified by running it for real against a clone
+(`scripts/ops/deps-update-rehearsal.ts`, which stubs only the GitHub calls). That
+caught two things review would not have: `git add -A` ran *after* the checks, so
+anything the suite left in the tree would have landed in the PR (staging is now
+limited to the paths the update itself changed); and a `BECKETT_DIR` sandbox added
+for the check phase turned out to override the `paths.beckett_dir` that 34
+browser/config tests set for themselves, reddening the suite it was meant to guard
+— reverted, with the residue documented honestly in `docs/routines.md` instead.
+
 ## v6.0.2 (2026-07-24)
 
 ### Volition — Beckett finishes the motion instead of asking permission
