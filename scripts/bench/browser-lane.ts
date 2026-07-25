@@ -123,15 +123,13 @@ const dir = mkdtempSync(join(tmpdir(), "beckett-browser-bench-"));
 const server = Bun.serve({
   port: 0,
   fetch() {
-    // Deterministic fixture: a #ready sentinel to wait on and a #content node to read.
+    // Deterministic fixture: a visible #content node to wait on and read, plus a
+    // button whose click mutates #out so the interaction exercises real DOM work.
     return new Response(
       `<!doctype html><title>Browser lane bench</title>
        <main><h1 id="content">Beckett browser lane benchmark fixture. ${"lorem ipsum ".repeat(40)}</h1>
        <button id="go">Go</button><output id="out"></output></main>
-       <script>
-         document.getElementById('go').onclick = () => { document.getElementById('out').textContent = 'clicked'; };
-         const marker = document.createElement('div'); marker.id = 'ready'; document.body.appendChild(marker);
-       </script>`,
+       <script>document.getElementById('go').onclick = () => { document.getElementById('out').textContent = 'clicked'; };</script>`,
       { headers: { "content-type": "text/html" } },
     );
   },
