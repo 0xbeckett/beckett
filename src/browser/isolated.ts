@@ -22,6 +22,7 @@ import {
   renameSync,
   rmSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
@@ -107,6 +108,12 @@ interface BuildBrowserHostLaunchOptions {
   parentEnv?: NodeJS.ProcessEnv;
   budgetOverrides?: BrowserBudgetOverrides;
   backend?: "playwright" | "betterwright";
+  /**
+   * When set, launch the managed CloakBrowser through this shim binary
+   * (CLOAKBROWSER_BINARY_PATH) instead of its resolved chromium. The shim must
+   * live below {@link cloakCacheDir} so the existing read-only bind exposes it.
+   */
+  cloakBinaryShimPath?: string;
 }
 
 /** Pure command builder, exported so Linux/macOS sandbox policy remains unit-testable. */
@@ -135,7 +142,14 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
   // isolated session never tries to (and fails to) rewrite a read-only mount.
   const cloakEnv: Record<string, string> =
     options.backend === "betterwright" && options.cloakCacheDir
-      ? { CLOAKBROWSER_CACHE_DIR: options.cloakCacheDir, CLOAKBROWSER_AUTO_UPDATE: "false" }
+      ? {
+          CLOAKBROWSER_CACHE_DIR: options.cloakCacheDir,
+          CLOAKBROWSER_AUTO_UPDATE: "false",
+          // Opt-in --disable-gpu shim. cloakbrowser's getLocalBinaryOverride() returns
+          // this verbatim as the browser executablePath; the shim then execs the real
+          // chromium (bind-mounted below cloakCacheDir) with the gpu flags prepended.
+          ...(options.cloakBinaryShimPath ? { CLOAKBROWSER_BINARY_PATH: options.cloakBinaryShimPath } : {}),
+        }
       : {};
   const baseEnv: Record<string, string> = {
     PATH: "/usr/bin:/bin",
@@ -344,6 +358,19 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
   // mirror cloakbrowser's own resolution (CLOAKBROWSER_CACHE_DIR, else ~/.cloakbrowser).
   const cloakCacheDir = deps.cloakCacheDir ?? (process.env.CLOAKBROWSER_CACHE_DIR?.trim() || join(homedir(), ".cloakbrowser"));
   const repoRoot = deps.repoRoot ?? resolve(MODULE_DIR, "../..");
+  // Resolve the --disable-gpu shim once (betterwright backend + opt-in only). Cached so a
+  // relaunch reuses the same shim; failure surfaces loudly on the launch that needed it.
+  let cloakGpuShim: Promise<string> | null = null;
+  function ensureCloakGpuShim(): Promise<string> | undefined {
+    if (backend !== "betterwright" || !settings.disableGpu) return undefined;
+    if (!cloakGpuShim) {
+      cloakGpuShim = writeCloakGpuShim(cloakCacheDir).catch((error) => {
+        cloakGpuShim = null;
+        throw error;
+      });
+    }
+    return cloakGpuShim;
+  }
 
   let child: HostChild | null = null;
   let hostIsolation: BrowserHostLaunch["isolation"] | null = null;
@@ -507,6 +534,7 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
     if (stopped) throw new Error("browser runtime is stopped");
     const currentSettings = hostSettingsForLease(current);
     const hostPath = await browserHostBundle(repoRoot);
+    const cloakBinaryShimPath = await ensureCloakGpuShim();
     const launch = buildBrowserHostLaunch({
       settings: currentSettings,
       platform,
