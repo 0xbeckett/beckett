@@ -375,7 +375,14 @@ export const createRoutinesExtension =
         },
         defaultDepsUpdateDeps({ beckettCli: [process.execPath, BECKETT_CLI_ENTRY], logger }),
       );
-      logger.info("deps-update finished", { status: result.status, prUrl: result.prUrl });
+      // The summary rides the log too: this process's stdout is discarded when the scheduler
+      // launched it, so the daemon log is the only place an operator can read the outcome if the
+      // Discord post below never lands.
+      logger.info("deps-update finished", {
+        status: result.status,
+        prUrl: result.prUrl,
+        summary: result.summary,
+      });
 
       // ONE line, terse, then done. A failed post must not fail the run — the update either landed
       // as a PR or it didn't, and that fact is already true regardless of Discord.
@@ -385,6 +392,9 @@ export const createRoutinesExtension =
         } catch (err) {
           logger.warn("deps-update could not post its summary", { error: String(err) });
         }
+      } else {
+        // Only reachable for a hand-run with no channel configured — the scheduler always passes one.
+        logger.info("deps-update posted nothing (no channel configured)");
       }
       out(result);
     }
