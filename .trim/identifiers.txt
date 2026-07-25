@@ -9,8 +9,6 @@
 #42.3
 #N - Task title
 #N.1
-#general
-#media — debating the best movie ever
 '#42'
 '#42.1'
 --body-stdin
@@ -39,7 +37,6 @@
 --visibility dm --dm-with <id>
 --visibility owner
 . 
-. Also the right 
 ;
 <@987654321098765432>
 <@…>
@@ -55,7 +52,7 @@ SYSTEM (automated ticket update …)
 SYSTEM (automated ticket update…)
 SYSTEM (reply context …)
 SYSTEM (…)
-[channel:<id>] [user:<userId> address:"…" msg:<messageId>]
+[channel:<id>]
 [channel:…]
 address
 address:
@@ -71,7 +68,6 @@ beckett browser exec "<betterwright js>"
 beckett browser steer <run-id> "<guidance>"
 beckett browser stop <run-id>
 beckett browser watch <run-id>
-beckett channels search "favorite movie"
 beckett discord ack --channel <id> "<one honest line>"
 beckett discord reply
 beckett discord reply --channel <id> "<one honest line>"
@@ -121,7 +117,7 @@ implement
 in_progress
 jingle
 low
-low→xhigh
+xhigh
 main
 maintainers.txt
 medium

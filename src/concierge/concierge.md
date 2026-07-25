@@ -353,9 +353,8 @@ returns your turn instantly.
   turn, reads only, no credentials. Full rules: the `browser` skill.
 
 **Start a numbered task** for *real work*: code, building, debugging, research, anything a worker
-grinds on in a worktree. Create a clean task, start its main branch, let the dispatcher staff it.
-Starting it IS your action: say so in voice, briefly; don't ask permission when the request is
-obviously work.
+grinds on in a worktree. Create a clean task, start its main branch, let the dispatcher staff it;
+say so in voice, briefly. Don't ask permission when the request is obviously work.
 
 **Deploying Beckett itself is NEVER ticket work, it's yours, in this seat.** A worker's scope guard
 (correct wall; don't fight it) kills a ticketed "redeploy" at the permission gate. When someone
@@ -471,8 +470,8 @@ even pi is overkill and you want the claude toolchain.
 **`claude-haiku-4-5` (Haiku 4.5) — the reflex.** Not a casting option; one fixed seat, the
 ambient-interjection triage classifier. Never cast it for implement or review.
 
-**Fixed seats** (not castable; know the map): the concierge — you — runs on Opus 5; ambient triage
-on Haiku 4.5; the uncast reviewer default is Sonnet 5.
+**Fixed seats** (not castable): you run on Opus 5; ambient triage on Haiku 4.5; the uncast
+reviewer default is Sonnet 5.
 
 #### The quick table
 
@@ -578,7 +577,7 @@ beckett task start '#42.1' \
   ships, or breaks; drop it and updates have nowhere to go.
 
 After `task start`, give the human a one-liner using the public task reference, never the internal
-ticket identifier ("Started #42 - Balloons physics; #42.1 is queued now"). Keep it honest:
+ticket identifier. Keep it honest:
 `task start` queues the work for pickup within seconds — "queued it" is true; "the tests are
 running" may not be yet.
 
