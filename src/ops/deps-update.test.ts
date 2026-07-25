@@ -9,6 +9,7 @@ import {
   dependencyRanges,
   detectPackageManagers,
   findHeldBack,
+  parsePorcelainPaths,
   parsePrUrl,
   runDepsUpdate,
   satisfiesRange,
@@ -44,6 +45,8 @@ interface Harness {
   deps: DepsUpdateDeps;
   /** Every command run, as "cwd :: argv". */
   ran: string[];
+  /** Every command run, with the argv and the env layered over it. */
+  calls: Array<{ cmd: string[]; cwd: string; env?: Record<string, string> }>;
   /** Every `beckett …` invocation's argv. */
   beckettCalls: string[][];
   removed: string[];
@@ -60,6 +63,7 @@ function harness(opts: {
   latest?: Record<string, string>;
 } = {}): Harness {
   const ran: string[] = [];
+  const calls: Array<{ cmd: string[]; cwd: string; env?: Record<string, string> }> = [];
   const beckettCalls: string[][] = [];
   const removed: string[] = [];
   const lockfiles = opts.lockfiles ?? ["bun.lock"];
@@ -69,6 +73,7 @@ function harness(opts: {
     async exec(cmd, o) {
       const joined = cmd.join(" ");
       ran.push(`${o.cwd} :: ${joined}`);
+      calls.push({ cmd, cwd: o.cwd, ...(o.env ? { env: o.env } : {}) });
       for (const [prefix, result] of Object.entries(opts.respond ?? {})) {
         if (joined.startsWith(prefix)) return result;
       }
@@ -92,7 +97,7 @@ function harness(opts: {
     removeDir: (path) => void removed.push(path),
     logger: quietLogger,
   };
-  return { deps, ran, beckettCalls, removed };
+  return { deps, ran, calls, beckettCalls, removed };
 }
 
 // ── manager detection ────────────────────────────────────────────────────────────────────────
@@ -248,6 +253,40 @@ describe("the run never touches the live checkout", () => {
     await runDepsUpdate(request(), h.deps);
     const clone = h.ran.find((line) => line.includes("git clone"))!;
     expect(clone).toContain("--no-hardlinks");
+  });
+
+  test("the check commands get their own BECKETT_DIR, outside the clone", async () => {
+    const h = harness();
+    await runDepsUpdate(request(), h.deps);
+    const clonePath = "/tmp/deps-work/beckett-deps-update-2026-07-26";
+    const checks = h.calls.filter((c) => c.cmd.includes("run"));
+    expect(checks.map((c) => c.cmd.join(" "))).toEqual(["bun run typecheck", "bun run test"]);
+    for (const check of checks) {
+      // The one place arbitrary project code runs — it must not be able to write the LIVE state.
+      expect(check.env?.BECKETT_DIR).toBe(`${clonePath}-state`);
+      expect(check.env?.BECKETT_HOME).toBe(`${clonePath}-state`);
+      // Outside the clone, so `git status` can never see it and the commit can never contain it.
+      expect(check.env!.BECKETT_DIR!.startsWith(`${clonePath}/`)).toBe(false);
+    }
+    // Only the check commands get the override; git and the update run with the ambient env.
+    expect(h.calls.filter((c) => c.env).length).toBe(2);
+    // ...and the scratch dir is cleaned up alongside the clone.
+    expect(h.removed).toContain(`${clonePath}-state`);
+  });
+
+  test("only the paths the UPDATE changed are staged, never a blanket `git add -A`", async () => {
+    // The test suite drops junk in the tree; `git status` was captured before it ran.
+    const h = harness({ statusPorcelain: ' M bun.lock\n M package.json\n?? "odd name.txt"\nR  a.ts -> b.ts\n' });
+    await runDepsUpdate(request(), h.deps);
+    const add = h.calls.find((c) => c.cmd[1] === "add")!;
+    expect(add.cmd).toEqual(["git", "add", "--", "b.ts", "bun.lock", "odd name.txt", "package.json"]);
+    expect(add.cmd).not.toContain("-A");
+  });
+
+  test("parsePorcelainPaths unquotes, takes a rename's NEW path, and dedupes", () => {
+    expect(parsePorcelainPaths(' M bun.lock\n?? "odd name.txt"\nR  old.ts -> new.ts\n M bun.lock\n\n'))
+      .toEqual(["bun.lock", "new.ts", "odd name.txt"]);
+    expect(parsePorcelainPaths("")).toEqual([]);
   });
 
   test("the clone is removed even when the run blows up", async () => {

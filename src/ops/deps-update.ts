@@ -567,14 +567,18 @@ export function parsePrUrl(stdout: string): string | null {
 // =======================================================================================
 
 /** Run a command, capturing output, with a hard timeout so no update can hang a weekly routine. */
-async function spawnCapture(cmd: string[], opts: { cwd: string; timeoutMs?: number }): Promise<ExecResult> {
+async function spawnCapture(
+  cmd: string[],
+  opts: { cwd: string; timeoutMs?: number; env?: Record<string, string> },
+): Promise<ExecResult> {
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    // Never block on a credential/passphrase prompt, and keep npm/bun non-interactive.
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", CI: "1" },
+    // Never block on a credential/passphrase prompt, and keep npm/bun non-interactive. The caller's
+    // `env` layers on top — that is how runChecks relocates BECKETT_DIR away from the live state.
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", CI: "1", ...opts.env },
   });
   const timer = setTimeout(() => proc.kill(), opts.timeoutMs ?? GIT_TIMEOUT_MS);
   try {
