@@ -291,9 +291,11 @@ async function cloneSource(req: DepsUpdateRequest, deps: DepsUpdateDeps): Promis
   });
   if (clone.code !== 0) throw new Error(`git clone of ${req.sourceRepo} failed: ${firstLine(clone.stderr)}`);
 
-  // Base off the source's remote-tracking ref when it has one (that is what the PR will diff
-  // against), falling back to its local branch. Resolved INSIDE the clone — no fetch, no network,
-  // and no chance of touching the source repo.
+  // Base off the source's `base` branch. `git clone` maps the source's LOCAL branches onto the
+  // clone's `origin/*`, so `origin/main` here IS the source checkout's own main — which for the
+  // daemon's tree is the deployed commit, exactly the right base for a PR. The bare `base` fallback
+  // covers a source whose default branch was checked out under that name. Resolved INSIDE the clone:
+  // no fetch, no network, and no command that could touch the source repo.
   let baseRef = "";
   for (const candidate of [`origin/${req.base}`, req.base]) {
     const r = await deps.exec(["git", "rev-parse", "--verify", "--quiet", candidate], { cwd: workDir });
