@@ -99,6 +99,104 @@ test("a resume that dies before init falls back to a FRESH session seeded with t
   expect(s.seedPending).toBeNull(); // consumed once
 });
 
+// ── issue #98: re-drive the in-flight turn on the seeded fresh session ─────────────────────
+
+/** The private surface the issue-#98 re-drive tests script. */
+interface RedriveGuts {
+  sessionId: string;
+  lastHandoff: string;
+  child: unknown;
+  freshNextLaunch: boolean;
+  initSeen: boolean;
+  lastLaunchWasResume: boolean;
+  consecutiveCrashes: number;
+  launch(isResume: boolean): Promise<void>;
+  writeUserLine(content: unknown): void;
+  handleLine(line: string, from: unknown): void;
+  runTurn(message: unknown, meta?: unknown): Promise<unknown>;
+}
+
+/**
+ * Wire a scripted claude harness onto a real ConciergeSession: each `launch` records the attempt
+ * and installs a fresh fake child; each `writeUserLine` fires that attempt's `script(child)` on a
+ * microtask (so the pending turn is already registered). This drives the ACTUAL runTurn/driveTurn/
+ * onResult/onExit machinery — only the subprocess is faked.
+ */
+function scriptHarness(
+  s: RedriveGuts,
+  script: (attempt: number, child: { kill(): void }, s: RedriveGuts) => void,
+): { launches: boolean[]; writes: unknown[] } {
+  const launches: boolean[] = [];
+  const writes: unknown[] = [];
+  s.child = null;
+  s.launch = async (isResume: boolean) => {
+    s.initSeen = false;
+    s.lastLaunchWasResume = isResume;
+    s.child = { kill() {} } as unknown;
+    launches.push(isResume);
+  };
+  s.writeUserLine = (content: unknown) => {
+    writes.push(content);
+    const attempt = launches.length;
+    const child = s.child as { kill(): void };
+    queueMicrotask(() => script(attempt, child, s));
+  };
+  return { launches, writes };
+}
+
+test("issue #98: an unresumable resume re-drives the SAME turn on the seeded fresh session", async () => {
+  tempBeckettDir();
+  const s = makeSession() as unknown as RedriveGuts;
+  s.sessionId = "dead-session";
+  s.lastHandoff = "we were mid-thread about the deploy rename";
+
+  const { launches, writes } = scriptHarness(s, (attempt, child, sess) => {
+    if (attempt === 1) {
+      // The resumed transcript is gone: a bare error result, then the process exits before init.
+      sess.handleLine(JSON.stringify({ type: "result", subtype: "error_during_execution" }), child);
+      void (sess as unknown as { onExit(c: number, x: unknown): Promise<void> }).onExit(1, child);
+    } else {
+      // The seeded fresh session inits and answers normally.
+      sess.handleLine(JSON.stringify({ type: "system", subtype: "init" }), child);
+      sess.handleLine(
+        JSON.stringify({ type: "result", structured_output: { decision: "send", message: "ok, here's where we were" } }),
+        child,
+      );
+    }
+  });
+
+  const output = await s.runTurn("hey, where were we?");
+
+  // The turn produced a real delivery output instead of being dropped / suppressed.
+  expect(output).toEqual({ decision: "send", message: "ok, here's where we were" });
+  // Exactly one re-drive: resume attempt, then one fresh attempt — never a loop.
+  expect(launches).toEqual([true, false]);
+  // The fresh session id was minted and the retry rode the seeded handoff note.
+  expect(s.sessionId).not.toBe("dead-session");
+  expect(writes[1]).toContain("we were mid-thread about the deploy rename");
+  // The transient crash was counted then cleared by the successful turn — no lingering alarm.
+  expect(s.consecutiveCrashes).toBe(0);
+});
+
+test("issue #98: a genuinely broken harness fails loudly after one re-drive (never loops)", async () => {
+  tempBeckettDir();
+  const s = makeSession() as unknown as RedriveGuts;
+  s.sessionId = "dead-session";
+  s.lastHandoff = "handoff";
+
+  const { launches } = scriptHarness(s, (_attempt, child, sess) => {
+    // Every launch dies before init — the resume AND the fresh fallback.
+    sess.handleLine(JSON.stringify({ type: "result", subtype: "error" }), child);
+    void (sess as unknown as { onExit(c: number, x: unknown): Promise<void> }).onExit(1, child);
+  });
+
+  // The retry is bounded: the second (fresh) death is not retried — it surfaces as an error.
+  await expect(s.runTurn("q")).rejects.toThrow();
+  expect(launches).toEqual([true, false]);
+  // Both deaths counted toward crash-loop detection — the existing alarm path is unaffected.
+  expect(s.consecutiveCrashes).toBe(2);
+});
+
 // ── 2. superseded-child isolation ───────────────────────────────────────────────────────
 
 test("output from a superseded child never touches the current turn", () => {

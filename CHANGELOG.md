@@ -2,6 +2,93 @@
 
 ## Unreleased
 
+## v6.1.0 (2026-07-24)
+
+### `beckett gh` gets a passthrough, and release tags can finally ship (#88)
+
+`beckett gh push` could only ever push **branches** — it rewrote any ref into
+`refs/heads/<branch>`, so publishing a release tag (`v6.0.3`/`v6.0.4`) was
+structurally impossible through the sanctioned path. And the curated verb list
+(`repo`, `pr`, `push`) was a permanent reimplementation treadmill against `gh`'s real
+surface. Two openers, both on the wrapper that *already* injects the PAT per
+invocation — this widens the aperture, it doesn't widen the blast radius.
+
+**`beckett gh raw -- <any gh args>`.** A passthrough that runs the real `gh` binary
+verbatim with the token injected through the environment (`GH_TOKEN` + the inline git
+credential helper, never argv), in `--dir` if given, streaming stdout/stderr and
+propagating `gh`'s exit code. That's the whole `gh` feature suite — releases, issues,
+gists, `gh api`, arbitrary flags — with zero per-verb maintenance. The curated verbs
+stay byte-for-byte (the characterization suite and the deps-update `['gh','push']` /
+`['gh','pr','create']` argv shapes are unchanged); passthrough is purely additive.
+
+**Release tags.** `beckett gh push --repo <r> --tag <t>` pushes
+`refs/tags/<t>:refs/tags/<t>` explicitly, so a tag lands as a tag. Pushing `v6.0.4`
+now works end to end.
+
+The token stays out of argv, out of `~/.git-credentials`, and out of every worker's
+inherited environment — deliberately **not** the bashrc-alias variant, which would
+export the PAT into every interactive shell and every subprocess.
+
+On the live symptom: the `v6.0.3`/`v6.0.4` "pre-receive hook declined" failures were
+the **ref-rewrite bug alone**, not a repo ruleset or a PAT tag-scope problem. Checked
+against the real repo: `0xbeckett/beckett` has **no rulesets** and no legacy tag
+protection (only branch protection on `main`, which never touches `refs/tags/*`), and
+the PAT has tag-write scope — a probe tag pushed through the new `--tag` path landed
+and was cleanly deleted. The sanctioned path simply could not express a `refs/tags/*`
+destination; now it can.
+
+## v6.0.3 (2026-07-24)
+
+### Weekly routines, and a dependency update that PRs itself (#85)
+
+SSH noticed `betterwright` pinned at 1.1.3 locally while 1.3.1 was published. ro's
+call: stop hand-bumping deps forever. Two pieces.
+
+**The `weekly` cadence.** `CadenceSchema` always advertised itself as "the seam for
+weekly / interval to slot in without touching the rest of the engine" — this took
+it. A weekly routine carries a weekday and keys its period to the tz-local **ISO
+week** (`2026-W30`), so the once-per-period idempotency guard in `scheduler.ts`
+works exactly as daily's does: a restart mid-week neither double-fires nor re-rolls
+the minute already chosen inside that week's window. ISO weeks run Monday→Sunday
+and belong to the year holding their Thursday, so a Sunday routine fires on day 7
+of the week it is keyed to, and a New Year that splits a week (2026-12-28 through
+2027-01-03 are all `2026-W53`) still gets exactly one fire. The fuzz-window
+humanization is unchanged — a random minute inside the window, persisted per
+period. `beckett routine add --weekly sunday` creates one; `routine ls` shows
+`weekly (sunday)` and spells the weekday out in the next fire time.
+
+`nextFireAt` now actually reads `lastFiredPeriodKey` (it always took the argument
+and never used it): a period that already fired points at the *next* one, so a
+fired Sunday stops reading as "next fire" for the six days after it.
+
+**The `deps-update` action.** A new routine action, and the first that does **not**
+go through the privileged browser lane — it is a local maintenance chore with no
+use for a web session, so it gets its own dispatch lane and the dispatcher forks on
+that lane *before* it resolves the browser agent at all. It runs as its own
+`beckett routine deps-update` subprocess, because a clone plus install plus a full
+test suite has no business inside a scheduler tick.
+
+One run: clone the source read-only (`--no-hardlinks`; the live checkout is only
+ever a clone *source*), detect package managers from the lockfiles actually present
+(npm/bun/pnpm — all supported, only the ones in use ever run; Beckett's own repo is
+bun-only), apply **in-range** updates only (the bare `update` verb, never
+`--latest`), then prove it with typecheck and the test suite. If either goes red the
+run stops there — no push, no PR, and the summary names the failed check. On green
+it opens a PR against `main` via `beckett gh` and posts exactly one terse line with
+the link. Anything the ranges refuse — a major jump, or an outgrown exact pin like
+`betterwright` — is reported as *available, not applied*.
+
+Seeded as `weekly-deps-update`, Sunday mornings 08:00–10:00 PT.
+
+Verified by running it for real against a clone
+(`scripts/ops/deps-update-rehearsal.ts`, which stubs only the GitHub calls). That
+caught two things review would not have: `git add -A` ran *after* the checks, so
+anything the suite left in the tree would have landed in the PR (staging is now
+limited to the paths the update itself changed); and a `BECKETT_DIR` sandbox added
+for the check phase turned out to override the `paths.beckett_dir` that 34
+browser/config tests set for themselves, reddening the suite it was meant to guard
+— reverted, with the residue documented honestly in `docs/routines.md` instead.
+
 ## v6.0.2 (2026-07-24)
 
 ### Volition — Beckett finishes the motion instead of asking permission

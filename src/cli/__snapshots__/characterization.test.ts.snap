@@ -1805,3 +1805,36 @@ exports[`cli: persona: daemon down fails on the bus 1`] = `
   "stdout": "",
 }
 `;
+
+exports[`cli: gh: push --tag without a repo prints usage 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: usage: beckett gh push --repo <owner/name> --tag <tag> [--dir <d>]
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: gh: raw with no gh args prints usage 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: usage: beckett gh raw [--dir <d>] -- <gh args>
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: gh: raw with an empty passthrough prints usage 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: usage: beckett gh raw [--dir <d>] -- <gh args>
+"
+,
+  "stdout": "",
+}
+`;

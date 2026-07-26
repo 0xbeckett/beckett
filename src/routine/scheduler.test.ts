@@ -149,3 +149,72 @@ test("fireNow --force dispatches even when already fired this period", async () 
   await scheduler.fireNow("daily-x-shitpost", { force: true });
   expect(calls.length).toBe(1);
 });
+
+// ── weekly cadence through the real scheduler (issue #85) ────────────────────────────────────
+
+/** Sun 2026-07-26 09:30 PT (inside the built-in deps-update 08:00–10:00 window) = 16:30Z. */
+const SUNDAY_INSIDE = new Date("2026-07-26T16:30:00.000Z");
+
+test("the weekly built-in fires once per ISO WEEK, not once per day", async () => {
+  const { store } = makeStore();
+  const { dispatcher, calls } = recorder();
+  const scheduler = startRoutineScheduler({
+    store, dispatcher, logger: quietLogger, now: () => SUNDAY_INSIDE, rng: () => 0, intervalMs: 10_000_000,
+  });
+  stoppers.push(scheduler.stop);
+
+  await scheduler.tick();
+  await scheduler.tick();
+  const weeklyCalls = calls.filter((p) => p.routineId === "weekly-deps-update");
+  expect(weeklyCalls.length).toBe(1);
+  // Its own lane — a maintenance job must never be handed to the browser.
+  expect(weeklyCalls[0]!.lane).toBe("deps-update");
+  expect(weeklyCalls[0]!.browserTask).toBeNull();
+  expect(weeklyCalls[0]!.credsEntry).toBeNull();
+
+  // The period claimed on disk is the ISO WEEK, so every remaining day of it is already spent.
+  const state = (await store.get("weekly-deps-update"))!.state;
+  expect(state.lastFiredPeriodKey).toBe("2026-W30");
+});
+
+test("a restart mid-week keeps the weekly period claimed (no second run that week)", async () => {
+  const { path, store } = makeStore();
+  await store.setState("weekly-deps-update", {
+    periodKey: "2026-W30",
+    chosenFireAt: "2026-07-26T15:12:00.000Z",
+    lastFiredPeriodKey: "2026-W30",
+    lastFiredAt: "2026-07-26T15:12:00.000Z",
+  });
+
+  // A restart on the Wednesday AFTER that Sunday — same ISO week, so still spent.
+  const restarted = new RoutineStore(path);
+  const { dispatcher, calls } = recorder();
+  const scheduler = startRoutineScheduler({
+    store: restarted, dispatcher, logger: quietLogger,
+    now: () => new Date("2026-07-22T20:00:00.000Z"), rng: () => 0.95, intervalMs: 10_000_000,
+  });
+  stoppers.push(scheduler.stop);
+  await scheduler.tick();
+
+  expect(calls.filter((p) => p.routineId === "weekly-deps-update").length).toBe(0);
+  // ...and the chosen instant is untouched — a restart must never re-roll the week's time.
+  const state = (await restarted.get("weekly-deps-update"))!.state;
+  expect(state.chosenFireAt).toBe("2026-07-26T15:12:00.000Z");
+});
+
+test("a weekly routine does not fire on a non-matching weekday", async () => {
+  const { store } = makeStore();
+  const { dispatcher, calls } = recorder();
+  const scheduler = startRoutineScheduler({
+    store, dispatcher, logger: quietLogger,
+    // Wed 2026-07-22 09:30 PT — inside the window's HOURS but the wrong day.
+    now: () => new Date("2026-07-22T16:30:00.000Z"), rng: () => 0, intervalMs: 10_000_000,
+  });
+  stoppers.push(scheduler.stop);
+  await scheduler.tick();
+  expect(calls.filter((p) => p.routineId === "weekly-deps-update").length).toBe(0);
+  // The week's time IS rolled (and persisted) — it just sits in the future, on Sunday.
+  const state = (await store.get("weekly-deps-update"))!.state;
+  expect(state.periodKey).toBe("2026-W30");
+  expect(state.chosenFireAt).toBe("2026-07-26T15:00:00.000Z");
+});

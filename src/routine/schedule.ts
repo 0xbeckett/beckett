@@ -5,8 +5,9 @@
  * timezone, compute
  *
  *   - the **period key** for an instant (the unit a routine fires at most once per — the
- *     tz-local calendar date for `daily`), and
- *   - a **concrete fire time** chosen uniformly at random inside the window for that period.
+ *     tz-local calendar date for `daily`, the tz-local ISO week for `weekly`), and
+ *   - a **concrete fire time** chosen uniformly at random inside the window for that period
+ *     (for `weekly`, inside the window on the cadence's chosen weekday).
  *
  * Everything here is PURE and the randomness is INJECTED (`rng: () => number` in [0,1)), so
  * "the chosen minute varies run-to-run" is verified deterministically in tests by feeding a
@@ -14,8 +15,11 @@
  * `Intl.DateTimeFormat`, which every supported runtime ships with the IANA tz database.
  */
 
-import type { Cadence, FuzzWindow, Schedule } from "./types.ts";
-import { toMinutes } from "./types.ts";
+import type { Cadence, FuzzWindow, Schedule, Weekday } from "./types.ts";
+import { toMinutes, WEEKDAYS } from "./types.ts";
+
+/** One calendar day in ms. Only used for whole-date arithmetic on UTC-midnight instants. */
+const DAY_MS = 86_400_000;
 
 /**
  * A tiny deterministic PRNG (Mulberry32) so a seed reproduces a run in tests. Lives here beside
@@ -106,20 +110,106 @@ export function localDateKey(tz: string, at: Date): string {
   return `${f.year}-${mm}-${dd}`;
 }
 
+// ── ISO week arithmetic (the `weekly` cadence's period key) ─────────────────────────────────
+//
+// Plain whole-date math on UTC-midnight instants: a tz-local calendar date is turned into a
+// naive "YYYY-MM-DD" by localDateKey FIRST, so nothing below ever has to reason about offsets.
+// Only windowBounds crosses back into a real timezone, exactly as it already did for daily.
+
+/** "YYYY-MM-DD" → the UTC-midnight instant of that naive calendar date, in ms. */
+function dateKeyToUtcMs(dateKey: string): number {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return Date.UTC(year!, month! - 1, day!);
+}
+
+/** The inverse of {@link dateKeyToUtcMs}: a UTC-midnight instant → "YYYY-MM-DD". */
+function utcMsToDateKey(ms: number): string {
+  const at = new Date(ms);
+  const mm = String(at.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(at.getUTCDate()).padStart(2, "0");
+  return `${at.getUTCFullYear()}-${mm}-${dd}`;
+}
+
 /**
- * The key of the period `at` falls in. A routine fires at most once per period key. For
- * `daily` that's the tz-local date; weekly/interval would derive their own key here.
+ * The ISO-8601 week-numbering key of a naive calendar date, e.g. "2026-W30". Weeks run Monday→
+ * Sunday and belong to the year that holds their Thursday, which is what makes this a sound
+ * once-per-week idempotency key across a New Year boundary: 2027-01-01 (a Friday) keys to
+ * "2026-W53", the same week as 2026-12-28, so a Sunday routine can't fire twice in one week.
+ */
+export function isoWeekKeyOfDate(dateKey: string): string {
+  const ms = dateKeyToUtcMs(dateKey);
+  const mondayIndex = (new Date(ms).getUTCDay() + 6) % 7; // 0 = Monday … 6 = Sunday
+  const thursday = ms + (3 - mondayIndex) * DAY_MS;
+  const isoYear = new Date(thursday).getUTCFullYear();
+  const week = Math.floor((thursday - Date.UTC(isoYear, 0, 1)) / (7 * DAY_MS)) + 1;
+  return `${isoYear}-W${String(week).padStart(2, "0")}`;
+}
+
+/** The ISO week key of the tz-local date `at` falls on. */
+export function isoWeekKey(tz: string, at: Date): string {
+  return isoWeekKeyOfDate(localDateKey(tz, at));
+}
+
+/** The calendar date ("YYYY-MM-DD") that `weekday` falls on inside ISO week `weekKey`. */
+export function isoWeekDate(weekKey: string, weekday: Weekday): string {
+  const m = weekKey.match(/^(\d{4})-W(\d{2})$/);
+  if (!m) throw new Error(`not an ISO week key: ${weekKey}`);
+  const isoYear = Number(m[1]);
+  const week = Number(m[2]);
+  // Jan 4 is always in ISO week 1, so week 1's Monday is the Monday on-or-before Jan 4.
+  const jan4 = Date.UTC(isoYear, 0, 4);
+  const week1Monday = jan4 - ((new Date(jan4).getUTCDay() + 6) % 7) * DAY_MS;
+  return utcMsToDateKey(week1Monday + ((week - 1) * 7 + WEEKDAYS.indexOf(weekday)) * DAY_MS);
+}
+
+/**
+ * The key of the period `at` falls in. A routine fires at most once per period key: the tz-local
+ * date for `daily`, the tz-local ISO week for `weekly`.
  */
 export function periodKey(cadence: Cadence, window: FuzzWindow, at: Date): string {
   switch (cadence.kind) {
     case "daily":
       return localDateKey(window.tz, at);
+    case "weekly":
+      return isoWeekKey(window.tz, at);
   }
 }
 
-/** The [start, end) UTC instants of the window for the period keyed by `key` ("YYYY-MM-DD"). */
-export function windowBounds(window: FuzzWindow, key: string): { start: Date; end: Date } {
-  const [year, month, day] = key.split("-").map(Number);
+/**
+ * The tz-local calendar DATE whose window a period's fire lands in. For `daily` the period key
+ * already IS that date; for `weekly` it is the cadence's weekday inside the keyed ISO week. This
+ * is the one place the two cadences differ downstream — {@link windowBounds} and everything above
+ * it stay date-keyed and cadence-blind.
+ */
+export function periodDateKey(cadence: Cadence, key: string): string {
+  switch (cadence.kind) {
+    case "daily":
+      return key;
+    case "weekly":
+      return isoWeekDate(key, cadence.weekday);
+  }
+}
+
+/**
+ * How far ahead "the next period" is — the step {@link nextFireAt} walks when the current period
+ * is spent (already fired, or its window elapsed unfired). One real day / one real week; a DST
+ * shift moves the wall-clock, never which period the landing instant belongs to.
+ */
+export function periodAdvanceMs(cadence: Cadence): number {
+  switch (cadence.kind) {
+    case "daily":
+      return DAY_MS;
+    case "weekly":
+      return 7 * DAY_MS;
+  }
+}
+
+/**
+ * The [start, end) UTC instants of the window on the calendar DATE `dateKey` ("YYYY-MM-DD").
+ * Cadence-blind: a weekly period resolves to its date via {@link periodDateKey} first.
+ */
+export function windowBounds(window: FuzzWindow, dateKey: string): { start: Date; end: Date } {
+  const [year, month, day] = dateKey.split("-").map(Number);
   const [sh, sm] = window.start.split(":").map(Number);
   const [eh, em] = window.end.split(":").map(Number);
   return {
@@ -133,18 +223,26 @@ export function windowBounds(window: FuzzWindow, key: string): { start: Date; en
  * to whole-minute granularity so the humanized time reads naturally (12:07, 12:41, …) and so
  * "the chosen minute varies run-to-run" is the observable, testable property. `rng` returns a
  * float in [0,1); inject a seeded one in tests.
+ *
+ * A `weekly` period's window sits on the cadence's weekday inside the keyed ISO week — the fuzz
+ * is identical, it just lands on one day of seven instead of every day.
  */
 export function rollFireTime(schedule: Schedule, key: string, rng: () => number): Date {
-  const { start } = windowBounds(schedule.window, key);
+  const { start } = windowBounds(schedule.window, periodDateKey(schedule.cadence, key));
   const spanMinutes = toMinutes(schedule.window.end) - toMinutes(schedule.window.start);
   const minute = Math.min(spanMinutes - 1, Math.floor(rng() * spanMinutes));
   return new Date(start.getTime() + minute * 60_000);
 }
 
 /**
- * The next concrete fire time for display: the persisted `chosenFireAt` if it belongs to the
- * current-or-later period, else the roll for the current period (for a routine the daemon
- * hasn't ticked yet). `rng` is only consulted for the un-rolled case.
+ * The next concrete fire time for display: the persisted `chosenFireAt` while the current period
+ * is still pending (so `routine ls` shows the same instant the scheduler will actually fire at,
+ * even once it's a few seconds overdue), else the roll for the NEXT period. `rng` is only
+ * consulted for a period that has no persisted roll.
+ *
+ * "Spent" means either already fired this period — which is why `lastFiredPeriodKey` is read here
+ * and matters much more for weekly (a fired Sunday would otherwise read as "next fire" for the
+ * six days after it) — or the window elapsed without a fire at all.
  */
 export function nextFireAt(
   schedule: Schedule,
@@ -153,11 +251,16 @@ export function nextFireAt(
   rng: () => number,
 ): Date {
   const key = periodKey(schedule.cadence, schedule.window, now);
-  if (state.periodKey === key && state.chosenFireAt) {
-    return new Date(state.chosenFireAt);
+  if (state.lastFiredPeriodKey !== key) {
+    if (state.periodKey === key && state.chosenFireAt) return new Date(state.chosenFireAt);
+    const rolled = rollFireTime(schedule, key, rng);
+    if (rolled.getTime() >= now.getTime()) return rolled;
   }
-  const rolled = rollFireTime(schedule, key, rng);
-  if (rolled.getTime() >= now.getTime()) return rolled;
-  // Today's window already fully elapsed and unfired — the next fire is tomorrow's window.
-  return rollFireTime(schedule, localDateKey(schedule.window.tz, new Date(now.getTime() + 24 * 3_600_000)), rng);
+  // This period is spent (fired, or its window fully elapsed unfired) — roll the next one's.
+  const nextKey = periodKey(
+    schedule.cadence,
+    schedule.window,
+    new Date(now.getTime() + periodAdvanceMs(schedule.cadence)),
+  );
+  return rollFireTime(schedule, nextKey, rng);
 }

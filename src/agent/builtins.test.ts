@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentStore } from "./store.ts";
-import { builtinAgentDefs, builtinAgentIds, SOCIAL_MEDIA_AGENT_ID } from "./builtins.ts";
+import { builtinAgentDefs, builtinAgentIds, SOCIAL_MEDIA_AGENT_ID, X_PING_ROSTER } from "./builtins.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -23,6 +23,33 @@ test("ships a social-media builtin defined entirely as data (prompt + seat, no c
   // No credential is baked into the definition.
   expect(JSON.stringify(def).toLowerCase()).not.toContain("password");
   expect(builtinAgentIds()).toContain(SOCIAL_MEDIA_AGENT_ID);
+});
+
+test("PING SOMEONE names an explicit roster, rotates the target, and never @s a stranger (issue #107)", () => {
+  const prompt = builtinAgentDefs().find((a) => a.id === SOCIAL_MEDIA_AGENT_ID)!.systemPrompt;
+  const flat = prompt.toLowerCase().replace(/\s+/g, " "); // collapse the wrapped lane text
+
+  // The roster is real and led by the established interlocutor — a single verified handle is valid
+  // (and strictly safer than one padded with an unverified guess).
+  expect(X_PING_ROSTER.length).toBeGreaterThanOrEqual(1);
+  expect(X_PING_ROSTER).toContain("@jawrooo_");
+
+  // No entry is a bare unverified placeholder: every roster handle is a real, specific X handle.
+  for (const handle of X_PING_ROSTER) expect(handle).not.toBe("@ssh");
+
+  // The prompt is BUILT from the roster (single source of truth), so every handle appears in the lane text.
+  for (const handle of X_PING_ROSTER) expect(prompt).toContain(handle);
+
+  // Target rotation: consecutive ping-posts must not reuse the same person, checked against recent posts.
+  expect(flat).toContain("with_replies");
+  expect(flat).toContain("not @ the same person two ping-posts running");
+
+  // No path to an arbitrary follower/stranger: the roster is the COMPLETE allow-list.
+  expect(flat).toContain("complete list of who you may @");
+  expect(flat).toContain("never @ a stranger");
+
+  // Existing lane-rotation instruction is untouched.
+  expect(prompt).toContain("PICK A LANE (vary it — do not lean on the same lane every time):");
 });
 
 test("the store seeds the social-media agent into agents.json on first load", async () => {

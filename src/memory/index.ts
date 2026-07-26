@@ -382,9 +382,21 @@ export class MemoryStore implements Memory {
     this.mossSyncedGraph = undefined;
     await this.ensureDir();
     let g = this.buildGraph();
-    const scanned = [...g.nodes.values()].filter((n) => !n.phantom).length;
+    // `scanned` is how many memory files the pass SAW, not how many parsed cleanly — the ticket's
+    // contract (issue #97) is that maintain sees the whole store. Count the enumerated tree, so a
+    // file that failed to parse still shows up in the total (buildGraph logged why it dropped)
+    // rather than silently shrinking the number and hiding that the store is bigger than the graph.
+    const files = this.listMarkdownFiles();
+    const scanned = files.length;
     const plan = planMaintenance(g, Date.now());
-    const report: MaintainReport = { scanned, ...plan, dryRun: Boolean(opts.dryRun) };
+    // A phantom is a link to a name with NO file. A name that DOES have a file on disk but
+    // failed to parse (e.g. a truncated write) is a broken file, not a missing one — reporting
+    // it as a phantom sends a re-`remember` down the wrong path and manufactures a false gap in
+    // the graph (issue #97). Drop those from the phantom list here, where the filesystem is in
+    // reach; buildGraph already logged the parse failure that made the node invisible.
+    const onDisk = new Set(files.map((p) => basename(p, ".md")));
+    const phantoms = plan.phantoms.filter((name) => !onDisk.has(name));
+    const report: MaintainReport = { scanned, ...plan, phantoms, dryRun: Boolean(opts.dryRun) };
     if (report.dryRun || (plan.archives.length === 0 && plan.merges.length === 0)) return report;
 
     // Merges first: they rewrite inbound links, which archiving must not race.
@@ -946,11 +958,32 @@ function mergeInto(existing: MemoryNode, intent: RememberIntent): NodeContent {
     body = intent.op === "append" ? `${body}\n\n${intent.body.trim()}`.trim() : intent.body.trim();
   }
 
-  return {
-    metadata,
-    description: intent.description?.trim() ?? existing.description,
-    body,
-  };
+  // The MEMORY.md one-liner is derived from `description`, and it's the ONLY thing loaded into
+  // every session (the body is invisible until a recall pulls the file). So a re-observation
+  // that restates the body but forgets to restate the description leaves the always-loaded hook
+  // asserting the OLD, now-contradicted claim — the corrected body never reaches the reader
+  // until something forces a recall (issue #96: a node's body said cross-fork PRs were CONFIRMED
+  // WORKING while its index line still read "PAT can't open PRs", and that stale hook drove a
+  // wrong answer three weeks later). An `op: "update"` REPLACES the body, so it's a full
+  // re-statement: when it carries a new body but no new description, refresh the hook FROM that
+  // new body's leading line so the index can never contradict it. `append` is accretion (the
+  // body still leads with the prior statement), so its existing hook stays.
+  const restatedHook =
+    intent.op === "update" && intent.body != null && body ? leadLine(body) : "";
+  const description = intent.description?.trim() || restatedHook || existing.description;
+
+  return { metadata, description, body };
+}
+
+/** First substantive line of a body as a one-line hook: strips a leading list/heading/quote
+ *  marker, collapses whitespace. Empty when the body has no prose line (keeps the caller's
+ *  fallback in play). Used to refresh a restated memory's index one-liner (issue #96). */
+function leadLine(body: string): string {
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.replace(/^\s*(?:[-*>]|#{1,6}|\d+[.)])\s+/, "").trim();
+    if (line && !/^\[\[[a-z0-9-]+\]\]$/.test(line)) return line.replace(/\s+/g, " ");
+  }
+  return "";
 }
 
 /** Materialize `links` into the content so the next graph build re-extracts them (Spec 08 §2.2). */
@@ -1006,8 +1039,11 @@ export function parseMemoryFile(
       if (m) add(m.name, field, m.alias);
     }
   }
-  // (b) prose edges from the body.
-  for (const m of cleanBody.matchAll(WIKILINK)) {
+  // (b) prose edges from the body — but NOT from inside code (fenced blocks or inline `spans`).
+  //     A note that documents the memory format writes literal `[[name]]` / `[[wikilinks]]`
+  //     examples in backticks; those are illustrations, not edges. Extracting them mints bogus
+  //     phantom nodes (`name`, `wikilinks`) that the maintenance report then flags forever.
+  for (const m of stripCodeForLinks(cleanBody).matchAll(WIKILINK)) {
     add(m[1]!, "body", m[2]);
   }
 
@@ -1501,6 +1537,23 @@ function serializeMaybeQuoted(s: string): string {
 // =======================================================================================
 // Small utilities
 // =======================================================================================
+
+/**
+ * Blank out code regions so body wikilink extraction never treats a documented `[[name]]`
+ * example as a real edge (Spec 08 §2.2 — links are prose, not code samples). Fenced blocks
+ * (``` / ~~~) and inline `code spans` are replaced with equal-length runs of spaces, which
+ * removes any `[[...]]` inside them while leaving every real link's text and position intact.
+ */
+function stripCodeForLinks(body: string): string {
+  const blank = (m: string) => m.replace(/[^\n]/g, " ");
+  return body
+    // Fenced blocks first (``` or ~~~, ≥3 of the same char), so a `[[link]]` on a fenced line
+    // is gone before the inline pass can see its backticks.
+    .replace(/(`{3,})[\s\S]*?\1/g, blank)
+    .replace(/(~{3,})[\s\S]*?\1/g, blank)
+    // Then inline spans: a run of backticks closed by an equal-length run (CommonMark spans).
+    .replace(/(`+)(?:(?!\1)[\s\S])*?\1/g, blank);
+}
 
 function matchWikilink(v: string): { name: string; alias?: string } | null {
   const m = v.match(/\[\[([a-z0-9-]+)(?:\|([^\]]+))?\]\]/);

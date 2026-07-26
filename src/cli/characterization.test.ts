@@ -163,6 +163,9 @@ const CASES: Case[] = [
   { name: "gh: pr merge without repo/number prints usage", argv: ["gh", "pr", "merge"], env: DUMMY_GH },
   { name: "gh: pr status without repo prints usage", argv: ["gh", "pr", "status", "1"], env: DUMMY_GH },
   { name: "gh: push without flags prints usage", argv: ["gh", "push"], env: DUMMY_GH },
+  { name: "gh: push --tag without a repo prints usage", argv: ["gh", "push", "--tag", "v1.0.0"], env: DUMMY_GH },
+  { name: "gh: raw with no gh args prints usage", argv: ["gh", "raw"], env: DUMMY_GH },
+  { name: "gh: raw with an empty passthrough prints usage", argv: ["gh", "raw", "--"], env: DUMMY_GH },
 
   // ── dns ─────────────────────────────────────────────────────────────────────────────────
   { name: "dns: without CLOUDFLARE_API_TOKEN is refused", argv: ["dns", "ls"] },

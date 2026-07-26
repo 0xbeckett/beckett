@@ -58,6 +58,7 @@ function fakeScheduler(log: string[]): RoutineScheduler {
         agentId: null,
         agentInput: null,
         browserTask: "check the thing",
+        depsUpdate: null,
         preview: "check the thing",
         credsEntry: "x.com",
         channelId: null,
@@ -355,6 +356,96 @@ test("unknown capabilities and pre-init calls refuse with results", async () => 
   expect(unknown).toEqual({ ok: false, error: 'routines: unknown capability "routines.nope"' });
 });
 
+// ── the deps-update lane forks BEFORE the browser (issue #85) ─────────────────────────────
+
+/** A plan shaped like the scheduler builds one, minus the fields the lane under test ignores. */
+function planFor(lane: "deps-update" | "browser") {
+  return {
+    routineId: "weekly-deps-update",
+    lane,
+    agentId: null,
+    agentInput: null,
+    browserTask: lane === "browser" ? "go do the thing" : null,
+    depsUpdate: lane === "deps-update" ? { repo: null, base: "main", sourceRepo: null } : null,
+    preview: "p",
+    credsEntry: null,
+    channelId: null,
+    requesterId: null,
+  };
+}
+
+/**
+ * Grab the dispatch closure the extension hands its scheduler. `createScheduler` receives the same
+ * `RoutineSchedulerDeps` the real loop would, so this exercises the PRODUCTION dispatcher.
+ */
+async function dispatcherOf(overrides: RoutinesExtensionDeps) {
+  const { ext, deps, schedulerBuilds } = build({
+    defaultOrigin: () => ({ channelId: "chan", requesterId: "owner-1" }),
+    ...overrides,
+  });
+  const registry = new ExtensionRegistry();
+  registry.register(ext);
+  await registry.initAll(deps);
+  await registry.startAll(deps, "late");
+  return schedulerBuilds[0]!.dispatcher;
+}
+
+/** Any accessor built from this must never be reached on the deps-update lane. */
+function exploding(): RoutinesExtensionDeps {
+  const boom = (what: string) => () => {
+    throw new Error(`the deps-update lane reached ${what}`);
+  };
+  return {
+    browserAgent: boom("the browser agent") as never,
+    agentRegistry: boom("the agent registry") as never,
+    agentRunner: boom("the agent runner") as never,
+  };
+}
+
+test("a deps-update fire launches its own process and never resolves the browser lane", async () => {
+  const launched: string[][] = [];
+  const dispatcher = await dispatcherOf({
+    ...exploding(),
+    spawnDepsUpdate: (argv) => void launched.push(argv),
+  });
+
+  // If the dispatcher touched browserAgent/agentRegistry/agentRunner this would throw.
+  await dispatcher.dispatch(planFor("deps-update") as never, {} as never);
+
+  expect(launched.length).toBe(1);
+  const argv = launched[0]!;
+  expect(argv.slice(0, 2)).toEqual(["routine", "deps-update"]);
+  expect(argv[argv.indexOf("--base") + 1]).toBe("main");
+  // The fire-time origin is threaded through so the subprocess knows where to post its one line.
+  expect(argv[argv.indexOf("--channel") + 1]).toBe("chan");
+  expect(argv[argv.indexOf("--requester") + 1]).toBe("owner-1");
+});
+
+test("the browser lane still goes to the browser — the fork is on the lane, not luck", async () => {
+  const posted: string[] = [];
+  const dispatcher = await dispatcherOf({
+    browserAgent: () => ({ async run(task: string) { posted.push(task); return undefined as never; } }) as never,
+    agentRegistry: () => ({ get: () => null }),
+    agentRunner: () => ({ run: async () => ({ state: "done", output: "x" }) }) as never,
+    spawnDepsUpdate: () => {
+      throw new Error("a browser routine took the deps-update lane");
+    },
+  });
+  await dispatcher.dispatch(planFor("browser") as never, {} as never);
+  expect(posted).toEqual(["go do the thing"]);
+});
+
+test("a deps-update fire still needs an origin channel + requester to report to", async () => {
+  const dispatcher = await dispatcherOf({
+    defaultOrigin: () => ({ channelId: null, requesterId: null }),
+    spawnDepsUpdate: () => {
+      throw new Error("launched without an origin");
+    },
+  });
+  await expect(dispatcher.dispatch(planFor("deps-update") as never, {} as never))
+    .rejects.toThrow(/origin channel \+ requester/);
+});
+
 // ── the Phase 1–4 bridge: the CLI registers the projection ───────────────────────────────
 
 test("asCapability projects the carried v5 facets into the pinned CLI spine slot", () => {
@@ -363,13 +454,20 @@ test("asCapability projects the carried v5 facets into the pinned CLI spine slot
   expect(projected.id).toBe("routines");
   expect(projected.summary).toBe("humanized recurring routines: add/list/remove/inspect + fire (dry-run or --force)");
   expect(projected.actionClass).toBe(ActionClass.FREE);
+  // The advertised help token is UNCHANGED by #85's deps-update verb: that verb is a routine's
+  // body, launched by the scheduler, so it stays unadvertised (like spend/journal/config) and the
+  // composed `beckett` command list the CLI characterization suite pins is byte-identical.
   expect(projected.cliHelp).toBe("routine list|inspect|add|remove|fire");
-  expect(projected.cliVerbs.map((v) => v.name)).toEqual(["routine"]);
-  expect(typeof projected.cliVerbs[0]!.run).toBe("function");
+  expect(projected.cliVerbs.map((v) => v.name)).toEqual(["routine deps-update", "routine"]);
+  expect(projected.cliVerbs.every((v) => typeof v.run === "function")).toBe(true);
   expect(projected.busCommands).toEqual([]);
 
   // The projection registers cleanly into the v5 spine (the CLI's exact move).
   const spine = new CapabilityRegistry();
   spine.register(projected);
   expect(spine.resolveCliVerb(["routine", "list"])!.capability.id).toBe("routines");
+  // Longest-verb-first resolution: `routine deps-update` must win over the bare `routine`, or the
+  // scheduler's subprocess would land in runRoutine's usage cascade.
+  expect(spine.resolveCliVerb(["routine", "deps-update", "--base", "main"])!.verb.name)
+    .toBe("routine deps-update");
 });

@@ -7,12 +7,13 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemory, recallOver, type MemoryStore } from "./index.ts";
 import { stem, scoreNode, nodeSimilarity } from "./search.ts";
 import { planMaintenance, startRoutineMaintenance, TTL_GRACE_MS } from "./maintain.ts";
+import { AGED_OBSERVATION_DAYS } from "./freshness.ts";
 import type { Logger, MemoryNode } from "../types.ts";
 
 const tmpDirs: string[] = [];
@@ -157,6 +158,107 @@ test("remember rejects a description-less create instead of orphaning an unparse
   ).rejects.toThrow(/description/);
   const files = readdirSync(dir, { recursive: true }) as string[];
   expect(files.some((f) => String(f).includes("no-desc"))).toBe(false); // nothing landed on disk
+});
+
+// ── remember: the always-loaded MEMORY.md index tracks the current claim (issue #96) ─────
+
+/** The MEMORY.md line for `name`, minus the `- [[name]] — ` prefix (age flag included). */
+function indexHook(dir: string, name: string): string | undefined {
+  const line = readFileSync(join(dir, "MEMORY.md"), "utf8")
+    .split("\n")
+    .find((l) => l.startsWith(`- [[${name}]]`));
+  return line?.replace(new RegExp(`^- \\[\\[${name}\\]\\] — `), "");
+}
+
+test("update-then-read-index shows the NEW hook, not the old description", async () => {
+  const { store, dir } = tempStore();
+  await store.remember({
+    op: "create", name: "gh-token-note", type: "reference",
+    description: "old claim about the token", body: "orig", source: "manual", reason: "seed",
+  });
+  expect(indexHook(dir, "gh-token-note")).toBe("old claim about the token");
+
+  await store.remember({
+    op: "update", name: "gh-token-note", type: "reference",
+    description: "the refreshed one-line claim", body: "restated body", source: "manual", reason: "re-observe",
+  });
+
+  const idx = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(indexHook(dir, "gh-token-note")).toBe("the refreshed one-line claim");
+  expect(idx).not.toContain("old claim about the token"); // the stale hook is gone
+  expect(idx.match(/\[\[gh-token-note\]\]/g)!.length).toBe(1); // still exactly one line
+});
+
+test("regression (#96): a re-observation that restates the body drags the index hook with it", async () => {
+  const { store, dir } = tempStore();
+  // The exact shape that bit us: index says the thing is broken.
+  await store.remember({
+    op: "create", name: "cross-fork-pr-limit", type: "reference",
+    description: "PAT can't open PRs on external repos; hand a compare link",
+    body: "Tried it, got a 403.", source: "manual", reason: "seed",
+  });
+  expect(indexHook(dir, "cross-fork-pr-limit")).toContain("can't open PRs");
+
+  // Re-observed and CONFIRMED WORKING — body restated, but the caller forgot the description.
+  await store.remember({
+    op: "update", name: "cross-fork-pr-limit", type: "reference",
+    body: "CONFIRMED WORKING under the classic PAT — open cross-fork PRs natively.",
+    source: "manual", reason: "re-observed 2026-07-02",
+  });
+
+  const idx = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(idx).not.toContain("can't open PRs"); // the always-loaded line no longer lies
+  expect(indexHook(dir, "cross-fork-pr-limit")).toContain("CONFIRMED WORKING");
+});
+
+test("a new memory still appends exactly one index line; a deleted one drops its line", async () => {
+  const { store, dir } = tempStore();
+  await seedWorld(store); // jason, loom-desk, docs-site
+  const before = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(before.match(/^- \[\[/gm)!.length).toBe(3);
+
+  await store.remember({
+    op: "create", name: "new-fact", type: "decision",
+    description: "a brand new one-liner",
+    metadata: { ttl: new Date(Date.now() - TTL_GRACE_MS - 86_400_000).toISOString() },
+    source: "manual", reason: "add",
+  });
+  const after = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(after.match(/^- \[\[/gm)!.length).toBe(4); // one line appended
+  expect(indexHook(dir, "new-fact")).toBe("a brand new one-liner");
+
+  // Retiring a node (archived on ttl expiry — nothing is ever hard-removed) drops its index line.
+  await store.maintain();
+  const pruned = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(pruned.match(/^- \[\[/gm)!.length).toBe(3);
+  expect(pruned).not.toContain("[[new-fact]]");
+});
+
+test("preserves ordering and the · upd freshness flag when an update rewrites a hook", async () => {
+  const { store, dir } = tempStore();
+  await seedWorld(store);
+  // Backdate loom-desk's `updated` so its index line earns the 90d+ ` · upd YYYY-MM-DD` flag.
+  const desk = store.buildGraph().nodes.get("loom-desk")!;
+  const stale = "2020-01-01";
+  writeFileSync(
+    desk.path,
+    readFileSync(desk.path, "utf8").replace(/updated: .*/, `updated: ${stale}`),
+  );
+  utimesSync(desk.path, new Date(`${stale}T00:00:00Z`), new Date(`${stale}T00:00:00Z`));
+
+  // An unrelated update regenerates the WHOLE index — loom-desk's aged flag must survive it,
+  // and the deterministic type→name ordering must be untouched.
+  await store.remember({
+    op: "update", name: "jason", type: "person",
+    description: "Primary user and owner — talks casual lowercase", body: "still here",
+    source: "manual", reason: "touch",
+  });
+  const after = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  expect(after).toContain(`· upd ${stale}`); // loom-desk still self-flags as an aged observation
+  // Ordering is stable: grouped by type, then name — [env] loom-desk, [person] jason, [project] docs-site.
+  expect(after.match(/^- \[\[[a-z-]+\]\]/gm)).toEqual([
+    "- [[loom-desk]]", "- [[jason]]", "- [[docs-site]]",
+  ]);
 });
 
 // ── maintenance: staleness, supersede, dedup merge, dry-run, no data loss ────────────────
@@ -403,6 +505,93 @@ test("startRoutineMaintenance runs the pass on its timer and stop() halts it", a
   expect(runs).toBeGreaterThanOrEqual(2);
   await new Promise((r) => setTimeout(r, 40));
   expect(runs).toBe(after);
+});
+
+// ── maintenance: SEE the whole store, report accurately (issue #97) ──────────────────────
+
+/** The store's on-disk memory count, the same way the graph build enumerates it. */
+function mdFileCount(dir: string): number {
+  return (readdirSync(dir, { recursive: true }) as string[]).filter(
+    (r) => r.endsWith(".md") && r !== "MEMORY.md" && !r.split(/[\\/]/).includes("archive"),
+  ).length;
+}
+
+test("maintain scans every memory file; a linked memory that exists on disk is not a phantom", async () => {
+  const { store, dir } = tempStore();
+  await seedWorld(store); // jason's body links [[loom-desk]] — a real, on-disk target
+  const report = await store.maintain({ dryRun: true });
+  // Every .md the store holds is scanned — no fraction of the tree left unseen.
+  expect(report.scanned).toBe(mdFileCount(dir));
+  // The linked-and-present node resolves to a real node, never a manufactured phantom.
+  expect(report.phantoms).not.toContain("loom-desk");
+  expect(store.buildGraph().nodes.get("loom-desk")?.phantom ?? true).toBe(false);
+});
+
+test("maintain does not mint phantoms from literal [[name]] examples inside code spans/fences", async () => {
+  const { store } = tempStore();
+  await seedWorld(store);
+  // A note that DOCUMENTS the memory format: illustrative links live in backticks and a fence,
+  // one genuine dangling link lives in prose. Only the prose link is a real (phantom) edge.
+  await store.remember({
+    op: "create",
+    name: "memory-format-note",
+    type: "reference",
+    description: "How wikilinks work in this store",
+    body: [
+      "A `[[name]]` in frontmatter is a graph edge; `[[wikilinks]]` resolve by name.",
+      "",
+      "```",
+      "example: [[fenced-placeholder]] is not a real link",
+      "```",
+      "",
+      "But this one is genuine: ask [[unmet-person]] about it.",
+    ].join("\n"),
+    source: "manual",
+    reason: "seed",
+  });
+  const report = await store.maintain({ dryRun: true });
+  expect(report.phantoms).not.toContain("name");
+  expect(report.phantoms).not.toContain("wikilinks");
+  expect(report.phantoms).not.toContain("fenced-placeholder");
+  expect(report.phantoms).toContain("unmet-person"); // a real prose link still counts
+});
+
+test("maintain does not report a name with a broken file on disk as a phantom", async () => {
+  const { store, dir } = tempStore();
+  await seedWorld(store);
+  // A real memory links to `[[courier-note]]`, whose file exists but failed to parse (a
+  // truncated write: empty name, no type). That's a broken file, not a missing one.
+  await store.remember({
+    op: "create",
+    name: "references-courier",
+    type: "reference",
+    description: "Points at the courier note",
+    body: "See [[courier-note]] for the details.",
+    source: "manual",
+    reason: "seed",
+  });
+  writeFileSync(join(dir, "courier-note.md"), '---\nname: ""\nmetadata:\n  node_type: memory\n---\n\nbody only.\n');
+  const report = await store.maintain({ dryRun: true });
+  expect(report.phantoms).not.toContain("courier-note");
+  // The pass still SEES the broken file — it counts toward scanned, not silently dropped.
+  expect(report.scanned).toBe(mdFileCount(dir));
+});
+
+test("maintain lists a memory whose updated date is past the aged threshold", async () => {
+  const { store } = tempStore();
+  await seedWorld(store);
+  const desk = store.buildGraph().nodes.get("loom-desk")!;
+  const aged = new Date(Date.now() - (AGED_OBSERVATION_DAYS + 30) * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  writeFileSync(
+    desk.path,
+    readFileSync(desk.path, "utf8").replace(/updated: .*/, `updated: ${aged}`),
+  );
+  const report = await store.maintain({ dryRun: true });
+  expect(report.agedObservations.map((a) => a.name)).toContain("loom-desk");
+  const entry = report.agedObservations.find((a) => a.name === "loom-desk")!;
+  expect(entry.ageDays).toBeGreaterThanOrEqual(AGED_OBSERVATION_DAYS);
 });
 
 test("nodeSimilarity treats reworded same facts as near-identical", () => {

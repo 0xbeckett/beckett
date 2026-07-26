@@ -129,6 +129,27 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
   // {@link buildGh} core, whose throws surface via main().catch(fail) with the same message.
   async function runGh(argv: string[]): Promise<void> {
     const [sub, ...rest] = argv;
+
+    // `beckett gh raw [--dir <d>] -- <gh args>` — the passthrough escape hatch (opens the full gh
+    // surface without a per-verb reimplementation). Handled BEFORE the generic flag parse: everything
+    // after `--` is gh's own argv (verbatim, INCLUDING gh's own `--flags`), so it must never run
+    // through `parse` (which would swallow gh's flags as ours). The PAT rides the env, never argv.
+    if (sub === "raw") {
+      let rawArgs = rest;
+      let dir: string | undefined;
+      if (rawArgs[0] === "--dir") {
+        dir = rawArgs[1];
+        if (dir === undefined) fail("usage: beckett gh raw [--dir <d>] -- <gh args>");
+        rawArgs = rawArgs.slice(2);
+      }
+      if (rawArgs[0] === "--") rawArgs = rawArgs.slice(1);
+      if (rawArgs.length === 0) fail("usage: beckett gh raw [--dir <d>] -- <gh args>");
+      // buildGh runs the PAT preflight (its throw reaches stderr via main().catch(fail)); raw never
+      // touches resolveRepoDir, so an absent --dir is fine. gh runs in --dir or the caller's cwd.
+      const gh = buildGh(config, dir);
+      process.exit(await gh.raw(rawArgs, dir ?? process.cwd()));
+    }
+
     const { _, flags } = parse(rest);
     // The CLI's historical default: repo-local ops run against the caller's cwd unless --dir.
     const gh = buildGh(config, flags.dir ? String(flags.dir) : process.cwd());
@@ -187,6 +208,14 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
     }
 
     if (sub === "push") {
+      // `--tag <tag>` publishes a release tag (refs/tags/*) — the ref-shape the branch push can't reach.
+      // Checked before the branch path so `push` with neither flag still prints the exact same usage.
+      if (flags.tag !== undefined) {
+        const tag = typeof flags.tag === "string" ? flags.tag : "";
+        if (!flags.repo || !tag) fail("usage: beckett gh push --repo <owner/name> --tag <tag> [--dir <d>]");
+        await gh.pushTag(String(flags.repo), tag);
+        out({ pushed: true, repo: String(flags.repo), tag });
+      }
       if (!flags.repo || !flags.branch) fail("usage: beckett gh push --repo <owner/name> --branch <remoteBranch> [--ref <localRef>] [--dir <d>]");
       await gh.pushBranch(String(flags.repo), flags.ref ? String(flags.ref) : "HEAD", String(flags.branch));
       out({ pushed: true, repo: String(flags.repo), branch: String(flags.branch) });

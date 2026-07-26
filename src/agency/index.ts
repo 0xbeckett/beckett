@@ -260,6 +260,16 @@ interface RunResult {
   stderr: string;
 }
 
+/**
+ * A streaming subprocess handle — just the exit promise. The `gh` passthrough ({@link GitHubCli.raw})
+ * INHERITS this process's stdio instead of capturing it (so gh's output streams live to the user), so
+ * the only thing it reads back is the exit code. Kept minimal + injectable so tests can assert argv/env
+ * without a real gh.
+ */
+interface StreamingChild {
+  exited: Promise<number>;
+}
+
 /** GitHub creates a fork asynchronously — poll this many times before pushing to it. */
 const FORK_READY_TRIES = 10;
 /** Delay between fork-readiness polls. */
@@ -328,6 +338,10 @@ export interface GitHubClientOptions {
   /** Subprocess runner — injectable so the publish decision tree is unit-testable (defaults to the
    *  real {@link run}). Tests pass a fake that matches on argv and returns canned `gh`/`git` output. */
   run?: (cmd: string[], opts?: { cwd?: string; env?: Record<string, string | undefined> }) => Promise<RunResult>;
+  /** Injectable STREAMING spawner for the `gh` passthrough ({@link GitHubCli.raw}) — defaults to a
+   *  stdio-inheriting Bun.spawn. Separate from `run` because the passthrough streams stdout/stderr
+   *  (never captures) and only reads the exit code. Tests inject a fake to assert argv/env/cwd. */
+  spawn?: (cmd: string[], opts: { cwd?: string; env?: Record<string, string | undefined> }) => StreamingChild;
   /** Injectable authenticated REST transport (defaults to the global fetch). */
   fetchImpl?: typeof fetch;
 }
@@ -356,10 +370,26 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     cmd: string[],
     opts?: { cwd?: string; env?: Record<string, string | undefined> },
   ) => Promise<RunResult>;
+  private readonly spawner: (
+    cmd: string[],
+    opts: { cwd?: string; env?: Record<string, string | undefined> },
+  ) => StreamingChild;
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly opts: GitHubClientOptions) {
     this.runner = opts.run ?? run;
+    this.spawner =
+      opts.spawn ??
+      ((cmd, o) =>
+        Bun.spawn(cmd, {
+          cwd: o.cwd,
+          env: (o.env ?? sanitizedEnv()) as Record<string, string>,
+          // STREAM, don't capture: gh's output goes straight to the user's terminal and its
+          // exit code is propagated. stdin is inherited so a piped body reaches gh verbatim.
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        }));
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
@@ -405,6 +435,20 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
       GIT_CONFIG_KEY_1: "credential.helper",
       GIT_CONFIG_VALUE_1: `!f() { echo username=${this.opts.account}; echo "password=$GITHUB_PAT"; }; f`,
     };
+  }
+
+  /**
+   * Env for the `gh` passthrough ({@link raw}): {@link gitEnv} (the inline credential helper, so gh
+   * subcommands that shell out to git — clone/checkout/sync — authenticate) with GH_TOKEN/GITHUB_TOKEN
+   * layered on top (so gh's own API calls authenticate). The gh keys are layered EXPLICITLY rather than
+   * spreading {@link ghEnv} — ghEnv re-spreads {@link sanitizedEnv}, which would re-introduce (and win
+   * over) any ambient GH_TOKEN/GITHUB_PAT from the host, so the injected PAT must be applied last to
+   * always win. Every key carries the PAT through the environment only — never argv, never
+   * `~/.git-credentials` — so the passthrough opens the full gh surface without widening where the
+   * token can leak.
+   */
+  private rawEnv(): Record<string, string | undefined> {
+    return { ...this.gitEnv(), GH_TOKEN: this.opts.pat, GITHUB_TOKEN: this.opts.pat };
   }
 
   /**
@@ -456,6 +500,44 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
   async pushBranch(repo: string, localRef: string, remoteBranch: string): Promise<void> {
     this.requireCreds("push branch");
     await this.gitPush(this.opts.resolveRepoDir(repo), repo, localRef, remoteBranch);
+  }
+
+  /**
+   * Push a local tag to `refs/tags/<tag>` on the remote — the release-tag path (v6.0.4). {@link gitPush}
+   * hardcodes `refs/heads/*` as the destination, so a tag was structurally impossible through
+   * {@link pushBranch}; this pushes the tag ref explicitly (`refs/tags/<tag>:refs/tags/<tag>`) so a tag
+   * lands as a tag, not a same-named branch. Same credential helper as every transport op (PAT in the
+   * environment, never argv). No scaffolding strip: a tag ref is immutable and points at an existing
+   * commit — there is nothing to rewrite. FREE caller.
+   */
+  async pushTag(repo: string, tag: string): Promise<void> {
+    this.requireCreds("push tag");
+    const name = tag.replace(/^refs\/tags\//, "").trim();
+    if (!name) throw new Error("push tag: a tag name is required");
+    const cwd = this.opts.resolveRepoDir(repo);
+    const url = `${this.gitHost()}/${repo}.git`;
+    const r = await this.runner(["git", "push", url, `refs/tags/${name}:refs/tags/${name}`], {
+      cwd,
+      env: this.gitEnv(),
+    });
+    if (r.code !== 0) {
+      throw new Error(`git push (tag ${name}) failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+    this.opts.logger.info("tag pushed", { repo, tag: name });
+  }
+
+  /**
+   * Passthrough to the real `gh` binary (Spec 07 §3.2): run it VERBATIM with the PAT injected via
+   * {@link rawEnv}, inheriting this process's stdio so stdout/stderr stream live, and return gh's exit
+   * code for the caller to propagate. The token never touches argv. This is the escape hatch for the
+   * full gh surface the curated verbs don't cover — and, like every op here, it means gh never needs
+   * `gh auth login`/`gh auth status`. FREE caller (the passthrough carries no agency gate; the CLI is
+   * the sanctioned entrypoint).
+   */
+  async raw(args: string[], cwd?: string): Promise<number> {
+    this.requireCreds("run gh");
+    const child = this.spawner(["gh", ...args], { cwd, env: this.rawEnv() });
+    return await child.exited;
   }
 
   /**
