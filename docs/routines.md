@@ -184,3 +184,101 @@ Runs the real clone, real update, real typecheck and real test suite, stubbing o
 `beckett gh` calls — and prints the exact argv it *would* have run. Use it before changing the job;
 the unit suite ([`src/ops/deps-update.test.ts`](../src/ops/deps-update.test.ts)) covers the same
 guarantees with everything injected.
+
+## Built-in: `model-news-watch` (issue #1) — the event-listener action
+
+Every other routine fires on a **schedule**; `watch` fires on an **event**. It polls a feed on a
+plain interval and, on a genuinely new item, dispatches through the SAME `agent` lane
+`daily-x-shitpost` uses — an event post instead of waiting for the next scheduled lane. A `watch`
+routine has **no `schedule`** (see the `RoutineAction` union in
+[`src/routine/types.ts`](../src/routine/types.ts)) — its timing is `pollIntervalMinutes`, not a
+fuzz window, and it is driven by its own interval loop
+([`src/routine/watch.ts`](../src/routine/watch.ts)`::startWatchLoop`), not
+`startRoutineScheduler`'s once-per-humanized-period tick.
+
+Seeded on first load, **enabled**, polling **every 15 minutes**: `https://ai-tracker.ssh.codes/api/v1/model-news?type=model&new_models=true`
+— a changelog of newly-shipped models — for the `social-media` agent (`@beckposting`).
+
+### Qualification, dedup, and the hard rate limits
+
+An item only fires when it is **unseen**, `newModel === true`, and `publishedAt` is inside the
+**last 24h** ([`isQualifyingItem`](../src/routine/model-news.ts)). Every item the feed returns —
+qualifying or not — is marked seen the moment it's evaluated, so nothing is ever reconsidered.
+
+On top of qualification, three rails apply and are **not configurable**:
+
+- **never twice about the same model id** — checked against the routine's own post history, not
+  just this round's items;
+- **at most one extra qualifying item survives per round** — the earliest-published candidate
+  wins; every other qualifying item that round is marked seen and logged as *dropped*, never
+  queued for later;
+- **1 event post per hour, 3 per rolling 24h** ([`WATCH_RATE_LIMIT`](../src/routine/rate-limit.ts))
+  — hard caps, independent of anything on the routine's own config.
+
+### Cold start never backfills
+
+The very first poll after `model-news-watch` starts running — a fresh install, or a state file
+that was deleted — records every item currently in the feed as seen and **posts nothing**. Only an
+item that shows up in a *later* poll can ever qualify. This is the one behavior the feature fails
+without: a cold start that treats a week's worth of history as breaking news.
+
+### A broken feed never posts
+
+A non-200 response, a timeout, unparseable JSON, or an unexpected top-level shape
+([`fetchModelNewsFeed`](../src/routine/model-news.ts)) is logged and the round is skipped — the
+seen-set and post history are untouched, and the same feed is tried again next interval. A single
+malformed item inside an otherwise-good response is dropped without failing the round; unknown
+fields on an item are ignored rather than crashing the parse.
+
+### Dry-run: watch a day of decisions without posting
+
+```
+beckett routine watch-mode model-news-watch dry-run   # ambient — every future poll simulates
+beckett routine watch-mode model-news-watch live       # back to posting for real
+```
+
+In dry-run mode the routine still polls, still qualifies, still dedups, and still rate-limits for
+real — the only thing that changes is the last step: instead of dispatching the agent, it posts a
+one-line `[dry-run] would post about …` preview to the report channel. Its accounting lives in a
+**separate bucket** from real posts, so flipping back to `live` never treats a simulated post as
+one that actually happened (and vice versa).
+
+`beckett routine fire model-news-watch --dry-run` is a second, independent lever: a ONE-SHOT,
+**read-only** simulation against whatever is currently persisted — it fetches the live feed (so
+the preview is real, not a guess) but never mutates the seen-set/post-history and never posts,
+regardless of the routine's ambient `dryRun` setting. Unlike every other routine's `--dry-run`
+(which is pure/offline), this one needs the network to say anything useful — it still never touches
+the daemon or the bus, so it works even if the daemon isn't running:
+
+```
+beckett routine fire model-news-watch --dry-run
+```
+
+### Disabling
+
+```
+beckett routine disable model-news-watch
+```
+
+Takes effect on the poll loop's very next tick — no daemon restart. `enable`/`inspect`/`fire` all
+work exactly like every other routine.
+
+### Where a real fire posts, and what shows up in Discord
+
+A qualifying fire dispatches the `social-media` agent with the item's title, model id(s), summary,
+and `source.url` as its subject — the agent still does its own research, verifies at `source.url`,
+and writes in voice before the background browser lane publishes (issue #1's prompt-side patch to
+`agents.json`/`routines.json` covers that half; this routine only supplies WHEN and WHICH item).
+The post-live confirmation rides the SAME browser-lane outcome relay every other routine post
+does — one short line to `BECKETT_ROUTINE_CHANNEL_ID` (or the routine's `channelId`) with the URL.
+
+### Unit tests
+
+[`src/routine/model-news.test.ts`](../src/routine/model-news.test.ts) covers the qualification
+predicate and the feed's defensive parsing; [`src/routine/rate-limit.test.ts`](../src/routine/rate-limit.test.ts)
+covers the 1/hour + 3/24h caps; [`src/routine/watch-store.test.ts`](../src/routine/watch-store.test.ts)
+covers the seen-set/post-history persistence and its age/count bounds; and
+[`src/routine/watch.test.ts`](../src/routine/watch.test.ts) covers the cold-start seed-no-backfill
+path, dedup by model id (including across two different feed items), the rate limiter wired into a
+full cycle, dry-run's separate accounting bucket, `previewWatchCycle`'s read-only guarantee, and
+the poll loop's live enable/disable + per-routine interval gating.

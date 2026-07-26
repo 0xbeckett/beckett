@@ -8,7 +8,7 @@
  *   - the CLI `--dry-run`, which builds the SAME plan and prints it WITHOUT dispatching, so the
  *     wiring is provable without a real live post.
  *
- * Three lanes:
+ * Four lanes:
  *   - `agent`  → invoke a registered agent with `agentInput`; the agent AUTHORS the browser task at
  *      dispatch time (its taste lives in its prompt, not here), so the plan carries the invocation,
  *      not composed text. The authored post is not knowable until the agent runs.
@@ -17,6 +17,12 @@
  *      The executor runs the dependency-update job in a throwaway clone and its output is a PR.
  *      This lane exists precisely so a maintenance job is NOT smuggled through the privileged
  *      browser lane, which would hand a local chore a web session it has no use for.
+ *   - `watch` → the event-listener lane (issue #1): no I/O happens here (this function stays
+ *      pure), so the plan only carries the intent to poll. The REAL work — fetching the feed,
+ *      qualifying an item, rate-limiting, and dispatching the `agent` lane on a genuine hit —
+ *      happens in the dispatcher, exactly like `deps-update`'s executor. A live, feed-aware
+ *      preview for `--dry-run` is built separately by `runWatchCycle`/`previewWatchCycle`
+ *      ({@link ./watch.ts}), which DO perform I/O — this function is not where that happens.
  *
  * The pre-#72 `x-shitpost` action is folded onto the `agent` lane here (target: the `social-media`
  * agent), so a legacy routines.json fires through exactly ONE path with no bespoke composition code.
@@ -44,10 +50,11 @@ export const LEGACY_SHITPOST_INPUT =
 export interface RoutineDispatchPlan {
   routineId: string;
   /**
-   * Which lane executes this: an agent that authors a post, a static browser task, or the local
-   * dependency-update job. Only the first two reach the browser.
+   * Which lane executes this: an agent that authors a post, a static browser task, the local
+   * dependency-update job, or the feed-watch poll. Only `agent`/`browser` (and, indirectly, a
+   * qualifying `watch` fire) reach the browser.
    */
-  lane: "agent" | "browser" | "deps-update";
+  lane: "agent" | "browser" | "deps-update" | "watch";
   /** agent lane: the registry id to invoke LIVE at dispatch (null for the browser lane). */
   agentId: string | null;
   /** agent lane: the instruction handed to that agent (null for the browser lane). */
@@ -103,6 +110,28 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
         `update in-range dependencies in an isolated clone, run typecheck + tests, ` +
         `open a PR against ${action.base}${action.repo ? ` on ${action.repo}` : ""}`,
       credsEntry: null,
+      channelId: action.channelId ?? null,
+      requesterId: action.requesterId ?? null,
+    };
+  }
+
+  if (action.kind === "watch") {
+    // Pure by construction: this is a DESCRIPTION of the poll, not a run of it. It carries
+    // `agentId` (mirroring the `agent` lane, since a qualifying fire dispatches through it) but
+    // `agentInput` is null — nobody knows which item, if any, will qualify until fire time.
+    return {
+      routineId: routine.id,
+      lane: "watch",
+      agentId: action.agentId,
+      agentInput: null,
+      browserTask: null,
+      depsUpdate: null,
+      preview:
+        `poll ${action.feedUrl} every ${action.pollIntervalMinutes}m; on a genuinely new, ` +
+        `unseen, rate-limit-clear model release, dispatch agent ${action.agentId} with the item ` +
+        `as the subject` +
+        (action.dryRun ? " (dry-run: would post, does not post)" : ""),
+      credsEntry: action.credsEntry ?? null,
       channelId: action.channelId ?? null,
       requesterId: action.requesterId ?? null,
     };
