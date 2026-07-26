@@ -5,8 +5,9 @@
 You @mention Beckett in Discord. It chats back in its own voice, decides how much effort your
 request actually deserves, and when there's real work to do it starts a numbered task and a fleet of
 coding agents builds it — opening PRs, deploying sites, generating images — while it keeps you
-posted in a task workspace such as `#42 - Build voting`. One long-lived agent is the face; a queue and a pool of workers are the
-hands.
+posted in the channel you asked in. Open a thread and point it at the work (`&42`, or `&recent` for a
+whole wave) and it reports there instead. One long-lived agent is the face; a queue and a pool of
+workers are the hands.
 
 This repo is the whole thing: the Discord front-of-house, the task registry, the ticket queue, the worker
 dispatcher, and the ops to run it. It's built to be **forked** — rename it, give it a new
@@ -243,9 +244,8 @@ Discord exposes the common read/create paths natively:
 
 | Slash command | What it does |
 |---|---|
-| `/task create name:<name>` | Allocates `#N`, creates `#N.1`, and opens the `#N - Name` workspace thread. |
+| `/task create name:<name>` | Allocates `#N` and creates `#N.1`. Opens no thread — work reports into the channel it was asked in. |
 | `/task show number:<N>` | Shows the task and its branch states without internal ticket ids. |
-| `/task workspace number:<N>` | Repairs a task whose Discord thread could not be created earlier. |
 | `/branch reference:<N.x>` | Shows aggregate additions, deletions, files, commits, checks, review, and conversation counts. Never raw diff lines. |
 | `/stats` | Privately shows the owner's remaining Claude and Codex subscription windows and reset times. |
 
