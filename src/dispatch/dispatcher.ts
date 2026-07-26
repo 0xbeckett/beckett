@@ -506,6 +506,13 @@ export class Dispatcher {
   private readonly unstaffedSince = new Map<string, number>();
   /** Tickets the watchdog has already re-staffed once; a still-workerless second sighting parks them. */
   private readonly watchdogRestaffed = new Set<string>();
+  /**
+   * Tickets whose worker has finished but whose finish handler (commit/push/PR) is still running.
+   * onWorkerDone frees the slot BEFORE awaiting the finish, so for that window the ticket is
+   * workerless while the board still reads in_progress — the watchdog must NOT count it wedged
+   * and re-staff a second worker into the worktree the finish is still committing (issue #11).
+   */
+  private readonly finishing = new Set<string>();
   /** Ledger entries loaded from a previous daemon's state file, consumed by {@link recoverFromCrash}. */
   private recoveredWorkers: Record<string, LedgeredWorker> | null = null;
   /** Per-ticket resume hints produced by recovery: the next same-stage spawn resumes this session. */
@@ -766,6 +773,7 @@ export class Dispatcher {
         if (
           this.isStaffed(ticket.id) ||
           this.isPending(ticket.id) ||
+          this.finishing.has(ticket.id) ||
           this.spawnRetryTimers.has(ticket.id) ||
           (ticket.state === "in_review" && (this.publishOutbox?.has(ticket.id) ?? false))
         ) {
@@ -2475,6 +2483,11 @@ export class Dispatcher {
     );
     this.recordSpend(ticket, stage, handle, status, spendMeta ?? this.spendMetaByWorker.get(handle.id));
     this.spendMetaByWorker.delete(handle.id);
+    // Mark the ticket mid-finish BEFORE freeing the slot: the finish handler below (commit/push/PR)
+    // can outlive a watchdog grace window, and for its whole duration the ticket is workerless while
+    // the board still reads in_progress. Without this, the watchdog would count it wedged and spawn a
+    // second worker into the worktree the finish is still committing (issue #11).
+    this.finishing.add(ticket.id);
     // Free the slot first so a queued spawn can take it.
     if (this.workers.get(ticket.id) === handle) this.workers.delete(ticket.id);
     this.liveTickets.delete(ticket.id);
@@ -2514,6 +2527,9 @@ export class Dispatcher {
         error: (err as Error).message,
       });
     } finally {
+      // Runs on the error path too: a throwing finish must not leak the id, or the watchdog is
+      // permanently blinded to this ticket.
+      this.finishing.delete(ticket.id);
       await handle.reap();
       this.releaseRepo(ticket.id);
       this.pump();
