@@ -330,6 +330,12 @@ export const configFragments = {
       // work instead of the whole session. Best-effort and side-effect-free beyond the worktree
       // (never touches the tracker / the advance- or publish-outbox). 0 disables periodic checkpointing.
       worker_checkpoint_s: nonNegInt.default(120),
+      // Staffing watchdog grace (issue #9): a ticket that is in a staffable/running state
+      // (in_progress / in_review / design) but has NO live worker, mid-spawn reservation, queued
+      // spawn, or scheduled retry for this many seconds is silently wedged — the reconciliation
+      // pass re-staffs it ONCE (logged), and parks it in `todo` with a comment if that also fails.
+      // Closes the whole class of "staffed-but-workerless" wedges. 0 disables the watchdog.
+      staffing_watchdog_s: nonNegInt.default(120),
       // Dispatcher retry/rework bounds (OPS-180) — previously hardcoded dispatcher constants,
       // now real knobs. Defaults are the old constants exactly; see stages.ts#retryCapsFor.
       // Max implement↔review round-trips before auto-rework stops and waits for a human.

@@ -498,6 +498,14 @@ export class Dispatcher {
   private checkpointTimer?: ReturnType<typeof setInterval>;
   /** True while a checkpoint pass is in flight, so overlapping ticks are skipped, not stacked. */
   private checkpointInFlight = false;
+  /** Staffing-watchdog timer (issue #9); undefined when disabled or not yet started. */
+  private watchdogTimer?: ReturnType<typeof setInterval>;
+  /** True while a reconciliation pass is in flight, so a slow pass can't overlap the next tick. */
+  private watchdogInFlight = false;
+  /** Epoch ms a staffable ticket was FIRST seen with no live worker — the wedge clock (issue #9). */
+  private readonly unstaffedSince = new Map<string, number>();
+  /** Tickets the watchdog has already re-staffed once; a still-workerless second sighting parks them. */
+  private readonly watchdogRestaffed = new Set<string>();
   /** Ledger entries loaded from a previous daemon's state file, consumed by {@link recoverFromCrash}. */
   private recoveredWorkers: Record<string, LedgeredWorker> | null = null;
   /** Per-ticket resume hints produced by recovery: the next same-stage spawn resumes this session. */
@@ -812,6 +820,28 @@ export class Dispatcher {
       }
     }
     return ticket.state;
+  }
+
+  /**
+   * A FRESH tracker read of the ticket's lifecycle state, or `null` when it can't be established
+   * (no `getIssue` on the client, ticket absent, or the fetch threw). Unlike {@link currentTicketState}
+   * this NEVER falls back to the caller's captured `ticket.state` — the caller uses `null` to mean
+   * "couldn't verify" and keeps its conservative default (issue #9). Used by the stale-transition
+   * guards, which must only override their default on POSITIVE evidence of the real state.
+   */
+  private async freshStateOrNull(ticket: Ticket): Promise<TicketState | null> {
+    const client = this.clientForTicket(ticket);
+    if (!client.getIssue) return null;
+    try {
+      const fresh = await client.getIssue(ticket.id);
+      return fresh?.state ?? null;
+    } catch (err) {
+      this.logger.warn("fresh state re-check failed", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
+      return null;
+    }
   }
 
   /**
@@ -1317,6 +1347,24 @@ export class Dispatcher {
   }
 
   private async onParked(ticket: Ticket, state: "todo" | "backlog" | "design_review"): Promise<void> {
+    // Stale-park guard (issue #9): unblocking a dependent races backlog→todo→in_progress, and the
+    // poller can deliver the interim backlog→todo park AFTER the ticket is already staffed
+    // in_progress. Acting on that stale park would drop the mid-spawn reservation and kill a healthy
+    // worker (the incident). If the ticket is currently staffed/live but a FRESH tracker read shows it
+    // has already advanced to a running state, this park event is stale — ignore it entirely (no
+    // teardown, no worker discard). A genuine human park reads back as the parked state and proceeds.
+    if (this.isStaffed(ticket.id)) {
+      const fresh = await this.freshStateOrNull(ticket);
+      if (fresh && fresh !== state && this.stages.forState(fresh)) {
+        this.logger.info("ignoring stale park — ticket already advanced past it", {
+          ticket: ticket.identifier,
+          parkedTo: state,
+          actual: fresh,
+        });
+        this.trace(ticket, "park", "info", `stale ${state} park ignored (ticket now ${fresh})`);
+        return;
+      }
+    }
     this.trace(ticket, "park", "held", `held in ${state}`);
     this.publishOutbox?.cancel(ticket.id);
     const handle = this.workers.get(ticket.id);
@@ -1796,17 +1844,50 @@ export class Dispatcher {
       }
     }
 
-    // If the ticket was cancelled/reaped DURING the spawn gap, its reservation was dropped from
-    // {@link staffing}; discard the freshly-spawned worker rather than register an orphan.
+    // If the ticket's reservation was dropped from {@link staffing} DURING the spawn gap, something
+    // touched it (cancel/park/restaff, or a stale out-of-order park event — issue #9). Before
+    // discarding a freshly-spawned, healthy worker, confirm the ticket is GENUINELY inactive: a
+    // benign forward transition (backlog→todo→in_progress) can clear the reservation via a stale
+    // park even though the ticket still wants exactly this worker.
     if (!this.staffing.has(ticket.id)) {
-      this.logger.info("ticket no longer staffed mid-spawn — discarding worker", {
+      const fresh = await this.freshStateOrNull(ticket);
+      const wantsThisStage = fresh != null && this.stages.forState(fresh)?.name === stage;
+      if (!wantsThisStage) {
+        this.logger.info("ticket no longer staffed mid-spawn — discarding worker", {
+          ticket: ticket.identifier,
+          stage,
+          workerId: handle.id,
+          ...(fresh ? { state: fresh } : {}),
+        });
+        await handle.abort("ticket no longer active");
+        await handle.reap();
+        // The discard was legitimate, but the ticket may still be active in a DIFFERENT staffable
+        // stage (it moved forward while we spawned) — never leave it staffed-but-workerless. Re-staff
+        // the stage it actually needs now; a terminal/parked ticket has no stage, so this is a no-op
+        // there. The reconciliation watchdog is the catch-all for any wedge this can't see.
+        if (fresh) {
+          const staffs = this.stages.forState(fresh);
+          if (staffs && (!staffs.entryGuard || staffs.entryGuard(ticket))) {
+            this.logger.info("re-staffing discarded mid-spawn worker for the ticket's current stage", {
+              ticket: ticket.identifier,
+              from: stage,
+              to: staffs.name,
+              state: fresh,
+            });
+            this.spawnGuarded({ ...ticket, state: fresh }, staffs.name);
+          }
+        }
+        return;
+      }
+      // Benign: a stale transition cleared the reservation, but the ticket is verifiably still active
+      // and wants this exact worker. Re-adopt the reservation and keep the healthy worker alive.
+      this.logger.info("mid-spawn reservation cleared by a stale transition — keeping healthy worker", {
         ticket: ticket.identifier,
         stage,
         workerId: handle.id,
+        state: fresh,
       });
-      await handle.abort("ticket no longer active");
-      await handle.reap();
-      return;
+      this.staffing.add(ticket.id);
     }
 
     this.workers.set(ticket.id, handle);
