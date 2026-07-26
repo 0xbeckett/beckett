@@ -47,6 +47,15 @@ import {
 import { buildDispatchPlan, type RoutineDispatchPlan } from "../../routine/plan.ts";
 import { nextFireAt, isValidTimeZone } from "../../routine/schedule.ts";
 import { WeekdaySchema, type Cadence, type Routine } from "../../routine/types.ts";
+import { WatchStateStore } from "../../routine/watch-store.ts";
+import { fetchModelNewsFeed } from "../../routine/model-news.ts";
+import {
+  runWatchCycle,
+  previewWatchCycle,
+  startWatchLoop,
+  type WatchDeps,
+  type WatchLoop,
+} from "../../routine/watch.ts";
 import { defaultDepsUpdateDeps, runDepsUpdate } from "../../ops/deps-update.ts";
 import { defaultRepoRoot } from "../../version/index.ts";
 import { loadIdentity } from "../../agency/index.ts";
@@ -106,6 +115,7 @@ export interface RoutinesExtension extends Extension {
  * a bare date is exactly the check a person wants to make at a glance.
  */
 function describeNextFire(routine: Routine): string {
+  if (!routine.schedule) return "n/a (event-driven, no fixed schedule)";
   const at = nextFireAt(routine.schedule, routine.state, new Date(), Math.random);
   const tz = routine.schedule.window.tz;
   const local = new Intl.DateTimeFormat("en-CA", {
@@ -124,17 +134,30 @@ function describeCadence(cadence: Cadence): string {
 }
 
 function summarizeRoutine(routine: Routine): Record<string, unknown> {
-  const w = routine.schedule.window;
-  return {
+  const base = {
     id: routine.id,
     name: routine.name,
     builtin: routine.builtin,
     enabled: routine.enabled,
     action: routine.action.kind,
-    cadence: describeCadence(routine.schedule.cadence),
+    lastFiredAt: routine.state.lastFiredAt ?? null,
+  };
+  // `watch` has no schedule/window — it polls on its own interval and fires 0..n times a day.
+  if (routine.action.kind === "watch") {
+    return {
+      ...base,
+      cadence: `every ${routine.action.pollIntervalMinutes}m (event-driven)`,
+      window: "n/a",
+      nextFire: describeNextFire(routine),
+      dryRun: routine.action.dryRun,
+    };
+  }
+  const w = routine.schedule!.window;
+  return {
+    ...base,
+    cadence: describeCadence(routine.schedule!.cadence),
     window: `${w.start}-${w.end} ${w.tz}`,
     nextFire: describeNextFire(routine),
-    lastFiredAt: routine.state.lastFiredAt ?? null,
   };
 }
 
@@ -194,6 +217,12 @@ export const createRoutinesExtension =
     let schedulerDeps: RoutineSchedulerDeps | null = null;
     let scheduler: RoutineScheduler | null = null;
     let primeTimer: ReturnType<typeof setTimeout> | null = null;
+    // The `watch` action's own runtime state (issue #1) — a SEPARATE durable store from
+    // routines.json/RoutineState, because a cold start must seed from the LIVE feed, not from
+    // whatever period-fire bookkeeping happened to be on disk. Built INERT by init; its poll
+    // loop arms alongside the scheduler in the same late start.
+    let watchStateStore: WatchStateStore | null = null;
+    let watchLoop: WatchLoop | null = null;
 
     function requireStore(): RoutineStore {
       if (!store) throw new Error("the routines extension is not initialized (lifecycle.init has not run)");
@@ -202,6 +231,24 @@ export const createRoutinesExtension =
     function requireScheduler(): RoutineScheduler {
       if (!scheduler) throw new Error("the routine scheduler is not started (lifecycle.start has not run)");
       return scheduler;
+    }
+
+    /** The `watch` action's runtime deps — shared by the automatic poll loop, a real `--force`
+     *  fire, and (via `previewWatchCycle`) a `--dry-run` fire routed through the ext capability. */
+    function watchDeps(): WatchDeps {
+      if (!watchStateStore) throw new Error("the routines extension is not initialized (lifecycle.init has not run)");
+      return {
+        stateStore: watchStateStore,
+        fetchFeed: (url) => fetchModelNewsFeed(url),
+        now: deps.now ?? (() => new Date()),
+        dispatchAgent: (agentInput, opts) => dispatchAgentLane(opts.agentId ?? "", agentInput, opts),
+        reportChannel: (channelId, text) =>
+          callBus(join(ctx.paths.beckettDir, "control.sock"), "discord.reply", { channelId, text }, 30_000).then(
+            () => undefined,
+          ),
+        defaultOrigin: () => deps.defaultOrigin?.() ?? { channelId: null, requesterId: null },
+        logger: ctx.logger.child("model-news-watch"),
+      };
     }
 
     /**
@@ -738,14 +785,19 @@ export const createRoutinesExtension =
             const rng = deps.rng ?? Math.random;
             let next: Date | null = null;
             for (const routine of enabled) {
+              // `watch` has no schedule to project a "next fire" from — it fires 0..n times a
+              // day depending on the feed, not on a fixed clock.
+              if (!routine.schedule) continue;
               const fire = nextFireAt(routine.schedule, routine.state, at, rng);
               if (!next || fire.getTime() < next.getTime()) next = fire;
             }
+            const watching = enabled.filter((r) => r.action.kind === "watch").length;
             return {
               ok: true,
               detail:
                 `scheduler ${scheduler ? "running" : "idle"}; ` +
                 `${enabled.length}/${routines.length} routines enabled` +
+                (watching ? `; ${watching} watch loop ${watchLoop ? "running" : "idle"}` : "") +
                 (next ? `; next fire ${next.toISOString()}` : ""),
             };
           } catch (err) {

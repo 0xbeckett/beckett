@@ -9,6 +9,11 @@
  *   - `weekly-deps-update` (issue #85) — Sunday mornings PT, update in-range dependencies in an
  *     isolated clone and open a PR. The acceptance vehicle for the `weekly` cadence, and the one
  *     built-in that never touches the browser.
+ *   - `model-news-watch` (issue #1) — polls the ai-tracker model-news feed every 15 minutes and,
+ *     on a genuinely new model release, fires an EVENT post through the same `social-media` agent
+ *     path as `daily-x-shitpost`, instead of waiting for the next scheduled lane. The acceptance
+ *     vehicle for the `watch` action: it has no `schedule` (see {@link ../routine/types.ts}) and
+ *     is driven by its own interval loop ({@link ../routine/watch.ts}), not the fuzz-window one.
  *
  * As of issue #55/#72 the shitpost routine drives that post THROUGH the `social-media` agent rather than
  * an ad-hoc composer: its action invokes the agent (which WRITES the post — taste lives in the
@@ -24,9 +29,17 @@
 
 import type { Routine } from "./types.ts";
 import { SOCIAL_MEDIA_AGENT_ID } from "../agent/builtins.ts";
+import { MODEL_NEWS_FEED_URL } from "./model-news.ts";
 
 /** jingle keychain entry that holds the X login (username/password/TOTP). A NAME, never a secret. */
 export const X_CREDS_ENTRY = "x.com";
+
+/**
+ * Id of the model-news event-watch routine (issue #1): polls the ai-tracker model-news feed and,
+ * on a genuinely new model release, dispatches the SAME `social-media` agent path
+ * `daily-x-shitpost` uses — an event post instead of waiting for the next scheduled lane.
+ */
+export const MODEL_NEWS_WATCH_ID = "model-news-watch";
 
 /**
  * The instruction handed to the social-media agent each fire. Deliberately terse — the agent's
@@ -77,6 +90,22 @@ export function builtinRoutineDefs(): Array<Omit<Routine, "createdAt" | "updated
       schedule: {
         cadence: { kind: "weekly", weekday: "sunday" },
         window: { start: "08:00", end: "10:00", tz: "America/Los_Angeles" },
+      },
+    },
+    {
+      id: MODEL_NEWS_WATCH_ID,
+      name: "model news event watch",
+      builtin: true,
+      enabled: true,
+      // No `schedule`: this action polls on its own interval (`pollIntervalMinutes`), not a
+      // once-per-humanized-period fuzz window — see the action's doc comment in types.ts.
+      action: {
+        kind: "watch",
+        feedUrl: MODEL_NEWS_FEED_URL,
+        pollIntervalMinutes: 15,
+        agentId: SOCIAL_MEDIA_AGENT_ID,
+        credsEntry: X_CREDS_ENTRY,
+        dryRun: false,
       },
     },
   ];
