@@ -215,7 +215,8 @@ exports[`cli: spend: empty ledger summary 1`] = `
   },
   "byProject": [],
   "byModel": [],
-  "byStage": []
+  "byStage": [],
+  "byHarness": []
 }
 "
 ,

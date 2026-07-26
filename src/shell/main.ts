@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
+import { recordBoot, recordCleanShutdown, uptimeLedgerPath } from "../uptime.ts";
 import { log as rootLog } from "../log.ts";
 import type { Config, Harness, Logger } from "../types.ts";
 import type { Ticket } from "../tracker/types.ts";
@@ -119,6 +120,7 @@ interface BootedSystem {
   browserAgent: BrowserAgent;
   browser: BrowserRuntime;
   extensions: ExtensionRegistry;
+  lifecycleLedgerPath: string;
 }
 
 /**
@@ -185,6 +187,9 @@ async function boot(): Promise<BootedSystem> {
   // relays, never replies or merges. Skipped without a PAT (nothing to read GitHub with).
   const paths = buildPaths(config);
   const beckettDir = paths.beckettDir;
+  // Lifecycle history starts now; a previous unmatched boot becomes an explicit unclean restart.
+  const lifecycleLedgerPath = uptimeLedgerPath(beckettDir);
+  recordBoot(lifecycleLedgerPath);
   const tasks = new TaskStore(join(beckettDir, "tasks.json"));
   const syncTaskBranch = async (ticket: Ticket, board: string, snapshot = false): Promise<void> => {
     if (!ticket.branchRef) return;
@@ -699,7 +704,7 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, extensions };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, extensions, lifecycleLedgerPath };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -734,6 +739,11 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
     await sys.concierge.stop();
   } catch (err) {
     sys.logger.warn("concierge shutdown failed", { error: (err as Error).message });
+  }
+  try {
+    recordCleanShutdown(sys.lifecycleLedgerPath);
+  } catch (err) {
+    sys.logger.warn("uptime ledger clean-shutdown append failed", { error: (err as Error).message });
   }
 }
 
