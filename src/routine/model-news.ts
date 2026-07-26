@@ -119,9 +119,11 @@ export const MODEL_NEWS_CLOCK_SKEW_TOLERANCE_MS = 60 * 60 * 1000;
 
 /**
  * The event-fire predicate: an item only qualifies when it is unseen, genuinely marks a new
- * model (`newModel === true`), carries a `publishedAt` inside the last 24h, and has a source
- * URL to verify against — the whole point of the listener is that the agent reads the source
- * before writing, and there is nothing to read without one.
+ * model (`newModel === true`), and carries a `publishedAt` inside the last 24h. A missing or
+ * unparseable `publishedAt` fails safe (does not qualify) rather than crashing or being treated
+ * as "always fresh". A missing `source.url` does NOT block qualification — the item still fires
+ * (the agent is told to verify independently when there is nothing to point it at,
+ * {@link buildAgentSubject} in `./watch.ts`) — but a well-formed item always has one in practice.
  */
 export function isQualifyingItem(
   item: ModelNewsItem,
@@ -129,7 +131,6 @@ export function isQualifyingItem(
 ): boolean {
   if (opts.seenIds.has(item.id)) return false;
   if (item.newModel !== true) return false;
-  if (!item.source?.url?.trim()) return false;
   const published = Date.parse(item.publishedAt);
   if (!Number.isFinite(published)) return false;
   const ageMs = opts.now.getTime() - published;

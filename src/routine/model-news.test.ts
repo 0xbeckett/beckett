@@ -37,9 +37,9 @@ test("does not qualify an item older than 24h", () => {
   expect(isQualifyingItem(stale, { seenIds: new Set(), now: NOW })).toBe(false);
 });
 
-test("does not qualify an item with no source url — nothing to verify against", () => {
-  expect(isQualifyingItem(item({ source: undefined }), { seenIds: new Set(), now: NOW })).toBe(false);
-  expect(isQualifyingItem(item({ source: { url: "" } }), { seenIds: new Set(), now: NOW })).toBe(false);
+test("still qualifies an item with no source url — the agent is told to verify independently", () => {
+  expect(isQualifyingItem(item({ source: undefined }), { seenIds: new Set(), now: NOW })).toBe(true);
+  expect(isQualifyingItem(item({ source: { url: "" } }), { seenIds: new Set(), now: NOW })).toBe(true);
 });
 
 test("does not qualify an item with an unparseable publishedAt", () => {
