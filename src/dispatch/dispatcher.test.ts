@@ -131,6 +131,8 @@ let provisionedOwners: string[] = [];
 let failProvision: Error | null = null;
 let commitResult: { committed: boolean; sha: string | null } = { committed: true, sha: "commit000" };
 let commitCalls: { workspace: string; message: string }[] = [];
+// When set, commitWorktree parks on this promise, holding a finish handler mid-commit (issue #11).
+let commitGate: Promise<void> | null = null;
 let diffSince = true;
 let fakeReviewDiff = "diff --git a/x.ts b/x.ts\n+added";
 let worktreeAdds: { workspace: string; branch: string; baseRef: string }[] = [];
@@ -144,6 +146,7 @@ mock.module("./spawn.ts", () => ({ spawnWorker: fakeSpawn, spawnTicketWorker: fa
 const gitFakes: Partial<GitOps> = {
   commitWorktree: async (workspace: string, _message: string) => {
     commitCalls.push({ workspace, message: _message });
+    if (commitGate) await commitGate; // issue #11: hold the finish handler mid-commit
     return commitResult;
   },
   headSha: async () => "base000", // v3.1 per-ticket diff base (fake repo has no real HEAD)
@@ -290,6 +293,7 @@ beforeEach(() => {
   provisionedOwners = [];
   commitResult = { committed: true, sha: "commit000" };
   commitCalls = [];
+  commitGate = null;
   diffSince = true;
   worktreeAdds = [];
   worktreeRemoves = [];
@@ -2242,6 +2246,47 @@ describe("staffing watchdog (issue #9)", () => {
     expect(res.parked).toEqual([]);
     expect(spawnCalls).toHaveLength(1);
     expect(client.setStateCalls.some((c) => c.id === "p" || c.id === "d")).toBe(false);
+  });
+
+  // issue #11: onWorkerDone frees the slot BEFORE awaiting the stage's finish handler, so a slow
+  // commit/push/PR leaves the ticket workerless while the board still reads in_progress. The
+  // `finishing` guard must keep the watchdog from counting that a wedge and spawning a SECOND worker
+  // into the worktree the finish is still committing.
+  test("does not re-staff a ticket whose finish handler is still committing", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ id: "f", identifier: "OPS-F", state: "in_progress" });
+    client.board = [ticket];
+
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    expect(spawnCalls).toHaveLength(1);
+
+    // Gate the safety-net commit so the implement finish handler parks mid-commit.
+    let release!: () => void;
+    commitGate = new Promise<void>((r) => (release = r));
+
+    created[0]!.finish("success", "implemented");
+    await tick(); // onWorkerDone runs: slot freed, finish handler now parked inside commitWorktree
+    expect(commitCalls).toHaveLength(1); // it reached the commit and is blocked on the gate
+    expect(d.live().filter((w) => w.state === "live")).toHaveLength(0); // no live worker
+
+    // A full grace window elapses while the finish is still committing. The wedge clock must reset
+    // each pass (finishing guard), so the watchdog never re-staffs a second worker.
+    const t0 = 2_000_000;
+    expect(await d.reconcileStaffing(t0)).toEqual({ restaffed: [], parked: [] });
+    const past = await d.reconcileStaffing(t0 + 121_000);
+    expect(past.restaffed).toEqual([]);
+    expect(past.parked).toEqual([]);
+    expect(spawnCalls).toHaveLength(1); // still only the original implement worker
+
+    // Release the gate: the finish completes normally and advances the ticket off in_progress.
+    release();
+    await tick();
+    await tick();
+    expect(client.setStateCalls.some((c) => c.id === "f")).toBe(true);
+
+    // With the finish done, the ticket is no longer mid-finish; the guard has stopped shielding it.
+    expect((d as unknown as { finishing: Set<string> }).finishing.has("f")).toBe(false);
   });
 });
 
