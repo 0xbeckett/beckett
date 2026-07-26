@@ -146,39 +146,6 @@ export const RoutineActionSchema = z.discriminatedUnion("kind", [
     /** Authenticated requester the browser run is attributed to (optional; owner env fallback). */
     requesterId: z.string().optional(),
   }),
-  /**
-   * `watch` (issue #1): poll a third-party feed on an interval and, on a genuinely new item,
-   * dispatch through the `agent` lane exactly like `x-shitpost`/`agent` do — an event post
-   * instead of a scheduled one. Unlike every other action this one has NO `schedule`: it does
-   * not fire once per humanized period, it polls on a plain interval and fires 0..n times a day
-   * depending on what the feed actually says, gated by its own qualification + rate-limit rules
-   * ({@link ../routine/model-news.ts}, {@link ../routine/rate-limit.ts}) rather than a fuzz
-   * window. Its runtime state (seen-set, post history) lives in its own store
-   * ({@link ../routine/watch-store.ts}), not in {@link RoutineState} — a restart-safe cold start
-   * must seed from the LIVE feed, not from whatever `RoutineState` happened to persist.
-   */
-  z.object({
-    kind: z.literal("watch"),
-    /** The feed to poll — a plain HTTP(S) URL, checked for a `200` + `items[]` body each round. */
-    feedUrl: z.string().min(1),
-    /** How often to poll. Default matches the ticket's ask: 15 minutes. */
-    pollIntervalMinutes: z.number().int().positive().default(15),
-    /** Registry id of the agent a qualifying fire is dispatched to (e.g. "social-media"). */
-    agentId: z.string().min(1),
-    /** jingle keychain entry the browser lane injects creds from, for the agent-authored post. */
-    credsEntry: z.string().optional(),
-    /** Discord channel a fire (real or dry-run) reports to (optional; env fallback). */
-    channelId: z.string().optional(),
-    /** Authenticated requester a real fire is attributed to (optional; owner env fallback). */
-    requesterId: z.string().optional(),
-    /**
-     * When true, every poll runs its full qualify/dedup/rate-limit pass but the final step is a
-     * one-line Discord preview instead of a real agent dispatch — "watch what it would have
-     * posted" without risking a live post. Its own accounting bucket in the watch store means
-     * flipping this back off never treats a simulated post as a real one.
-     */
-    dryRun: z.boolean().default(false),
-  }),
 ]);
 export type RoutineAction = z.infer<typeof RoutineActionSchema>;
 
@@ -210,12 +177,7 @@ export const RoutineSchema = z.object({
   /** Paused routines persist and inspect but never fire. */
   enabled: z.boolean().default(true),
   action: RoutineActionSchema,
-  /**
-   * Absent for `watch` actions ONLY — nothing else in the union fires without one. A `watch`
-   * routine's timing is its own `pollIntervalMinutes`, not a humanized period/window; see the
-   * action's doc comment above.
-   */
-  schedule: ScheduleSchema.optional(),
+  schedule: ScheduleSchema,
   state: RoutineStateSchema.default({
     periodKey: null,
     chosenFireAt: null,

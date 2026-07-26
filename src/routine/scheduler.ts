@@ -57,10 +57,6 @@ export function startRoutineScheduler(deps: RoutineSchedulerDeps): RoutineSchedu
 
   async function evaluate(routine: Routine): Promise<void> {
     if (!routine.enabled) return;
-    // `watch` routines have no `schedule` — they poll on their own interval via a SEPARATE loop
-    // ({@link ./watch.ts}'s `startWatchLoop`), not this humanized-period one. Nothing below this
-    // line applies to them.
-    if (routine.action.kind === "watch" || !routine.schedule) return;
     const at = now();
     const key = periodKey(routine.schedule.cadence, routine.schedule.window, at);
     let state = routine.state;
@@ -112,26 +108,10 @@ export function startRoutineScheduler(deps: RoutineSchedulerDeps): RoutineSchedu
     const routine = await deps.store.get(id);
     if (!routine) throw new Error(`no such routine: ${id}`);
     const plan = buildDispatchPlan(routine);
-
-    // `watch` has no period to be idempotent PER — its own qualify/dedup/rate-limit pass (run by
-    // the dispatcher, {@link ../capability/modules/routines.ts}) is what keeps a manual fire safe,
-    // the same rails that gate its automatic interval poll. So: a dry-run returns the (feed-blind)
-    // pure plan here — the CLI builds a real, feed-aware preview itself via `previewWatchCycle`
-    // without going through the daemon at all — and every other fire (force or not) just runs a
-    // real poll cycle right now, `force` bypassing nothing but the "wait for the next interval"
-    // wall-clock gate that only the separate poll loop enforces.
-    if (routine.action.kind === "watch") {
-      if (opts.dryRun) return plan;
-      await deps.dispatcher.dispatch(plan, routine);
-      return plan;
-    }
-
     if (opts.dryRun) return plan;
-    if (!routine.schedule) throw new Error(`routine ${id} has no schedule (only a "watch" action may omit one)`);
-    const schedule = routine.schedule;
     if (!opts.force) {
       // Non-forced manual fire still respects per-period idempotency.
-      const key = periodKey(schedule.cadence, schedule.window, now());
+      const key = periodKey(routine.schedule.cadence, routine.schedule.window, now());
       if (routine.state.lastFiredPeriodKey === key) {
         throw new Error(`routine ${id} already fired this period (${key}); use --force to fire again`);
       }

@@ -99,23 +99,6 @@ export class RoutineStore {
     });
   }
 
-  /**
-   * Toggle a `watch` routine's ambient dry-run mode — the "watch what it would have posted for a
-   * day before trusting it" lever (issue #1). Distinct from `enabled`: `enabled: false` stops the
-   * poll loop entirely, while `dryRun: true` keeps it polling and evaluating for real but swaps
-   * the final step (a live post) for a one-line Discord preview.
-   */
-  async setWatchDryRun(id: string, dryRun: boolean): Promise<Routine> {
-    return this.mutate((reg) => {
-      const routine = reg.routines.find((r) => r.id === id);
-      if (!routine) throw new Error(`no such routine: ${id}`);
-      if (routine.action.kind !== "watch") throw new Error(`routine ${id} is not a "watch" routine`);
-      routine.action = { ...routine.action, dryRun };
-      routine.updatedAt = this.now().toISOString();
-      return structuredClone(routine);
-    });
-  }
-
   /** Replace a routine's runtime state (the scheduler's persist path). */
   async setState(id: string, state: Routine["state"]): Promise<void> {
     await this.mutate((reg) => {
