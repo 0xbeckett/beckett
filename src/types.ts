@@ -301,6 +301,14 @@ export interface ThreadCreated {
 
 
 /** Options for posting a reply (ambient model — always the origin channel, Spec 05 §3). */
+/** The mutable portion of an existing Discord message. At least one field must be supplied. */
+export interface DiscordMessageEditPayload {
+  /** Replacement message text. An empty string deliberately clears the text. */
+  content?: string;
+  /** Replacement embeds. An empty array deliberately clears embeds. */
+  embeds?: DiscordEmbed[];
+}
+
 export interface ReplyOptions {
   replyToMessageId?: string; // native reply-to for correlation
   /** Discord author id of replyToMessageId; enables only that person's native-reply notification. */
@@ -966,6 +974,11 @@ export interface DiscordGateway {
   stop(): Promise<void>;
   /** Post to a channel; returns the bot message id (for reply correlation). */
   post(channelId: string, content: string, opts?: ReplyOptions): Promise<string>;
+  /**
+   * Edit an existing bot message. Rejections are typed DiscordMessageEditError subclasses so
+   * periodic callers can distinguish a deleted message from retryable Discord outages.
+   */
+  editMessage(channelId: string, messageId: string, payload: DiscordMessageEditPayload): Promise<void>;
   /** Delete one bot-authored message when a privacy-critical ledger write fails. */
   deleteMessage(channelId: string, messageId: string): Promise<void>;
   /** Trigger the typing indicator in a channel (~10s; re-call to keep it alive). */

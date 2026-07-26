@@ -19,7 +19,9 @@
  *  - **No post is lost when the ws drops** (Spec 01 §6 failure table): while disconnected,
  *    `post()` queues the message and resolves the caller's promise with the real message id
  *    once it actually lands on reconnect. Workers don't depend on the ws, so the work
- *    completes and is simply delivered late.
+ *    completes and is simply delivered late. Edits differ deliberately: a stale progress
+ *    update has no value, so offline edits are coalesced last-write-wins per message and their
+ *    caller receives a typed transient error rather than waiting across the disconnect.
  *  - **Sparseness is law** (Spec 05 §7): the gateway is a dumb pipe — it posts exactly what
  *    it's told. Deciding *whether* to speak (the five YES moments) lives in the loop/Brain.
  *  - **Loop guard**: bot-authored messages (incl. our own) are dropped before they reach the
@@ -37,6 +39,7 @@ import {
   Events,
   type Message,
   type MessageCreateOptions,
+  type MessageEditOptions,
   AttachmentBuilder,
   ActionRowBuilder,
   ButtonBuilder,
@@ -47,6 +50,7 @@ import {
 } from "discord.js";
 import type {
   DiscordGateway,
+  DiscordMessageEditPayload,
   IncomingMessage,
   ReplyContextMessage,
   ReplyOptions,
@@ -84,6 +88,68 @@ interface QueuedPost {
   opts?: ReplyOptions;
   resolve: (messageId: string) => void;
   reject: (err: Error) => void;
+}
+
+/** A latest-only edit buffered across a gateway outage. */
+interface QueuedEdit {
+  channelId: string;
+  messageId: string;
+  payload: DiscordMessageEditPayload;
+}
+
+/** Base class for every edit failure. Consumers can catch this instead of parsing Discord text. */
+export class DiscordMessageEditError extends Error {
+  readonly kind: "unknown-message" | "permission" | "transient" | "failed";
+  readonly channelId: string;
+  readonly messageId: string;
+
+  constructor(
+    kind: DiscordMessageEditError["kind"],
+    channelId: string,
+    messageId: string,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "DiscordMessageEditError";
+    this.kind = kind;
+    this.channelId = channelId;
+    this.messageId = messageId;
+  }
+}
+
+/** The target was deleted (Discord HTTP 404 / code 10008); callers should post a replacement. */
+export class DiscordUnknownMessageError extends DiscordMessageEditError {
+  constructor(channelId: string, messageId: string, options?: ErrorOptions) {
+    super("unknown-message", channelId, messageId, "discord message no longer exists", options);
+    this.name = "DiscordUnknownMessageError";
+  }
+}
+
+/** The bot cannot edit this message; retrying will not help until permissions change. */
+export class DiscordMessageEditPermissionError extends DiscordMessageEditError {
+  constructor(channelId: string, messageId: string, options?: ErrorOptions) {
+    super("permission", channelId, messageId, "discord permission denied while editing message", options);
+    this.name = "DiscordMessageEditPermissionError";
+  }
+}
+
+/** A disconnect, Discord 5xx, or rate limit; callers should skip this tick and try later. */
+export class DiscordTransientMessageEditError extends DiscordMessageEditError {
+  /** Server-requested delay, when the transient failure was a rate limit. */
+  readonly retryAfterMs: number | undefined;
+
+  constructor(
+    channelId: string,
+    messageId: string,
+    message: string,
+    retryAfterMs?: number,
+    options?: ErrorOptions,
+  ) {
+    super("transient", channelId, messageId, message, options);
+    this.name = "DiscordTransientMessageEditError";
+    this.retryAfterMs = retryAfterMs;
+  }
 }
 
 /** Construction options. The daemon wires these; `token` falls back to `DISCORD_TOKEN`. */
@@ -124,6 +190,15 @@ export class DiscordJsGateway implements DiscordGateway {
 
   /** Outbound posts buffered while disconnected (Spec 01 §6 — flushed on reconnect). */
   private readonly outbound: QueuedPost[] = [];
+  /**
+   * Latest-only edits buffered while disconnected. Unlike posts, progress edits are stale as soon
+   * as a newer cycle supersedes them, so this is keyed by channel/message rather than a FIFO.
+   */
+  private readonly queuedEdits = new Map<string, QueuedEdit>();
+  /** Per-channel Discord edit cooldowns, populated from 429 retry_after responses. */
+  private readonly editRetryAt = new Map<string, number>();
+  private readonly editFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private flushingEdits = false;
   /** Message ids posted by this process, used to recognize native no-ping replies to Beckett. */
   private readonly ownMessageIds = new Set<string>();
   /** Privacy-critical subset of own ids, marked synchronously before `sendNow` returns. */
@@ -215,6 +290,7 @@ export class DiscordJsGateway implements DiscordGateway {
         this.lastEventTs = Date.now();
         this.logger.info("discord gateway up", { tag: c.user.tag, botUserId: c.user.id });
         void this.flushOutbound();
+        void this.flushQueuedEdits();
         resolve();
       });
       // A login/connect error before we go live is fatal to start().
@@ -237,6 +313,11 @@ export class DiscordJsGateway implements DiscordGateway {
     // Drain the outbound queue: a shutdown should not leave callers hanging forever.
     const pending = this.outbound.splice(0);
     for (const p of pending) p.reject(new Error("discord gateway stopped before post was sent"));
+    // Queued edits have no awaiters — each caller was already told to skip the offline tick.
+    this.queuedEdits.clear();
+    this.editRetryAt.clear();
+    for (const timer of this.editFlushTimers.values()) clearTimeout(timer);
+    this.editFlushTimers.clear();
 
     const client = this.client;
     if (!client) return;
@@ -376,6 +457,57 @@ export class DiscordJsGateway implements DiscordGateway {
     }
     if (opts?.queueIfOffline === false) throw new Error("discord gateway is offline");
     return this.enqueue(channelId, content, opts);
+  }
+
+  /**
+   * PATCH an existing message. Offline/transient edits are retained as one latest-only value per
+   * message for reconnect, but reject immediately with a typed transient error so a periodic
+   * caller never hangs across a gateway blip. Deleted messages and permission failures are typed
+   * separately so the caller can repost or stop retrying respectively.
+   */
+  async editMessage(
+    channelId: string,
+    messageId: string,
+    payload: DiscordMessageEditPayload,
+  ): Promise<void> {
+    if (!hasEditFields(payload)) {
+      throw new DiscordMessageEditError(
+        "failed",
+        channelId,
+        messageId,
+        "discord message edit needs content and/or embeds",
+      );
+    }
+
+    if (!this.connected || !this.client) {
+      this.enqueueEdit(channelId, messageId, payload);
+      throw new DiscordTransientMessageEditError(
+        channelId,
+        messageId,
+        "discord gateway is offline; edit queued for reconnect",
+      );
+    }
+
+    const retryAt = this.editRetryAt.get(channelId);
+    if (retryAt && retryAt > Date.now()) {
+      this.enqueueEdit(channelId, messageId, payload);
+      throw new DiscordTransientMessageEditError(
+        channelId,
+        messageId,
+        "discord edit is rate limited; edit queued for retry",
+        retryAt - Date.now(),
+      );
+    }
+
+    try {
+      await this.editNow(channelId, messageId, payload);
+    } catch (error) {
+      const typed = this.toEditError(channelId, messageId, error);
+      if (typed instanceof DiscordTransientMessageEditError) {
+        this.enqueueEdit(channelId, messageId, payload, typed.retryAfterMs);
+      }
+      throw typed;
+    }
   }
 
   async deleteMessage(channelId: string, messageId: string): Promise<void> {
@@ -564,6 +696,7 @@ export class DiscordJsGateway implements DiscordGateway {
       this.lastEventTs = Date.now();
       this.logger.info("discord shard RESUMEd", { shard: id, replayedEvents: replayed });
       void this.flushOutbound();
+      void this.flushQueuedEdits();
     });
     client.on(Events.ShardReady, (id) => {
       // Re-IDENTIFY after an invalidated session: the gap is NOT replayed (Spec 05 §1.2);
@@ -571,6 +704,7 @@ export class DiscordJsGateway implements DiscordGateway {
       this.connected = true;
       this.lastEventTs = Date.now();
       void this.flushOutbound();
+      void this.flushQueuedEdits();
     });
     client.on(Events.Error, (err) => {
       this.logger.error("discord client error", { error: String(err) });
