@@ -55,6 +55,7 @@ import {
   startWatchLoop,
   type WatchDeps,
   type WatchLoop,
+  type WatchLoopDeps,
 } from "../../routine/watch.ts";
 import { defaultDepsUpdateDeps, runDepsUpdate } from "../../ops/deps-update.ts";
 import { defaultRepoRoot } from "../../version/index.ts";
@@ -100,7 +101,7 @@ export interface RoutinesExtensionDeps {
   /** Test seams for the `watch` action's own store/loop/feed (issue #1) — kept separate from the
    *  scheduler's, since `watch` runs on its own interval, not the humanized fuzz-window one. */
   createWatchStateStore?: (ctx: ExtensionContext) => WatchStateStore;
-  createWatchLoop?: (deps: import("../../routine/watch.ts").WatchLoopDeps) => WatchLoop;
+  createWatchLoop?: (deps: WatchLoopDeps) => WatchLoop;
   fetchFeed?: (url: string) => ReturnType<typeof fetchModelNewsFeed>;
   watchIntervalMs?: number;
 }
@@ -239,19 +240,17 @@ export const createRoutinesExtension =
       return scheduler;
     }
 
-    /** The `watch` action's runtime deps for ONE routine — shared by the automatic poll loop, a
-     *  real `--force` fire, and (via `previewWatchCycle`) a `--dry-run` fire routed through the
-     *  ext capability. `dispatchAgent` is bound to THIS routine's `agentId`, since a `WatchDeps`
-     *  carries no routine identity of its own. */
-    function watchDeps(routine: Routine): WatchDeps {
+    /** The `watch` action's runtime deps — ONE shared object serves every `watch` routine (and
+     *  the automatic poll loop, a real `--force` fire, and — via `previewWatchCycle` — a
+     *  `--dry-run` fire): `dispatchAgent` takes the target `agentId` per call rather than being
+     *  bound to one routine, so nothing here needs to vary by routine. */
+    function watchDeps(): WatchDeps {
       if (!watchStateStore) throw new Error("the routines extension is not initialized (lifecycle.init has not run)");
-      if (routine.action.kind !== "watch") throw new Error(`routine ${routine.id} is not a "watch" routine`);
-      const agentId = routine.action.agentId;
       return {
         stateStore: watchStateStore,
         fetchFeed: deps.fetchFeed ?? ((url) => fetchModelNewsFeed(url)),
         now: deps.now ?? (() => new Date()),
-        dispatchAgent: (agentInput, opts) => dispatchAgentLane(agentId, agentInput, opts),
+        dispatchAgent: (agentId, agentInput, opts) => dispatchAgentLane(agentId, agentInput, opts),
         reportChannel: (channelId, text) =>
           callBus(join(ctx.paths.beckettDir, "control.sock"), "discord.reply", { channelId, text }, 30_000).then(
             () => undefined,
@@ -368,7 +367,7 @@ export const createRoutinesExtension =
       // agent dispatch — happens HERE, exactly once per fire (the automatic loop's own interval
       // gate, or a manual `fire`/`--force`, both land in this one place).
       if (plan.lane === "watch") {
-        await runWatchCycle(routine, watchDeps(routine));
+        await runWatchCycle(routine, watchDeps());
         return;
       }
 
@@ -412,6 +411,24 @@ export const createRoutinesExtension =
      */
     function cliRoutineStore(): RoutineStore {
       return new RoutineStore(join(ctx.paths.beckettDir, "routines.json"));
+    }
+
+    /**
+     * `previewWatchCycle`'s deps for a CLI-local `--dry-run` — same watch-state.json the daemon's
+     * loop reads, a real (unprivileged) feed fetch, and the same env-resolved origin fallback
+     * every routine action uses. No daemon required: a dry-run must work even if the daemon is
+     * down, exactly like every other routine's `--dry-run`.
+     */
+    function cliWatchPreviewDeps(): Pick<WatchDeps, "fetchFeed" | "now" | "stateStore" | "defaultOrigin"> {
+      return {
+        stateStore: new WatchStateStore(join(ctx.paths.beckettDir, "watch-state.json")),
+        fetchFeed: (url) => fetchModelNewsFeed(url),
+        now: () => new Date(),
+        defaultOrigin: () => ({
+          channelId: process.env.BECKETT_ROUTINE_CHANNEL_ID?.trim() ?? null,
+          requesterId: process.env.DISCORD_OWNER_ID?.trim() ?? null,
+        }),
+      };
     }
 
     /**
@@ -587,6 +604,22 @@ export const createRoutinesExtension =
         const force = flags.force === true;
         const routine = await store.get(id!);
         if (!routine) fail(`no such routine: ${id}`);
+        if (dryRun && routine!.action.kind === "watch") {
+          // A `watch` dry-run needs the LIVE feed to say anything useful, so — unlike every other
+          // lane's dry-run — it does real (read-only) I/O. It still never touches the bus/daemon:
+          // fetching the feed and reading the watch store are both plain, unprivileged operations
+          // this CLI process can do itself, and `previewWatchCycle` never mutates either.
+          const preview = await previewWatchCycle(routine!, cliWatchPreviewDeps());
+          out({
+            dryRun: true,
+            routine: id,
+            lane: "watch",
+            ...preview,
+            note: preview.wouldPost
+              ? "dry-run did NOT dispatch the agent or post. To fire for real: beckett routine fire " + id + " --force"
+              : "dry-run did NOT mutate the watch state (seen-set/post-history) — nothing here counts against a real round.",
+          });
+        }
         if (dryRun) {
           // Build the exact dispatch plan WITHOUT running the agent or posting — proves the wiring,
           // no live post. For the agent lane the post text is authored at fire time, so it's not shown.
@@ -615,8 +648,22 @@ export const createRoutinesExtension =
         }
       }
 
+      if (sub === "watch-mode") {
+        const [id, mode] = rest;
+        if (!id || (mode !== "live" && mode !== "dry-run")) {
+          fail("usage: beckett routine watch-mode <id> live|dry-run");
+        }
+        try {
+          const routine = await store.setWatchDryRun(id!, mode === "dry-run");
+          out(summarizeRoutine(routine));
+        } catch (err) {
+          fail((err as Error).message);
+        }
+      }
+
       fail(
-        "usage: beckett routine list | inspect <id> | add <id> ... | remove <id> | enable <id> | disable <id> | fire <id> [--dry-run|--force]",
+        "usage: beckett routine list | inspect <id> | add <id> ... | remove <id> | enable <id> | disable <id> | " +
+          "fire <id> [--dry-run|--force] | watch-mode <id> live|dry-run",
       );
     }
 
@@ -796,7 +843,10 @@ export const createRoutinesExtension =
             deps.createStore?.(ctx) ?? new RoutineStore(join(ctx.paths.beckettDir, "routines.json"));
           watchStateStore =
             deps.createWatchStateStore?.(ctx) ??
-            new WatchStateStore(join(ctx.paths.beckettDir, "watch-state.json"), ...(deps.now ? [{ now: deps.now }] : []));
+            new WatchStateStore(
+              join(ctx.paths.beckettDir, "watch-state.json"),
+              deps.now ? { now: deps.now } : {},
+            );
           schedulerDeps = {
             store,
             logger: ctx.logger.child("routine"),
@@ -826,22 +876,7 @@ export const createRoutinesExtension =
 
           const watchLoopDeps = {
             routineStore: store,
-            // `watchDeps` needs a routine to bind `dispatchAgent`'s agentId — the loop itself is
-            // routine-agnostic, so it asks for fresh deps per routine at cycle time.
-            watchDeps: {
-              stateStore: watchStateStore!,
-              fetchFeed: deps.fetchFeed ?? ((url: string) => fetchModelNewsFeed(url)),
-              now: deps.now ?? (() => new Date()),
-              dispatchAgent: () => {
-                throw new Error("watch loop dispatchAgent must be bound per-routine — use watchDeps(routine)");
-              },
-              reportChannel: (channelId: string, text: string) =>
-                callBus(join(ctx.paths.beckettDir, "control.sock"), "discord.reply", { channelId, text }, 30_000).then(
-                  () => undefined,
-                ),
-              defaultOrigin: () => deps.defaultOrigin?.() ?? { channelId: null, requesterId: null },
-              logger: ctx.logger.child("model-news-watch"),
-            },
+            watchDeps: watchDeps(),
             ...(deps.now ? { now: deps.now } : {}),
             ...(deps.watchIntervalMs !== undefined ? { intervalMs: deps.watchIntervalMs } : {}),
           };
@@ -905,9 +940,9 @@ export const createRoutinesExtension =
         },
         {
           name: "routine",
-          summary: "named recurring tasks that fire at a fuzzed time inside a daily window",
+          summary: "named recurring tasks that fire at a fuzzed time inside a daily window, or on an event",
           usage:
-            'beckett routine list | inspect <id> | add <id> --window 12:00-13:00 --tz <IANA> --task "<task>" [--weekly <weekday>] [--creds <entry>] | remove <id> | enable|disable <id> | fire <id> [--dry-run|--force]',
+            'beckett routine list | inspect <id> | add <id> --window 12:00-13:00 --tz <IANA> --task "<task>" [--weekly <weekday>] [--creds <entry>] | remove <id> | enable|disable <id> | fire <id> [--dry-run|--force] | watch-mode <id> live|dry-run',
           run: runRoutine,
         },
       ],
