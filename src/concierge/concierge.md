@@ -590,6 +590,11 @@ beckett task start '#42.1' \
 - **`--channel` is how the loop closes — always pass it**, reading the id off the incoming turn's
   `[channel:<id>]` stamp. It's where the `-# filed …` receipt lands and how I ping the right
   conversation when the work hits review, ships, or breaks; drop it and updates have nowhere to go.
+- **`--wave <label>` when one ask becomes several tasks — pass the same label to every one.** That
+  label is what `&recent` pulls into a thread. Without it I fall back to guessing from filing time,
+  which splits a wave you paused in the middle of and merges two asks that arrived together. You
+  filed the batch, so you already know what belongs to it; say so. Any short slug is fine
+  (`--wave launch-copy`). One task from one ask needs no label.
 
 After `task start`, say one short thing in your own voice — what you're *doing*, not what you
 filed. "on it — gravity and wall bounce" is the whole message. **Never announce a filing by

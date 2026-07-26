@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -138,4 +138,49 @@ test("task start files the public branch marker into the tracker and links the i
   } finally {
     server.stop(true);
   }
+});
+
+/**
+ * Read the raw registry. `task list` is a deliberately curated public projection and does not carry
+ * `waveId` — the wave is routing plumbing behind `&recent`, never something a person is shown.
+ */
+function wavesOf(dir: string): string[] {
+  const raw = JSON.parse(readFileSync(join(dir, "tasks.json"), "utf8")) as { tasks: Array<{ waveId?: string }> };
+  return raw.tasks.map((t) => t.waveId ?? "");
+}
+
+test("an explicit --wave label groups tasks the clock and channel would have split", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-task-wave-"));
+  dirs.push(dir);
+
+  // Same label across DIFFERENT channels — the grouping the fallback inference cannot express.
+  // Pinning has to win over it, or `&recent` can never pull a cross-channel wave into one thread.
+  await cli(dir, ["task", "create", "--title", "Launch copy", "--channel", "111", "--wave", "launch"]);
+  await cli(dir, ["task", "create", "--title", "Launch art", "--channel", "222", "--wave", "launch"]);
+
+  expect(wavesOf(dir)).toEqual(["launch", "launch"]);
+});
+
+test("without a label, two channels never share a wave", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-task-wave-split-"));
+  dirs.push(dir);
+
+  await cli(dir, ["task", "create", "--title", "Media ask", "--channel", "111"]);
+  await cli(dir, ["task", "create", "--title", "Dev ask", "--channel", "222"]);
+
+  const waves = wavesOf(dir);
+  expect(waves).toHaveLength(2);
+  expect(waves[0]).not.toBe(waves[1]);
+});
+
+test("without a label, back-to-back filings in ONE channel do share a wave", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-task-wave-join-"));
+  dirs.push(dir);
+
+  await cli(dir, ["task", "create", "--title", "Schema", "--channel", "111"]);
+  await cli(dir, ["task", "create", "--title", "API", "--channel", "111"]);
+
+  const waves = wavesOf(dir);
+  expect(waves[0]).toBe(waves[1]!);
+  expect(waves[0]).not.toBe("");
 });

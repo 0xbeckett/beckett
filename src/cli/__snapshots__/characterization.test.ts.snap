@@ -980,7 +980,7 @@ exports[`cli: task: create without a title prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>]
+"error: usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>] [--wave <label>]
 "
 ,
   "stdout": "",

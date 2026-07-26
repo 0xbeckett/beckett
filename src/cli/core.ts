@@ -708,15 +708,23 @@ export async function runTask(argv: string[]): Promise<void> {
   if (sub === "create") {
     const title = String(flags.title ?? _.join(" ")).trim();
     if (!title) {
-      fail('usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>]');
+      fail('usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>] [--wave <label>]');
     }
     const project = flags.project ? String(flags.project) : undefined;
     guardRestrictedProject(project, Boolean(flags["confirm-beckett"]));
+    // `--wave` is how the concierge PINS a batch. Grouping is otherwise inferred from co-filing time
+    // and origin channel, which is a guess: file two unrelated things quickly and they merge; pause
+    // to think mid-wave and it splits. The concierge does not have to guess — it filed the batch, in
+    // one turn, and it is the only thing that knows which asks belong together. Passing the same
+    // label across a burst states that intent outright, and it can express groupings the clock never
+    // could, like work filed for one ask across two channels. An explicit label always wins.
+    const wave = flags.wave ? String(flags.wave).trim() : "";
     const created = await store.createTask({
       title,
       ...(flags["branch-title"] ? { initialBranchTitle: String(flags["branch-title"]) } : {}),
       ...(project ? { project } : {}),
       ...(flags.channel ? { originChannelId: String(flags.channel) } : {}),
+      ...(wave ? { waveId: wave } : {}),
     });
     await notifyBus("task.created", {
       taskRef: `#${created.task.number}`,
