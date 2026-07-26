@@ -254,6 +254,64 @@ test("case 1 — cloned third-party upstream: fork → push to fork → PR to up
   expect(create).toContain("0xbeckett:beckett/ops-28");
 });
 
+test("case 1a — third-party origin we can push to (collaborator): push to origin, in-repo PR (base main)", async () => {
+  // #12/#13: origin is frgmt0/bored and 0xbeckett is a collaborator there. Publish must derive the
+  // head repo + push target from origin (NOT 0xbeckett/<slug>), push the branch to origin, and open
+  // a plain in-repo PR — no fork, head is the bare branch, base is origin's default branch.
+  const { gh, calls } = cli((j) => {
+    if (j.startsWith("git remote get-url origin")) return ok("https://github.com/frgmt0/bored.git");
+    if (j.startsWith("gh repo view frgmt0/bored --json viewerPermission")) return ok("WRITE\n"); // collaborator
+    if (j.startsWith("git ls-files")) return ok(""); // no scaffolding to strip
+    if (j.includes("--json defaultBranchRef")) return ok("main");
+    if (j.startsWith("git push https://github.com/frgmt0/bored.git")) return ok();
+    if (j.startsWith("gh pr list")) return ok("[]");
+    if (j.startsWith("gh pr create")) return ok("https://github.com/frgmt0/bored/pull/3\n");
+    return undefined;
+  });
+  const r = await gh.ensurePublished({ slug: "bored", sourceDir: "/src", ticket: "task-7-1" });
+  expect(r.kind).toBe("pr");
+  expect(r.nameWithOwner).toBe("frgmt0/bored");
+  expect(r.prUrl).toContain("/pull/3");
+  // No fork was created — we pushed straight to origin.
+  expect(calls.some((c) => c.startsWith("gh repo fork"))).toBe(false);
+  const push = calls.find((c) => c.startsWith("git push"))!;
+  expect(push).toContain("frgmt0/bored.git");
+  expect(push).toContain("HEAD:refs/heads/beckett/task-7-1");
+  // The branch is pushed BEFORE the PR is opened.
+  const pushIdx = calls.findIndex((c) => c.startsWith("git push"));
+  const prIdx = calls.findIndex((c) => c.startsWith("gh pr create"));
+  expect(pushIdx).toBeLessThan(prIdx);
+  // PR is in-repo: --repo frgmt0/bored, --base main, --head is the bare branch (no `owner:` prefix).
+  const create = calls.find((c) => c.startsWith("gh pr create"))!;
+  expect(create).toContain("--repo frgmt0/bored");
+  expect(create).toContain("--base main");
+  expect(create).toContain("--head beckett/task-7-1");
+  expect(create).not.toContain("0xbeckett:");
+});
+
+test("case 1b — third-party upstream we can only read: still forks and opens a cross-fork PR", async () => {
+  // The collaborator check reports READ (or is unroutable) → we can't push to origin, so the
+  // genuine-fork-of-upstream path is preserved: fork → push to fork → cross-fork PR to upstream.
+  const { gh, calls } = cli((j) => {
+    if (j.startsWith("git remote get-url origin")) return ok("https://github.com/SSHdotCodes/probabilities.git");
+    if (j.startsWith("gh repo view SSHdotCodes/probabilities --json viewerPermission")) return ok("READ\n");
+    if (j.startsWith("gh repo fork")) return ok("forked");
+    if (j.startsWith("gh repo view 0xbeckett/probabilities --json name")) return ok('{"name":"probabilities"}');
+    if (j.startsWith("git push")) return ok();
+    if (j.includes("--json defaultBranchRef")) return ok("main");
+    if (j.startsWith("gh pr list")) return ok("[]");
+    if (j.startsWith("gh pr create")) return ok("https://github.com/SSHdotCodes/probabilities/pull/7\n");
+    return undefined;
+  });
+  const r = await gh.ensurePublished({ slug: "probabilities", sourceDir: "/src", ticket: "OPS-28" });
+  expect(r.kind).toBe("pr");
+  expect(r.nameWithOwner).toBe("SSHdotCodes/probabilities");
+  expect(calls.some((c) => c.startsWith("gh repo fork SSHdotCodes/probabilities"))).toBe(true);
+  const create = calls.find((c) => c.startsWith("gh pr create"))!;
+  expect(create).toContain("--repo SSHdotCodes/probabilities");
+  expect(create).toContain("0xbeckett:beckett/ops-28");
+});
+
 test("idempotent (upstream PR) — an already-open PR is reused, gh pr create is NOT called again", async () => {
   const { gh, calls } = cli((j) => {
     if (j.startsWith("git remote get-url origin")) return ok("https://github.com/SSHdotCodes/probabilities.git");

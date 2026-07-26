@@ -632,9 +632,10 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * "already exists" (the original bug: `gh repo create` blew up because the cloned checkout already
    * had an `origin`, and the ticket had already been marked done, so the work silently never shipped):
    *
-   *   1. **Cloned third-party upstream** (`origin` points outside our account and managed owner) →
-   *      fork it under the authenticated account, push a ticket branch to the fork, and open a PR.
-   *      We can't push to someone else's repo and merging is a human call → `kind: "pr"`.
+   *   1. **Origin outside our account/managed owner** — the head repo and push target come from
+   *      `origin`, never a hardcoded `0xbeckett/<slug>`. If we're a collaborator (write access) we
+   *      push the ticket branch straight to origin and open a plain in-repo PR; otherwise we fork
+   *      the upstream, push to the fork, and open a cross-fork PR. Merging is a human call → `kind: "pr"`.
    *   2. **A repo we already own** (a continuing/shared project, e.g. the beckett self-repo) → push a
    *      ticket branch and open a PR against its default branch. NEVER `HEAD→main` (that's the
    *      non-fast-forward "fetch first" reject that stranded shared-repo tickets) → `kind: "pr"`.
@@ -667,23 +668,45 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
       `Automated contribution by Beckett${p.ticket ? ` for ${p.ticket}` : ""}.` +
       (p.description ? `\n\n${p.description}` : "");
 
-    // Case 1 — cloned from a third-party upstream: fork → push branch to fork → PR to upstream.
-    const upstream = await this.originUpstream(p.sourceDir);
-    if (upstream) {
+    // Case 1 — origin points to a repo outside our own account/managed owner. The head repo and
+    // push target are read from THAT origin, never a hardcoded `0xbeckett/<slug>` — the assumption
+    // that stranded #12 (origin was frgmt0/bored, but publish tried to open a cross-fork PR from a
+    // 0xbeckett fork that was never pushed). Two sub-shapes, distinguished by whether we can push:
+    //   1a — we're a collaborator on origin (write access): push the branch STRAIGHT to origin and
+    //        open a plain in-repo PR (base = origin's default branch, head = branch). No fork.
+    //   1b — a genuine third-party upstream we can only read: fork it, push the branch to our fork,
+    //        and open a cross-fork PR (head `<account>:branch`) against the upstream — as before.
+    const foreignOrigin = await this.originUpstream(p.sourceDir);
+    if (foreignOrigin) {
+      if (await this.canPush(foreignOrigin)) {
+        // 1a — collaborator on origin: push there and open an in-repo PR. A retry after a lost
+        // response reuses the branch's already-open PR (publish-outbox idempotency).
+        const existing = await this.findOpenPR(foreignOrigin, branch);
+        if (existing) {
+          this.opts.logger.info("reused existing in-repo PR", { repo: foreignOrigin, branch, pr: existing.url });
+          return { nameWithOwner: foreignOrigin, url: `${this.gitHost()}/${foreignOrigin}`, kind: "pr", prUrl: existing.url };
+        }
+        await this.gitPush(p.sourceDir, foreignOrigin, "HEAD", branch);
+        const base = await this.defaultBranch(foreignOrigin);
+        const pr = await this.ensurePR({ repo: foreignOrigin, base, head: branch, title, body });
+        this.opts.logger.info("published via in-repo PR", { repo: foreignOrigin, branch, pr: pr.url });
+        return { nameWithOwner: foreignOrigin, url: `${this.gitHost()}/${foreignOrigin}`, kind: "pr", prUrl: pr.url };
+      }
+      // 1b — cloned third-party upstream: fork → push branch to fork → cross-fork PR to upstream.
       // A retry after a lost response must not even start the create path: look for the ticket
       // branch's open PR before forking/pushing/opening. This is the publish-outbox idempotency
       // boundary (and avoids cross-fork PAT churn once a PR already exists).
-      const existing = await this.findOpenPR(upstream, `${this.opts.account}:${branch}`);
+      const existing = await this.findOpenPR(foreignOrigin, `${this.opts.account}:${branch}`);
       if (existing) {
-        this.opts.logger.info("reused existing upstream PR", { upstream, branch, pr: existing.url });
-        return { nameWithOwner: upstream, url: `${this.gitHost()}/${upstream}`, kind: "pr", prUrl: existing.url };
+        this.opts.logger.info("reused existing upstream PR", { upstream: foreignOrigin, branch, pr: existing.url });
+        return { nameWithOwner: foreignOrigin, url: `${this.gitHost()}/${foreignOrigin}`, kind: "pr", prUrl: existing.url };
       }
-      const fork = await this.ensureFork(upstream);
+      const fork = await this.ensureFork(foreignOrigin);
       await this.gitPush(p.sourceDir, fork, "HEAD", branch);
-      const base = await this.defaultBranch(upstream);
-      const pr = await this.ensurePR({ repo: upstream, base, head: `${this.opts.account}:${branch}`, title, body });
-      this.opts.logger.info("published via upstream PR", { upstream, fork, branch, pr: pr.url });
-      return { nameWithOwner: upstream, url: `${this.gitHost()}/${upstream}`, kind: "pr", prUrl: pr.url };
+      const base = await this.defaultBranch(foreignOrigin);
+      const pr = await this.ensurePR({ repo: foreignOrigin, base, head: `${this.opts.account}:${branch}`, title, body });
+      this.opts.logger.info("published via upstream PR", { upstream: foreignOrigin, fork, branch, pr: pr.url });
+      return { nameWithOwner: foreignOrigin, url: `${this.gitHost()}/${foreignOrigin}`, kind: "pr", prUrl: pr.url };
     }
 
     const repo = `${this.publishingOwner()}/${p.slug}`;
@@ -783,6 +806,22 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     ]);
     if (ownOrigins.has(owner.toLowerCase())) return null;
     return nwo;
+  }
+
+  /**
+   * Whether the authenticated account has write access to `repo` — the signal that decides how a
+   * third-party origin publishes: with push access we're a collaborator and open a plain in-repo PR
+   * (Case 1a); without it we can only fork and open a cross-fork PR (Case 1b). `viewerPermission`
+   * is `ADMIN`/`MAINTAIN`/`WRITE`/`TRIAGE`/`READ`; anything below WRITE — or an unqueryable repo —
+   * means "can't push". FREE: a metadata read.
+   */
+  private async canPush(repo: string): Promise<boolean> {
+    const r = await this.runner(
+      ["gh", "repo", "view", repo, "--json", "viewerPermission", "-q", ".viewerPermission"],
+      { env: this.ghEnv() },
+    );
+    if (r.code !== 0) return false;
+    return /^(ADMIN|MAINTAIN|WRITE)$/i.test(r.stdout.trim());
   }
 
   /** A repo's default branch (`main`/`master`/…) via the API; falls back to `main` if unknown. */
