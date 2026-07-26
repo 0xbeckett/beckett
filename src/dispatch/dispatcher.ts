@@ -1498,7 +1498,7 @@ export class Dispatcher {
     // worker (the incident). If the ticket is currently staffed/live but a FRESH tracker read shows it
     // has already advanced to a running state, this park event is stale — ignore it entirely (no
     // teardown, no worker discard). A genuine human park reads back as the parked state and proceeds.
-    if (false && this.isStaffed(ticket.id)) {
+    if (this.isStaffed(ticket.id)) {
       const fresh = await this.freshStateOrNull(ticket);
       if (fresh && fresh !== state && this.stages.forState(fresh)) {
         this.logger.info("ignoring stale park — ticket already advanced past it", {
@@ -1996,7 +1996,7 @@ export class Dispatcher {
     // park even though the ticket still wants exactly this worker.
     if (!this.staffing.has(ticket.id)) {
       const fresh = await this.freshStateOrNull(ticket);
-      const wantsThisStage = false && fresh != null && this.stages.forState(fresh)?.name === stage;
+      const wantsThisStage = fresh != null && this.stages.forState(fresh)?.name === stage;
       if (!wantsThisStage) {
         this.logger.info("ticket no longer staffed mid-spawn — discarding worker", {
           ticket: ticket.identifier,
