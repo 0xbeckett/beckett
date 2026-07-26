@@ -920,6 +920,166 @@ export class DiscordJsGateway implements DiscordGateway {
     return firstId!;
   }
 
+  /** PATCH through discord.js's REST route after fetching the target message. */
+  private async editNow(
+    channelId: string,
+    messageId: string,
+    payload: DiscordMessageEditPayload,
+  ): Promise<void> {
+    const client = this.client;
+    if (!client) throw new Error("discord gateway not started");
+    const channel = await client.channels.fetch(channelId);
+    if (!channel?.isTextBased()) {
+      throw new Error(`discord channel ${channelId} is not a text channel`);
+    }
+    const message = await channel.messages.fetch(messageId);
+    const edit: MessageEditOptions = { allowedMentions: { parse: [] } };
+    if (payload.content !== undefined) edit.content = payload.content;
+    if (payload.embeds !== undefined) edit.embeds = payload.embeds.map((embed) => new EmbedBuilder(embed));
+    await message.edit(edit);
+    this.lastEventTs = Date.now();
+  }
+
+  /** Store the current value only: reconnect must never replay a stale progress history. */
+  private enqueueEdit(
+    channelId: string,
+    messageId: string,
+    payload: DiscordMessageEditPayload,
+    retryAfterMs?: number,
+  ): void {
+    const key = editKey(channelId, messageId);
+    this.queuedEdits.set(key, { channelId, messageId, payload });
+    this.logger.warn("discord edit deferred", {
+      channelId,
+      messageId,
+      queueDepth: this.queuedEdits.size,
+      retryAfterMs,
+    });
+    if (retryAfterMs !== undefined) this.applyEditCooldown(channelId, retryAfterMs);
+  }
+
+  /** Run the one queued edit for each message once the gateway reconnects or a 429 expires. */
+  private async flushQueuedEdits(): Promise<void> {
+    if (this.flushingEdits || !this.connected || !this.client || this.queuedEdits.size === 0) return;
+    this.flushingEdits = true;
+    try {
+      for (const [key, item] of [...this.queuedEdits]) {
+        // A concurrent update replaced this snapshot; it will be handled by its newer value.
+        if (this.queuedEdits.get(key) !== item) continue;
+        if (!this.connected || !this.client) return;
+
+        const retryAt = this.editRetryAt.get(item.channelId);
+        if (retryAt && retryAt > Date.now()) {
+          this.scheduleEditFlush(item.channelId, retryAt);
+          continue;
+        }
+        if (retryAt) this.editRetryAt.delete(item.channelId);
+
+        try {
+          await this.editNow(item.channelId, item.messageId, item.payload);
+          // Do not erase a newer edit that arrived while the PATCH was in flight.
+          if (this.queuedEdits.get(key) === item) this.queuedEdits.delete(key);
+        } catch (error) {
+          const typed = this.toEditError(item.channelId, item.messageId, error);
+          if (typed instanceof DiscordTransientMessageEditError) {
+            // Keep this latest value for the next reconnect/tick. A concurrent caller may have
+            // replaced it while this PATCH was in flight; never put this older payload back.
+            if (this.queuedEdits.get(key) === item) {
+              this.enqueueEdit(item.channelId, item.messageId, item.payload, typed.retryAfterMs);
+            } else if (typed.retryAfterMs !== undefined) {
+              this.applyEditCooldown(item.channelId, typed.retryAfterMs);
+            }
+            if (!this.connected) return;
+          } else {
+            // A deleted target or permissions problem cannot be fixed by replaying this edit.
+            if (this.queuedEdits.get(key) === item) this.queuedEdits.delete(key);
+            this.logger.warn("dropping queued discord edit", {
+              channelId: item.channelId,
+              messageId: item.messageId,
+              kind: typed.kind,
+              error: String(typed),
+            });
+          }
+        }
+      }
+    } finally {
+      this.flushingEdits = false;
+    }
+  }
+
+  /** Record Discord's per-channel rate-limit boundary and arrange delivery at that boundary. */
+  private applyEditCooldown(channelId: string, retryAfterMs: number): void {
+    const retryAt = Date.now() + retryAfterMs;
+    const previous = this.editRetryAt.get(channelId) ?? 0;
+    const nextRetryAt = Math.max(previous, retryAt);
+    this.editRetryAt.set(channelId, nextRetryAt);
+    this.scheduleEditFlush(channelId, nextRetryAt);
+  }
+
+  /** Arrange a single retry at Discord's advertised rate-limit boundary. */
+  private scheduleEditFlush(channelId: string, retryAt: number): void {
+    const oldTimer = this.editFlushTimers.get(channelId);
+    if (oldTimer) clearTimeout(oldTimer);
+    const waitMs = Math.max(0, retryAt - Date.now());
+    const timer = setTimeout(() => {
+      this.editFlushTimers.delete(channelId);
+      void this.flushQueuedEdits();
+    }, waitMs);
+    // The timer merely improves eventual delivery; it must not keep a cleanly stopped daemon alive.
+    timer.unref?.();
+    this.editFlushTimers.set(channelId, timer);
+  }
+
+  /** Convert all discord.js/REST failures into a branchable edit error. */
+  private toEditError(channelId: string, messageId: string, error: unknown): DiscordMessageEditError {
+    if (error instanceof DiscordMessageEditError) return error;
+    const details = (error !== null && typeof error === "object" ? error : {}) as {
+      code?: unknown;
+      status?: unknown;
+      retry_after?: unknown;
+      rawError?: { code?: unknown; retry_after?: unknown };
+      data?: { retry_after?: unknown };
+    };
+    const code = numericDiscordError(details.code ?? details.rawError?.code);
+    const status = numericDiscordError(details.status);
+    const retryAfterMs = discordRetryAfterMs(
+      details.retry_after ?? details.rawError?.retry_after ?? details.data?.retry_after,
+    );
+    const options = { cause: error };
+
+    // Discord uses code 10008 for Unknown Message. HTTP 404 is likewise the message endpoint's
+    // deleted/missing target outcome and intentionally maps to the repost path.
+    if (code === 10_008 || status === 404) {
+      return new DiscordUnknownMessageError(channelId, messageId, options);
+    }
+    // Missing Permissions is 50013; a raw 403 is the equivalent REST response.
+    if (code === 50_013 || status === 403) {
+      return new DiscordMessageEditPermissionError(channelId, messageId, options);
+    }
+    if (
+      !this.connected ||
+      !this.client ||
+      status === 429 ||
+      (status !== undefined && status >= 500) ||
+      isTransientTransportError(error)
+    ) {
+      return new DiscordTransientMessageEditError(
+        channelId,
+        messageId,
+        status === 429 ? "discord edit rate limited" : "discord edit temporarily unavailable",
+        status === 429 ? retryAfterMs ?? 1_000 : undefined,
+        options,
+      );
+    }
+    return new DiscordMessageEditError(
+      "failed",
+      channelId,
+      messageId,
+      "discord message edit failed",
+      options,
+    );
+  }
+
   /** Buffer a post until reconnect; the promise resolves with the real id when it lands. */
   private enqueue(channelId: string, content: string, opts?: ReplyOptions): Promise<string> {
     this.logger.warn("discord gateway down; queueing post for reconnect", {
@@ -1025,6 +1185,44 @@ export function taskThreadName(raw: string): string {
   const clean = raw.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   if (!clean) throw new Error("task thread name cannot be empty");
   return [...clean].slice(0, 100).join("");
+}
+
+/** A collision-free identity for the latest queued edit of one Discord message. */
+function editKey(channelId: string, messageId: string): string {
+  return `${channelId}\u0000${messageId}`;
+}
+
+function hasEditFields(payload: unknown): payload is DiscordMessageEditPayload {
+  return (
+    payload !== null &&
+    typeof payload === "object" &&
+    (Object.hasOwn(payload, "content") || Object.hasOwn(payload, "embeds"))
+  );
+}
+
+function numericDiscordError(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+  return undefined;
+}
+
+/** Discord's JSON retry_after is seconds; normalize it to a non-negative millisecond delay. */
+function discordRetryAfterMs(value: unknown): number | undefined {
+  const seconds = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds * 1_000) : undefined;
+}
+
+/** Network failures often arrive before the shard listener has marked us disconnected. */
+function isTransientTransportError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" && [
+    "ECONNABORTED",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ENETDOWN",
+    "ENETUNREACH",
+    "ETIMEDOUT",
+  ].includes(code);
 }
 
 function buildButtonRow(buttons: NonNullable<ReplyOptions["buttons"]>): ActionRowBuilder<ButtonBuilder> {

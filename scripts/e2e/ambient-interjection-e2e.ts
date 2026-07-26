@@ -27,7 +27,13 @@ import { Concierge, type ConciergeSession, type TurnMessage } from "../../src/co
 import { validateConfig } from "../../src/config.ts";
 import type { AmbientClock } from "../../src/concierge/ambient.ts";
 import type { TriageFn, TriageVerdict } from "../../src/concierge/triage.ts";
-import type { DiscordGateway, IncomingMessage, ReplyOptions, ThreadCreated } from "../../src/types.ts";
+import type {
+  DiscordGateway,
+  DiscordMessageEditPayload,
+  IncomingMessage,
+  ReplyOptions,
+  ThreadCreated,
+} from "../../src/types.ts";
 
 const repoRoot = join(import.meta.dir, "../..");
 const CHAN = "1520658476974735490";
@@ -87,6 +93,11 @@ class FakeGateway implements DiscordGateway {
     const id = `post-${this.posts.length + 1}`;
     this.posts.push({ id, channelId, text: content, replyTo: opts?.replyToMessageId });
     return id;
+  }
+
+  async editMessage(channelId: string, messageId: string, payload: DiscordMessageEditPayload): Promise<void> {
+    const post = this.posts.find((item) => item.channelId === channelId && item.id === messageId);
+    if (post && payload.content !== undefined) post.text = payload.content;
   }
 
   async deleteMessage(channelId: string, messageId: string): Promise<void> {
