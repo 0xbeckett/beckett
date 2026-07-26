@@ -2096,6 +2096,155 @@ describe("concurrency cap", () => {
   });
 });
 
+// ── regression: the mid-spawn staffing race (issue #9) ───────────────────────────────────────
+// A dependent unblocks and is staffed backlog→in_progress in one tick. The poller then delivers
+// the STALE interim backlog→todo park for the SAME ticket into the spawn gap. Pre-fix that park
+// dropped the mid-spawn reservation and the "still staffed?" guard discarded a perfectly healthy
+// worker, leaving the ticket in_progress with no worker and no self-heal.
+describe("mid-spawn staffing race (issue #9)", () => {
+  test("a stale park delivered into the spawn gap does NOT discard the freshly-spawned worker", async () => {
+    const { d, client } = newDispatcher();
+    const blocker = makeTicket({ id: "a", identifier: "OPS-A", state: "done" });
+    const dependent = makeTicket({ id: "b", identifier: "OPS-B", state: "backlog", blockedBy: ["OPS-A"] });
+    client.board = [blocker, dependent];
+
+    let release!: () => void;
+    spawnGate = new Promise<void>((r) => (release = r));
+
+    // Blocker finishes → the dependent is unblocked and staffed (backlog→in_progress) in the same
+    // tick; its spawn is now suspended mid-flight (reservation held, handle not yet registered).
+    await d.handle(stateChanged(blocker, "done", "in_review"));
+    await tick();
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]!.ticketId).toBe("b");
+
+    // The poller delivers the stale interim backlog→todo park INTO the spawn gap. The ticket's real
+    // tracker state is already in_progress, so this park is stale and must be ignored.
+    await d.handle(stateChanged({ ...dependent, state: "todo" }, "todo", "backlog"));
+
+    release();
+    await tick();
+    await tick();
+
+    // The worker survived: it is live, was never aborted, and the ticket was not parked.
+    expect(created).toHaveLength(1);
+    expect(created[0]!.aborted).toBe(false);
+    expect(d.live().filter((w) => w.state === "live")).toHaveLength(1);
+    expect(client.setStateCalls.some((c) => c.id === "b" && c.state === "todo")).toBe(false);
+  });
+
+  test("a directly-staffed ticket also survives a stale park in the spawn gap", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ id: "b", identifier: "OPS-B", state: "in_progress" });
+    client.board = [ticket];
+
+    let release!: () => void;
+    spawnGate = new Promise<void>((r) => (release = r));
+
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    expect(spawnCalls).toHaveLength(1);
+
+    // Stale park to todo while the worker is mid-spawn; the board still reads in_progress.
+    await d.handle(stateChanged({ ...ticket, state: "todo" }, "todo", "in_progress"));
+
+    release();
+    await tick();
+    await tick();
+
+    expect(created[0]!.aborted).toBe(false);
+    expect(d.live().filter((w) => w.state === "live")).toHaveLength(1);
+  });
+
+  test("a GENUINE park (ticket really moved to todo) still tears the mid-spawn worker down", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ id: "b", identifier: "OPS-B", state: "in_progress" });
+    client.board = [ticket];
+
+    let release!: () => void;
+    spawnGate = new Promise<void>((r) => (release = r));
+
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    expect(spawnCalls).toHaveLength(1);
+
+    // A REAL human park: the board actually moves to todo, then the park event arrives. The guard's
+    // fresh read confirms todo, so the worker is correctly discarded (no wedge, no orphan).
+    ticket.state = "todo"; // mutate the board ticket the fake getIssue returns
+    await d.handle(stateChanged(ticket, "todo", "in_progress"));
+
+    release();
+    await tick();
+    await tick();
+
+    expect(created[0]!.aborted).toBe(true);
+    expect(d.live().filter((w) => w.state === "live")).toHaveLength(0);
+  });
+});
+
+// ── regression: the staffing watchdog (issue #9, defect 2) ───────────────────────────────────
+// Even granting a legitimate discard, a ticket must never be left staffed-but-workerless. The
+// reconciliation pass re-staffs any in_progress ticket with no live worker past its grace window.
+describe("staffing watchdog (issue #9)", () => {
+  test("re-staffs an in_progress ticket left with no live worker past the grace window, once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-watchdog-"));
+    try {
+      const path = join(dir, "dispatch.jsonl");
+      const { d, client } = newDispatcher(2, { dispatchEventsPath: path });
+      const ticket = makeTicket({ id: "w", identifier: "OPS-W", state: "in_progress" });
+      client.board = [ticket]; // in_progress on the board, but no worker was ever staffed
+
+      const t0 = 1_000_000;
+      // First sighting: record the wedge clock, take no action (give normal staffing a full window).
+      expect(await d.reconcileStaffing(t0)).toEqual({ restaffed: [], parked: [] });
+      expect(spawnCalls).toHaveLength(0);
+
+      // Still workerless past the 120s grace → re-staff once and log the recovery.
+      const res = await d.reconcileStaffing(t0 + 121_000);
+      await tick();
+      expect(res.restaffed).toEqual(["w"]);
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0]!.ticketId).toBe("w");
+      expect(d.live().filter((s) => s.state === "live")).toHaveLength(1);
+
+      const rows = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      expect(rows.some((r) => r.stage === "watchdog" && r.outcome === "started")).toBe(true);
+
+      // The re-staff took (a live worker now exists), so a later pass is a no-op — never re-staffs twice.
+      const again = await d.reconcileStaffing(t0 + 400_000);
+      expect(again.restaffed).toEqual([]);
+      expect(spawnCalls).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("leaves healthy, pre-grace, queued, and terminal/parked tickets alone", async () => {
+    const { d, client } = newDispatcher(1);
+    const live = makeTicket({ id: "live", identifier: "OPS-L", state: "in_progress" });
+    const queued = makeTicket({ id: "q", identifier: "OPS-Q", state: "in_progress" });
+    const parked = makeTicket({ id: "p", identifier: "OPS-P", state: "todo" });
+    const done = makeTicket({ id: "d", identifier: "OPS-D", state: "done" });
+    client.board = [live, queued, parked, done];
+
+    // Staff `live` (fills the cap of 1) and queue `queued` behind it.
+    await d.handle(stateChanged(live, "in_progress"));
+    await tick();
+    await d.handle(stateChanged(queued, "in_progress"));
+    await tick();
+    expect(spawnCalls).toHaveLength(1); // only `live` spawned; `queued` is pending at the cap
+
+    const t0 = 5_000_000;
+    await d.reconcileStaffing(t0);
+    const res = await d.reconcileStaffing(t0 + 500_000); // well past grace
+    // Nothing new re-staffed: `live` has a worker, `queued` is pending, `parked`/`done` aren't staffable.
+    expect(res.restaffed).toEqual([]);
+    expect(res.parked).toEqual([]);
+    expect(spawnCalls).toHaveLength(1);
+    expect(client.setStateCalls.some((c) => c.id === "p" || c.id === "d")).toBe(false);
+  });
+});
+
 describe("worktrees (v3.2)", () => {
   test("implement + review share ONE worktree; done tears it down", async () => {
     const { d } = newDispatcher();
