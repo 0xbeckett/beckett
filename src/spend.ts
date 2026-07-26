@@ -76,7 +76,29 @@ export function parseSince(input: string, now = Date.now()): number | null {
   return Number.isNaN(absolute) ? null : absolute;
 }
 
-export function summarizeSpend(rows: SpendRecord[]) {
+export interface SpendSummaryOptions {
+  /** ISO timestamp, epoch milliseconds, or a relative `parseSince` window such as `24h`. */
+  since?: string | number;
+  /** Injectable clock for rolling-window snapshots. */
+  now?: number;
+}
+
+function rowsSince(rows: SpendRecord[], since: SpendSummaryOptions["since"], now: number): SpendRecord[] {
+  if (since === undefined) return rows;
+  const start = typeof since === "number" ? since : parseSince(since, now);
+  if (start === null) throw new Error(`invalid spend window: ${since}`);
+  return rows.filter((row) => {
+    const at = Date.parse(row.ts);
+    return Number.isFinite(at) && at >= start;
+  });
+}
+
+/**
+ * Aggregate ledger rows, optionally over a rolling window. Harnesses deliberately come from the
+ * ledger itself: a harness rename or addition must show up without a dashboard code change.
+ */
+export function summarizeSpend(rows: SpendRecord[], options: SpendSummaryOptions = {}) {
+  const selected = rowsSince(rows, options.since, options.now ?? Date.now());
   const total = (items: SpendRecord[]) => ({
     records: items.length,
     turns: items.reduce((n, r) => n + r.turns, 0),
@@ -88,11 +110,25 @@ export function summarizeSpend(rows: SpendRecord[]) {
   });
   const by = (key: (r: SpendRecord) => string) => {
     const groups = new Map<string, SpendRecord[]>();
-    for (const row of rows) {
+    for (const row of selected) {
       const name = key(row);
       groups.set(name, [...(groups.get(name) ?? []), row]);
     }
     return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, items]) => ({ name, ...total(items) }));
   };
-  return { totals: total(rows), byProject: by((r) => r.project || "(unknown)"), byModel: by((r) => r.model), byStage: by((r) => r.stage) };
+  return {
+    totals: total(selected),
+    byProject: by((r) => r.project || "(unknown)"),
+    byModel: by((r) => r.model),
+    byStage: by((r) => r.stage),
+    byHarness: by((r) => r.harness),
+  };
+}
+
+/** Status-card ready rolling summaries. Both boundaries use `parseSince`, not calendar days. */
+export function summarizeSpendWindows(rows: SpendRecord[], now = Date.now()) {
+  return {
+    last24h: summarizeSpend(rows, { since: "24h", now }),
+    last7d: summarizeSpend(rows, { since: "7d", now }),
+  };
 }
