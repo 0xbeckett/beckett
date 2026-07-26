@@ -1,0 +1,10 @@
+(fail) browser evaluator sandbox policy > Linux uses a fresh bounded bubblewrap without controller state mounts
+(fail) cli: memory: recall without args prints usage
+(fail) cli: memory: remember without --name prints usage
+(fail) cli: memory: show of an unknown node fails
+(fail) cli: memory: show without a name prints usage
+(fail) cli: memory: unknown sub fails
+(fail) cli: recall: --as-self combined with --viewer is rejected
+(fail) cli: recall: bad --viewer-role is rejected
+(fail) cli: recall: no query prints usage
+(fail) cli: recall: query on an empty graph
