@@ -39,7 +39,8 @@ export function appendLifecycleEvent(path: string, event: LifecycleEvent): void 
   mkdirSync(dirname(path), { recursive: true });
   const fd = openSync(path, "a");
   try {
-    const bytes = Buffer.from(`${JSON.stringify(event)}\n`, "utf8");
+    // Leading newline quarantines a crash-truncated prior row before the next append.
+    const bytes = Buffer.from(`\n${JSON.stringify(event)}\n`, "utf8");
     if (writeSync(fd, bytes) !== bytes.length) throw new Error("short write appending uptime ledger");
     fsyncSync(fd);
   } finally {
