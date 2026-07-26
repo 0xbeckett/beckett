@@ -2009,7 +2009,9 @@ export class Dispatcher {
         // The discard was legitimate, but the ticket may still be active in a DIFFERENT staffable
         // stage (it moved forward while we spawned) — never leave it staffed-but-workerless. Re-staff
         // the stage it actually needs now; a terminal/parked ticket has no stage, so this is a no-op
-        // there. The reconciliation watchdog is the catch-all for any wedge this can't see.
+        // there. Deferred a turn so THIS spawn's own launchSpawn.finally (which deletes the shared
+        // per-ticket `staffing` slot) has already run — otherwise it would clobber the re-staff's
+        // fresh reservation. The reconciliation watchdog is the catch-all for any wedge this misses.
         if (fresh) {
           const staffs = this.stages.forState(fresh);
           if (staffs && (!staffs.entryGuard || staffs.entryGuard(ticket))) {
@@ -2019,7 +2021,8 @@ export class Dispatcher {
               to: staffs.name,
               state: fresh,
             });
-            this.spawnGuarded({ ...ticket, state: fresh }, staffs.name);
+            const restaffTicket = { ...ticket, state: fresh };
+            setTimeout(() => this.spawnGuarded(restaffTicket, staffs.name), 0).unref?.();
           }
         }
         return;
