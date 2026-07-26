@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DiscordUnknownMessageError } from "../discord/gateway.ts";
+import { DiscordTransientMessageEditError, DiscordUnknownMessageError } from "../discord/gateway.ts";
 import { createStatusDashboardService, statusDashboardMessagePath } from "./service.ts";
 import type { StatusDashboardSnapshot } from "./types.ts";
 
@@ -80,7 +80,9 @@ test("status dashboard integration: post, edit, resume, replace deleted, and sur
   expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({ messageId: "message-2" });
 
   // A transient failure skips only this cycle; the following cycle still edits the replacement.
-  gateway.nextEditError = new Error("temporary gateway blip");
+  gateway.nextEditError = new DiscordTransientMessageEditError(
+    "1525690195234521179", "message-2", "temporary gateway blip",
+  );
   await restarted.runCycle();
   expect(gateway.posts).toHaveLength(2);
   const editsBeforeRecovery = gateway.edits.length;
