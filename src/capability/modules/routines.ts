@@ -97,6 +97,12 @@ export interface RoutinesExtensionDeps {
   intervalMs?: number;
   createStore?: (ctx: ExtensionContext) => RoutineStore;
   createScheduler?: (deps: RoutineSchedulerDeps) => RoutineScheduler;
+  /** Test seams for the `watch` action's own store/loop/feed (issue #1) — kept separate from the
+   *  scheduler's, since `watch` runs on its own interval, not the humanized fuzz-window one. */
+  createWatchStateStore?: (ctx: ExtensionContext) => WatchStateStore;
+  createWatchLoop?: (deps: import("../../routine/watch.ts").WatchLoopDeps) => WatchLoop;
+  fetchFeed?: (url: string) => ReturnType<typeof fetchModelNewsFeed>;
+  watchIntervalMs?: number;
 }
 
 /** The built extension plus the accessors `shell/main.ts` wires into the concierge's v5 setters. */
@@ -233,15 +239,19 @@ export const createRoutinesExtension =
       return scheduler;
     }
 
-    /** The `watch` action's runtime deps — shared by the automatic poll loop, a real `--force`
-     *  fire, and (via `previewWatchCycle`) a `--dry-run` fire routed through the ext capability. */
-    function watchDeps(): WatchDeps {
+    /** The `watch` action's runtime deps for ONE routine — shared by the automatic poll loop, a
+     *  real `--force` fire, and (via `previewWatchCycle`) a `--dry-run` fire routed through the
+     *  ext capability. `dispatchAgent` is bound to THIS routine's `agentId`, since a `WatchDeps`
+     *  carries no routine identity of its own. */
+    function watchDeps(routine: Routine): WatchDeps {
       if (!watchStateStore) throw new Error("the routines extension is not initialized (lifecycle.init has not run)");
+      if (routine.action.kind !== "watch") throw new Error(`routine ${routine.id} is not a "watch" routine`);
+      const agentId = routine.action.agentId;
       return {
         stateStore: watchStateStore,
-        fetchFeed: (url) => fetchModelNewsFeed(url),
+        fetchFeed: deps.fetchFeed ?? ((url) => fetchModelNewsFeed(url)),
         now: deps.now ?? (() => new Date()),
-        dispatchAgent: (agentInput, opts) => dispatchAgentLane(opts.agentId ?? "", agentInput, opts),
+        dispatchAgent: (agentInput, opts) => dispatchAgentLane(agentId, agentInput, opts),
         reportChannel: (channelId, text) =>
           callBus(join(ctx.paths.beckettDir, "control.sock"), "discord.reply", { channelId, text }, 30_000).then(
             () => undefined,
@@ -288,11 +298,48 @@ export const createRoutinesExtension =
     }
 
     /**
+     * The `agent` lane's body: resolve the agent LIVE from the registry (so editing its prompt —
+     * or, for `watch`, the routine's target agent — takes effect with no redeploy), let it author
+     * the post, then hand what it authored to the PRIVILEGED in-process browser lane. Shared by
+     * `dispatchPlan`'s own `agent` branch AND `watch`'s `dispatchAgent` dependency
+     * ({@link watchDeps}) — a qualifying watch fire is THE SAME agent-lane path `daily-x-shitpost`
+     * uses, not a second implementation of it.
+     */
+    async function dispatchAgentLane(
+      agentId: string,
+      agentInput: string,
+      origin: { channelId: string; requesterId: string; credsEntry?: string | null },
+    ): Promise<void> {
+      if (!deps.browserAgent || !deps.agentRegistry || !deps.agentRunner) {
+        // Only reachable in a process that armed the scheduler without the daemon's deps —
+        // the CLI never starts it, and the daemon always injects all three.
+        throw new Error("routine dispatch is not wired (the daemon injects the browser lane + agent registry/runner)");
+      }
+      const def = deps.agentRegistry().get(agentId);
+      if (!def) throw new Error(`routine references unknown agent: ${agentId}`);
+      const outcome = await deps
+        .agentRunner()
+        .run(def, agentInput, { channelId: origin.channelId, requesterId: origin.requesterId });
+      if (outcome.state !== "done" || !outcome.output.trim()) {
+        throw new Error(`agent ${agentId} did not author a post: ${outcome.error ?? outcome.state}`);
+      }
+      // Credential injection (from the jingle entry NAMED by credsEntry), the X verification
+      // pause/resume, and the confirmation back to the origin channel are all the browser agent's
+      // job (issue #50) — including the one-line "posted, here's the URL" report a qualifying
+      // watch fire promises: it rides the SAME onOutcome relay every other browser-lane post does.
+      await deps.browserAgent().run(outcome.output.trim(), {
+        channelId: origin.channelId,
+        requesterId: origin.requesterId,
+        credsEntry: origin.credsEntry ?? null,
+      });
+    }
+
+    /**
      * The dispatch executor, moved from `shell/main.ts` byte-identically (messages and check
      * order preserved). Runs OFF the scheduler's tick path — the scheduler never blocks on
      * browser work. Resolution of every dependency is deferred to HERE, fire time.
      */
-    async function dispatchPlan(plan: RoutineDispatchPlan): Promise<void> {
+    async function dispatchPlan(plan: RoutineDispatchPlan, routine: Routine): Promise<void> {
       // Resolve the origin channel/requester at fire time (the daemon binds this to
       // BECKETT_ROUTINE_CHANNEL_ID / DISCORD_OWNER_ID) so no id is baked into a routine.
       const fallback = deps.defaultOrigin?.() ?? { channelId: null, requesterId: null };
@@ -316,6 +363,15 @@ export const createRoutinesExtension =
         return;
       }
 
+      // The event-listener lane (issue #1): no I/O happened in `buildDispatchPlan` (it stays
+      // pure), so the REAL poll — fetch, qualify, dedup, rate-limit, and (on a genuine hit) the
+      // agent dispatch — happens HERE, exactly once per fire (the automatic loop's own interval
+      // gate, or a manual `fire`/`--force`, both land in this one place).
+      if (plan.lane === "watch") {
+        await runWatchCycle(routine, watchDeps(routine));
+        return;
+      }
+
       if (!deps.browserAgent || !deps.agentRegistry || !deps.agentRunner) {
         // Only reachable in a process that armed the scheduler without the daemon's deps —
         // the CLI never starts it, and the daemon always injects all three.
@@ -324,26 +380,22 @@ export const createRoutinesExtension =
 
       // The task string posted to the browser lane. For the `browser` lane it's the routine's
       // static task; for the `agent` lane the agent AUTHORS it live (issue #55/#72).
-      let browserTask = plan.browserTask;
       if (plan.lane === "agent") {
         if (!plan.agentId) throw new Error("agent-lane routine is missing an agentId");
-        // Resolve the agent LIVE from the registry, so editing its prompt (or the routine's target
-        // agent) takes effect with no redeploy. A removed/unknown agent fails loudly here.
-        const def = deps.agentRegistry().get(plan.agentId);
-        if (!def) throw new Error(`routine references unknown agent: ${plan.agentId}`);
-        const outcome = await deps.agentRunner().run(def, plan.agentInput ?? "", { channelId, requesterId });
-        if (outcome.state !== "done" || !outcome.output.trim()) {
-          throw new Error(`agent ${plan.agentId} did not author a post: ${outcome.error ?? outcome.state}`);
-        }
-        browserTask = outcome.output.trim();
+        await dispatchAgentLane(plan.agentId, plan.agentInput ?? "", {
+          channelId,
+          requesterId,
+          credsEntry: plan.credsEntry,
+        });
+        return;
       }
-      if (!browserTask) throw new Error("routine dispatch produced no browser task");
+      if (!plan.browserTask) throw new Error("routine dispatch produced no browser task");
 
       // Post via the PRIVILEGED in-process browser lane — the routine holds the channel/requester
       // authorization, so a headless run can post without a Discord mention token. Credential
       // injection (from the jingle entry NAMED by credsEntry), the X verification pause/resume,
       // and the confirmation back to the origin channel are all the browser agent's job (issue #50).
-      await deps.browserAgent().run(browserTask, {
+      await deps.browserAgent().run(plan.browserTask, {
         channelId,
         requesterId,
         credsEntry: plan.credsEntry,
@@ -742,10 +794,13 @@ export const createRoutinesExtension =
         init: () => {
           store =
             deps.createStore?.(ctx) ?? new RoutineStore(join(ctx.paths.beckettDir, "routines.json"));
+          watchStateStore =
+            deps.createWatchStateStore?.(ctx) ??
+            new WatchStateStore(join(ctx.paths.beckettDir, "watch-state.json"), ...(deps.now ? [{ now: deps.now }] : []));
           schedulerDeps = {
             store,
             logger: ctx.logger.child("routine"),
-            dispatcher: { dispatch: (plan) => dispatchPlan(plan) },
+            dispatcher: { dispatch: (plan, routine) => dispatchPlan(plan, routine) },
             ...(deps.now ? { now: deps.now } : {}),
             ...(deps.rng ? { rng: deps.rng } : {}),
             ...(deps.intervalMs !== undefined ? { intervalMs: deps.intervalMs } : {}),
@@ -755,10 +810,12 @@ export const createRoutinesExtension =
         // construction, internals untouched) + the 5s post-boot prime so a routine whose
         // window is live right now is caught up without waiting a full tick. Re-entry is a
         // no-op — a second sweep must never arm a second interval (redundant roll/persist
-        // churn; per-period idempotency would still prevent a double FIRE).
+        // churn; per-period idempotency would still prevent a double FIRE). The `watch` poll
+        // loop arms alongside it, off the SAME store — `beckett routine enable/disable` needs
+        // no restart because both loops re-read the store live every tick.
         start: () => {
           if (scheduler) return;
-          if (!schedulerDeps) {
+          if (!schedulerDeps || !store) {
             throw new Error("the routines extension is not initialized (lifecycle.init has not run)");
           }
           const started = deps.createScheduler?.(schedulerDeps) ?? startRoutineScheduler(schedulerDeps);
@@ -766,6 +823,29 @@ export const createRoutinesExtension =
           // Prime once shortly after boot. Best-effort; failures are logged inside the scheduler.
           primeTimer = setTimeout(() => void started.tick().catch(() => {}), 5_000);
           primeTimer.unref?.();
+
+          const watchLoopDeps = {
+            routineStore: store,
+            // `watchDeps` needs a routine to bind `dispatchAgent`'s agentId — the loop itself is
+            // routine-agnostic, so it asks for fresh deps per routine at cycle time.
+            watchDeps: {
+              stateStore: watchStateStore!,
+              fetchFeed: deps.fetchFeed ?? ((url: string) => fetchModelNewsFeed(url)),
+              now: deps.now ?? (() => new Date()),
+              dispatchAgent: () => {
+                throw new Error("watch loop dispatchAgent must be bound per-routine — use watchDeps(routine)");
+              },
+              reportChannel: (channelId: string, text: string) =>
+                callBus(join(ctx.paths.beckettDir, "control.sock"), "discord.reply", { channelId, text }, 30_000).then(
+                  () => undefined,
+                ),
+              defaultOrigin: () => deps.defaultOrigin?.() ?? { channelId: null, requesterId: null },
+              logger: ctx.logger.child("model-news-watch"),
+            },
+            ...(deps.now ? { now: deps.now } : {}),
+            ...(deps.watchIntervalMs !== undefined ? { intervalMs: deps.watchIntervalMs } : {}),
+          };
+          watchLoop = deps.createWatchLoop?.(watchLoopDeps) ?? startWatchLoop(watchLoopDeps);
         },
         // Idempotent: clears the prime + interval; a later start() may re-arm cleanly.
         stop: () => {
@@ -775,6 +855,8 @@ export const createRoutinesExtension =
           }
           scheduler?.stop();
           scheduler = null;
+          watchLoop?.stop();
+          watchLoop = null;
         },
         health: async () => {
           if (!store) return { ok: false, detail: "not initialized" };

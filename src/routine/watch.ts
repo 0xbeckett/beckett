@@ -61,9 +61,12 @@ export interface WatchDeps {
   stateStore: WatchStateStore;
   fetchFeed: (url: string) => Promise<ModelNewsFetchResult>;
   now: () => Date;
-  /** Runs the SAME agent-lane path `daily-x-shitpost` uses: the agent authors the post from
-   *  `agentInput`-as-subject, and the browser lane publishes it. Rejects on any failure. */
+  /** Runs the SAME agent-lane path `daily-x-shitpost` uses: `agentId` authors the post from
+   *  `agentInput`-as-subject, and the browser lane publishes it. Rejects on any failure. Takes
+   *  `agentId` per call (rather than being bound once) so ONE `WatchDeps` — and one poll loop —
+   *  can serve every `watch` routine, each naming its own agent. */
   dispatchAgent: (
+    agentId: string,
     agentInput: string,
     opts: { channelId: string; requesterId: string; credsEntry: string | null },
   ) => Promise<void>;
@@ -246,7 +249,7 @@ export async function runWatchCycle(routine: Routine, deps: WatchDeps): Promise<
   }
 
   try {
-    await deps.dispatchAgent(buildAgentSubject(chosen, modelId), {
+    await deps.dispatchAgent(action.agentId, buildAgentSubject(chosen, modelId), {
       channelId,
       requesterId,
       credsEntry: action.credsEntry ?? null,
