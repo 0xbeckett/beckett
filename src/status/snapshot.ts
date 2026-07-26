@@ -98,7 +98,9 @@ export class StatusSnapshotCollector {
         this.healthFailures++;
         return { reachable: false, status, version: null };
       }
-      const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+      // A healthy HTTP endpoint remains reachable even if an older bored build has no JSON body.
+      let body: Record<string, unknown> | null = null;
+      try { body = await response.json() as Record<string, unknown>; } catch { /* version is optional */ }
       const version = typeof body?.version === "string" ? body.version : null;
       this.healthLastOkAt = this.now();
       this.healthFailures = 0;

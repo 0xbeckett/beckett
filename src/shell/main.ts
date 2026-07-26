@@ -42,7 +42,11 @@ import { createGitHubPrPoller, type GitHubPrPoller } from "../github/poll.ts";
 import { createGitHubActivityPoller, type GitHubActivityPoller } from "../github/activity.ts";
 import { parsePrUrl } from "../github/types.ts";
 import { preflightFor } from "../drivers/index.ts";
-import { createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
+import { CARDS_CHANNEL_ID, createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
+import { createDiscordGateway } from "../discord/gateway.ts";
+import { createSystemMetricsReader } from "../system-metrics.ts";
+import { createStatusSnapshotCollector } from "../status/snapshot.ts";
+import { createStatusDashboardService, statusDashboardMessagePath, type StatusDashboardService } from "../status/service.ts";
 import type { QuickRunner } from "../quick/index.ts";
 import type { BrowserRuntime } from "../browser/runtime.ts";
 import type { BrowserAgent } from "../browser/agent.ts";
@@ -116,6 +120,7 @@ interface BootedSystem {
   mailPoller: AgentMailPoller | null;
   dispatcher: Dispatcher;
   concierge: Concierge;
+  statusDashboard: StatusDashboardService;
   quick: QuickRunner;
   browserAgent: BrowserAgent;
   browser: BrowserRuntime;
@@ -191,6 +196,8 @@ async function boot(): Promise<BootedSystem> {
   const lifecycleLedgerPath = uptimeLedgerPath(beckettDir);
   recordBoot(lifecycleLedgerPath);
   const tasks = new TaskStore(join(beckettDir, "tasks.json"));
+  // The Concierge and dashboard deliberately share this one gateway connection.
+  const gateway = createDiscordGateway({ config, logger: logger.child("discord") });
   const syncTaskBranch = async (ticket: Ticket, board: string, snapshot = false): Promise<void> => {
     if (!ticket.branchRef) return;
     const branch = await tasks.syncTicket(ticket, board);
@@ -250,6 +257,7 @@ async function boot(): Promise<BootedSystem> {
   const concierge = createConcierge({
     config,
     logger: logger.child("concierge"),
+    gateway,
     tracker: client,
     tasks,
     branchStatus: createBranchStatusService({
@@ -563,6 +571,26 @@ async function boot(): Promise<BootedSystem> {
   // Start the Concierge FIRST (of the live parts) so a bad claude launch fails the whole boot
   //    before we begin polling. (Constructed above so its progress sink could be wired in.)
   await concierge.start();
+
+  // The dashboard is one durable message in the existing cards channel. Its collector owns all
+  // I/O; the renderer remains a pure snapshot → embed function.
+  const statusCollector = createStatusSnapshotCollector({
+    version: BECKETT_VERSION,
+    pollIntervalMs: config.tracker.poll_secs * 1_000,
+    poller,
+    tracker: client,
+    metrics: createSystemMetricsReader(),
+    lifecycleLedgerPath,
+    spendPath: paths.spend,
+  });
+  const statusDashboard = createStatusDashboardService({
+    gateway,
+    channelId: CARDS_CHANNEL_ID,
+    statePath: statusDashboardMessagePath(beckettDir),
+    collectSnapshot: () => statusCollector.collect(),
+    logger: logger.child("status.dashboard"),
+  });
+  await statusDashboard.start();
   if (prPoller) {
     // Re-arm the watch list from the registry after a restart. This used to skip every task with
     // no `threadId` and route the rest at that thread, which made sense only while Beckett opened
@@ -704,7 +732,7 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, quick, browserAgent, browser, extensions, lifecycleLedgerPath };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, statusDashboard, quick, browserAgent, browser, extensions, lifecycleLedgerPath };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -716,6 +744,7 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   // (sanctioned in the v6 design resolution): routine fires stay per-period idempotent, and a
   // straggler maintain pass is serialized + best-effort by construction. Memory registered
   // LAST, so its stop runs FIRST in the reverse sweep.
+  sys.statusDashboard.stop();
   sys.prPoller?.stop();
   sys.activityPoller?.stop();
   sys.mailPoller?.stop();
