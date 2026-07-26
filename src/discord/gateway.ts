@@ -498,13 +498,22 @@ export class DiscordJsGateway implements DiscordGateway {
         retryAt - Date.now(),
       );
     }
+    if (retryAt) this.editRetryAt.delete(channelId);
 
+    // If a reconnect/rate-limit retry is already pending, replace it before the live PATCH so
+    // a late flush can never overwrite this newer update with its old payload.
+    const key = editKey(channelId, messageId);
+    const pending = this.queuedEdits.has(key) ? { channelId, messageId, payload } : undefined;
+    if (pending) this.queuedEdits.set(key, pending);
     try {
       await this.editNow(channelId, messageId, payload);
+      if (pending && this.queuedEdits.get(key) === pending) this.queuedEdits.delete(key);
     } catch (error) {
       const typed = this.toEditError(channelId, messageId, error);
       if (typed instanceof DiscordTransientMessageEditError) {
         this.enqueueEdit(channelId, messageId, payload, typed.retryAfterMs);
+      } else if (pending && this.queuedEdits.get(key) === pending) {
+        this.queuedEdits.delete(key);
       }
       throw typed;
     }

@@ -10,7 +10,13 @@ import { join } from "node:path";
 import { ChannelType } from "discord.js";
 import type { ReplyOptions } from "../types.ts";
 import { chunkReply } from "./chunk.ts";
-import { DiscordJsGateway, splitDiscordContent, taskThreadName } from "./gateway.ts";
+import {
+  DiscordJsGateway,
+  DiscordTransientMessageEditError,
+  DiscordUnknownMessageError,
+  splitDiscordContent,
+  taskThreadName,
+} from "./gateway.ts";
 import {
   BROWSER_QUESTION_ATTACHMENT_NAME,
   BROWSER_QUESTION_SUFFIX,
@@ -27,6 +33,93 @@ test("splitDiscordContent splits long replies without truncating", () => {
 test("an expiring post can fail fast instead of queueing while Discord is offline", async () => {
   const gateway = new DiscordJsGateway();
   await expect(gateway.post("chan-1", "question", { queueIfOffline: false })).rejects.toThrow("offline");
+});
+
+/** Capture message PATCHes without a live Discord connection. */
+function fakeEditableGateway(edit: (payload: Record<string, unknown>) => Promise<unknown>) {
+  const gateway = new DiscordJsGateway();
+  const channel = {
+    isTextBased: () => true,
+    messages: { fetch: async () => ({ edit }) },
+  };
+  (gateway as unknown as { client: unknown; connected: boolean }).client = {
+    channels: { fetch: async () => channel },
+  };
+  (gateway as unknown as { connected: boolean }).connected = true;
+  return gateway;
+}
+
+test("editMessage PATCHes content and embeds while connected", async () => {
+  const patches: Array<Record<string, unknown>> = [];
+  const gateway = fakeEditableGateway(async (payload) => { patches.push(payload); });
+
+  await gateway.editMessage("chan-1", "message-1", {
+    content: "updated status",
+    embeds: [{ title: "Build", description: "green" }],
+  });
+
+  expect(patches).toHaveLength(1);
+  expect(patches[0]?.content).toBe("updated status");
+  expect((patches[0]?.embeds as unknown[])?.length).toBe(1);
+  expect(patches[0]?.allowedMentions).toEqual({ parse: [] });
+});
+
+test("an offline edit is applied once after reconnect", async () => {
+  const patches: Array<Record<string, unknown>> = [];
+  const gateway = fakeEditableGateway(async (payload) => { patches.push(payload); });
+  (gateway as unknown as { connected: boolean }).connected = false;
+
+  await expect(gateway.editMessage("chan-1", "message-1", { content: "offline update" })).rejects
+    .toBeInstanceOf(DiscordTransientMessageEditError);
+  expect(patches).toEqual([]);
+
+  (gateway as unknown as { connected: boolean }).connected = true;
+  await (gateway as unknown as { flushQueuedEdits: () => Promise<void> }).flushQueuedEdits();
+  expect(patches.map((patch) => patch.content)).toEqual(["offline update"]);
+});
+
+test("offline edits coalesce to their latest payload before reconnect", async () => {
+  const patches: Array<Record<string, unknown>> = [];
+  const gateway = fakeEditableGateway(async (payload) => { patches.push(payload); });
+  (gateway as unknown as { connected: boolean }).connected = false;
+
+  await expect(gateway.editMessage("chan-1", "message-1", { content: "first" })).rejects
+    .toBeInstanceOf(DiscordTransientMessageEditError);
+  await expect(gateway.editMessage("chan-1", "message-1", { content: "latest" })).rejects
+    .toBeInstanceOf(DiscordTransientMessageEditError);
+
+  (gateway as unknown as { connected: boolean }).connected = true;
+  await (gateway as unknown as { flushQueuedEdits: () => Promise<void> }).flushQueuedEdits();
+  expect(patches).toHaveLength(1);
+  expect(patches[0]?.content).toBe("latest");
+});
+
+test("a Discord 404 edit is a typed unknown-message error", async () => {
+  const gateway = fakeEditableGateway(async () => {
+    throw Object.assign(new Error("Unknown Message"), { status: 404, code: 10_008 });
+  });
+
+  await expect(gateway.editMessage("chan-1", "deleted", { content: "update" })).rejects
+    .toBeInstanceOf(DiscordUnknownMessageError);
+});
+
+test("a 429 edit waits for retry_after before retrying the one queued payload", async () => {
+  const attempts: number[] = [];
+  let first = true;
+  const gateway = fakeEditableGateway(async () => {
+    attempts.push(Date.now());
+    if (first) {
+      first = false;
+      throw Object.assign(new Error("rate limited"), { status: 429, retry_after: 0.02 });
+    }
+  });
+
+  await expect(gateway.editMessage("chan-1", "message-1", { content: "update" })).rejects
+    .toBeInstanceOf(DiscordTransientMessageEditError);
+  await new Promise((resolve) => setTimeout(resolve, 35));
+
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]! - attempts[0]!).toBeGreaterThanOrEqual(15);
 });
 
 test("downtime reconciliation fetches messages after the stored cursor and normalizes them oldest-first", async () => {
