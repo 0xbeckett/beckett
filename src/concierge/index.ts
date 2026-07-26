@@ -2345,15 +2345,18 @@ export class Concierge {
    * {@link registerThreadOnFirstMessage} applies — same bar ("not an outsider": the invite-only
    * gate, not maintainer-only, because a member opening a room to work in is the whole feature),
    * same ordering (checked BEFORE any state is written). Without it this is a bouncer bypass by
-   * the fast path: anyone who can see a channel can open a public thread in it, the gateway
-   * forwards the event (including the `newlyCreated === false` "bot was added" case), and
-   * {@link WorkspaceRegistry.registerThread} scrapes `#N` task refs out of the thread NAME —
-   * which is ATTACKER-CHOSEN TEXT, never validated against who may see task N. A thread named
-   * "#12 notes" would therefore mint a workspace bound to task 12, and since `channelForTask`
-   * wins over the origin channel, every milestone and filed receipt for that work would route
-   * into a room its owner never opened. So NO state is written for someone who does not pass.
-   * (The gateway has already joined the thread by the time we are called — that is membership in
-   * a room they could see anyway; it routes nothing, says nothing, and persists nothing.)
+   * the fast path: anyone who can see a channel can open a public thread in it and the gateway
+   * forwards the event, including the `newlyCreated === false` "bot was added" case.
+   *
+   * Note the gate alone was NOT sufficient while the registry still bound work by thread name.
+   * Gating the creator left the lazy path open — the name is chosen by the thread's author, the
+   * speaker who triggers lazy registration is someone else, and only the speaker was checked. The
+   * registry no longer reads the name at all (see {@link WorkspaceRegistry.registerThread}); work
+   * arrives solely through an authorized person's explicit `&<ref>`. This gate remains because a
+   * workspace still makes later messages directed, which is itself worth protecting.
+   *
+   * Joining happens HERE rather than in the gateway, so Beckett never becomes a member of a room
+   * opened by someone who failed the gate.
    */
   onThreadCreated(t: ThreadCreated): void {
     if (this.accessLevelFor(t.creatorId) === "outsider") {
@@ -2365,6 +2368,17 @@ export class Concierge {
       return;
     }
     this.workspaces.registerThread(t);
+    this.joinThreadBestEffort(t.threadId);
+  }
+
+  /**
+   * Subscribe to a thread so it keeps delivering and unarchives cleanly. Optional on the gateway
+   * interface (partial test gateways do not implement it) and never awaited — a REST round trip
+   * must not delay the turn that triggered it. Only ever called after the access gate.
+   */
+  private joinThreadBestEffort(threadId: string): void {
+    if (typeof this.gateway.joinThread !== "function") return;
+    void this.gateway.joinThread(threadId).catch(() => undefined);
   }
 
   /** Start independent prerequisites concurrently; serve only after each is ready. */
@@ -2545,9 +2559,17 @@ export class Concierge {
    */
   private async restoreTaskWorkspaces(): Promise<void> {
     for (const task of this.tasks.list()) {
-      const threadId = task.threadId;
-      if (!threadId || !this.workspaces.contextFor(threadId)) continue;
-      this.workspaces.attachTasks(threadId, [String(task.number)]);
+      const ref = String(task.number);
+      // Resolve from the REGISTRY, never from `task.threadId`. Attachment is exclusive — attaching
+      // steals the ref from whichever workspace held it — and `task.threadId` is a stale artifact of
+      // the era when Beckett opened a thread per task. Trusting it meant every restart silently
+      // dragged work back: move #12 from Beckett's old thread A to your own thread B with `&12`,
+      // restart, and boot would re-attach #12 to A because the task row still pointed there.
+      // workspaces.json is the source of truth for where work reports, and it already survives a
+      // restart on its own. All this pass adds is the branch/ticket links created while we were
+      // down, bound to the thread that genuinely owns the task right now.
+      const threadId = this.workspaces.channelForTask(ref);
+      if (!threadId) continue;
       for (const branch of task.branches) {
         this.workspaces.bindBranch(threadId, branch.ref, branch.ticket?.identifier);
       }
@@ -4989,12 +5011,7 @@ export class Concierge {
       parentChannelId: m.parentChannelId,
       userId: m.userId,
     });
-    // Join so Beckett is a real member of the thread (unarchives it, keeps events flowing).
-    // Optional on the interface — partial test gateways do not implement it — and never awaited:
-    // a REST round trip must not delay the answer to the message that triggered it.
-    if (typeof this.gateway.joinThread === "function") {
-      void this.gateway.joinThread(m.channelId).catch(() => undefined);
-    }
+    this.joinThreadBestEffort(m.channelId);
     return this.workspaces.contextFor(m.channelId);
   }
 

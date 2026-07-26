@@ -137,18 +137,23 @@ test("an unmentioned message in a user-opened thread is a ticket-grounded direct
   } as unknown as ConciergeSession;
   const concierge = new Concierge({ config, session, gateway });
 
-  // A person opens a thread named after the ticket → the gateway's thread-create event registers it.
+  // A person opens a thread → the gateway's thread-create event registers it. The name is a label
+  // and grounds nothing, so the ticket is bound the way it really gets bound: filed from in here.
   concierge.onThreadCreated({
     threadId: "user-thread-1",
     parentChannelId: CHAN,
-    name: "OPS-40 auth refresh",
+    name: "auth refresh corner",
     creatorId: USER,
+  });
+  await (concierge as unknown as { onBusRequest: Function }).onBusRequest({
+    cmd: "ticket.filed",
+    args: { identifier: "OPS-40", channelId: "user-thread-1", title: "auth refresh" },
   });
   await concierge.onMessage({
     ...mention("also preserve the old refresh tokens"),
     messageId: "workspace-msg-1",
     channelId: "user-thread-1",
-    channelName: "OPS-40 auth refresh",
+    channelName: "auth refresh corner",
     content: "also preserve the old refresh tokens",
     mentionsBot: false,
   });
@@ -239,8 +244,14 @@ test("workspace routing survives a Concierge restart", async () => {
   first.onThreadCreated({
     threadId: "user-thread-3",
     parentChannelId: CHAN,
-    name: "OPS-50 perf work",
+    name: "perf work corner",
     creatorId: USER,
+  });
+  // Ground it the only way grounding happens: a ticket filed from inside the room. What has to
+  // survive the restart is this binding — written to workspaces.json — not anything about the name.
+  await (first as unknown as { onBusRequest: Function }).onBusRequest({
+    cmd: "ticket.filed",
+    args: { identifier: "OPS-50", channelId: "user-thread-3", title: "perf work" },
   });
 
   // A fresh Concierge (same BECKETT_DIR) rehydrates the registry from workspaces.json.

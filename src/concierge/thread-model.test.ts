@@ -178,13 +178,10 @@ test("an outsider opening a thread cannot mint a workspace", async () => {
   expect(posts).toHaveLength(1);
 });
 
-test("an outsider's thread-create event mints NOTHING, however the thread is named", () => {
-  const { concierge, workspaces, dir } = harness();
+test("an outsider's thread-create event mints NOTHING, and Beckett does not even join", () => {
+  const { concierge, workspaces, dir, joined } = harness();
   const stateFile = join(dir, "workspaces.json");
 
-  // The attack: the thread NAME is attacker-chosen text, and registerThread scrapes `#N` task refs
-  // out of it. An unguarded fast path would bind task 1 to a room opened by someone with no access
-  // and then route its milestones and receipts there.
   concierge.onThreadCreated(
     threadCreated({ threadId: "thread-evil", name: "#1 notes", creatorId: OUTSIDER }),
   );
@@ -194,12 +191,49 @@ test("an outsider's thread-create event mints NOTHING, however the thread is nam
   expect(workspaces.contextFor("thread-evil")).toBeNull();
   expect(workspaces.channelForTask("1")).toBeNull();
   expect(existsSync(stateFile)).toBe(false);
+  // Joining moved out of the gateway and behind this gate: the gateway cannot see the access list,
+  // so joining on the raw event made Beckett a member of any room anyone could open.
+  expect(joined).toEqual([]);
 
   // Same event from an authorized member DOES register — which also proves the assertions above
   // are watching the right registry and the right file, not passing vacuously.
   concierge.onThreadCreated(threadCreated({ name: "#1 notes" }));
-  expect(workspaces.channelForTask("1")).toBe(THREAD);
+  expect(workspaces.contextFor(THREAD)).not.toBeNull();
   expect(existsSync(stateFile)).toBe(true);
+  expect(joined).toEqual([THREAD]);
+  // …and it STILL owns no work, because the name is a label. See the next test.
+  expect(workspaces.channelForTask("1")).toBeNull();
+});
+
+test("the thread NAME never binds work — not even once an authorized person speaks in the room", async () => {
+  const { concierge, tasks, workspaces, asks } = harness();
+  const stolen = "thread-evil";
+  await tasks.createTask({ title: "Build voting", originChannelId: CHAN });
+
+  // The hijack, end to end. The thread NAME is attacker-chosen text that is never checked against
+  // who may see task 1, while `channelForTask` routes that task's milestones, PR events and filed
+  // receipts. Step 1: an outsider opens "#1 notes" and is correctly bounced.
+  concierge.onThreadCreated(threadCreated({ threadId: stolen, name: "#1 notes", creatorId: OUTSIDER }));
+  expect(workspaces.contextFor(stolen)).toBeNull();
+
+  // Step 2 is the part the creator gate could never cover, and the reason the name had to stop
+  // binding: the OWNER wanders in and posts something ordinary. That lazily registers the
+  // workspace — the speaker is trusted, so the gate passes — but the name it registers under is
+  // still the outsider's. Scraping it here would hand task 1's routing to the attacker's room
+  // through a completely authorized action.
+  await concierge.onMessage(
+    message({ channelId: stolen, channelName: "#1 notes", content: "what's the status here?" }),
+  );
+
+  expect(workspaces.contextFor(stolen)).toMatchObject({ name: "#1 notes", taskRefs: [] });
+  expect(asks).toHaveLength(1); // the room IS a workspace: the turn ran
+  expect(workspaces.channelForTask("1")).toBeNull(); // …and it owns nothing
+
+  // Only a deliberate `&1` from an authorized person moves routing. Asserting that it still works
+  // here is what stops the null above from passing vacuously: task #1 exists and IS attachable —
+  // the name simply is not what attaches it.
+  await concierge.onMessage(message({ channelId: stolen, channelName: "#1 notes", content: "&1" }));
+  expect(workspaces.channelForTask("1")).toBe(stolen);
 });
 
 test("an invited MEMBER opening a thread still gets a workspace (the bar is access, not rank)", () => {

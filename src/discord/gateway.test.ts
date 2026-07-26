@@ -226,14 +226,18 @@ test("a live browser-question id stays classified during the post-to-ledger hand
 test("both a freshly created thread and one Beckett was added to reach onThreadCreate; bot/parentless ones do not", async () => {
   const gateway = new DiscordJsGateway();
   const listeners = new Map<string, (...args: unknown[]) => void>();
+  const fetched: string[] = [];
   const fakeClient = {
     user: { id: "bot-1" },
     on: (event: string, cb: (...args: unknown[]) => void) => {
       listeners.set(String(event), cb);
     },
     rest: { on: () => undefined },
-    // joinThread runs for every surfaced thread; keep it inert here.
-    channels: { fetch: async () => null },
+    // Records any join attempt. `joinThread` starts with `channels.fetch`, so a non-empty list
+    // means the gateway tried to join off the raw event — which it must not: it cannot see the
+    // access list, so that made Beckett a member of any room anyone could open, before the
+    // Concierge had a chance to bounce the creator. Joining now happens behind that gate.
+    channels: { fetch: async (id: string) => { fetched.push(id); return null; } },
   };
   (gateway as unknown as { client: unknown }).client = fakeClient;
   (gateway as unknown as { wireListeners: (c: unknown) => void }).wireListeners(fakeClient);
@@ -273,6 +277,8 @@ test("both a freshly created thread and one Beckett was added to reach onThreadC
       newlyCreated: false,
     },
   ]);
+  // The gateway forwards and nothing more: no join, for any of them.
+  expect(fetched).toEqual([]);
 });
 
 test("a surfaced thread is joined once so Beckett stays subscribed", async () => {

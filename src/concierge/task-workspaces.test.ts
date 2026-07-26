@@ -250,25 +250,27 @@ test("startup recovery creates NO thread for a task that never had one", async (
   expect(tasks.getTask(1)?.threadId).toBeUndefined();
 });
 
-test("startup recovery re-binds branches linked while the daemon was down, and skips vanished threads", async () => {
+test("startup recovery re-binds branches linked while the daemon was down, and skips unattached work", async () => {
   const { concierge, tasks, threadCalls } = harness();
   const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
   await tasks.createTask({ title: "Offline repair", originChannelId: "parent-1", initialBranchTitle: "API" });
-  await tasks.setThread(1, "user-thread", "parent-1");
   await tasks.linkTicket(
     "1.1",
     { id: "ticket-id", identifier: "OPS-321", board: "ops", projectId: "project-id", url: "https://tracker.test/OPS-321" },
     "in_progress",
   );
-  // The thread is still live in workspaces.json, but the ticket was linked while we were down.
+  // The room the person opened and attached #1 to. That attachment — not `task.threadId` — is what
+  // recovery resolves against, and it is already durable in workspaces.json on its own.
   concierge.onThreadCreated({
     threadId: "user-thread",
     parentChannelId: "parent-1",
     name: "offline repair corner",
     creatorId: OWNER,
   });
+  workspaces.attachTasks("user-thread", ["1"]);
 
-  // A second task whose thread the person deleted (never registered) must be left alone.
+  // A second task nobody ever attached to a thread must be left alone: no workspace owns it, so
+  // there is nowhere to re-bind and its results keep reporting into its origin channel.
   await tasks.createTask({ title: "Closed room", originChannelId: "parent-1" });
   await tasks.setThread(2, "thread-gone", "parent-1");
 
@@ -277,13 +279,51 @@ test("startup recovery re-binds branches linked while the daemon was down, and s
   ).restoreTaskWorkspaces();
 
   expect(threadCalls).toEqual([]);
+  // The branch/ticket link made while we were down is what recovery actually adds back.
   expect(workspaces.contextFor("user-thread")).toMatchObject({
     taskRefs: ["1"],
     branchRefs: ["1.1"],
     ticketIdents: ["OPS-321"],
   });
   expect(workspaces.channelForTicket("OPS-321")).toBe("user-thread");
+  // A stale `task.threadId` is never resurrected into a workspace.
   expect(workspaces.contextFor("thread-gone")).toBeNull();
+  expect(workspaces.channelForTask("2")).toBeNull();
+});
+
+test("startup recovery honours the CURRENT attachment, not the task's stale threadId", async () => {
+  const { concierge, tasks } = harness();
+  const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
+  await tasks.createTask({ title: "Moved work", originChannelId: "parent-1", initialBranchTitle: "API" });
+  // The task row still points at thread A — an artifact of the era when Beckett opened a thread per
+  // task, and a field `&12` deliberately never writes.
+  await tasks.setThread(1, "A", "parent-1");
+  await tasks.linkTicket(
+    "1.1",
+    { id: "t", identifier: "OPS-77", board: "ops", projectId: "p", url: "https://tracker.test/OPS-77" },
+    "in_progress",
+  );
+  for (const threadId of ["A", "B"]) {
+    concierge.onThreadCreated({ threadId, parentChannelId: "parent-1", name: `room ${threadId}`, creatorId: OWNER });
+  }
+  workspaces.attachTasks("A", ["1"]);
+
+  // The person moves the work: `&1` in B. Attachment is exclusive, so A yields the ref.
+  workspaces.attachTasks("B", ["1"]);
+  expect(workspaces.channelForTask("1")).toBe("B");
+
+  await (
+    concierge as unknown as { restoreTaskWorkspaces(): Promise<void> }
+  ).restoreTaskWorkspaces();
+
+  // The regression: recovery used to re-attach from `task.threadId`, so every restart silently
+  // dragged the work back to A while Beckett kept telling the user it reported in B.
+  expect(workspaces.channelForTask("1")).toBe("B");
+  expect(workspaces.contextFor("A")?.taskRefs).toEqual([]);
+  // Branch/ticket links land on the thread that genuinely owns the task right now.
+  expect(workspaces.contextFor("B")).toMatchObject({ branchRefs: ["1.1"], ticketIdents: ["OPS-77"] });
+  expect(workspaces.contextFor("A")?.branchRefs).toEqual([]);
+  expect(workspaces.channelForTicket("OPS-77")).toBe("B");
 });
 
 test("a conversational branch-status reference returns the rich card without an LLM turn", async () => {

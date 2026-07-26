@@ -131,6 +131,28 @@ test("tasks filed back to back are one wave, which is the whole point of &recent
   expect(new Set(store.recentWave().map((task) => task.waveId)).size).toBe(1);
 });
 
+test("a wave never spans channels, however close together the filings land", async () => {
+  const { store, advance } = makeClockStore();
+  // Two people asking for unrelated things in two rooms in the same breath. Co-filing time alone
+  // used to fuse them into one wave, so `&recent` in the #dev thread attached the #media task too —
+  // work reporting into a room whose members never asked for it.
+  await store.createTask({ title: "Transcode uploads", originChannelId: "media" });
+  advance(400);
+  await store.createTask({ title: "Fix the build", originChannelId: "dev" });
+
+  const [media, dev] = store.list();
+  expect(media?.waveId).toBeTruthy();
+  expect(dev?.waveId).not.toBe(media?.waveId as string);
+  // `&recent` in either room gets the newest wave, and that wave is one task — not both.
+  expect(store.recentWave().map((task) => task.number)).toEqual([2]);
+
+  // A third filing in the ORIGINAL channel chains off that channel's task, not the newest overall.
+  advance(400);
+  await store.createTask({ title: "Thumbnails", originChannelId: "media" });
+  expect(store.getTask(3)?.waveId).toBe(media?.waveId as string);
+  expect(store.recentWave().map((task) => task.number)).toEqual([1, 3]);
+});
+
 test("a task filed well after the previous one starts a fresh wave", async () => {
   const { store, advance } = makeClockStore();
   await store.createTask({ title: "Schema" });

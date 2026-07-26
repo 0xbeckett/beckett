@@ -15,12 +15,13 @@
  * The registry is deliberately dumb state, no gateway handle at all:
  *  - **Registration** comes from the gateway's thread-create event ({@link WorkspaceRegistry.registerThread}),
  *    filtered upstream to user-created threads only.
- *  - **Ticket grounding** is additive within a thread. A thread whose name carries identifiers
- *    ("OPS-120 auth rework", "#12.1 retry logic") binds to them at registration; a ticket filed FROM
- *    inside a workspace binds to it when the Concierge acks it ({@link WorkspaceRegistry.bindTicket});
- *    an explicit `&ref` attaches more later ({@link WorkspaceRegistry.attachTasks}). Additive is the
- *    invariant that matters: attaching #2 must never silently drop #1, because a dropped binding
- *    shows up much later as results posting to the wrong place with no error anywhere.
+ *  - **Ticket grounding** is additive within a thread, and never comes from the thread NAME — the
+ *    name is attacker-chosen text and binding work by it is a routing hijack (see the note above
+ *    {@link StoredWorkspace}). A ticket filed FROM inside a workspace binds to it when the Concierge
+ *    acks it ({@link WorkspaceRegistry.bindTicket}); an explicit `&ref` attaches more later
+ *    ({@link WorkspaceRegistry.attachTasks}). Additive is the invariant that matters: attaching #2
+ *    must never silently drop #1, because a dropped binding shows up much later as results posting
+ *    to the wrong place with no error anywhere.
  *  - **A task ref lives in exactly one workspace.** Additive-within is not additive-across: routing
  *    ({@link WorkspaceRegistry.channelForTask}) can only name one thread, so both `&ref` attachment
  *    and {@link WorkspaceRegistry.registerTaskThread} withdraw the ref from every other workspace.
@@ -63,21 +64,20 @@ export interface WorkspaceRegistryOptions {
   logger?: Logger;
 }
 
-/** Matches legacy ticket identifiers like "OPS-120" inside a thread name. */
-const TICKET_IDENT_RE = /\b[A-Z][A-Z0-9]{1,9}-\d+\b/g;
-
 /**
- * Matches the task refs the tracker actually issues today — `#12`, `#12.1` — inside a thread name,
- * so "#12 auth rework" grounds itself the moment the person opens the thread.
+ * A thread NAME never binds work. This is a security boundary, not a style choice.
  *
- * The guards are the whole point. The lookbehind rejects a `#` glued to a preceding word/number/dot
- * (`auth#12`, `v1.#2`) so we never harvest a ref out of the middle of a token, and the trailing
- * `(?!\w)` rejects `#12abc`. A bare `12` never matches — without the sigil a thread named
- * "12 ideas for launch" would claim task 12. `#` followed by non-digits (`#general`, `#todo`) has
- * no digits to capture and falls through.
+ * We used to scrape "OPS-120" and "#12" out of the name and ground the workspace on them. But the
+ * name is chosen by whoever opened the thread, and `channelForTask`/`channelForTicket` route real
+ * milestones, PR events and filed receipts by it. That made the name an attacker-controlled routing
+ * table: anyone who could see a channel could open a thread called "#12 notes" and, the moment any
+ * authorized person said anything in it, become the destination for task 12's updates.
+ *
+ * Gating registration on the SPEAKER did not close it — the speaker is trusted, the name is not.
+ * The only robust rule is that attachment must be an explicit act by an authorized person, which is
+ * exactly what `&12` / `&recent` already are (see src/concierge/thread-attach.ts). The name is kept
+ * as a human label and nothing more.
  */
-const TASK_REF_RE = /(?<![\w#.])#(\d+(?:\.\d+)*)(?!\w)/g;
-
 interface StoredWorkspace {
   parentChannelId: string;
   name: string;
@@ -118,14 +118,6 @@ function normalizeTaskRefs(refs: readonly string[]): string[] {
   return [...new Set(refs.map(normalizeRef).filter(Boolean))].sort(compareTaskRefs);
 }
 
-/** Scrape both grounding vocabularies out of a thread name the person chose. */
-function scrapeThreadName(name: string): { ticketIdents: string[]; taskRefs: string[] } {
-  return {
-    ticketIdents: [...new Set(name.match(TICKET_IDENT_RE) ?? [])],
-    taskRefs: normalizeTaskRefs([...name.matchAll(TASK_REF_RE)].map((m) => m[1]!)),
-  };
-}
-
 /**
  * Owns the user-opened-thread → work routing map. Constructed by the Concierge, fed by the
  * gateway's thread-create events and by explicit `&ref` attachments, and consulted on every
@@ -143,27 +135,27 @@ export class WorkspaceRegistry {
   }
 
   /**
-   * Register a user-created thread as a workspace. Idempotent per thread id; identifiers found in
-   * the thread name are bound immediately so "OPS-120 auth rework" or "#12.1 retry logic" is
-   * grounded from its first message without the person having to say `&12.1`.
+   * Register a user-created thread as a workspace. Idempotent per thread id.
+   *
+   * A fresh workspace owns NO work. It is a room Beckett listens in without needing an @mention;
+   * which work reports there is decided later, and only ever by an authorized person typing
+   * `&<ref>` or `&recent`. See the note on {@link StoredWorkspace} for why the thread name is
+   * deliberately not consulted.
    */
   registerThread(t: ThreadCreated): void {
     const existing = this.byThread.get(t.threadId);
     if (existing) return; // already a workspace — a re-emitted create event changes nothing
-    const { ticketIdents, taskRefs } = scrapeThreadName(t.name);
     this.byThread.set(t.threadId, {
       parentChannelId: t.parentChannelId,
       name: t.name,
-      ticketIdents,
-      taskRefs,
+      ticketIdents: [],
+      taskRefs: [],
       branchRefs: [],
     });
     this.log.info("workspace registered from user thread", {
       threadId: t.threadId,
       name: t.name,
       creatorId: t.creatorId,
-      tickets: ticketIdents,
-      tasks: taskRefs,
     });
     this.saveState();
   }

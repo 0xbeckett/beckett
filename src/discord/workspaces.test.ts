@@ -1,14 +1,21 @@
 /**
  * Coverage for the workspace registry: user-opened threads become work workspaces. No Discord
  * side-effects live here — the registry is pure routing state fed by the gateway's thread-create
- * event, grounded by identifiers in the thread name and by explicit `&<taskRef>` / `&recent`
- * attachments, and persisted so unmentioned routing survives a daemon restart.
+ * event, grounded ONLY by explicit `&<taskRef>` / `&recent` attachments and by tickets filed from
+ * inside the thread, and persisted so unmentioned routing survives a daemon restart.
  *
- * The invariants worth breaking a build over: attachment is ADDITIVE within a thread (a second wave
- * never drops the first) but EXCLUSIVE across threads (a ref routes to exactly one workspace, and
- * `&ref` moves it there even when the target already holds it), a legacy scalar `taskRef` on disk
- * MIGRATES rather than vanishing, and neither `&ref` nor registering a task thread ever STEALS a
- * whole workspace out from under the person who opened it — only the one ref moves.
+ * The security invariant that outranks all the others: **a thread NAME binds nothing.** The name is
+ * chosen by whoever opened the thread and is never validated against who may see the work, so
+ * scraping "OPS-120"/"#12" out of it turned `channelForTask`/`channelForTicket` — which route real
+ * milestones, PR events and filed receipts — into an attacker-controlled routing table. The name is
+ * a human label; only a deliberate act by an authorized person attaches work.
+ *
+ * The routing invariants worth breaking a build over: attachment is ADDITIVE within a thread (a
+ * second wave never drops the first) but EXCLUSIVE across threads (a ref routes to exactly one
+ * workspace, and `&ref` moves it there even when the target already holds it), a legacy scalar
+ * `taskRef` on disk MIGRATES rather than vanishing, and neither `&ref` nor registering a task
+ * thread ever STEALS a whole workspace out from under the person who opened it — only the one ref
+ * moves.
  */
 
 import { afterEach, expect, test } from "bun:test";
@@ -34,57 +41,93 @@ function stateFile(): string {
   return join(dir, "workspaces.json");
 }
 
-test("a user thread registers a workspace, grounded by ticket idents in its name", () => {
+/**
+ * Write a state file where two workspaces BOTH hold the same task ref, and load a registry off it.
+ *
+ * There is deliberately no API that produces this: `attachTasks` and `registerTaskThread` both
+ * withdraw the ref from everyone else, which is the exclusivity the tests below are pinning. The
+ * state is still reachable in the wild — a file written by an older build, a hand edit, a merge of
+ * two daemons' state — and it is exactly the state where a merge-only `attachTasks` would strand
+ * routing on the wrong room forever. So it is seeded on disk rather than through the API.
+ */
+function registryHoldingRefTwice(file: string): WorkspaceRegistry {
+  writeFileSync(
+    file,
+    JSON.stringify({
+      // Insertion order is the tiebreak `channelForTask` uses, so A wins the routing to begin with.
+      A: { parentChannelId: "chan-1", name: "first attempt", ticketIdents: [], taskRefs: ["12"], branchRefs: [] },
+      B: { parentChannelId: "chan-1", name: "second attempt", ticketIdents: [], taskRefs: ["12"], branchRefs: [] },
+    }),
+    "utf8",
+  );
+  return new WorkspaceRegistry({ stateFile: file, logger: quietLog });
+}
+
+test("a user thread registers a workspace that owns NO work, however it is named", () => {
   const reg = new WorkspaceRegistry({ logger: quietLog });
   reg.registerThread({ threadId: "t-1", parentChannelId: "chan-1", name: "OPS-120 auth rework", creatorId: "u-1" });
 
+  // The name is carried through verbatim as a human label — and grounds nothing. Registration
+  // creates a room Beckett listens in, not a claim on OPS-120.
   expect(reg.contextFor("t-1")).toEqual({
     parentChannelId: "chan-1",
     name: "OPS-120 auth rework",
-    ticketIdents: ["OPS-120"],
+    ticketIdents: [],
     taskRefs: [],
     branchRefs: [],
   });
+  expect(reg.channelForTicket("OPS-120")).toBeNull();
   // A channel that isn't a workspace resolves to nothing.
   expect(reg.contextFor("chan-1")).toBeNull();
 });
 
-test("a thread named for a numbered task grounds itself on that task", () => {
+test("a thread named for a numbered task does NOT ground itself on that task", () => {
   const reg = new WorkspaceRegistry({ logger: quietLog });
   reg.registerThread({ threadId: "t-n", parentChannelId: "chan-1", name: "#12 auth rework", creatorId: "u-1" });
   reg.registerThread({ threadId: "t-sub", parentChannelId: "chan-1", name: "#12.1 retry logic", creatorId: "u-1" });
 
-  expect(reg.contextFor("t-n")?.taskRefs).toEqual(["12"]);
-  expect(reg.contextFor("t-sub")?.taskRefs).toEqual(["12.1"]);
-  expect(reg.channelForTask("#12")).toBe("t-n");
-  expect(reg.channelForTask("12.1")).toBe("t-sub");
+  expect(reg.contextFor("t-n")?.taskRefs).toEqual([]);
+  expect(reg.contextFor("t-sub")?.taskRefs).toEqual([]);
+  // Nothing routes anywhere: task 12's milestones and receipts still go to its origin channel.
+  expect(reg.channelForTask("#12")).toBeNull();
+  expect(reg.channelForTask("12.1")).toBeNull();
+
+  // …and the ONLY thing that changes that is an authorized person saying so.
+  reg.attachTasks("t-n", ["#12"]);
+  expect(reg.channelForTask("12")).toBe("t-n");
 });
 
-test("name scraping takes both vocabularies and refuses lookalikes", () => {
+test("a thread name never binds work, however it is spelled", () => {
   const reg = new WorkspaceRegistry({ logger: quietLog });
-  reg.registerThread({
-    threadId: "t-mixed",
-    parentChannelId: "chan-1",
-    name: "OPS-120 + #2 and #10 (see #10 again)",
-    creatorId: "u-1",
-  });
-  // Deduped, and ordered the way a human reads a wave: #2 before #10, not lexicographically.
-  expect(reg.contextFor("t-mixed")).toMatchObject({
-    ticketIdents: ["OPS-120"],
-    taskRefs: ["2", "10"],
-  });
-
-  // Bare numbers, `#` + non-digits, and refs glued into a longer token are all NOT task refs.
-  reg.registerThread({
-    threadId: "t-noise",
-    parentChannelId: "chan-1",
-    name: "12 ideas for #general, ping auth#7 or #12abc",
-    creatorId: "u-1",
-  });
-  expect(reg.contextFor("t-noise")?.taskRefs).toEqual([]);
+  // Every vocabulary the old scraper understood, every lookalike it deliberately rejected, and the
+  // shapes in between. They are all the same case now, which is the point: there is no parse to
+  // get subtly wrong, so no name can ever become a routing decision.
+  const names = [
+    "OPS-120 auth rework", // legacy ticket identifier
+    "#12 auth rework", // task ref
+    "#12.1 retry logic", // dotted sub-ref
+    "OPS-120 + #2 and #10 (see #10 again)", // both vocabularies, repeated
+    "12 ideas for #general, ping auth#7 or #12abc", // the lookalikes
+    "#1 notes", // the hijack the fix exists to stop
+  ];
+  for (const [i, name] of names.entries()) {
+    reg.registerThread({ threadId: `t-${i}`, parentChannelId: "chan-1", name, creatorId: "u-1" });
+    expect(reg.contextFor(`t-${i}`)).toEqual({
+      parentChannelId: "chan-1",
+      name,
+      ticketIdents: [],
+      taskRefs: [],
+      branchRefs: [],
+    });
+  }
+  // Nothing a name mentioned is reachable by routing, in either vocabulary.
+  for (const ref of ["1", "2", "7", "10", "12", "12.1", "12abc"]) {
+    expect(reg.channelForTask(ref)).toBeNull();
+  }
+  expect(reg.channelForTicket("OPS-120")).toBeNull();
 });
 
-test("a thread with no work in the name is still a workspace (grounded later)", () => {
+test("an ungrounded thread is still a workspace, and a ticket filed from it grounds it", () => {
   const reg = new WorkspaceRegistry({ logger: quietLog });
   reg.registerThread({ threadId: "t-2", parentChannelId: "chan-1", name: "brainstorm corner", creatorId: "u-1" });
   expect(reg.contextFor("t-2")).toEqual({
@@ -105,13 +148,19 @@ test("a thread with no work in the name is still a workspace (grounded later)", 
 
 test("registration is idempotent and binds are deduped", () => {
   const reg = new WorkspaceRegistry({ logger: quietLog });
-  reg.registerThread({ threadId: "t-3", parentChannelId: "chan-1", name: "OPS-1 and OPS-2", creatorId: "u-1" });
-  reg.registerThread({ threadId: "t-3", parentChannelId: "chan-9", name: "renamed", creatorId: "u-2" });
+  reg.registerThread({ threadId: "t-3", parentChannelId: "chan-1", name: "auth rework", creatorId: "u-1" });
+  // Grounding is seeded the only way it can be: tickets filed from inside the room.
   reg.bindTicket("t-3", "OPS-1");
+  reg.bindTicket("t-3", "OPS-2");
+
+  // A re-emitted create event (a rename, or the daemon seeing the thread twice) changes nothing —
+  // not the parent channel, not the label, and above all not the work already bound here.
+  reg.registerThread({ threadId: "t-3", parentChannelId: "chan-9", name: "renamed", creatorId: "u-2" });
+  reg.bindTicket("t-3", "OPS-1"); // …and a repeated bind does not duplicate
 
   expect(reg.contextFor("t-3")).toEqual({
     parentChannelId: "chan-1", // the first registration wins
-    name: "OPS-1 and OPS-2",
+    name: "auth rework",
     ticketIdents: ["OPS-1", "OPS-2"],
     taskRefs: [],
     branchRefs: [],
@@ -148,9 +197,9 @@ test("attachTasks is additive and idempotent — attaching #2 never drops #1", (
 
 test("attachTasks MOVES a ref: '&12' in thread B takes routing away from thread A", () => {
   const reg = new WorkspaceRegistry({ logger: quietLog });
-  // Thread A grounds itself on #12 just by being named for it — the trap case, because the person
-  // never typed `&12` there and has no reason to suspect A is holding the routing hostage.
-  reg.registerThread({ threadId: "A", parentChannelId: "chan-1", name: "#12 auth rework", creatorId: "u-1" });
+  // A holds #12 because someone attached it there — the only way a thread ever holds anything.
+  reg.registerThread({ threadId: "A", parentChannelId: "chan-1", name: "auth rework", creatorId: "u-1" });
+  reg.attachTasks("A", ["#12"]);
   reg.registerThread({ threadId: "B", parentChannelId: "chan-1", name: "second attempt", creatorId: "u-1" });
   expect(reg.channelForTask("12")).toBe("A");
 
@@ -162,7 +211,7 @@ test("attachTasks MOVES a ref: '&12' in thread B takes routing away from thread 
   // A yields the one ref and nothing else: still a workspace, just no longer holding #12.
   expect(reg.contextFor("A")).toEqual({
     parentChannelId: "chan-1",
-    name: "#12 auth rework",
+    name: "auth rework",
     ticketIdents: [],
     taskRefs: [],
     branchRefs: [],
@@ -189,10 +238,8 @@ test("attachTasks moves only the named refs and leaves the loser's other work al
 });
 
 test("re-attaching a ref the target ALREADY holds still withdraws it from the other workspace", () => {
-  const reg = new WorkspaceRegistry({ logger: quietLog });
-  // B is grounded on #12 by its name; A is grounded first, so insertion order hands A the routing.
-  reg.registerThread({ threadId: "A", parentChannelId: "chan-1", name: "#12 first attempt", creatorId: "u-1" });
-  reg.registerThread({ threadId: "B", parentChannelId: "chan-1", name: "#12 second attempt", creatorId: "u-1" });
+  // Both rooms hold #12 on disk; insertion order hands A the routing.
+  const reg = registryHoldingRefTwice(stateFile());
   expect(reg.channelForTask("12")).toBe("A");
 
   // The user types `&12` in B *because it didn't work*. B's own set is already {12}, so a
@@ -205,11 +252,9 @@ test("re-attaching a ref the target ALREADY holds still withdraws it from the ot
 
 test("an attach that only withdraws is still persisted across a save/load cycle", () => {
   const file = stateFile();
-  const reg = new WorkspaceRegistry({ stateFile: file, logger: quietLog });
-  reg.registerThread({ threadId: "A", parentChannelId: "chan-1", name: "#12 first attempt", creatorId: "u-1" });
-  reg.registerThread({ threadId: "B", parentChannelId: "chan-1", name: "#12 second attempt", creatorId: "u-1" });
+  const reg = registryHoldingRefTwice(file);
 
-  reg.attachTasks("B", ["#12"]); // withdrawal-only: B's own set does not change
+  reg.attachTasks("B", ["#12"]); // withdrawal-only: B's own set really does not change
 
   // The write must have happened, or the daemon restarts straight back into the wrong routing.
   const onDisk = JSON.parse(readFileSync(file, "utf8"));
@@ -291,17 +336,21 @@ test("detachAll clears the work but keeps the thread a workspace", () => {
 test("workspace routing survives a restart via the state file", () => {
   const file = stateFile();
   const first = new WorkspaceRegistry({ stateFile: file, logger: quietLog });
-  first.registerThread({ threadId: "t-4", parentChannelId: "chan-1", name: "OPS-9 migration", creatorId: "u-1" });
+  first.registerThread({ threadId: "t-4", parentChannelId: "chan-1", name: "auth rework", creatorId: "u-1" });
+  first.bindTicket("t-4", "OPS-9");
   first.bindTicket("t-4", "OPS-10");
+  first.attachTasks("t-4", ["#12"]);
 
   const second = new WorkspaceRegistry({ stateFile: file, logger: quietLog });
   expect(second.contextFor("t-4")).toEqual({
     parentChannelId: "chan-1",
-    name: "OPS-9 migration",
-    ticketIdents: ["OPS-10", "OPS-9"],
-    taskRefs: [],
+    name: "auth rework",
+    ticketIdents: ["OPS-10", "OPS-9"], // contextFor sorts idents lexicographically
+    taskRefs: ["12"],
     branchRefs: [],
   });
+  expect(second.channelForTicket("OPS-9")).toBe("t-4");
+  expect(second.channelForTask("12")).toBe("t-4");
 });
 
 test("a legacy scalar taskRef on disk migrates into taskRefs instead of being dropped", () => {

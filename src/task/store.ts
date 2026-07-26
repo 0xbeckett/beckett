@@ -320,7 +320,7 @@ export class TaskStore {
         ...(input.project ? { project: input.project } : {}),
         // Inferred inside the lock that allocates `number`, off the registry as just read, so two
         // concurrent creators cannot land in different halves of the same burst.
-        waveId: input.waveId ?? inferWaveId(registry.tasks, now),
+        waveId: input.waveId ?? inferWaveId(registry.tasks, now, input.originChannelId),
         branches: [branch],
         createdAt: now,
         updatedAt: now,
@@ -570,8 +570,13 @@ export function newWaveId(): string {
  * "time of last filing", which a daemon restart or (far more likely) the next short-lived CLI
  * process would lose, splitting a wave down the middle for no reason the user can see.
  */
-function inferWaveId(tasks: WorkTask[], nowIso: string): string {
-  const previous = newestTask(tasks);
+function inferWaveId(tasks: WorkTask[], nowIso: string, originChannelId?: string): string {
+  // A wave is scoped to ONE channel. Co-filing time alone is not enough: two people asking for
+  // unrelated things in #media and #dev in the same breath produced one wave, so `&recent` in a
+  // #dev thread attached the #media task too — work reporting into a room whose members never
+  // asked for it. Same channel is the weakest extra condition that makes the inference honest.
+  // A task filed with no channel can only join another channel-less task.
+  const previous = newestTask(tasks.filter((t) => t.originChannelId === originChannelId));
   // A pre-wave row has no id to join. Grouping onto `undefined` would leave the new task outside
   // every wave lookup, so it starts a wave of its own and the legacy rows stay as they are.
   if (!previous?.waveId) return newWaveId();

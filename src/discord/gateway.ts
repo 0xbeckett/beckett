@@ -535,9 +535,10 @@ export class DiscordJsGateway implements DiscordGateway {
         newlyCreated: newlyCreated === true,
       };
       this.logger.info("discord user thread surfaced", t as unknown as Record<string, unknown>);
-      // Subscribe so the thread keeps delivering to us and unarchives cleanly. Fire-and-forget by
-      // design — joinThread never rejects, and registration must not wait on a REST round trip.
-      void this.joinThread(thread.id);
+      // NOTE: joining is deliberately NOT done here. The gateway cannot see the access list, so
+      // joining on the raw event made Beckett a member of every thread anyone could open — including
+      // an outsider's — before the Concierge had gated it. Joining is now the Concierge's call,
+      // taken after the access check, at the moment it decides the thread is a real workspace.
       // Isolate handler failures — a thrown registration must never kill the gateway.
       void Promise.resolve()
         .then(() => this.threadHandler?.(t))
