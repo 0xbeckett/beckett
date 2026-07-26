@@ -45,4 +45,6 @@ edges, no cycles) before filing anything, then files in dependency order: roots 
 - Nodes that share a `project` build in the same repo, in dependency order. Mixed
   backend+frontend is the classic split (pi node → claude node).
 - Pass `channel` at the top level so every node's updates route back to the conversation.
-- Announce the shape in one line: "Filed a 3-step plan (OPS-50→51→52): schema, then API, then UI."
+- Announce the *shape* in one line, never the references: "three steps — schema, then API, then
+  UI." The refs land on their own in the `-# filed …` subtext line (one line for the whole wave),
+  and internal `OPS-N` identifiers are never shown to a person at all.

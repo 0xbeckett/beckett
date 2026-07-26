@@ -36,9 +36,13 @@ The Concierge is a coworker, not a ticket window. A few invariants define the fe
   the session via the shared channel window). Nothing ever posts "you're next in line" — the
   typing indicator is the only waiting signal. Steering mid-thought is ordinary conversation:
   the newest message is the current truth and the model answers it without meta-narration.
-- **Threads for parallel work.** Real work fans out into task-workspace threads
-  (`beckett task create --channel`), so parallel asks in a channel are parallel conversations,
-  not a stack.
+- **Beckett never opens a thread.** Filing creates no Discord thread: work runs in the background
+  and reports into the channel it was requested from (`beckett task create --channel` records the
+  return address only), with one `-# filed …` subtext line per wave as the whole visible receipt
+  (`src/discord/filed-line.ts`). A person who wants an organized space opens a thread themselves
+  and posts a message whose entire content is `&<ref>` or `&recent`; that is resolved in code
+  before the model sees the turn, and the attached work reports there from then on (`&clear`
+  detaches). Parallel asks in a channel are still parallel conversations, not a stack.
 - **Reply context reaches back** (`src/concierge/reply-context.ts`). A native reply to a
   message outside the session's window fetches the target plus the
   `shared_context.reply_context_surrounding` (default 5) messages before and after it, injected

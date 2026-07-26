@@ -223,7 +223,7 @@ test("a live browser-question id stays classified during the post-to-ledger hand
   expect(normalized.repliedToBotUnverified).toBeUndefined();
 });
 
-test("a user-created thread is normalized to the onThreadCreate handler; bot/replayed ones are not", async () => {
+test("both a freshly created thread and one Beckett was added to reach onThreadCreate; bot/parentless ones do not", async () => {
   const gateway = new DiscordJsGateway();
   const listeners = new Map<string, (...args: unknown[]) => void>();
   const fakeClient = {
@@ -232,6 +232,8 @@ test("a user-created thread is normalized to the onThreadCreate handler; bot/rep
       listeners.set(String(event), cb);
     },
     rest: { on: () => undefined },
+    // joinThread runs for every surfaced thread; keep it inert here.
+    channels: { fetch: async () => null },
   };
   (gateway as unknown as { client: unknown }).client = fakeClient;
   (gateway as unknown as { wireListeners: (c: unknown) => void }).wireListeners(fakeClient);
@@ -245,15 +247,163 @@ test("a user-created thread is normalized to the onThreadCreate handler; bot/rep
 
   // A person opened a thread → normalized and delivered.
   emit({ id: "thread-1", parentId: "parent-1", name: "OPS-7 auth rework", ownerId: "user-1" }, true);
-  // The bot's own thread (belt and braces — it should never create one) → filtered.
+  // The bot's own thread (belt and braces — it should never create one) → still filtered.
   emit({ id: "thread-2", parentId: "parent-1", name: "bot thread", ownerId: "bot-1" }, true);
-  // A replayed create (bot merely ADDED to an existing thread) → filtered.
+  // Beckett ADDED to a thread that already existed (newlyCreated === false) → delivered, tagged.
+  // This is the only signal we get for a thread that predates the daemon; dropping it made those
+  // threads invisible forever.
   emit({ id: "thread-3", parentId: "parent-1", name: "old thread", ownerId: "user-1" }, false);
+  // No parent channel → not a channel workspace, still filtered.
+  emit({ id: "thread-4", parentId: null, name: "orphan", ownerId: "user-1" }, true);
   await new Promise((r) => setTimeout(r, 0));
 
   expect(seen).toEqual([
-    { threadId: "thread-1", parentChannelId: "parent-1", name: "OPS-7 auth rework", creatorId: "user-1" },
+    {
+      threadId: "thread-1",
+      parentChannelId: "parent-1",
+      name: "OPS-7 auth rework",
+      creatorId: "user-1",
+      newlyCreated: true,
+    },
+    {
+      threadId: "thread-3",
+      parentChannelId: "parent-1",
+      name: "old thread",
+      creatorId: "user-1",
+      newlyCreated: false,
+    },
   ]);
+});
+
+test("a surfaced thread is joined once so Beckett stays subscribed", async () => {
+  const gateway = new DiscordJsGateway();
+  let joins = 0;
+  const thread = {
+    isThread: () => true,
+    joined: false,
+    join: async () => {
+      joins++;
+      thread.joined = true;
+    },
+  };
+  (gateway as unknown as { client: unknown }).client = {
+    channels: { fetch: async () => thread },
+  };
+
+  await gateway.joinThread("thread-1");
+  expect(joins).toBe(1);
+  // Already a member: re-surfacing must not burn another rate-limited REST call.
+  await gateway.joinThread("thread-1");
+  expect(joins).toBe(1);
+});
+
+test("joining a thread we cannot see is swallowed, not thrown at the gateway", async () => {
+  const gateway = new DiscordJsGateway();
+  const missingAccess = Object.assign(new Error("Missing Access"), { code: 50_001 });
+  (gateway as unknown as { client: unknown }).client = {
+    channels: {
+      fetch: async () => {
+        throw missingAccess;
+      },
+    },
+  };
+
+  await expect(gateway.joinThread("private-thread")).resolves.toBeUndefined();
+});
+
+test("a non-thread channel is never joined", async () => {
+  const gateway = new DiscordJsGateway();
+  let joins = 0;
+  (gateway as unknown as { client: unknown }).client = {
+    channels: {
+      fetch: async () => ({ isThread: () => false, join: async () => { joins++; } }),
+    },
+  };
+
+  await gateway.joinThread("plain-channel");
+  expect(joins).toBe(0);
+});
+
+test("a message inside a thread is normalized with its thread flag and parent channel", async () => {
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: { user: { id: string } } }).client = { user: { id: "bot-1" } };
+  const normalize = (msg: Record<string, unknown>) =>
+    (
+      gateway as unknown as {
+        normalize: (m: Record<string, unknown>) => Promise<{
+          isThread?: boolean;
+          parentChannelId?: string;
+        }>;
+      }
+    ).normalize(msg);
+  const base = {
+    guildId: "guild-1",
+    createdTimestamp: 0,
+    content: "status?",
+    author: { id: "user-1", bot: false, username: "u", globalName: null },
+    member: { displayName: "u", roles: { cache: new Map() } },
+    mentions: { has: () => false },
+    reference: null,
+    attachments: new Map(),
+  };
+
+  const inThread = await normalize({
+    ...base,
+    id: "msg-thread",
+    channelId: "thread-1",
+    channel: { name: "OPS-7", isThread: () => true, parentId: "parent-1" },
+  });
+  expect(inThread.isThread).toBe(true);
+  expect(inThread.parentChannelId).toBe("parent-1");
+
+  const inChannel = await normalize({
+    ...base,
+    id: "msg-channel",
+    channelId: "chan-1",
+    channel: { name: "ops", isThread: () => false, parentId: "category-1" },
+  });
+  expect(inChannel.isThread).toBe(false);
+  expect(inChannel.parentChannelId).toBeUndefined();
+});
+
+test("a partial or uncached channel leaves thread fields unknown instead of losing the message", async () => {
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: { user: { id: string } } }).client = { user: { id: "bot-1" } };
+  const normalize = (channel: unknown) =>
+    (
+      gateway as unknown as {
+        normalize: (m: Record<string, unknown>) => Promise<{
+          messageId: string;
+          isThread?: boolean;
+          parentChannelId?: string;
+        }>;
+      }
+    ).normalize({
+      id: "msg-partial",
+      guildId: null,
+      channelId: "dm-1",
+      channel,
+      createdTimestamp: 0,
+      content: "hey",
+      author: { id: "user-1", bot: false, username: "u", globalName: null },
+      member: null,
+      mentions: { has: () => false },
+      reference: null,
+      attachments: new Map(),
+    });
+
+  // A DM partial with no isThread(), and a channel whose isThread() blows up: both degrade to
+  // "unknown" rather than throwing out of normalize.
+  for (const channel of [
+    null,
+    {},
+    { isThread: () => { throw new Error("uncached channel"); } },
+  ]) {
+    const normalized = await normalize(channel);
+    expect(normalized.messageId).toBe("msg-partial");
+    expect(normalized.isThread).toBeUndefined();
+    expect(normalized.parentChannelId).toBeUndefined();
+  }
 });
 
 /** Capture sendNow payloads without a live Discord connection. */

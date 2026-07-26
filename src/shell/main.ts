@@ -390,6 +390,13 @@ async function boot(): Promise<BootedSystem> {
     // OPS-124: a PR Beckett just opened → start watching it, routed to the ticket's origin channel.
     // Parse the repo+number from the PR URL; a non-PR URL yields null and is ignored. The poller
     // itself drops PRs outside our org and (at relay time) PRs with no origin channel.
+    //
+    // What is stamped here is the FALLBACK destination, not the destination. A user-opened thread
+    // that owns this work wins, but that is resolved when the event is relayed
+    // (`Concierge.channelForPr`), never here: under the user-owned thread model `&12` writes the
+    // attachment into the workspace registry only, and the person usually opens the room AFTER
+    // the PR exists. Stamping a thread at open time would both miss those attachments and freeze
+    // the wrong channel for the PR's whole life.
     onPrOpened: async ({ prUrl, ticket }) => {
       const parsed = parsePrUrl(prUrl);
       if (!parsed) return;
@@ -401,14 +408,13 @@ async function boot(): Promise<BootedSystem> {
         }
       }
       if (prPoller) {
-        const taskThread = tasks.findByTicket(ticket.id)?.task.threadId;
         prPoller.watch({
           repo: parsed.repo,
           number: parsed.number,
           url: prUrl,
           title: ticket.title,
           ticket: ticket.identifier,
-          channel: taskThread ?? ticket.originChannel,
+          channel: ticket.originChannel,
         });
       }
     },
@@ -553,8 +559,15 @@ async function boot(): Promise<BootedSystem> {
   //    before we begin polling. (Constructed above so its progress sink could be wired in.)
   await concierge.start();
   if (prPoller) {
+    // Re-arm the watch list from the registry after a restart. This used to skip every task with
+    // no `threadId` and route the rest at that thread, which made sense only while Beckett opened
+    // a thread per task: under the user-owned thread model `threadId` is almost never set (`&12`
+    // writes the workspace registry, not the task), so the skip silently stopped watching nearly
+    // every open PR across a restart. Watch them all and stamp the ORIGIN channel as the
+    // fallback; the live destination is resolved per event in `Concierge.channelForPr`, which
+    // consults the workspace registry. Re-watching is safe: a known PR only refreshes its
+    // routing, and a newly-seeded one records its current state and emits nothing.
     for (const task of tasks.list()) {
-      if (!task.threadId) continue;
       for (const branch of task.branches) {
         if (!branch.pullRequest || !branch.ticket) continue;
         prPoller.watch({
@@ -563,7 +576,7 @@ async function boot(): Promise<BootedSystem> {
           url: branch.pullRequest.url,
           title: branch.title,
           ticket: branch.ticket.identifier,
-          channel: task.threadId,
+          channel: task.threadId ?? task.originChannelId,
         });
       }
     }

@@ -1,4 +1,23 @@
-/** Durable user-facing task and branch registry. Tracker tickets remain an execution detail. */
+/**
+ * Durable user-facing task and branch registry. Tracker tickets remain an execution detail.
+ *
+ * WAVES. Beckett no longer opens a thread per task, so "the batch you just filed" has to be a
+ * real thing the store can hand back: the user types `&recent` in a thread they opened and means
+ * the set of tasks that went in together, not the single newest row. Every task therefore carries
+ * a `waveId` stamped at creation.
+ *
+ * The grouping is inferred HERE rather than passed in by a caller, because no caller is in a
+ * position to pass it: a wave reaches the store as a burst of separate `beckett task create`
+ * PROCESSES, one per task, so nothing in memory ever holds the batch. What the tasks of a wave do
+ * share is the clock — they are filed moments apart — and the store already sees every filing
+ * under one lock, so `createTask()` joins the newest existing task's wave when the two land
+ * within WAVE_WINDOW_MS of each other (see `inferWaveId`). An explicitly passed `waveId` still
+ * wins, for the caller that genuinely does hold a batch (tests, a future in-process planner).
+ *
+ * The field is OPTIONAL in the schema on purpose: registries written before waves existed must
+ * keep loading. Those rows simply have no wave, and `recentWave()` degrades to "just that task"
+ * rather than silently sweeping every wave-less row into one giant batch.
+ */
 import {
   mkdirSync,
   readFileSync,
@@ -10,12 +29,34 @@ import {
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { z } from "zod";
+import { prefixedId } from "../ids.ts";
 import type { Ticket, TicketState } from "../tracker/types.ts";
 
 export const TASK_TITLE_MAX = 100;
 const LOCK_STALE_MS = 30_000;
 const LOCK_ATTEMPTS = 200;
 const START_CLAIM_STALE_MS = 5 * 60_000;
+
+/**
+ * How close together two filings must land to count as the same wave.
+ *
+ * WHY a window is the signal: the concierge files a wave as back-to-back `beckett task create`
+ * processes, so co-filing is the ONLY thing the tasks of a batch have in common by the time they
+ * reach the registry — there is no shared caller, session, or channel to key on.
+ *
+ * WHY 20s: the real gap between those spawns is well under a second, and a couple of seconds at
+ * worst when the box is loaded or the CLI pays a cold start, so 20s is an order of magnitude of
+ * headroom — a slow spawn cannot split a wave in half. It is also far under any human filing
+ * rhythm: someone who files a task, thinks, and files an unrelated one minutes later gets two
+ * waves, which is exactly what `&recent` has to mean for them.
+ *
+ * WHY measured against the NEWEST task rather than the wave's first: it chains, so a long burst
+ * stays one wave as long as each filing lands within 20s of the previous one. The cost is that a
+ * sustained trickle of unrelated tasks under 20s apart would chain into one wave — accepted,
+ * because nothing files that way, and the alternative (window from the wave's first task) has the
+ * worse failure: it splits a legitimately slow burst, which is the case this feature exists for.
+ */
+const WAVE_WINDOW_MS = 20_000;
 
 export type TaskStatus = "active" | "paused" | "done" | "cancelled";
 export type TaskBranchStatus =
@@ -89,6 +130,8 @@ const TaskSchema = z.object({
   originChannelId: z.string().optional(),
   threadId: z.string().optional(),
   project: z.string().optional(),
+  // Optional so pre-wave registries still parse; stamped on every task created from here on.
+  waveId: z.string().optional(),
   branches: z.array(TaskBranchSchema),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -181,6 +224,55 @@ export class TaskStore {
     return task && branch ? structuredClone({ task, branch }) : null;
   }
 
+  /**
+   * The batch behind `&recent`: every task sharing the waveId of the most recently CREATED task.
+   *
+   * Deliberately status-blind. A wave that already finished is still the most recent wave, and a
+   * user who opens a thread and asks for it wants the finished work reported there — filtering to
+   * `active` would hand back an empty set exactly when the batch just landed. Recency is by
+   * createdAt (the filing moment), NOT updatedAt, so a late status flip on an old task cannot
+   * hijack `&recent`; ties (a batch filed inside one clock tick) break on number descending.
+   */
+  recentWave(): WorkTask[] {
+    const tasks = this.read().tasks;
+    const head = newestTask(tasks);
+    if (!head) return [];
+    // A pre-wave row has no id to group by; it is its own wave rather than a bucket that would
+    // collect every other legacy row.
+    if (!head.waveId) return structuredClone([head]);
+    const wave = tasks.filter((task) => task.waveId === head.waveId);
+    return structuredClone(wave.sort((a, b) => a.number - b.number));
+  }
+
+  /**
+   * Resolve a user-typed reference — `#12`, `12`, `#12.1`, `12.1` — to the task and, for dotted
+   * refs, the branch. Returns null rather than throwing: the input comes from a Discord message
+   * (`&<taskRef>`), where "that isn't a task" is an ordinary answer, not an exception.
+   */
+  resolveTaskRef(ref: string): { task: WorkTask; branch?: TaskBranch } | null {
+    const text = ref.trim();
+    if (text.includes(".")) {
+      let normalized: string;
+      try {
+        normalized = normalizeBranchRef(text);
+      } catch {
+        return null;
+      }
+      // getBranch() is null for a well-formed ref naming a branch that does not exist (#12.9 on a
+      // task with one branch); do NOT fall back to the task, or the caller would attach work to a
+      // batch the user did not name.
+      return this.getBranch(normalized);
+    }
+    let number: number;
+    try {
+      number = normalizeTaskNumber(text);
+    } catch {
+      return null;
+    }
+    const task = this.read().tasks.find((candidate) => candidate.number === number);
+    return task ? structuredClone({ task }) : null;
+  }
+
   findByTicket(ticketIdOrIdentifier: string): { task: WorkTask; branch: TaskBranch } | null {
     for (const task of this.read().tasks) {
       const branch = task.branches.find(
@@ -191,11 +283,19 @@ export class TaskStore {
     return null;
   }
 
+  /**
+   * File a task. Grouping into a wave is normally INFERRED (see `inferWaveId`) — the usual caller
+   * is one `beckett task create` process out of a burst and has no batch id to offer. `waveId` is
+   * for the rare caller that genuinely holds the whole batch in memory: pass the SAME id for every
+   * task of one filing and it overrides the inferred grouping outright, so a caller that knows the
+   * batch is never second-guessed by the clock.
+   */
   async createTask(input: {
     title: string;
     originChannelId?: string;
     project?: string;
     initialBranchTitle?: string;
+    waveId?: string;
   }): Promise<{ task: WorkTask; branch: TaskBranch }> {
     return this.mutate((registry) => {
       const now = this.now().toISOString();
@@ -218,6 +318,9 @@ export class TaskStore {
         status: "active",
         ...(input.originChannelId ? { originChannelId: input.originChannelId } : {}),
         ...(input.project ? { project: input.project } : {}),
+        // Inferred inside the lock that allocates `number`, off the registry as just read, so two
+        // concurrent creators cannot land in different halves of the same burst.
+        waveId: input.waveId ?? inferWaveId(registry.tasks, now),
         branches: [branch],
         createdAt: now,
         updatedAt: now,
@@ -444,6 +547,67 @@ export class TaskStore {
     }
     throw new Error(`timed out waiting for task registry lock ${this.lockPath}`);
   }
+}
+
+/**
+ * Mint an id for a fresh wave. Follows the repo id scheme (`src/ids.ts`) rather than a bespoke
+ * format so wave ids are greppable in the registry and the JSONL log alongside `task_…`/`wk_…`.
+ */
+export function newWaveId(): string {
+  return prefixedId("wave");
+}
+
+/**
+ * Which wave a brand-new task belongs to: the newest existing task's, when the two were filed
+ * within WAVE_WINDOW_MS of each other, otherwise a fresh one.
+ *
+ * Called from INSIDE the locked `mutate()` that allocates the task number, with the registry as
+ * just read from disk. That matters for the concurrent case: two `beckett task create` processes
+ * racing to file the same burst take the lock in turn, so the second one sees the first one's task
+ * committed and joins its wave instead of minting a rival id.
+ *
+ * The only input is `createdAt` stamps already durable in the registry — deliberately no in-memory
+ * "time of last filing", which a daemon restart or (far more likely) the next short-lived CLI
+ * process would lose, splitting a wave down the middle for no reason the user can see.
+ */
+function inferWaveId(tasks: WorkTask[], nowIso: string): string {
+  const previous = newestTask(tasks);
+  // A pre-wave row has no id to join. Grouping onto `undefined` would leave the new task outside
+  // every wave lookup, so it starts a wave of its own and the legacy rows stay as they are.
+  if (!previous?.waveId) return newWaveId();
+  const previousAt = Date.parse(previous.createdAt);
+  const now = Date.parse(nowIso);
+  if (!Number.isFinite(previousAt) || !Number.isFinite(now)) return newWaveId();
+  const elapsed = now - previousAt;
+  // Negative elapsed means the newest row is stamped in the future — a skewed clock or a
+  // hand-edited registry. Refuse to guess: an unrelated task swept into a stale wave reports into
+  // a thread the user never meant, which is worse than an extra wave.
+  if (elapsed < 0 || elapsed > WAVE_WINDOW_MS) return newWaveId();
+  return previous.waveId;
+}
+
+/** The most recently FILED task, by `compareRecency`. Undefined only for an empty registry. */
+function newestTask(tasks: WorkTask[]): WorkTask | undefined {
+  let newest: WorkTask | undefined;
+  for (const task of tasks) {
+    if (!newest || compareRecency(task, newest) > 0) newest = task;
+  }
+  return newest;
+}
+
+/**
+ * Filing order: newer createdAt wins, ties (a batch filed within one tick) break on number.
+ * Timestamps are parsed rather than string-compared because a hand-edited or imported registry may
+ * carry a non-UTC offset, where lexical order lies; an unparseable stamp sorts oldest so it can
+ * never claim to be the most recent wave.
+ */
+function compareRecency(a: WorkTask, b: WorkTask): number {
+  const at = Date.parse(a.createdAt);
+  const bt = Date.parse(b.createdAt);
+  const left = Number.isFinite(at) ? at : -Infinity;
+  const right = Number.isFinite(bt) ? bt : -Infinity;
+  if (left !== right) return left < right ? -1 : 1;
+  return a.number - b.number;
 }
 
 function aggregateTaskStatus(branches: TaskBranch[], current: TaskStatus): TaskStatus {

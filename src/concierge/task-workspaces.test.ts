@@ -10,12 +10,14 @@ import type { WorkspaceRegistry } from "../discord/workspaces.ts";
 import { branchCardReference, CARDS_CHANNEL_ID, Concierge, type ConciergeSession } from "./index.ts";
 
 // The Discord slash surface (`onCommand` — /task create|show|workspace, /stats, /branch) was
-// deleted in the v6 Phase-4 product cut: @mention + CLI are the flow. These tests pin the
-// SURVIVING task-workspace logic — `ensureTaskThread` stored-thread validation, deleted-thread
-// recreation, sibling threads, startup reconciliation, and the conversational branch card — which
-// were previously reachable ONLY through the removed slash controller. They drive the live
-// entrypoints instead: the `task.created` control-bus command (what `beckett task create` calls),
-// `restoreTaskWorkspaces` (startup recovery), and `onMessage`.
+// deleted in the v6 Phase-4 product cut: @mention + CLI are the flow.
+//
+// Beckett no longer creates a thread per task at all — that is the whole point of the threads
+// rework, and the FIRST thing these tests pin: `task.created` (what `beckett task create|branch|
+// start` calls) and startup recovery must both be thread-silent. `ensureTaskThread` survives for
+// the one case still legitimate (the person asking for a thread in words), so its stored-thread
+// validation, deleted-thread recreation and sibling-thread logic are exercised by calling it
+// directly instead of through a bus command that no longer reaches it.
 
 const OWNER = "111111111111111111";
 const savedDir = process.env.BECKETT_DIR;
@@ -86,26 +88,76 @@ function harness(
   return { concierge, tasks, createdNames, createdChannels, threadCalls, asks, posts, dir };
 }
 
-test("task.created allocates the numbered thread and routes it under its channel", async () => {
-  const { concierge, tasks, createdNames } = harness();
+/** The private explicit-request path, reachable only by a deliberate call. */
+function threadMaker(concierge: Concierge) {
+  return (concierge as unknown as {
+    ensureTaskThread(taskNumber: number, fallbackChannelId?: string): Promise<{ threadId: string; name: string }>;
+  }).ensureTaskThread.bind(concierge);
+}
+
+test("task.created records the task and creates NO Discord thread", async () => {
+  const { concierge, tasks, createdNames, threadCalls } = harness();
   await tasks.createTask({ title: "Build voting", originChannelId: "channel-1" });
 
   const first = await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 1, channelId: "channel-1" } });
-  expect(first).toMatchObject({ ok: true, data: { taskRef: "#1", threadId: "thread-1", name: "#1 - Build voting" } });
-  expect(createdNames).toEqual(["#1 - Build voting"]);
-  expect(tasks.getTask(1)).toMatchObject({ number: 1, threadId: "thread-1" });
+  // No threadId in the reply and none on the task: the work reports into channel-1 itself.
+  expect(first).toEqual({ ok: true, data: { taskRef: "#1" } });
+  expect(createdNames).toEqual([]);
+  expect(threadCalls).toEqual([]);
+  expect(tasks.getTask(1)?.threadId).toBeUndefined();
 });
 
-test("a numbered task thread is directed context and a new task inside it gets a sibling thread", async () => {
-  const { concierge, tasks, createdChannels, asks } = harness();
-  await tasks.createTask({ title: "First task", originChannelId: "parent-1" });
-  await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 1, channelId: "parent-1" } });
+test("task.created on a nonexistent task fails without touching Discord", async () => {
+  const { concierge, threadCalls } = harness();
+  const reply = await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 9, channelId: "channel-1" } });
+  expect(reply).toEqual({ ok: false, error: "no such task: #9" });
+  expect(threadCalls).toEqual([]);
+});
+
+test("task.created grounds the thread it was filed from, and only when that thread is a workspace", async () => {
+  const { concierge, tasks } = harness();
+  const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
+  concierge.onThreadCreated({
+    threadId: "user-thread",
+    parentChannelId: "parent-1",
+    name: "voting corner",
+    creatorId: OWNER,
+  });
+  await tasks.createTask({ title: "Build voting", originChannelId: "user-thread", initialBranchTitle: "API" });
+  await tasks.linkTicket(
+    "1.1",
+    { id: "t", identifier: "OPS-9", board: "ops", projectId: "p", url: "https://tracker.test/OPS-9" },
+    "in_progress",
+  );
+
+  await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 1, channelId: "user-thread" } });
+  expect(workspaces.channelForTask("1")).toBe("user-thread");
+  expect(workspaces.channelForTicket("OPS-9")).toBe("user-thread");
+
+  // A plain channel is not a workspace, so nothing is recorded and results stay in that channel.
+  await tasks.createTask({ title: "Other work", originChannelId: "channel-1" });
+  await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 2, channelId: "channel-1" } });
+  expect(workspaces.channelForTask("2")).toBeNull();
+});
+
+test("a thread holding attached work is directed context framed with that work", async () => {
+  const { concierge, tasks, asks } = harness();
+  const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
+  await tasks.createTask({ title: "First task", originChannelId: "parent-1", initialBranchTitle: "API" });
+  concierge.onThreadCreated({
+    threadId: "thread-1",
+    parentChannelId: "parent-1",
+    name: "first task corner",
+    creatorId: OWNER,
+  });
+  workspaces.attachTasks("thread-1", ["1"]);
+  workspaces.bindBranch("thread-1", "1.1");
 
   await concierge.onMessage({
     messageId: "m1",
     userId: OWNER,
     channelId: "thread-1",
-    channelName: "#1 - First task",
+    channelName: "first task corner",
     guildId: "guild-1",
     content: "start the main branch now",
     repliedToId: null,
@@ -118,47 +170,51 @@ test("a numbered task thread is directed context and a new task inside it gets a
   expect(asks[0]).toContain("task #1");
   expect(asks[0]).toContain("#1.1");
   expect(asks[0]).toContain("do not create a duplicate task");
+});
 
-  // A task filed from inside an existing task's thread gets a sibling thread under the durable
-  // parent, not a nested thread. This is the `currentWorkspace?.taskRef → parentChannelId` branch.
+test("an explicitly requested task thread lands as a sibling of the thread it was asked for in", async () => {
+  const { concierge, tasks, createdChannels } = harness();
+  const ensureTaskThread = threadMaker(concierge);
+  await tasks.createTask({ title: "First task", originChannelId: "parent-1" });
+  await ensureTaskThread(1, "parent-1");
+
+  // Asking for a thread from inside a thread that already owns work puts the new one under the
+  // durable parent, never nested. This is the `currentWorkspace.taskRefs.length` branch.
   await tasks.createTask({ title: "Second task", originChannelId: "thread-1" });
-  await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 2, channelId: "thread-1" } });
+  await ensureTaskThread(2, "thread-1");
   expect(createdChannels).toEqual(["parent-1", "parent-1"]);
   expect(tasks.getTask(2)?.originChannelId).toBe("parent-1");
 });
 
-test("task.created reports a durable task when the thread fails and repairs it on retry", async () => {
+test("an explicit thread request keeps the task durable when Discord refuses, and repairs on retry", async () => {
   const { concierge, tasks, createdNames } = harness({ failThreadOnce: true });
+  const ensureTaskThread = threadMaker(concierge);
   await tasks.createTask({ title: "Durable task", originChannelId: "channel-1" });
 
-  const partial = await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 1, channelId: "channel-1" } });
-  expect(partial).toMatchObject({ ok: false });
+  await expect(ensureTaskThread(1, "channel-1")).rejects.toThrow("missing CreatePublicThreads");
   expect(tasks.getTask(1)?.threadId).toBeUndefined();
 
-  const repaired = await concierge.onBusRequest({ cmd: "task.created", args: { taskNumber: 1, channelId: "channel-1" } });
-  expect(repaired).toMatchObject({ ok: true, data: { threadId: "thread-1" } });
+  const repaired = await ensureTaskThread(1, "channel-1");
+  expect(repaired.threadId).toBe("thread-1");
   expect(tasks.getTask(1)?.threadId).toBe("thread-1");
   expect(createdNames).toEqual(["#1 - Durable task"]);
 });
 
-test("task.created gateway-validates a stored thread instead of blindly recreating it", async () => {
+test("an explicit thread request gateway-validates a stored thread instead of blindly recreating it", async () => {
   const { concierge, tasks, createdNames, threadCalls } = harness({
     existingThreads: { "thread-live": "parent-1" },
   });
   await tasks.createTask({ title: "Live task", originChannelId: "parent-1" });
   await tasks.setThread(1, "thread-live", "parent-1");
 
-  const reply = await concierge.onBusRequest({
-    cmd: "task.created",
-    args: { taskNumber: 1, channelId: "different-channel" },
-  });
+  const thread = await threadMaker(concierge)(1, "different-channel");
 
   expect(threadCalls).toEqual(["thread-live"]);
   expect(createdNames).toEqual([]);
-  expect(reply).toMatchObject({ ok: true, data: { threadId: "thread-live" } });
+  expect(thread.threadId).toBe("thread-live");
 });
 
-test("task.created replaces a deleted stored thread under its durable parent", async () => {
+test("an explicit thread request replaces a deleted stored thread under its durable parent", async () => {
   const { concierge, tasks, createdChannels, threadCalls } = harness({
     unavailableThreadIds: ["thread-deleted"],
   });
@@ -171,54 +227,63 @@ test("task.created replaces a deleted stored thread under its durable parent", a
     ["1.1"],
   );
 
-  const reply = await concierge.onBusRequest({
-    cmd: "task.created",
-    args: { taskNumber: 1, channelId: "different-channel" },
-  });
+  const thread = await threadMaker(concierge)(1, "different-channel");
 
   expect(threadCalls).toEqual(["thread-deleted", "parent-1"]);
   expect(createdChannels).toEqual(["parent-1"]);
   expect(tasks.getTask(1)?.threadId).toBe("thread-1");
-  expect(workspaces.contextFor("thread-deleted")).toBeNull();
+  // The stale workspace yields the ref but stays a registered room the person opened.
+  expect(workspaces.contextFor("thread-deleted")?.taskRefs).toEqual([]);
   expect(workspaces.channelForTask("1")).toBe("thread-1");
-  expect(reply).toMatchObject({ ok: true, data: { threadId: "thread-1" } });
+  expect(thread.threadId).toBe("thread-1");
 });
 
-test("startup workspace reconciliation creates a task thread missed while the daemon was offline", async () => {
-  const { concierge, tasks, createdNames } = harness();
+test("startup recovery creates NO thread for a task that never had one", async () => {
+  const { concierge, tasks, createdNames, threadCalls } = harness();
   await tasks.createTask({ title: "Offline task", originChannelId: "parent-1" });
   await (
     concierge as unknown as { restoreTaskWorkspaces(): Promise<void> }
   ).restoreTaskWorkspaces();
-  expect(createdNames).toEqual(["#1 - Offline task"]);
-  expect(tasks.getTask(1)?.threadId).toBe("thread-1");
+  // A boot that spawned a thread per task would recreate the exact noise we removed.
+  expect(createdNames).toEqual([]);
+  expect(threadCalls).toEqual([]);
+  expect(tasks.getTask(1)?.threadId).toBeUndefined();
 });
 
-test("startup repairs a deleted task thread and restores linked-ticket routing", async () => {
-  const { concierge, tasks, threadCalls } = harness({
-    unavailableThreadIds: ["thread-deleted"],
-  });
-  await tasks.createTask({ title: "Offline repair", originChannelId: "parent-1" });
-  await tasks.setThread(1, "thread-deleted", "parent-1");
+test("startup recovery re-binds branches linked while the daemon was down, and skips vanished threads", async () => {
+  const { concierge, tasks, threadCalls } = harness();
+  const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
+  await tasks.createTask({ title: "Offline repair", originChannelId: "parent-1", initialBranchTitle: "API" });
+  await tasks.setThread(1, "user-thread", "parent-1");
   await tasks.linkTicket(
     "1.1",
     { id: "ticket-id", identifier: "OPS-321", board: "ops", projectId: "project-id", url: "https://tracker.test/OPS-321" },
     "in_progress",
   );
+  // The thread is still live in workspaces.json, but the ticket was linked while we were down.
+  concierge.onThreadCreated({
+    threadId: "user-thread",
+    parentChannelId: "parent-1",
+    name: "offline repair corner",
+    creatorId: OWNER,
+  });
+
+  // A second task whose thread the person deleted (never registered) must be left alone.
+  await tasks.createTask({ title: "Closed room", originChannelId: "parent-1" });
+  await tasks.setThread(2, "thread-gone", "parent-1");
 
   await (
     concierge as unknown as { restoreTaskWorkspaces(): Promise<void> }
   ).restoreTaskWorkspaces();
 
-  const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
-  expect(threadCalls).toEqual(["thread-deleted", "parent-1"]);
-  expect(tasks.getTask(1)?.threadId).toBe("thread-1");
-  expect(workspaces.contextFor("thread-1")).toMatchObject({
-    taskRef: "1",
+  expect(threadCalls).toEqual([]);
+  expect(workspaces.contextFor("user-thread")).toMatchObject({
+    taskRefs: ["1"],
     branchRefs: ["1.1"],
     ticketIdents: ["OPS-321"],
   });
-  expect(workspaces.channelForTicket("OPS-321")).toBe("thread-1");
+  expect(workspaces.channelForTicket("OPS-321")).toBe("user-thread");
+  expect(workspaces.contextFor("thread-gone")).toBeNull();
 });
 
 test("a conversational branch-status reference returns the rich card without an LLM turn", async () => {

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TaskStore, displayTaskName } from "./store.ts";
+import { TaskStore, displayTaskName, newWaveId } from "./store.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -14,6 +14,20 @@ function makeStore(): { path: string; store: TaskStore } {
   dirs.push(dir);
   const path = join(dir, "tasks.json");
   return { path, store: new TaskStore(path) };
+}
+
+/**
+ * A store on a hand-cranked clock. Wave grouping is a function of the gap between filings, so the
+ * tests have to own that gap: a real clock would make "back to back" and "much later" the same
+ * sub-millisecond instant and prove nothing either way.
+ */
+function makeClockStore(): { path: string; store: TaskStore; advance: (ms: number) => void } {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-tasks-"));
+  dirs.push(dir);
+  const path = join(dir, "tasks.json");
+  let clock = Date.parse("2026-07-25T09:00:00.000Z");
+  const store = new TaskStore(path, { now: () => new Date(clock) });
+  return { path, store, advance: (ms: number) => { clock += ms; } };
 }
 
 test("creates durable sequential tasks with a numbered initial branch", async () => {
@@ -89,6 +103,142 @@ test("records direct publication independently from pull-request metadata", asyn
     url: "https://github.com/0xbeckett/voting",
     kind: "pushed",
   });
+});
+
+test("a caller-supplied wave id groups a whole batch behind &recent", async () => {
+  const { store } = makeStore();
+  const wave = newWaveId();
+  await store.createTask({ title: "Schema" });
+  await store.createTask({ title: "API", waveId: wave });
+  await store.createTask({ title: "Route", waveId: wave });
+  await store.createTask({ title: "Docs", waveId: wave });
+
+  expect(store.recentWave().map((task) => task.number)).toEqual([2, 3, 4]);
+  expect(new Set(store.recentWave().map((task) => task.waveId))).toEqual(new Set([wave]));
+});
+
+test("tasks filed back to back are one wave, which is the whole point of &recent", async () => {
+  const { store, advance } = makeClockStore();
+  // The concierge shells out once per task, so a wave arrives as separate processes a few hundred
+  // milliseconds apart. Nobody passes a waveId; the store has to infer the batch from that.
+  await store.createTask({ title: "Schema" });
+  advance(400);
+  await store.createTask({ title: "API" });
+  advance(900);
+  await store.createTask({ title: "Docs" });
+
+  expect(store.recentWave().map((task) => task.number)).toEqual([1, 2, 3]);
+  expect(new Set(store.recentWave().map((task) => task.waveId)).size).toBe(1);
+});
+
+test("a task filed well after the previous one starts a fresh wave", async () => {
+  const { store, advance } = makeClockStore();
+  await store.createTask({ title: "Schema" });
+  advance(500);
+  await store.createTask({ title: "API" });
+  // A person filing, thinking, then filing something unrelated. Nothing to do with the batch.
+  advance(5 * 60_000);
+  await store.createTask({ title: "Unrelated bug" });
+
+  const recent = store.recentWave();
+  expect(recent.map((task) => task.number)).toEqual([3]);
+  const [one, two, three] = store.list();
+  expect(one?.waveId).toBe(two?.waveId as string);
+  expect(three?.waveId).not.toBe(one?.waveId as string);
+});
+
+test("an explicit wave id overrides the inferred grouping", async () => {
+  const { store, advance } = makeClockStore();
+  const wave = newWaveId();
+  // #1 lands inside the window of nothing, so it opens its own wave; #2 is filed just as close but
+  // names its wave, and that must win. #3 then chains off #2, the newest task.
+  await store.createTask({ title: "Schema" });
+  advance(200);
+  await store.createTask({ title: "API", waveId: wave });
+  advance(200);
+  await store.createTask({ title: "Docs" });
+
+  const [one, two, three] = store.list();
+  expect(two?.waveId).toBe(wave);
+  expect(one?.waveId).not.toBe(wave);
+  expect(three?.waveId).toBe(wave);
+  expect(store.recentWave().map((task) => task.number)).toEqual([2, 3]);
+});
+
+test("a new task never joins a pre-wave row from an older registry", async () => {
+  const { path, store } = makeStore();
+  await store.createTask({ title: "Legacy" });
+  const registry = JSON.parse(readFileSync(path, "utf8"));
+  for (const task of registry.tasks) delete task.waveId;
+  writeFileSync(path, JSON.stringify(registry), "utf8");
+
+  // Grouping onto an absent id would leave #2 outside every wave lookup, so it opens its own.
+  const fresh = new TaskStore(path);
+  await fresh.createTask({ title: "Modern" });
+  expect(fresh.getTask(2)?.waveId).toBeTruthy();
+  expect(fresh.recentWave().map((task) => task.number)).toEqual([2]);
+});
+
+test("a lone task is a wave of one, and a finished wave is still the recent one", async () => {
+  const { store, advance } = makeClockStore();
+  const wave = newWaveId();
+  await store.createTask({ title: "API", waveId: wave });
+  // Filed long after, so #2 is genuinely its own wave rather than a continuation of #1's.
+  advance(10 * 60_000);
+  await store.createTask({ title: "Hotfix" });
+  // Status-blind: completing the newest wave must not hand &recent back to the older batch.
+  await store.linkTicket(
+    "2.1",
+    { id: "uuid", identifier: "OPS-9", board: "ops", projectId: "p1", url: "https://tracker.test/OPS-9" },
+    "done",
+  );
+
+  const recent = store.recentWave();
+  expect(recent.map((task) => task.number)).toEqual([2]);
+  expect(recent[0]?.status).toBe("done");
+  expect(recent[0]?.waveId).not.toBe(wave);
+});
+
+test("a pre-wave task loaded from an older registry is its own wave", async () => {
+  const { path, store } = makeStore();
+  await store.createTask({ title: "Legacy" });
+  await store.createTask({ title: "Also legacy" });
+  const registry = JSON.parse(readFileSync(path, "utf8"));
+  for (const task of registry.tasks) delete task.waveId;
+  writeFileSync(path, JSON.stringify(registry), "utf8");
+
+  const recent = new TaskStore(path).recentWave();
+  expect(recent.map((task) => task.number)).toEqual([2]);
+  expect(recent[0]?.waveId).toBeUndefined();
+});
+
+test("recentWave on an empty registry is empty, not an error", () => {
+  const { store } = makeStore();
+  expect(store.recentWave()).toEqual([]);
+});
+
+test("resolves every spelling of a task or branch reference", async () => {
+  const { store } = makeStore();
+  await store.createTask({ title: "Voting" });
+  await store.createBranch({ task: 1, title: "API" });
+
+  expect(store.resolveTaskRef("#1")?.task.number).toBe(1);
+  expect(store.resolveTaskRef("1")?.task.number).toBe(1);
+  expect(store.resolveTaskRef("#1")?.branch).toBeUndefined();
+  expect(store.resolveTaskRef(" #1.2 ")?.branch?.ref).toBe("1.2");
+  expect(store.resolveTaskRef("1.2")).toMatchObject({ task: { number: 1 }, branch: { title: "API" } });
+});
+
+test("unresolvable references return null instead of throwing", async () => {
+  const { store } = makeStore();
+  await store.createTask({ title: "Voting" });
+
+  expect(store.resolveTaskRef("1.7")).toBeNull(); // well-formed, branch does not exist
+  expect(store.resolveTaskRef("#9")).toBeNull();
+  expect(store.resolveTaskRef("9.1")).toBeNull();
+  expect(store.resolveTaskRef("recent")).toBeNull();
+  expect(store.resolveTaskRef("")).toBeNull();
+  expect(store.resolveTaskRef("1.")).toBeNull();
 });
 
 test("resuming implementation clears the previous final diff snapshot", async () => {

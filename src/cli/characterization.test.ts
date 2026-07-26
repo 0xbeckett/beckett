@@ -95,6 +95,9 @@ function normalize(text: string, sandbox: string): string {
       .replace(/"(created_at|updated_at|createdAt|updatedAt|ts)": \d+/g, '"$1": <EPOCH_MS>')
       // Generated record ids (task/branch ulid-ish ids).
       .replace(/"id": "[0-9a-zA-Z_-]{8,}"/g, '"id": "<ID>"')
+      // `waveId` groups the batch behind `&recent`; it is minted fresh per filing, so only its
+      // PRESENCE is contractual — pinning the random value would make this snapshot flake.
+      .replace(/"waveId": "wave_[0-9a-zA-Z_-]+"/g, '"waveId": "<WAVE_ID>"')
       // The dead-socket connect error's OS-level suffix (bun/kernel wording) is not ours to pin.
       .replace(/shell not running \(socket <BECKETT_DIR>\/control\.sock\): [^\n)]*/g, "shell not running (socket <BECKETT_DIR>/control.sock): <CONNECT_ERROR>")
   );

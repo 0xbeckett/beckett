@@ -24,6 +24,10 @@
  *    it's told. Deciding *whether* to speak (the five YES moments) lives in the loop/Brain.
  *  - **Loop guard**: bot-authored messages (incl. our own) are dropped before they reach the
  *    handler, preventing an ack-of-an-ack cascade (Spec 05 §2.2 / §9.2).
+ *  - **Threads are observed, never opened**: Beckett does not create threads for its own work —
+ *    a PERSON opens one and attaches work to it. The gateway's whole job here is to make a thread
+ *    visible: every inbound message carries `isThread`/`parentChannelId` read off the live
+ *    channel, and a thread surfaces whether it was just created OR Beckett was merely added to it.
  */
 
 import {
@@ -170,10 +174,17 @@ export class DiscordJsGateway implements DiscordGateway {
       );
     }
 
+    // Threads need NO extra intent, and definitely no extra privileged one: `Guilds` already
+    // delivers the full thread lifecycle (threadCreate / threadUpdate / threadDelete / thread
+    // member updates), and `GuildMessages` already delivers messageCreate for messages posted
+    // INSIDE a thread — Discord models a thread as a channel, so it rides the same intent as its
+    // parent. Verified against the discord.js v14 intent table; do not add ThreadMembers hoping
+    // to "fix" thread visibility, the gap was ours (we dropped non-newlyCreated events), not
+    // Discord's.
     const client = new Client({
       intents: [
-        GatewayIntentBits.Guilds, // channel/role cache — required for everything
-        GatewayIntentBits.GuildMessages, // receive messageCreate in guild channels
+        GatewayIntentBits.Guilds, // channel/role cache + thread lifecycle — required for everything
+        GatewayIntentBits.GuildMessages, // receive messageCreate in guild channels AND their threads
         GatewayIntentBits.MessageContent, // PRIVILEGED — without it message.content is empty (Risk-E)
         GatewayIntentBits.DirectMessages, // 1:1 DMs (still ambient — the DM is the channel)
       ],
@@ -415,6 +426,37 @@ export class DiscordJsGateway implements DiscordGateway {
     this.threadHandler = cb;
   }
 
+  /**
+   * Join a thread so Beckett stays a member of it: Discord keeps delivering to members, an
+   * archived thread unarchives when a member posts, and the thread stops silently falling out of
+   * our view after the archive window. Idempotent — `joined` is checked first so a re-surfaced
+   * thread does not burn a rate-limited REST call.
+   *
+   * NEVER throws into the caller. Every call site is an event handler or a background attach, and
+   * a private thread, a deleted thread, or a guild where we lack access is an ordinary Tuesday,
+   * not a reason to kill the gateway: Missing Access (50001) and Unknown Channel (10003) are
+   * expected and land at debug, anything else warns and is still swallowed.
+   */
+  async joinThread(threadId: string): Promise<void> {
+    const client = this.client;
+    if (!client) return;
+    try {
+      const channel = await client.channels.fetch(threadId);
+      // Not a thread (or unresolvable): nothing to join, and joining a text channel is meaningless.
+      if (!channel?.isThread()) return;
+      if (channel.joined) return;
+      await channel.join();
+      this.logger.info("discord thread joined", { threadId });
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (code === 50_001 || code === 10_003) {
+        this.logger.debug("discord thread join skipped", { threadId, code });
+        return;
+      }
+      this.logger.warn("discord thread join failed", { threadId, error: String(error) });
+    }
+  }
+
   isConnected(): boolean {
     return this.connected;
   }
@@ -472,13 +514,16 @@ export class DiscordJsGateway implements DiscordGateway {
         );
     });
 
-    // A person opened a thread → a workspace candidate. `newlyCreated` filters out the replayed
-    // create Discord fires when the bot is merely ADDED to an existing thread; the ownerId check
-    // filters the bot's own threads (it should never create any — belt and braces) so a workspace
-    // can only originate from a human decision.
+    // A person's thread SURFACED → a workspace candidate. We deliberately no longer drop
+    // `newlyCreated === false`: that is exactly the event Discord fires when the bot is merely
+    // ADDED to a thread that already existed, which is the only signal we ever get for a thread
+    // that predates the daemon or that someone invites Beckett into later. Dropping it made those
+    // threads invisible forever, so both cases are delivered and tagged with `newlyCreated` for
+    // the Concierge to log the difference. The remaining guards stand: the ownerId check filters
+    // the bot's own threads (it should never create any — belt and braces) so a workspace can only
+    // originate from a human decision, and a thread with no parentId is not a channel workspace.
     client.on(Events.ThreadCreate, (thread, newlyCreated) => {
       this.lastEventTs = Date.now();
-      if (!newlyCreated) return;
       const creatorId = thread.ownerId ?? undefined;
       if (!creatorId || creatorId === this.client?.user?.id) return;
       if (!thread.parentId) return;
@@ -487,8 +532,12 @@ export class DiscordJsGateway implements DiscordGateway {
         parentChannelId: thread.parentId,
         name: thread.name,
         creatorId,
+        newlyCreated: newlyCreated === true,
       };
-      this.logger.info("discord user thread created", t as unknown as Record<string, unknown>);
+      this.logger.info("discord user thread surfaced", t as unknown as Record<string, unknown>);
+      // Subscribe so the thread keeps delivering to us and unarchives cleanly. Fire-and-forget by
+      // design — joinThread never rejects, and registration must not wait on a REST round trip.
+      void this.joinThread(thread.id);
       // Isolate handler failures — a thrown registration must never kill the gateway.
       void Promise.resolve()
         .then(() => this.threadHandler?.(t))
@@ -553,6 +602,11 @@ export class DiscordJsGateway implements DiscordGateway {
       // Guild channels carry a name ("media"); DM channels don't have one — the shared-context
       // store keys server-wide awareness/search off exactly this distinction.
       channelName: (msg.channel as { name?: string | null } | null)?.name ?? undefined,
+      // Thread awareness straight off the live channel. Beckett used to learn "this is a thread"
+      // ONLY by finding the channel in the workspace registry, which meant a thread it was added
+      // to late — or one that predates the daemon — looked exactly like a top-level channel. The
+      // registry is now an enrichment, not the source of truth.
+      ...threadInfo(msg),
       guildId: msg.guildId ?? null,
       content: msg.content,
       repliedToId: msg.reference?.messageId ?? null,
@@ -772,6 +826,32 @@ export class DiscordJsGateway implements DiscordGateway {
     }
   }
 
+}
+
+/**
+ * Best-effort thread classification for an inbound message.
+ *
+ * discord.js hands us a full channel object most of the time, but not always: DM channels arrive
+ * as partials (`Partials.Channel`), an uncached channel can be a bare stub, and injected test
+ * fakes carry only the fields their test needs. An inbound human message is far too valuable to
+ * drop over a missing method, so anything unexpected degrades to `{}` — both fields undefined,
+ * meaning "unknown" — rather than throwing out of `normalize` and losing the whole message.
+ * `isThread: false` is therefore a positive answer, distinct from an absent one.
+ */
+function threadInfo(msg: Message): { isThread?: boolean; parentChannelId?: string } {
+  try {
+    const channel = msg.channel as unknown as
+      | { isThread?: () => boolean; parentId?: string | null }
+      | null
+      | undefined;
+    if (!channel || typeof channel.isThread !== "function") return {};
+    if (!channel.isThread()) return { isThread: false };
+    // A thread always has a parent in practice; keep the field absent rather than inventing one.
+    const parentChannelId = channel.parentId ?? undefined;
+    return parentChannelId ? { isThread: true, parentChannelId } : { isThread: true };
+  } catch {
+    return {};
+  }
 }
 
 /** Split Discord content without truncating, preferring paragraph/newline/word boundaries. */

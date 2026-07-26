@@ -211,7 +211,7 @@ test("a ticket filed from inside a workspace grounds that workspace", async () =
     content: "can you get me a csv export?",
     mentionsBot: false,
   });
-  expect(turns[0]).toContain("No ticket is bound to it yet");
+  expect(turns[0]).toContain("No work is attached to it yet");
 
   // Second workspace message: the filed ticket now grounds the frame.
   await concierge.onMessage({

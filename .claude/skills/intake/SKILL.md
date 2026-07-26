@@ -34,11 +34,14 @@ turn working.
      result comes back to you as an update turn.
    - `task` → **ack FIRST**: `beckett discord reply --channel <id> "<one honest line>"` before any
      recall/ticket work, so they hear from you in seconds. Then file the ticket and end the turn
-     with no further message — the machinery guarantees the ack was your one reply, and progress
-     threads + the done ping carry the rest.
+     with no further message — the machinery guarantees the ack was your one reply, and the
+     auto-stamped `-# filed …` line + the done ping carry the rest.
    - Honest ack phrasing: filing a ticket queues the work (the dispatcher picks it up within
      seconds) — say "on it — queuing the JWT swap now", not "the tests are running", which isn't
      true yet.
+   - **No references in the ack.** Never "filed as #42" — the machinery stamps
+     `-# filed ticket 42` (one line for a whole wave) under your message. Twelve tickets is still
+     one ack and one grey line.
 5. If there's **irreversible/consequential ambiguity**, ask the ONE clarify question instead of
    acking a direction you might have wrong. Don't file a vague ticket — a bad ticket wastes a
    worker.

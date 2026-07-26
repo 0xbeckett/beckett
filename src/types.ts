@@ -251,6 +251,15 @@ export interface IncomingMessage {
   channelId: string;
   /** The channel's name at capture time (e.g. "media") — undefined for DMs, which have none. */
   channelName?: string;
+  /**
+   * The message arrived in a thread, not a top-level channel. Read straight off the live channel
+   * so a thread Beckett was added to late (and therefore never registered as a workspace) is still
+   * recognizable. Undefined means the gateway could not tell — a partial/uncached channel — never
+   * "no": callers must treat undefined as unknown, not as a top-level channel.
+   */
+  isThread?: boolean;
+  /** The thread's parent channel; undefined outside threads and when the parent is unknowable. */
+  parentChannelId?: string;
   guildId: string | null;
   content: string;
   repliedToId: string | null; // the strong correlation key
@@ -266,8 +275,13 @@ export interface IncomingMessage {
 
 
 /**
- * A thread a PERSON just opened, normalized off the gateway's thread-create event. These can be
- * adopted as workspaces; Beckett-created numbered task threads use {@link TaskThreadCreated}.
+ * A person's thread that just SURFACED to Beckett, normalized off the gateway's thread-create
+ * event. These can be adopted as workspaces; Beckett-created numbered task threads use
+ * {@link TaskThreadCreated}.
+ *
+ * "Surfaced" is deliberately broader than "created": Discord fires the same event when the bot is
+ * merely ADDED to a thread that already existed, which is the ONLY signal we get for a thread that
+ * predates the daemon. Both cases are delivered — {@link newlyCreated} tells them apart.
  */
 export interface ThreadCreated {
   threadId: string;
@@ -276,6 +290,13 @@ export interface ThreadCreated {
   name: string;
   /** Discord user id of the thread creator. */
   creatorId: string;
+  /**
+   * True when the thread was just opened; false when Beckett was added to (or replayed into) a
+   * thread that already existed. The live gateway always sets this; it is optional only so the
+   * older hand-built event literals in tests keep compiling, and undefined should be read as
+   * "provenance unknown", not as "newly created".
+   */
+  newlyCreated?: boolean;
 }
 
 
@@ -970,6 +991,13 @@ export interface DiscordGateway {
    * activity/progress threads are gone; the worker firehose goes to the private ticket journal.
    */
   onThreadCreate(cb: (t: ThreadCreated) => void | Promise<void>): void;
+  /**
+   * Join a thread so Beckett stays subscribed to it and a post can unarchive it. Best-effort:
+   * implementations swallow permission/unknown-channel failures and never reject. Optional
+   * because injected partial test gateways predate this surface — guard with
+   * `typeof gateway.joinThread === "function"` exactly like {@link onThreadCreate}'s callers do.
+   */
+  joinThread?(threadId: string): Promise<void>;
   /** Create or rename the dedicated Discord workspace for a numbered task. */
   createTaskThread?(channelId: string, name: string): Promise<TaskThreadCreated>;
   isConnected(): boolean;

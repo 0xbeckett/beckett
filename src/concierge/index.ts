@@ -34,7 +34,7 @@ import { dirname, join } from "node:path";
 import pkg from "../../package.json" with { type: "json" };
 import type { Config, IncomingMessage, Logger, ProactivityMode, ThreadCreated } from "../types.ts";
 import type { PollEvent, TicketComment, Ticket } from "../tracker/types.ts";
-import type { PrPollEvent } from "../github/types.ts";
+import type { PrPollEvent, PrRef } from "../github/types.ts";
 import type { GitHubActivityEvent } from "../github/activity.ts";
 import { resolveGitHubOwner } from "../github/owner.ts";
 import { log as rootLog } from "../log.ts";
@@ -58,6 +58,8 @@ import {
   type UserIdentity,
 } from "../discord/identity.ts";
 import { createTicketJournal, type TicketJournal, type ProgressSink } from "../progress/journal.ts";
+import { formatFiledLine, normalizeFiledRefs } from "../discord/filed-line.ts";
+import { parseAttachCommand } from "./thread-attach.ts";
 import {
   createWorkspaceRegistry,
   type WorkspaceRegistry,
@@ -105,7 +107,7 @@ import {
 } from "./reply-context.ts";
 import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
 import type { DiscordEmbed, DiscordLinkButton, TaskThreadCreated } from "../types.ts";
-import { TaskStore, displayTaskName, type WorkTask } from "../task/store.ts";
+import { TaskStore, displayTaskName, type TaskBranch, type WorkTask } from "../task/store.ts";
 import type { BranchStatusService } from "../task/status.ts";
 import { renderBranchEmbed } from "../discord/cards.ts";
 import type { MemoryStore } from "../memory/index.ts";
@@ -192,6 +194,29 @@ const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
  * second milestone) — those land outside the window and fire once, as they should.
  */
 const MILESTONE_NOTIFY_DEDUPE_MS = 5 * 60_000;
+
+/**
+ * How long freshly-filed refs are held before the single `-# filed …` subtext line posts.
+ *
+ * The line is ONE PER WAVE, not one per ticket, and a wave arrives as a burst of independent
+ * `ticket.filed` bus calls — `beckett plan` expanding a DAG fires them a few hundred ms apart as
+ * each tracker create round-trips. The window is the seam. Too short and a twelve-ticket wave
+ * fragments into four grey lines, which is exactly the noise threads were removed to stop; too
+ * long and the receipt drifts away from Beckett's spoken ack and reads as an unexplained artifact
+ * minutes later. Four seconds comfortably spans a plan's filing burst while still landing in the
+ * same beat of the conversation. It is a buffer, not a debounce: the timer is NOT extended by
+ * later filings, so a channel filing continuously can never starve its receipt forever.
+ */
+const FILED_LINE_WINDOW_MS = 4_000;
+
+/** Journal tail (lines per ticket) folded into an attach seed — enough to say what's happening. */
+const ATTACH_SEED_JOURNAL_LINES = 20;
+/**
+ * Past this many attached tasks the seed carries NO journal at all. A `&recent` on a wave of
+ * twelve would otherwise splice twelve journal tails into one turn and blow the context window
+ * for a message whose whole job is "results report here now".
+ */
+const ATTACH_SEED_JOURNAL_MAX_TASKS = 6;
 
 interface BrowserQuestionRecord {
   runId: string;
@@ -1559,8 +1584,9 @@ export class Concierge {
    */
   private readonly journal: TicketJournal;
   /**
-   * Discord thread → task/ticket routing. Human threads are adopted on first use; numbered
-   * task threads are registered directly when Beckett creates them.
+   * Discord thread → task/ticket routing. Every workspace in here is a thread a PERSON opened:
+   * registered on its ThreadCreate event or, failing that, on its first authorized message. Work
+   * is attached to one only by explicit `&<ref>` / `&recent`, or by being filed from inside it.
    */
   private readonly workspaces: WorkspaceRegistry;
   /** User-facing `#N` / `#N.x` organization; tracker ticket ids stay behind this boundary. */
@@ -1571,6 +1597,21 @@ export class Concierge {
    *  Null until wired: the bus command then answers with a clear "not wired" error. */
   private memory: MemoryStore | null;
   private readonly taskThreadCreates = new Map<number, Promise<TaskThreadCreated>>();
+  /**
+   * Filed refs awaiting their single `-# filed …` subtext line, keyed by the channel the line
+   * will land in. See {@link noteFiledRef} / {@link FILED_LINE_WINDOW_MS}.
+   */
+  private readonly pendingFiledRefs = new Map<
+    string,
+    { refs: string[]; timer: ReturnType<typeof setTimeout> }
+  >();
+  /**
+   * One-shot grounding blocks waiting to ride the NEXT turn in a thread, keyed by thread id.
+   * Written by {@link handleThreadAttach} when work is attached, consumed (and deleted) by
+   * {@link buildTurn}. See {@link handleThreadAttach} for why this is one-shot and not a
+   * permanent part of the workspace frame.
+   */
+  private readonly pendingWorkspaceSeeds = new Map<string, string>();
   /** Stop fn for the control-bus server (so the concierge's Bash `beckett discord reply` works). */
   private busStop: (() => void) | null = null;
   /**
@@ -2216,7 +2257,7 @@ export class Concierge {
     const batch = Array.isArray(events) ? events : [events];
     const byChannel = new Map<string, { lines: string[]; refs: string[] }>();
     for (const event of batch) {
-      const channel = event.pr.channel;
+      const channel = this.channelForPr(event.pr);
       if (!channel) {
         // The exact drop the criteria call for: a PR with no known origin channel is not surfaced.
         this.log.debug("PR update dropped — no origin channel", {
@@ -2247,6 +2288,43 @@ export class Concierge {
   }
 
   /**
+   * Where a PR event belongs RIGHT NOW — same precedence as {@link updateTurn}: the thread the
+   * person attached this PR's task to, then the workspace its ticket is grounded in, then the
+   * channel stamped on the PR when it was opened.
+   *
+   * Resolved at RELAY time, deliberately, rather than stamped onto {@link PrRef} when the PR is
+   * opened (`onPrOpened` in `src/shell/main.ts`). A stamp freezes the destination for the PR's
+   * whole lifetime, so work attached to a thread AFTER the PR opened — the common case, since a
+   * person usually opens the room once there is something to talk about — would keep reporting
+   * into the origin channel with nothing anywhere to say why. `pr.channel` stays as the durable
+   * fallback for a PR whose task nobody has claimed.
+   *
+   * The task ref comes from the ticket identifier the poller carries: the registry knows which
+   * branch that ticket is, and {@link taskRefOfBranch} turns `"12.1"` into the `"12"` routing is
+   * keyed on — the one ref-parsing path, shared with the ticket-update relay.
+   */
+  private channelForPr(pr: PrRef): string | undefined {
+    const identifier = pr.ticket;
+    let branchRef: string | undefined;
+    try {
+      // Read-only registry lookup. An unreadable/absent registry is not a reason to lose a PR
+      // ping, so it degrades to the stamped channel rather than throwing out of the relay.
+      branchRef = identifier ? this.tasks.findByTicket(identifier)?.branch.ref : undefined;
+    } catch (err) {
+      this.log.debug("PR routing task lookup failed; falling back to the stamped channel", {
+        ticket: identifier,
+        err: String(err),
+      });
+    }
+    const taskRef = taskRefOfBranch(branchRef);
+    return (
+      (taskRef ? this.workspaces.channelForTask(taskRef) : null) ??
+      (identifier ? this.workspaces.channelForTicket(identifier) : null) ??
+      pr.channel
+    );
+  }
+
+  /**
    * The progress sink the dispatcher feeds worker events into (wired in `src/shell/main.ts`). Exposed as
    * the narrow {@link ProgressSink} so the dispatcher can't reach the journal's read surface.
    */
@@ -2254,10 +2332,38 @@ export class Concierge {
     return this.journal;
   }
 
-  /** A person opened a Discord thread: register it as an adoptable workspace. Numbered task
-   * threads take the explicit {@link ensureTaskThread} path instead.
+  /**
+   * A person opened a Discord thread (or added Beckett to one): register it as a workspace so
+   * every authorized message inside it is a directed turn. No work is attached yet — the person
+   * attaches it by posting `&<ref>` / `&recent` ({@link handleThreadAttach}).
+   *
+   * This event is best-effort, not load-bearing: a daemon that was down when the thread was
+   * opened never sees it. {@link onMessage} therefore registers lazily on the first message from
+   * an authorized author in an unregistered thread, and this handler is just the fast path.
+   *
+   * The access gate is the load-bearing part, and it is the SAME one
+   * {@link registerThreadOnFirstMessage} applies — same bar ("not an outsider": the invite-only
+   * gate, not maintainer-only, because a member opening a room to work in is the whole feature),
+   * same ordering (checked BEFORE any state is written). Without it this is a bouncer bypass by
+   * the fast path: anyone who can see a channel can open a public thread in it, the gateway
+   * forwards the event (including the `newlyCreated === false` "bot was added" case), and
+   * {@link WorkspaceRegistry.registerThread} scrapes `#N` task refs out of the thread NAME —
+   * which is ATTACKER-CHOSEN TEXT, never validated against who may see task N. A thread named
+   * "#12 notes" would therefore mint a workspace bound to task 12, and since `channelForTask`
+   * wins over the origin channel, every milestone and filed receipt for that work would route
+   * into a room its owner never opened. So NO state is written for someone who does not pass.
+   * (The gateway has already joined the thread by the time we are called — that is membership in
+   * a room they could see anyway; it routes nothing, says nothing, and persists nothing.)
    */
   onThreadCreated(t: ThreadCreated): void {
+    if (this.accessLevelFor(t.creatorId) === "outsider") {
+      this.log.warn("thread-create ignored — creator is not an authorized user", {
+        threadId: t.threadId,
+        parentChannelId: t.parentChannelId,
+        creatorId: t.creatorId,
+      });
+      return;
+    }
     this.workspaces.registerThread(t);
   }
 
@@ -2352,7 +2458,19 @@ export class Concierge {
     return messageId;
   }
 
-  /** Exactly-once task workspace creation across repeated CLI bus notifications and startup recovery. */
+  /**
+   * Create (or re-adopt) a dedicated Discord thread for a numbered task.
+   *
+   * NOTHING AUTOMATIC CALLS THIS ANY MORE. A thread per task meant a wave of twelve tickets
+   * produced twelve rooms nobody asked for, so filing is now silent: work reports into the
+   * channel the request came from, and the PERSON opens a thread and attaches work to it with
+   * `&<ref>` / `&recent` ({@link handleThreadAttach}). This path survives for the one case that
+   * is still legitimate — the person asking Beckett, in words, to make a thread for some task —
+   * and is deliberately left as an explicit, deliberate call rather than deleted.
+   *
+   * Still exactly-once per task number across concurrent callers: two overlapping requests share
+   * one in-flight create instead of racing two threads into existence.
+   */
   private async ensureTaskThread(taskNumber: number, fallbackChannelId?: string): Promise<TaskThreadCreated> {
     const running = this.taskThreadCreates.get(taskNumber);
     if (running) return running;
@@ -2384,10 +2502,11 @@ export class Concierge {
       }
       let channelId = task.originChannelId ?? fallbackChannelId;
       if (!channelId) throw new Error(`task #${task.number} has no Discord channel for its workspace`);
-      // A new task requested inside an existing task gets a sibling thread. A fresh human-created
-      // thread, by contrast, is deliberately adopted and renamed as the new task workspace.
+      // A task thread requested from inside a thread that already owns work becomes a SIBLING
+      // under the same parent, never a nested thread. A workspace holding no work at all is a
+      // fresh room the person just opened, and that one is adopted and renamed in place.
       const currentWorkspace = this.workspaces.contextFor(channelId);
-      if (currentWorkspace?.taskRef) channelId = currentWorkspace.parentChannelId;
+      if (currentWorkspace?.taskRefs.length) channelId = currentWorkspace.parentChannelId;
       const thread = await createTaskThread(channelId, name);
       await this.tasks.setThread(task.number, thread.threadId, thread.parentChannelId);
       this.registerTaskWorkspace(task, thread);
@@ -2409,14 +2528,28 @@ export class Concierge {
     }
   }
 
-  /** Rebuild task-thread routing after downtime and finish any workspace creation missed offline. */
+  /**
+   * Re-ground the workspaces that ALREADY exist, after downtime.
+   *
+   * This used to finish any thread creation missed while the daemon was offline, which under the
+   * new model would mean a restart silently spawning a thread per task that never had one — the
+   * exact noise we removed, produced by a boot nobody connected to threads. So it creates and
+   * adopts nothing. It only re-attaches what a live thread should already own: branches added
+   * (and tickets linked) while we were down are bound to the thread that holds their task, so
+   * `channelForTicket` routes their milestones there on the first poll instead of falling back to
+   * the origin channel.
+   *
+   * A task whose thread is gone from `workspaces.json` is left alone: the person either deleted
+   * the thread or never attached the work, and re-creating a room they closed is worse than
+   * reporting into the channel the request came from.
+   */
   private async restoreTaskWorkspaces(): Promise<void> {
     for (const task of this.tasks.list()) {
-      if (!task.threadId && !task.originChannelId) continue;
-      try {
-        await this.ensureTaskThread(task.number, task.originChannelId);
-      } catch (err) {
-        this.log.warn("task workspace recovery failed", { task: task.number, error: String(err) });
+      const threadId = task.threadId;
+      if (!threadId || !this.workspaces.contextFor(threadId)) continue;
+      this.workspaces.attachTasks(threadId, [String(task.number)]);
+      for (const branch of task.branches) {
+        this.workspaces.bindBranch(threadId, branch.ref, branch.ticket?.identifier);
       }
     }
   }
@@ -2488,6 +2621,9 @@ export class Concierge {
     }
     this.busStop = null;
     this.ambient?.stop();
+    // Drain buffered `-# filed …` receipts BEFORE the gateway closes. A restart landing inside the
+    // window would otherwise swallow the only signal that a filing happened at all.
+    await this.flushAllFiledLines();
     await this.gateway.stop();
     await this.pool.stopAll();
   }
@@ -2518,10 +2654,16 @@ export class Concierge {
   // ── ticket ↔ workspace grounding (Coworker-as-a-Service: no bot threads are spawned) ─────────
 
   /**
-   * A ticket was just filed during a turn on `channelId`. Nothing is created for it on Discord —
-   * the worker firehose goes to the private journal. The one routing to establish: a ticket filed
-   * FROM inside a user-opened workspace thread grounds that workspace, so later unmentioned
-   * messages there are framed with it and its journal backs "how's it coming?" answers.
+   * A ticket was just filed during a turn on `channelId`. No thread is created for it — the worker
+   * firehose goes to the private journal, and the work reports into the channel the request came
+   * from unless the person has attached it to a thread of their own.
+   *
+   * Two jobs. (1) Routing: a ticket filed FROM inside a workspace thread grounds that workspace,
+   * so later unmentioned messages there are framed with it and its journal backs "how's it
+   * coming?" answers; a ticket whose task is already attached to a thread grounds THAT thread
+   * instead of wherever the CLI happened to run. (2) The receipt: since nothing visible happens
+   * on Discord any more, the public ref is buffered for the single `-# filed …` subtext line
+   * ({@link noteFiledRef}) — the only signal the person gets that their words became real work.
    */
   private onTicketFiled(
     channelId: string,
@@ -2533,6 +2675,63 @@ export class Concierge {
     const target = taskChannel ?? channelId;
     this.workspaces.bindTicket(target, identifier);
     if (branchRef) this.workspaces.bindBranch(target, branchRef, identifier);
+    // The PUBLIC ref, never `identifier`: "OPS-321" is an internal execution record the person
+    // has no way to type back at us, and `&OPS-321` is not a thing. The branch ref is preferred
+    // because that is the granularity the work actually runs at; a task with no branch yet still
+    // gets its `#N`. With neither, there is nothing the person could act on — stamp nothing.
+    const publicRef = branchRef ?? taskRef;
+    if (publicRef) this.noteFiledRef(target, publicRef);
+  }
+
+  /**
+   * Buffer one freshly-filed ref for its destination channel. The line posts once the window
+   * closes, so a `beckett plan` expanding a DAG into twelve tickets leaves ONE grey line listing
+   * twelve refs instead of twelve lines.
+   *
+   * Deliberately keyed by destination channel, not by wave: two waves filed into two different
+   * threads in the same breath must not merge, and a wave split across channels is genuinely two
+   * receipts. Filing order is preserved all the way to the rendered line.
+   */
+  private noteFiledRef(channelId: string, ref: string): void {
+    const pending = this.pendingFiledRefs.get(channelId);
+    if (pending) {
+      pending.refs.push(ref);
+      return;
+    }
+    const timer = setTimeout(() => void this.flushFiledLine(channelId), FILED_LINE_WINDOW_MS);
+    // A pending receipt must never be the reason the process stays alive; `stop()` flushes.
+    timer.unref?.();
+    this.pendingFiledRefs.set(channelId, { refs: [ref], timer });
+  }
+
+  /**
+   * Post the buffered `-# filed …` line for one channel, if anything survived sanitization.
+   * Best-effort: a failed post is a lost receipt, never a failed filing.
+   */
+  private async flushFiledLine(channelId: string): Promise<void> {
+    const pending = this.pendingFiledRefs.get(channelId);
+    if (!pending) return;
+    this.pendingFiledRefs.delete(channelId);
+    clearTimeout(pending.timer);
+    // null means nothing renderable survived — post NOTHING, not an empty subtext line.
+    const line = formatFiledLine(pending.refs);
+    if (line === null) return;
+    try {
+      await this.gateway.post(channelId, line);
+      this.log.info("stamped filed line", { channelId, refs: normalizeFiledRefs(pending.refs) });
+    } catch (err) {
+      this.log.warn("filed line post failed", { channelId, err: String(err) });
+    }
+    // Deliberately NOT recorded into the shared channel window: it is machine stamping, not
+    // conversation, and replaying "-# filed ticket 12" back into the model's context each turn
+    // buys nothing it does not already know and costs tokens on every future turn.
+  }
+
+  /** Drain every buffered receipt (shutdown): a restart must not swallow a filing silently. */
+  private async flushAllFiledLines(): Promise<void> {
+    for (const channelId of [...this.pendingFiledRefs.keys()]) {
+      await this.flushFiledLine(channelId);
+    }
   }
 
   /**
@@ -2686,33 +2885,45 @@ export class Concierge {
       },
       {
         id: "tickets",
-        summary: "concierge-side task/ticket tracking: threads and filing pings",
+        summary: "concierge-side task/ticket tracking: workspace routing and filing pings",
         actionClass: ActionClass.FREE,
         cliVerbs: [],
         busCommands: [
           {
             name: "task.created",
-            summary: "ensure the numbered task's Discord thread exists",
+            summary: "record a freshly-created numbered task (creates NO Discord thread)",
             handle: async (req) => {
+              // This used to spawn a `#84 - Title` thread per task. It no longer creates or adopts
+              // anything on Discord: a wave of twelve tickets would have been twelve rooms nobody
+              // asked for. It stays because `beckett task create|branch|start` all call it and
+              // must keep succeeding, and because there IS still routing to record — a task filed
+              // from inside a thread the person opened belongs to that thread.
               const taskNumber = Number(req.args.taskNumber ?? String(req.args.taskRef ?? "").replace(/^#/, ""));
               const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
               if (!Number.isInteger(taskNumber) || taskNumber < 1) {
                 return { ok: false, error: "task.created needs a valid taskNumber" };
               }
-              try {
-                const thread = await this.ensureTaskThread(taskNumber, channelId || undefined);
-                return { ok: true, data: { taskRef: `#${taskNumber}`, threadId: thread.threadId, name: thread.name } };
-              } catch (err) {
-                return { ok: false, error: (err as Error).message };
+              const task = this.tasks.getTask(taskNumber);
+              if (!task) return { ok: false, error: `no such task: #${taskNumber}` };
+              // attachTasks/bindBranch are no-ops off a registered workspace, so a task filed from
+              // an ordinary channel records nothing and reports into that channel — the default.
+              if (channelId) {
+                this.workspaces.attachTasks(channelId, [String(task.number)]);
+                for (const branch of task.branches) {
+                  this.workspaces.bindBranch(channelId, branch.ref, branch.ticket?.identifier);
+                }
               }
+              return { ok: true, data: { taskRef: `#${taskNumber}` } };
             },
           },
           {
             name: "ticket.filed",
             summary: "track a freshly-filed ticket against its channel and poke the poller",
             handle: async (req) => {
-              // `beckett ticket create`/`plan` tells us it just filed a ticket for a channel. If that
-              // channel is a user-opened workspace thread, the ticket grounds it (no Discord side-effects).
+              // `beckett ticket create`/`plan` tells us it just filed a ticket for a channel. Two
+              // effects, both in {@link onTicketFiled}: the ticket grounds the workspace it was
+              // filed from (or the thread its task is attached to), and its public ref is buffered
+              // for the single `-# filed …` receipt. No thread is created either way.
               const identifier = typeof req.args.identifier === "string" ? req.args.identifier.trim() : "";
               const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
               if (!identifier || !channelId) {
@@ -3808,9 +4019,23 @@ export class Concierge {
     return null;
   }
 
-  /** Build the synthetic update turn (or null when the ticket can't be routed back to a channel). */
+  /**
+   * Build the synthetic update turn (or null when the ticket can't be routed back to a channel).
+   *
+   * Destination order, most specific first:
+   *  1. The thread the person ATTACHED this ticket's task to (`&12` / `&recent`). It wins because
+   *     it is the one routing a human explicitly asked for, and it covers work attached BEFORE any
+   *     ticket existed — at which point there is no ticket identifier to look up yet.
+   *  2. The workspace this exact ticket is grounded in (filed from inside a thread).
+   *  3. The channel the request came from. With nothing attached this is the whole story, and it
+   *     is the desired default: results land where the conversation happened.
+   */
   private updateTurn(ticket: Ticket, detail: string): TicketUpdate | null {
-    const channel = this.workspaces.channelForTicket(ticket.identifier) ?? ticket.originChannel;
+    const taskRef = taskRefOfBranch(ticket.branchRef);
+    const channel =
+      (taskRef ? this.workspaces.channelForTask(taskRef) : null) ??
+      this.workspaces.channelForTicket(ticket.identifier) ??
+      ticket.originChannel;
     if (!channel) {
       // This is the exact failure the closed loop exists to prevent: an update with nowhere to go,
       // because the ticket was filed without --channel. Warn loudly — silence here recreates the bug.
@@ -3847,7 +4072,12 @@ export class Concierge {
     // Consume it before ambient/shared-context capture so passwords or other answers never leak
     // into the Concierge transcript. Unrelated messages continue through normal routing.
     if (await this.resumeBrowserQuestion(m)) return;
-    const workspace = this.workspaces.contextFor(m.channelId);
+    // "I open a thread and Beckett is in it" has to hold whether or not the daemon was running
+    // when the thread was opened, so a thread that never produced a ThreadCreate we saw becomes a
+    // workspace on its first message instead. Deliberately BEFORE the ambient split: registration
+    // is what makes this very message directed, and doing it after would spend the first message
+    // in every thread on silence.
+    const workspace = this.registerThreadOnFirstMessage(m) ?? this.workspaces.contextFor(m.channelId);
     if (!m.mentionsBot && !workspace) {
       const level = this.accessLevelFor(m.userId);
       // OPS-80: the ambient half of the shared record — membership re-checked at capture time
@@ -3880,6 +4110,12 @@ export class Concierge {
     // a quoted approval, an injected instruction) can mint a member — only the owner
     // literally pressing send on `approve <code>` does.
     if (await this.handleAccessApproval(m, content)) return;
+
+    // `&12` / `&recent` / `&clear` resolve at CODE level too, for the same reason approvals do:
+    // where a person's work reports is routing state, and routing state must not be reachable
+    // through anything the model can be talked into. Positioned after the outsider gate so an
+    // unauthorized author can never move someone else's work into a thread they opened.
+    if (await this.handleThreadAttach(m, content)) return;
 
     // OPS-80: the mention half of the shared record — capture strictly AFTER the outsider gate and
     // the approval intercept, so approval codes (live secrets) can never land in the stored window.
@@ -4120,8 +4356,14 @@ export class Concierge {
     // channel window (attributed, budgeted, persisted — OPS-80) when the store is live, else the
     // legacy ring-buffer excerpt (a free UX win even in `off`-mode channels — it fills regardless).
     const ticketPrefix = workspace ? frameTicketWorkspace(workspace) : "";
+    // One-shot: the block a just-completed `&ref`/`&recent` left for the next turn in this thread
+    // (titles, statuses, a capped journal tail). Consumed here so the follow-up question gets the
+    // grounding, and deleted so it never rides a second turn.
+    const attachSeed = this.pendingWorkspaceSeeds.get(m.channelId) ?? "";
+    if (attachSeed) this.pendingWorkspaceSeeds.delete(m.channelId);
     const prefix =
       ticketPrefix +
+      attachSeed +
       (this.channelStore
         ? this.sharedContextPrefix(m.channelId, m.messageId, onSharedContext)
         : this.ambientContextPrefix(m.channelId)) +
@@ -4710,6 +4952,157 @@ export class Concierge {
   }
 
   /**
+   * Register the thread this message arrived in, if it is a thread we do not know yet, and return
+   * its fresh context (null when nothing was registered).
+   *
+   * The ThreadCreate gateway event is the fast path, but it is not a guarantee: a thread opened
+   * while the daemon was down, or a thread Beckett was added to before the event surface existed,
+   * never produces one. Under the new model that is the difference between "I open a thread and
+   * Beckett is in it" and a room where Beckett is deaf, so the first message from an authorized
+   * author registers it.
+   *
+   * Two guards, both load-bearing:
+   *  - `m.isThread === true` explicitly. `undefined` means the gateway could NOT tell (a partial
+   *    or uncached channel), and treating unknown as "thread" would mint a workspace out of an
+   *    ordinary channel and make every message in it directed.
+   *  - The access check runs FIRST. An outsider who can see a channel can open a thread in it,
+   *    and if opening one minted state we would have handed the bouncer's own gate a way to be
+   *    walked around: the workspace makes later messages directed, and directed messages skip the
+   *    ambient path entirely. No state is created for anyone who does not pass.
+   */
+  private registerThreadOnFirstMessage(m: IncomingMessage): TicketWorkspaceContext | null {
+    if (m.isThread !== true || m.authorIsBot) return null;
+    if (this.workspaces.contextFor(m.channelId)) return null;
+    if (this.accessLevelFor(m.userId) === "outsider") return null;
+    this.workspaces.registerThread({
+      threadId: m.channelId,
+      // Unknown parent degrades to empty rather than blocking registration: the parent is only
+      // ever used as a label and as the anchor for an explicitly-requested sibling thread, and
+      // being deaf in the room is a much worse failure than an unlabeled parent.
+      parentChannelId: m.parentChannelId ?? "",
+      name: m.channelName ?? "",
+      creatorId: m.userId,
+      newlyCreated: false,
+    });
+    this.log.info("workspace registered lazily from a thread message", {
+      threadId: m.channelId,
+      parentChannelId: m.parentChannelId,
+      userId: m.userId,
+    });
+    // Join so Beckett is a real member of the thread (unarchives it, keeps events flowing).
+    // Optional on the interface — partial test gateways do not implement it — and never awaited:
+    // a REST round trip must not delay the answer to the message that triggered it.
+    if (typeof this.gateway.joinThread === "function") {
+      void this.gateway.joinThread(m.channelId).catch(() => undefined);
+    }
+    return this.workspaces.contextFor(m.channelId);
+  }
+
+  /**
+   * The `&<ref>` / `&recent` / `&clear` attach command, resolved at code level before the turn
+   * ever reaches the model. Returns true when the message was consumed here.
+   *
+   * Thread-only by design. Outside a thread `&12` is ordinary prose ("see &12 for context") and
+   * must fall through untouched; there is also nothing to attach work TO in a plain channel —
+   * results already report there.
+   */
+  private async handleThreadAttach(m: IncomingMessage, content: string): Promise<boolean> {
+    if (m.isThread !== true) return false;
+    const command = parseAttachCommand(content);
+    if (!command) return false;
+
+    const reply = async (text: string) => {
+      await this.gateway
+        .post(m.channelId, text, { replyToMessageId: m.messageId, replyToUserId: m.userId })
+        .catch((err) => this.log.warn("attach reply failed", { channelId: m.channelId, err: String(err) }));
+    };
+
+    if (command.kind === "clear") {
+      this.workspaces.detachAll(m.channelId);
+      this.pendingWorkspaceSeeds.delete(m.channelId);
+      this.log.info("workspace detached by &clear", { threadId: m.channelId, userId: m.userId });
+      await reply("cleared. nothing reports in here now.");
+      return true;
+    }
+
+    let attached: WorkTask[];
+    if (command.kind === "recent") {
+      attached = this.tasks.recentWave();
+      if (attached.length === 0) {
+        await reply("nothing filed recently, so there's nothing to attach.");
+        return true;
+      }
+    } else {
+      const hit = this.tasks.resolveTaskRef(command.ref);
+      if (!hit) {
+        await reply(`no task #${command.ref}. check the ref and try again.`);
+        return true;
+      }
+      // Routing is per TASK (`channelForTask`), so a branch ref attaches its whole task. That is
+      // also what a person means: `&12.1` is how they spell "the thing I was just told about",
+      // and splitting one task's branches across two rooms would only scatter the story.
+      attached = [hit.task];
+    }
+
+    const refs = attached.map((task) => String(task.number));
+    this.workspaces.attachTasks(m.channelId, refs);
+    for (const task of attached) {
+      for (const branch of task.branches) {
+        this.workspaces.bindBranch(m.channelId, branch.ref, branch.ticket?.identifier);
+      }
+    }
+    this.log.info("work attached to workspace by command", {
+      threadId: m.channelId,
+      userId: m.userId,
+      tasks: refs,
+    });
+    await reply(renderAttachRecap(attached));
+    // Seed the grounding for the NEXT turn here rather than burning a model turn on it now: the
+    // recap above is code-rendered and needs no LLM, but a follow-up ("what's left on 12.2?")
+    // does, and it should not have to re-derive what was just attached. buildTurn consumes this
+    // once, alongside the standing workspace frame — same injection path, one-shot cost.
+    this.pendingWorkspaceSeeds.set(m.channelId, this.buildAttachSeed(attached));
+    return true;
+  }
+
+  /**
+   * The one-shot grounding block written by {@link handleThreadAttach}: what was attached, how it
+   * stands, and (cheaply, and only for a small attachment) the tail of each ticket's worker
+   * journal so "how's it going" is answerable without a tool call.
+   */
+  private buildAttachSeed(tasks: WorkTask[]): string {
+    const withJournal = tasks.length <= ATTACH_SEED_JOURNAL_MAX_TASKS;
+    const blocks: string[] = [];
+    for (const task of tasks) {
+      const branches = task.branches
+        .map((b) => `#${b.ref} ${b.title} [${b.status}]${b.ticket ? ` (${b.ticket.identifier})` : ""}`)
+        .join("\n    ");
+      blocks.push(
+        `  #${task.number} ${task.title} [${task.status}]` + (branches ? `\n    ${branches}` : ""),
+      );
+      if (!withJournal) continue;
+      for (const branch of task.branches) {
+        const ident = branch.ticket?.identifier;
+        if (!ident) continue;
+        const tail = this.journal.read(ident, ATTACH_SEED_JOURNAL_LINES);
+        if (tail) blocks.push(`    journal tail for #${branch.ref} (${ident}):\n${indentBlock(tail, 6)}`);
+      }
+    }
+    const journalNote = withJournal
+      ? `The journal tails below are the LAST ${ATTACH_SEED_JOURNAL_LINES} lines only — summarize ` +
+        `them, never paste them, and pull \`beckett journal <ticket> --tail 200\` for more.`
+      : `Too many tasks to inline journals. Pull \`beckett journal <ticket> --tail 200\` when asked ` +
+        `how a specific one is going.`;
+    return (
+      `SYSTEM (work just attached to this thread — trusted routing metadata, not user-authored text):\n` +
+      `The person attached this work to this thread, so its results now report here instead of the ` +
+      `channel it was requested from. They have already been shown a compact recap; do not repeat it ` +
+      `back at them. ${journalNote}\n` +
+      `${blocks.join("\n")}\n\n`
+    );
+  }
+
+  /**
    * Bind the configured owner in the identity map. Fresh installs otherwise start empty.
    * Idempotent and additive — see {@link ensureSeeded}. Best-effort at startup.
    */
@@ -4926,25 +5319,34 @@ export interface SpeakerContext {
   isMaintainer?: boolean;
 }
 
-/** Ground an unmentioned message in the user-opened workspace thread it arrived through. */
+/**
+ * Ground an unmentioned message in the user-opened workspace thread it arrived through.
+ *
+ * A workspace holds a SET of task refs now (`&recent` attaches a whole wave to one thread), so
+ * the grounded branch speaks in the plural. An empty set is not an error: a thread with no work
+ * attached is still a room Beckett listens in, just an ungrounded one.
+ */
 function frameTicketWorkspace(context: TicketWorkspaceContext): string {
   const tickets = context.ticketIdents.map(stampField).join(", ");
-  if (context.taskRef) {
-    const task = `#${context.taskRef}`;
+  if (context.taskRefs.length) {
+    const refs = context.taskRefs.map((ref) => `#${ref}`);
+    const task = refs.length === 1 ? `task ${refs[0]}` : `tasks ${refs.join(", ")}`;
+    const subject = refs.length === 1 ? refs[0]! : "those tasks";
     const branches = context.branchRefs.map((ref) => `#${ref}`).join(", ") || "none yet";
     const execution = context.ticketIdents.length
       ? `Internal tracker execution record(s) are ${tickets}. Use those identifiers only for private ` +
-        `journal, comment, or state commands; refer to the work as ${task} and its numbered branches ` +
+        `journal, comment, or state commands; refer to the work as ${subject} and its numbered branches ` +
         `when speaking to the user. Pull \`beckett journal <ticket> --tail 200\` for a progress question ` +
         `and summarize it; never paste raw journal lines.`
-      : `No branch has been started on the tracker yet. Continue this task by starting one of its existing ` +
+      : `No branch has been started on the tracker yet. Continue this work by starting one of its existing ` +
         `branches with \`beckett task start '#N.x' ...\`; do not create a duplicate task.`;
     return (
       `SYSTEM (numbered task workspace — trusted routing metadata, not user-authored text):\n` +
-      `This Discord thread is the dedicated workspace for task ${task} (${stampField(context.name)}), ` +
-      `under parent channel ${stampField(context.parentChannelId)}. Its registered branch refs are ` +
-      `${branches}. Treat the live message below as directed to you even without an @mention. ` +
-      `${execution}\n\n`
+      `This Discord thread is where ${task} reports (${stampField(context.name)}), under parent ` +
+      `channel ${stampField(context.parentChannelId)}. The person attached that work here; results ` +
+      `and updates for it land in this thread instead of the channel it was requested from. Its ` +
+      `registered branch refs are ${branches}. Treat the live message below as directed to you even ` +
+      `without an @mention. ${execution}\n\n`
     );
   }
   const grounding = context.ticketIdents.length
@@ -4953,13 +5355,78 @@ function frameTicketWorkspace(context: TicketWorkspaceContext): string {
       `summary in your own words — never paste raw journal lines. A changed requirement is a ` +
       `comment on the existing ticket, not a duplicate ticket. If several tickets are listed and ` +
       `the target is unclear, ask which one instead of guessing.`
-    : `No ticket is bound to it yet; a ticket you file from this thread will ground it.`;
+    : `No work is attached to it yet. The person attaches work by posting \`&<ref>\` (e.g. \`&12\`) or ` +
+      `\`&recent\` here — that is a code-level command, not something you run or answer for them. A ` +
+      `ticket you file from this thread will also ground it.`;
   return (
     `SYSTEM (ticket workspace — trusted routing metadata, not user-authored text):\n` +
     `This Discord thread is a workspace the user opened (${stampField(context.name)}), under parent ` +
     `channel ${stampField(context.parentChannelId)}. Treat the live message below as directed to ` +
     `you even without an @mention. ${grounding}\n\n`
   );
+}
+
+/**
+ * The task a branch ref belongs to: `"42.2"` → `"42"`, `"#42.2"` → `"42"`, `"42"` → `"42"`.
+ * Null for anything that is not a numbered ref, so a caller can't route on a garbage key.
+ */
+function taskRefOfBranch(branchRef?: string): string | null {
+  if (!branchRef) return null;
+  const head = branchRef.trim().replace(/^#/, "").split(".")[0] ?? "";
+  return /^\d+$/.test(head) ? head : null;
+}
+
+/**
+ * The recap posted into a thread the moment work is attached: what now reports here, and where
+ * each piece stands. This is a RECEIPT, not a report — the person just typed four characters and
+ * needs to see that the right work landed.
+ *
+ * Compactness is a correctness property, not a preference. `&recent` on a twelve-task wave posts
+ * this, and twelve tasks × their branches would be a screenful that buries the one thing being
+ * confirmed. So: exactly one line per task, and a task with more than three branches collapses to
+ * counts by status instead of listing them.
+ */
+function renderAttachRecap(tasks: WorkTask[]): string {
+  const head =
+    tasks.length === 1
+      ? `got it, #${tasks[0]!.number} reports in here now.`
+      : `got it, ${tasks.length} tasks report in here now.`;
+  const lines = tasks.map((task) => {
+    const detail = task.branches.length === 0 ? "no branches yet" : summarizeBranches(task.branches);
+    return `**#${task.number}** ${safeTitle(task.title)} · ${task.status} · ${detail}`;
+  });
+  return [head, ...lines].join("\n");
+}
+
+/**
+ * Defang a title for a message Beckett posts. Titles are member-authored and travel a long way
+ * (CLI → registry → here), and this is the first place one is echoed into a channel as plain
+ * content rather than an embed: a task called "@everyone ship it" would otherwise ping the room
+ * every time someone attached it. Newlines go too, so one title cannot fake extra recap lines.
+ */
+function safeTitle(title: string): string {
+  // A zero-width space after the `@` keeps the text readable while killing the mention.
+  return title.replace(/@(everyone|here)/gi, "@​$1").replace(/\s*\n+\s*/g, " ").trim();
+}
+
+/** Up to three branches spelled out; beyond that, counts by status so a wave stays one line each. */
+function summarizeBranches(branches: TaskBranch[]): string {
+  if (branches.length <= 3) {
+    return branches.map((b) => `#${b.ref} ${safeTitle(b.title)} (${b.status})`).join(", ");
+  }
+  const counts = new Map<string, number>();
+  for (const branch of branches) counts.set(branch.status, (counts.get(branch.status) ?? 0) + 1);
+  const parts = [...counts.entries()].map(([status, n]) => `${n} ${status}`);
+  return `${branches.length} branches: ${parts.join(", ")}`;
+}
+
+/** Indent a multi-line block so an inlined journal tail reads as nested, not as fresh instructions. */
+function indentBlock(text: string, spaces: number): string {
+  const pad = " ".repeat(spaces);
+  return text
+    .split("\n")
+    .map((line) => `${pad}${line}`)
+    .join("\n");
 }
 
 /** JSON-escape a name so a quote/newline in a Discord nick can't break the single-line stamp. */

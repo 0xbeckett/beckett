@@ -6,14 +6,29 @@
  * @mention required. Beckett does not create threads — the human decides when a piece of work
  * deserves a dedicated space, opens the thread, and Beckett moves in.
  *
+ * A workspace holds a **set** of task refs, not one. The user attaches work to a thread they opened
+ * by posting `&<taskRef>` (one task) or `&recent` (a whole wave at once), so "this thread owns
+ * exactly one task" was never true under the new model — a wave of twelve tickets lands in one
+ * thread the person chose. Hence {@link StoredWorkspace.taskRefs} is an array, and everything that
+ * used to compare a scalar now asks "is this ref IN the set".
+ *
  * The registry is deliberately dumb state, no gateway handle at all:
- *  - **Registration** comes from the gateway's thread-create event ({@link registerThread}),
+ *  - **Registration** comes from the gateway's thread-create event ({@link WorkspaceRegistry.registerThread}),
  *    filtered upstream to user-created threads only.
- *  - **Ticket grounding** is additive. A thread whose name carries ticket identifiers
- *    ("OPS-120 auth rework") binds to them at registration; a ticket filed FROM inside a
- *    workspace binds to it when the Concierge acks it ({@link bindTicket}). A workspace with no
- *    tickets yet is still a workspace — the conversation is directed, just not ticket-grounded.
- *  - **Persistence**: the thread → tickets map is saved to `<beckettDir>/workspaces.json` so
+ *  - **Ticket grounding** is additive within a thread. A thread whose name carries identifiers
+ *    ("OPS-120 auth rework", "#12.1 retry logic") binds to them at registration; a ticket filed FROM
+ *    inside a workspace binds to it when the Concierge acks it ({@link WorkspaceRegistry.bindTicket});
+ *    an explicit `&ref` attaches more later ({@link WorkspaceRegistry.attachTasks}). Additive is the
+ *    invariant that matters: attaching #2 must never silently drop #1, because a dropped binding
+ *    shows up much later as results posting to the wrong place with no error anywhere.
+ *  - **A task ref lives in exactly one workspace.** Additive-within is not additive-across: routing
+ *    ({@link WorkspaceRegistry.channelForTask}) can only name one thread, so both `&ref` attachment
+ *    and {@link WorkspaceRegistry.registerTaskThread} withdraw the ref from every other workspace.
+ *    The loser keeps its other work and stays registered — only the one ref moves.
+ *  - A workspace with no tasks yet is still a workspace — the conversation is directed, just not
+ *    grounded. {@link WorkspaceRegistry.detachAll} returns a thread to exactly that state rather
+ *    than unregistering it: Beckett still listens there, it just no longer owns any work.
+ *  - **Persistence**: the thread → work map is saved to `<beckettDir>/workspaces.json` so
  *    unmentioned routing survives a daemon restart. Best-effort: a corrupt/missing file starts
  *    fresh and new thread-create events rebuild it.
  *
@@ -34,8 +49,11 @@ export interface TicketWorkspaceContext {
   name: string;
   /** Ticket identifiers grounded in this workspace (possibly empty for a fresh thread). */
   ticketIdents: string[];
-  /** Numbered task and branch refs are the user-facing grounding for new workspaces. */
-  taskRef?: string;
+  /**
+   * Numbered task refs this workspace owns, normalized without the leading `#` and in stable
+   * order. Empty for a thread that has not been attached to any work yet.
+   */
+  taskRefs: string[];
   branchRefs: string[];
 }
 
@@ -45,20 +63,73 @@ export interface WorkspaceRegistryOptions {
   logger?: Logger;
 }
 
-/** Matches ticket identifiers like "OPS-120" inside a thread name. */
+/** Matches legacy ticket identifiers like "OPS-120" inside a thread name. */
 const TICKET_IDENT_RE = /\b[A-Z][A-Z0-9]{1,9}-\d+\b/g;
+
+/**
+ * Matches the task refs the tracker actually issues today — `#12`, `#12.1` — inside a thread name,
+ * so "#12 auth rework" grounds itself the moment the person opens the thread.
+ *
+ * The guards are the whole point. The lookbehind rejects a `#` glued to a preceding word/number/dot
+ * (`auth#12`, `v1.#2`) so we never harvest a ref out of the middle of a token, and the trailing
+ * `(?!\w)` rejects `#12abc`. A bare `12` never matches — without the sigil a thread named
+ * "12 ideas for launch" would claim task 12. `#` followed by non-digits (`#general`, `#todo`) has
+ * no digits to capture and falls through.
+ */
+const TASK_REF_RE = /(?<![\w#.])#(\d+(?:\.\d+)*)(?!\w)/g;
 
 interface StoredWorkspace {
   parentChannelId: string;
   name: string;
   ticketIdents: string[];
-  taskRef?: string;
+  /** Normalized (no leading `#`), deduped, stably ordered. Never undefined — empty means "none". */
+  taskRefs: string[];
   branchRefs: string[];
 }
 
+/** Strip the display sigil and surrounding whitespace: `" #12.1 "` → `"12.1"`. */
+function normalizeRef(raw: string): string {
+  return raw.trim().replace(/^#/, "");
+}
+
 /**
- * Owns the user-opened-thread → ticket routing map. Constructed by the Concierge, fed by the
- * gateway's thread-create events, and consulted on every inbound message.
+ * Order task refs the way a human reads a wave: numerically by dotted segment, so `#2` sorts before
+ * `#10` instead of after it the way a plain lexicographic `.sort()` would. Non-numeric refs (we
+ * accept whatever a caller hands us) fall back to lexicographic and sort after the numbered ones,
+ * which keeps the order total and therefore stable across saves.
+ */
+function compareTaskRefs(a: string, b: string): number {
+  const segsA = a.split(".");
+  const segsB = b.split(".");
+  const numericA = segsA.every((s) => /^\d+$/.test(s));
+  const numericB = segsB.every((s) => /^\d+$/.test(s));
+  if (numericA !== numericB) return numericA ? -1 : 1;
+  if (!numericA) return a < b ? -1 : a > b ? 1 : 0;
+  for (let i = 0; i < Math.max(segsA.length, segsB.length); i++) {
+    const na = Number(segsA[i] ?? "0");
+    const nb = Number(segsB[i] ?? "0");
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
+
+/** Normalize + dedupe + order a set of refs. The single funnel every mutation goes through. */
+function normalizeTaskRefs(refs: readonly string[]): string[] {
+  return [...new Set(refs.map(normalizeRef).filter(Boolean))].sort(compareTaskRefs);
+}
+
+/** Scrape both grounding vocabularies out of a thread name the person chose. */
+function scrapeThreadName(name: string): { ticketIdents: string[]; taskRefs: string[] } {
+  return {
+    ticketIdents: [...new Set(name.match(TICKET_IDENT_RE) ?? [])],
+    taskRefs: normalizeTaskRefs([...name.matchAll(TASK_REF_RE)].map((m) => m[1]!)),
+  };
+}
+
+/**
+ * Owns the user-opened-thread → work routing map. Constructed by the Concierge, fed by the
+ * gateway's thread-create events and by explicit `&ref` attachments, and consulted on every
+ * inbound message and every outbound result.
  */
 export class WorkspaceRegistry {
   private readonly log: Logger;
@@ -72,18 +143,19 @@ export class WorkspaceRegistry {
   }
 
   /**
-   * Register a user-created thread as a workspace. Idempotent per thread id; ticket identifiers
-   * found in the thread name are bound immediately so "OPS-120 auth rework" is grounded from its
-   * first message.
+   * Register a user-created thread as a workspace. Idempotent per thread id; identifiers found in
+   * the thread name are bound immediately so "OPS-120 auth rework" or "#12.1 retry logic" is
+   * grounded from its first message without the person having to say `&12.1`.
    */
   registerThread(t: ThreadCreated): void {
     const existing = this.byThread.get(t.threadId);
     if (existing) return; // already a workspace — a re-emitted create event changes nothing
-    const ticketIdents = [...new Set(t.name.match(TICKET_IDENT_RE) ?? [])];
+    const { ticketIdents, taskRefs } = scrapeThreadName(t.name);
     this.byThread.set(t.threadId, {
       parentChannelId: t.parentChannelId,
       name: t.name,
       ticketIdents,
+      taskRefs,
       branchRefs: [],
     });
     this.log.info("workspace registered from user thread", {
@@ -91,50 +163,127 @@ export class WorkspaceRegistry {
       name: t.name,
       creatorId: t.creatorId,
       tickets: ticketIdents,
+      tasks: taskRefs,
     });
     this.saveState();
   }
 
-  /** Register a task workspace Beckett deliberately created or adopted. Idempotent per thread. */
+  /**
+   * Register a task workspace Beckett deliberately created or adopted. Idempotent per thread, and
+   * additive on the thread's task set.
+   *
+   * This used to STEAL the ref: any other workspace holding the same task was deleted outright, on
+   * the assumption that a task thread is Beckett's and there is exactly one. Under the user-owned
+   * thread model that assumption is false and the deletion is destructive — the other workspace is
+   * a room a person opened and may legitimately hold a dozen other tasks. So we now only withdraw
+   * *this* ref from the other workspace and leave it registered with everything else intact.
+   */
   registerTaskThread(
     thread: TaskThreadCreated,
     taskRef: string,
     branchRefs: string[] = [],
   ): void {
-    const normalizedTask = taskRef.trim().replace(/^#/, "");
-    const normalizedBranches = [...new Set(branchRefs.map((ref) => ref.trim().replace(/^#/, "")).filter(Boolean))];
-    const replacedThreadIds: string[] = [];
-    const inheritedTickets: string[] = [];
-    const inheritedBranches: string[] = [];
+    const normalizedTask = normalizeRef(taskRef);
+    const normalizedBranches = [...new Set(branchRefs.map(normalizeRef).filter(Boolean))];
+    const yieldedThreadIds: string[] = [];
     for (const [threadId, workspace] of this.byThread) {
-      if (threadId === thread.threadId || workspace.taskRef !== normalizedTask) continue;
-      replacedThreadIds.push(threadId);
-      inheritedTickets.push(...workspace.ticketIdents);
-      inheritedBranches.push(...workspace.branchRefs);
-      this.byThread.delete(threadId);
+      if (threadId === thread.threadId || !workspace.taskRefs.includes(normalizedTask)) continue;
+      workspace.taskRefs = workspace.taskRefs.filter((ref) => ref !== normalizedTask);
+      yieldedThreadIds.push(threadId);
     }
     const existing = this.byThread.get(thread.threadId);
     if (existing) {
-      existing.taskRef = normalizedTask;
+      existing.taskRefs = normalizeTaskRefs([...existing.taskRefs, normalizedTask]);
       existing.parentChannelId = thread.parentChannelId;
-      existing.ticketIdents = [...new Set([...existing.ticketIdents, ...inheritedTickets])];
-      existing.branchRefs = [...new Set([...existing.branchRefs, ...inheritedBranches, ...normalizedBranches])];
+      existing.branchRefs = [...new Set([...existing.branchRefs, ...normalizedBranches])];
       existing.name = thread.name;
     } else {
       this.byThread.set(thread.threadId, {
         parentChannelId: thread.parentChannelId,
         name: thread.name,
-        ticketIdents: [...new Set(inheritedTickets)],
-        taskRef: normalizedTask,
-        branchRefs: [...new Set([...inheritedBranches, ...normalizedBranches])],
+        ticketIdents: [],
+        taskRefs: normalizeTaskRefs([normalizedTask]),
+        branchRefs: normalizedBranches,
       });
     }
     this.log.info("task workspace registered", {
       threadId: thread.threadId,
       task: normalizedTask,
       branches: normalizedBranches,
-      replacedThreadIds,
+      yieldedThreadIds,
     });
+    this.saveState();
+  }
+
+  /**
+   * Bind a set of task refs to an already-registered workspace thread — the `&<taskRef>` / `&recent`
+   * path, where the person points at a thread they opened and says "report this work here".
+   *
+   * Additive **within** the target thread (attaching #2 never drops #1) but **exclusive across**
+   * threads: every other workspace yields the incoming refs. Why always-exclusive rather than an
+   * opt-in flag — `&12` is not "also mention it here", it is a person standing in a room saying
+   * *this work lives HERE*, and {@link channelForTask} can only answer with one thread anyway. It
+   * resolves ties by Map insertion order, so leaving the ref in an older workspace does not produce
+   * shared routing, it produces routing to the OLDER room while Beckett confirms the new one. That
+   * is a silent lie the user cannot see: the confirmation says "#12 reports in here now", the
+   * grounding is seeded, and then every milestone and every filed receipt keeps landing somewhere
+   * else. A flag would only let a caller opt into that failure, so there is no flag. Losing a ref is
+   * not lossy for the loser either — it keeps its other work and stays a registered workspace.
+   *
+   * A thread that is not a registered workspace is a no-op (with a warn), never an implicit
+   * registration — registration carries a parent channel id and a creator we do not have here, and
+   * inventing one would route results into a channel nobody asked for.
+   */
+  attachTasks(threadId: string, taskRefs: string[]): void {
+    const ws = this.byThread.get(threadId);
+    const incoming = normalizeTaskRefs(taskRefs);
+    if (!ws) {
+      this.log.warn("attachTasks on a non-workspace thread; ignoring", { threadId, tasks: incoming });
+      return;
+    }
+    // Withdraw first, and BEFORE the "nothing new" early return below. The case that matters is the
+    // user who re-issues `&12` in this thread *because it didn't work*: the target already holds the
+    // ref, so a merge-only path would no-op and routing would stay stuck on the other workspace
+    // forever — the command would be permanently unable to fix the very thing it appears to fix.
+    // Mirrors registerTaskThread: withdraw just these refs, never the other workspace itself.
+    const yieldedThreadIds: string[] = [];
+    for (const [otherId, other] of this.byThread) {
+      if (otherId === threadId) continue;
+      const kept = other.taskRefs.filter((ref) => !incoming.includes(ref));
+      if (kept.length === other.taskRefs.length) continue;
+      other.taskRefs = kept;
+      yieldedThreadIds.push(otherId);
+    }
+    const merged = normalizeTaskRefs([...ws.taskRefs, ...incoming]);
+    const unchanged =
+      merged.length === ws.taskRefs.length && merged.every((ref, i) => ref === ws.taskRefs[i]);
+    // A withdrawal ALONE is a real state change and must be persisted, even when the target's own
+    // set is untouched. Only a fully inert call skips the write, so a repeated `&ref` in the one
+    // thread that already owns the work still does not churn the state file.
+    if (unchanged && !yieldedThreadIds.length) return;
+    ws.taskRefs = merged;
+    this.log.info("tasks attached to workspace", { threadId, tasks: merged, yieldedThreadIds });
+    this.saveState();
+  }
+
+  /**
+   * Release every piece of work a thread owns while keeping it a workspace. The thread is still a
+   * place Beckett listens without an @mention; it simply no longer routes any results, so the next
+   * `&ref` starts from a clean set instead of resurrecting whatever was attached weeks ago.
+   */
+  detachAll(threadId: string): void {
+    const ws = this.byThread.get(threadId);
+    if (!ws) return;
+    if (!ws.taskRefs.length && !ws.ticketIdents.length && !ws.branchRefs.length) return;
+    this.log.info("workspace detached from all work", {
+      threadId,
+      tasks: ws.taskRefs,
+      tickets: ws.ticketIdents,
+      branches: ws.branchRefs,
+    });
+    ws.taskRefs = [];
+    ws.ticketIdents = [];
+    ws.branchRefs = [];
     this.saveState();
   }
 
@@ -142,7 +291,7 @@ export class WorkspaceRegistry {
   bindBranch(channelId: string, branchRef: string, ticketIdent?: string): void {
     const ws = this.byThread.get(channelId);
     if (!ws) return;
-    const normalized = branchRef.trim().replace(/^#/, "");
+    const normalized = normalizeRef(branchRef);
     if (normalized && !ws.branchRefs.includes(normalized)) ws.branchRefs.push(normalized);
     if (ticketIdent && !ws.ticketIdents.includes(ticketIdent)) ws.ticketIdents.push(ticketIdent);
     this.saveState();
@@ -168,7 +317,7 @@ export class WorkspaceRegistry {
       parentChannelId: ws.parentChannelId,
       name: ws.name,
       ticketIdents: [...ws.ticketIdents].sort(),
-      ...(ws.taskRef ? { taskRef: ws.taskRef } : {}),
+      taskRefs: [...ws.taskRefs],
       branchRefs: [...ws.branchRefs].sort(),
     };
   }
@@ -181,10 +330,11 @@ export class WorkspaceRegistry {
     return null;
   }
 
+  /** The thread a task's results belong in, or null to fall back to the origin channel. */
   channelForTask(taskRef: string): string | null {
-    const normalized = taskRef.trim().replace(/^#/, "");
+    const normalized = normalizeRef(taskRef);
     for (const [threadId, workspace] of this.byThread) {
-      if (workspace.taskRef === normalized) return threadId;
+      if (workspace.taskRefs.includes(normalized)) return threadId;
     }
     return null;
   }
@@ -195,13 +345,21 @@ export class WorkspaceRegistry {
       const raw = JSON.parse(readFileSync(this.stateFile, "utf8")) as Record<string, Record<string, unknown>>;
       for (const [threadId, rec] of Object.entries(raw)) {
         if (typeof rec?.parentChannelId !== "string") continue;
+        // Tolerate the pre-wave shape: a scalar `taskRef` migrates into a one-element `taskRefs`.
+        // Production state is being wiped, so this costs nothing — but a binding that vanishes on
+        // restart is invisible until results post to the wrong channel, and that is worth a branch.
+        const storedRefs = Array.isArray(rec.taskRefs)
+          ? rec.taskRefs.filter((x): x is string => typeof x === "string")
+          : typeof rec.taskRef === "string"
+            ? [rec.taskRef]
+            : [];
         this.byThread.set(threadId, {
           parentChannelId: rec.parentChannelId,
           name: typeof rec.name === "string" ? rec.name : "",
           ticketIdents: Array.isArray(rec.ticketIdents)
             ? rec.ticketIdents.filter((x): x is string => typeof x === "string")
             : [],
-          ...(typeof rec.taskRef === "string" ? { taskRef: rec.taskRef } : {}),
+          taskRefs: normalizeTaskRefs(storedRefs),
           branchRefs: Array.isArray(rec.branchRefs)
             ? rec.branchRefs.filter((x): x is string => typeof x === "string")
             : [],

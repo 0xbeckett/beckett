@@ -20,7 +20,8 @@ person honestly what's going on, and using your levers when a different path is 
 3. `beckett status` — the live daemon in one JSON blob: every worker (ticket, stage, harness, pid,
    elapsed, last-event age), poller health, tracker API health, your own session stats. The fastest
    answer to "is anything actually moving?"
-4. The ticket's Discord progress thread mirrors the worker's play-by-play if you need finer grain.
+4. `beckett journal <id> --tail 200` — the private, ticket-keyed worker play-by-play if you need
+   finer grain. Nothing streams to Discord; summarize it, never paste raw journal lines back.
 
 ## Your levers (all real commands)
 

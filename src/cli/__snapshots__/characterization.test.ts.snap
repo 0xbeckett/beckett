@@ -998,6 +998,7 @@ exports[`cli: task: create allocates #1 with an initial branch 1`] = `
     "number": 1,
     "title": "Ship the widget",
     "status": "active",
+    "waveId": "<WAVE_ID>",
     "branches": [
       {
         "id": "<ID>",
