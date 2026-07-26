@@ -696,6 +696,150 @@ export class Dispatcher {
   }
 
   /**
+   * Start the periodic staffing watchdog (issue #9). Call ONCE at boot, after {@link recoverFromCrash}.
+   * On a cadence derived from `supervise.staffing_watchdog_s` it runs {@link reconcileStaffing}, which
+   * re-staffs (or, on a second failure, parks) any ticket left silently staffed-but-workerless — the
+   * whole class of wedges the mid-spawn discard race was one instance of. `staffing_watchdog_s = 0`
+   * disables it. Idempotent — a second call is a no-op while a timer is already armed.
+   */
+  startStaffingWatchdog(): void {
+    if (this.watchdogTimer) return;
+    const graceS = this.config.supervise?.staffing_watchdog_s ?? 0;
+    if (!graceS || graceS <= 0) {
+      this.logger.info("staffing watchdog disabled", { staffing_watchdog_s: graceS });
+      return;
+    }
+    // Poll faster than the grace so a wedge is caught within roughly one grace window, not two.
+    const intervalMs = Math.max(15_000, Math.round((graceS * 1000) / 2));
+    this.watchdogTimer = setInterval(() => {
+      void this.reconcileStaffing().catch((err) =>
+        this.logger.warn("staffing reconciliation pass failed", { error: (err as Error).message }),
+      );
+    }, intervalMs);
+    this.watchdogTimer.unref?.();
+    this.logger.info("staffing watchdog armed", { graceSeconds: graceS, everyMs: intervalMs });
+  }
+
+  /** Stop the staffing watchdog (daemon shutdown). Idempotent. */
+  stopStaffingWatchdog(): void {
+    if (!this.watchdogTimer) return;
+    clearInterval(this.watchdogTimer);
+    this.watchdogTimer = undefined;
+  }
+
+  /**
+   * One staffing reconciliation pass (issue #9). Enumerates the board and, for every ticket in a
+   * staffable/running state (in_progress / in_review / design) that is NOT being handled — no live
+   * worker, no mid-spawn reservation, not queued at the cap, no scheduled backed-off retry, not a
+   * publish-held in_review — tracks how long it has been workerless. Past the configured grace it is
+   * re-staffed ONCE (logged); if it is STILL workerless a grace window later, it is parked in `todo`
+   * with a comment so a human sees it. This is the catch-all that guarantees a discarded/wedged
+   * ticket never sits silently in `in_progress` with no worker. Exposed (with an injectable clock) so
+   * tests drive a pass deterministically without a timer. Returns the ids re-staffed / parked this pass.
+   */
+  async reconcileStaffing(nowMs: number = Date.now()): Promise<{ restaffed: string[]; parked: string[] }> {
+    if (this.watchdogInFlight) return { restaffed: [], parked: [] };
+    this.watchdogInFlight = true;
+    const restaffed: string[] = [];
+    const parked: string[] = [];
+    try {
+      let all: Ticket[];
+      try {
+        all = await this.listAllIssues();
+      } catch (err) {
+        this.logger.warn("staffing watchdog: listIssues failed — skipping this pass", {
+          error: (err as Error).message,
+        });
+        return { restaffed, parked };
+      }
+      const graceMs = (this.config.supervise?.staffing_watchdog_s ?? 120) * 1000;
+      const wedged = new Set<string>();
+      for (const ticket of all) {
+        const staffs = this.stages.forState(ticket.state);
+        // Not a staffable state, or a design ticket the guard won't staff → not a wedge; forget it.
+        if (!staffs || (staffs.entryGuard && !staffs.entryGuard(ticket))) {
+          this.forgetWedgeClock(ticket.id);
+          continue;
+        }
+        // Actively handled → healthy; reset its wedge clock. A publish retry legitimately parks
+        // completed work in_review, so it is NOT an unstaffed review gate.
+        if (
+          this.isStaffed(ticket.id) ||
+          this.isPending(ticket.id) ||
+          this.spawnRetryTimers.has(ticket.id) ||
+          (ticket.state === "in_review" && (this.publishOutbox?.has(ticket.id) ?? false))
+        ) {
+          this.forgetWedgeClock(ticket.id);
+          continue;
+        }
+        wedged.add(ticket.id);
+        const since = this.unstaffedSince.get(ticket.id);
+        if (since === undefined) {
+          this.unstaffedSince.set(ticket.id, nowMs);
+          continue; // first sighting — give normal staffing a full grace window before acting
+        }
+        if (nowMs - since < graceMs) continue;
+        if (!this.watchdogRestaffed.has(ticket.id)) {
+          // First recovery: re-staff once and restart the clock so the fresh spawn gets its own window.
+          this.watchdogRestaffed.add(ticket.id);
+          this.unstaffedSince.set(ticket.id, nowMs);
+          this.logger.warn("staffing watchdog: ticket staffable with no live worker — re-staffing", {
+            ticket: ticket.identifier,
+            state: ticket.state,
+            stage: staffs.name,
+            idleMs: nowMs - since,
+          });
+          this.trace(ticket, "watchdog", "started", `no live worker for ${Math.round((nowMs - since) / 1000)}s — re-staffing`);
+          this.spawnGuarded(ticket, staffs.name);
+          restaffed.push(ticket.id);
+        } else {
+          // Re-staff did NOT take (still workerless a grace window later) → park for a human.
+          this.logger.error("staffing watchdog: re-staff did not take — parking ticket in todo", {
+            ticket: ticket.identifier,
+            state: ticket.state,
+            stage: staffs.name,
+          });
+          this.trace(ticket, "watchdog", "held", "re-staff did not take — parked in todo for a human");
+          this.forgetWedgeClock(ticket.id);
+          const ok = await this.advanceTicket(
+            ticket,
+            "todo",
+            "A worker for this ticket was never established (it stayed in **" +
+              `${ticket.state}** with nothing running), and an automatic re-staff did not take. I've ` +
+              "parked it in **todo** so it costs no tokens while it waits — move it back to " +
+              "**in_progress** to try again.",
+          ).catch((err) => {
+            this.logger.warn("staffing watchdog: park failed", {
+              ticket: ticket.identifier,
+              error: (err as Error).message,
+            });
+            return false;
+          });
+          if (ok) parked.push(ticket.id);
+        }
+      }
+      // Forget the clock for any ticket that is no longer wedged (moved on, or now handled).
+      for (const id of [...this.unstaffedSince.keys()]) {
+        if (!wedged.has(id)) this.forgetWedgeClock(id);
+      }
+    } finally {
+      this.watchdogInFlight = false;
+    }
+    return { restaffed, parked };
+  }
+
+  /** Clear a ticket's watchdog wedge clock + re-staff marker (it is healthy / gone). */
+  private forgetWedgeClock(ticketId: string): void {
+    this.unstaffedSince.delete(ticketId);
+    this.watchdogRestaffed.delete(ticketId);
+  }
+
+  /** True if a ticket has a spawn queued at the concurrency cap / behind a busy repo. */
+  private isPending(ticketId: string): boolean {
+    return this.pending.some((p) => p.ticket.id === ticketId);
+  }
+
+  /**
    * Commit every live worker's worktree as a WIP checkpoint (OPS-125). Best-effort per worker: a
    * git failure (e.g. an index.lock race with the worker's own commit) is logged and skipped, never
    * fatal, and one worker's failure never blocks the others. A worker that has already produced its
@@ -1061,6 +1205,7 @@ export class Dispatcher {
     // Stop the periodic checkpoint loop first (OPS-125): a graceful drain commits each worker's WIP
     // itself below, so a checkpoint pass racing the drain would only contend on the same worktree.
     this.stopCheckpointLoop();
+    this.stopStaffingWatchdog();
     for (const timer of this.spawnRetryTimers.values()) clearTimeout(timer);
     this.spawnRetryTimers.clear();
     if (live.length === 0) {

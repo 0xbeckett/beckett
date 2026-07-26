@@ -596,6 +596,11 @@ async function boot(): Promise<BootedSystem> {
   // (drainForShutdown) still commits WIP itself and stops this loop first.
   dispatcher.startCheckpointLoop();
 
+  // Staffing watchdog (issue #9): arm the reconciliation pass that re-staffs — or, failing that,
+  // parks with a comment — any ticket left silently staffed-but-workerless (the mid-spawn discard
+  // race, or any other wedge). Runs after crash recovery so it never races the boot re-staff sweep.
+  dispatcher.startStaffingWatchdog();
+
   // EARLY extension background loops start here — after crash recovery (so a migrated organ
   // never races the recovery block) and BEFORE the pollers, which stay last so events only flow
   // once everything else is ready to consume them. The browser agent's recover() rides this
