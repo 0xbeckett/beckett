@@ -111,10 +111,11 @@ export function readUptime(path: string, now = Date.now()): UptimeSnapshot {
     windows.push({ shutdownAt: shutdown.at, bootAt: boot.at, durationMs });
   }
   const lastBoot = [...events].reverse().find((event) => event.kind === "boot");
+  const running = events.at(-1)?.kind === "boot";
   const total = windows.reduce((sum, window) => sum + window.durationMs, 0);
   const downtimeHistory: DowntimeHistory = windows.length === 0 ? "no-history" : total === 0 ? "zero" : "recorded";
   return {
-    currentUptimeMs: lastBoot ? Math.max(0, now - Date.parse(lastBoot.at)) : null,
+    currentUptimeMs: lastBoot && running ? Math.max(0, now - Date.parse(lastBoot.at)) : null,
     bootedAt: lastBoot?.at ?? null,
     downtimeHistory,
     downtimeMessage: downtimeHistory === "no-history"
