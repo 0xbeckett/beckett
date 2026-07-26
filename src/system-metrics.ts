@@ -110,7 +110,7 @@ async function fetchJson(fetcher: NetdataFetch, url: string, timeoutMs: number):
 async function netdataMetrics(fetcher: NetdataFetch, base: string, timeoutMs: number, now: number): Promise<SystemMetrics> {
   const query = (chart: string) => `${base}/api/v1/data?chart=${encodeURIComponent(chart)}&points=1&format=json`;
   // Root is Netdata's normal chart id. The chart-list fallback covers installations where the
-  // sanitized root id differs, without asking the OS to run df.
+  // sanitized root id differs, while keeping collection entirely in-process.
   const [cpuRaw, ramRaw, rootDisk] = await Promise.all([
     fetchJson(fetcher, query("system.cpu"), timeoutMs),
     fetchJson(fetcher, query("system.ram"), timeoutMs),
