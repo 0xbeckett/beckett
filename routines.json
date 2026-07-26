@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "routines": [
+    {
+      "id": "daily-x-shitpost",
+      "name": "daily X shitpost",
+      "builtin": true,
+      "enabled": true,
+      "action": {
+        "kind": "agent",
+        "agentId": "social-media",
+        "input": "Compose today's shitpost — one fresh, in-voice line — and author the browser task that posts it to X.",
+        "credsEntry": "x.com"
+      },
+      "schedule": {
+        "cadence": {
+          "kind": "daily"
+        },
+        "window": {
+          "start": "12:00",
+          "end": "13:00",
+          "tz": "America/Los_Angeles"
+        }
+      },
+      "state": {
+        "periodKey": null,
+        "chosenFireAt": null,
+        "lastFiredPeriodKey": null,
+        "lastFiredAt": null
+      },
+      "createdAt": "2026-07-26T06:14:04.725Z",
+      "updatedAt": "2026-07-26T06:14:04.725Z"
+    },
+    {
+      "id": "weekly-deps-update",
+      "name": "weekly dependency update",
+      "builtin": true,
+      "enabled": true,
+      "action": {
+        "kind": "deps-update",
+        "base": "main"
+      },
+      "schedule": {
+        "cadence": {
+          "kind": "weekly",
+          "weekday": "sunday"
+        },
+        "window": {
+          "start": "08:00",
+          "end": "10:00",
+          "tz": "America/Los_Angeles"
+        }
+      },
+      "state": {
+        "periodKey": null,
+        "chosenFireAt": null,
+        "lastFiredPeriodKey": null,
+        "lastFiredAt": null
+      },
+      "createdAt": "2026-07-26T06:14:04.725Z",
+      "updatedAt": "2026-07-26T06:14:04.725Z"
+    },
+    {
+      "id": "model-news-watch",
+      "name": "model news event watch",
+      "builtin": true,
+      "enabled": true,
+      "action": {
+        "kind": "watch",
+        "feedUrl": "https://ai-tracker.ssh.codes/api/v1/model-news?type=model&new_models=true",
+        "pollIntervalMinutes": 15,
+        "agentId": "social-media",
+        "credsEntry": "x.com",
+        "dryRun": true
+      },
+      "state": {
+        "periodKey": null,
+        "chosenFireAt": null,
+        "lastFiredPeriodKey": null,
+        "lastFiredAt": null
+      },
+      "createdAt": "2026-07-26T06:14:04.725Z",
+      "updatedAt": "2026-07-26T06:14:05.804Z"
+    }
+  ],
+  "removedBuiltins": []
+}
