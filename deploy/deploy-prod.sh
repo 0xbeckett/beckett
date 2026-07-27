@@ -16,12 +16,14 @@ HOST="${BECKETT_HOST:-beckett@loom-desk}"
 # bumped and main pushed, but `git ls-remote --tags origin vX.Y.Z` stayed empty and the log
 # truncated at the restart with no "deploy complete".
 #
-# The killer is cgroup MEMBERSHIP, so escape it: re-exec the whole script into a transient user
+# Since issue #30 the tag is now pushed in phase 2, BEFORE the restart, so a cgroup kill can no
+# longer lose it. But this scope is still necessary: the restart would otherwise kill the script
+# mid-phase-3, before the health read-back and the phase-4 post-restart tag verification — a
+# silent half-deploy. So still escape the cgroup: re-exec the whole script into a transient user
 # *scope* — a sibling of beckett-v4.service under the user manager, not a child of it. The restart
 # can no longer reach us, so the ssh client stays connected, the remote health gate returns
-# normally, and the post-restart tag push runs in order (no tag-before-successful-restart, no
-# double-tag — ordering is unchanged). This is a no-op off the daemon host (e.g. the Mac, or an
-# interactive shell on loom-desk), where this script isn't a child of beckett-v4.service.
+# normally, and phases 3–4 run to completion. This is a no-op off the daemon host (e.g. the Mac, or
+# an interactive shell on loom-desk), where this script isn't a child of beckett-v4.service.
 if [ -z "${BECKETT_DEPLOY_SCOPED:-}" ] && grep -qs 'beckett-v4\.service' /proc/self/cgroup; then
   echo "== self-deploy detected: re-exec into a detached user scope so the restart can't kill us =="
   command -v systemd-run >/dev/null || {
@@ -122,23 +124,23 @@ bun x tsc --noEmit                      # never restart onto broken code
 # branches like beckett/wk_0012f678/OPS-11 need the `/**` form.
 git for-each-ref --format='%(refname:short)' 'refs/heads/beckett/wk_*' 'refs/heads/beckett/wk_*/**' | xargs -r git branch -D
 # Self-healing unit install (v3→v4 cutover): if the beckett-v4 unit isn't linked yet, this box
-# still has the old unit — run install.sh (idempotent) to link v4 and retire the stale ones.
+# still has the old unit — run install.sh (idempotent) to link v4 and retire the stale ones. This
+# must be in place before the phase-3 restart; it does NOT itself restart anything.
 systemctl --user cat beckett-v4.service >/dev/null 2>&1 || ~/beckett/deploy/install.sh
-# A browser run (including a queued one) is durable only until shutdown: its Claude/browser
-# session cannot survive this restart. Query the STILL-OLD daemon first. The guard prints run ids
-# and ages while it waits, then fails closed after a capped deadline rather than losing a routine
-# run. Set BECKETT_BROWSER_DRAIN_WAIT_SECS=0 to refuse immediately (maximum: ten minutes).
-bun deploy/browser-drain-guard.ts
-systemctl --user restart beckett-v4.service
-sleep 5
-systemctl --user is-active beckett-v4.service
-journalctl --user -u beckett-v4.service -n 12 --no-pager -o cat
 REMOTE
 
-# Record the verified deployment with an annotated release tag and push it via git's explicit
-# tag refspec. Do not use `beckett gh push` here: its branch-only API rejects refs/tags/* (GH014).
-# A pre-existing tag must already be an annotated tag on this exact release commit; silently
-# accepting a local lightweight/stale tag would let package.json and origin's history drift again.
+# ── phase 2: tag the release BEFORE the restart (issue #30) ─────────────────────────────────
+# "This commit is release vX.Y.Z" becomes TRUE the moment the version-bump commit is on origin/main
+# and the phase-1 gates pass — it does not depend on THIS restart succeeding. The old ordering put
+# the tag AFTER the restart, so a script death anywhere between the restart and `git tag -a` (issue
+# #81's cgroup kill, an ssh drop, a health-gate abort) lost the tag entirely — and a lost tag then
+# wedged the NEXT deploy's bump base. Tagging here, before the restart, trades that fragile ordering
+# for a durable one; phase 3 still re-verifies the tag survived on origin after the restart.
+#
+# Push via git's explicit tag refspec. Do NOT use `beckett gh push` here: its branch-only API
+# rejects refs/tags/* (GH014). A pre-existing tag must already be an annotated tag on THIS exact
+# release commit; silently accepting a local lightweight/stale tag would let package.json and
+# origin's history drift again.
 VERSION="v$(python3 -c 'import json;print(json.load(open("package.json"))["version"])')"
 HEAD_COMMIT="$(git rev-parse HEAD)"
 if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
@@ -164,5 +166,35 @@ LOCAL_TAG="$(git rev-parse "refs/tags/${VERSION}")"
   echo "FATAL: origin did not retain ${VERSION} after push" >&2
   exit 1
 }
-echo "== tagged and pushed ${VERSION} =="
+echo "== tagged and pushed ${VERSION} BEFORE restart =="
+
+# ── phase 3: drain in-flight browser work, then restart onto the tagged release ─────────────
+# The browser-drain guard is a HARD gate that must run as late as possible — immediately before the
+# restart — because a browser run started between phase 1 and here would otherwise be lost by the
+# restart. It stays ahead of the restart; it is not weakened. A browser run (including a queued one)
+# is durable only until shutdown: its Claude/browser session cannot survive this restart. The guard
+# queries the STILL-OLD daemon, prints run ids and ages while it waits, then fails closed after a
+# capped deadline rather than losing a routine run. Set BECKETT_BROWSER_DRAIN_WAIT_SECS=0 to refuse
+# immediately (maximum: ten minutes).
+echo "== draining browser work and restarting ${HOST} =="
+ssh "${HOST}" 'bash -s' <<'REMOTE'
+set -euo pipefail
+cd ~/beckett
+bun deploy/browser-drain-guard.ts
+systemctl --user restart beckett-v4.service
+sleep 5
+systemctl --user is-active beckett-v4.service
+journalctl --user -u beckett-v4.service -n 12 --no-pager -o cat
+REMOTE
+
+# ── phase 4: verify the tag SURVIVED the restart on origin ──────────────────────────────────
+# The tag was pushed in phase 2, but re-check origin after the restart: this is the loud alarm the
+# old flow never had. If anything (a force-push race, a mirror hiccup) dropped the tag, fail here
+# rather than reporting a clean deploy over a missing release record.
+REMOTE_TAG_AFTER="$(git ls-remote --tags origin "refs/tags/${VERSION}" | awk '{print $1}')"
+[ "${REMOTE_TAG_AFTER}" = "${LOCAL_TAG}" ] || {
+  echo "FATAL: ${VERSION} is missing from origin after the restart — release tag was lost" >&2
+  exit 1
+}
+echo "== verified ${VERSION} still on origin after restart =="
 echo "== deploy complete =="
