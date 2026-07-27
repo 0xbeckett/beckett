@@ -282,7 +282,7 @@ describe("dispatch queue", () => {
 
   test("restart cancels persisted queued runs instead of replaying them", async () => {
     const { dir, agent, questions } = setup();
-    await agent.run("ASK_COLOR", { channelId: "chan-1", requesterId: "owner" });
+    const first = await agent.run("ASK_COLOR", { channelId: "chan-1", requesterId: "owner" });
     await waitUntil(() => questions.length === 1);
     const q1 = await agent.run("first queued", { channelId: "chan-2", requesterId: "owner" });
     const q2 = await agent.run("second queued", { channelId: "chan-3", requesterId: "owner" });
