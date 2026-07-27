@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createMemory, type MemoryStore } from "./index.ts";
 import { createCalibration, listCalibration, renderCalibrationBlock } from "./calibration.ts";
 import { SELF_AUDIENCE } from "./search.ts";
-import type { Logger } from "../types.ts";
+import type { Logger, RememberIntent } from "../types.ts";
 
 const dirs: string[] = [];
 const quiet = (() => {
@@ -41,7 +41,7 @@ async function seed(
     description: `[${kind}] ${about}`,
     body: "",
     metadata: { kind, channel, about, reason: `reason for ${name}`, created: `${observed}T00:00:00.000Z`, ...extra },
-    source: `source-for-${name}`,
+    source: `source-for-${name}` as RememberIntent["source"],
     reason: "test",
   });
 }
