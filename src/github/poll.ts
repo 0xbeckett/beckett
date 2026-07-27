@@ -70,6 +70,10 @@ interface PrState {
   seenCommentIds: string[];
   /** Merged/closed already emitted → the entry is pruned on the next tick, never re-fired. */
   terminal: boolean;
+  /** Count of CONSECUTIVE hard read failures (repo gone/forbidden). Reset to 0 on any successful
+   *  read; the watch is dropped only once this reaches {@link HARD_FAILURES_BEFORE_DROP}, so a
+   *  single bad response can never wipe it. A transient failure leaves this untouched. */
+  hardFailures: number;
 }
 
 /** The registration payload every PR-open path hands {@link GitHubPrPoller.watch}. */
@@ -109,28 +113,69 @@ export type PrEventSink = (events: PrPollEvent[]) => void | Promise<void>;
 /** Review verdicts that are worth a ping (a plain "COMMENTED" review is a review comment). */
 const MATERIAL_REVIEW = new Set(["APPROVED", "CHANGES_REQUESTED", "COMMENTED"]);
 
-/** One PR's per-tick read outcome: a live read, a permanent drop (repo gone), or a transient skip. */
+/** One PR's per-tick read outcome: a live read, a HARD failure (repo genuinely gone), or a
+ *  transient skip (leave the watch untouched and retry next tick). A hard failure is not itself a
+ *  drop — {@link GitHubPrPoller.poll} only drops after {@link HARD_FAILURES_BEFORE_DROP} of them in
+ *  a row, so a one-off bad response can never wipe a watch. */
 type ReadResult =
   | { kind: "read"; entry: PrState; signals: PrSignals }
-  | { kind: "drop"; entry: PrState }
+  | { kind: "hard-fail"; entry: PrState }
   | null;
 
+/** How many CONSECUTIVE hard failures a PR must rack up before we drop its watch. One bad response
+ *  must never be enough — a hard-looking blip that is actually transient (a momentary edge 404, a
+ *  mislabelled 5xx) has to persist across this many ticks before we conclude the repo is truly
+ *  gone. Any successful read resets the counter to zero. */
+const HARD_FAILURES_BEFORE_DROP = 3;
+
 /**
- * Does a failed read mean the repo is PERMANENTLY unreadable — deleted, or gone private under us —
- * rather than a transient blip? The reader wraps `gh`'s stderr, so we match the signatures GitHub
- * emits for a gone/forbidden repo (a missing repo GraphQL-resolves to nothing; a REST 404/403).
- * A rate-limit is a 403 too but is explicitly transient, so it is never treated as unreadable.
+ * Classify a failed read. `"hard"` means the repo is genuinely gone or genuinely off-limits — a
+ * 404/410, or a 403 that is a real "no access to this repo" — the only class that can (eventually)
+ * drop a watch. EVERYTHING ELSE is `"transient"`: a 5xx, a network error/timeout, a primary OR
+ * secondary rate-limit, an abuse-detection block, or any message we don't recognize. A transient
+ * failure is a no-op — the snapshot is left exactly as it was so the PR retries next tick.
+ *
+ * The reader wraps `gh`'s stderr, so we match on the signatures GitHub emits. Transient is checked
+ * FIRST and wins every tie: we would far rather retry a genuinely-dead repo a few extra times than
+ * silently wipe a live watch on a maybe. Nothing unrecognized is ever treated as hard.
  */
-function isRepoUnreadable(message: string): boolean {
+function classifyReadFailure(message: string): "hard" | "transient" {
   const m = message.toLowerCase();
-  if (m.includes("rate limit")) return false;
-  return (
+  // Transient takes priority. A secondary rate-limit / abuse block surfaces as a 403, so these must
+  // be matched BEFORE the 403 → hard rule below, or we'd mistake throttling for a gone repo.
+  if (
+    m.includes("rate limit") ||
+    m.includes("secondary rate") ||
+    m.includes("abuse") ||
+    m.includes("timeout") ||
+    m.includes("timed out") ||
+    m.includes("network") ||
+    m.includes("socket hang up") ||
+    m.includes("econnreset") ||
+    m.includes("econnrefused") ||
+    m.includes("etimedout") ||
+    m.includes("enotfound") ||
+    m.includes("eai_again") ||
+    m.includes("service unavailable") ||
+    m.includes("bad gateway") ||
+    m.includes("gateway timeout") ||
+    /\b5\d\d\b/.test(m) // any 5xx
+  ) {
+    return "transient";
+  }
+  // Hard: the repo resolves to nothing, or we genuinely cannot see it (404 / 410 / a real 403).
+  if (
     m.includes("could not resolve to a repository") ||
     m.includes("not found") ||
     m.includes("resource not accessible") ||
     m.includes("must have push access") ||
-    /\b40[34]\b/.test(m)
-  );
+    /\b40[34]\b/.test(m) || // 403 forbidden / 404 not found
+    /\b410\b/.test(m) // 410 gone
+  ) {
+    return "hard";
+  }
+  // Unrecognized → transient. We never drop a watch on a message we can't positively classify.
+  return "transient";
 }
 
 export class GitHubPrPoller {
@@ -211,6 +256,7 @@ export class GitHubPrPoller {
       seenReviewIds: [],
       seenCommentIds: [],
       terminal: false,
+      hardFailures: 0,
     });
     this.logger.info("watching PR", { repo: req.repo, number: req.number, channel: req.channel ?? null });
     this.persist();
