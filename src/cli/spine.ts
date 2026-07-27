@@ -87,11 +87,12 @@ export const SPINE: SpineEntry[] = [
   { id: "identity", cliHelp: "identity set|show|list", verbs: [{ name: "identity", load: core((m) => m.runIdentity) }] },
   {
     id: "discord",
-    cliHelp: "discord reply|ack|decline",
+    cliHelp: "discord reply|ack|decline|delete",
     verbs: [
       { name: "discord reply", load: core((m) => m.runDiscordReply) },
       { name: "discord ack", load: core((m) => m.runDiscordAck) },
       { name: "discord decline", load: core((m) => m.runDiscordDecline) },
+      { name: "discord delete", load: core((m) => m.runDiscordDelete) },
     ],
   },
   { id: "proactivity", cliHelp: "proactivity status|set|off", verbs: [{ name: "proactivity", load: core((m) => m.runProactivity) }] },

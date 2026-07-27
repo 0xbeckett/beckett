@@ -981,6 +981,11 @@ export interface DiscordGateway {
   editMessage(channelId: string, messageId: string, payload: DiscordMessageEditPayload): Promise<void>;
   /** Delete one bot-authored message when a privacy-critical ledger write fails. */
   deleteMessage(channelId: string, messageId: string): Promise<void>;
+  /** Author id of a message, or null if it no longer exists — the authorship check behind the
+   *  `beckett discord delete` verb (issue #35), which refuses anything not authored by Beckett. */
+  fetchMessageAuthorId(channelId: string, messageId: string): Promise<string | null>;
+  /** Beckett's own Discord user id once connected (undefined before login). */
+  botUserId(): string | undefined;
   /** Trigger the typing indicator in a channel (~10s; re-call to keep it alive). */
   sendTyping(channelId: string): Promise<void>;
   /** Register the inbound message handler (intake + awaiting-reply resolution). */

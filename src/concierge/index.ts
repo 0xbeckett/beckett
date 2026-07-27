@@ -3808,6 +3808,37 @@ export class Concierge {
             },
           },
           {
+            name: "discord.delete",
+            summary: "delete ONE Beckett-authored message by id (refuses anyone else's message)",
+            handle: async (req) => {
+              // Issue #35: a thin bus surface over the gateway's proven deleteMessage, so Beckett can
+              // clean up its own debugging litter without a human doing it by hand. THE guardrail: only
+              // ever delete a message Beckett itself authored. A verb that could delete anyone's message
+              // is a moderation tool, and that is not what this is for — so authorship is checked against
+              // the bot's own user id HERE, in code, and refused loudly otherwise. The refusal is the
+              // feature. One message at a time by explicit id: no bulk, no range, no delete-last-N.
+              const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
+              const messageId = typeof req.args.messageId === "string" ? req.args.messageId.trim() : "";
+              if (!channelId || !messageId) {
+                return { ok: false, error: "discord.delete needs channelId and messageId" };
+              }
+              try {
+                const authorId = await this.gateway.fetchMessageAuthorId(channelId, messageId);
+                if (authorId === null) {
+                  return { ok: false, error: `message ${messageId} not found in channel ${channelId} (already deleted?)` };
+                }
+                const botId = this.gateway.botUserId();
+                if (!botId || authorId !== botId) {
+                  return { ok: false, error: `refusing to delete message ${messageId}: it was not authored by Beckett` };
+                }
+                await this.gateway.deleteMessage(channelId, messageId);
+                return { ok: true, data: `deleted message ${messageId} in channel ${channelId}` };
+              } catch (err) {
+                return { ok: false, error: (err as Error).message };
+              }
+            },
+          },
+          {
             name: "discord.reply",
             summary: "post to a channel as the concierge (deduped; may claim the live turn)",
             handle: async (req) => {

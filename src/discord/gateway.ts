@@ -534,6 +534,33 @@ export class DiscordJsGateway implements DiscordGateway {
     this.browserQuestionMessageIds.delete(messageId);
   }
 
+  /**
+   * Return the author id of a message, or null if it no longer exists. The `beckett discord
+   * delete` verb (issue #35) uses this to enforce the one guardrail that matters — only ever
+   * delete a message Beckett itself authored — by comparing against {@link botUserId} BEFORE it
+   * calls {@link deleteMessage}. A vanished message (Unknown Message / 10008) resolves to null so
+   * the caller can report "already gone" distinctly from "not mine".
+   */
+  async fetchMessageAuthorId(channelId: string, messageId: string): Promise<string | null> {
+    const client = this.client;
+    if (!client) throw new Error("discord gateway not started");
+    const channel = await client.channels.fetch(channelId);
+    if (!channel?.isTextBased()) throw new Error(`discord channel ${channelId} is not text based`);
+    try {
+      const message = await channel.messages.fetch(messageId);
+      return message.author?.id ?? null;
+    } catch (error) {
+      if ((error as { code?: unknown }).code === 10_008) return null; // Unknown Message — already gone
+      throw error;
+    }
+  }
+
+  /** Beckett's own Discord user id once connected (undefined before login). The Concierge asks the
+   *  gateway rather than tracking it, since only the live client knows the bot's identity. */
+  botUserId(): string | undefined {
+    return this.client?.user?.id;
+  }
+
   /** Create a dedicated task thread, or adopt/rename the current thread when already inside one. */
   async createTaskThread(channelId: string, requestedName: string): Promise<TaskThreadCreated> {
     const client = this.client;

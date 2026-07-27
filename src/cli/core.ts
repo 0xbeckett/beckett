@@ -1322,6 +1322,21 @@ export async function runDiscordAck(argv: string[]): Promise<void> {
   );
 }
 
+// Delete ONE Beckett-authored message by explicit id (issue #35): clean up your own debugging
+// litter instead of leaving it for someone else. Routes over the same control bus as `discord
+// reply`/`ack` and lands on the running daemon's `gateway.deleteMessage`. The guardrail — only
+// ever delete a message Beckett authored — is enforced daemon-side; a message that is gone or was
+// never Beckett's comes back as a one-line error and a non-zero exit, never an unhandled rejection.
+export async function runDiscordDelete(argv: string[]): Promise<void> {
+  const { flags } = parse(argv);
+  const channelId = flags.channel ? String(flags.channel).trim() : "";
+  const messageId = flags.message ? String(flags.message).trim() : "";
+  if (!channelId || !messageId) {
+    fail("usage: beckett discord delete --channel <id> --message <id>");
+  }
+  await bus("discord.delete", { channelId, messageId });
+}
+
 // Hold-and-cancel backstop (OPS-101 / OPS-99 §5.3): abort the ambient turn you're running and
 // post NOTHING — "on reflection this wasn't for me." Only valid mid-ambient-turn; the bus rejects
 // it on a direct @mention/DM (those are never declined) or once you've already replied.
