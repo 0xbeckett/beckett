@@ -60,6 +60,19 @@ test("lists valid visible open loops due-first and flags overdue without recall 
   expect(renderOpenLoopsBlock(memory)).toContain("[recurring-error]");
 });
 
+test("loop reads use recall's fail-closed visibility gate", async () => {
+  const { memory } = store();
+  await seed(memory, "public-loop", "2026-07-01");
+  await seed(memory, "owner-loop", "2026-07-02", "commitment", { visibility: "owner" });
+  await seed(memory, "dm-loop", "2026-07-03", "commitment", { visibility: "dm", dm_with: "881122334455667788" });
+
+  expect(listLoops(memory).map((loop) => loop.node.name)).toEqual(["public-loop"]);
+  expect(listLoops(memory, { audience: SELF_AUDIENCE }).map((loop) => loop.node.name)).toEqual([
+    "public-loop", "owner-loop",
+  ]);
+  expect(renderOpenLoopsBlock(memory)).not.toContain("dm-loop");
+});
+
 test("close and drop round-trip through MemoryStore without losing body or unknown metadata", async () => {
   const { memory, dir } = store();
   await seed(memory, "close-me", "2026-07-01", "commitment", { watchdog: "still-here" });
