@@ -538,6 +538,10 @@ export const configFragments = {
       output_token_budget: posInt.default(150_000),
       // Empty = the concierge model: a dream is Beckett replaying its own day, not a specialist.
       model: z.string().default(""),
+      // The overnight spike's sub-budget (issue #38) is carved out of output_token_budget, and
+      // its throwaway worktree is cut from Beckett's own checkout unless a repo is named here.
+      spike_output_token_budget: posInt.default(60_000),
+      spike_repo: z.string().default(""),
     })
     .strict()
     .default({}),
