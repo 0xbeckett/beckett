@@ -137,6 +137,14 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
     options.backend === "betterwright" && options.cloakCacheDir
       ? { CLOAKBROWSER_CACHE_DIR: options.cloakCacheDir, CLOAKBROWSER_AUTO_UPDATE: "false" }
       : {};
+  // Forward the betterwright adapter's concurrent-lease controls into the host
+  // so the cap and the single-lease kill switch operate inside the sandbox.
+  // Only forward what is actually set, so a default launch's command is unchanged.
+  const leaseEnv: Record<string, string> = {};
+  for (const name of ["BECKETT_BROWSER_MAX_LEASES", "BECKETT_BROWSER_SINGLE_LEASE"]) {
+    const value = options.parentEnv?.[name];
+    if (typeof value === "string" && value.length > 0) leaseEnv[name] = value;
+  }
   const baseEnv: Record<string, string> = {
     PATH: "/usr/bin:/bin",
     HOME: hostHome,
@@ -148,6 +156,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
     BECKETT_BROWSER_HOST_SETTINGS: encodedSettings,
     BECKETT_BROWSER_BACKEND: options.backend ?? "playwright",
     ...cloakEnv,
+    ...leaseEnv,
     ...(encodedBudgets ? { BECKETT_BROWSER_HOST_BUDGETS: encodedBudgets } : {}),
   };
   if (options.sandbox === "none") {
@@ -205,6 +214,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
     ];
     if (encodedBudgets) args.push("--setenv", "BECKETT_BROWSER_HOST_BUDGETS", encodedBudgets);
     for (const [name, value] of Object.entries(cloakEnv)) args.push("--setenv", name, value);
+    for (const [name, value] of Object.entries(leaseEnv)) args.push("--setenv", name, value);
     args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
     addLinuxSystemMounts(args);
     // bwrap creates missing parents for bind destinations. /runtime is explicit because its child
