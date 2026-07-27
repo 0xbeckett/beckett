@@ -124,10 +124,16 @@ function leaseFor(runId: string): BrowserLease {
 
 test("two leases acquired back to back are both live, each on its own session", async () => {
   const fake = new FakeBetterWright();
+  let launchDownloadPolicy: unknown;
   const runtime = createBetterWrightRuntime(settingsFor(), quietLog, {
-    createBrowser: () => fake,
+    createBrowser: (options) => {
+      launchDownloadPolicy = options?.downloadPolicy;
+      return fake;
+    },
   });
   try {
+    // `ask` is fixed at worker launch; individual calls carry their own bit.
+    expect(launchDownloadPolicy).toBe("ask");
     await runtime.acquire(leaseFor("alpha"));
     await runtime.acquire(leaseFor("beta"));
     expect(runtime.hasLease("alpha")).toBe(true);
