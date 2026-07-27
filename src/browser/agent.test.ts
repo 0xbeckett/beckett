@@ -574,6 +574,19 @@ describe("durable outcomes and crash recovery", () => {
     expect(revived.outcomes[0]!.result).toContain("daemon restarted");
   });
 
+  test("shutdown cancels every concurrent live run and queued dispatch", async () => {
+    const { agent, outcomes, questions } = setup({}, { browser: fakeBrowser(2) });
+    const first = await agent.run("ASK_COLOR first", { channelId: "chan", requesterId: "owner" });
+    const second = await agent.run("ASK_COLOR second", { channelId: "chan", requesterId: "owner" });
+    const queued = await agent.run("after deploy", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => questions.length === 2);
+    await agent.stopAll();
+    await waitUntil(() => outcomes.length === 3);
+    expect(outcomes.map((run) => run.runId).sort()).toEqual([first.runId, second.runId, queued.runId].sort());
+    expect(outcomes.every((run) => run.state === "cancelled" && run.restartCancelled)).toBeTrue();
+    expect(agent.stats().runs.filter((run) => ["running", "waiting", "queued"].includes(run.state))).toHaveLength(0);
+  });
+
   test("stopAll does not wait forever for an offline question post", async () => {
     const { agent } = setup({}, {
       onQuestion: async () => await new Promise<string>(() => undefined),

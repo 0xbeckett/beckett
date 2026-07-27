@@ -23,7 +23,7 @@ function ctx(): ExtensionContext {
   return { config, paths: buildPaths(config, {}), logger: quiet };
 }
 
-function fakeRuntime(calls: string[]): BrowserRuntime {
+function fakeRuntime(calls: string[], maxConcurrentLeases = 3): BrowserRuntime {
   let lease: string | null = null;
   return {
     async acquire(next) {
@@ -50,7 +50,17 @@ function fakeRuntime(calls: string[]): BrowserRuntime {
       return lease === runId;
     },
     stats() {
-      return { ready: true, profileDir: "p", activeRunId: lease, pages: 2, launches: 1, evaluations: 3, averageEvalMs: 10 };
+      return {
+        ready: true,
+        profileDir: "p",
+        activeRunId: lease,
+        activeRunIds: lease ? [lease] : [],
+        maxConcurrentLeases,
+        pages: 2,
+        launches: 1,
+        evaluations: 3,
+        averageEvalMs: 10,
+      };
     },
     async stop() {
       calls.push("runtime.stop");
@@ -105,13 +115,13 @@ function fakeAgent(calls: string[], stats: Partial<BrowserAgentStats> = {}): Bro
   };
 }
 
-function build(stats: Partial<BrowserAgentStats> = {}): { ext: BrowserExtension; calls: string[]; deps: ExtensionContext } {
+function build(stats: Partial<BrowserAgentStats> = {}, maxConcurrentLeases = 3): { ext: BrowserExtension; calls: string[]; deps: ExtensionContext } {
   const deps = ctx();
   const calls: string[] = [];
   const ext = createBrowserExtension({
     onQuestion: async () => "anchor-1",
     onOutcome: () => {},
-    createRuntime: () => fakeRuntime(calls),
+    createRuntime: () => fakeRuntime(calls, maxConcurrentLeases),
     createAgent: () => fakeAgent(calls, stats),
   })(deps);
   return { ext, calls, deps };
@@ -244,6 +254,18 @@ test("browser.exec also does not defer to a queued background run", async () => 
   );
   expect(alongsideQueue.ok).toBeTrue();
   expect(calls).toEqual(["runtime.acquire:inline", "runtime.evaluate:return 1", "runtime.release"]);
+});
+
+test("browser.exec restores the former background-lease refusal when the kill switch pins one lane", async () => {
+  const { ext, calls, deps } = build({
+    runs: [{ runId: "r-live", state: "running", startedAt: 1, finishedAt: null, credsEntry: null, question: null, task: "t" }],
+  }, 1);
+  await ext.lifecycle!.init!(deps);
+  const refused = await ext.invoke!(
+    { capabilityId: "browser.exec", args: { code: "return 1" }, origin: ORIGIN }, deps,
+  );
+  expect(refused).toMatchObject({ ok: false, error: expect.stringContaining("holds the browser") });
+  expect(calls).toEqual([]);
 });
 
 test("task/exec/steer/stop refuse without an origin identity; watch stays an open read", async () => {

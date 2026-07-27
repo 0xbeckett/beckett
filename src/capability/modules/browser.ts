@@ -110,10 +110,26 @@ export const createBrowserExtension =
 
     /** One inline evaluation gets its own session; runtime admission enforces only its lane cap. */
     async function execOneOff(code: string, channelId: string | null): Promise<unknown> {
+      const rt = requireRuntime();
+      // The kill switch intentionally restores the former global-lease UX, including protecting
+      // an accepted queue→live handoff from an inline acquire race.
+      if ((rt.stats().maxConcurrentLeases ?? 1) <= 1) {
+        const busyRun = requireAgent()
+          .stats()
+          .runs.find((run) => run.state === "running" || run.state === "waiting" || run.state === "queued");
+        if (busyRun) {
+          throw new Error(
+            busyRun.state === "queued"
+              ? `the background browser agent has run ${busyRun.runId} queued for the browser - ` +
+                  `it starts the moment the lease frees; wait for the queue to drain or dispatch this as a background task`
+              : `the background browser agent holds the browser (run ${busyRun.runId}, ${busyRun.state}) - ` +
+                  `use \`beckett browser watch/steer\` on that run instead, or wait for it to finish`,
+          );
+        }
+      }
       const runId = `inline-${crypto.randomUUID()}`;
       const controlToken = crypto.randomUUID();
       const artifactsDir = join(ctx.paths.beckettDir, "browser-agent", "inline", runId);
-      const rt = requireRuntime();
       try {
         await rt.acquire({ runId, channelId, artifactsDir, controlToken });
         return await rt.evaluate(runId, code, controlToken);
