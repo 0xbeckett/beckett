@@ -1509,7 +1509,9 @@ export async function runBrowser(argv: string[]): Promise<void> {
     }
   }
   const dispatchArgv = sub === "run" ? rest : argv;
-  const mistakenSubcommand = browserTaskSubcommandMistake(dispatchArgv);
+  // `run` is a legacy task-dispatch spelling, so inspect the original argv only to catch its
+  // bare form; `browser run "real task"` remains a valid dispatch.
+  const mistakenSubcommand = browserTaskSubcommandMistake(sub === "run" ? argv : dispatchArgv);
   if (mistakenSubcommand) {
     fail(
       `"${mistakenSubcommand.token}" looks like a browser subcommand; ` +
