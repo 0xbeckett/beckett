@@ -18,6 +18,8 @@ export interface LoopEntry {
   source: string;
   closes: string;
   closed?: string;
+  /** Date of the last progress note, or null if the loop has never been touched. */
+  lastTouched: string | null;
   overdue: boolean;
 }
 
@@ -128,6 +130,42 @@ export async function settleLoop(
   return entry;
 }
 
+/**
+ * Append a dated progress note to an open loop and stamp `lastTouched`, without settling it.
+ * Goes through the same MemoryStore/mergeInto path as {@link settleLoop}, so unrelated metadata
+ * (including `visibility`) is retained untouched — a note can never widen a loop's audience.
+ */
+export async function noteLoop(
+  store: MemoryStore,
+  name: string,
+  note: string | undefined,
+  audience?: Audience,
+): Promise<LoopEntry> {
+  const existing = listLoops(store, { all: true, audience }).find((loop) => loop.node.name === name);
+  if (!existing || existing.status !== "open") throw new Error(`no visible open loop named '${name}'`);
+  if (!note?.trim()) throw new Error("--note is required to note a loop");
+
+  const touched = todayDate();
+  const body = [
+    existing.node.body.trim(),
+    `**Note (${touched}):** ${note.trim()}`,
+  ].filter(Boolean).join("\n\n");
+  const node = await store.remember({
+    op: "update",
+    name: existing.node.name,
+    type: "loop",
+    description: existing.node.description,
+    // mergeInto retains every metadata key not named here; status stays `open`.
+    metadata: { lastTouched: touched },
+    body,
+    source: String(existing.node.metadata.source ?? existing.node.source) as RememberIntent["source"],
+    reason: "note loop via CLI",
+  });
+  const entry = asLoop(node, touched);
+  if (!entry) throw new Error(`loop '${name}' could not be read after noting`);
+  return entry;
+}
+
 const SELF_LOOP_AUDIENCE: Audience = { viewerId: "beckett-self", viewerRole: "owner", context: "guild" };
 
 function asLoop(node: MemoryNode, today: string): LoopEntry | null {
@@ -145,6 +183,10 @@ function asLoop(node: MemoryNode, today: string): LoopEntry | null {
   const closes = typeof metadata.closes === "string" && metadata.closes.trim() ? metadata.closes.trim() : null;
   const hasClosed = metadata.closed !== undefined && metadata.closed !== null;
   const closed = typeof metadata.closed === "string" && isDate(metadata.closed) ? metadata.closed : undefined;
+  // Loops predating progress notes carry no `lastTouched`; they read as never touched.
+  const lastTouched = typeof metadata.lastTouched === "string" && isDate(metadata.lastTouched)
+    ? metadata.lastTouched
+    : null;
   // A close date belongs only to terminal loops; terminal loops must have one. A malformed
   // present close date is malformed frontmatter too, never silently treated as absent.
   if (!kind || !status || !due || !opened || !source || !closes || (hasClosed && !closed)) return null;
@@ -158,6 +200,7 @@ function asLoop(node: MemoryNode, today: string): LoopEntry | null {
     source,
     closes,
     ...(closed ? { closed } : {}),
+    lastTouched,
     overdue: due <= today,
   };
 }
