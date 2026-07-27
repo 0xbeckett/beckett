@@ -165,6 +165,8 @@ function fakeBrowserAgent(overrides: Partial<BrowserAgent> = {}): BrowserAgent {
     evalSecrets: async () => null,
     recover: async () => {},
     stats: () => ({ running: 0, waiting: 1, queued: 0, runs: [] }),
+    beginDeployDrain: () => {},
+    endDeployDrain: () => {},
     stopAll: async () => {},
     ...overrides,
   };

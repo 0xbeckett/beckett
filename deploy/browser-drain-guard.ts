@@ -8,6 +8,8 @@
  */
 
 import { waitForBrowserDrain, type BrowserRunForDrain } from "../src/deploy/browser-drain.ts";
+import { callBus } from "../src/shell/control-bus.ts";
+import { SOCK } from "../src/cli/context.ts";
 
 const MAX_WAIT_SECS = 10 * 60;
 const DEFAULT_WAIT_SECS = 120;
@@ -49,27 +51,54 @@ async function browserStatus(): Promise<unknown> {
   }
 }
 
+async function setDeployDrain(active: boolean): Promise<void> {
+  const command = active ? "browser.begin-deploy-drain" : "browser.end-deploy-drain";
+  const response = await callBus(SOCK, command, {}, 10_000);
+  if (!response.ok) throw new Error(response.error ?? `${command} failed`);
+}
+
 async function main(): Promise<void> {
   const seconds = waitSeconds();
-  const result = await waitForBrowserDrain({
-    status: browserStatus,
-    waitMs: seconds * 1_000,
-    onWaiting: (runs, remainingMs) => {
-      const remainingSecs = Math.ceil(remainingMs / 1_000);
-      console.log(
-        `== deploy preflight: waiting for live browser run(s) ${runs.map(describe).join(", ")}; ` +
-          `${remainingSecs}s remain before this deploy refuses to restart ==`,
-      );
-    },
-  });
-  if (result.drained) {
-    console.log("== deploy preflight: browser lease is idle; safe to restart ==");
-    return;
+  let restarting = false;
+  let drainGateClosed = false;
+  // Close the queue→lease race BEFORE the first status read. The first deploy that introduces
+  // this guard talks to an older daemon which lacks this private command; it still gets the
+  // bounded status/refusal guard so this upgrade remains deployable, then every later deploy is
+  // fully race-free.
+  try {
+    await setDeployDrain(true);
+    drainGateClosed = true;
+  } catch (error) {
+    const message = (error as Error).message;
+    if (!message.includes("unknown command")) throw error;
+    console.warn("== deploy preflight: running daemon predates the drain gate; using status-only compatibility guard ==");
   }
-  throw new Error(
-    `refusing to restart with live browser run(s): ${result.runs.map(describe).join(", ")}. ` +
-      "Wait for the run to finish or stop it deliberately, then deploy again.",
-  );
+  try {
+    const result = await waitForBrowserDrain({
+      status: browserStatus,
+      waitMs: seconds * 1_000,
+      onWaiting: (runs, remainingMs) => {
+        const remainingSecs = Math.ceil(remainingMs / 1_000);
+        console.log(
+          `== deploy preflight: waiting for live browser run(s) ${runs.map(describe).join(", ")}; ` +
+            `${remainingSecs}s remain before this deploy refuses to restart ==`,
+        );
+      },
+    });
+    if (!result.drained) {
+      throw new Error(
+        `refusing to restart with live browser run(s): ${result.runs.map(describe).join(", ")}. ` +
+          "Wait for the run to finish or stop it deliberately, then deploy again.",
+      );
+    }
+    // Leave the gate closed: deploy-prod calls systemctl immediately after this process exits.
+    restarting = true;
+    console.log("== deploy preflight: browser lease is idle; safe to restart ==");
+  } finally {
+    // A failed preflight must not leave the healthy daemon permanently unable to start queued
+    // work. On success the imminent restart resets the in-memory gate.
+    if (!restarting && drainGateClosed) await setDeployDrain(false).catch(() => undefined);
+  }
 }
 
 main().catch((error) => {

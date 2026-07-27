@@ -377,6 +377,24 @@ describe("dispatch queue", () => {
   });
 });
 
+describe("deploy drain", () => {
+  test("queues a routine/browser arrival during deploy drain and starts it if the preflight aborts", async () => {
+    const { agent, outcomes } = setup();
+    // The deploy guard closes this gate before reading status, eliminating the clean-status →
+    // restart race. The task remains in the same durable queue used for restart recovery.
+    agent.beginDeployDrain();
+    const queued = await agent.run("post after aborted deploy", { channelId: "chan", requesterId: "owner" });
+    expect(queued.queued).toBe(1);
+    expect(agent.stats()).toMatchObject({ running: 0, queued: 1 });
+    await Bun.sleep(40);
+    expect(outcomes).toHaveLength(0);
+
+    agent.endDeployDrain();
+    await waitUntil(() => outcomes.length === 1);
+    expect(outcomes[0]).toMatchObject({ runId: queued.runId, state: "done" });
+  });
+});
+
 describe("pause, surface, resume", () => {
   test("parks on a screenshot-backed question and resumes the same session", async () => {
     const { dir, agent, outcomes, questions } = setup();
