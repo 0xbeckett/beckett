@@ -74,6 +74,27 @@ test("loop reads use recall's fail-closed visibility gate", async () => {
   expect(renderOpenLoopsBlock(memory)).not.toContain("dm-loop");
 });
 
+test("loop block can include only recent closed SELF loops for event turns", async () => {
+  const { memory } = store();
+  await seed(memory, "open", "2026-08-01");
+  await seed(memory, "just-closed", "2026-07-01", "commitment", { status: "done", closed: "2026-07-27" });
+  await seed(memory, "week-old", "2026-07-02", "commitment", { status: "dropped", closed: "2026-07-20" });
+  await seed(memory, "stale", "2026-07-03", "commitment", { status: "done", closed: "2026-07-19" });
+  await seed(memory, "private-close", "2026-07-04", "commitment", {
+    status: "done",
+    closed: "2026-07-27",
+    visibility: "dm",
+    dm_with: "881122334455667788",
+  });
+
+  const block = renderOpenLoopsBlock(memory, undefined, { recentlyClosedDays: 7, today: "2026-07-27" });
+  expect(block).toContain("I owe open");
+  expect(block).toContain("CLOSED 2026-07-27 [commitment] I owe just-closed");
+  expect(block).toContain("CLOSED 2026-07-20 [commitment] I owe week-old");
+  expect(block).not.toContain("I owe stale");
+  expect(block).not.toContain("I owe private-close");
+});
+
 test("close and drop round-trip through MemoryStore without losing body or unknown metadata", async () => {
   const { memory, dir } = store();
   await seed(memory, "close-me", "2026-07-01", "commitment", { watchdog: "still-here" });
