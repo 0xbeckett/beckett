@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.9.0 (2026-07-27)
+
 ### The overnight spike: two loops, one branch-only prototype (#38)
 
 The generative half of the dream engine. When the nightly synthesis notices that two open
