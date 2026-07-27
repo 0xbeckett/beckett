@@ -1287,6 +1287,30 @@ describe("stall escalation ladder (issue #21)", () => {
     expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(2);
   });
 
+  test("records the journal-derived fingerprint when it kills a silent worker", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-stall-fingerprint-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const { d } = newDispatcher(2, { runtimeStatePath });
+      const ticket = makeTicket();
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+
+      created[0].fingerprint = "Read: src/browser/profile-cache.ts";
+      created[0].stall(640_000, 2);
+      await tick();
+      await tick();
+
+      const state = JSON.parse(readFileSync(runtimeStatePath, "utf8"));
+      expect(state.stallFingerprints[ticket.id]).toEqual({
+        fingerprint: "implement: Read: src/browser/profile-cache.ts",
+        cycles: 1,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("two identical silent fingerprints park the ticket instead of respawning forever", async () => {
     const { d, client } = newDispatcher();
     const ticket = makeTicket();
