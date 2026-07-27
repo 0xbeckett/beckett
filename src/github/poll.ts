@@ -8,11 +8,15 @@
  * the diff persisted so a daemon restart never re-fires an old notification (the "notify re-fire
  * loop" hazard).
  *
- * WHAT IT WATCHES. The poller is registry-driven: {@link GitHubPrPoller.watch} is called by the
- * dispatcher the moment Beckett opens a PR, stamping the originating ticket's channel onto the
- * entry. A PR that was never registered is never polled, and a registered PR whose owner isn't our
- * account is dropped (v1 scope = the 0xbeckett org only). This is also why an unknown PR produces
- * nothing: there's simply no entry for it.
+ * WHAT IT WATCHES. The poller is registry-driven: {@link GitHubPrPoller.watch} is called by every
+ * path that opens a PR — the dispatcher when a worker publishes one, and `beckett gh pr create`
+ * (over the control bus) when one is opened by hand from the concierge seat — stamping the
+ * originating channel onto the entry where one is knowable. It watches any PR *we opened*, wherever
+ * it lives: a cross-fork PR into a third-party upstream is watched exactly like one on our own org
+ * (#31 — the v1 "our-org-only" gate silently left every cross-org PR with no watcher at all). A PR
+ * that was never registered is never polled, which is why an unknown PR produces nothing: there's
+ * simply no entry for it. A watched repo that goes private or is deleted under us (a read that
+ * 404s/403s) is dropped once, so it never becomes a poll that fails forever every tick.
  *
  * WHAT COUNTS AS MATERIAL. New reviews (approval / changes-requested / plain review comment), new
  * conversation comments, a CI conclusion (failures loudest), a merge, or a close. Explicitly NOT
@@ -68,7 +72,7 @@ interface PrState {
   terminal: boolean;
 }
 
-/** The registration payload the dispatcher hands {@link GitHubPrPoller.watch}. */
+/** The registration payload every PR-open path hands {@link GitHubPrPoller.watch}. */
 export interface WatchRequest {
   repo: string;
   number: number;
@@ -76,11 +80,19 @@ export interface WatchRequest {
   title: string;
   ticket?: string;
   channel?: string;
+  /**
+   * The PR author's login, when the caller knows it. It exists only for the defensive check in
+   * {@link GitHubPrPoller.watch}: a registration is only ever issued for a PR we just opened, so an
+   * absent author means "the open path vouches this is ours". A stamped author that is NOT us is the
+   * one thing we refuse — a PR we did not author has no business being watched here.
+   */
+  author?: string;
 }
 
 export interface GitHubPrPollerDeps {
   reader: GitHubPrReader;
-  /** Our GitHub login: scopes watching to the org and filters Beckett's own reviews/comments. */
+  /** Our GitHub login: the defensive author check in {@link GitHubPrPoller.watch} and the filter
+   *  that suppresses Beckett's own reviews/comments both compare against it. */
   account: string;
   logger?: Logger;
   /** Self-schedule interval for {@link GitHubPrPoller.start} (seconds). Defaults to 60. */
@@ -127,15 +139,25 @@ export class GitHubPrPoller {
   // ── registration ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Start watching a PR Beckett just opened. Idempotent: re-watching a known PR only refreshes its
-   * routing (channel/title), never its snapshot, so a re-open can't replay history. Enforces the v1
-   * scope in ONE place — a PR whose owner isn't our account (a cross-fork PR to a third-party
-   * upstream) is ignored. Persists immediately so the registration survives a restart.
+   * Start watching a PR we just opened. Idempotent: re-watching a known PR only refreshes its
+   * routing (channel/title), never its snapshot, so a re-open can't replay history. Persists
+   * immediately so the registration survives a restart.
+   *
+   * There is NO org gate here (#31): the old "repo owner == our account" check dropped exactly the
+   * cross-fork PRs into third-party upstreams that most need watching — a PR I open on someone
+   * else's repo, closed and reimplemented upstream with nobody watching. Registration is only ever
+   * issued for a PR we opened, and reading a third-party PR is fine with the classic PAT we already
+   * use for cross-fork PRs. The one remaining guard is a genuine safety condition, not a scope
+   * limit: if the caller stamped an author and it is demonstrably NOT us, this is someone else's PR
+   * we were handed by mistake — refuse it. An absent author is the vouched-ours common case.
    */
   watch(req: WatchRequest): void {
-    const owner = req.repo.split("/")[0] ?? "";
-    if (owner.toLowerCase() !== this.account.toLowerCase()) {
-      this.logger.debug("not watching PR outside our org", { repo: req.repo, number: req.number });
+    if (req.author && req.author.toLowerCase() !== this.account.toLowerCase()) {
+      this.logger.debug("not watching PR we did not author", {
+        repo: req.repo,
+        number: req.number,
+        author: req.author,
+      });
       return;
     }
     const key = prKey(req.repo, req.number);
