@@ -3848,6 +3848,39 @@ export class Concierge {
               });
             },
           },
+          {
+            name: "routine.self",
+            summary: "wake the concierge on its own open-loop ledger from a self-lane routine fire (issue #26)",
+            handle: async (req) => {
+              // The self lane (issue #26): the ONLY routine lane that wakes Beckett itself instead of
+              // the browser. The routine dispatcher posts here; we frame a SYSTEM turn and hand it to
+              // `askUpdate` — the SAME queued SYSTEM_SCOPE lane ticket updates and notifyIncomingEmail
+              // use, never a user-message path. The prompt is Beckett's OWN text from a routine
+              // definition (not third-party content), so it needs no untrusted-input quoting — but it
+              // is still framed as SYSTEM, never as if a person typed it. One fire is one turn: this
+              // enqueues exactly one turn and returns; it never loops, retries into a second turn, or
+              // schedules anything (per-period idempotency in the scheduler is the only fire guard).
+              const routineId = typeof req.args.routineId === "string" ? req.args.routineId.trim() : "";
+              const prompt = typeof req.args.prompt === "string" ? req.args.prompt.trim() : "";
+              const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
+              if (!routineId || !prompt || !channelId) {
+                return { ok: false, error: "routine.self needs routineId, prompt, and channelId" };
+              }
+              const framed =
+                `SYSTEM (scheduled self-directed sweep — an automated routine woke you on your own open-loop ledger; ` +
+                `NOT a message from a user, do not reply to this turn as if a person typed it):\n` +
+                `Routine "${routineId}" fired and handed you its own standing instruction:\n\n${prompt}\n\n` +
+                `This is ONE turn: do the work now — you have your doctrine, your memory, your Bash tool, and the ` +
+                `ability to file tickets. If any of it is worth surfacing to the person, report IN YOUR VOICE by ` +
+                `running this from your Bash tool:\n` +
+                `  beckett discord reply --channel ${channelId} "<your message>"\n` +
+                `If there is nothing worth saying, do nothing.`;
+              // Fire-and-forget onto the system session (like notify()/quick()/pr updates): the bus
+              // caller must not block on a full concierge turn, and askUpdate already logs + retries once.
+              void this.askUpdate(framed, `self:${routineId}`).catch(() => undefined);
+              return { ok: true, data: { woke: routineId } };
+            },
+          },
         ],
       },
     ];

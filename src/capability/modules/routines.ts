@@ -46,7 +46,7 @@ import {
 } from "../../routine/scheduler.ts";
 import { buildDispatchPlan, type RoutineDispatchPlan } from "../../routine/plan.ts";
 import { nextFireAt, isValidTimeZone } from "../../routine/schedule.ts";
-import { WeekdaySchema, type Cadence, type Routine } from "../../routine/types.ts";
+import { WeekdaySchema, type Cadence, type Routine, type RoutineAction } from "../../routine/types.ts";
 import { WatchStateStore } from "../../routine/watch-store.ts";
 import { fetchModelNewsFeed } from "../../routine/model-news.ts";
 import {
@@ -371,6 +371,23 @@ export const createRoutinesExtension =
         return;
       }
 
+      // The self lane (issue #26): the ONLY lane that wakes Beckett's OWN concierge, not the
+      // browser. It forks HERE — before the browser dependency check below, for the SAME reason
+      // deps-update does — because a turn that puts Beckett on its own open-loop ledger has no
+      // business resolving a browser lane, an agent, or a creds entry. Forking early makes it
+      // structurally impossible for a self routine to reach any of them. The wake itself is one
+      // bus post to the concierge, which frames a SYSTEM turn; no credentials ride this lane.
+      if (plan.lane === "self") {
+        if (!plan.selfPrompt) throw new Error("self-lane routine is missing its prompt");
+        await callBus(
+          join(ctx.paths.beckettDir, "control.sock"),
+          "routine.self",
+          { routineId: plan.routineId, prompt: plan.selfPrompt, channelId },
+          30_000,
+        );
+        return;
+      }
+
       if (!deps.browserAgent || !deps.agentRegistry || !deps.agentRunner) {
         // Only reachable in a process that armed the scheduler without the daemon's deps —
         // the CLI never starts it, and the daemon always injects all three.
@@ -537,7 +554,7 @@ export const createRoutinesExtension =
         const { _, flags } = parse(rest);
         const id = _[0];
         if (!id) {
-          fail('usage: beckett routine add <id> --window 12:00-13:00 --tz <IANA> --task "<browser task>" [--weekly <weekday>] [--name <n>] [--creds <entry>] [--channel <id>]');
+          fail('usage: beckett routine add <id> --window 12:00-13:00 --tz <IANA> (--task "<browser task>" | --self "<prompt>") [--weekly <weekday>] [--name <n>] [--creds <entry>] [--channel <id>]');
         }
         const windowRaw = String(flags.window ?? "");
         const m = windowRaw.match(/^(\d{2}:\d{2})-(\d{2}:\d{2})$/);
@@ -545,7 +562,15 @@ export const createRoutinesExtension =
         const tz = String(flags.tz ?? "");
         if (!tz || !isValidTimeZone(tz)) fail("--tz must be a valid IANA timezone, e.g. America/Los_Angeles");
         const task = flags.task ? String(flags.task) : "";
-        if (!task.trim()) fail('a routine needs a --task "<self-contained browser task>"');
+        const selfPrompt = flags.self ? String(flags.self) : "";
+        // The self lane (issue #26) and the browser lane are two different destinations — one wakes
+        // Beckett, the other wakes the browser — so a single routine can be exactly one of them.
+        if (task.trim() && selfPrompt.trim()) {
+          fail('--task and --self are mutually exclusive: a routine either runs a browser --task or wakes Beckett with --self');
+        }
+        if (!task.trim() && !selfPrompt.trim()) {
+          fail('a routine needs a --task "<self-contained browser task>" or a --self "<prompt>"');
+        }
         // No --weekly → daily, exactly as before. A typo'd weekday fails HERE, at add time, for
         // the same reason a bad --tz does: a cadence that can't resolve must never reach the store.
         let cadence: Cadence;
@@ -555,17 +580,25 @@ export const createRoutinesExtension =
           fail("--weekly must be a weekday name, e.g. sunday");
           return;
         }
+        // A self routine carries its own prompt and NO creds — its lane never touches the browser.
+        const action: RoutineAction = selfPrompt.trim()
+          ? {
+              kind: "self",
+              prompt: selfPrompt,
+              channelId: flags.channel ? String(flags.channel) : undefined,
+            }
+          : {
+              kind: "browser",
+              task,
+              credsEntry: flags.creds ? String(flags.creds) : undefined,
+              channelId: flags.channel ? String(flags.channel) : undefined,
+            };
         try {
           const routine = await store.add({
             id: id!,
             name: flags.name ? String(flags.name) : id!,
             enabled: true,
-            action: {
-              kind: "browser",
-              task,
-              credsEntry: flags.creds ? String(flags.creds) : undefined,
-              channelId: flags.channel ? String(flags.channel) : undefined,
-            },
+            action,
             schedule: {
               cadence,
               window: { start: m[1]!, end: m[2]!, tz },
@@ -635,6 +668,7 @@ export const createRoutinesExtension =
             credsEntry: plan.credsEntry,
             browserTask: plan.browserTask,
             depsUpdate: plan.depsUpdate,
+            selfPrompt: plan.selfPrompt,
             note: "dry-run did NOT run the agent or post. To fire for real: beckett routine fire " + id + " --force",
           });
         }
@@ -670,6 +704,7 @@ export const createRoutinesExtension =
     /** Kept for the CLI dry-run/plan output: which executor a lane actually hands the work to. */
     function describeLaneTarget(plan: RoutineDispatchPlan): string {
       if (plan.lane === "deps-update") return "beckett routine deps-update (local maintenance subprocess)";
+      if (plan.lane === "self") return "the concierge (a framed SYSTEM turn — wakes Beckett, never the browser)";
       if (plan.lane === "agent") return `invoke agent ${plan.agentId} → beckett browser (background lane)`;
       return "beckett browser (background lane)";
     }

@@ -8,7 +8,7 @@
  *   - the CLI `--dry-run`, which builds the SAME plan and prints it WITHOUT dispatching, so the
  *     wiring is provable without a real live post.
  *
- * Four lanes:
+ * Five lanes:
  *   - `agent`  → invoke a registered agent with `agentInput`; the agent AUTHORS the browser task at
  *      dispatch time (its taste lives in its prompt, not here), so the plan carries the invocation,
  *      not composed text. The authored post is not knowable until the agent runs.
@@ -23,6 +23,10 @@
  *      happens in the dispatcher, exactly like `deps-update`'s executor. A live, feed-aware
  *      preview for `--dry-run` is built separately by `runWatchCycle`/`previewWatchCycle`
  *      ({@link ./watch.ts}), which DO perform I/O — this function is not where that happens.
+ *   - `self` → the ONLY lane that wakes Beckett itself (issue #26): no agent, no browser, no
+ *      credentials. The plan carries just the prompt; the dispatcher hands it to the concierge's
+ *      self-wake bus command, which frames a SYSTEM turn on `SYSTEM_SCOPE` via `askUpdate`. Like
+ *      `deps-update`, it exists so a self-directed wake is NEVER smuggled through the browser lane.
  *
  * The pre-#72 `x-shitpost` action is folded onto the `agent` lane here (target: the `social-media`
  * agent), so a legacy routines.json fires through exactly ONE path with no bespoke composition code.
@@ -109,6 +113,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
         base: action.base,
         sourceRepo: action.sourceRepo ?? null,
       },
+      selfPrompt: null,
       preview:
         `update in-range dependencies in an isolated clone, run typecheck + tests, ` +
         `open a PR against ${action.base}${action.repo ? ` on ${action.repo}` : ""}`,
@@ -129,12 +134,32 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       agentInput: null,
       browserTask: null,
       depsUpdate: null,
+      selfPrompt: null,
       preview:
         `poll ${action.feedUrl} every ${action.pollIntervalMinutes}m; on a genuinely new, ` +
         `unseen, rate-limit-clear model release, dispatch agent ${action.agentId} with the item ` +
         `as the subject` +
         (action.dryRun ? " (dry-run: would post, does not post)" : ""),
       credsEntry: action.credsEntry ?? null,
+      channelId: action.channelId ?? null,
+      requesterId: action.requesterId ?? null,
+    };
+  }
+
+  if (action.kind === "self") {
+    // Its own lane, deliberately (issue #26): the ONLY plan that wakes Beckett itself. Like
+    // `deps-update` it names no agent, no browser task, and no creds entry — there is no shape a
+    // dispatcher could mistake for browser work, so a self routine can never resolve a web session.
+    return {
+      routineId: routine.id,
+      lane: "self",
+      agentId: null,
+      agentInput: null,
+      browserTask: null,
+      depsUpdate: null,
+      selfPrompt: action.prompt,
+      preview: `wake the concierge on its own ledger: ${action.prompt}`,
+      credsEntry: null,
       channelId: action.channelId ?? null,
       requesterId: action.requesterId ?? null,
     };
@@ -150,6 +175,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       agentInput: LEGACY_SHITPOST_INPUT,
       browserTask: null,
       depsUpdate: null,
+      selfPrompt: null,
       preview: `invoke agent ${SOCIAL_MEDIA_AGENT_ID}: ${LEGACY_SHITPOST_INPUT}`,
       credsEntry: action.credsEntry ?? null,
       channelId: action.channelId ?? null,
@@ -165,6 +191,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
     agentInput: null,
     browserTask: action.task,
     depsUpdate: null,
+    selfPrompt: null,
     preview: action.task,
     credsEntry: action.credsEntry ?? null,
     channelId: action.channelId ?? null,
