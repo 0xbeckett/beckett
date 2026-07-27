@@ -100,6 +100,34 @@ test("incoming email is delivered through the automated-update turn queue with r
   expect(asks[0]).toContain("beckett mail read");
 });
 
+test("routine.self frames a SYSTEM self-directed-sweep turn on the same askUpdate lane (issue #26)", async () => {
+  const { concierge, asks } = harness();
+  const res = await concierge.onBusRequest({
+    cmd: "routine.self",
+    args: { routineId: "morning-sweep", prompt: "look over the board and nudge anything stalled", channelId: CHAN },
+  });
+  expect(res.ok).toBe(true);
+  await new Promise((r) => setTimeout(r, 0)); // askUpdate is fire-and-forget onto the system session
+  expect(asks.length).toBe(1);
+  // Framed as SYSTEM, a scheduled self-directed sweep, and explicitly NOT a user message.
+  expect(asks[0]).toContain("SYSTEM (scheduled self-directed sweep");
+  expect(asks[0]).toContain("NOT a message from a user");
+  // Carries the routine id, the origin channel, and its own prompt.
+  expect(asks[0]).toContain("morning-sweep");
+  expect(asks[0]).toContain("look over the board and nudge anything stalled");
+  expect(asks[0]).toContain(`beckett discord reply --channel ${CHAN}`);
+  // Permission to stay silent if there's nothing worth saying.
+  expect(asks[0]).toContain("do nothing");
+});
+
+test("routine.self refuses without routineId/prompt/channelId (no half-formed self turn)", async () => {
+  const { concierge, asks } = harness();
+  const res = await concierge.onBusRequest({ cmd: "routine.self", args: { prompt: "x", channelId: CHAN } });
+  expect(res.ok).toBe(false);
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(0);
+});
+
 test("does NOT ping for the intermediate `→ in_review` advance (avoids the double-message)", () => {
   const { concierge, asks } = harness();
   // The person already has an ack; the `done` ping lands after review. This intermediate advance is

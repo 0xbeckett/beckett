@@ -360,14 +360,15 @@ test("unknown capabilities and pre-init calls refuse with results", async () => 
 // ── the deps-update lane forks BEFORE the browser (issue #85) ─────────────────────────────
 
 /** A plan shaped like the scheduler builds one, minus the fields the lane under test ignores. */
-function planFor(lane: "deps-update" | "browser") {
+function planFor(lane: "deps-update" | "browser" | "self") {
   return {
-    routineId: "weekly-deps-update",
+    routineId: lane === "self" ? "morning-sweep" : "weekly-deps-update",
     lane,
     agentId: null,
     agentInput: null,
     browserTask: lane === "browser" ? "go do the thing" : null,
     depsUpdate: lane === "deps-update" ? { repo: null, base: "main", sourceRepo: null } : null,
+    selfPrompt: lane === "self" ? "look over the board and nudge anything stalled" : null,
     preview: "p",
     credsEntry: null,
     channelId: null,
@@ -434,6 +435,35 @@ test("the browser lane still goes to the browser — the fork is on the lane, no
   });
   await dispatcher.dispatch(planFor("browser") as never, {} as never);
   expect(posted).toEqual(["go do the thing"]);
+});
+
+test("a self fire wakes the concierge and never resolves the browser lane (issue #26)", async () => {
+  const woke: Array<{ routineId: string; prompt: string; channelId: string }> = [];
+  const dispatcher = await dispatcherOf({
+    ...exploding(), // browserAgent/agentRegistry/agentRunner all throw if the lane reaches them
+    wakeSelf: (post) => void woke.push(post),
+  });
+
+  // If the dispatcher touched browserAgent/agentRegistry/agentRunner this would throw — proving the
+  // self lane forks BEFORE that requirement check, exactly like deps-update.
+  await dispatcher.dispatch(planFor("self") as never, {} as never);
+
+  expect(woke.length).toBe(1);
+  expect(woke[0]!.routineId).toBe("morning-sweep");
+  expect(woke[0]!.prompt).toBe("look over the board and nudge anything stalled");
+  // The fire-time origin is threaded through so the framed turn knows which channel to report to.
+  expect(woke[0]!.channelId).toBe("chan");
+});
+
+test("a self fire still needs an origin channel to report to", async () => {
+  const dispatcher = await dispatcherOf({
+    defaultOrigin: () => ({ channelId: null, requesterId: null }),
+    wakeSelf: () => {
+      throw new Error("woke without an origin");
+    },
+  });
+  await expect(dispatcher.dispatch(planFor("self") as never, {} as never))
+    .rejects.toThrow(/origin channel \+ requester/);
 });
 
 test("a deps-update fire still needs an origin channel + requester to report to", async () => {

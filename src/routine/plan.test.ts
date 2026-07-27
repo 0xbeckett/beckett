@@ -75,6 +75,29 @@ test("deps-update carries an explicit repo/base/source when the routine names th
   expect(plan.preview).toContain("0xbeckett/beckett");
 });
 
+test("self action → its OWN lane carrying only the prompt, nothing a browser dispatcher could act on", () => {
+  const plan = buildDispatchPlan(routine({ kind: "self", prompt: "look over the board and nudge anything stalled" }));
+  expect(plan.lane).toBe("self");
+  expect(plan.selfPrompt).toBe("look over the board and nudge anything stalled");
+  // The self lane wakes Beckett, never the browser: no browser task, no agent, no deps job, and —
+  // critically — no creds entry anywhere on it (issue #26).
+  expect(plan.browserTask).toBeNull();
+  expect(plan.agentId).toBeNull();
+  expect(plan.agentInput).toBeNull();
+  expect(plan.depsUpdate).toBeNull();
+  expect(plan.credsEntry).toBeNull();
+  expect(plan.preview).toContain("look over the board and nudge anything stalled");
+});
+
+test("self action carries the routine's channelId/requesterId when named, still no creds", () => {
+  const plan = buildDispatchPlan(
+    routine({ kind: "self", prompt: "morning sweep", channelId: "chan-1", requesterId: "owner-1" }),
+  );
+  expect(plan.channelId).toBe("chan-1");
+  expect(plan.requesterId).toBe("owner-1");
+  expect(plan.credsEntry).toBeNull();
+});
+
 test("a plan never carries a secret value — only the jingle entry NAME", () => {
   const plan = buildDispatchPlan(
     routine({ kind: "agent", agentId: "social-media", input: "x", credsEntry: "x.com" }),
