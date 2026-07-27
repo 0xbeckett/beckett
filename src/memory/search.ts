@@ -330,6 +330,15 @@ function idOrUndefined(v: unknown): string | undefined {
 }
 
 /**
+ * Is this node a dream-derived INFERENCE (issue #36)? Every read surface that renders node
+ * content should mark these visibly so they are never read back as observed fact. Pure over
+ * the node shape (lives here, not index.ts, so agent-recall can use it cycle-free).
+ */
+export function isInferenceNode(node: Pick<MemoryNode, "type" | "metadata">): boolean {
+  return node.type === "dream" || node.metadata?.inference === true || node.metadata?.inference === "true";
+}
+
+/**
  * Read a node's effective visibility + provenance, validating each field independently so one
  * malformed field never poisons the rest. Fail-closed: a present-but-invalid `visibility`
  * becomes `owner` (never public), and `dm` without a valid `dm_with` degrades to `owner`.

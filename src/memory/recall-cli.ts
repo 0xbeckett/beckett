@@ -1,7 +1,7 @@
 /** Shared `beckett recall` parsing and rendering for the CLI and warm daemon bus. */
 
 import { parse } from "../cli/io.ts";
-import type { MemoryStore } from "./index.ts";
+import { isInferenceNode, type MemoryStore } from "./index.ts";
 import { freshnessLabel, indexAgeFlag, ageDays, AGED_OBSERVATION_DAYS } from "./freshness.ts";
 import {
   type Audience,
@@ -69,6 +69,12 @@ export async function recallCliOutput(memory: MemoryStore, request: RecallCliReq
           dated_observation: days !== null && days >= AGED_OBSERVATION_DAYS,
           visibility: prov.visibility,
           provenance: renderProvenanceFrom(prov),
+          // Dream-derived hits are INFERENCES, never observed facts (issue #36). The flag plus
+          // the sources they were inferred from travel with every consumer of the JSON shape.
+          inference: isInferenceNode(h.node),
+          ...(isInferenceNode(h.node)
+            ? { inferred_from: Array.isArray(h.node.metadata.provenance) ? h.node.metadata.provenance : [] }
+            : {}),
           body: h.node.body,
         };
       }),
@@ -78,6 +84,7 @@ export async function recallCliOutput(memory: MemoryStore, request: RecallCliReq
         description: e.node.description,
         updated: e.node.updated,
         visibility: provenanceOf(e.node).visibility,
+        inference: isInferenceNode(e.node),
         reason: e.reason,
       })),
       phantoms: r.phantoms,
@@ -91,22 +98,29 @@ export async function recallCliOutput(memory: MemoryStore, request: RecallCliReq
   for (const h of r.hits) {
     const prov = provenanceOf(h.node);
     const source = renderProvenanceFrom(prov);
+    const inference = isInferenceNode(h.node);
+    const inferredFrom = Array.isArray(h.node.metadata.provenance) ? h.node.metadata.provenance : [];
     lines.push(
-      `\n## ${h.node.name} (${h.node.type}, score ${h.score.toFixed(2)})`,
+      `\n## ${h.node.name} (${h.node.type}, score ${h.score.toFixed(2)})${inference ? " — INFERENCE" : ""}`,
       `path: ${h.node.path}`,
       // Every hit is anchored to its observation date — old observations are history, not
       // current truth, and the reader judges from the date.
       `updated: ${h.node.updated.slice(0, 10)} (${freshnessLabel(h.node.updated, now)})`,
       `visibility: ${prov.visibility}${source ? ` · ${source}` : ""}`,
+      // A dream-derived hit must never read back as observed fact (issue #36): say so in
+      // place, and name what it was inferred from so the reader can check the sources.
+      ...(inference
+        ? [`inference: dream-derived — an inference, NOT an observed fact (from: ${inferredFrom.join(", ") || "unrecorded"})`]
+        : []),
       h.node.description,
       ...(h.node.body ? ["", h.node.body] : []),
     );
   }
-  if (r.expanded.length) lines.push("\n# related (linked)\n" + r.expanded.map((e) => `- ${e.node.name}: ${e.node.description}${indexAgeFlag(e.node.updated, now)} [${e.reason}]`).join("\n"));
+  if (r.expanded.length) lines.push("\n# related (linked)\n" + r.expanded.map((e) => `- ${e.node.name}: ${isInferenceNode(e.node) ? "[inference] " : ""}${e.node.description}${indexAgeFlag(e.node.updated, now)} [${e.reason}]`).join("\n"));
   if (r.phantoms.length) lines.push("\n# phantoms: " + r.phantoms.join(", "));
   if (r.notes.length) lines.push("\n# notes: " + r.notes.join("; "));
   lines.push("\n# index");
-  for (const il of r.index) lines.push(`- ${il.name} (${il.type}): ${il.description}${indexAgeFlag(il.updated, now)}`);
+  for (const il of r.index) lines.push(`- ${il.name} (${il.type}): ${il.type === "dream" ? "[inference] " : ""}${il.description}${indexAgeFlag(il.updated, now)}`);
   return lines.join("\n");
 }
 

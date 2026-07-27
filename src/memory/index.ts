@@ -70,6 +70,7 @@ import {
   canView,
   corpusStats,
   DEDUP_THRESHOLD,
+  isInferenceNode,
   nodeSimilarity,
   provenanceOf,
   scoreNode,
@@ -108,6 +109,29 @@ const WIKILINK = /\[\[([a-z0-9-]+)(?:\|([^\]]+))?\]\]/g;
 /** Subdirectory (top-level) that holds archived nodes — on disk, out of the graph. */
 const ARCHIVE_DIR = "archive";
 
+/**
+ * The dream namespace's mandatory name shape (issue #36): the date the dream ran plus a slug.
+ * The prefix is load-bearing — {@link MemoryStore.rememberDream} rejects anything else, so a
+ * dream write can never collide with (or update) a node outside its own namespace.
+ */
+export const DREAM_NAME_RE = /^dream-\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]*$/;
+
+/** Input to {@link MemoryStore.rememberDream}. Type/inference/source are NOT parameters — forced. */
+export interface DreamRememberInput {
+  /** `dream-YYYY-MM-DD-<slug>` — validated against {@link DREAM_NAME_RE}. */
+  name: string;
+  description: string;
+  body?: string;
+  /** The specific sources the inference was derived from (e.g. "journal:#31", "loop:x"). */
+  provenance: string[];
+  /** Logged into the memory git commit, like remember's reason. */
+  reason: string;
+}
+
+// isInferenceNode lives in ./search.ts (pure over nodes, cycle-free for agent-recall);
+// re-exported here so write-path consumers import it alongside the store.
+export { isInferenceNode } from "./search.ts";
+
 /** Maps a node `type` to its conventional subdirectory (Spec 08 §1.1 — folders are cosmetic). */
 const TYPE_FOLDER: Record<string, string> = {
   person: "people",
@@ -117,6 +141,7 @@ const TYPE_FOLDER: Record<string, string> = {
   "worker-note": "workers",
   reference: "references",
   decision: "decisions",
+  dream: "dreams",
 };
 
 /** Deterministic metadata key order for clean one-line git diffs (Spec 08 §4.5). */
@@ -138,6 +163,8 @@ const META_ORDER = [
   "decided", "supersedes",
   // calibration
   "kind", "channel", "about", "reason",
+  // dream (issue #36) — the inference marker + the sources the inference was derived from
+  "inference", "provenance",
 ];
 /** Provenance fields rendered last (Spec 08 §1.2; visibility/provenance from multiplayer §7). */
 const META_TAIL = [
@@ -365,6 +392,89 @@ export class MemoryStore implements Memory {
 
     const result = g.nodes.get(name);
     if (!result) throw new Error(`memory.remember: node '${name}' missing after write`);
+    return result;
+  }
+
+  // ── rememberDream (issue #36 — the dream pass's ONLY memory write path) ──────────────
+
+  /**
+   * Create-only write for a dream-derived INFERENCE. This is deliberately narrower than
+   * {@link remember} — the containment is structural, not prompted:
+   *
+   *   - the name MUST match {@link DREAM_NAME_RE} (`dream-YYYY-MM-DD-<slug>`), so a dream can
+   *     never name (and thereby update) an existing non-dream node;
+   *   - if ANY node or file already answers to the name, it throws — no update, no append, no
+   *     similarity dedup/merge. A dream physically cannot edit or delete an existing memory.
+   *   - `metadata.type = "dream"`, `inference: true`, and the non-empty `provenance` list are
+   *     forced here, whatever the caller passes;
+   *   - the backlink-refresh sweep that {@link remember} runs over link targets is SKIPPED:
+   *     a dream write touches exactly one new node file plus the generated MEMORY.md index.
+   *     (`## Backlinks` sections are derived state; the graph's edges come from the files.)
+   */
+  async rememberDream(input: DreamRememberInput): Promise<MemoryNode> {
+    return this.withLock(() => this.rememberDreamLocked(input));
+  }
+
+  private async rememberDreamLocked(input: DreamRememberInput): Promise<MemoryNode> {
+    if (!DREAM_NAME_RE.test(input.name)) {
+      throw new Error(
+        `memory.rememberDream: invalid dream node name '${input.name}' (must be dream-YYYY-MM-DD-<kebab-slug>)`,
+      );
+    }
+    if (!input.description?.trim()) {
+      throw new Error(`memory.rememberDream: 'description' is required for '${input.name}'`);
+    }
+    const provenance = (input.provenance ?? []).map((s) => String(s).trim()).filter(Boolean);
+    if (!provenance.length) {
+      throw new Error(`memory.rememberDream: a dream memory needs a non-empty provenance list ('${input.name}')`);
+    }
+    this.warmGraph = undefined;
+    this.mossSyncedGraph = undefined;
+    await this.ensureDir();
+    let g = this.buildGraph();
+
+    const prior = g.nodes.get(input.name);
+    if (prior && !prior.phantom) {
+      throw new Error(`memory.rememberDream: '${input.name}' already exists — dream memories are create-only`);
+    }
+    const path = this.pathFor(input.name, "dream");
+    if (existsSync(path)) {
+      // A file the graph didn't parse (malformed/archived remnant) still blocks: never overwrite.
+      throw new Error(`memory.rememberDream: a file already exists at ${path} — dream memories are create-only`);
+    }
+
+    const now = nowIso();
+    const node: MemoryNode = {
+      name: input.name,
+      type: "dream",
+      description: input.description.trim(),
+      metadata: {
+        type: "dream",
+        inference: true,
+        provenance,
+        created: now,
+        updated: now,
+        source: "derived",
+      },
+      body: (input.body ?? "").trim(),
+      path,
+      created: now,
+      updated: now,
+      source: "derived",
+      stale: false,
+      phantom: false,
+      mtime: Date.now(),
+    };
+    this.atomicWrite(path, renderNode(node, g));
+
+    // Rebuild for the derived index; deliberately NO refreshBacklinksOnDisk sweep (see above).
+    g = this.buildGraph();
+    this.atomicWrite(join(this.dir, "MEMORY.md"), renderIndex(g));
+    await this.commit(`memory: dream ${input.name} (${input.reason})`);
+    await this.syncMossQuietly(g);
+
+    const result = g.nodes.get(input.name);
+    if (!result) throw new Error(`memory.rememberDream: node '${input.name}' missing after write`);
     return result;
   }
 
@@ -1160,7 +1270,11 @@ export function renderIndex(g: MemoryGraph): string {
     // MEMORY.md is ALWAYS loaded, so it's the cheapest place to teach every session that a line
     // untouched for 90+ days is an observation FROM THEN — still on the record, never deleted,
     // just anchored to its time. The fact stays; its date travels with it.
-    out += `- [[${line.name}]] — ${line.description}${indexAgeFlag(line.updated, now)}\n`;
+    // Dream nodes carry their nature into the always-loaded index: an inference read cold
+    // must never pass for an observed fact (issue #36).
+    const node = g.nodes.get(line.name);
+    const inference = node && isInferenceNode(node) ? "[inference] " : "";
+    out += `- [[${line.name}]] — ${inference}${line.description}${indexAgeFlag(line.updated, now)}\n`;
   }
   return out;
 }

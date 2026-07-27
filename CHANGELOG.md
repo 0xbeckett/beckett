@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### The dream engine: a nightly, budgeted replay of my own day (#36)
+
+A new `dream` routine kind rides the self lane once a night, at a random minute inside
+03:00–05:00 America/Los_Angeles (the engine's per-period idempotency is the once-per-night
+guard). It forks exactly where `self`/`deps-update` do — before every browser dependency —
+but instead of framing a concierge turn it spawns a contained `beckett dream run` process,
+so the pass can never hold a shell, a credential, or the browser.
+
+The pass assembles the last 24h read-only — worker journals, ticket state transitions
+(`events/dispatch.jsonl`), the open-loop ledger, calibration/veto records (gracefully absent
+where that ticket hasn't landed), and stored **guild** channel windows. DM windows are never
+read: the gate is in code (null/missing `guildId` skips the channel before its window is even
+loaded), with a spy test proving it. One tool-less reflection call (plus per-section condense
+calls on heavy days) runs under a hard output-token ceiling from config
+(`[dream] output_token_budget`, default 150k — a ceiling, not a target: a quiet day
+short-circuits to a thin entry with zero model calls). Tripping the ceiling stops cleanly and
+writes a partial entry marked `truncated: true`.
+
+Outputs are INFERENCES, never facts, enforced structurally rather than by prompt:
+
+- exactly one dated journal entry per night at `~/.beckett/dreams/YYYY-MM-DD.md` (what
+  happened / what I'd do differently / worth remembering / worth forgetting / loops that
+  might combine), assembled in memory and written once — no per-step churn;
+- memories land only through the new create-only `MemoryStore.rememberDream`, which forces
+  `type: dream` + `inference: true` + a provenance list, namespace-locks names to
+  `dream-YYYY-MM-DD-<slug>`, refuses any existing node (no update, no dedup merge, no
+  backlink rewrite of other files), and drops any proposed memory whose provenance names a
+  source that wasn't actually assembled that night;
+- every recall surface (CLI/bus text + JSON, related/index lines, MEMORY.md, agent-recall
+  candidates) visibly marks dream-derived hits as inference, with their sources;
+- nothing here can touch doctrine or persona — there is no write path to either, and the
+  containment tests try to violate all of the above and fail.
+
+`beckett dream ls` / `beckett dream show <date>` read the journal back. The proposal queue
+(#24.2) and the overnight spike (#24.3) build on this namespace.
+
 ## v6.1.0 (2026-07-24)
 
 ### `beckett gh` gets a passthrough, and release tags can finally ship (#88)

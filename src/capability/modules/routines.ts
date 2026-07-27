@@ -99,6 +99,13 @@ export interface RoutinesExtensionDeps {
    * live socket. No credentials ride this lane, so nothing here names one.
    */
   wakeSelf?: (post: { routineId: string; prompt: string; channelId: string }) => void | Promise<void>;
+  /**
+   * How the dream pass (issue #36) is launched. Default: a detached `beckett dream run`
+   * subprocess, exactly like `spawnDepsUpdate`. Injected for the same reason — so a test can
+   * assert the dream forks on the self lane BEFORE (and never resolves) the browser
+   * agent/registry/runner, and never posts a `routine.self` concierge wake.
+   */
+  spawnDream?: (argv: string[]) => void;
   /** Test seams — the scheduler's injectable clock/RNG/cadence (see {@link RoutineSchedulerDeps}). */
   now?: () => Date;
   rng?: () => number;
@@ -304,6 +311,38 @@ export const createRoutinesExtension =
     }
 
     /**
+     * Launch the dream pass (issue #36) as its own `beckett dream run` process — the deps-update
+     * pattern exactly: detached, not awaited, its own reporting (a dream reports to nobody; the
+     * journal under ~/.beckett/dreams IS the output). It rides the SELF lane's pre-browser fork,
+     * so like a plain self wake it can never resolve the browser agent, an agent registry entry,
+     * or a creds entry — and unlike a plain self wake it never frames a concierge turn either:
+     * the subprocess's write surface is the dream namespace only, enforced in `src/dream/`.
+     */
+    function spawnDream(
+      plan: RoutineDispatchPlan,
+      origin: { channelId: string; requesterId: string },
+    ): void {
+      const argv = [
+        "dream", "run",
+        "--routine", plan.routineId,
+        // Provenance only — nothing in the pass posts to Discord or branches on the requester.
+        "--requester", origin.requesterId,
+      ];
+      if (deps.spawnDream) {
+        deps.spawnDream(argv);
+        return;
+      }
+      const proc = Bun.spawn([process.execPath, BECKETT_CLI_ENTRY, ...argv], {
+        cwd: ctx.paths.home,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      proc.unref?.();
+      ctx.logger.info("dream pass launched off-process", { routineId: plan.routineId, pid: proc.pid });
+    }
+
+    /**
      * The `agent` lane's body: resolve the agent LIVE from the registry (so editing its prompt —
      * or, for `watch`, the routine's target agent — takes effect with no redeploy), let it author
      * the post, then hand what it authored to the PRIVILEGED in-process browser lane. Shared by
@@ -385,6 +424,14 @@ export const createRoutinesExtension =
       // structurally impossible for a self routine to reach any of them. The wake itself is one
       // bus post to the concierge, which frames a SYSTEM turn; no credentials ride this lane.
       if (plan.lane === "self") {
+        // The dream variant (issue #36) forks FIRST, inside the self lane: it shares the lane's
+        // "never the browser" structure but runs as the contained `beckett dream run` subprocess
+        // instead of a concierge turn — a dream must not be able to act through the concierge's
+        // shell, and the subprocess's write surface is code-limited to the dream namespace.
+        if (plan.dream) {
+          spawnDream(plan, { channelId, requesterId });
+          return;
+        }
         if (!plan.selfPrompt) throw new Error("self-lane routine is missing its prompt");
         const post = { routineId: plan.routineId, prompt: plan.selfPrompt, channelId };
         if (deps.wakeSelf) {

@@ -105,3 +105,42 @@ test("a plan never carries a secret value — only the jingle entry NAME", () =>
   expect(plan.credsEntry).toBe("x.com");
   expect(JSON.stringify(plan).toLowerCase()).not.toContain("password");
 });
+
+test("dream action → the self lane with the dream flag and NOTHING dispatchable elsewhere (issue #36)", () => {
+  const plan = buildDispatchPlan(routine({ kind: "dream" }));
+  expect(plan.lane).toBe("self");
+  expect(plan.dream).toBe(true);
+  // Rides the self lane's containment exactly: no prompt (its shape lives in code), no browser
+  // task, no agent, no deps job, and no creds entry a dispatcher could hand to a web session.
+  expect(plan.selfPrompt).toBeNull();
+  expect(plan.browserTask).toBeNull();
+  expect(plan.agentId).toBeNull();
+  expect(plan.agentInput).toBeNull();
+  expect(plan.depsUpdate).toBeNull();
+  expect(plan.credsEntry).toBeNull();
+  expect(plan.preview).toContain("dream");
+});
+
+test("every non-dream action plans with dream=false — only the dream kind takes the dream fork", () => {
+  const kinds: RoutineAction[] = [
+    { kind: "agent", agentId: "social-media", input: "x" },
+    { kind: "browser", task: "t" },
+    { kind: "deps-update", base: "main" },
+    { kind: "self", prompt: "sweep" },
+    { kind: "x-shitpost", account: "@a", credsEntry: "x.com" },
+  ];
+  for (const action of kinds) expect(buildDispatchPlan(routine(action)).dream).toBe(false);
+});
+
+test("the builtin nightly-dream fires daily in a fuzzed 03:00–05:00 America/Los_Angeles window (issue #36)", async () => {
+  const { builtinRoutineDefs } = await import("./builtins.ts");
+  const dream = builtinRoutineDefs().find((r) => r.id === "nightly-dream")!;
+  expect(dream).toBeDefined();
+  expect(dream.action.kind).toBe("dream");
+  expect(dream.schedule).toEqual({
+    cadence: { kind: "daily" },
+    window: { start: "03:00", end: "05:00", tz: "America/Los_Angeles" },
+  });
+  // The once-per-period guard is the engine's own idempotency; nothing dream-specific to add —
+  // pinned in scheduler.test.ts ("fires exactly once per period").
+});

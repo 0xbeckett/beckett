@@ -530,6 +530,17 @@ export const configFragments = {
       peer_burst_per_min: posInt.default(5),
     })
     .default({}),
+  // The nightly dream pass (issue #36): a budgeted, read-mostly replay of Beckett's own day on
+  // the self lane. The budget is a hard CEILING on model output tokens, not a target — a quiet
+  // day finishes far below it; hitting it writes a partial journal entry marked truncated.
+  dream: z
+    .object({
+      output_token_budget: posInt.default(150_000),
+      // Empty = the concierge model: a dream is Beckett replaying its own day, not a specialist.
+      model: z.string().default(""),
+    })
+    .strict()
+    .default({}),
 } satisfies { [K in keyof Config]: z.ZodType<Config[K], z.ZodTypeDef, unknown> };
 
 // =======================================================================================
@@ -558,6 +569,7 @@ const BUILTIN_CAPABILITY_INFO: {
   quick: { id: "quick", summary: "Quick agents (no-ticket lane) + the computer-use browser host." },
   announce: { id: "announce", summary: "Restart changelog announcements." },
   federation: { id: "federation", summary: "Peer-Beckett federation over Discord." },
+  dream: { id: "dream", summary: "Nightly dream pass: token ceiling + model for the self-lane day replay." },
 };
 
 /**

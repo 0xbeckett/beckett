@@ -137,6 +137,14 @@ const CASES: Case[] = [
   { name: "memory: remember without --name prints usage", argv: ["memory", "remember"] },
   { name: "memory: unknown sub fails", argv: ["memory", "bogus"] },
 
+  // ── dream (issue #36) — journal read-back; hermetic sandbox = no dreams yet ─────────────
+  { name: "dream: bare lists an empty journal", argv: ["dream"] },
+  { name: "dream: ls lists an empty journal", argv: ["dream", "ls"] },
+  { name: "dream: show without a date prints usage", argv: ["dream", "show"] },
+  { name: "dream: show rejects a non-date", argv: ["dream", "show", "not-a-date"] },
+  { name: "dream: show of an undreamt night fails", argv: ["dream", "show", "2026-01-01"] },
+  { name: "dream: unknown sub prints usage", argv: ["dream", "bogus"] },
+
   // ── spend ───────────────────────────────────────────────────────────────────────────────
   { name: "spend: empty ledger summary", argv: ["spend"] },
   { name: "spend: bad --since is rejected", argv: ["spend", "--since", "yesterdayish"] },

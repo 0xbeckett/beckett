@@ -46,13 +46,19 @@ test("fires exactly once per period (idempotent) and delegates dispatch off-proc
   await scheduler.tick();
   await scheduler.tick();
 
-  // One dispatch total across three ticks — idempotent per period.
-  expect(calls.length).toBe(1);
-  expect(calls[0]!.routineId).toBe("daily-x-shitpost");
-  expect(calls[0]!.credsEntry).toBe("x.com");
-  // The period is claimed on disk.
+  // Two dispatches total across three ticks — the shitpost AND the nightly dream (issue #36;
+  // with rng 0 its 03:00 PT roll is long past by 12:30 PT), each exactly once per period.
+  expect(calls.length).toBe(2);
+  expect(calls.map((c) => c.routineId).sort()).toEqual(["daily-x-shitpost", "nightly-dream"]);
+  const shitpost = calls.find((c) => c.routineId === "daily-x-shitpost")!;
+  expect(shitpost.credsEntry).toBe("x.com");
+  const dream = calls.find((c) => c.routineId === "nightly-dream")!;
+  expect(dream.lane).toBe("self");
+  expect(dream.dream).toBe(true);
+  // The period is claimed on disk, for both.
   const state = (await store.get("daily-x-shitpost"))!.state;
   expect(state.lastFiredPeriodKey).toBe("2026-07-20");
+  expect((await store.get("nightly-dream"))!.state.lastFiredPeriodKey).toBe("2026-07-20");
 });
 
 test("a restart inside the window neither re-rolls the chosen time nor double-fires", async () => {
@@ -82,7 +88,9 @@ test("a restart inside the window neither re-rolls the chosen time nor double-fi
 
   const state = (await restarted.get("daily-x-shitpost"))!.state;
   expect(state.chosenFireAt).toBe("2026-07-20T19:20:00.000Z"); // NOT re-rolled
-  expect(calls.length).toBe(1); // caught up and fired once
+  // Exactly one shitpost fire (the seeded nightly-dream also catches up its own period here —
+  // its 03:00–05:00 PT window is past at 12:30 PT — but never affects this routine's state).
+  expect(calls.filter((c) => c.routineId === "daily-x-shitpost").length).toBe(1);
 
   // A second restart after firing must not double-fire.
   const second = new RoutineStore(path);
@@ -110,7 +118,10 @@ test("does not fire before the chosen time", async () => {
   });
   stoppers.push(scheduler.stop);
   await scheduler.tick();
-  expect(calls.length).toBe(0);
+  // The pre-rolled 12:45 PT shitpost must NOT fire at 12:30 (the seeded nightly-dream, whose
+  // window is long past, is the only dispatch this tick).
+  expect(calls.filter((c) => c.routineId === "daily-x-shitpost").length).toBe(0);
+  expect(calls.every((c) => c.routineId === "nightly-dream")).toBe(true);
 });
 
 test("fireNow dry-run returns the plan WITHOUT dispatching (no live post)", async () => {

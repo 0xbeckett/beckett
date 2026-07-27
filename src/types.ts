@@ -502,6 +502,10 @@ export type NodeType =
   | "worker-note"
   | "reference"
   | "decision"
+  // Dream-derived inference (issue #36): NEVER an observed fact. Created only by the nightly
+  // dream pass through `MemoryStore.rememberDream` — the create-only write path that forces
+  // `inference: true` + a provenance list and refuses to touch any existing node.
+  | "dream"
   | (string & {});
 
 /** One markdown memory file parsed into a node (Spec 08 §2). */
@@ -627,6 +631,7 @@ export interface Paths {
   announcedFile: string; // <beckettDir>/announced.txt — last commit SHA announced on restart (changelog)
   presetsFile: string; // <beckettDir>/presets.json — user-defined named cast presets (OPS-110)
   journalDir: string; // <beckettDir>/journal — private per-ticket worker progress journals
+  dreamsDir: string; // <beckettDir>/dreams — nightly dream journal entries (issue #36)
   workspacesFile: string; // <beckettDir>/workspaces.json — user-opened thread → ticket routing
 }
 
@@ -864,6 +869,19 @@ export interface Config {
     /** Runaway backstop: max peer-bot messages the gateway will process per channel per
      *  rolling minute, so two auto-replying Becketts can never melt a channel. Default 5. */
     peer_burst_per_min: number;
+  };
+  /**
+   * The nightly dream pass (issue #36): a budgeted, read-mostly replay of Beckett's own day on
+   * the self lane. Outputs are INFERENCES, never facts — they land only in the `dream` memory
+   * namespace and the `~/.beckett/dreams` journal, never in doctrine or persona.
+   */
+  dream: {
+    /** Hard ceiling on model OUTPUT tokens per pass. A ceiling, not a target — a quiet day
+     *  should finish far below it. On hitting it the pass stops cleanly and writes a partial
+     *  journal entry marked truncated. Default 150_000. */
+    output_token_budget: number;
+    /** Model for the pass. Empty = the concierge model (a dream is Beckett, not a specialist). */
+    model: string;
   };
 }
 

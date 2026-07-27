@@ -162,6 +162,11 @@ export const SPINE: SpineEntry[] = [
     cliHelp: "calibration [--channel <id>|--about <slug>|--json] | calibration veto|hit",
     verbs: [{ name: "calibration", load: async () => (await import("./calibration-cli.ts")).runCalibration }],
   },
+  {
+    id: "dream",
+    cliHelp: "dream ls|show <date>",
+    verbs: [{ name: "dream", load: async () => (await import("./dream-cli.ts")).runDream }],
+  },
 
   { id: "spend", verbs: [{ name: "spend", load: core((m) => m.runSpend) }] },
   { id: "journal", verbs: [{ name: "journal", load: core((m) => m.runJournal) }] },
