@@ -25,9 +25,14 @@ test("prunes only disposable caches in every nested Default profile", async () =
       writeFileSync(join(dir, cache, "payload"), Buffer.alloc(4096));
     }
     for (const file of state) {
-      mkdirSync(join(dir, file), { recursive: file === "Local Storage" || file === "IndexedDB" || file === "Sessions" });
-      if (file === "Local Storage" || file === "IndexedDB" || file === "Sessions") writeFileSync(join(dir, file, "state"), "keep");
-      else writeFileSync(join(dir, file), "keep");
+      const isDirectory = file === "Local Storage" || file === "IndexedDB" || file === "Sessions";
+      if (isDirectory) {
+        mkdirSync(join(dir, file), { recursive: true });
+        writeFileSync(join(dir, file, "state"), "keep");
+      } else {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, file), "keep");
+      }
     }
   }
 

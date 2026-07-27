@@ -331,6 +331,26 @@ test("acquire prunes an oversized disposable cache before warming a lease", asyn
   }
 });
 
+test("acquire leaves caches alone below the prune high-water mark", async () => {
+  const settings = settingsFor();
+  const cache = join(settings.profileDir, "betterwright", "browser", "profile", "Default", "Cache");
+  mkdirSync(cache, { recursive: true });
+  writeFileSync(join(cache, "small.bin"), Buffer.alloc(32 * 1024));
+  const fake = new FakeBetterWright();
+  const runtime = createBetterWrightRuntime(settings, quietLog, {
+    createBrowser: () => fake,
+    maxProfileBytes: 128 * 1024,
+  });
+  try {
+    await runtime.acquire(leaseFor("below-high-water"));
+    expect(existsSync(cache)).toBe(true);
+    const result = await runtime.evaluate("below-high-water", "return 1");
+    expect(result.events.join("\n")).not.toContain("profile cache pruned");
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("one lease tripping the profile budget does not blind or kill another", async () => {
   let profileSize = 10;
   const fake = new FakeBetterWright();

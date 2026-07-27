@@ -67,7 +67,7 @@ export async function pruneChromeProfileCaches(profileRoot: string): Promise<Chr
     } catch {
       // Missing/churning cache directories are harmless.
     }
-  }))));
+  })));
   const after = await measureDirectoryBytes(profileRoot);
   return { reclaimedBytes: Math.max(0, before - after) };
 }

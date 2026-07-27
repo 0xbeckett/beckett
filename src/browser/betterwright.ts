@@ -253,6 +253,10 @@ export function createBetterWrightRuntime(
     }) as BetterWrightResult;
     const screenshots = copyArtifacts(raw, lease);
     const summaries = raw.pages ?? [];
+    // Include pending host events (such as an acquire-time cache prune) in the
+    // next result journal entry, then retain the raw BetterWright events for
+    // the bounded internal ring as well.
+    const pendingEvents = lease.events.splice(0);
     const events = (raw.events ?? []).map((entry) => typeof entry === "string" ? entry : JSON.stringify(entry));
     for (const entry of events) pushLeaseEvent(lease, entry);
     const result: BrowserEvalResult = {
@@ -264,7 +268,7 @@ export function createBetterWrightRuntime(
         url: typeof entry.url === "string" ? entry.url : "about:blank",
         title: typeof entry.title === "string" ? entry.title : "",
       })),
-      events,
+      events: [...pendingEvents, ...events],
       screenshots,
       elapsedMs: typeof raw.durationMs === "number" ? raw.durationMs : 0,
       truncated: false,
@@ -335,7 +339,6 @@ export function createBetterWrightRuntime(
           // worker may own the profile, so never risk deleting a cache under Chrome.
           cachePruneReclaimed = (await pruneChromeProfileCaches(profileRoot)).reclaimedBytes;
           profileBytes = await measureProfileBytes();
-          pushLeaseEvent(active, `[profile cache pruned] reclaimed ${cachePruneReclaimed} bytes`);
         }
         if (profileBytes > maxProfileBytes) {
           const pruneDetail = cachePruneReclaimed === null
@@ -347,6 +350,9 @@ export function createBetterWrightRuntime(
         // Start the BetterWright worker now so unavailable browser setup fails
         // before the agent begins its turn.
         await runOnLease(active, () => execute(active, "return page.url()"));
+        if (cachePruneReclaimed !== null) {
+          pushLeaseEvent(active, `[profile cache pruned] reclaimed ${cachePruneReclaimed} bytes`);
+        }
         logger.info("BetterWright browser lease acquired", {
           runId: lease.runId,
           channelId: lease.channelId,
