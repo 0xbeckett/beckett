@@ -2091,7 +2091,7 @@ export class Concierge {
 
   /** Fresh, bounded session-start loop ledger. SELF scope includes public/owner, never DM loops. */
   openLoopsBlock(): string {
-    return renderOpenLoopsBlock(this.memory);
+    return renderOpenLoopsBlock(this.memory, this.tasks);
   }
 
   /**

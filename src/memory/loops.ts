@@ -3,6 +3,7 @@
 import type { MemoryNode, RememberIntent } from "../types.ts";
 import type { MemoryStore } from "./index.ts";
 import { type Audience, canView } from "./search.ts";
+import type { TaskStore } from "../task/store.ts";
 
 export const LOOP_KINDS = ["commitment", "recurring-error", "wishlist"] as const;
 export type LoopKind = (typeof LOOP_KINDS)[number];
@@ -21,6 +22,17 @@ export interface LoopEntry {
   /** Date of the last progress note, or null if the loop has never been touched. */
   lastTouched: string | null;
   overdue: boolean;
+  /**
+   * Task refs (`#20`, `#20.1`) filed against this loop, stamped by `linkLoopTask` or `task create
+   * --loop`. Absent/empty for loops predating linking or never linked — no migration needed.
+   */
+  linkedTasks: string[];
+}
+
+export interface LinkedTaskStatus {
+  ref: string;
+  /** Resolved from the live task registry at read time, never cached on the loop node. */
+  status: string;
 }
 
 export interface ListLoopsOptions {
@@ -47,22 +59,38 @@ export function listLoops(store: MemoryStore, opts: ListLoopsOptions = {}): Loop
   );
 }
 
-/** Render the compact, bounded session-start grounding block. Empty means no prompt change. */
-export function renderOpenLoopsBlock(store: MemoryStore | null | undefined): string {
+/**
+ * Render the compact, bounded session-start grounding block. Empty means no prompt change.
+ *
+ * `tasks` is optional so callers with no wired registry (tests, a bare memory-only caller) still
+ * get a loop list; when present, each loop's linked task refs are resolved live and an explicit
+ * "check before filing" instruction is prepended — this is the fix for issue #39, where a sweep
+ * filed a duplicate ticket because nothing surfaced that one already existed for the same loop.
+ */
+export function renderOpenLoopsBlock(store: MemoryStore | null | undefined, tasks?: TaskStore): string {
   if (!store) return "";
   try {
     const loops = listLoops(store, { audience: SELF_LOOP_AUDIENCE });
     if (!loops.length) return "";
     const shown = loops.slice(0, 12);
-    const lines = shown.map((loop) =>
-      `- ${loop.overdue ? "OVERDUE " : ""}${loop.due} [${loop.kind}] ${loop.node.description}`,
-    );
+    const lines = shown.map((loop) => {
+      const filed = tasks ? formatLinkedTasks(resolveLinkedTasks(tasks, loop)) : "";
+      return `- ${loop.overdue ? "OVERDUE " : ""}${loop.due} [${loop.kind}] ${loop.node.description}${filed}`;
+    });
     if (loops.length > shown.length) lines.push(`+${loops.length - shown.length} more — run \`beckett loops\``);
-    return `<open-loops>\n${lines.join("\n")}\n</open-loops>`;
+    const preamble = "Before filing a task off any loop below, check its \"already filed\" refs (or "
+      + "`beckett loops --json`) — a loop with a running/open task already covers that defect; do not "
+      + "file a second ticket for the same root cause.";
+    return `<open-loops>\n${preamble}\n${lines.join("\n")}\n</open-loops>`;
   } catch {
     // A broken memory directory must never keep a chat session from launching.
     return "";
   }
+}
+
+function formatLinkedTasks(linked: LinkedTaskStatus[]): string {
+  if (!linked.length) return "";
+  return ` [already filed: ${linked.map((task) => `${task.ref} (${task.status})`).join(", ")}]`;
 }
 
 /** Create a convention-complete public loop through MemoryStore (which owns markdown rendering). */
@@ -166,6 +194,53 @@ export async function noteLoop(
   return entry;
 }
 
+/**
+ * Stamp a task ref onto a loop's `linkedTasks`, so the next sweep that reads the ledger sees "a
+ * task already exists for this" instead of an untouched-looking loop (issue #39). Idempotent: a
+ * ref already on the list is a no-op, not a duplicate entry. Works against a loop of any status —
+ * a task can legitimately land moments after a loop closes — but the loop must still be visible
+ * to the caller's audience.
+ */
+export async function linkLoopTask(
+  store: MemoryStore,
+  name: string,
+  taskRef: string,
+  audience?: Audience,
+): Promise<LoopEntry> {
+  const existing = listLoops(store, { all: true, audience }).find((loop) => loop.node.name === name);
+  if (!existing) throw new Error(`no visible loop named '${name}'`);
+  const ref = taskRef.trim();
+  if (!/^#?\d+(?:\.\d+)*$/.test(ref)) throw new Error(`invalid task reference "${taskRef}"`);
+  const normalized = ref.startsWith("#") ? ref : `#${ref}`;
+  const linkedTasks = existing.linkedTasks.includes(normalized)
+    ? existing.linkedTasks
+    : [...existing.linkedTasks, normalized];
+
+  const node = await store.remember({
+    op: "update",
+    name: existing.node.name,
+    type: "loop",
+    description: existing.node.description,
+    // mergeInto retains every metadata key not named here, including future unknown keys.
+    metadata: { linkedTasks },
+    body: existing.node.body,
+    source: String(existing.node.metadata.source ?? existing.node.source) as RememberIntent["source"],
+    reason: "link task to loop via CLI",
+  });
+  const entry = asLoop(node, todayDate());
+  if (!entry) throw new Error(`loop '${name}' could not be read after linking`);
+  return entry;
+}
+
+/** Resolve a loop's linked task refs to their current registry status, at read time — never cached. */
+export function resolveLinkedTasks(tasks: TaskStore, entry: Pick<LoopEntry, "linkedTasks">): LinkedTaskStatus[] {
+  return entry.linkedTasks.map((ref) => {
+    const resolved = tasks.resolveTaskRef(ref);
+    if (!resolved) return { ref, status: "unknown" };
+    return { ref, status: resolved.branch ? resolved.branch.status : resolved.task.status };
+  });
+}
+
 const SELF_LOOP_AUDIENCE: Audience = { viewerId: "beckett-self", viewerRole: "owner", context: "guild" };
 
 function asLoop(node: MemoryNode, today: string): LoopEntry | null {
@@ -202,7 +277,21 @@ function asLoop(node: MemoryNode, today: string): LoopEntry | null {
     ...(closed ? { closed } : {}),
     lastTouched,
     overdue: due <= today,
+    linkedTasks: parseLinkedTasks(metadata.linkedTasks),
   };
+}
+
+/** Normalize a raw metadata value into a deduped list of `#N`/`#N.x` refs, dropping junk. */
+function parseLinkedTasks(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const refs = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim();
+    if (!/^#?\d+(?:\.\d+)*$/.test(trimmed)) continue;
+    refs.add(trimmed.startsWith("#") ? trimmed : `#${trimmed}`);
+  }
+  return [...refs];
 }
 
 function isDate(value: string): boolean {

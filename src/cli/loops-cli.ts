@@ -1,20 +1,24 @@
 /** `beckett loops` — direct, visibility-gated open-loop ledger operations. */
 
 import { createMemory } from "../memory/index.ts";
-import { LOOP_KINDS, listLoops, noteLoop, openLoop, settleLoop } from "../memory/loops.ts";
+import { LOOP_KINDS, linkLoopTask, listLoops, noteLoop, openLoop, resolveLinkedTasks, settleLoop } from "../memory/loops.ts";
 import { audienceFromFlags } from "../memory/recall-cli.ts";
 import { provenanceOf } from "../memory/search.ts";
+import { TaskStore } from "../task/store.ts";
 import { out, fail, parse } from "./io.ts";
 import { paths } from "./context.ts";
+import { join } from "node:path";
 
 const USAGE =
   "usage: beckett loops [--all] [--json] [--as-self | --viewer <userId>] [--viewer-role owner|maintainer|member] [--context guild|dm] | " +
   "loops open --name <n> --kind commitment|recurring-error|wishlist --due <YYYY-MM-DD> --source <s> --desc <d> [--closes <c>] | " +
-  "loops note <name> --note <text> | loops close <name> [--note <text>] | loops drop <name> --note <why>";
+  "loops note <name> --note <text> | loops close <name> [--note <text>] | loops drop <name> --note <why> | " +
+  "loops link <name> --task <ref>";
 
 export async function runLoops(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
-  const memory = createMemory({ memoryDir: paths.memoryDir, git: sub === "open" || sub === "close" || sub === "drop" || sub === "note" });
+  const memory = createMemory({ memoryDir: paths.memoryDir, git: sub === "open" || sub === "close" || sub === "drop" || sub === "note" || sub === "link" });
+  const tasks = new TaskStore(join(paths.beckettDir, "tasks.json"));
 
   if (!sub || sub.startsWith("--")) {
     const listArgv = sub ? argv : [];
@@ -41,10 +45,11 @@ export async function runLoops(argv: string[]): Promise<void> {
           overdue: loop.overdue,
           description: loop.node.description,
           visibility: provenanceOf(loop.node).visibility,
+          linkedTasks: resolveLinkedTasks(tasks, loop),
         })),
       });
     }
-    out(renderLoopList(loops));
+    out(renderLoopList(loops, tasks));
   }
 
   const { _, flags } = parse(rest);
@@ -84,6 +89,18 @@ export async function runLoops(argv: string[]): Promise<void> {
     }
   }
 
+  if (sub === "link") {
+    const name = _[0]?.trim();
+    const task = typeof flags.task === "string" ? flags.task.trim() : "";
+    if (!name || !task) fail("usage: beckett loops link <name> --task <ref>");
+    try {
+      const entry = await linkLoopTask(memory, name, task, audience);
+      out({ linked: entry.node.name, linkedTasks: entry.linkedTasks });
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  }
+
   if (sub === "close" || sub === "drop") {
     const name = _[0]?.trim();
     if (!name) fail(`usage: beckett loops ${sub} <name>${sub === "drop" ? " --note <why>" : " [--note <text>]"}`);
@@ -101,7 +118,7 @@ export async function runLoops(argv: string[]): Promise<void> {
   fail(USAGE);
 }
 
-function renderLoopList(loops: ReturnType<typeof listLoops>): string {
+function renderLoopList(loops: ReturnType<typeof listLoops>, tasks: TaskStore): string {
   if (!loops.length) return "(none)";
   const today = new Date().toISOString().slice(0, 10);
   const lines: string[] = [];
@@ -111,8 +128,12 @@ function renderLoopList(loops: ReturnType<typeof listLoops>): string {
     if (lines.length) lines.push("");
     lines.push(`# ${kind}`);
     for (const loop of group) {
+      const linked = resolveLinkedTasks(tasks, loop);
+      const filed = linked.length
+        ? ` (already filed: ${linked.map((t) => `${t.ref} ${t.status}`).join(", ")})`
+        : "";
       lines.push(
-        `- ${loop.overdue ? "OVERDUE " : ""}${loop.due} [${loop.kind}] [${loop.status}] (${touchedLabel(loop.lastTouched, today)}) ${loop.source} — ${loop.node.description}`,
+        `- ${loop.overdue ? "OVERDUE " : ""}${loop.due} [${loop.kind}] [${loop.status}] (${touchedLabel(loop.lastTouched, today)}) ${loop.source} — ${loop.node.description}${filed}`,
       );
     }
   }

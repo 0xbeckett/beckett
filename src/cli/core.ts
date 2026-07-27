@@ -29,6 +29,8 @@ import type { Casting, Ticket, TicketState } from "../tracker/types.ts";
 import { projectSlug } from "../tracker/cast.ts";
 import { parseSince, readSpendLedger, summarizeSpend } from "../spend.ts";
 import { TaskStore, displayTaskName, normalizeBranchRef, normalizeTaskNumber } from "../task/store.ts";
+import { createMemory } from "../memory/index.ts";
+import { linkLoopTask } from "../memory/loops.ts";
 import { AgentStore } from "../agent/store.ts";
 import { createAgentRunner } from "../agent/invoke.ts";
 import { AGENT_HARNESSES, AGENT_EFFORTS, type AgentDefinition } from "../agent/types.ts";
