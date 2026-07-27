@@ -8,12 +8,13 @@ import {
   type BetterWrightClient,
 } from "./betterwright.ts";
 import type { BrowserHostSettings, BrowserLease } from "./runtime.ts";
+import type { Logger } from "../types.ts";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 const quietLog = (() => {
   const logger = { info() {}, warn() {}, debug() {}, error() {}, child() { return logger; } };
-  return logger as unknown as ReturnType<() => Parameters<typeof createBetterWrightRuntime>[1]>;
+  return logger as unknown as Logger;
 })();
 
 interface RunCall {
