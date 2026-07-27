@@ -1,10 +1,11 @@
 /**
  * Daemon-side supervisor for the browser host subprocess.
  *
- * A host lives for one complete computer-use lease, including question waits, then exits. The
- * Chromium profile remains on disk so cookies survive, while escaped JavaScript state cannot leak
- * into a later run. Production modes fail closed when their OS sandbox is unavailable; explicit
- * process-only mode exists for local benchmark development and is never selected automatically.
+ * A BetterWright host owns multiple concurrent, session-scoped leases; the legacy Playwright
+ * controller retains its one-host-per-lease isolation. Chromium profile state remains on disk
+ * while every BetterWright session is named for its run. Production modes fail closed when their
+ * OS sandbox is unavailable; explicit process-only mode exists for local benchmark development
+ * and is never selected automatically.
  */
 
 import {
@@ -358,8 +359,15 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
   let child: HostChild | null = null;
   let hostIsolation: BrowserHostLaunch["isolation"] | null = null;
   let starting: Promise<void> | null = null;
-  let hostLeaseRunId: string | null = null;
-  let lease: BrowserLease | null = null;
+  // BetterWright sessions coexist in one host. The legacy Playwright controller remains
+  // deliberately single-lease, preserving its evaluator process and profile semantics.
+  const configuredCap = Number.parseInt(process.env.BECKETT_BROWSER_MAX_LEASES ?? "3", 10);
+  const singleLease = /^(1|true|yes|on)$/i.test(process.env.BECKETT_BROWSER_SINGLE_LEASE?.trim() ?? "");
+  const maxConcurrentLeases = backend === "betterwright" && !singleLease
+    ? Math.min(16, Math.max(1, Number.isInteger(configuredCap) && configuredCap > 0 ? configuredCap : 3))
+    : 1;
+  const hostLeaseRunIds = new Set<string>();
+  const leases = new Map<string, BrowserLease>();
   let stopped = false;
   let nextRequestId = 1;
   let pending = new Map<number, PendingRequest>();
@@ -377,7 +385,8 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
   }
 
   function requireLease(runId: string): BrowserLease {
-    if (!lease || lease.runId !== runId) throw new Error(`browser lease ${runId} is not active`);
+    const lease = leases.get(runId);
+    if (!lease) throw new Error(`browser lease ${runId} is not active`);
     return lease;
   }
 
@@ -403,7 +412,7 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
     if (child === target) {
       child = null;
       hostIsolation = null;
-      hostLeaseRunId = null;
+      hostLeaseRunIds.clear();
       pages = 0;
     }
   }
@@ -508,8 +517,10 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
     if (tail) logger.debug("isolated browser host diagnostics", { tail });
   }
 
-  function hostSettingsForLease(current: BrowserLease): BrowserHostSettings {
-    return { ...settings, artifactsRoot: resolve(current.artifactsDir) };
+  function hostSettingsForLease(_current: BrowserLease): BrowserHostSettings {
+    // The shared host must be sandboxed against the common artifacts root, not whichever run
+    // happened to start it. Per-run artifact paths are still validated by the host runtime.
+    return settings;
   }
 
   async function startHost(current: BrowserLease, forceProcess = false): Promise<void> {
@@ -573,11 +584,11 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
     try {
       await ensureHost(current);
       if (stopped) throw new Error("browser acquisition was interrupted by shutdown");
-      if (hostLeaseRunId === current.runId) return;
+      if (hostLeaseRunIds.has(current.runId)) return;
       const hostLease = { runId: current.runId, channelId: current.channelId, artifactsDir: current.artifactsDir };
       const stats = (await rpc("acquire", hostLease, settings.launchTimeoutMs + 5_000)) as BrowserRuntimeStats;
       if (stopped) throw new Error("browser acquisition was interrupted by shutdown");
-      hostLeaseRunId = current.runId;
+      hostLeaseRunIds.add(current.runId);
       launches++;
       pages = stats.pages;
     } catch (error) {
@@ -683,24 +694,31 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
       if (!nextLease.controlToken || nextLease.controlToken.length < 32) {
         throw new Error("browser lease requires a high-entropy control capability");
       }
-      const occupying = lease;
-      if (occupying && occupying.runId !== nextLease.runId) {
-        throw new Error(`computer-use is busy with run ${occupying.runId}; retry after it finishes`);
+      const occupying = leases.values().next().value as BrowserLease | undefined;
+      if (leases.has(nextLease.runId) && hostLeaseRunIds.has(nextLease.runId)) return;
+      if (!leases.has(nextLease.runId) && leases.size >= maxConcurrentLeases) {
+        if (maxConcurrentLeases === 1) {
+          throw new Error(`computer-use is busy with run ${occupying?.runId}; retry after it finishes`);
+        }
+        throw new Error(`browser lease cap of ${maxConcurrentLeases} concurrent session(s) reached; cannot acquire run ${nextLease.runId} until one releases`);
       }
-      if (occupying?.runId === nextLease.runId && hostLeaseRunId === nextLease.runId) return;
       if (!pathIsWithin(settings.artifactsRoot, resolve(nextLease.artifactsDir))) {
         throw new Error(`browser artifacts must stay below ${settings.artifactsRoot}`);
       }
 
       // Reserve before any await, closing the cold-start concurrency race.
-      lease = { ...nextLease };
-      delivered.clear();
+      const current = { ...nextLease };
+      leases.set(current.runId, current);
       try {
-        await acquireInHost(lease);
+        await acquireInHost(current);
       } catch (error) {
-        const target = child;
-        if (target) await killHost(target, error as Error);
-        if (lease?.runId === nextLease.runId) lease = null;
+        // One failed BetterWright session must not tear down unrelated live sessions.
+        if (backend !== "betterwright") {
+          const target = child;
+          if (target) await killHost(target, error as Error);
+        }
+        leases.delete(current.runId);
+        hostLeaseRunIds.delete(current.runId);
         throw error;
       }
     },
@@ -711,7 +729,7 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
       if (!code.trim()) throw new Error(`${backend} browser needs non-empty JavaScript`);
       if (code.length > MAX_CODE_CHARS) throw new Error(`${backend} browser code exceeds ${MAX_CODE_CHARS} characters`);
       try {
-        return await serializeEvaluation(async () => {
+        const evaluateInHost = async () => {
           if (stopped) throw new Error("browser runtime is stopped");
           await acquireInHost(current);
           if (backend === "betterwright") {
@@ -769,7 +787,10 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
           pages = result.pages.length;
           if (!evaluated.ok) throw new Error(evaluated.error ?? "browser evaluation failed");
           return deliverEvaluation(result, current);
-        });
+        };
+        // BetterWright serializes each session itself; serializing here would turn concurrent
+        // sessions back into one global lane. The legacy evaluator remains globally serialized.
+        return await (backend === "betterwright" ? evaluateInHost() : serializeEvaluation(evaluateInHost));
       } catch (error) {
         throw markTimeoutUncertain(error);
       }
@@ -795,8 +816,10 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
     async release(runId, captureProof) {
       const current = requireLease(runId);
       try {
-        await evaluationQueue;
-        if (!child || hostLeaseRunId !== runId) return [];
+        // The BetterWright host orders release behind that run's own work. Only the legacy
+        // evaluator needs the global queue before its single host can exit.
+        if (backend !== "betterwright") await evaluationQueue;
+        if (!child || !hostLeaseRunIds.has(runId)) return [];
         const sources = await rpc(
           "release",
           { runId, captureProof },
@@ -804,22 +827,26 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
         ) as string[];
         return sources.map((source) => trustedPng(source, current));
       } finally {
-        await terminateLeaseHost();
-        if (lease?.runId === runId) lease = null;
-        hostLeaseRunId = null;
-        pages = 0;
+        leases.delete(runId);
+        hostLeaseRunIds.delete(runId);
+        if (backend !== "betterwright") {
+          await terminateLeaseHost();
+          pages = 0;
+        }
       }
     },
 
     hasLease(runId) {
-      return lease?.runId === runId;
+      return leases.has(runId);
     },
 
     stats() {
       return {
-        ready: child !== null && hostLeaseRunId !== null,
+        ready: child !== null && hostLeaseRunIds.size > 0,
         profileDir: settings.profileDir,
-        activeRunId: lease?.runId ?? null,
+        activeRunId: leases.keys().next().value ?? null,
+        activeRunIds: [...leases.keys()],
+        maxConcurrentLeases,
         pages,
         launches,
         evaluations,
@@ -834,8 +861,8 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
       if (inFlight) await inFlight.catch(() => undefined);
       await evaluationQueue.catch(() => undefined);
       await terminateLeaseHost();
-      lease = null;
-      hostLeaseRunId = null;
+      leases.clear();
+      hostLeaseRunIds.clear();
       pages = 0;
     },
   };

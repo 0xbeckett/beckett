@@ -177,6 +177,18 @@ async function main(): Promise<void> {
     : createLocalBrowserRuntime({ settings, logger: hostLogger, ...decodeBudgetOverrides() });
   const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
   try {
+    const active = new Set<Promise<void>>();
+    const respond = async (request: BrowserHostRequest): Promise<void> => {
+      let response: BrowserHostResponse;
+      try {
+        response = { version: 1, id: request.id, ok: true, data: await handle(runtime, request) };
+      } catch (error) {
+        response = { version: 1, id: request.id, ok: false, error: boundedError(error) };
+      }
+      // Each response is one small JSONL write; request ids let the supervisor match out-of-order
+      // session completions while BetterWright itself preserves order within a session.
+      process.stdout.write(`${JSON.stringify(response)}\n`);
+    };
     for await (const line of input) {
       if (!line.trim()) continue;
       if (line.length > MAX_REQUEST_CHARS) throw new Error("browser host request exceeded size limit");
@@ -189,19 +201,15 @@ async function main(): Promise<void> {
       if (request.version !== 1 || !Number.isSafeInteger(request.id) || typeof request.method !== "string") {
         throw new Error("browser host received an invalid request envelope");
       }
-      let response: BrowserHostResponse;
-      try {
-        response = { version: 1, id: request.id, ok: true, data: await handle(runtime, request) };
-      } catch (error) {
-        response = {
-          version: 1,
-          id: request.id,
-          ok: false,
-          error: boundedError(error),
-        };
+      // Stop is a barrier: never close the shared BetterWright client under earlier requests.
+      if (request.method === "stop") {
+        await Promise.all(active);
+        await respond(request);
+        break;
       }
-      process.stdout.write(`${JSON.stringify(response)}\n`);
-      if (request.method === "stop") break;
+      const work = respond(request);
+      active.add(work);
+      void work.finally(() => active.delete(work));
     }
   } finally {
     input.close();

@@ -108,22 +108,8 @@ export const createBrowserExtension =
       return agent;
     }
 
-    /** The idle-lease one-shot: acquire → one evaluation → release, refused while a run is live. */
+    /** One inline evaluation gets its own session; runtime admission enforces only its lane cap. */
     async function execOneOff(code: string, channelId: string | null): Promise<unknown> {
-      // "queued" includes a dispatch mid-acquire (queue→live handoff): exec must not race it
-      // for the lease — losing that race would error a queued run.
-      const busyRun = requireAgent()
-        .stats()
-        .runs.find((run) => run.state === "running" || run.state === "waiting" || run.state === "queued");
-      if (busyRun) {
-        throw new Error(
-          busyRun.state === "queued"
-            ? `the background browser agent has run ${busyRun.runId} queued for the browser - ` +
-                `it starts the moment the lease frees; wait for the queue to drain or dispatch this as a background task`
-            : `the background browser agent holds the browser (run ${busyRun.runId}, ${busyRun.state}) - ` +
-                `use \`beckett browser watch/steer\` on that run instead, or wait for it to finish`,
-        );
-      }
       const runId = `inline-${crypto.randomUUID()}`;
       const controlToken = crypto.randomUUID();
       const artifactsDir = join(ctx.paths.beckettDir, "browser-agent", "inline", runId);
@@ -155,10 +141,11 @@ export const createBrowserExtension =
             "Dispatch a self-contained browser/computer-use task to the dedicated background " +
             "agent — the default for anything with more than one step, anything needing " +
             "credentials, and anything that might take a while (a signup, a login-and-do-" +
-            "something, posting a draft). Returns immediately with a runId; if another run " +
-            "holds the browser the dispatch queues (the return carries its position) and " +
-            "starts automatically when the lease frees — never re-dispatch. Questions surface " +
-            "as one Discord anchor; the outcome comes back as an update turn.",
+            "something, posting a draft). Returns immediately with a runId and starts at once " +
+            "in its own browser session while capacity remains; past the concurrent-session cap " +
+            "it queues (the return carries its position) and starts automatically when a lane " +
+            "frees — never re-dispatch. Questions surface as one Discord anchor for that run; " +
+            "the outcome comes back as an update turn.",
           input: TaskArgs,
           examples: [
             "check https://example.com/status — is the API listed as degraded?",
@@ -169,10 +156,11 @@ export const createBrowserExtension =
         {
           id: "browser.exec",
           description:
-            "Run ONE BetterWright JavaScript one-off inline on the shared persistent browser " +
-            "while it is idle — a quick read of a live page (\"is the site up?\", \"what does " +
-            "this page say right now?\"). Refuses while a background run holds the lease. No " +
-            "credentials; reads and trivially reversible clicks only.",
+            "Run ONE BetterWright JavaScript one-off inline in its own browser session — a quick " +
+            "read of a live page (\"is the site up?\", \"what does this page say right now?\"). " +
+            "It can run beside background tasks and refuses only when its session is busy or all " +
+            "concurrent browser lanes are full. No credentials; reads and trivially reversible " +
+            "clicks only.",
           actionClass: ActionClass.FREE,
           input: ExecArgs,
           examples: ["await page.goto('https://example.com/status'); return snapshot()"],
@@ -180,9 +168,10 @@ export const createBrowserExtension =
         {
           id: "browser.watch",
           description:
-            "Snapshot a background browser run: its state (including queued), redacted " +
-            "activity journal, and — while it is live — a fresh page screenshot. Use when " +
-            "someone asks what it is doing, or before steering.",
+            "Snapshot exactly the background browser run named by runId: its state (including " +
+            "queued), redacted activity journal, and — while that run is live — a fresh page " +
+            "screenshot from its own session. Use when someone asks what it is doing, or before " +
+            "steering.",
           actionClass: ActionClass.FREE,
           input: WatchArgs,
           examples: ["what is the browser run doing right now?"],
@@ -190,10 +179,10 @@ export const createBrowserExtension =
         {
           id: "browser.steer",
           description:
-            "Deliver mid-run guidance to a background browser run: a running run gets the " +
-            "note in its next tool result, a run parked on a question resumes with it, and a " +
-            "queued run folds it into its launch input. Use when the person changes their " +
-            "mind or adds a constraint.",
+            "Deliver mid-run guidance to exactly the background browser run named by runId: a " +
+            "running run gets the note in its next tool result, a run parked on its question " +
+            "resumes with it, and a queued run folds it into its launch input. Other concurrent " +
+            "runs are untouched. Use when the person changes their mind or adds a constraint.",
           actionClass: ActionClass.FREE,
           input: SteerArgs,
           examples: ["use the annual plan, not monthly — the person just corrected it"],
@@ -201,9 +190,10 @@ export const createBrowserExtension =
         {
           id: "browser.stop",
           description:
-            "Cancel a background browser run: a live one is killed cleanly and the browser " +
-            "released, a queued one is removed before it ever starts. Both still report a " +
-            "cancelled outcome turn. Use for \"never mind\" or a run stuck beyond steering.",
+            "Cancel exactly the background browser run named by runId: a live run is killed " +
+            "cleanly and only its session released, while a queued run is removed before it " +
+            "starts. Both still report a cancelled outcome turn; other concurrent runs continue. " +
+            "Use for \"never mind\" or a run stuck beyond steering."}]},
           actionClass: ActionClass.FREE,
           input: StopArgs,
           examples: ["stop the browser run, the person cancelled the request"],
