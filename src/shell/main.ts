@@ -163,7 +163,14 @@ async function boot(): Promise<BootedSystem> {
   // GitHub identity; a missing PAT makes it undefined → the dispatcher skips publishing and says so.
   const identity = loadIdentity(config);
   const publishRepo = identity.github.pat
-    ? async (a: { slug: string; repoRoot: string; description: string; ticket?: string; targetBranch?: string }) => {
+    ? async (a: {
+        slug: string;
+        repoRoot: string;
+        description: string;
+        ticket?: string;
+        targetBranch?: string;
+        baseSha?: string;
+      }) => {
         const gh = new GitHubCli({
           pat: identity.github.pat,
           account: identity.github.account,
@@ -178,6 +185,7 @@ async function boot(): Promise<BootedSystem> {
           description: a.description,
           ticket: a.ticket,
           targetBranch: a.targetBranch,
+          baseSha: a.baseSha,
         });
         return { url: r.url, kind: r.kind, prUrl: r.prUrl };
       }

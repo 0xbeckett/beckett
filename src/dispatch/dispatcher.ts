@@ -160,6 +160,8 @@ export interface DispatcherDeps {
      * (`main`). Absent ⇒ publish to the repo default exactly as before (OPS-185).
      */
     targetBranch?: string;
+    /** Worktree base captured before implementation; enables safe publish squash-apply recovery. */
+    baseSha?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   /**
    * Optional progress feed: the dispatcher forwards each worker's granular {@link WorkerEvent}
@@ -419,6 +421,7 @@ export class Dispatcher {
     description: string;
     ticket?: string;
     targetBranch?: string;
+    baseSha?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   private readonly progress?: ProgressSink;
   private readonly onAdvance?: DispatcherDeps["onAdvance"];
@@ -2782,6 +2785,7 @@ export class Dispatcher {
         ticket: this.publicPublishTicket(ticket),
         // A ticket cast onto a non-main integration branch funnels there; `main` stays untouched.
         ...(ticket.targetBranch ? { targetBranch: ticket.targetBranch } : {}),
+        ...(this.baseShaForTicket.get(ticket.id) ? { baseSha: this.baseShaForTicket.get(ticket.id) } : {}),
       });
       return await this.recordPublication(ticket, r);
     } catch (err) {
@@ -2954,6 +2958,7 @@ export class Dispatcher {
         ticket: this.publicPublishTicket(ticket),
         // Preserve the non-main funnel across a durable retry: never advance `main` on replay.
         ...(ticket.targetBranch ? { targetBranch: ticket.targetBranch } : {}),
+        ...(this.baseShaForTicket.get(ticket.id) ? { baseSha: this.baseShaForTicket.get(ticket.id) } : {}),
       });
       return await this.recordPublication(ticket, r);
     } catch (err) {

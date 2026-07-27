@@ -30,7 +30,10 @@
  * no mail client is implemented here.
  */
 
+import { unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type {
   ActionType,
   ActionContext,
@@ -656,6 +659,9 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
      * (OPS-185).
      */
     targetBranch?: string;
+    /** Original worker base, captured when its worktree was created. Used only to recover from a
+     * rebase that tries to replay a predecessor which has since squash-landed. */
+    baseSha?: string;
   }): Promise<PublishResult> {
     this.requireCreds("publish repo");
     // Clean the source tree once up front (OPS-61) so NO publish path — including the brand-new-repo
@@ -724,7 +730,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
       // main's), so no fetch/rebase/push ever references the default branch. Absent ⇒ the default
       // branch, byte-for-byte as before.
       const target = this.integrationTarget(p.targetBranch);
-      await this.pushToBranch(p.sourceDir, repo, target ?? undefined);
+      await this.pushToBranch(p.sourceDir, repo, target ?? undefined, p.baseSha, title);
       this.opts.logger.info("published via push to branch", { repo, branch: target ?? "(default)" });
       return { nameWithOwner: repo, url: `${this.gitHost()}/${repo}`, kind: "pushed" };
     }
@@ -760,11 +766,17 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * the repo's default branch (`main` for the self-repo) — a ticket cast onto a non-main integration
    * branch passes it explicitly so `main` is never fetched, rebased, or pushed. If the remote branch
    * doesn't exist yet (a just-created/empty repo, or a fresh integration branch) the fetch fails
-   * harmlessly and the push creates it. A rebase conflict aborts and throws — the caller turns that
-   * into a "needs a human" hold rather than force-pushing over someone's (or a parallel worker's)
-   * commits.
+   * harmlessly and the push creates it. On a rebase conflict, a dependent worker may be carrying a
+   * predecessor's pre-squash commits. In that one shape, retry its recorded *own* base..tip delta as
+   * one patch over a freshly fetched remote tip; this avoids replaying already-landed checkpoints.
    */
-  private async pushToBranch(cwd: string, repo: string, branch?: string): Promise<void> {
+  private async pushToBranch(
+    cwd: string,
+    repo: string,
+    branch?: string,
+    workerBaseSha?: string,
+    summary?: string,
+  ): Promise<void> {
     const base = branch ?? await this.defaultBranch(repo);
     const url = `${this.gitHost()}/${repo}.git`;
     const fetch = await this.runner(["git", "fetch", url, base], { cwd, env: this.gitEnv() });
@@ -772,6 +784,13 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
       const rebase = await this.runner(["git", "rebase", "FETCH_HEAD"], { cwd, env: this.gitEnv() });
       if (rebase.code !== 0) {
         await this.runner(["git", "rebase", "--abort"], { cwd, env: this.gitEnv() });
+        try {
+          if (await this.squashApplyWorkerDelta(cwd, url, base, workerBaseSha, summary)) return await this.gitPush(cwd, repo, "HEAD", base);
+        } catch (err) {
+          // A failed apply reports only the remaining files. Do not bury the useful answer under
+          // the original 20-commit rebase transcript.
+          throw err;
+        }
         throw new Error(
           `publish: local work conflicts with ${repo}@${base} and can't auto-rebase — needs a human ` +
             `(${rebase.stderr.trim() || rebase.stdout.trim()})`,
@@ -779,6 +798,83 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
       }
     }
     await this.gitPush(cwd, repo, "HEAD", base);
+  }
+
+  /**
+   * Apply exactly the worker's recorded base..tip contribution as one commit. False means the
+   * metadata is not safe enough to make this transformation, so the caller preserves the old human
+   * hold. A conflicting apply throws a deliberately compact residual-conflict error for the courier.
+   */
+  private async squashApplyWorkerDelta(
+    cwd: string,
+    url: string,
+    remoteBranch: string,
+    workerBaseSha: string | undefined,
+    summary: string | undefined,
+  ): Promise<boolean> {
+    if (!workerBaseSha?.trim()) return false;
+    const tip = await this.runner(["git", "rev-parse", "--verify", "--quiet", "HEAD"], { cwd, env: this.gitEnv() });
+    const base = await this.runner(["git", "rev-parse", "--verify", "--quiet", `${workerBaseSha}^{commit}`], { cwd, env: this.gitEnv() });
+    if (tip.code !== 0 || base.code !== 0) return false;
+    const baseSha = base.stdout.trim();
+    const tipSha = tip.stdout.trim();
+    if (!baseSha || !tipSha) return false;
+
+    // A non-ancestor base makes a two-dot diff a tree comparison rather than the worker's history.
+    // Never guess in that case.
+    const ancestor = await this.runner(["git", "merge-base", "--is-ancestor", baseSha, tipSha], { cwd, env: this.gitEnv() });
+    if (ancestor.code !== 0) return false;
+    const nonempty = await this.runner(["git", "diff", "--quiet", `${baseSha}..${tipSha}`], { cwd, env: this.gitEnv() });
+    if (nonempty.code === 0 || nonempty.code > 1) return false;
+
+    // A deletion must have been made in this exact worker range. This catches a stale/wrong base
+    // whose snapshot comparison would otherwise remove a file the worker never changed.
+    const deletions = await this.runner(["git", "diff", "--name-status", "--diff-filter=D", `${baseSha}..${tipSha}`], {
+      cwd,
+      env: this.gitEnv(),
+    });
+    if (deletions.code !== 0) return false;
+    for (const line of deletions.stdout.split(/\r?\n/)) {
+      const path = line.split("\t")[1]?.trim();
+      if (!path) continue;
+      const touched = await this.runner(
+        ["git", "log", "--format=%H", "--diff-filter=D", `${baseSha}..${tipSha}`, "--", path],
+        { cwd, env: this.gitEnv() },
+      );
+      if (touched.code !== 0 || !touched.stdout.trim()) return false;
+    }
+
+    // Fetch again after aborting the rebase: FETCH_HEAD is the precise landing point for the patch.
+    const refreshed = await this.runner(["git", "fetch", url, remoteBranch], { cwd, env: this.gitEnv() });
+    if (refreshed.code !== 0) return false;
+    const current = await this.runner(["git", "branch", "--show-current"], { cwd, env: this.gitEnv() });
+    const landingBranch = `${current.stdout.trim() || "beckett/squash-apply"}-land`;
+    const checkout = await this.runner(["git", "checkout", "-B", landingBranch, "FETCH_HEAD"], { cwd, env: this.gitEnv() });
+    if (checkout.code !== 0) return false;
+
+    const patchPath = join(tmpdir(), `beckett-squash-apply-${randomUUID()}.patch`);
+    try {
+      const diff = await this.runner(["git", "diff", "--binary", `${baseSha}..${tipSha}`], { cwd, env: this.gitEnv() });
+      if (diff.code !== 0 || !diff.stdout) return false;
+      await writeFile(patchPath, diff.stdout);
+      const apply = await this.runner(["git", "apply", "--3way", patchPath], { cwd, env: this.gitEnv() });
+      if (apply.code !== 0) {
+        const conflicts = await this.runner(["git", "diff", "--name-only", "--diff-filter=U"], { cwd, env: this.gitEnv() });
+        const files = conflicts.stdout.split(/\r?\n/).map((file) => file.trim()).filter(Boolean);
+        throw new Error(
+          `publish: squash-apply still conflicts with ${remoteBranch}; residual conflicting files: ` +
+            `${files.length ? files.join(", ") : "(none reported)"} — needs a human`,
+        );
+      }
+      const commit = await this.runner(
+        ["git", "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", summary?.trim() || "beckett: squash apply worker delta"],
+        { cwd, env: this.gitEnv() },
+      );
+      if (commit.code !== 0) return false;
+      return true;
+    } finally {
+      await unlink(patchPath).catch(() => {});
+    }
   }
 
   /** `setPublic` that never throws — visibility is cosmetic and must not block shipping the code. */
