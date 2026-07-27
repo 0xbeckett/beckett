@@ -3325,6 +3325,31 @@ export class Concierge {
             },
           },
           {
+            // Deploy-only handshake: close the queue→lease race before deploy-prod polls status.
+            // New routine/browser dispatches stay durably queued and recover on boot; no caller
+            // can slip a fresh volatile run between a clean status reply and systemctl restart.
+            name: "browser.begin-deploy-drain",
+            summary: "temporarily queue browser dispatches while a deploy drains live leases",
+            handle: async () => {
+              if (!this.browserAgent) {
+                return { ok: false, error: "the browser agent is unavailable - not wired" };
+              }
+              this.browserAgent.beginDeployDrain();
+              return { ok: true, data: this.browserAgent.stats() };
+            },
+          },
+          {
+            name: "browser.end-deploy-drain",
+            summary: "re-open browser dispatch after an aborted deploy preflight",
+            handle: async () => {
+              if (!this.browserAgent) {
+                return { ok: false, error: "the browser agent is unavailable - not wired" };
+              }
+              this.browserAgent.endDeployDrain();
+              return { ok: true, data: this.browserAgent.stats() };
+            },
+          },
+          {
             name: "browser.status",
             summary: "list the browser agent's live and recent runs",
             handle: async () => {
