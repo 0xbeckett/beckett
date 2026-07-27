@@ -137,10 +137,6 @@ export interface BrowserAgent {
    */
   recover(): Promise<void>;
   stats(): BrowserAgentStats;
-  /** Stop starting queued work while a deploy drains current leases; new work remains durable. */
-  beginDeployDrain(): void;
-  /** Re-open dispatch after a deploy preflight aborts without restarting the daemon. */
-  endDeployDrain(): void;
   stopAll(): Promise<void>;
 }
 
@@ -302,8 +298,6 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
   const requeue: BrowserAgentRun[] = [];
   let outcomeRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let queueRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  /** A deploy preflight closes this gate before polling; arrivals remain safely queued on disk. */
-  let deployDraining = false;
   let stopping = false;
 
   loadLedger();
@@ -501,7 +495,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
    * queue and retries, because a queued run must never be dropped ("never re-dispatch").
    */
   function maybeStartNext(): void {
-    if (stopping || deployDraining || starting || live.size > 0) return;
+    if (stopping || starting || live.size > 0) return;
     const next = queue.shift();
     if (!next) return;
     void startDispatch(next).catch((error) => {
@@ -846,7 +840,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       // The lease is one-run-exclusive; a dispatch that arrives while it is held (or another
       // dispatch is mid-acquire) queues durably instead of refusing, and starts automatically
       // when the lease frees.
-      if (deployDraining || live.size > 0 || queue.length > 0 || starting) {
+      if (live.size > 0 || queue.length > 0 || starting) {
         // The keychain read above stays fail-fast VALIDATION only: secret values must not sit
         // in daemon memory for an unbounded queue wait, so they are dropped here and re-read
         // by startDispatch when the lease frees (credsEntry set + secrets null — the same
@@ -1047,21 +1041,8 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       };
     },
 
-    beginDeployDrain() {
-      // Do not reject arrivals while the deploy waits: routine scheduling may land during this
-      // window, and a durable queued row is safe to recover after restart.
-      deployDraining = true;
-    },
-
-    endDeployDrain() {
-      if (stopping) return;
-      deployDraining = false;
-      maybeStartNext();
-    },
-
     async stopAll() {
       stopping = true;
-      deployDraining = true;
       if (outcomeRetryTimer) clearTimeout(outcomeRetryTimer);
       outcomeRetryTimer = null;
       if (queueRetryTimer) clearTimeout(queueRetryTimer);

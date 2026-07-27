@@ -99,12 +99,6 @@ function fakeAgent(calls: string[], stats: Partial<BrowserAgentStats> = {}): Bro
       calls.push("agent.recover");
     },
     stats: () => ({ running: 0, waiting: 0, queued: 0, runs: [], ...stats }),
-    beginDeployDrain() {
-      calls.push("agent.beginDeployDrain");
-    },
-    endDeployDrain() {
-      calls.push("agent.endDeployDrain");
-    },
     async stopAll() {
       calls.push("agent.stopAll");
     },
