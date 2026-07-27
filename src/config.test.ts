@@ -214,7 +214,10 @@ test("computer-use defaults to one stable full-Chromium profile and bounded tool
     browser_eval_timeout_ms: 60_000,
     browser_max_output_chars: 24_000,
     browser_question_wait_secs: 3_600,
+    browser_attach_roots: [],
   });
+  expect(validateConfig({ quick: { browser_attach_roots: ["/tmp/../approved-media"] } }).quick.browser_attach_roots).toEqual(["/approved-media"]);
+  expect(() => validateConfig({ quick: { browser_attach_roots: ["relative-media"] } })).toThrow("absolute directory path");
   expect(() => validateConfig({ quick: { browser_max_output_chars: 4_095 } })).toThrow();
   expect(() => validateConfig({ quick: { browser_max_output_chars: 1_000_001 } })).toThrow();
 });

@@ -34,6 +34,21 @@ Downloads are denied for this MCP surface. Browser output remains bounded by Bec
 is returned to the model, and proof/question screenshots are copied into the run artifact
 directory and PNG-validated before Discord can consume them.
 
+## Attachment roots
+
+`attachFile()` defaults to the current run's artifact directory (the normal screenshot → post
+flow) and `paths.imagesDir` (`~/.beckett/images`). Operators can add absolute directories with
+`[quick].browser_attach_roots` in `~/.beckett/config.toml`, for example:
+
+```toml
+[quick]
+browser_attach_roots = ["/srv/approved-media"]
+```
+
+`["/"]` deliberately permits broad filesystem attachment access, but is never a default and
+emits a startup warning. Every candidate is `realpath`-resolved before root containment, then
+must be a bounded regular PNG, JPEG, GIF, WebP, or MP4 whose magic bytes match its extension.
+
 ## Human loop and evidence
 
 Browser work detaches immediately. A real missing fact returns `needs_input`; Beckett leaves the

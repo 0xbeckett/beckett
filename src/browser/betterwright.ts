@@ -18,9 +18,11 @@
  * the pre-1.3.0 strictly-single-lease behaviour without a revert.
  */
 
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { closeSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readSync, writeSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { basename, extname, join, resolve } from "node:path";
 import { BetterWright, NetworkPolicy, piImageArtifacts } from "betterwright";
+import { openTrustedBrowserAttachment } from "./attachments.ts";
 import type { Logger } from "../types.ts";
 import { measureDirectoryBytes, pruneChromeProfileCaches } from "./profile-cache.ts";
 import type {
@@ -58,7 +60,7 @@ interface ActiveLease extends BrowserLease {
   /** Per-lease event ring — never interleaves with another lease's events. */
   events: string[];
   screenshots: string[];
-  /** Run-artifact screenshot path -> BetterWright's own readable artifact path. */
+  /** Validated public path -> BetterWright-owned readable copy. */
   attachments: Map<string, string>;
   /** Serializes this lease's own calls so they stay strictly ordered. */
   queue: Promise<void>;
@@ -247,11 +249,64 @@ export function createBetterWrightRuntime(
     return copied;
   }
 
+  /** Extract direct string paths from attachFile(selector, "/path") calls before sandbox execution. */
+  function literalAttachmentPaths(code: string): string[] {
+    const matches = code.matchAll(/\battachFile\s*\(\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,()]+)\s*,\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g);
+    const paths = new Set<string>();
+    for (const match of matches) {
+      const literal = match[1]!;
+      try {
+        // Browser paths returned in tool results are JSON strings. Supporting single quotes too
+        // keeps the normal JavaScript spelling ergonomic without evaluating model-authored code.
+        const value = literal.startsWith('"')
+          ? JSON.parse(literal)
+          : literal.slice(1, -1).replace(/\\(['\\])/g, "$1");
+        if (typeof value === "string") paths.add(value);
+      } catch {
+        // The sandbox helper rejects an unprepared path with the same safe refusal.
+      }
+    }
+    return [...paths];
+  }
+
+  /** Copy the bytes from the checked descriptor into BetterWright's artifact directory. */
+  function stageAttachment(lease: ActiveLease, source: string): void {
+    const trusted = openTrustedBrowserAttachment(source, [lease.artifactsDir, ...(settings.attachmentRoots ?? [])]);
+    try {
+      if (lease.attachments.has(trusted.sourcePath)) return;
+      const sessionDir = createHash("sha256").update(lease.session).digest("hex").slice(0, 16);
+      const destinationDir = join(home, "artifacts", sessionDir);
+      mkdirSync(destinationDir, { recursive: true, mode: 0o700 });
+      const destination = join(
+        destinationDir,
+        `beckett-attach-${randomUUID().slice(0, 8)}${extname(trusted.sourcePath).toLowerCase()}`,
+      );
+      const output = openSync(destination, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+      try {
+        const buffer = Buffer.allocUnsafe(64 * 1024);
+        let offset = 0;
+        while (offset < trusted.size) {
+          const count = readSync(trusted.fd, buffer, 0, Math.min(buffer.length, trusted.size - offset), offset);
+          if (count <= 0) throw new Error("browser attachment ended while copying");
+          let written = 0;
+          while (written < count) written += writeSync(output, buffer, written, count - written);
+          offset += count;
+        }
+      } finally {
+        closeSync(output);
+      }
+      lease.attachments.set(trusted.sourcePath, destination);
+      // The snippet uses the spelling it supplied; retain it as a lookup alias while
+      // containment is always decided from trusted.sourcePath after realpath.
+      lease.attachments.set(source, destination);
+    } finally {
+      closeSync(trusted.fd);
+    }
+  }
+
   /**
-   * Add the one narrow file-upload primitive model snippets receive. Its public
-   * path is only a lookup key: the real path is a BetterWright-owned artifact
-   * that was copied from a screenshot for this lease. Therefore neither a
-   * guessed path nor a path from another run can reach setInputFiles.
+   * Add the narrow file-upload primitive model snippets receive. The public path is a lookup key
+   * for a host-validated BetterWright artifact, so it cannot turn into arbitrary filesystem read.
    */
   function attachmentBridge(lease: ActiveLease): string {
     const approved = JSON.stringify(Object.fromEntries(lease.attachments));
@@ -260,7 +315,7 @@ const attachFile = async (target, screenshotPath) => {
   if (typeof screenshotPath !== "string") throw new Error("attachFile needs a screenshot path");
   const approvedPath = ${approved}[screenshotPath];
   if (typeof approvedPath !== "string") {
-    throw new Error("attachFile refuses paths outside this run's approved screenshot artifacts");
+    throw new Error("attachFile refuses paths outside this run's approved attachment roots");
   }
   const input = typeof target === "string" ? page.locator(target) : target;
   if (!input || typeof input.setInputFiles !== "function") {
@@ -276,9 +331,9 @@ const attachFile = async (target, screenshotPath) => {
   async function execute(lease: ActiveLease, code: string): Promise<BrowserEvalResult> {
     if (!code.trim()) throw new Error("betterwright browser requires non-empty JavaScript");
     if (code.length > MAX_CODE_CHARS) throw new Error(`betterwright browser code exceeds ${MAX_CODE_CHARS} characters`);
-    // Do not alter ordinary program source until this lease actually has an
-    // attachable screenshot. That keeps the bridge dormant (and source/error
-    // locations stable) for the overwhelming majority of browser actions.
+    // Stage literal paths before exposing the bridge; unprepared dynamic paths still fail closed.
+    for (const source of literalAttachmentPaths(code)) stageAttachment(lease, source);
+    // Do not alter ordinary program source until this lease actually has an attachable file.
     const bridgedCode = lease.attachments.size > 0 ? `${attachmentBridge(lease)}\n${code}` : code;
     const raw = await browser.run(bridgedCode, {
       session: lease.session,

@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { validateConfig } from "../config.ts";
 import type { Logger } from "../types.ts";
 import { buildBrowserEvaluatorLaunch } from "./evaluator-runner.ts";
+import { assertTrustedBrowserAttachment } from "./attachments.ts";
 import { assertTrustedArtifactPng, buildBrowserHostLaunch, createIsolatedBrowserRuntime } from "./isolated.ts";
 import { browserHostSettings, type BrowserHostSettings } from "./runtime.ts";
 
@@ -239,6 +240,40 @@ test("attachment validation refuses a PNG path outside the run artifacts directo
     mkdirSync(artifactsDir, { recursive: true });
     writeFileSync(outside, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
     expect(() => assertTrustedArtifactPng(outside, artifactsDir)).toThrow("escaped the run artifacts directory");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("configured attachment roots accept media, reject escaping symlinks and mismatched bytes, and honor '/'", () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-browser-attachment-roots-test-"));
+  try {
+    const artifacts = join(dir, "artifacts");
+    const extra = join(dir, "approved");
+    const outside = join(dir, "outside");
+    mkdirSync(artifacts, { recursive: true });
+    mkdirSync(extra, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(4)]);
+    const configuredRoots = browserHostSettings(validateConfig({
+      paths: { beckett_dir: dir },
+      quick: { browser_attach_roots: [extra] },
+    })).attachmentRoots!;
+    expect(configuredRoots).toContain(resolve(extra));
+    const approved = join(extra, "post.png");
+    writeFileSync(approved, png);
+    expect(assertTrustedBrowserAttachment(approved, [artifacts, ...configuredRoots])).toBe(realpathSync(approved));
+
+    const escaped = join(outside, "outside.png");
+    writeFileSync(escaped, png);
+    symlinkSync(escaped, join(extra, "escape.png"));
+    expect(() => assertTrustedBrowserAttachment(join(extra, "escape.png"), [artifacts, extra])).toThrow("escaped the permitted roots");
+
+    const mismatch = join(extra, "not-a-jpeg.jpg");
+    writeFileSync(mismatch, png);
+    expect(() => assertTrustedBrowserAttachment(mismatch, [artifacts, extra])).toThrow("do not match its extension");
+
+    expect(assertTrustedBrowserAttachment(escaped, ["/"])).toBe(realpathSync(escaped));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

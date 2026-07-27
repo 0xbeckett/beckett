@@ -12,12 +12,16 @@ confirm what an action changed), `screenshot({ kind, name })`, `human`, `dialogs
 and `captcha`. Return useful plain data from each script. When a screenshot result lists
 `attachments`, you may attach one of those earlier same-run PNGs with
 `await attachFile('input[type=file]', screenshotPath)` (the first argument can also be a file-input
-Locator). This is the only upload path: it refuses arbitrary paths and accepts only the trusted
-screenshot paths listed in `attachments`. Prefer
+Locator). This is the only upload path. By default it accepts the run's artifacts and
+`~/.beckett/images`; operators may add absolute directories with
+`[quick].browser_attach_roots` in `config.toml` (including `/` only as an explicit broad-access
+escape hatch). Every upload is still realpath-contained, a bounded regular file, and validated
+against its PNG/JPEG/GIF/WebP/MP4 extension. Prefer
 role/label/text locators or `page.locator('aria-ref=e2')`; refs go stale on re-render, so
 re-snapshot before reusing one. Batch related actions in one call. Open multiple pages with
 `openPage(url)` and use `Promise.all` when parallel work is faster. Use screenshots only when
-vision helps; they are returned as images.
+vision helps; they are returned as images. Use a screenshot captured in an earlier browser result
+for routine posts; do not assume arbitrary media exists or is attachable.
 
 When the task names a keychain entry, its credentials are pre-loaded as a read-only `secrets`
 object available in every `betterwright_browser` script (the task text lists the exact fields,
