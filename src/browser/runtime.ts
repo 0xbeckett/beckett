@@ -253,10 +253,10 @@ export function browserHostSettings(config: Config): BrowserHostSettings {
 /** The production runtime always crosses an OS process and sandbox boundary. */
 export function createBrowserRuntime(deps: CreateBrowserRuntimeDeps): BrowserRuntime {
   const settings = browserHostSettings(deps.config);
-  if (deps.config.quick.browser_attach_roots.length > 0) {
-    deps.logger.warn("browser attachment access widened beyond the default roots", {
-      roots: deps.config.quick.browser_attach_roots,
-    });
+  const defaultImagesRoot = resolve(buildPaths(deps.config).imagesDir);
+  const widenedRoots = deps.config.quick.browser_attach_roots.filter((root) => resolve(root) !== defaultImagesRoot);
+  if (widenedRoots.length > 0) {
+    deps.logger.warn("browser attachment access widened beyond the default roots", { roots: widenedRoots });
   }
   return createIsolatedBrowserRuntime({ settings, logger: deps.logger, backend: "betterwright" });
 }

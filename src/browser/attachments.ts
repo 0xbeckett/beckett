@@ -73,7 +73,7 @@ export function openTrustedBrowserAttachment(source: string, permittedRoots: rea
     fd = openSync(sourcePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const stat = fstatSync(fd);
     if (!stat.isFile()) throw new Error("browser attachment is not a regular file");
-    if (stat.size < 12 || stat.size > MAX_BROWSER_ATTACHMENT_BYTES) {
+    if (stat.size < 8 || stat.size > MAX_BROWSER_ATTACHMENT_BYTES) {
       throw new Error(`browser attachment size ${stat.size} is outside the allowed range`);
     }
     const header = Buffer.alloc(12);
