@@ -221,10 +221,12 @@ export class GitHubPrPoller {
 
   /**
    * One poll cycle. Prune the PRs that reached a terminal state last tick (their merged/closed
-   * event already fired), then read + diff every remaining watched PR. Never throws: a read that
-   * fails for one PR is logged and skipped, leaving its snapshot untouched so it retries next tick.
-   * Mutates + persists the snapshot BEFORE returning events, so a crash between persist and relay
-   * loses a ping rather than re-firing one.
+   * event already fired), then read + diff every remaining watched PR. Never throws: a TRANSIENT
+   * read failure for one PR is logged and skipped, leaving its snapshot untouched so it retries next
+   * tick, while a read that proves the repo PERMANENTLY unreadable (404/403 — deleted or gone
+   * private) drops the entry once so it never becomes a poll that fails forever. Mutates + persists
+   * the snapshot BEFORE returning events, so a crash between persist and relay loses a ping rather
+   * than re-firing one.
    */
   async poll(): Promise<PrPollEvent[]> {
     // Drop terminal entries from the registry (their event fired last tick). They are gone from the
