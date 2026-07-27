@@ -92,6 +92,13 @@ export interface RoutinesExtensionDeps {
    * so it is visible in one place that this lane never reaches `browserAgent`.
    */
   spawnDepsUpdate?: (argv: string[]) => void;
+  /**
+   * How the `self` lane wakes the concierge (issue #26). Default: a `routine.self` control-bus post
+   * that frames a SYSTEM turn. Injected for the same reason `spawnDepsUpdate` is — so a test can
+   * assert the lane forks BEFORE (and never resolves) the browser agent/registry/runner, without a
+   * live socket. No credentials ride this lane, so nothing here names one.
+   */
+  wakeSelf?: (post: { routineId: string; prompt: string; channelId: string }) => void | Promise<void>;
   /** Test seams — the scheduler's injectable clock/RNG/cadence (see {@link RoutineSchedulerDeps}). */
   now?: () => Date;
   rng?: () => number;
@@ -379,12 +386,12 @@ export const createRoutinesExtension =
       // bus post to the concierge, which frames a SYSTEM turn; no credentials ride this lane.
       if (plan.lane === "self") {
         if (!plan.selfPrompt) throw new Error("self-lane routine is missing its prompt");
-        await callBus(
-          join(ctx.paths.beckettDir, "control.sock"),
-          "routine.self",
-          { routineId: plan.routineId, prompt: plan.selfPrompt, channelId },
-          30_000,
-        );
+        const post = { routineId: plan.routineId, prompt: plan.selfPrompt, channelId };
+        if (deps.wakeSelf) {
+          await deps.wakeSelf(post);
+          return;
+        }
+        await callBus(join(ctx.paths.beckettDir, "control.sock"), "routine.self", post, 30_000);
         return;
       }
 
