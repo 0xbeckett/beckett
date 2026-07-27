@@ -119,6 +119,11 @@ git for-each-ref --format='%(refname:short)' 'refs/heads/beckett/wk_*' 'refs/hea
 # Self-healing unit install (v3→v4 cutover): if the beckett-v4 unit isn't linked yet, this box
 # still has the old unit — run install.sh (idempotent) to link v4 and retire the stale ones.
 systemctl --user cat beckett-v4.service >/dev/null 2>&1 || ~/beckett/deploy/install.sh
+# A running/waiting browser task owns volatile Claude + Chromium state. Ask the STILL-OLD daemon
+# before we restart it: the guard prints each run id and age while waiting, then fails closed after
+# its finite deadline rather than silently killing a routine post mid-research. Set
+# BECKETT_BROWSER_DRAIN_WAIT_SECS=0 to refuse immediately; it is capped at ten minutes in the guard.
+bun deploy/browser-drain-guard.ts
 systemctl --user restart beckett-v4.service
 sleep 5
 systemctl --user is-active beckett-v4.service
