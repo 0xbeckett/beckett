@@ -115,6 +115,76 @@ function fakeAgent(calls: string[], stats: Partial<BrowserAgentStats> = {}): Bro
   };
 }
 
+/** Models agent admission so the extension test exercises task/watch/steer/stop as one surface. */
+function concurrentAgent(calls: string[], cap: number): BrowserAgent {
+  const runs = new Map<string, { state: "queued" | "running" | "cancelled"; task: string }>();
+  let next = 0;
+  return {
+    async run(task) {
+      const runId = `run-${++next}`;
+      const live = [...runs.values()].filter((run) => run.state === "running").length;
+      const queued = [...runs.values()].filter((run) => run.state === "queued").length;
+      const state = live < cap && queued === 0 ? "running" : "queued";
+      runs.set(runId, { state, task });
+      calls.push(`agent.run:${runId}:${state}:${task}`);
+      return state === "queued" ? { runId, queued: queued + 1 } : { runId };
+    },
+    async resume() {},
+    async steer(runId, note) {
+      if (!runs.has(runId)) throw new Error(`browser run ${runId} is not live`);
+      calls.push(`agent.steer:${runId}:${note}`);
+      return "queued";
+    },
+    async stop(runId, reason) {
+      const run = runs.get(runId);
+      if (!run) throw new Error(`browser run ${runId} is not live`);
+      run.state = "cancelled";
+      calls.push(`agent.stop:${runId}:${reason ?? ""}`);
+    },
+    drainSteers: () => [],
+    recordEval: () => {},
+    async inspect(runId) {
+      const run = runs.get(runId);
+      if (!run) return null;
+      return {
+        run: {
+          runId,
+          state: run.state,
+          task: run.task,
+          channelId: "chan",
+          startedAt: 1,
+          finishedAt: run.state === "cancelled" ? 2 : null,
+          question: null,
+          result: null,
+          proofFiles: [],
+        },
+        journal: [],
+        screenshot: null,
+      };
+    },
+    async evalSecrets() { return null; },
+    async recover() {},
+    stats: () => {
+      const values = [...runs.entries()].map(([runId, run]) => ({
+        runId,
+        state: run.state,
+        startedAt: 1,
+        finishedAt: run.state === "cancelled" ? 2 : null,
+        credsEntry: null,
+        question: null,
+        task: run.task,
+      }));
+      return {
+        running: values.filter((run) => run.state === "running").length,
+        waiting: 0,
+        queued: values.filter((run) => run.state === "queued").length,
+        runs: values,
+      };
+    },
+    async stopAll() {},
+  };
+}
+
 function build(stats: Partial<BrowserAgentStats> = {}, maxConcurrentLeases = 3): { ext: BrowserExtension; calls: string[]; deps: ExtensionContext } {
   const deps = ctx();
   const calls: string[] = [];
@@ -216,8 +286,57 @@ test("browser.task validates at the seam and routes to agent.run with the origin
   expect(calls).toEqual(["agent.run:post the thread:chan-9:owner-1:x.com"]);
 });
 
+test("capability surface admits two tasks through distinct lanes and routes watch/steer/stop by runId", async () => {
+  const deps = ctx();
+  const calls: string[] = [];
+  const agent = concurrentAgent(calls, 2);
+  const ext = createBrowserExtension({
+    onQuestion: async () => "anchor-1",
+    onOutcome: () => {},
+    createRuntime: () => fakeRuntime(calls, 2),
+    createAgent: () => agent,
+  })(deps);
+  await ext.lifecycle!.init!(deps);
+  const origin = { channelId: "chan", userId: "owner-1" };
+
+  const first = await ext.invoke!({ capabilityId: "browser.task", args: { task: "first" }, origin }, deps);
+  const second = await ext.invoke!({ capabilityId: "browser.task", args: { task: "second" }, origin }, deps);
+  const third = await ext.invoke!({ capabilityId: "browser.task", args: { task: "third" }, origin }, deps);
+  expect(first).toEqual({ ok: true, data: { runId: "run-1" } });
+  expect(second).toEqual({ ok: true, data: { runId: "run-2" } });
+  expect(third).toEqual({ ok: true, data: { runId: "run-3", queued: 1 } });
+
+  expect(await ext.invoke!({ capabilityId: "browser.watch", args: { runId: "run-1" } }, deps))
+    .toMatchObject({ ok: true, data: { run: { runId: "run-1", task: "first" } } });
+  expect(await ext.invoke!(
+    { capabilityId: "browser.steer", args: { runId: "run-2", note: "only second" }, origin }, deps,
+  )).toEqual({ ok: true, data: { runId: "run-2", delivery: "queued" } });
+  expect(await ext.invoke!(
+    { capabilityId: "browser.stop", args: { runId: "run-1", reason: "only first" }, origin }, deps,
+  )).toEqual({ ok: true, data: { runId: "run-1", state: "cancelled" } });
+  expect(calls).toContain("agent.steer:run-2:only second");
+  expect(calls).toContain("agent.stop:run-1:only first");
+  expect(calls).not.toContain("agent.stop:run-2:only first");
+});
+
 /** The derived-by-the-core origin identity every acting capability requires. */
 const ORIGIN = { channelId: "chan", userId: "owner-1" };
+
+test("capability surface restores single-lane task queueing with the kill switch", async () => {
+  const deps = ctx();
+  const calls: string[] = [];
+  const ext = createBrowserExtension({
+    onQuestion: async () => "anchor-1",
+    onOutcome: () => {},
+    createRuntime: () => fakeRuntime(calls, 1),
+    createAgent: () => concurrentAgent(calls, 1),
+  })(deps);
+  await ext.lifecycle!.init!(deps);
+  const first = await ext.invoke!({ capabilityId: "browser.task", args: { task: "first" }, origin: ORIGIN }, deps);
+  const second = await ext.invoke!({ capabilityId: "browser.task", args: { task: "second" }, origin: ORIGIN }, deps);
+  expect(first).toEqual({ ok: true, data: { runId: "run-1" } });
+  expect(second).toEqual({ ok: true, data: { runId: "run-2", queued: 1 } });
+});
 
 test("browser.exec runs in its own session even while a background run is live", async () => {
   const idle = build();
