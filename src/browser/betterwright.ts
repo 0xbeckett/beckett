@@ -9,9 +9,9 @@
  * concurrently while keeping calls *within* one session strictly ordered (see
  * node_modules/betterwright/docs/sessions.md). This adapter holds a map of
  * concurrent leases — one betterwright session per run — instead of a single
- * global lease. Every per-run guard (profile-budget accounting, the browser-wide
- * download reference gate, proof capture, and the event ring) is keyed off its
- * own lease so one run can never blind, throttle, or corrupt another.
+ * global lease. Every per-run guard (profile-budget accounting, per-session
+ * download approval, proof capture, and the event ring) is keyed off its own
+ * lease so one run can never blind, throttle, or corrupt another.
  *
  * Concurrency is capped (default 3, `BECKETT_BROWSER_MAX_LEASES`). The kill
  * switch `BECKETT_BROWSER_SINGLE_LEASE=1` pins the cap to one lease, restoring
@@ -45,7 +45,6 @@ const MAX_PROFILE_GROWTH_BYTES = 100 * 1024 * 1024;
 
 /** The slice of the betterwright client this adapter drives; injectable for tests. */
 export interface BetterWrightClient {
-  downloadPolicy: "ask" | "allow" | "deny";
   run(code: string, options?: { session?: string; approvedDownloads?: boolean; note?: string; timeout?: number }): Promise<unknown>;
   closeSession?(session?: string): Promise<unknown>;
   close(): Promise<void>;
@@ -63,8 +62,6 @@ interface ActiveLease extends BrowserLease {
   profileBytesAtAcquire: number;
   /** Per-lease budget breach; set only for the offending lease, never shared. */
   profileBudgetError: Error | null;
-  /** Whether this lease currently holds a reference on the download gate. */
-  downloadsApproved: boolean;
 }
 
 interface BetterWrightResult {
@@ -113,9 +110,8 @@ export interface BetterWrightRuntime extends BrowserRuntime {
   /** Session names of the currently live leases. */
   sessions(): string[];
   /**
-   * Reference-counted download gate. Enabling downloads for a lease flips the
-   * browser-wide `downloadPolicy` to "allow"; it only returns to "deny" once the
-   * last holder releases, so one lease's release never revokes another's.
+   * Grant/revoke this lease's download approval. BetterWright receives it on
+   * each run as `approvedDownloads`; it never mutates shared launch policy.
    */
   approveDownloads(runId: string, approved?: boolean): void;
 }
@@ -191,13 +187,16 @@ export function createBetterWrightRuntime(
     // Pin the open private-network and loopback defaults explicitly so Beckett's
     // local/intranet access survives future upgrades.
     policy: new NetworkPolicy({ allowLoopback: true, allowPrivateNetwork: true }),
-    downloadPolicy: "deny",
+    // This is a launch-only setting. `ask` gates each download on the
+    // `approvedDownloads` bit supplied with that specific session run.
+    // Changing it after launch hot-restarts BetterWright's shared worker.
+    downloadPolicy: "ask",
     publicSearchPolicy: "block",
   });
 
   const leases = new Map<string, ActiveLease>();
-  // Reference-counted holders of the browser-wide download permission. The gate
-  // itself is browser-wide, so releasing one lease must not revoke another's.
+  // Session-scoped download approval. This is intentionally a set rather than
+  // browser configuration: every `run` gets only its own session's bit.
   const downloadReferences = new Set<string>();
   let stopped = false;
   let launches = 0;
@@ -214,11 +213,6 @@ export function createBetterWrightRuntime(
   function pushLeaseEvent(lease: ActiveLease, message: string): void {
     lease.events.push(message.length > 500 ? `${message.slice(0, 497)}...` : message);
     while (lease.events.length > MAX_EVENTS) lease.events.shift();
-  }
-
-  function syncDownloadPolicy(): void {
-    // Browser-wide gate: "allow" while any lease holds a reference, else "deny".
-    browser.downloadPolicy = downloadReferences.size > 0 ? "allow" : "deny";
   }
 
   /** Chain this lease's work so calls within one lease stay strictly ordered. */
@@ -270,7 +264,7 @@ export function createBetterWrightRuntime(
     if (code.length > MAX_CODE_CHARS) throw new Error(`betterwright browser code exceeds ${MAX_CODE_CHARS} characters`);
     const raw = await browser.run(code, {
       session: lease.session,
-      approvedDownloads: lease.downloadsApproved,
+      approvedDownloads: downloadReferences.has(lease.session),
     }) as BetterWrightResult;
     const screenshots = copyArtifacts(raw, lease);
     const summaries = raw.pages ?? [];
@@ -309,9 +303,7 @@ export function createBetterWrightRuntime(
   }
 
   function releaseDownloadReference(lease: ActiveLease): void {
-    if (!downloadReferences.delete(lease.session)) return;
-    lease.downloadsApproved = false;
-    syncDownloadPolicy();
+    downloadReferences.delete(lease.session);
   }
 
   const runtime: BetterWrightRuntime = {
@@ -323,10 +315,8 @@ export function createBetterWrightRuntime(
 
     approveDownloads(runId, approved = true) {
       const lease = requireLease(runId);
-      lease.downloadsApproved = approved;
       if (approved) downloadReferences.add(lease.session);
       else downloadReferences.delete(lease.session);
-      syncDownloadPolicy();
     },
 
     async acquire(lease) {
@@ -349,7 +339,6 @@ export function createBetterWrightRuntime(
         queue: Promise.resolve(),
         profileBytesAtAcquire: 0,
         profileBudgetError: null,
-        downloadsApproved: false,
       };
       leases.set(lease.runId, active);
       launches++;
@@ -458,7 +447,6 @@ export function createBetterWrightRuntime(
       stopped = true;
       leases.clear();
       downloadReferences.clear();
-      syncDownloadPolicy();
       await browser.close();
     },
   };

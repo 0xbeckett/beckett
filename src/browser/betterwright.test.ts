@@ -47,7 +47,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
 
 /** A configurable stand-in for the betterwright client — no real browser. */
 class FakeBetterWright implements BetterWrightClient {
-  downloadPolicy: "ask" | "allow" | "deny" = "deny";
+  downloadPolicy: "ask" | "allow" | "deny" = "ask";
   closed = false;
   readonly closedSessions: string[] = [];
   readonly calls: RunCall[] = [];
@@ -354,36 +354,8 @@ test("the global profile ceiling binds every lease regardless of its own baselin
   }
 });
 
-describe("the reference-counted download gate", () => {
-  test("one lease releasing never revokes another lease's download permission", async () => {
-    const fake = new FakeBetterWright();
-    const runtime = createBetterWrightRuntime(settingsFor(), quietLog, {
-      createBrowser: () => fake,
-      maxLeases: 5,
-    });
-    try {
-      await runtime.acquire(leaseFor("alpha"));
-      await runtime.acquire(leaseFor("beta"));
-      expect(fake.downloadPolicy).toBe("deny");
-
-      runtime.approveDownloads("alpha");
-      expect(fake.downloadPolicy).toBe("allow");
-      runtime.approveDownloads("beta");
-      expect(fake.downloadPolicy).toBe("allow");
-
-      // alpha's release must not revoke the browser-wide permission beta still holds.
-      await runtime.release("alpha", false);
-      expect(fake.downloadPolicy).toBe("allow");
-
-      // Only when the last holder releases does the gate close.
-      await runtime.release("beta", false);
-      expect(fake.downloadPolicy).toBe("deny");
-    } finally {
-      await runtime.stop();
-    }
-  });
-
-  test("an approving lease forwards approvedDownloads on its own runs only", async () => {
+describe("the per-session download approval gate", () => {
+  test("approval is sent per call, does not leak, and survives another lease's release", async () => {
     const fake = new FakeBetterWright();
     const runtime = createBetterWrightRuntime(settingsFor(), quietLog, {
       createBrowser: () => fake,
@@ -395,10 +367,23 @@ describe("the reference-counted download gate", () => {
       runtime.approveDownloads("alpha");
       await runtime.evaluate("alpha", "return 'A'");
       await runtime.evaluate("beta", "return 'B'");
+
+      // Approval is transport metadata on this run, not a mutable worker-wide
+      // policy. Beta never receives alpha's approval.
       const alphaCall = fake.calls.find((call) => call.code === "return 'A'");
       const betaCall = fake.calls.find((call) => call.code === "return 'B'");
       expect(alphaCall?.approvedDownloads).toBe(true);
       expect(betaCall?.approvedDownloads).toBe(false);
+      expect(fake.downloadPolicy).toBe("ask");
+
+      // Releasing alpha must neither restart the worker nor affect beta's own
+      // approval bit; beta can still run with its explicit approval.
+      runtime.approveDownloads("beta");
+      await runtime.release("alpha", false);
+      await runtime.evaluate("beta", "return 'B after alpha release'");
+      const betaAfterRelease = fake.calls.find((call) => call.code === "return 'B after alpha release'");
+      expect(betaAfterRelease?.approvedDownloads).toBe(true);
+      expect(fake.downloadPolicy).toBe("ask");
     } finally {
       await runtime.stop();
     }

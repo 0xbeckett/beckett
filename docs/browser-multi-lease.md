@@ -15,10 +15,11 @@ corrupt another:
   each lease's own acquire baseline; the absolute profile ceiling is global and
   shared. Whichever binds first wins. A lease that trips its budget stays tripped
   until it releases and never touches another lease's accounting.
-- **Download reference gate** — the browser-wide `downloadPolicy` is
-  reference-counted across leases. It flips to `"allow"` while *any* lease holds a
-  reference and only returns to `"deny"` once the last holder releases, so one
-  lease's release never revokes another's permission.
+- **Download approval gate** — BetterWright launches once with
+  `downloadPolicy: "ask"` and that launch-level setting is never mutated. The
+  adapter keeps an approval set by session and passes
+  `approvedDownloads: true` only on calls from an explicitly approved lease.
+  Therefore releasing lease A cannot grant, revoke, or restart lease B's pages.
 - **Proof capture and the event ring** — both are per-lease and never interleave.
 
 ## Concurrency cap
