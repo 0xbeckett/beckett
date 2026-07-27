@@ -193,7 +193,7 @@ export const createBrowserExtension =
             "Cancel exactly the background browser run named by runId: a live run is killed " +
             "cleanly and only its session released, while a queued run is removed before it " +
             "starts. Both still report a cancelled outcome turn; other concurrent runs continue. " +
-            "Use for \"never mind\" or a run stuck beyond steering."}]},
+            "Use for \"never mind\" or a run stuck beyond steering.",
           actionClass: ActionClass.FREE,
           input: StopArgs,
           examples: ["stop the browser run, the person cancelled the request"],

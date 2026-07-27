@@ -99,7 +99,7 @@ export interface BrowserRuntimeStats {
   activeRunIds?: string[];
   /** Admission cap exposed to the agent; absent means the legacy single lease. */
   maxConcurrentLeases?: number;
-  pages:
+  pages: number;
   launches: number;
   evaluations: number;
   averageEvalMs: number;

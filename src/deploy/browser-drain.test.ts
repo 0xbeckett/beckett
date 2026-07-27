@@ -39,6 +39,20 @@ test("the preflight accepts CLI status data directly and blocks every state shut
   expect(restartBlockingBrowserRuns({ data: statusWith([queued]) })).toEqual([queued]);
 });
 
+test("deploy drain reports every concurrent live run so none can be orphaned", async () => {
+  let clock = 0;
+  const first = { runId: "session-a", state: "running", startedAt: 1 };
+  const second = { runId: "session-b", state: "waiting", startedAt: 2 };
+  const result = await waitForBrowserDrain({
+    status: async () => statusWith([first, second]),
+    waitMs: 10,
+    pollMs: 10,
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+  });
+  expect(result).toEqual({ drained: false, runs: [first, second] });
+});
+
 test("a deploy proceeds immediately once status says browser work is drained", async () => {
   const result = await waitForBrowserDrain({
     status: async () => statusWith([{ runId: "done", state: "done", startedAt: 1 }]),

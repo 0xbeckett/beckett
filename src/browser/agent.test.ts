@@ -104,18 +104,20 @@ function makeConfig(dir: string, overrides: Partial<Config["quick"]> = {}): Conf
   } as unknown as Config;
 }
 
-function fakeBrowser(): BrowserRuntime {
-  let lease: { runId: string; artifactsDir: string } | null = null;
+function fakeBrowser(maxConcurrentLeases = 1): BrowserRuntime {
+  const leases = new Map<string, { runId: string; artifactsDir: string }>();
   return {
     async acquire(next) {
-      lease = next;
+      if (!leases.has(next.runId) && leases.size >= maxConcurrentLeases) throw new Error("computer-use is busy");
+      leases.set(next.runId, next);
       mkdirSync(next.artifactsDir, { recursive: true });
     },
     async evaluate() {
       throw new Error("not used by agent unit tests");
     },
     async capture(runId, name) {
-      if (!lease || lease.runId !== runId) throw new Error("missing lease");
+      const lease = leases.get(runId);
+      if (!lease) throw new Error("missing lease");
       const path = join(lease.artifactsDir, `${name}.png`);
       writeFileSync(path, Buffer.from("89504e470d0a1a0a", "hex"));
       return path;
@@ -125,19 +127,29 @@ function fakeBrowser(): BrowserRuntime {
     },
     async restore() {},
     async release(runId, captureProof) {
-      if (!lease || lease.runId !== runId) return [];
+      if (!leases.has(runId)) return [];
       const files = captureProof ? [await this.capture(runId, "proof")] : [];
-      lease = null;
+      leases.delete(runId);
       return files;
     },
     hasLease(runId) {
-      return lease?.runId === runId;
+      return leases.has(runId);
     },
     stats() {
-      return { ready: !!lease, profileDir: "test", activeRunId: lease?.runId ?? null, pages: 1, launches: 1, evaluations: 0, averageEvalMs: 0 };
+      return {
+        ready: leases.size > 0,
+        profileDir: "test",
+        activeRunId: leases.keys().next().value ?? null,
+        activeRunIds: [...leases.keys()],
+        maxConcurrentLeases,
+        pages: 1,
+        launches: 1,
+        evaluations: 0,
+        averageEvalMs: 0,
+      };
     },
     async stop() {
-      lease = null;
+      leases.clear();
     },
   };
 }
@@ -218,7 +230,7 @@ describe("dispatch", () => {
     expect(outcomes[0]!.proofFiles).toHaveLength(1);
   });
 
-  test("queues a second concurrent run and rejects a dispatch without channel/requester", async () => {
+  test("queues a second run at the legacy single-lease cap and rejects a dispatch without channel/requester", async () => {
     const { agent, questions } = setup();
     await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
     await waitUntil(() => questions.length === 1);
@@ -227,6 +239,26 @@ describe("dispatch", () => {
     expect(second.queued).toBe(1);
     expect(agent.stats().queued).toBe(1);
     await expect(agent.run("x", { channelId: "", requesterId: "owner" })).rejects.toThrow(/origin channel/);
+  });
+
+  test("admits concurrent sessions through the cap; question anchors and answers stay with their run", async () => {
+    const { agent, outcomes, questions } = setup({}, { browser: fakeBrowser(2) });
+    const first = await agent.run("ASK_COLOR first", { channelId: "chan", requesterId: "owner" });
+    const second = await agent.run("ASK_COLOR second", { channelId: "chan", requesterId: "owner" });
+    const third = await agent.run("over cap", { channelId: "chan", requesterId: "owner" });
+    expect(first.queued).toBeUndefined();
+    expect(second.queued).toBeUndefined();
+    expect(third.queued).toBe(1);
+    await waitUntil(() => questions.length === 2);
+    expect(new Set(questions.map(({ run }) => run.runId))).toEqual(new Set([first.runId, second.runId]));
+    expect(agent.stats()).toMatchObject({ waiting: 2, queued: 1 });
+
+    // Replying to first's anchor resumes only first; second remains parked on its own anchor.
+    await agent.resume(first.runId, "blue");
+    await waitUntil(() => outcomes.some((run) => run.runId === first.runId));
+    expect((await agent.inspect(second.runId, { screenshot: false }))!.run.state).toBe("waiting");
+    await agent.resume(second.runId, "red");
+    await waitUntil(() => outcomes.length === 3);
   });
 });
 

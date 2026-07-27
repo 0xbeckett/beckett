@@ -209,7 +209,7 @@ test("browser.task validates at the seam and routes to agent.run with the origin
 /** The derived-by-the-core origin identity every acting capability requires. */
 const ORIGIN = { channelId: "chan", userId: "owner-1" };
 
-test("browser.exec runs one idle-lease script (acquire→evaluate→release) and refuses while a run is live", async () => {
+test("browser.exec runs in its own session even while a background run is live", async () => {
   const idle = build();
   const registry = new ExtensionRegistry();
   registry.register(idle.ext);
@@ -225,27 +225,25 @@ test("browser.exec runs one idle-lease script (acquire→evaluate→release) and
     runs: [{ runId: "r-live", state: "running", startedAt: 1, finishedAt: null, credsEntry: null, question: null, task: "t" }],
   });
   await busy.ext.lifecycle!.init!(busy.deps);
-  const refused = await busy.ext.invoke!(
+  const alongsideLive = await busy.ext.invoke!(
     { capabilityId: "browser.exec", args: { code: "return 1" }, origin: ORIGIN },
     busy.deps,
   );
-  expect(refused.ok).toBeFalse();
-  expect(refused.error).toContain("holds the browser");
-  expect(busy.calls).toEqual([]);
+  expect(alongsideLive.ok).toBeTrue();
+  expect(busy.calls).toEqual(["runtime.acquire:inline", "runtime.evaluate:return 1", "runtime.release"]);
 });
 
-test("browser.exec refuses during the queue→live handoff (a queued run must win the lease)", async () => {
+test("browser.exec also does not defer to a queued background run", async () => {
   const { ext, calls, deps } = build({
     runs: [{ runId: "r-q", state: "queued", startedAt: 1, finishedAt: null, credsEntry: null, question: null, task: "t" }],
   });
   await ext.lifecycle!.init!(deps);
-  const refused = await ext.invoke!(
+  const alongsideQueue = await ext.invoke!(
     { capabilityId: "browser.exec", args: { code: "return 1" }, origin: ORIGIN },
     deps,
   );
-  expect(refused.ok).toBeFalse();
-  expect(refused.error).toContain("queued for the browser");
-  expect(calls).toEqual([]);
+  expect(alongsideQueue.ok).toBeTrue();
+  expect(calls).toEqual(["runtime.acquire:inline", "runtime.evaluate:return 1", "runtime.release"]);
 });
 
 test("task/exec/steer/stop refuse without an origin identity; watch stays an open read", async () => {
@@ -326,6 +324,25 @@ test("watch/steer/stop route to the agent; unknown runs and capabilities refuse 
   expect(stopped).toEqual({ ok: true, data: { runId: "run-1", state: "cancelled" } });
   expect(calls).toContain("agent.steer:run-1:annual plan");
   expect(calls).toContain("agent.stop:run-1:never mind");
+});
+
+test("watch, steer, and stop keep two concurrent runIds isolated", async () => {
+  const { ext, calls, deps } = build();
+  await ext.lifecycle!.init!(deps);
+  for (const runId of ["run-1", "run-2"]) {
+    const watched = await ext.invoke!({ capabilityId: "browser.watch", args: { runId } }, deps);
+    expect(watched).toMatchObject({ ok: true, data: { run: { runId } } });
+    expect(await ext.invoke!(
+      { capabilityId: "browser.steer", args: { runId, note: `note for ${runId}` }, origin: ORIGIN }, deps,
+    )).toEqual({ ok: true, data: { runId, delivery: "queued" } });
+  }
+  expect(await ext.invoke!(
+    { capabilityId: "browser.stop", args: { runId: "run-1", reason: "stop first" }, origin: ORIGIN }, deps,
+  )).toEqual({ ok: true, data: { runId: "run-1", state: "cancelled" } });
+  expect(calls).toContain("agent.steer:run-1:note for run-1");
+  expect(calls).toContain("agent.steer:run-2:note for run-2");
+  expect(calls).toContain("agent.stop:run-1:stop first");
+  expect(calls).not.toContain("agent.stop:run-2:stop first");
 });
 
 test("invoke before init refuses with a result — it never throws out or exits", async () => {
