@@ -1,6 +1,6 @@
 /** Pure Discord status-dashboard renderer: snapshot in, embed out. */
 import type { DiscordEmbed } from "../types.ts";
-import type { CoreOperationHealth, StatusDashboardSnapshot } from "../status/types.ts";
+import type { CoreOperationHealth, StatusDashboardSnapshot, SubscriptionLimits } from "../status/types.ts";
 
 const GREEN = 0x2ea043;
 const AMBER = 0xd29922;
@@ -34,6 +34,7 @@ export function renderStatusDashboardEmbed(snapshot: StatusDashboardSnapshot): D
       { name: "Disk", value: usage(snapshot.system.diskUsed, snapshot.system.diskTotal), inline: true },
       { name: "Core API health", value: health.map(({ operation, color }) => healthLine(operation, color)).join("\n") || "No operations observed" },
       { name: "Harness usage", value: harnessUsage(snapshot) },
+      { name: "Subscription limits", value: subscriptionLimits(snapshot.subscriptionLimits, snapshot.collectedAt) },
     ],
     footer: { text: "Health: green current · yellow stale but reachable · red unavailable" },
     timestamp: snapshot.collectedAt,
@@ -72,6 +73,42 @@ function harnessUsage(snapshot: StatusDashboardSnapshot): string {
     const h7 = `${row.last7d.turns} turns · ${formatTokens(row.last7d.tokensIn + row.last7d.tokensOut)}`;
     return `**${row.harness}** — 24h: ${h24}; 7d: ${h7}`;
   }).join("\n").slice(0, 1_000);
+}
+
+function subscriptionLimits(limits: SubscriptionLimits, collectedAt: string): string {
+  const claude = limits.claude.available
+    ? limits.claude.limits.map((limit) => limitLine(limit, collectedAt)).join("\n") || "unavailable"
+    : "unavailable";
+  const overage = limits.claude.overage
+    ? `\nOverage credits — ${money(limits.claude.overage.used, limits.claude.overage.currency)} / ${money(limits.claude.overage.limit, limits.claude.overage.currency)}`
+    : "";
+  const codex = limits.codex.available
+    ? `${limits.codex.limits.map((limit) => limitLine(limit, collectedAt)).join("\n") || "unavailable"}\nObserved ${formatDuration(limits.codex.observedAgeMs)} ago${limits.codex.stale ? " · **STALE**" : ""}`
+    : "unavailable";
+  return `**Claude Max**\n${claude}${overage}\n\n**ChatGPT / Codex**\n${codex}`.slice(0, 1_000);
+}
+
+function limitLine(limit: SubscriptionLimits["claude"]["limits"][number], collectedAt: string): string {
+  const icon = limitColor(limit.severity, limit.percentUsed);
+  return `${icon} ${limit.label} — ${limit.percentUsed.toFixed(0)}% used · resets ${reset(limit.resetsAt, collectedAt)}`;
+}
+
+function limitColor(severity: string | null, percent: number): string {
+  const severityHint = severity?.toLowerCase();
+  if (severityHint === "normal") return "🟢";
+  if (severityHint === "warning") return "🟡";
+  if (severityHint === "critical" || severityHint === "error") return "🔴";
+  return percent >= 90 ? "🔴" : percent >= 75 ? "🟡" : "🟢";
+}
+
+function reset(value: string | null, collectedAt: string): string {
+  if (!value) return "unknown";
+  const ms = Date.parse(value) - Date.parse(collectedAt);
+  return Number.isFinite(ms) ? `in ${formatDuration(Math.max(0, ms))}` : "unknown";
+}
+
+function money(amount: number, currency: string): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(amount);
 }
 
 function usage(used: number, total: number): string {

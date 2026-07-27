@@ -5,7 +5,8 @@ import type { SystemMetrics } from "../system-metrics.ts";
 import type { TrackerPoller } from "../tracker/poll.ts";
 import type { TrackerClient } from "../tracker/client.ts";
 import { readUptimeSnapshot } from "../uptime.ts";
-import type { CoreOperationHealth, HarnessUsage, StatusDashboardSnapshot } from "./types.ts";
+import { SubscriptionLimitsSource } from "./subscriptions.ts";
+import type { CoreOperationHealth, HarnessUsage, StatusDashboardSnapshot, SubscriptionLimits } from "./types.ts";
 
 export interface StatusSnapshotCollectorDeps {
   version: string;
@@ -18,6 +19,7 @@ export interface StatusSnapshotCollectorDeps {
   boredUrl?: string;
   fetch?: typeof fetch;
   now?: () => number;
+  subscriptions?: Pick<SubscriptionLimitsSource, "collect">;
 }
 
 interface HealthProbe {
@@ -33,15 +35,17 @@ export class StatusSnapshotCollector {
   private healthLastOkAt: number | null = null;
   private healthFailures = 0;
   private healthVersion: string | null = null;
+  private readonly subscriptions: Pick<SubscriptionLimitsSource, "collect">;
 
   constructor(private readonly deps: StatusSnapshotCollectorDeps) {
     this.now = deps.now ?? Date.now;
     this.fetchImpl = deps.fetch ?? globalThis.fetch.bind(globalThis);
+    this.subscriptions = deps.subscriptions ?? new SubscriptionLimitsSource({ fetch: this.fetchImpl, now: this.now });
   }
 
   async collect(): Promise<StatusDashboardSnapshot> {
     const now = this.now();
-    const [system, probe] = await Promise.all([this.deps.metrics.read(), this.probeHealth()]);
+    const [system, probe, subscriptionLimits] = await Promise.all([this.deps.metrics.read(), this.probeHealth(), this.collectSubscriptions()]);
     const poll = this.deps.poller.stats();
     const tracker = this.deps.tracker.stats();
     const trackerFailedAfterSuccess = tracker.lastErrorAt !== null &&
@@ -84,7 +88,13 @@ export class StatusSnapshotCollector {
       system,
       health,
       harnessUsage: usage(this.deps.spendPath, now),
+      subscriptionLimits,
     };
+  }
+
+  private async collectSubscriptions(): Promise<SubscriptionLimits> {
+    try { return await this.subscriptions.collect(); }
+    catch { return { claude: { available: false, limits: [] }, codex: { available: false, limits: [], observedAgeMs: null, stale: false } }; }
   }
 
   private async probeHealth(): Promise<HealthProbe> {

@@ -19,6 +19,21 @@ export interface HarnessUsage {
   last7d: { records: number; turns: number; tokensIn: number; tokensOut: number; costUsd: number | null };
 }
 
+/** Plain, already-collected plan capacity data; renderers never fetch or read files. */
+export interface SubscriptionLimits {
+  claude: {
+    available: boolean;
+    limits: Array<{ label: string; percentUsed: number; resetsAt: string | null; severity: string | null }>;
+    overage?: { used: number; limit: number; currency: string } | null;
+  };
+  codex: {
+    available: boolean;
+    limits: Array<{ label: string; percentUsed: number; resetsAt: string | null; severity: string | null }>;
+    observedAgeMs: number | null;
+    stale: boolean;
+  };
+}
+
 /** All I/O has already happened by the time this value reaches a renderer. */
 export interface StatusDashboardSnapshot {
   collectedAt: string;
@@ -29,4 +44,5 @@ export interface StatusDashboardSnapshot {
   system: SystemMetrics;
   health: CoreOperationHealth[];
   harnessUsage: HarnessUsage[];
+  subscriptionLimits: SubscriptionLimits;
 }

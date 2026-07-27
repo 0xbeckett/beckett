@@ -17,6 +17,7 @@ function snapshot(): StatusDashboardSnapshot {
     system: { source: "proc", collectedAt: "2026-07-26T12:00:00.000Z", cpu: { loadPercent: 1 }, memory: { usedBytes: 1, totalBytes: 2 }, disk: { usedBytes: 1, totalBytes: 2 }, cpuLoad: 1, memoryUsed: 1, memoryTotal: 2, diskUsed: 1, diskTotal: 2 },
     health: [{ name: "Tracker poll", reachable: true, lastSuccessAt: 1, lastSuccessAgeMs: 0, consecutiveFailures: 0 }],
     harnessUsage: [],
+    subscriptionLimits: { claude: { available: false, limits: [] }, codex: { available: false, limits: [], observedAgeMs: null, stale: false } },
   };
 }
 

@@ -35,18 +35,24 @@ export const fixtureSnapshot: StatusDashboardSnapshot = {
   harnessUsage: [
     { harness: "claude", last24h: { records: 2, turns: 3, tokensIn: 1200, tokensOut: 300, costUsd: 0.02 }, last7d: { records: 4, turns: 8, tokensIn: 3000, tokensOut: 1000, costUsd: 0.05 } },
   ],
+  subscriptionLimits: {
+    claude: { available: true, limits: [{ label: "5h session", percentUsed: 14, resetsAt: "2026-07-26T13:00:00Z", severity: "normal" }], overage: { used: 0, limit: 20, currency: "USD" } },
+    codex: { available: true, limits: [{ label: "5h", percentUsed: 34, resetsAt: "2026-07-26T14:00:00Z", severity: null }], observedAgeMs: 31 * 60_000, stale: true },
+  },
 };
 
 test("pure status renderer exposes every dashboard panel from a fixture snapshot", () => {
   const embed = renderStatusDashboardEmbed(fixtureSnapshot);
   expect(embed.title).toBe("Beckett live status");
   expect(embed.fields?.map((field) => field.name)).toEqual([
-    "Uptime", "Downtime", "Versions", "CPU load", "RAM", "Disk", "Core API health", "Harness usage",
+    "Uptime", "Downtime", "Versions", "CPU load", "RAM", "Disk", "Core API health", "Harness usage", "Subscription limits",
   ]);
   expect(embed.fields?.[1]?.value).toContain("No downtime recorded since 2026-07-26");
   expect(embed.fields?.[6]?.value).toContain("Tracker poll");
   expect(embed.fields?.[7]?.value).toContain("24h:");
   expect(embed.fields?.[7]?.value).toContain("7d:");
+  expect(embed.fields?.[8]?.value).toContain("Claude Max");
+  expect(embed.fields?.[8]?.value).toContain("STALE");
 });
 
 test("health yellow has the concrete stale-but-reachable meaning", () => {
