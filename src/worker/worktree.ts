@@ -255,6 +255,18 @@ export async function removeWorktree(repoRoot: string, workspace: string): Promi
 }
 
 /**
+ * Delete a local branch outright (`git branch -D`). Idempotent — a branch that is already gone
+ * is not an error. Used by the overnight-spike GC (issue #38): a spike branch is evidence, not
+ * work, so after its TTL it is dropped while the finding text is kept.
+ */
+export async function deleteBranch(repoRoot: string, branch: string): Promise<void> {
+  const r = await runGit(["branch", "-D", branch], repoRoot);
+  if (r.code !== 0 && !/not found/i.test(r.stderr)) {
+    logger.warn("git branch -D failed", { repoRoot, branch, stderr: r.stderr.trim() });
+  }
+}
+
+/**
  * Append ignore patterns to a worktree's git exclude file (`info/exclude`) so per-worker meta
  * files (the scope-guard settings + done schema) never appear in the worker's diff.
  */
