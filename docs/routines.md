@@ -12,7 +12,8 @@ Each routine has:
 - an **id / name** (kebab-case, e.g. `daily-x-shitpost`),
 - an **action** — what to run when it fires, always dispatched OFF the scheduler process, never
   inline. Most actions go to the `beckett browser` background lane; `deps-update` (below) is the
-  one local-maintenance action, and it deliberately does not,
+  one local-maintenance action and `self` (below) is the one that wakes Beckett's own concierge,
+  and neither of those touches the browser,
 - a **schedule** = a base **cadence** (`daily` or `weekly <weekday>`; the union in
   [`src/routine/types.ts`](../src/routine/types.ts) is still the seam for `interval`)
   plus a **fuzz window** (`start`–`end` wall-clock in a named IANA timezone).
@@ -64,15 +65,18 @@ chosen minute *varies run-to-run* and that a given seed reproduces a run determi
 beckett routine list                       # every routine + its next concrete fire time
 beckett routine inspect <id>               # full detail incl. persisted state
 beckett routine add <id> --window 09:00-09:40 --tz America/New_York \
-    --task "<self-contained browser task>" [--weekly <weekday>] [--name <n>] \
-    [--creds <jingle-entry>] [--channel <id>]
+    ( --task "<self-contained browser task>" | --self "<prompt Beckett gives itself>" ) \
+    [--weekly <weekday>] [--name <n>] [--creds <jingle-entry>] [--channel <id>]
 beckett routine remove <id>                # a removed built-in stays removed across restarts
 beckett routine enable|disable <id>
 beckett routine fire <id> --dry-run        # compose + build the dispatch plan, POST NOTHING
 beckett routine fire <id> --force          # real, live dispatch through the browser lane
 ```
 
-`add` creates a `browser`-action routine that runs an arbitrary self-contained task each period.
+`add` creates a `browser`-action routine that runs an arbitrary self-contained task each period,
+unless you pass `--self` instead of `--task` — then it creates a `self`-action routine that wakes
+Beckett itself (see the self lane below). `--task` and `--self` are **mutually exclusive**: a
+routine is either a browser task or a self-directed wake, and passing both fails at add time.
 Pass `--weekly sunday` (any weekday name) to make it weekly instead of daily; `routine ls` and
 `routine inspect` then show the cadence as `weekly (sunday)` and the next fire with its weekday
 spelled out, e.g. `Sun, 2026-07-26, 09:44 America/Los_Angeles`.
@@ -282,3 +286,37 @@ covers the seen-set/post-history persistence and its age/count bounds; and
 path, dedup by model id (including across two different feed items), the rate limiter wired into a
 full cycle, dry-run's separate accounting bucket, `previewWatchCycle`'s read-only guarantee, and
 the poll loop's live enable/disable + per-routine interval gating.
+
+## The `self` lane (issue #26) — a routine that wakes Beckett, not the browser
+
+Every other lane wakes something *other* than Beckett — a browser task, a registered agent, a
+local maintenance subprocess, a polled feed. The `self` lane is the one that wakes **Beckett's own
+concierge**: the seat with the doctrine, the memory graph, the Bash tool, and the ability to file
+tickets. A `self` routine puts Beckett on its own open-loop ledger a few times a day.
+
+```
+beckett routine add morning-sweep --window 08:00-09:00 --tz America/Los_Angeles \
+    --self "Look over the ticket board and anything left half-finished; if something needs a nudge, say so."
+```
+
+- The action is `{ kind: "self", prompt, channelId?, requesterId? }`. `--self` and `--task` are
+  mutually exclusive.
+- Like `deps-update`, this action **does not go through the browser lane** and carries **no
+  credentials**. `buildDispatchPlan` gives it its own `self` lane (no `browserTask`, no
+  `depsUpdate`, no `credsEntry`), and the dispatcher forks on that lane *before* it resolves the
+  browser agent / agent registry / agent runner at all — so it is structurally impossible for a
+  self routine to reach a web session.
+- The fire is a single control-bus post (`routine.self`) to the concierge, which frames a **SYSTEM
+  turn** and hands it to `askUpdate` — the exact `SYSTEM_SCOPE` lane ticket updates and incoming
+  email (`notifyIncomingEmail`) already run on. The prompt is Beckett's *own* text from a routine
+  definition, not third-party content, so it needs no untrusted-input quoting — but it is still
+  framed as SYSTEM, never as a message from a user. The turn is told it is a scheduled self-directed
+  sweep, carries the routine id and the origin channel, and is instructed to report in voice with
+  `beckett discord reply --channel <id> "<message>"` **or do nothing** if there is nothing worth
+  saying.
+- **One fire is one turn.** The lane never loops, retries into a second turn, or schedules anything;
+  per-period idempotency in the scheduler is the only fire guard, and that is enough.
+
+`beckett routine fire <id> --dry-run` prints lane `self` and the prompt (the plan is pure — it
+wakes nothing). The sweep routine *definitions* are config, created after this ships; this is the
+seam that lets a routine wake Beckett at all.

@@ -59,6 +59,7 @@ function fakeScheduler(log: string[]): RoutineScheduler {
         agentInput: null,
         browserTask: "check the thing",
         depsUpdate: null,
+        selfPrompt: null,
         preview: "check the thing",
         credsEntry: "x.com",
         channelId: null,
