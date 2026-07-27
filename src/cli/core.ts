@@ -297,6 +297,8 @@ export async function runVersion(argv: string[]): Promise<void> {
 
   out({
     previous: s.base,
+    base: s.base,
+    baseSource: s.baseSource,
     version,
     level,
     suggestedLevel: s.suggestion.level,
@@ -315,7 +317,7 @@ export async function runVersion(argv: string[]): Promise<void> {
  */
 function promptForBump(s: Awaited<ReturnType<typeof computeBumpSuggestion>>): BumpLevel | string | undefined {
   process.stderr.write(
-    `\nbeckett version bump — base v${s.base}${s.fromTag ? " (last deployed tag)" : " (package.json)"}\n` +
+    `\nbeckett version bump — base v${s.base} (${s.baseSource})\n` +
       `${s.commits.length} commit${s.commits.length === 1 ? "" : "s"} since; areas: ${s.areas.join(", ") || "—"}\n` +
       s.suggestion.reasons.join("\n") +
       `\nsuggested: ${s.suggestion.level.toUpperCase()} → v${s.suggested}\n`,

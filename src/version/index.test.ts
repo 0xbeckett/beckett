@@ -19,7 +19,7 @@ import {
   cutChangelog,
   commitVersion,
 } from "./index.ts";
-import { classifyBump } from "./semver.ts";
+import { classifyBump, compareSemver } from "./semver.ts";
 
 const git = async (args: string[], cwd: string): Promise<string> => {
   const p = Bun.spawn({ cmd: ["git", "-C", cwd, ...args], stdout: "pipe", stderr: "ignore" });
@@ -241,6 +241,7 @@ describe("git-backed base + commits + suggestion", () => {
     const s = await computeBumpSuggestion(repo);
     expect(s.base).toBe("4.1.2");
     expect(s.fromTag).toBe(true);
+    expect(s.baseSource).toBe("last deployed tag");
     expect(s.suggestion.level).toBe("minor");
     expect(s.suggested).toBe("4.2.0");
     expect(s.commits).toContain("feat: add a shiny new capability");
@@ -266,8 +267,45 @@ describe("git-backed base + commits + suggestion", () => {
     const s = await computeBumpSuggestion(untagged);
     expect(s.base).toBe("5.0.0");
     expect(s.fromTag).toBe(false);
+    expect(s.baseSource).toBe("package.json — no tag for v5.0.0 (newest tag v4.1.2)");
     expect(s.suggested).toBe("5.1.0");
     expect(s.suggested.startsWith("4.")).toBe(false);
+  });
+
+  // The exact issue #30 incident: v6.8.1 reached package.json but only v6.8.0 got tagged (the
+  // deploy died before the tag step). The OLD code based the bump on the newest tag (6.8.0),
+  // suggested a PATCH → 6.8.1, then writeVersion's guard hit `refusing to write v6.8.1:
+  // package.json is already v6.8.1` and wedged every future patch release. This proves the base is
+  // now max(tag, package.json), so a patch increments PAST package.json and the guard is unreachable
+  // via a merely-missing tag.
+  test("tag behind package.json (issue #30 lost-tag wedge) → patch increments past package.json", async () => {
+    const wedge = mkdtempSync(join(tmpdir(), "beckett-verrepo-wedge-"));
+    await initRepo(wedge);
+    writeFileSync(join(wedge, "package.json"), `{\n  "version": "6.8.0"\n}\n`);
+    await git(["add", "package.json"], wedge);
+    await git(["commit", "-q", "-m", "beckett: release v6.8.0"], wedge);
+    await tag(wedge, "v6.8.0");
+    // v6.8.1 shipped to package.json but was never tagged (the deploy died before `git tag -a`).
+    writeFileSync(join(wedge, "package.json"), `{\n  "version": "6.8.1"\n}\n`);
+    await git(["add", "package.json"], wedge);
+    await git(["commit", "-q", "-m", "beckett: release v6.8.1"], wedge);
+    // One ordinary fix merged since, so the classifier lands on PATCH — the level that used to wedge.
+    writeFileSync(join(wedge, "fix"), "1");
+    await git(["add", "fix"], wedge);
+    await git(["commit", "-q", "-m", "fix: tidy something small"], wedge);
+
+    const s = await computeBumpSuggestion(wedge);
+    expect(s.base).toBe("6.8.1"); // max(6.8.0 tag, 6.8.1 package.json) — NOT the stale 6.8.0 tag
+    expect(s.fromTag).toBe(false);
+    expect(s.baseSource).toBe("package.json — no tag for v6.8.1 (newest tag v6.8.0)");
+    expect(s.suggestion.level).toBe("patch");
+
+    // Resolve the patch and prove it clears writeVersion's `refusing to write` guard: it must be
+    // strictly greater than the current package.json version, so the deploy is no longer wedged.
+    const { version } = resolveVersion(s.base, s.suggestion, undefined);
+    expect(version).toBe("6.8.2");
+    expect(compareSemver(version, readVersion(wedge))).toBeGreaterThan(0);
+    expect(() => writeVersion(version, wedge)).not.toThrow();
   });
 
   test("no tags → package.json is the bump base, never throws", async () => {
@@ -281,5 +319,6 @@ describe("git-backed base + commits + suggestion", () => {
     const s = await computeBumpSuggestion(fresh);
     expect(s.base).toBe("0.1.0");
     expect(s.fromTag).toBe(false);
+    expect(s.baseSource).toBe("package.json — no tags yet");
   });
 });

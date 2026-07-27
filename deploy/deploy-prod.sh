@@ -65,7 +65,12 @@ else
   exit 1
 fi
 
-echo "== deploying origin/main to ${HOST} =="
+# ── phase 1: prepare + gate the release on the host (NOT restarting yet) ────────────────────
+# Bring ~/beckett to origin/main and run every hard gate — build, browser smoke, `tsc --noEmit`.
+# NOTHING here restarts the daemon: the restart (and the browser-drain guard that must run right
+# before it) is phase 3, AFTER the tag lands. If any gate here fails, ssh returns non-zero, the
+# local `set -e` aborts, and we never tag — so a tag still only ever records a gate-passing build.
+echo "== gating origin/main on ${HOST} (build + smoke + typecheck; NOT restarting yet) =="
 ssh "${HOST}" 'bash -s' <<'REMOTE'
 set -euo pipefail
 cd ~/beckett

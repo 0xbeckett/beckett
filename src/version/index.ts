@@ -222,6 +222,13 @@ export interface DeployBumpSuggestion {
   base: string;
   /** Whether a tag exists for the selected bump base. */
   fromTag: boolean;
+  /**
+   * Human-readable provenance of {@link base} for the deploy output — names WHICH source won, so a
+   * bump off an untagged package.json (the issue #30 lost-tag case) explains itself instead of
+   * looking like an arbitrary number. E.g. `"last deployed tag"` or
+   * `"package.json — no tag for v6.8.1 (newest tag v6.8.0)"`.
+   */
+  baseSource: string;
   /** The commit subjects since the newest tag (or recent history when no tag exists) that were classified. */
   commits: string[];
   /** Top-level source areas touched since `base` (colour for the reason, not the decision). */
@@ -244,12 +251,21 @@ export async function computeBumpSuggestion(
   const packageVersion = readVersion(repoRoot);
   const tagBase = await newestTaggedVersion(repoRoot);
   const base = tagBase && compareSemver(tagBase, packageVersion) > 0 ? tagBase : packageVersion;
+  const fromTag = tagBase === base;
+  // Name where the base came from. When package.json wins over an older (or absent) tag, this is
+  // the lost-tag case (issue #30): say so, and name the stale tag, so the bump reads as deliberate.
+  const baseSource = fromTag
+    ? "last deployed tag"
+    : tagBase
+      ? `package.json — no tag for v${base} (newest tag v${tagBase})`
+      : "package.json — no tags yet";
   const commits = await commitsSinceVersion(repoRoot, tagBase, max);
   const areas = await areasChangedSince(repoRoot, tagBase);
   const suggestion = classifyBump(commits);
   return {
     base,
-    fromTag: tagBase === base,
+    fromTag,
+    baseSource,
     commits,
     areas,
     suggestion,

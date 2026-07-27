@@ -1,2 +1,0 @@
-src/moss-local/index.ts(12,84): error TS2307: Cannot find module '@moss-dev/moss-core' or its corresponding type declarations.
-src/moss-local/index.ts(226,30): error TS7006: Parameter 'hit' implicitly has an 'any' type.
