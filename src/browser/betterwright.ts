@@ -281,7 +281,11 @@ const attachFile = async (target, screenshotPath) => {
   async function execute(lease: ActiveLease, code: string): Promise<BrowserEvalResult> {
     if (!code.trim()) throw new Error("betterwright browser requires non-empty JavaScript");
     if (code.length > MAX_CODE_CHARS) throw new Error(`betterwright browser code exceeds ${MAX_CODE_CHARS} characters`);
-    const raw = await browser.run(`${attachmentBridge(lease)}\n${code}`, {
+    // Do not alter ordinary program source until this lease actually has an
+    // attachable screenshot. That keeps the bridge dormant (and source/error
+    // locations stable) for the overwhelming majority of browser actions.
+    const bridgedCode = lease.attachments.size > 0 ? `${attachmentBridge(lease)}\n${code}` : code;
+    const raw = await browser.run(bridgedCode, {
       session: lease.session,
       approvedDownloads: downloadReferences.has(lease.session),
     }) as BetterWrightResult;
