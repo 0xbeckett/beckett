@@ -158,7 +158,8 @@ async function agenticRecallOutput(memory: MemoryStore, request: RecallCliReques
   return lines.join("\n");
 }
 
-function audienceFromFlags(flags: Record<string, string | boolean>): Audience {
+/** Shared CLI audience parser: every direct memory reader must use recall's fail-closed scope rules. */
+export function audienceFromFlags(flags: Record<string, string | boolean>): Audience {
   if (flags["as-self"] !== undefined) {
     if (flags.viewer !== undefined || flags["viewer-role"] !== undefined || flags.context !== undefined) {
       throw new Error("--as-self cannot be combined with --viewer/--viewer-role/--context");

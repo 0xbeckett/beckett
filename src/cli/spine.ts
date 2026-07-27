@@ -151,6 +151,12 @@ export const SPINE: SpineEntry[] = [
       { name: "memory", load: ext(async (d) => (await import("../capability/modules/memory.ts")).createMemoryExtension({})(d), "memory") },
     ],
   },
+  {
+    id: "loops",
+    cliHelp: "loops [--all|--json] | loops open|close|drop",
+    verbs: [{ name: "loops", load: async () => (await import("./loops-cli.ts")).runLoops }],
+  },
+
   { id: "spend", verbs: [{ name: "spend", load: core((m) => m.runSpend) }] },
   { id: "journal", verbs: [{ name: "journal", load: core((m) => m.runJournal) }] },
   { id: "config", verbs: [{ name: "config", load: core((m) => m.runConfig) }] },

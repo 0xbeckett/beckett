@@ -111,6 +111,7 @@ import { TaskStore, displayTaskName, type TaskBranch, type WorkTask } from "../t
 import type { BranchStatusService } from "../task/status.ts";
 import { renderBranchEmbed } from "../discord/cards.ts";
 import type { MemoryStore } from "../memory/index.ts";
+import { renderOpenLoopsBlock } from "../memory/loops.ts";
 import { parseRecallCliRequest, recallCliOutput } from "../memory/recall-cli.ts";
 
 /**
@@ -507,6 +508,8 @@ export interface ConciergeSessionOptions {
    * to the pre-catalog shape.
    */
   catalogBlock?: () => string;
+  /** Freshly-read, visibility-gated open-loop ledger. Empty preserves the historic prompt exactly. */
+  openLoopsBlock?: () => string;
 }
 
 /**
@@ -532,6 +535,8 @@ export class ConciergeSession {
   private readonly handoffWindow: () => string;
   /** The lazily-read extension-catalog block; "" (the default) composes no block at all. */
   private readonly catalogBlock: () => string;
+  /** The lazily-read open-loop block; empty means no prompt change for stores without loops. */
+  private readonly openLoopsBlock: () => string;
   /**
    * Unforgeable per-process issuer credential (OPS-80 §9.3): exported into the child's env as
    * `BECKETT_SESSION_TOKEN`, echoed back on every `beckett …` bus call, and resolved by the
@@ -603,6 +608,7 @@ export class ConciergeSession {
     this.gate = opts.gate ?? null;
     this.handoffWindow = opts.handoffWindow ?? (() => "");
     this.catalogBlock = opts.catalogBlock ?? (() => "");
+    this.openLoopsBlock = opts.openLoopsBlock ?? (() => "");
     this.sessionId = crypto.randomUUID();
   }
 
@@ -1504,6 +1510,10 @@ export class ConciergeSession {
     // sound. Empty (no registry wired) → no block, so the composed prompt is byte-identical.
     const catalog = this.catalogBlock().trim();
     if (catalog) blocks.push(catalog);
+    // The ledger is fresh on every launch, like persona. Its renderer is visibility-gated and
+    // returns "" for no open loops, preserving the old prompt byte-for-byte in that case.
+    const openLoops = this.openLoopsBlock().trim();
+    if (openLoops) blocks.push(openLoops);
     if (persona.trim()) blocks.push(`<persona>\n${persona}\n</persona>`);
     return blocks.join("\n\n");
   }
@@ -1825,6 +1835,8 @@ export class Concierge {
           handoffWindow: () => this.handoffWindowForScope(scope),
           // v6 discovery: read lazily so the registry (wired post-construction) is seen at launch.
           catalogBlock: () => this.extensionCatalogBlock(),
+          // Loops live in the same warm store and are re-read for every child launch.
+          openLoopsBlock: () => this.openLoopsBlock(),
           // Crash-loop alarm (issue #24): a repeating child crash (bad auth/config) pings the ops
           // channel instead of surfacing only as per-message "something broke" replies.
           onCrashLoop: (info) => {
@@ -2053,6 +2065,11 @@ export class Concierge {
    */
   extensionCatalogBlock(): string {
     return this.extensions ? renderCatalogBlock(this.extensions.registry.catalog()) : "";
+  }
+
+  /** Fresh, bounded session-start loop ledger. SELF scope includes public/owner, never DM loops. */
+  openLoopsBlock(): string {
+    return renderOpenLoopsBlock(this.memory);
   }
 
   /** Wire the instant-tick hook for freshly-filed tickets (v4-main, issue #33). See {@link ticketFiledListener}. */
