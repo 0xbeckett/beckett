@@ -336,6 +336,10 @@ export const configFragments = {
       // pass re-staffs it ONCE (logged), and parks it in `todo` with a comment if that also fails.
       // Closes the whole class of "staffed-but-workerless" wedges. 0 disables the watchdog.
       staffing_watchdog_s: nonNegInt.default(120),
+      // Repeat-stall guard (issue #44): if respawned workers repeatedly go silent at the same
+      // command/file/tool fingerprint, park the ticket instead of re-paying the same failed run.
+      // Two matching cycles catches deterministic loops while still allowing one transient stall.
+      max_repeated_stall_fingerprints: posInt.default(2),
       // Dispatcher retry/rework bounds (OPS-180) — previously hardcoded dispatcher constants,
       // now real knobs. Defaults are the old constants exactly; see stages.ts#retryCapsFor.
       // Max implement↔review round-trips before auto-rework stops and waits for a human.

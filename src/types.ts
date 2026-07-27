@@ -659,6 +659,9 @@ export interface Config {
      *  reservation, queued spawn, or scheduled retry for this long is re-staffed once (logged),
      *  then parked in todo with a comment if that also fails. 0 disables. Default 120 (issue #9). */
     staffing_watchdog_s: number;
+    /** Identical silent-worker fingerprints allowed before the dispatcher parks the ticket rather
+     *  than repeating the same respawn forever. Default 2 (issue #44). */
+    max_repeated_stall_fingerprints: number;
     /** Max implement↔review round-trips before auto-rework stops and waits for a human.
      *  Default 3 (was the dispatcher's MAX_REWORK_CYCLES constant; OPS-180). */
     max_rework_cycles: number;

@@ -115,6 +115,11 @@ export interface TicketWorkerHandle {
   /** Live spend counters off the driver (turns/tools/tokens/$) — for finish-comment telemetry. */
   telemetry(): WorkerSpend;
   /**
+   * Most recent tool/file activity, normalized from the same events written to the private
+   * journal. Null means there is not enough evidence to compare a silent run safely.
+   */
+  stallFingerprint(): string | null;
+  /**
    * STEERING: inject a mid-flight nudge. Returns the driver's honest receipt (issue #22):
    * `delivered` (acked live), `queued` (inside the harness, unacked), `will-restart` (one-shot —
    * applies when the current run ends), or `dropped` (arrived after the terminal finish; the
@@ -328,6 +333,10 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   let sessionId = ""; // captured from the driver's SpawnResult (crash-recovery ledger, issue #20)
   let pid = 0;
   let lastAssistantText = "";
+  // This is deliberately derived from the normalized WorkerEvents, which are also handed to the
+  // private journal immediately below. It is a small in-memory index of existing evidence, not a
+  // second telemetry stream or a journal read on the stall hot path.
+  let lastStallFingerprint: string | null = null;
   let finishedFired = false;
   let reaped = false;
   const doneCbs = new Set<DoneCallback>();
@@ -348,6 +357,8 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
   };
 
   const unsubscribe = driver.onEvent((e: WorkerEvent) => {
+    const fingerprint = stallFingerprintFromEvent(e);
+    if (fingerprint) lastStallFingerprint = fingerprint;
     // Record the granular event in the ticket's private journal (best-effort — a broken
     // sink must never derail the worker's own lifecycle bookkeeping below).
     if (onProgress) {
@@ -469,6 +480,9 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     telemetry(): WorkerSpend {
       return driver.getTelemetry();
     },
+    stallFingerprint(): string | null {
+      return lastStallFingerprint;
+    },
     async nudge(text: string): Promise<NudgeReceipt["accepted"]> {
       const receipt = await driver.sendNudge(text);
       logger.info("ticket worker nudged", { workerId: id, accepted: receipt.accepted, len: text.length });
@@ -504,3 +518,33 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
 
 /** specs/_legacy-v3/V3.md §6 alias for {@link spawnWorker}. */
 export const spawnTicketWorker = spawnWorker;
+
+/**
+ * Canonical, bounded evidence for the repeat-stall guard. Use only fields that all drivers
+ * normalize and that the journal already renders (commands, paths, and the tool name), avoiding
+ * volatile ids/timestamps embedded in raw driver frames.
+ */
+export function stallFingerprintFromEvent(event: WorkerEvent): string | null {
+  if (event.kind === "file_change") {
+    const paths = [...new Set(event.paths.map((p) => cleanFingerprintPart(p.path)).filter(Boolean))].sort();
+    return paths.length > 0 ? `files: ${paths.join(", ")}` : null;
+  }
+  if (event.kind !== "tool_call") return null;
+
+  const tool = cleanFingerprintPart(event.tool) || "tool";
+  const input = event.input && typeof event.input === "object"
+    ? event.input as Record<string, unknown>
+    : {};
+  // These are the same compact, cross-harness hints the journal exposes. A command is preferred
+  // so `bun test` stays distinguishable from any other use of the shell tool.
+  const detail = ["command", "file_path", "path", "pattern", "query", "url"]
+    .map((key) => input[key])
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return detail ? `${tool}: ${cleanFingerprintPart(detail)}` : `tool: ${tool}`;
+}
+
+/** Collapse presentation-only differences and cap untrusted tool input before it reaches state/comments. */
+function cleanFingerprintPart(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim().replace(/`/g, "'");
+  return normalized.length <= 500 ? normalized : `${normalized.slice(0, 499)}…`;
+}
