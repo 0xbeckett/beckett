@@ -54,7 +54,7 @@ export interface RoutineDispatchPlan {
    * dependency-update job, or the feed-watch poll. Only `agent`/`browser` (and, indirectly, a
    * qualifying `watch` fire) reach the browser.
    */
-  lane: "agent" | "browser" | "deps-update" | "watch";
+  lane: "agent" | "browser" | "deps-update" | "watch" | "self";
   /** agent lane: the registry id to invoke LIVE at dispatch (null for the browser lane). */
   agentId: string | null;
   /** agent lane: the instruction handed to that agent (null for the browser lane). */
@@ -63,6 +63,8 @@ export interface RoutineDispatchPlan {
   browserTask: string | null;
   /** deps-update lane: what to update and where the PR goes (null on the other lanes). */
   depsUpdate: DepsUpdateTarget | null;
+  /** self lane: the instruction Beckett gives itself, framed as a SYSTEM turn (null elsewhere). */
+  selfPrompt: string | null;
   /** Human-readable summary shown in a dry-run + logs. */
   preview: string;
   /** jingle keychain entry passed to the browser lane via --creds (a NAME, never a secret). */
@@ -85,6 +87,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       agentInput: action.input,
       browserTask: null,
       depsUpdate: null,
+      selfPrompt: null,
       preview: `invoke agent ${action.agentId}: ${action.input}`,
       credsEntry: action.credsEntry ?? null,
       channelId: action.channelId ?? null,
