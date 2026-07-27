@@ -139,6 +139,9 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
   const hostTmp = join("/tmp", `beckett-browser-${profileHash}`);
   mkdirSync(options.settings.profileDir, { recursive: true, mode: 0o700 });
   mkdirSync(options.settings.artifactsRoot, { recursive: true, mode: 0o700 });
+  // Mount even an empty configured root so media created after this long-lived host starts is
+  // visible to a later browser run. A non-directory fails loudly instead of becoming a file root.
+  for (const root of attachmentRoots(options.settings)) mkdirSync(root, { recursive: true, mode: 0o700 });
   mkdirSync(hostHome, { recursive: true, mode: 0o700 });
   mkdirSync(hostTmp, { recursive: true, mode: 0o700 });
 
@@ -631,7 +634,7 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
     const existing = delivered.get(source);
     if (existing) return existing;
     const artifactsDir = resolve(current.artifactsDir);
-    let trusted: TrustedPngFile | null = null;
+    let trusted: TrustedBrowserAttachment | null = null;
     let deliveryTarget: string | null = null;
     try {
       // This is the shared containment/regular-file/size/PNG signature gate for

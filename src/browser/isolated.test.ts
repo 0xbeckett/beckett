@@ -239,7 +239,7 @@ test("attachment validation refuses a PNG path outside the run artifacts directo
     const outside = join(dir, "outside.png");
     mkdirSync(artifactsDir, { recursive: true });
     writeFileSync(outside, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-    expect(() => assertTrustedArtifactPng(outside, artifactsDir)).toThrow("escaped the run artifacts directory");
+    expect(() => assertTrustedArtifactPng(outside, artifactsDir)).toThrow("escaped the permitted roots");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

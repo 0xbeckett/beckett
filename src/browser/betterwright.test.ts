@@ -238,7 +238,7 @@ test("proof capture is per-lease and lands under each lease's own artifacts dir"
 
 test("the bridge exposes attachFile only for screenshots captured by this lease", async () => {
   const shot = join(scratch, "attach-source.png");
-  writeFileSync(shot, PNG_SIGNATURE);
+  writeFileSync(shot, Buffer.concat([PNG_SIGNATURE, Buffer.alloc(4)]));
   const fake = new FakeBetterWright((call) => call.code.includes("CAPTURE_ATTACHABLE")
     ? { artifacts: [{ kind: "debug", media: `MEDIA:${shot}` }] }
     : {});
@@ -253,7 +253,7 @@ test("the bridge exposes attachFile only for screenshots captured by this lease"
     expect(call.code).toContain(source);
     expect(call.code).toContain(shot);
     expect(call.code).toContain("input.setInputFiles(approvedPath)");
-    expect(call.code).toContain("refuses paths outside this run's approved screenshot artifacts");
+    expect(call.code).toContain("refuses paths outside this run's approved attachment roots");
   } finally {
     await runtime.stop();
   }

@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { extname, isAbsolute, relative, resolve } from "node:path";
 
 export const MAX_BROWSER_ATTACHMENT_BYTES = 16 * 1024 * 1024;
@@ -54,7 +54,8 @@ export function openTrustedBrowserAttachment(source: string, permittedRoots: rea
 
   const roots = permittedRoots.flatMap((root) => {
     try {
-      return [realpathSync(resolve(root))];
+      const resolved = realpathSync(resolve(root));
+      return statSync(resolved).isDirectory() ? [resolved] : [];
     } catch {
       // A configured directory may be created later; it cannot authorize a file until then.
       return [];

@@ -243,6 +243,11 @@ export function createBetterWrightRuntime(
       if (!existsSync(image.path)) continue;
       const target = join(resolve(lease.artifactsDir), `betterwright-${Date.now()}-${copied.length}-${basename(image.path)}`);
       copyFileSync(image.path, target);
+      // Screenshots are mapped eagerly so an agent may pass a previously returned path through a
+      // variable. Validate it here with the same realpath/file-shape gate as configured roots.
+      const trusted = openTrustedBrowserAttachment(target, [lease.artifactsDir]);
+      closeSync(trusted.fd);
+      lease.attachments.set(trusted.sourcePath, image.path);
       lease.attachments.set(target, image.path);
       copied.push(target);
     }
