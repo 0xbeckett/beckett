@@ -77,12 +77,27 @@ test("with a catalog thunk the block composes AFTER doctrine and BEFORE persona"
   expect(prompt).toContain("image.generate");
 });
 
-test("without a registry the composed prompt is byte-identical (no catalog block)", () => {
+test("empty catalog and loop stores leave the composed prompt byte-identical", () => {
   const config = tempConfig();
   const bare = composedPrompt(new ConciergeSession({ config }));
-  const emptyThunk = composedPrompt(new ConciergeSession({ config, catalogBlock: () => "" }));
+  const emptyCatalog = composedPrompt(new ConciergeSession({ config, catalogBlock: () => "" }));
+  const emptyLoops = composedPrompt(new ConciergeSession({ config, openLoopsBlock: () => "" }));
   expect(bare).not.toContain("<extension-catalog>");
-  expect(emptyThunk).toBe(bare);
+  expect(bare).not.toContain("<open-loops>");
+  expect(emptyCatalog).toBe(bare);
+  expect(emptyLoops).toBe(bare);
+});
+
+test("the fresh loop block composes after catalog and before persona", () => {
+  const config = tempConfig();
+  const session = new ConciergeSession({
+    config,
+    catalogBlock: () => "<extension-catalog>\\n- x\\n</extension-catalog>",
+    openLoopsBlock: () => "<open-loops>\\n- OVERDUE 2026-07-01 [commitment] I owe this\\n</open-loops>",
+  });
+  const prompt = composedPrompt(session);
+  expect(prompt.indexOf("<extension-catalog>")).toBeLessThan(prompt.indexOf("<open-loops>"));
+  expect(prompt.indexOf("<open-loops>")).toBeLessThan(prompt.indexOf("<persona>"));
 });
 
 // ── the concierge wiring ─────────────────────────────────────────────────────────────────

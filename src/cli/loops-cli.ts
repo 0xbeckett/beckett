@@ -77,7 +77,9 @@ export async function runLoops(argv: string[]): Promise<void> {
     const note = typeof flags.note === "string" ? flags.note : undefined;
     try {
       const entry = await settleLoop(memory, name, sub === "close" ? "done" : "dropped", note, audience);
-      out({ [sub === "close" ? "closed" : "dropped"]: entry.node.name, closed: entry.closed });
+      out(sub === "close"
+        ? { closed: entry.node.name, closed_at: entry.closed }
+        : { dropped: entry.node.name, closed_at: entry.closed });
     } catch (err) {
       fail((err as Error).message);
     }

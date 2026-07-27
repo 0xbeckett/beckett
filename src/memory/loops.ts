@@ -2,7 +2,7 @@
 
 import type { MemoryNode, RememberIntent } from "../types.ts";
 import type { MemoryStore } from "./index.ts";
-import { type Audience, canView, provenanceOf } from "./search.ts";
+import { type Audience, canView } from "./search.ts";
 
 export const LOOP_KINDS = ["commitment", "recurring-error", "wishlist"] as const;
 export type LoopKind = (typeof LOOP_KINDS)[number];
@@ -143,9 +143,11 @@ function asLoop(node: MemoryNode, today: string): LoopEntry | null {
   const opened = typeof metadata.opened === "string" && isDate(metadata.opened) ? metadata.opened : null;
   const source = typeof metadata.source === "string" && metadata.source.trim() ? metadata.source.trim() : null;
   const closes = typeof metadata.closes === "string" && metadata.closes.trim() ? metadata.closes.trim() : null;
+  const hasClosed = metadata.closed !== undefined && metadata.closed !== null;
   const closed = typeof metadata.closed === "string" && isDate(metadata.closed) ? metadata.closed : undefined;
-  // A close date belongs only to terminal loops; terminal loops must have one.
-  if (!kind || !status || !due || !opened || !source || !closes) return null;
+  // A close date belongs only to terminal loops; terminal loops must have one. A malformed
+  // present close date is malformed frontmatter too, never silently treated as absent.
+  if (!kind || !status || !due || !opened || !source || !closes || (hasClosed && !closed)) return null;
   if ((status === "open" && closed) || (status !== "open" && !closed)) return null;
   return {
     node,
