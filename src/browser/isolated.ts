@@ -63,6 +63,48 @@ interface PendingRequest {
   reject(error: Error): void;
 }
 
+interface TrustedPngFile {
+  sourcePath: string;
+  fd: number;
+  size: number;
+}
+
+/**
+ * Open a PNG only after proving it is a regular, bounded file below the given
+ * run's artifact directory. The open descriptor is retained for callers that
+ * need to copy the exact checked bytes without a path-based TOCTOU window.
+ */
+function openTrustedArtifactPng(source: string, artifactsDir: string): TrustedPngFile {
+  const sourcePath = resolve(source);
+  const root = resolve(artifactsDir);
+  if (!pathIsWithin(root, sourcePath)) throw new Error("browser screenshot escaped the run artifacts directory");
+
+  let fd: number | null = null;
+  try {
+    fd = openSync(sourcePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error("browser screenshot is not a regular file");
+    if (stat.size < PNG_SIGNATURE.length || stat.size > MAX_SCREENSHOT_BYTES) {
+      throw new Error(`browser screenshot size ${stat.size} is outside the allowed range`);
+    }
+    const signature = Buffer.alloc(PNG_SIGNATURE.length);
+    if (readSync(fd, signature, 0, signature.length, 0) !== signature.length || !signature.equals(PNG_SIGNATURE)) {
+      throw new Error("browser screenshot is not a PNG");
+    }
+    return { sourcePath, fd, size: stat.size };
+  } catch (error) {
+    if (fd !== null) closeSync(fd);
+    throw error;
+  }
+}
+
+/** Public for focused boundary tests and for every future artifact consumer. */
+export function assertTrustedArtifactPng(source: string, artifactsDir: string): string {
+  const trusted = openTrustedArtifactPng(source, artifactsDir);
+  closeSync(trusted.fd);
+  return trusted.sourcePath;
+}
+
 export interface CreateIsolatedBrowserRuntimeDeps {
   settings: BrowserHostSettings;
   logger: Logger;

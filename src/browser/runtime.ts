@@ -88,6 +88,8 @@ export interface BrowserEvalResult {
   pages: BrowserPageSummary[];
   events: string[];
   screenshots: string[];
+  /** Trusted PNG screenshots the agent may attach later in this same run. */
+  attachments?: string[];
   elapsedMs: number;
   truncated: boolean;
 }

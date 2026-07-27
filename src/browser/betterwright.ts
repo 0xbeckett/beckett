@@ -42,6 +42,8 @@ const MAX_LEASES_HARD_CAP = 16;
 const MAX_PROFILE_BYTES = 512 * 1024 * 1024;
 /** Per-lease growth allowance, measured from each lease's own acquire baseline. */
 const MAX_PROFILE_GROWTH_BYTES = 100 * 1024 * 1024;
+/** Bound bridge source while retaining enough screenshots for a normal agent run. */
+const MAX_ATTACHMENTS_PER_LEASE = 64;
 /** Prune disposable caches before they can make a dormant profile unavailable. */
 const PROFILE_PRUNE_HIGH_WATER_MARK = 0.7;
 
@@ -58,6 +60,8 @@ interface ActiveLease extends BrowserLease {
   /** Per-lease event ring — never interleaves with another lease's events. */
   events: string[];
   screenshots: string[];
+  /** Run-artifact screenshot path -> BetterWright's own readable artifact path. */
+  attachments: Map<string, string>;
   /** Serializes this lease's own calls so they stay strictly ordered. */
   queue: Promise<void>;
   /** Shared-profile size observed when this lease acquired, its growth baseline. */
@@ -228,6 +232,7 @@ export function createBetterWrightRuntime(
     if (lease.profileBudgetError) throw lease.profileBudgetError;
   }
 
+  /** Copy BetterWright images into the run directory and retain their approved source mapping. */
   function copyArtifacts(result: BetterWrightResult, lease: ActiveLease): string[] {
     mkdirSync(lease.artifactsDir, { recursive: true, mode: 0o700 });
     const copied: string[] = [];
@@ -238,16 +243,45 @@ export function createBetterWrightRuntime(
       if (!existsSync(image.path)) continue;
       const target = join(resolve(lease.artifactsDir), `betterwright-${Date.now()}-${copied.length}-${basename(image.path)}`);
       copyFileSync(image.path, target);
+      lease.attachments.set(target, image.path);
+      while (lease.attachments.size > MAX_ATTACHMENTS_PER_LEASE) {
+        lease.attachments.delete(lease.attachments.keys().next().value!);
+      }
       copied.push(target);
     }
     return copied;
+  }
+
+  /**
+   * Add the one narrow file-upload primitive model snippets receive. Its public
+   * path is only a lookup key: the real path is a BetterWright-owned artifact
+   * that was copied from a screenshot for this lease. Therefore neither a
+   * guessed path nor a path from another run can reach setInputFiles.
+   */
+  function attachmentBridge(lease: ActiveLease): string {
+    const approved = JSON.stringify(Object.fromEntries(lease.attachments));
+    return `
+const attachFile = async (target, screenshotPath) => {
+  if (typeof screenshotPath !== "string") throw new Error("attachFile needs a screenshot path");
+  const approvedPath = ${approved}[screenshotPath];
+  if (typeof approvedPath !== "string") {
+    throw new Error("attachFile refuses paths outside this run's approved screenshot artifacts");
+  }
+  const input = typeof target === "string" ? page.locator(target) : target;
+  if (!input || typeof input.setInputFiles !== "function") {
+    throw new Error("attachFile target must be a file-input selector or Locator");
+  }
+  await input.setInputFiles(approvedPath);
+  return { attached: screenshotPath };
+};
+`;
   }
 
   /** Raw evaluation on one lease's session. Callers must already hold the lease queue. */
   async function execute(lease: ActiveLease, code: string): Promise<BrowserEvalResult> {
     if (!code.trim()) throw new Error("betterwright browser requires non-empty JavaScript");
     if (code.length > MAX_CODE_CHARS) throw new Error(`betterwright browser code exceeds ${MAX_CODE_CHARS} characters`);
-    const raw = await browser.run(code, {
+    const raw = await browser.run(`${attachmentBridge(lease)}\n${code}`, {
       session: lease.session,
       approvedDownloads: downloadReferences.has(lease.session),
     }) as BetterWrightResult;
@@ -325,6 +359,7 @@ export function createBetterWrightRuntime(
         session: lease.runId,
         events: [],
         screenshots: [],
+        attachments: new Map(),
         queue: Promise.resolve(),
         profileBytesAtAcquire: 0,
         profileBudgetError: null,
