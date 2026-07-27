@@ -63,6 +63,18 @@ sweep can show progress without claiming completion; `lastTouched` is null for l
 the field existed, and surfaces on `LoopEntry` so callers can prefer untouched loops. A note must
 never widen visibility — it only ever passes `lastTouched` in the metadata patch.
 
+**Linking a loop to the work filed against it** (issue #39): a loop's `linkedTasks` metadata is a
+plain string array of task refs (`#20`, `#20.1`), stamped by `linkLoopTask` (also reachable as
+`beckett loops link <name> --task <ref>`, or inline via `beckett task create --loop <name>`).
+`resolveLinkedTasks(taskStore, loop)` resolves each ref's status from the live `TaskStore` at read
+time — never cached on the loop node, so a cancelled/done task shows as such immediately, with no
+loop write needed. `renderOpenLoopsBlock` (the session-start `<open-loops>` block every session,
+including a self-lane sweep turn, gets composed into its system prompt) takes an optional
+`TaskStore` and, when given one, appends each loop's resolved `already filed: #ref (status)` list
+plus an explicit "check before filing" instruction — this is the fix for the mitigation that
+depended on the model remembering to look. The field is optional and absent reads as `[]`, so
+loops predating linking need no migration.
+
 ## Gotchas that have bitten before
 
 - The warm daemon caches the parsed graph keyed by an mtime/size stamp taken **before** the
