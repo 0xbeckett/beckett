@@ -27,6 +27,14 @@ test("Claude fixture iterates all non-null limits, scopes models, and converts e
   ], overage: { used: 0, limit: 20, currency: "USD" } });
 });
 
+test("spend-shaped overage uses its minor-unit exponent only when enabled", () => {
+  const payload = { ...claudeFixture, extra_usage: { is_enabled: false }, spend: {
+    enabled: true, used: { amount_minor: 125, exponent: 2, currency: "USD" }, limit: { amount_minor: 2000, exponent: 2, currency: "USD" },
+  } };
+  expect(parseClaudeUsage(payload).overage).toEqual({ used: 1.25, limit: 20, currency: "USD" });
+  expect(parseClaudeUsage({ ...payload, spend: { ...payload.spend, enabled: false } }).overage).toBeNull();
+});
+
 test("source reads credentials only for its request, caches response, and takes last limits from newest rollout that has one", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-subscriptions-")); dirs.push(dir);
   const credentials = join(dir, "credentials.json"); writeFileSync(credentials, JSON.stringify({ claudeAiOauth: { accessToken: "test-secret" } }));

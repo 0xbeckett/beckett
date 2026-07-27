@@ -100,7 +100,9 @@ export function parseClaudeUsage(value: unknown): SubscriptionLimits["claude"] {
     }];
   });
   const extra = record(body.extra_usage);
-  const overage = extra?.is_enabled === true ? moneyPool(extra) : null;
+  const spend = record(body.spend);
+  // Older/current OAuth payload variants expose this same pool as extra_usage or spend.
+  const overage = extra?.is_enabled === true ? moneyPool(extra) : spend?.enabled === true ? spendPool(spend) : null;
   return { available: true, limits, overage };
 }
 
@@ -113,12 +115,19 @@ function credentialToken(path: string): string | null {
 }
 
 function moneyPool(value: Record<string, unknown>) {
-  const exponent = number(value.decimal_places) ?? 2;
+  const exponent = number(value.exponent) ?? number(value.decimal_places) ?? 2;
   const limit = number(value.monthly_limit);
   const used = number(value.used_credits);
   if (limit === null || used === null) return null;
   const divisor = 10 ** exponent;
   return { used: used / divisor, limit: limit / divisor, currency: string(value.currency) ?? "USD" };
+}
+function spendPool(value: Record<string, unknown>) {
+  const used = record(value.used); const limit = record(value.limit);
+  const exponent = number(limit?.exponent) ?? number(used?.exponent) ?? 2;
+  const usedMinor = number(used?.amount_minor); const limitMinor = number(limit?.amount_minor);
+  if (usedMinor === null || limitMinor === null) return null;
+  return { used: usedMinor / 10 ** exponent, limit: limitMinor / 10 ** exponent, currency: string(limit?.currency) ?? string(used?.currency) ?? "USD" };
 }
 
 function claudeLabel(kind: string, group: string | null, model: string | null): string {
