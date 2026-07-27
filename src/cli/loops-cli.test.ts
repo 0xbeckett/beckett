@@ -29,6 +29,23 @@ async function cli(dir: string, args: string[]): Promise<unknown> {
   return JSON.parse(await cliRaw(dir, args));
 }
 
+async function cliFailure(dir: string, args: string[]): Promise<string> {
+  const proc = Bun.spawn([process.execPath, join(import.meta.dir, "beckett.ts"), ...args], {
+    cwd: join(import.meta.dir, "..", ".."),
+    env: { ...process.env, BECKETT_DIR: dir, BECKETT_HOME: dir },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  expect(code).toBe(1);
+  return stderr || stdout;
+}
+
 test("task create --loop stamps the link, and beckett loops surfaces it with a live status", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-loops-cli-"));
   dirs.push(dir);
@@ -55,6 +72,33 @@ test("task create --loop stamps the link, and beckett loops surfaces it with a l
 
   const text = await cliRaw(dir, ["loops", "--as-self"]);
   expect(text).toContain("already filed: #1 active");
+});
+
+test("beckett loops rejects flags outside each subcommand's allow-list", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-loops-cli-flags-"));
+  dirs.push(dir);
+
+  const noteError = await cliFailure(dir, ["loops", "note", "anything", "--note", "probe", "--due", "2026-08-05"]);
+  expect(noteError).toContain("unknown flag --due");
+  expect(noteError).toContain("usage: beckett loops");
+
+  const openError = await cliFailure(dir, [
+    "loops", "open", "--name", "anything", "--kind", "wishlist", "--due", "2026-08-05",
+    "--source", "self", "--desc", "probe", "--task", "#31.1",
+  ]);
+  expect(openError).toContain("unknown flag --task");
+  expect(openError).toContain("usage: beckett loops");
+});
+
+test("beckett loops open reports every missing required flag", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-loops-cli-open-required-"));
+  dirs.push(dir);
+
+  const error = await cliFailure(dir, ["loops", "open", "--name", "only-name"]);
+  expect(error).toContain("--kind");
+  expect(error).toContain("--due");
+  expect(error).toContain("--source");
+  expect(error).toContain("--desc");
 });
 
 test("beckett loops link attaches a task ref to an already-open loop", async () => {

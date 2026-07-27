@@ -15,6 +15,14 @@ const USAGE =
   "loops note <name> --note <text> | loops close <name> [--note <text>] | loops drop <name> --note <why> | " +
   "loops link <name> --task <ref>";
 
+const AUDIENCE_FLAGS = ["as-self", "viewer", "viewer-role", "context"];
+
+/** Reject typos rather than silently accepting intent a command cannot perform. */
+function validateFlags(flags: Record<string, string | boolean>, allowed: string[]): void {
+  const unknown = Object.keys(flags).filter((flag) => !allowed.includes(flag));
+  if (unknown.length) fail(`loops: unknown flag${unknown.length === 1 ? "" : "s"} ${unknown.map((flag) => `--${flag}`).join(", ")}\n${USAGE}`);
+}
+
 export async function runLoops(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const memory = createMemory({ memoryDir: paths.memoryDir, git: sub === "open" || sub === "close" || sub === "drop" || sub === "note" || sub === "link" });
@@ -23,6 +31,7 @@ export async function runLoops(argv: string[]): Promise<void> {
   if (!sub || sub.startsWith("--")) {
     const listArgv = sub ? argv : [];
     const { flags } = parse(listArgv);
+    validateFlags(flags, ["all", "json", ...AUDIENCE_FLAGS]);
     let audience;
     try {
       audience = audienceFromFlags(flags);
@@ -53,6 +62,14 @@ export async function runLoops(argv: string[]): Promise<void> {
   }
 
   const { _, flags } = parse(rest);
+  const allowedFlags: Record<string, string[]> = {
+    open: ["name", "kind", "due", "source", "desc", "closes", ...AUDIENCE_FLAGS],
+    note: ["note", ...AUDIENCE_FLAGS],
+    close: ["note", ...AUDIENCE_FLAGS],
+    drop: ["note", ...AUDIENCE_FLAGS],
+    link: ["task", ...AUDIENCE_FLAGS],
+  };
+  if (sub in allowedFlags) validateFlags(flags, allowedFlags[sub]!);
   let audience;
   try {
     audience = audienceFromFlags(flags);
@@ -61,11 +78,10 @@ export async function runLoops(argv: string[]): Promise<void> {
   }
 
   if (sub === "open") {
-    const required = (key: string): string => {
-      const value = flags[key];
-      if (typeof value !== "string" || !value.trim()) fail(`loops open: --${key} is required`);
-      return value;
-    };
+    const requiredKeys = ["name", "kind", "due", "source", "desc"];
+    const missing = requiredKeys.filter((key) => typeof flags[key] !== "string" || !flags[key].trim());
+    if (missing.length) fail(`loops open: required flags missing: ${missing.map((key) => `--${key}`).join(", ")}`);
+    const required = (key: string): string => flags[key] as string;
     const entry = await openLoop(memory, {
       name: required("name"),
       kind: required("kind") as (typeof LOOP_KINDS)[number],
