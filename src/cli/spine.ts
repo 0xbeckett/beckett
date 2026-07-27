@@ -153,7 +153,7 @@ export const SPINE: SpineEntry[] = [
   },
   {
     id: "loops",
-    cliHelp: "loops [--all|--json] | loops open|close|drop",
+    cliHelp: "loops [--all|--json] | loops open|note|close|drop",
     verbs: [{ name: "loops", load: async () => (await import("./loops-cli.ts")).runLoops }],
   },
 

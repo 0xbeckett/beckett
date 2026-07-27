@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemory, type MemoryStore } from "./index.ts";
-import { listLoops, openLoop, renderOpenLoopsBlock, settleLoop } from "./loops.ts";
+import { listLoops, noteLoop, openLoop, renderOpenLoopsBlock, settleLoop } from "./loops.ts";
 import { SELF_AUDIENCE } from "./search.ts";
 import type { Logger } from "../types.ts";
 
@@ -98,6 +98,58 @@ test("close and drop round-trip through MemoryStore without losing body or unkno
   expect(dropNode.metadata.closed).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(dropNode.body).toContain("ro released this");
   expect(readFileSync(closeNode.path, "utf8")).toContain("watchdog: still-here");
+});
+
+test("noting a loop appends a dated note and stamps lastTouched without changing status", async () => {
+  const { memory, dir } = store();
+  await seed(memory, "note-me", "2026-08-01", "commitment", { watchdog: "keep-me", visibility: "owner" });
+
+  const before = listLoops(memory, { all: true, audience: SELF_AUDIENCE });
+  expect(before[0]!.lastTouched).toBeNull();
+
+  const noted = await noteLoop(memory, "note-me", "made real progress on the adoption", SELF_AUDIENCE);
+  expect(noted.status).toBe("open");
+  expect(noted.lastTouched).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+  const fresh = createMemory({ memoryDir: dir, logger: quiet, git: false });
+  const node = fresh.buildGraph().nodes.get("note-me")!;
+  expect(node.metadata.status).toBe("open");
+  expect(node.metadata.lastTouched).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  expect(node.metadata.watchdog).toBe("keep-me");
+  // A note must never widen visibility.
+  expect(node.metadata.visibility).toBe("owner");
+  expect(node.body).toContain("Body for note-me.");
+  expect(node.body).toMatch(/\*\*Note \(\d{4}-\d{2}-\d{2}\):\*\* made real progress on the adoption/);
+
+  // A second note stacks under the first and re-stamps.
+  await noteLoop(memory, "note-me", "still not done", SELF_AUDIENCE);
+  const twice = createMemory({ memoryDir: dir, logger: quiet, git: false }).buildGraph().nodes.get("note-me")!;
+  expect(twice.body).toContain("made real progress on the adoption");
+  expect(twice.body).toContain("still not done");
+});
+
+test("noting rejects unknown/non-open loops and blank notes in settleLoop's error style", async () => {
+  const { memory } = store();
+  await seed(memory, "live", "2026-08-01");
+  await settleLoop(memory, "live", "done", undefined, SELF_AUDIENCE);
+  await seed(memory, "still-open", "2026-08-02");
+
+  expect(noteLoop(memory, "ghost", "x", SELF_AUDIENCE)).rejects.toThrow("no visible open loop named 'ghost'");
+  expect(noteLoop(memory, "live", "x", SELF_AUDIENCE)).rejects.toThrow("no visible open loop named 'live'");
+  expect(noteLoop(memory, "still-open", "   ", SELF_AUDIENCE)).rejects.toThrow("--note is required to note a loop");
+});
+
+test("loops opened before lastTouched existed parse and read as never touched", async () => {
+  const { memory, dir } = store();
+  await seed(memory, "modern", "2026-08-15"); // creates the loop/ dir
+  // A pre-note loop file with no lastTouched key at all.
+  writeFileSync(
+    join(dir, "loop", "legacy.md"),
+    "---\nname: legacy\ndescription: an old loop\nmetadata:\n  type: loop\n  kind: commitment\n  status: open\n  due: 2026-09-01\n  opened: 2026-06-01\n  source: manual\n  closes: check it\n---\nlegacy body\n",
+  );
+  const loops = listLoops(memory, { audience: SELF_AUDIENCE });
+  expect(loops.map((l) => l.node.name)).toContain("legacy");
+  expect(loops.find((l) => l.node.name === "legacy")!.lastTouched).toBeNull();
 });
 
 test("opening a loop creates the conventional loop file and an empty ledger renders nothing", async () => {

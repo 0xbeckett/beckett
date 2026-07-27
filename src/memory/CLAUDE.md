@@ -51,6 +51,18 @@ claims — old ones get demoted or superseded, never judged wrong by age alone.
 | Add a maintenance detector | `planMaintenance` in `maintain.ts` (pure, powers `--dry-run`); execution in `MemoryStore.maintain`. Favor flagging over auto-acting; never cross a visibility boundary when merging |
 | Read memory from a new surface | `recall()` / `recallAgentic()` with an explicit `Audience` (`SELF_AUDIENCE` for Beckett acting for itself — it excludes dm-scoped facts by construction) |
 
+## The open-loop ledger (`loops.ts`)
+
+`loop`-type nodes are the standing ledger of commitments/recurring-errors/wishlist items. All
+transitions go through `MemoryStore.remember` like any other node, so audience/visibility scoping
+is identical — `listLoops` gates through `canView`, and every write uses `mergeInto` so unrelated
+metadata (crucially `visibility`) is preserved. Lifecycle: `openLoop` (status `open`) → `noteLoop`
+(a dated `**Note (YYYY-MM-DD):**` in the body + a `lastTouched` metadata date, status stays
+`open`) → `settleLoop` (`done`/`dropped` + a close/drop note). `noteLoop` is the in-between so a
+sweep can show progress without claiming completion; `lastTouched` is null for loops opened before
+the field existed, and surfaces on `LoopEntry` so callers can prefer untouched loops. A note must
+never widen visibility — it only ever passes `lastTouched` in the metadata patch.
+
 ## Gotchas that have bitten before
 
 - The warm daemon caches the parsed graph keyed by an mtime/size stamp taken **before** the
