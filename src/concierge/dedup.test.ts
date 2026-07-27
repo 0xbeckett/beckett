@@ -591,6 +591,21 @@ test("a browser outcome arrives as an update turn instructing a voiced reply wit
   expect(asks[0]).toContain(`beckett discord reply --channel ${CHAN} --file ${proof} `);
 });
 
+test("a deploy-cancelled browser run is surfaced as exactly one identifying line", async () => {
+  const { asks, concierge } = harness({ replyViaCli: false, turnText: "" });
+  await concierge.notifyBrowserOutcome(agentRun({
+    runId: "9fe5bfbe-519e-4784-9ba1-ad4eeb8269f6",
+    task: "research replies and post the evening update",
+    state: "cancelled",
+    restartCancelled: true,
+    finishedAt: Date.now(),
+  }));
+  expect(asks).toHaveLength(1);
+  expect(asks[0]).toContain("Send exactly this one line");
+  expect(asks[0]).toContain("Deploy cancelled browser run 9fe5bfbe-519e-4784-9ba1-ad4eeb8269f6: research replies and post the evening update");
+  expect(asks[0]).not.toContain("retry");
+});
+
 test("a failed browser outcome tells the Concierge to say so plainly", async () => {
   const { asks, concierge } = harness({ replyViaCli: false, turnText: "" });
   await concierge.notifyBrowserOutcome(agentRun({

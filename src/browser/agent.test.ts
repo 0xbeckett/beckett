@@ -280,7 +280,7 @@ describe("dispatch queue", () => {
     expect(input).toContain("prefer the aisle seat");
   });
 
-  test("recover re-queues persisted queued runs in order and then drains them", async () => {
+  test("restart cancels persisted queued runs instead of replaying them", async () => {
     const { dir, agent, questions } = setup();
     await agent.run("ASK_COLOR", { channelId: "chan-1", requesterId: "owner" });
     await waitUntil(() => questions.length === 1);
@@ -292,12 +292,11 @@ describe("dispatch queue", () => {
     // Simulate a hard crash: a fresh agent over the same beckett dir, no stopAll.
     const revived = setup({}, { dir });
     await revived.agent.recover();
-    // The live run is reported as an orphan error; the queued ones start, in order, unprompted.
+    // No task is replayed after a restart: every durable active/queued row is a cancellation.
     await waitUntil(() => revived.outcomes.length === 3, 8_000);
-    expect(revived.outcomes[0]).toMatchObject({ channelId: "chan-1", state: "error" });
-    expect(revived.outcomes.slice(1).map((run) => run.runId)).toEqual([q1.runId, q2.runId]);
-    expect(revived.outcomes.slice(1).every((run) => run.state === "done")).toBe(true);
-    expect(revived.agent.stats().queued).toBe(0);
+    expect(revived.outcomes.map((run) => run.runId)).toEqual([first.runId, q1.runId, q2.runId]);
+    expect(revived.outcomes.every((run) => run.state === "cancelled" && run.restartCancelled)).toBe(true);
+    expect(revived.agent.stats()).toMatchObject({ running: 0, waiting: 0, queued: 0 });
   });
 
   test("losing the lease race to an inline exec re-queues the run instead of erroring it", async () => {
@@ -489,7 +488,7 @@ describe("keychain secrets", () => {
 });
 
 describe("durable outcomes and crash recovery", () => {
-  test("a run that was live when the daemon died is reported as an error on recover", async () => {
+  test("a run that died in a daemon restart is recorded as a cancellation on recover", async () => {
     const { dir, agent, questions } = setup();
     await agent.run("ASK_COLOR", { channelId: "chan-7", requesterId: "owner" });
     await waitUntil(() => questions.length === 1 && agent.stats().waiting === 1);
@@ -497,8 +496,13 @@ describe("durable outcomes and crash recovery", () => {
     const revived = setup({}, { dir });
     await revived.agent.recover();
     expect(revived.outcomes).toHaveLength(1);
-    expect(revived.outcomes[0]).toMatchObject({ channelId: "chan-7", state: "error" });
-    expect(revived.outcomes[0]!.result).toContain("daemon restarted");
+    expect(revived.outcomes[0]).toMatchObject({
+      channelId: "chan-7",
+      state: "cancelled",
+      restartCancelled: true,
+      task: "ASK_COLOR",
+    });
+    expect(revived.outcomes[0]!.result).toContain("Cancelled because the daemon restarted");
     const ledger = JSON.parse(readFileSync(join(dir, "browser-agent", "runs.json"), "utf8")) as BrowserAgentRun[];
     expect(ledger.every((run) => run.outcomeDelivered)).toBe(true);
   });
@@ -519,7 +523,7 @@ describe("durable outcomes and crash recovery", () => {
     expect(ledger.every((run) => run.outcomeDelivered)).toBe(true);
   });
 
-  test("stopAll settles live runs as errors that survive to the next boot", async () => {
+  test("shutdown records each live run as a restart cancellation for the next boot", async () => {
     const failures: string[] = [];
     const { dir, agent } = setup({}, {
       onOutcome: (run) => {
@@ -534,7 +538,8 @@ describe("durable outcomes and crash recovery", () => {
     const revived = setup({}, { dir });
     await revived.agent.recover();
     expect(revived.outcomes).toHaveLength(1);
-    expect(revived.outcomes[0]!.result).toContain("shut down");
+    expect(revived.outcomes[0]).toMatchObject({ state: "cancelled", restartCancelled: true, task: "ASK_COLOR" });
+    expect(revived.outcomes[0]!.result).toContain("daemon restarted");
   });
 
   test("stopAll does not wait forever for an offline question post", async () => {

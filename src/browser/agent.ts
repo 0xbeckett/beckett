@@ -42,6 +42,8 @@ export interface BrowserAgentRun {
   questionMessageId: string | null;
   /** Outcome reached the concierge as an update turn; undelivered runs re-report after a restart. */
   outcomeDelivered: boolean;
+  /** This run was killed by daemon shutdown and must be surfaced as a concise cancellation. */
+  restartCancelled?: boolean;
 }
 
 export interface BrowserAgentQuestion {
@@ -131,9 +133,8 @@ export interface BrowserAgent {
    */
   evalSecrets(runId: string): Promise<Record<string, string> | null>;
   /**
-   * Report runs a dead daemon stranded and re-queue persisted queued dispatches (order
-   * preserved — a queued run is never dropped); call once at boot, after the concierge can
-   * take turns.
+   * Report every run a dead daemon stranded as cancelled; never replay work after a restart.
+   * Call once at boot, after the concierge can take turns.
    */
   recover(): Promise<void>;
   stats(): BrowserAgentStats;
@@ -292,10 +293,8 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
   const queue: PendingDispatch[] = [];
   /** The dispatch currently between queue and `live` (mid-acquire); still owed a ledger row. */
   let starting: PendingDispatch | null = null;
-  /** Runs a dead daemon left live on disk; {@link recover} turns them into error outcomes. */
+  /** Runs a dead daemon left on disk; {@link recover} turns them into restart-cancellation outcomes. */
   const orphans: BrowserAgentRun[] = [];
-  /** Runs persisted as "queued" by the previous daemon; {@link recover} re-queues them in order. */
-  const requeue: BrowserAgentRun[] = [];
   let outcomeRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let queueRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
@@ -331,12 +330,11 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
           question: typeof value.question === "string" ? value.question : null,
           questionMessageId: typeof value.questionMessageId === "string" ? value.questionMessageId : null,
           outcomeDelivered: value.outcomeDelivered === true,
+          restartCancelled: value.restartCancelled === true,
         };
-        // A Claude session and browser lease do not survive the daemon, so a run that was live
-        // when the process died is terminal now — it just has not told anyone yet. A QUEUED run
-        // held nothing volatile: it survives intact and is re-queued by recover(), never dropped.
-        if (run.state === "queued") requeue.push(run);
-        else if (run.state === "running" || run.state === "waiting") orphans.push(run);
+        // Nothing is replayed after a daemon restart. A live session/lease is gone, and even a
+        // queued task is deliberately cancelled rather than becoming a surprise later dispatch.
+        if (run.state === "queued" || run.state === "running" || run.state === "waiting") orphans.push(run);
         else finished.push(run);
       }
     } catch (error) {
@@ -835,6 +833,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
         question: null,
         questionMessageId: null,
         outcomeDelivered: false,
+        restartCancelled: false,
       };
       const dispatch: PendingDispatch = { run, secrets, pendingSteers: [] };
       // The lease is one-run-exclusive; a dispatch that arrives while it is held (or another
@@ -995,21 +994,13 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
 
     async recover() {
       for (const run of orphans.splice(0)) {
-        run.state = "error";
+        run.state = "cancelled";
+        run.restartCancelled = true;
         run.finishedAt = run.finishedAt ?? Date.now();
-        run.result =
-          run.result ??
-          "The daemon restarted while this browser task was in flight; the session could not be recovered. Dispatch it again to retry.";
+        run.result = run.result ?? "Cancelled because the daemon restarted before this browser task finished.";
         run.outcomeDelivered = false;
         finished.push(run);
         logger.warn("browser agent recovered an orphaned run", { runId: run.runId, channelId: run.channelId });
-      }
-      // Queued runs held nothing volatile: re-queue every one in ledger order — a restart may
-      // delay a queued dispatch but never drops it. Secrets re-resolve at start.
-      for (const run of requeue.splice(0)) {
-        queue.push({ run, secrets: null, pendingSteers: [] });
-        journal(run.runId, [], { kind: "queued", position: queue.length, requeued: true });
-        logger.info("browser agent re-queued a persisted run", { runId: run.runId, position: queue.length });
       }
       persistLedger();
       for (const run of [...finished]) {
@@ -1047,8 +1038,8 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       outcomeRetryTimer = null;
       if (queueRetryTimer) clearTimeout(queueRetryTimer);
       queueRetryTimer = null;
-      // Queued runs stay "queued" in the durable ledger: the next boot's recover() re-queues
-      // them instead of settling them as errors — a shutdown never costs a queued dispatch.
+      // Queued rows remain in the ledger for the next boot to mark cancelled. They are never
+      // replayed: a restart must not launch work the operator did not deliberately re-dispatch.
       await Promise.all(
         [...live.values()].map(async (entry) => {
           try {
@@ -1056,7 +1047,8 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
           } catch {
             // best effort
           }
-          await finalize(entry, "error", "The daemon shut down before the browser task finished.");
+          entry.run.restartCancelled = true;
+          await finalize(entry, "cancelled", "Cancelled because the daemon restarted before this browser task finished.");
         }),
       );
     },
