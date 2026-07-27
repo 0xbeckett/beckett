@@ -358,7 +358,7 @@ test("a dependent cut from pre-squash predecessor history squash-applies only it
       apiBase: "https://api.github.com",
       resolveRepoDir: () => worker,
       logger: noopLog,
-      run: (async (cmd, opts) => {
+      run: (async (cmd: string[], opts?: { cwd?: string; env?: Record<string, string | undefined> }) => {
         calls.push(cmd.join(" "));
         if (cmd[0] === "git") return realRun(cmd, opts);
         if (cmd.join(" ").startsWith("gh repo view 0xbeckett/beckett --json name")) return ok('{"name":"beckett"}');

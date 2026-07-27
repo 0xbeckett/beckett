@@ -706,7 +706,7 @@ describe("advance on finish", () => {
 
   test("v3.1: publishes the project repo to GitHub on done and links the URL in the comment", async () => {
     const client = new FakeClient();
-    const calls: { slug: string; repoRoot: string; description: string; ticket?: string }[] = [];
+    const calls: { slug: string; repoRoot: string; description: string; ticket?: string; baseSha?: string; commitMessage?: string }[] = [];
     const published: Array<{ url: string; kind: string; ticket: string }> = [];
     const d = new Dispatcher({
     gitOps: gitFakes,
@@ -739,6 +739,10 @@ describe("advance on finish", () => {
         repoRoot: "/home/beckett/Projects/balloons-game/.beckett/worktrees/tkt-1",
         description: "Build balloons",
         ticket: "OPS-1",
+        // v3.3: the publisher needs the branch's base and the worker's summary so it can
+        // squash-apply when a rebase would replay already-landed checkpoints.
+        baseSha: "base000",
+        commitMessage: "shipped it",
       },
     ]);
     expect(client.setStateCalls).toEqual([{ id: "tkt-1", state: "done" }]);
