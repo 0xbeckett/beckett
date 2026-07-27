@@ -5,9 +5,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemory, type MemoryStore } from "./index.ts";
-import { listLoops, noteLoop, openLoop, renderOpenLoopsBlock, settleLoop } from "./loops.ts";
+import { linkLoopTask, listLoops, noteLoop, openLoop, renderOpenLoopsBlock, resolveLinkedTasks, settleLoop } from "./loops.ts";
 import { SELF_AUDIENCE } from "./search.ts";
 import type { Logger } from "../types.ts";
+import { TaskStore } from "../task/store.ts";
 
 const dirs: string[] = [];
 const quiet = (() => {
@@ -150,6 +151,67 @@ test("loops opened before lastTouched existed parse and read as never touched", 
   const loops = listLoops(memory, { audience: SELF_AUDIENCE });
   expect(loops.map((l) => l.node.name)).toContain("legacy");
   expect(loops.find((l) => l.node.name === "legacy")!.lastTouched).toBeNull();
+});
+
+test("linking stamps a deduped task ref and resolves its live status without caching it on the node", async () => {
+  const { memory, dir } = store();
+  await seed(memory, "external-pr-has-no-watcher", "2026-08-01");
+  const tasks = new TaskStore(join(dir, "tasks.json"));
+  const { task } = await tasks.createTask({ title: "Watch every PR I open" });
+
+  const linked = await linkLoopTask(memory, "external-pr-has-no-watcher", `#${task.number}`, SELF_AUDIENCE);
+  expect(linked.linkedTasks).toEqual([`#${task.number}`]);
+  // Re-linking the same ref is a no-op, not a duplicate entry.
+  const again = await linkLoopTask(memory, "external-pr-has-no-watcher", `${task.number}.1`, SELF_AUDIENCE);
+  expect(again.linkedTasks.sort()).toEqual([`#${task.number}`, `#${task.number}.1`].sort());
+
+  const resolved = resolveLinkedTasks(tasks, again);
+  expect(resolved).toContainEqual({ ref: `#${task.number}`, status: "active" });
+  expect(resolved).toContainEqual({ ref: `#${task.number}.1`, status: "ready" });
+
+  // Status resolves live, never from a cached copy: move the branch and the SAME loop entry (not
+  // re-read from the loop node, whose linkedTasks never change) reports the new status.
+  await tasks.linkTicket(
+    `${task.number}.1`,
+    { id: "t1", identifier: "OPS-1", board: "ops", projectId: "p1", url: "https://example.test/t1" },
+    "cancelled",
+  );
+  expect(resolveLinkedTasks(tasks, again)).toContainEqual({ ref: `#${task.number}.1`, status: "cancelled" });
+});
+
+test("linked task refs surface in the session-start block with an explicit check-before-filing instruction", async () => {
+  const { memory, dir } = store();
+  await seed(memory, "external-pr-has-no-watcher", "2026-08-01");
+  const tasks = new TaskStore(join(dir, "tasks.json"));
+  const { task } = await tasks.createTask({ title: "Watch every PR I open" });
+  await linkLoopTask(memory, "external-pr-has-no-watcher", `#${task.number}`);
+
+  const block = renderOpenLoopsBlock(memory, tasks);
+  expect(block).toContain("check its");
+  expect(block).toContain(`already filed: #${task.number} (active)`);
+
+  // Without a wired TaskStore the block still renders (no crash), just without the status suffix.
+  const bare = renderOpenLoopsBlock(memory);
+  expect(bare).not.toContain(`#${task.number}`);
+});
+
+test("linking rejects an unknown loop and a malformed ref", async () => {
+  const { memory } = store();
+  await seed(memory, "real-loop", "2026-08-01");
+
+  expect(linkLoopTask(memory, "ghost-loop", "#1")).rejects.toThrow("no visible loop named 'ghost-loop'");
+  expect(linkLoopTask(memory, "real-loop", "not-a-ref")).rejects.toThrow('invalid task reference "not-a-ref"');
+});
+
+test("loops predating linkedTasks parse with an empty list", async () => {
+  const { memory, dir } = store();
+  await seed(memory, "modern", "2026-08-15");
+  writeFileSync(
+    join(dir, "loop", "legacy-no-links.md"),
+    "---\nname: legacy-no-links\ndescription: an old loop\nmetadata:\n  type: loop\n  kind: commitment\n  status: open\n  due: 2026-09-01\n  opened: 2026-06-01\n  source: manual\n  closes: check it\n---\nbody\n",
+  );
+  const loop = listLoops(memory, { audience: SELF_AUDIENCE }).find((l) => l.node.name === "legacy-no-links")!;
+  expect(loop.linkedTasks).toEqual([]);
 });
 
 test("opening a loop creates the conventional loop file and an empty ledger renders nothing", async () => {

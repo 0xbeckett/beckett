@@ -712,7 +712,7 @@ export async function runTask(argv: string[]): Promise<void> {
   if (sub === "create") {
     const title = String(flags.title ?? _.join(" ")).trim();
     if (!title) {
-      fail('usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>] [--wave <label>]');
+      fail('usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>] [--wave <label>] [--loop <name>]');
     }
     const project = flags.project ? String(flags.project) : undefined;
     guardRestrictedProject(project, Boolean(flags["confirm-beckett"]));
@@ -723,6 +723,7 @@ export async function runTask(argv: string[]): Promise<void> {
     // label across a burst states that intent outright, and it can express groupings the clock never
     // could, like work filed for one ask across two channels. An explicit label always wins.
     const wave = flags.wave ? String(flags.wave).trim() : "";
+    const loop = flags.loop ? String(flags.loop).trim() : "";
     const created = await store.createTask({
       title,
       ...(flags["branch-title"] ? { initialBranchTitle: String(flags["branch-title"]) } : {}),
@@ -737,6 +738,21 @@ export async function runTask(argv: string[]): Promise<void> {
       title: created.task.title,
       ...(created.task.originChannelId ? { channelId: created.task.originChannelId } : {}),
     });
+    // `--loop` stamps the filing back onto the open-loop ledger (issue #39), so the NEXT sweep that
+    // reads the ledger sees this task instead of filing a duplicate. Best-effort by design: a typo'd
+    // or already-settled loop name must not undo the task that was just filed.
+    if (loop) {
+      try {
+        const memory = createMemory({ memoryDir: paths.memoryDir, logger: quietLogger });
+        await linkLoopTask(memory, loop, `#${created.task.number}`);
+      } catch (err) {
+        out({
+          task: publicTask(created.task),
+          branch: publicBranch(created.branch),
+          loopLinkError: (err as Error).message,
+        });
+      }
+    }
     out({
       task: publicTask(created.task),
       branch: publicBranch(created.branch),
