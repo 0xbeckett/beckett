@@ -2,7 +2,7 @@
  * Beckett — Built-in routines (`src/routine/builtins.ts`)
  * =======================================================================================
  * Engine-seeded routines that exist on a fresh install. The store seeds these on load unless
- * the user explicitly removed them (tracked in `removedBuiltins`). Two live here:
+ * the user explicitly removed them (tracked in `removedBuiltins`). Four live here:
  *
  *   - `daily-x-shitpost` (issue #62) — once a day at a random minute in 12:00–13:00 PT, post a
  *     dumb in-voice shitpost to X @beckposting. The acceptance vehicle for humanized timing.
@@ -14,6 +14,10 @@
  *     path as `daily-x-shitpost`, instead of waiting for the next scheduled lane. The acceptance
  *     vehicle for the `watch` action: it has no `schedule` (see {@link ../routine/types.ts}) and
  *     is driven by its own interval loop ({@link ../routine/watch.ts}), not the fuzz-window one.
+ *   - `nightly-dream` (issue #36) — once a night at a random minute in 03:00–05:00 PT, the self
+ *     lane spawns the contained dream pass (`beckett dream run`): a budgeted, read-mostly replay
+ *     of the day whose outputs are inferences (journal entry + `dream`-namespace memories), never
+ *     facts, never doctrine.
  *
  * As of issue #55/#72 the shitpost routine drives that post THROUGH the `social-media` agent rather than
  * an ad-hoc composer: its action invokes the agent (which WRITES the post — taste lives in the
@@ -53,6 +57,14 @@ export const DAILY_SHITPOST_INPUT =
  * Exported so the executor and its tests can name it without restating the string.
  */
 export const WEEKLY_DEPS_UPDATE_ID = "weekly-deps-update";
+
+/**
+ * Id of the nightly dream routine (issue #36): once a night, at a random minute inside
+ * 03:00–05:00 PT, the self lane spawns the contained `beckett dream run` pass — a budgeted,
+ * read-mostly replay of the day whose outputs are inferences, never facts. The engine's
+ * per-period idempotency (`lastFiredPeriodKey`) is the once-per-night guard.
+ */
+export const NIGHTLY_DREAM_ID = "nightly-dream";
 
 /**
  * The definitions (sans timestamps/state — the store stamps those on seed). Kept as a factory
@@ -106,6 +118,21 @@ export function builtinRoutineDefs(): Array<Omit<Routine, "createdAt" | "updated
         agentId: SOCIAL_MEDIA_AGENT_ID,
         credsEntry: X_CREDS_ENTRY,
         dryRun: false,
+      },
+    },
+    {
+      id: NIGHTLY_DREAM_ID,
+      name: "nightly dream pass",
+      builtin: true,
+      enabled: true,
+      // No prompt, no creds, no channel baked in: the pass's shape lives in code
+      // (`beckett dream run`), and channel/requester attribution comes from env at fire time.
+      action: { kind: "dream" },
+      // Deep night PT, fuzzed inside the owner's asked-for window. Daily period key doubles as
+      // the once-per-night guard; a restart mid-window neither re-rolls nor double-fires.
+      schedule: {
+        cadence: { kind: "daily" },
+        window: { start: "03:00", end: "05:00", tz: "America/Los_Angeles" },
       },
     },
   ];

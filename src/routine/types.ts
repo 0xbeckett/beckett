@@ -98,6 +98,9 @@ export type Schedule = z.infer<typeof ScheduleSchema>;
  *   tool, and the ability to file tickets — so a routine can put Beckett on its own open-loop
  *   ledger a few times a day. No agent, no browser task, no credentials: like `deps-update` it must
  *   never be routed through the privileged browser lane, which it has no use for.
+ * - `dream` (issue #36): the nightly dream pass on the self lane — same fork, same "never the
+ *   browser" guarantee, but executed as the contained `beckett dream run` subprocess instead of a
+ *   concierge turn, so its token ceiling and its write containment are enforced in code.
  */
 export const RoutineActionSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -194,6 +197,22 @@ export const RoutineActionSchema = z.discriminatedUnion("kind", [
      */
     prompt: z.string().min(1),
     /** Discord channel the self turn is told to report to (optional; env fallback). */
+    channelId: z.string().optional(),
+    /** Authenticated requester the fire is attributed to (optional; owner env fallback). */
+    requesterId: z.string().optional(),
+  }),
+  /**
+   * `dream` (issue #36): the nightly dream pass, riding the SELF lane's dispatch fork (before
+   * every browser dependency, like `deps-update`/`self` — no agent, no browser, no credentials).
+   * Unlike a plain `self` wake it does NOT frame a concierge turn: the dispatcher spawns the
+   * contained `beckett dream run` body, whose only write surfaces are the dream journal under
+   * `~/.beckett/dreams/` and create-only `dream`-namespace memories, under a hard output-token
+   * ceiling from config. There is no prompt field on purpose — the pass's shape lives in code,
+   * so a routine edit can't widen what a dream is allowed to do.
+   */
+  z.object({
+    kind: z.literal("dream"),
+    /** Discord channel the fire is attributed to (optional; env fallback). Provenance only. */
     channelId: z.string().optional(),
     /** Authenticated requester the fire is attributed to (optional; owner env fallback). */
     requesterId: z.string().optional(),

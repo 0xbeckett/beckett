@@ -57,6 +57,7 @@ function fakeScheduler(log: string[]): RoutineScheduler {
         lane: "browser",
         agentId: null,
         agentInput: null,
+        dream: false,
         browserTask: "check the thing",
         depsUpdate: null,
         selfPrompt: null,
@@ -360,15 +361,17 @@ test("unknown capabilities and pre-init calls refuse with results", async () => 
 // ── the deps-update lane forks BEFORE the browser (issue #85) ─────────────────────────────
 
 /** A plan shaped like the scheduler builds one, minus the fields the lane under test ignores. */
-function planFor(lane: "deps-update" | "browser" | "self") {
+function planFor(kind: "deps-update" | "browser" | "self" | "dream") {
   return {
-    routineId: lane === "self" ? "morning-sweep" : "weekly-deps-update",
-    lane,
+    routineId: kind === "self" ? "morning-sweep" : kind === "dream" ? "nightly-dream" : "weekly-deps-update",
+    // The dream variant (issue #36) rides the self LANE; only its `dream` flag differs.
+    lane: kind === "dream" ? "self" : kind,
     agentId: null,
     agentInput: null,
-    browserTask: lane === "browser" ? "go do the thing" : null,
-    depsUpdate: lane === "deps-update" ? { repo: null, base: "main", sourceRepo: null } : null,
-    selfPrompt: lane === "self" ? "look over the board and nudge anything stalled" : null,
+    browserTask: kind === "browser" ? "go do the thing" : null,
+    depsUpdate: kind === "deps-update" ? { repo: null, base: "main", sourceRepo: null } : null,
+    selfPrompt: kind === "self" ? "look over the board and nudge anything stalled" : null,
+    dream: kind === "dream",
     preview: "p",
     credsEntry: null,
     channelId: null,
@@ -453,6 +456,40 @@ test("a self fire wakes the concierge and never resolves the browser lane (issue
   expect(woke[0]!.prompt).toBe("look over the board and nudge anything stalled");
   // The fire-time origin is threaded through so the framed turn knows which channel to report to.
   expect(woke[0]!.channelId).toBe("chan");
+});
+
+test("a dream fire spawns its contained process on the self lane — never the browser, never a concierge wake (issue #36)", async () => {
+  const launched: string[][] = [];
+  const dispatcher = await dispatcherOf({
+    // If the dream fork ever reached the browser agent/registry/runner, these throw — proving it
+    // forks on the self lane BEFORE the browser-deps requirement check, exactly like deps-update.
+    ...exploding(),
+    wakeSelf: () => {
+      throw new Error("a dream fire framed a concierge turn — the dream must never hold the concierge's shell");
+    },
+    spawnDream: (argv) => void launched.push(argv),
+  });
+
+  await dispatcher.dispatch(planFor("dream") as never, {} as never);
+
+  expect(launched.length).toBe(1);
+  expect(launched[0]!.slice(0, 2)).toEqual(["dream", "run"]);
+  const routineFlag = launched[0]!.indexOf("--routine");
+  expect(routineFlag).toBeGreaterThan(-1);
+  expect(launched[0]![routineFlag + 1]).toBe("nightly-dream");
+  // Nothing secret-shaped or creds-shaped rides the argv.
+  expect(launched[0]!.join(" ")).not.toContain("--creds");
+});
+
+test("a dream fire still resolves an origin like every routine (attribution only)", async () => {
+  const dispatcher = await dispatcherOf({
+    defaultOrigin: () => ({ channelId: null, requesterId: null }),
+    spawnDream: () => {
+      throw new Error("launched without an origin");
+    },
+  });
+  await expect(dispatcher.dispatch(planFor("dream") as never, {} as never))
+    .rejects.toThrow(/origin channel \+ requester/);
 });
 
 test("a self fire still needs an origin channel to report to", async () => {

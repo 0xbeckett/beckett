@@ -5,7 +5,7 @@ exports[`cli: bare invocation prints the unknown-command help 1`] = `
   "exit": 1,
   "stderr": 
 "error: unknown command: beckett  
-commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline|delete | proactivity status|set|off | quick <agent>|list | browser <task>|status|watch|steer|stop|exec | routine list|inspect|add|remove|fire | agent ls|show|add|new|invoke|rm | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain | loops [--all|--json] | loops open|note|close|drop | calibration [--channel <id>|--about <slug>|--json] | calibration veto|hit
+commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline|delete | proactivity status|set|off | quick <agent>|list | browser <task>|status|watch|steer|stop|exec | routine list|inspect|add|remove|fire | agent ls|show|add|new|invoke|rm | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain | loops [--all|--json] | loops open|note|close|drop | calibration [--channel <id>|--about <slug>|--json] | calibration veto|hit | dream ls|show <date>
 "
 ,
   "stdout": "",
@@ -17,7 +17,7 @@ exports[`cli: unknown group prints the unknown-command help 1`] = `
   "exit": 1,
   "stderr": 
 "error: unknown command: beckett wat 
-commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline|delete | proactivity status|set|off | quick <agent>|list | browser <task>|status|watch|steer|stop|exec | routine list|inspect|add|remove|fire | agent ls|show|add|new|invoke|rm | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain | loops [--all|--json] | loops open|note|close|drop | calibration [--channel <id>|--about <slug>|--json] | calibration veto|hit
+commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline|delete | proactivity status|set|off | quick <agent>|list | browser <task>|status|watch|steer|stop|exec | routine list|inspect|add|remove|fire | agent ls|show|add|new|invoke|rm | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain | loops [--all|--json] | loops open|note|close|drop | calibration [--channel <id>|--about <slug>|--json] | calibration veto|hit | dream ls|show <date>
 "
 ,
   "stdout": "",
@@ -29,7 +29,7 @@ exports[`cli: bare discord group falls through to the help 1`] = `
   "exit": 1,
   "stderr": 
 "error: unknown command: beckett discord 
-commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline|delete | proactivity status|set|off | quick <agent>|list | browser <task>|status|watch|steer|stop|exec | routine list|inspect|add|remove|fire | agent ls|show|add|new|invoke|rm | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain | loops [--all|--json] | loops open|note|close|drop | calibration [--channel <id>|--about <slug>|--json] | calibration veto|hit
+commands: status [--pretty] | version [bump] | doctor [--json] | reload | persona | mail inbox|send|ls|read | access ls|grant|revoke | maintainer ls|grant|revoke | federation ls|add|remove | channels list|search|recall|wipe | identity set|show|list | discord reply|ack|decline|delete | proactivity status|set|off | quick <agent>|list | browser <task>|status|watch|steer|stop|exec | routine list|inspect|add|remove|fire | agent ls|show|add|new|invoke|rm | image | eval <author/model> [--short|--full] | site deploy | task create|branch|start|show|list | ticket create|comment|state|list|show|trace | preset ls|show | plan | gh repo|pr|push | dns ls|add|rm | deploy <name>|ls|rm | secret request | recall "<query>" [--type t] [--name n] [--as-self | --viewer id] | memory recall|remember|show|maintain | loops [--all|--json] | loops open|note|close|drop | calibration [--channel <id>|--about <slug>|--json] | calibration veto|hit | dream ls|show <date>
 "
 ,
   "stdout": "",
@@ -190,6 +190,72 @@ exports[`cli: memory: unknown sub fails 1`] = `
   "exit": 1,
   "stderr": 
 "error: unknown: beckett memory bogus (recall | remember | show | maintain)
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: dream: bare lists an empty journal 1`] = `
+{
+  "exit": 0,
+  "stderr": "",
+  "stdout": 
+"(no dreams yet)
+"
+,
+}
+`;
+
+exports[`cli: dream: ls lists an empty journal 1`] = `
+{
+  "exit": 0,
+  "stderr": "",
+  "stdout": 
+"(no dreams yet)
+"
+,
+}
+`;
+
+exports[`cli: dream: show without a date prints usage 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: usage: beckett dream show <YYYY-MM-DD>
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: dream: show rejects a non-date 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: dream: invalid date 'not-a-date' (expected YYYY-MM-DD)
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: dream: show of an undreamt night fails 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: no dream entry for 2026-01-01
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: dream: unknown sub prints usage 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: usage: beckett dream ls [--json] | dream show <YYYY-MM-DD> | dream run [--force] [--routine <id>] [--requester <id>]
 "
 ,
   "stdout": "",
@@ -1689,6 +1755,10 @@ max_commits = 20
 [federation]
 peers = []
 peer_burst_per_min = 5
+
+[dream]
+output_token_budget = 150000
+model = ""
 "
 ,
 }

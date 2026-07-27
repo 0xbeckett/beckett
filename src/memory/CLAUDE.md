@@ -75,6 +75,24 @@ plus an explicit "check before filing" instruction — this is the fix for the m
 depended on the model remembering to look. The field is optional and absent reads as `[]`, so
 loops predating linking need no migration.
 
+## The dream namespace (`rememberDream`, issue #36)
+
+`dream`-type nodes are INFERENCES from the nightly dream pass (`src/dream/`), never observed
+facts. They have their own write path, `MemoryStore.rememberDream`, and its narrowness is the
+point — do not widen it, and do not route dream writes through `remember()`:
+
+- **Create-only.** Names are locked to `dream-YYYY-MM-DD-<slug>` (`DREAM_NAME_RE`); any
+  existing node or file with the name is a hard refusal. No update, no append, no similarity
+  dedup/merge (remember()'s dedup is exactly the laundering vector this path exists to close).
+- **Forced markers.** `metadata.type = "dream"`, `inference: true`, and a non-empty
+  `provenance` list naming real sources are stamped in code, whatever the caller passes.
+- **Touches nothing else.** The backlink-refresh sweep is deliberately skipped: one new node
+  file plus the regenerated MEMORY.md, and no existing file changes by a byte.
+- **Read surfaces mark it.** `isInferenceNode` (search.ts) drives an explicit inference flag
+  in recall text/JSON, index lines, MEMORY.md, and agent-recall candidates — a dream must
+  never read back as something that was observed to happen. Keep new read surfaces on that
+  helper. Containment tests live in `dreams.test.ts`; they try to violate this and must fail.
+
 ## Gotchas that have bitten before
 
 - The warm daemon caches the parsed graph keyed by an mtime/size stamp taken **before** the

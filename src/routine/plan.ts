@@ -69,6 +69,12 @@ export interface RoutineDispatchPlan {
   depsUpdate: DepsUpdateTarget | null;
   /** self lane: the instruction Beckett gives itself, framed as a SYSTEM turn (null elsewhere). */
   selfPrompt: string | null;
+  /**
+   * self lane, dream variant (issue #36): true when this fire is the nightly dream pass. The
+   * dispatcher then spawns the contained `beckett dream run` body instead of framing a concierge
+   * turn — same pre-browser fork, same no-agent/no-browser/no-creds shape as a plain self wake.
+   */
+  dream: boolean;
   /** Human-readable summary shown in a dry-run + logs. */
   preview: string;
   /** jingle keychain entry passed to the browser lane via --creds (a NAME, never a secret). */
@@ -92,6 +98,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       browserTask: null,
       depsUpdate: null,
       selfPrompt: null,
+      dream: false,
       preview: `invoke agent ${action.agentId}: ${action.input}`,
       credsEntry: action.credsEntry ?? null,
       channelId: action.channelId ?? null,
@@ -114,6 +121,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
         sourceRepo: action.sourceRepo ?? null,
       },
       selfPrompt: null,
+      dream: false,
       preview:
         `update in-range dependencies in an isolated clone, run typecheck + tests, ` +
         `open a PR against ${action.base}${action.repo ? ` on ${action.repo}` : ""}`,
@@ -135,6 +143,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       browserTask: null,
       depsUpdate: null,
       selfPrompt: null,
+      dream: false,
       preview:
         `poll ${action.feedUrl} every ${action.pollIntervalMinutes}m; on a genuinely new, ` +
         `unseen, rate-limit-clear model release, dispatch agent ${action.agentId} with the item ` +
@@ -158,7 +167,31 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       browserTask: null,
       depsUpdate: null,
       selfPrompt: action.prompt,
+      dream: false,
       preview: `wake the concierge on its own ledger: ${action.prompt}`,
+      credsEntry: null,
+      channelId: action.channelId ?? null,
+      requesterId: action.requesterId ?? null,
+    };
+  }
+
+  if (action.kind === "dream") {
+    // The dream pass (issue #36) rides the SELF lane: same pre-browser fork, same guarantee that
+    // nothing here can be mistaken for browser work. `dream: true` is the only difference — the
+    // dispatcher spawns the contained `beckett dream run` body instead of framing a concierge
+    // turn, so the token ceiling and the write containment stay enforced in code, not prompt.
+    return {
+      routineId: routine.id,
+      lane: "self",
+      agentId: null,
+      agentInput: null,
+      browserTask: null,
+      depsUpdate: null,
+      selfPrompt: null,
+      dream: true,
+      preview:
+        "replay the day on the self lane (dream pass): read-only assembly, budgeted reflection, " +
+        "one dated journal entry under ~/.beckett/dreams, inference-only memories",
       credsEntry: null,
       channelId: action.channelId ?? null,
       requesterId: action.requesterId ?? null,
@@ -176,6 +209,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       browserTask: null,
       depsUpdate: null,
       selfPrompt: null,
+      dream: false,
       preview: `invoke agent ${SOCIAL_MEDIA_AGENT_ID}: ${LEGACY_SHITPOST_INPUT}`,
       credsEntry: action.credsEntry ?? null,
       channelId: action.channelId ?? null,
@@ -192,6 +226,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
     browserTask: action.task,
     depsUpdate: null,
     selfPrompt: null,
+    dream: false,
     preview: action.task,
     credsEntry: action.credsEntry ?? null,
     channelId: action.channelId ?? null,

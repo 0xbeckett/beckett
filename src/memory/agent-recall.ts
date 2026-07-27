@@ -32,6 +32,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { childEnv } from "../env.ts";
 import { freshnessLabel } from "./freshness.ts";
+import { isInferenceNode } from "./search.ts";
 import type { Logger, ScoredNode } from "../types.ts";
 import { log as rootLog } from "../log.ts";
 
@@ -207,7 +208,9 @@ function renderCandidates(candidates: ScoredNode[]): string {
       return [
         // The date + age ride every candidate: notes are dated OBSERVATIONS — the agent
         // anchors old ones to their time and lets the newer observation win on conflict.
-        `[${i + 1}] id: ${n.name}  (type: ${n.type}, observed: ${n.updated.slice(0, 10)} — ${freshnessLabel(n.updated, now)})`,
+        // Dream-derived nodes are INFERENCES (issue #36) — say so where the agent reads them,
+        // so a dream can never be quoted back as something that was observed to happen.
+        `[${i + 1}] id: ${n.name}  (type: ${n.type}, observed: ${n.updated.slice(0, 10)} — ${freshnessLabel(n.updated, now)})${isInferenceNode(n) ? "  [INFERENCE — dream-derived, not observed fact]" : ""}`,
         `description: ${n.description}`,
         body ? `body: ${truncate(body, 1200)}` : "",
       ]
