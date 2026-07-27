@@ -67,15 +67,31 @@ export function listLoops(store: MemoryStore, opts: ListLoopsOptions = {}): Loop
  * "check before filing" instruction is prepended — this is the fix for issue #39, where a sweep
  * filed a duplicate ticket because nothing surfaced that one already existed for the same loop.
  */
-export function renderOpenLoopsBlock(store: MemoryStore | null | undefined, tasks?: TaskStore): string {
+export interface RenderOpenLoopsOptions {
+  /** Include terminal loops closed in this many calendar days (normally just for event turns). */
+  recentlyClosedDays?: number;
+  /** Testable clock boundary; defaults to today's UTC date. */
+  today?: string;
+}
+
+export function renderOpenLoopsBlock(
+  store: MemoryStore | null | undefined,
+  tasks?: TaskStore,
+  options: RenderOpenLoopsOptions = {},
+): string {
   if (!store) return "";
   try {
-    const loops = listLoops(store, { audience: SELF_LOOP_AUDIENCE });
+    const today = options.today ?? todayDate();
+    const recentlyClosedDays = options.recentlyClosedDays ?? 0;
+    const cutoff = recentDateCutoff(today, recentlyClosedDays);
+    const loops = listLoops(store, { all: recentlyClosedDays > 0, audience: SELF_LOOP_AUDIENCE, today })
+      .filter((loop) => loop.status === "open" || (!!cutoff && !!loop.closed && loop.closed >= cutoff));
     if (!loops.length) return "";
     const shown = loops.slice(0, 12);
     const lines = shown.map((loop) => {
       const filed = tasks ? formatLinkedTasks(resolveLinkedTasks(tasks, loop)) : "";
-      return `- ${loop.overdue ? "OVERDUE " : ""}${loop.due} [${loop.kind}] ${loop.node.description}${filed}`;
+      const state = loop.status === "open" ? `${loop.overdue ? "OVERDUE " : ""}${loop.due}` : `CLOSED ${loop.closed}`;
+      return `- ${state} [${loop.kind}] ${loop.node.description}${filed}`;
     });
     if (loops.length > shown.length) lines.push(`+${loops.length - shown.length} more — run \`beckett loops\``);
     const preamble = "Before filing a task off any loop below, check its \"already filed\" refs (or "
@@ -298,6 +314,13 @@ function isDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function recentDateCutoff(today: string, days: number): string | null {
+  if (!Number.isSafeInteger(days) || days < 1 || !isDate(today)) return null;
+  const date = new Date(`${today}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
 }
 
 function todayDate(): string {

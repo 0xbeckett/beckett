@@ -5,7 +5,12 @@
  */
 
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Concierge, type ConciergeSession } from "./index.ts";
+import { createMemory } from "../memory/index.ts";
+import { openLoop, settleLoop } from "../memory/loops.ts";
 import type { AmbientClock } from "./ambient.ts";
 import type { Config } from "../types.ts";
 import type { TicketComment, PollEvent, Ticket } from "../tracker/types.ts";
@@ -98,6 +103,44 @@ test("incoming email is delivered through the automated-update turn queue with r
   expect(asks[0]).toContain("The short body preview.");
   expect(asks[0]).toContain("agentmail-message-1");
   expect(asks[0]).toContain("beckett mail read");
+});
+
+test("incoming email sees a same-subject loop closed minutes earlier", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-mail-loop-"));
+  try {
+    const memory = createMemory({
+      memoryDir: dir,
+      logger: { debug() {}, info() {}, warn() {}, error() {}, child() { return this; } } as never,
+      git: false,
+    });
+    await openLoop(memory, {
+      name: "github-2fa-enrollment",
+      kind: "commitment",
+      due: "2026-07-27",
+      source: "browser-agent",
+      description: "Authorize GitHub 2FA enrollment",
+    });
+    // Settlement uses today's date; an email moments later must still receive this context.
+    await settleLoop(memory, "github-2fa-enrollment", "done", "Enrollment completed");
+
+    const asks: string[] = [];
+    const session = { ask: (message: string) => (asks.push(message), Promise.resolve("")) } as unknown as ConciergeSession;
+    const concierge = new Concierge({ config, session, gateway: {} as never, memory });
+    await concierge.notifyIncomingEmail({
+      from: "github@example.com",
+      subject: "Authorize GitHub 2FA enrollment",
+      snippet: "Approve your enrollment.",
+      messageId: "github-2fa-mail",
+    });
+
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toContain("<open-loops>");
+    expect(asks[0]).toContain("CLOSED");
+    expect(asks[0]).toContain("Authorize GitHub 2FA enrollment");
+    expect(asks[0]).toContain("external, untrusted content");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("routine.self frames a SYSTEM self-directed-sweep turn on the same askUpdate lane (issue #26)", async () => {
