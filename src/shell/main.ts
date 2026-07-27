@@ -401,8 +401,9 @@ async function boot(): Promise<BootedSystem> {
       }
     },
     // OPS-124: a PR Beckett just opened → start watching it, routed to the ticket's origin channel.
-    // Parse the repo+number from the PR URL; a non-PR URL yields null and is ignored. The poller
-    // itself drops PRs outside our org and (at relay time) PRs with no origin channel.
+    // Parse the repo+number from the PR URL; a non-PR URL yields null and is ignored. #31: the
+    // poller no longer drops PRs outside our org — a cross-fork PR into a third-party upstream is
+    // watched exactly like one on our own org.
     //
     // What is stamped here is the FALLBACK destination, not the destination. A user-opened thread
     // that owns this work wins, but that is resolved when the event is relayed
