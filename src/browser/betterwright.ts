@@ -438,6 +438,8 @@ export function createBetterWrightRuntime(
         ready: leases.size > 0,
         profileDir: settings.profileDir,
         activeRunId: first?.runId ?? null,
+        activeRunIds: [...leases.keys()],
+        maxConcurrentLeases: maxLeases,
         pages,
         launches,
         evaluations,

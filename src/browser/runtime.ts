@@ -93,8 +93,13 @@ export interface BrowserEvalResult {
 export interface BrowserRuntimeStats {
   ready: boolean;
   profileDir: string;
+  /** Legacy first active lease; use activeRunIds when concurrent sessions are available. */
   activeRunId: string | null;
-  pages: number;
+  /** Every active lease (one BetterWright session per run). */
+  activeRunIds?: string[];
+  /** Admission cap exposed to the agent; absent means the legacy single lease. */
+  maxConcurrentLeases?: number;
+  pages:
   launches: number;
   evaluations: number;
   averageEvalMs: number;

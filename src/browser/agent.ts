@@ -98,10 +98,10 @@ export interface BrowserRunInspection {
 
 export interface BrowserAgent {
   /**
-   * Dispatch a background run. Always succeeds once the inputs validate: while another run
-   * holds the one-run-exclusive browser lease the dispatch queues durably instead of refusing,
-   * and `queued` carries its 1-based position. A queued run starts automatically the moment
-   * the lease frees — the caller must never re-dispatch.
+   * Dispatch a background run. Always succeeds once the inputs validate: it starts immediately
+   * in its own browser session while a lane is available, otherwise queues durably. `queued`
+   * carries the 1-based position beyond the runtime's concurrency cap; queued work starts
+   * automatically when any session frees — the caller must never re-dispatch.
    */
   run(
     task: string,
@@ -190,7 +190,7 @@ const BROWSER_MCP_PATH = join(import.meta.dir, "mcp.ts");
 const ARTIFACT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const LEDGER_FINISHED_CAP = 50;
 const OUTCOME_RETRY_MS = 30_000;
-/** How soon a queued start that lost the lease race (an inline exec slipped in) retries. */
+/** How soon a queued start retries after a transient runtime admission race. */
 const QUEUE_START_RETRY_MS = 1_000;
 /** Filename (inside the run dir) the browser MCP server touches once claude has registered its tool. */
 const ATTACH_MARKER_NAME = "mcp-attached";
@@ -285,14 +285,10 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
   const ledgerPath = join(agentDir, "runs.json");
   const live = new Map<string, LiveRun>();
   const finished: BrowserAgentRun[] = [];
-  /**
-   * Dispatches waiting for the one-run-exclusive lease, oldest first. The queue exists so a
-   * busy browser never refuses a dispatch; the LEASE semantics are untouched — at most one
-   * run drives the browser at a time.
-   */
+  /** Dispatches beyond the runtime's concurrent-session cap, oldest first. */
   const queue: PendingDispatch[] = [];
-  /** The dispatch currently between queue and `live` (mid-acquire); still owed a ledger row. */
-  let starting: PendingDispatch | null = null;
+  /** Dispatches between admission and `live`; each remains durable during acquire. */
+  const starting = new Map<string, PendingDispatch>();
   /** Runs a dead daemon left on disk; {@link recover} turns them into restart-cancellation outcomes. */
   const orphans: BrowserAgentRun[] = [];
   let outcomeRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -350,7 +346,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     // `starting` is included so a dispatch mid-acquire can never fall out of the durable ledger.
     const records = [
       ...[...live.values()].map((entry) => entry.run),
-      ...(starting ? [starting.run] : []),
+      ...[...starting.values()].map((dispatch) => dispatch.run),
       ...queue.map((dispatch) => dispatch.run),
       ...finished,
     ];
@@ -475,7 +471,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     void deliverOutcome(run);
   }
 
-  /** Retry the queue head after a lost lease race, once the interloper has had time to release. */
+  /** Retry queued admission after a transient race with another runtime client. */
   function scheduleQueueRetry(): void {
     if (stopping || queueRetryTimer) return;
     queueRetryTimer = setTimeout(() => {
@@ -484,34 +480,37 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     }, QUEUE_START_RETRY_MS);
   }
 
+  /** Runtime admission cap; old runtimes deliberately retain their one-lease behaviour. */
+  function concurrentRunCap(): number {
+    return Math.max(1, browser.stats().maxConcurrentLeases ?? 1);
+  }
+
   /**
-   * Hand the freed lease to the oldest queued dispatch. A queued run whose start fails
-   * (keychain entry gone, lease acquire error) has no dispatcher to throw to — it settles as
-   * a terminal error outcome and the next one gets its chance. The ONE exception is losing
-   * the acquire race to another lease holder (an inline exec sliding into the queue→live
-   * handoff): that is contention, not a dead dispatch — the run goes back to the head of the
-   * queue and retries, because a queued run must never be dropped ("never re-dispatch").
+   * Fill every free browser-session lane from the FIFO queue. A queued start whose acquire
+   * loses an external race is returned to the head rather than dropped; every other start
+   * failure becomes its own terminal outcome and the next lane is attempted.
    */
   function maybeStartNext(): void {
-    if (stopping || starting || live.size > 0) return;
-    const next = queue.shift();
-    if (!next) return;
-    void startDispatch(next).catch((error) => {
-      const message = (error as Error).message ?? String(error);
-      if (/computer-use is busy/.test(message)) {
-        queue.unshift(next);
-        persistLedger();
-        logger.info("browser queue start lost the lease race; will retry", { runId: next.run.runId });
-        scheduleQueueRetry();
-        return;
-      }
-      settleQueued(
-        next.run,
-        "error",
-        `The queued browser run could not start: ${message}. Dispatch it again to retry.`,
-      );
-      maybeStartNext();
-    });
+    if (stopping) return;
+    while (queue.length > 0 && live.size + starting.size < concurrentRunCap()) {
+      const next = queue.shift()!;
+      void startDispatch(next).catch((error) => {
+        const message = (error as Error).message ?? String(error);
+        if (/computer-use is busy|lease cap .* reached/.test(message)) {
+          queue.unshift(next);
+          persistLedger();
+          logger.info("browser queue start lost the lease race; will retry", { runId: next.run.runId });
+          scheduleQueueRetry();
+          return;
+        }
+        settleQueued(
+          next.run,
+          "error",
+          `The queued browser run could not start: ${message}. Dispatch it again to retry.`,
+        );
+        maybeStartNext();
+      });
+    }
   }
 
   /**
@@ -522,7 +521,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
    */
   async function startDispatch(dispatch: PendingDispatch): Promise<void> {
     const { run } = dispatch;
-    starting = dispatch;
+    starting.set(run.runId, dispatch);
     try {
       // A queued run deliberately holds no secret values; resolve its named entry only at start.
       if (!dispatch.secrets && run.credsEntry) {
@@ -567,7 +566,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       live.set(run.runId, entry);
       // Cleared the moment the run is registered live, so a persistLedger fired from
       // spawnLeg below cannot double-count it as both live and starting.
-      starting = null;
+      starting.delete(run.runId);
       let input = run.task;
       if (run.context) input += `\n\n${contextPreamble(run.context)}`;
       if (dispatch.secrets) input += `\n\n${secretsPreamble(dispatch.secrets)}`;
@@ -581,7 +580,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       journal(run.runId, entry.sensitiveInputs, { kind: "dispatched", task: run.task, context: run.context !== null });
       void spawnLeg(entry, input, false);
     } finally {
-      starting = null;
+      starting.delete(run.runId);
     }
   }
 
@@ -836,10 +835,10 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
         restartCancelled: false,
       };
       const dispatch: PendingDispatch = { run, secrets, pendingSteers: [] };
-      // The lease is one-run-exclusive; a dispatch that arrives while it is held (or another
-      // dispatch is mid-acquire) queues durably instead of refusing, and starts automatically
-      // when the lease frees.
-      if (live.size > 0 || queue.length > 0 || starting) {
+      // Preserve FIFO once anyone is queued; otherwise admit directly into any free session
+      // lane. The runtime's cap is authoritative and the agent's check gives callers an honest
+      // queue position instead of discovering saturation only after a failed acquire.
+      if (live.size + starting.size >= concurrentRunCap() || queue.length > 0) {
         // The keychain read above stays fail-fast VALIDATION only: secret values must not sit
         // in daemon memory for an unbounded queue wait, so they are dropped here and re-read
         // by startDispatch when the lease frees (credsEntry set + secrets null — the same
@@ -945,8 +944,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
 
     async inspect(runId, opts) {
       const entry = live.get(runId);
-      const queuedDispatch =
-        starting?.run.runId === runId ? starting : queue.find((dispatch) => dispatch.run.runId === runId);
+      const queuedDispatch = starting.get(runId) ?? queue.find((dispatch) => dispatch.run.runId === runId);
       const run = entry?.run ?? queuedDispatch?.run ?? finished.find((candidate) => candidate.runId === runId);
       if (!run) return null;
       const sensitiveInputs =
@@ -1012,7 +1010,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     stats() {
       const all = [
         ...[...live.values()].map((entry) => entry.run),
-        ...(starting ? [starting.run] : []),
+        ...[...starting.values()].map((dispatch) => dispatch.run),
         ...queue.map((dispatch) => dispatch.run),
         ...finished,
       ];
@@ -1038,8 +1036,12 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       outcomeRetryTimer = null;
       if (queueRetryTimer) clearTimeout(queueRetryTimer);
       queueRetryTimer = null;
-      // Queued rows remain in the ledger for the next boot to mark cancelled. They are never
-      // replayed: a restart must not launch work the operator did not deliberately re-dispatch.
+      // Cancel every accepted dispatch now, including work beyond the lane cap. Leaving queued
+      // rows for a future boot used to orphan them during deploys with multiple live sessions.
+      for (const dispatch of queue.splice(0)) {
+        dispatch.run.restartCancelled = true;
+        settleQueued(dispatch.run, "cancelled", "Cancelled because the daemon restarted before this browser task finished.");
+      }
       await Promise.all(
         [...live.values()].map(async (entry) => {
           try {
