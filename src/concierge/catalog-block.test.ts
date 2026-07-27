@@ -83,12 +83,29 @@ test("empty catalog and loop stores leave the composed prompt byte-identical", (
   const emptyCatalog = composedPrompt(new ConciergeSession({ config, catalogBlock: () => "" }));
   const emptyLoops = composedPrompt(new ConciergeSession({ config, openLoopsBlock: () => "" }));
   const emptyCalibration = composedPrompt(new ConciergeSession({ config, calibrationBlock: () => "" }));
+  const emptyProposals = composedPrompt(new ConciergeSession({ config, proposalsBlock: () => "" }));
   expect(bare).not.toContain("<extension-catalog>");
   expect(bare).not.toContain("<open-loops>");
   expect(bare).not.toContain("<calibration>");
+  expect(bare).not.toContain("<open-proposals>");
   expect(emptyCatalog).toBe(bare);
   expect(emptyLoops).toBe(bare);
   expect(emptyCalibration).toBe(bare);
+  expect(emptyProposals).toBe(bare);
+});
+
+test("the open-proposals block composes after open-loops and before persona (issue #37)", () => {
+  const config = tempConfig();
+  const session = new ConciergeSession({
+    config,
+    openLoopsBlock: () => "<open-loops>\\n- OVERDUE 2026-07-01 [commitment] I owe this\\n</open-loops>",
+    proposalsBlock: () =>
+      "<open-proposals>\\n- prop-2026-07-26-x [doctrine-change] stop asking to confirm reads\\n</open-proposals>",
+  });
+  const prompt = composedPrompt(session);
+  expect(prompt.indexOf("<open-loops>")).toBeLessThan(prompt.indexOf("<open-proposals>"));
+  expect(prompt.indexOf("<open-proposals>")).toBeLessThan(prompt.indexOf("<persona>"));
+  expect(prompt).toContain("prop-2026-07-26-x");
 });
 
 test("the fresh loop block composes after catalog and before persona", () => {

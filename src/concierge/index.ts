@@ -114,6 +114,7 @@ import { renderBranchEmbed } from "../discord/cards.ts";
 import type { MemoryStore } from "../memory/index.ts";
 import { renderOpenLoopsBlock } from "../memory/loops.ts";
 import { renderCalibrationBlock } from "../memory/calibration.ts";
+import { renderProposalsBlock } from "../proposal/store.ts";
 import { parseRecallCliRequest, recallCliOutput } from "../memory/recall-cli.ts";
 
 /**
@@ -514,6 +515,8 @@ export interface ConciergeSessionOptions {
   openLoopsBlock?: () => string;
   /** Freshly-read, per-channel calibration bar for THIS session's channel. Empty → no block. */
   calibrationBlock?: () => string;
+  /** Freshly-read, hard-capped open proposal queue (issue #37). Empty → no block, silent queue. */
+  proposalsBlock?: () => string;
 }
 
 /**
@@ -543,6 +546,8 @@ export class ConciergeSession {
   private readonly openLoopsBlock: () => string;
   /** The lazily-read per-channel calibration block; empty means no prompt change for this channel. */
   private readonly calibrationBlock: () => string;
+  /** The lazily-read open-proposal block; empty (nothing pending) means no prompt change at all. */
+  private readonly proposalsBlock: () => string;
   /**
    * Unforgeable per-process issuer credential (OPS-80 §9.3): exported into the child's env as
    * `BECKETT_SESSION_TOKEN`, echoed back on every `beckett …` bus call, and resolved by the
@@ -616,6 +621,7 @@ export class ConciergeSession {
     this.catalogBlock = opts.catalogBlock ?? (() => "");
     this.openLoopsBlock = opts.openLoopsBlock ?? (() => "");
     this.calibrationBlock = opts.calibrationBlock ?? (() => "");
+    this.proposalsBlock = opts.proposalsBlock ?? (() => "");
     this.sessionId = crypto.randomUUID();
   }
 
@@ -1521,6 +1527,12 @@ export class ConciergeSession {
     // returns "" for no open loops, preserving the old prompt byte-for-byte in that case.
     const openLoops = this.openLoopsBlock().trim();
     if (openLoops) blocks.push(openLoops);
+    // What a dream ASKED for overnight (issue #37), waiting on a decision it can never make for
+    // itself. Sits next to the loop ledger because it is the same kind of thing — something owed
+    // an answer — and is hard-capped for the same reason: a block that is noisy every morning
+    // gets ignored, and an ignored gate is a broken gate. Silent when nothing is pending.
+    const proposals = this.proposalsBlock().trim();
+    if (proposals) blocks.push(proposals);
     // The per-channel calibration bar rides the same warm store, re-read per launch. Scoped to this
     // session's channel and "" for a channel with no records, so the prompt is byte-identical then.
     const calibration = this.calibrationBlock().trim();
@@ -1859,6 +1871,9 @@ export class Concierge {
           // The calibration bar is per-channel: the pool scope IS the channel id (session_scope
           // "channel"), so a global-scope session simply matches no records and renders nothing.
           calibrationBlock: () => this.calibrationBlock(scope),
+          // What last night's dream ASKED for. Read per launch like the rest; a decision is a
+          // CLI verb the session runs, never something the block itself can do.
+          proposalsBlock: () => this.proposalsBlock(),
           // Crash-loop alarm (issue #24): a repeating child crash (bad auth/config) pings the ops
           // channel instead of surfacing only as per-message "something broke" replies.
           onCrashLoop: (info) => {
@@ -2100,6 +2115,14 @@ export class Concierge {
    */
   calibrationBlock(channelId: string): string {
     return renderCalibrationBlock(this.memory, channelId);
+  }
+
+  /**
+   * Fresh, hard-capped open-proposal queue (issue #37) — read straight off the proposal
+   * directory, which is neither the memory graph nor the dream namespace. Silent when empty.
+   */
+  proposalsBlock(): string {
+    return renderProposalsBlock(buildPaths(this.config).proposalsDir);
   }
 
   /** Wire the instant-tick hook for freshly-filed tickets (v4-main, issue #33). See {@link ticketFiledListener}. */

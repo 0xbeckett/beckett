@@ -145,6 +145,17 @@ const CASES: Case[] = [
   { name: "dream: show of an undreamt night fails", argv: ["dream", "show", "2026-01-01"] },
   { name: "dream: unknown sub prints usage", argv: ["dream", "bogus"] },
 
+  // ── dream proposals (issue #37) — the queue is empty and silent in a fresh sandbox ──────
+  { name: "dream: proposals ls on an empty queue", argv: ["dream", "proposals", "ls"] },
+  { name: "dream: proposals ls --all on an empty queue", argv: ["dream", "proposals", "ls", "--all"] },
+  { name: "dream: proposals show without an id prints usage", argv: ["dream", "proposals", "show"] },
+  { name: "dream: proposals show rejects a traversal id", argv: ["dream", "proposals", "show", "../persona"] },
+  { name: "dream: proposals accept of an unknown id fails", argv: ["dream", "proposals", "accept", "prop-2026-01-01-x"] },
+  { name: "dream: proposals reject without --why refuses", argv: ["dream", "proposals", "reject", "prop-2026-01-01-x"] },
+  { name: "dream: proposals unknown sub prints usage", argv: ["dream", "proposals", "bogus"] },
+  { name: "dream: propose without a kind prints usage", argv: ["dream", "propose"] },
+  { name: "dream: propose without a claim fails", argv: ["dream", "propose", "--kind", "doctrine-change"] },
+
   // ── spend ───────────────────────────────────────────────────────────────────────────────
   { name: "spend: empty ledger summary", argv: ["spend"] },
   { name: "spend: bad --since is rejected", argv: ["spend", "--since", "yesterdayish"] },
