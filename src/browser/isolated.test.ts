@@ -273,7 +273,12 @@ test("configured attachment roots accept media, reject escaping symlinks and mis
     writeFileSync(mismatch, png);
     expect(() => assertTrustedBrowserAttachment(mismatch, [artifacts, extra])).toThrow("do not match its extension");
 
-    expect(assertTrustedBrowserAttachment(escaped, ["/"])).toBe(realpathSync(escaped));
+    const broadRoots = browserHostSettings(validateConfig({
+      paths: { beckett_dir: dir },
+      quick: { browser_attach_roots: ["/"] },
+    })).attachmentRoots!;
+    expect(broadRoots).toContain("/");
+    expect(assertTrustedBrowserAttachment(escaped, broadRoots)).toBe(realpathSync(escaped));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
