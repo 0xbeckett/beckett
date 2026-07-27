@@ -662,6 +662,8 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     /** Original worker base, captured when its worktree was created. Used only to recover from a
      * rebase that tries to replay a predecessor which has since squash-landed. */
     baseSha?: string;
+    /** The worker's completion summary; used as the single squash-apply commit subject. */
+    commitMessage?: string;
   }): Promise<PublishResult> {
     this.requireCreds("publish repo");
     // Clean the source tree once up front (OPS-61) so NO publish path — including the brand-new-repo
@@ -730,7 +732,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
       // main's), so no fetch/rebase/push ever references the default branch. Absent ⇒ the default
       // branch, byte-for-byte as before.
       const target = this.integrationTarget(p.targetBranch);
-      await this.pushToBranch(p.sourceDir, repo, target ?? undefined, p.baseSha, title);
+      await this.pushToBranch(p.sourceDir, repo, target ?? undefined, p.baseSha, p.commitMessage ?? title);
       this.opts.logger.info("published via push to branch", { repo, branch: target ?? "(default)" });
       return { nameWithOwner: repo, url: `${this.gitHost()}/${repo}`, kind: "pushed" };
     }

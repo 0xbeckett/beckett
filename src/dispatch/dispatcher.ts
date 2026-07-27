@@ -162,6 +162,8 @@ export interface DispatcherDeps {
     targetBranch?: string;
     /** Worktree base captured before implementation; enables safe publish squash-apply recovery. */
     baseSha?: string;
+    /** Worker completion summary; retained if recovery commits its delta as one squash. */
+    commitMessage?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   /**
    * Optional progress feed: the dispatcher forwards each worker's granular {@link WorkerEvent}
@@ -422,6 +424,7 @@ export class Dispatcher {
     ticket?: string;
     targetBranch?: string;
     baseSha?: string;
+    commitMessage?: string;
   }) => Promise<{ url: string; kind: "pushed" | "pr"; prUrl?: string }>;
   private readonly progress?: ProgressSink;
   private readonly onAdvance?: DispatcherDeps["onAdvance"];
@@ -2664,7 +2667,7 @@ export class Dispatcher {
     //    return the ticket to a ready state (`todo`) with a loud comment.
     this.implementRetries.delete(ticket.id);
     this.persistRuntimeState();
-    const pub = await this.publishProject(ticket);
+    const pub = await this.publishProject(ticket, summary);
     if (pub.status === "failed" && this.publishOutbox) {
       await this.queueFailedPublish(
         ticket,
@@ -2744,7 +2747,7 @@ export class Dispatcher {
    * stays honest. `failed` is the load-bearing case: the caller must NOT mark the ticket done (a
    * done ticket whose work never left the box is the false-done this fixes — see OPS-30).
    */
-  private async publishProject(ticket: Ticket): Promise<PublishOutcome> {
+  private async publishProject(ticket: Ticket, workerSummary?: string): Promise<PublishOutcome> {
     this.trace(ticket, "publish", "started", "git push/publish starting");
     // Owned-repo publication rebases this branch onto the latest remote default. Capture the
     // branch's own contribution first or a parallel branch already on main contaminates its card.
@@ -2786,6 +2789,7 @@ export class Dispatcher {
         // A ticket cast onto a non-main integration branch funnels there; `main` stays untouched.
         ...(ticket.targetBranch ? { targetBranch: ticket.targetBranch } : {}),
         ...(this.baseShaForTicket.get(ticket.id) ? { baseSha: this.baseShaForTicket.get(ticket.id) } : {}),
+        ...(workerSummary?.trim() ? { commitMessage: workerSummary } : {}),
       });
       return await this.recordPublication(ticket, r);
     } catch (err) {
@@ -2959,6 +2963,7 @@ export class Dispatcher {
         // Preserve the non-main funnel across a durable retry: never advance `main` on replay.
         ...(ticket.targetBranch ? { targetBranch: ticket.targetBranch } : {}),
         ...(this.baseShaForTicket.get(ticket.id) ? { baseSha: this.baseShaForTicket.get(ticket.id) } : {}),
+        ...(op.summary.trim() ? { commitMessage: op.summary } : {}),
       });
       return await this.recordPublication(ticket, r);
     } catch (err) {
@@ -3080,7 +3085,7 @@ export class Dispatcher {
     // stall the wave. Only the `done` LABEL stays publish-gated (the OPS-30 false-done fix).
     await this.promoteDependents(ticket, { assumeDone: true });
 
-    const pub = await this.publishProject(ticket);
+    const pub = await this.publishProject(ticket, summary);
     if (pub.status === "failed") {
       if (this.publishOutbox) {
         await this.queueFailedPublish(ticket, messagePrefix, summary, "done", pub.error);

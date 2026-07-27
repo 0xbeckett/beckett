@@ -170,6 +170,7 @@ async function boot(): Promise<BootedSystem> {
         ticket?: string;
         targetBranch?: string;
         baseSha?: string;
+        commitMessage?: string;
       }) => {
         const gh = new GitHubCli({
           pat: identity.github.pat,
@@ -186,6 +187,7 @@ async function boot(): Promise<BootedSystem> {
           ticket: a.ticket,
           targetBranch: a.targetBranch,
           baseSha: a.baseSha,
+          commitMessage: a.commitMessage,
         });
         return { url: r.url, kind: r.kind, prUrl: r.prUrl };
       }

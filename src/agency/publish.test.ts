@@ -7,6 +7,9 @@
  */
 
 import { expect, test } from "bun:test";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GitHubCli, parseRepoNwo } from "./index.ts";
 import type { Logger } from "../types.ts";
 
@@ -32,6 +35,24 @@ type FakeRun = (
 
 const ok = (stdout = ""): RunResult => ({ code: 0, stdout, stderr: "" });
 const fail = (stderr = "", code = 1): RunResult => ({ code, stdout: "", stderr });
+
+/** A real git runner for the squash-landing regression fixture below. */
+async function realRun(cmd: string[], opts?: { cwd?: string; env?: Record<string, string | undefined> }): Promise<RunResult> {
+  const env = Object.fromEntries(Object.entries(opts?.env ?? process.env).filter(([, value]) => value !== undefined)) as Record<string, string>;
+  const proc = Bun.spawn(cmd, { cwd: opts?.cwd, env, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { code, stdout, stderr };
+}
+
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  const result = await realRun(["git", ...args], { cwd });
+  if (result.code !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
+}
 
 /** Build a GitHubCli whose subprocess runner is `route`, recording every argv it sees. */
 function cli(
@@ -230,6 +251,142 @@ test("case 2 — a rebase CONFLICT aborts and throws (dispatcher then holds the 
   );
   expect(calls.some((c) => c.startsWith("git rebase --abort"))).toBe(true);
   expect(calls.some((c) => c.startsWith("git push"))).toBe(false); // never force over a conflict
+});
+
+test("a residual squash-apply conflict names only the remaining files, not the rebase transcript", async () => {
+  const { gh, calls } = cli((j) => {
+    if (j.startsWith("git remote get-url origin")) return fail("no origin");
+    if (j.startsWith("gh repo view 0xbeckett/beckett --json name")) return ok('{"name":"beckett"}');
+    if (j.includes("api --method PATCH")) return ok();
+    if (j.includes("--json defaultBranchRef")) return ok("main");
+    if (j.startsWith("git fetch")) return ok();
+    if (j.startsWith("git rebase --abort")) return ok();
+    if (j.startsWith("git rebase")) return fail("could not apply ancient checkpoint transcript");
+    if (j.startsWith("git rev-parse") && j.includes("HEAD")) return ok("tip");
+    if (j.startsWith("git rev-parse")) return ok("base");
+    if (j.startsWith("git merge-base")) return ok();
+    if (j.startsWith("git diff --quiet")) return fail(); // nonempty worker delta
+    if (j.startsWith("git diff --name-status")) return ok(); // no deletions
+    if (j.startsWith("git branch --show-current")) return ok("beckett/24-3");
+    if (j.startsWith("git checkout -B")) return ok();
+    if (j.startsWith("git diff --binary")) return ok("diff --git a/a b/a\n");
+    if (j.startsWith("git apply --3way")) return fail("conflict internals that a courier does not need");
+    if (j.startsWith("git diff --name-only --diff-filter=U")) return ok("snapshot.test.ts\ngenerated-cli.txt\n");
+    return undefined;
+  });
+  let error: Error | undefined;
+  try {
+    await gh.ensurePublished({ slug: "beckett", sourceDir: "/src", baseSha: "base" });
+  } catch (err) {
+    error = err as Error;
+  }
+  expect(error?.message).toContain("snapshot.test.ts, generated-cli.txt");
+  expect(error?.message).not.toContain("ancient checkpoint transcript");
+  expect(calls.some((call) => call.startsWith("git rebase --abort"))).toBe(true);
+});
+
+test("unsafe squash-apply metadata keeps the existing human hold instead of guessing", async () => {
+  const { gh, calls } = cli((j) => {
+    if (j.startsWith("git remote get-url origin")) return fail("no origin");
+    if (j.startsWith("gh repo view 0xbeckett/beckett --json name")) return ok('{"name":"beckett"}');
+    if (j.includes("api --method PATCH")) return ok();
+    if (j.includes("--json defaultBranchRef")) return ok("main");
+    if (j.startsWith("git fetch")) return ok();
+    if (j.startsWith("git rebase --abort")) return ok();
+    if (j.startsWith("git rebase")) return fail("original rebase failure");
+    if (j.startsWith("git rev-parse") && j.includes("HEAD")) return ok("tip");
+    if (j.startsWith("git rev-parse")) return ok("base");
+    if (j.startsWith("git merge-base")) return ok();
+    if (j.startsWith("git diff --quiet")) return fail();
+    if (j.startsWith("git diff --name-status")) return ok("D\tnever-touched.txt\n");
+    if (j.startsWith("git log --format=%H")) return ok(); // no deletion commit in the worker range
+    return undefined;
+  });
+  await expect(gh.ensurePublished({ slug: "beckett", sourceDir: "/src", baseSha: "base" })).rejects.toThrow(
+    /original rebase failure/,
+  );
+  expect(calls.some((call) => call.startsWith("git apply --3way"))).toBe(false);
+});
+
+test("a dependent cut from pre-squash predecessor history squash-applies only its own delta", async () => {
+  const root = await mkdtemp(join(tmpdir(), "beckett-publish-squash-"));
+  try {
+    const remoteParent = join(root, "0xbeckett");
+    const remote = join(remoteParent, "beckett.git");
+    const seed = join(root, "seed");
+    const worker = join(root, "worker");
+    const land = join(root, "land");
+    await mkdir(remoteParent, { recursive: true });
+    await git(root, "init", "--bare", remote);
+    await git(root, "init", "--initial-branch=main", seed);
+    await git(seed, "config", "user.email", "test@example.com");
+    await git(seed, "config", "user.name", "Test");
+    await writeFile(join(seed, "README.md"), "root\n");
+    await git(seed, "add", ".");
+    await git(seed, "commit", "-m", "root");
+    await git(seed, "remote", "add", "origin", `file://${remote}`);
+    await git(seed, "push", "origin", "main");
+
+    await git(root, "clone", "-b", "main", `file://${remote}`, worker);
+    await git(worker, "config", "user.email", "test@example.com");
+    await git(worker, "config", "user.name", "Test");
+    // These are the predecessor's local checkpoints. The dependent starts at its tip.
+    await writeFile(join(worker, "shared.txt"), "checkpoint one\n");
+    await git(worker, "add", ".");
+    await git(worker, "commit", "-m", "predecessor checkpoint one");
+    await writeFile(join(worker, "shared.txt"), "predecessor final\n");
+    await git(worker, "add", ".");
+    await git(worker, "commit", "-m", "predecessor checkpoint two");
+    const predecessorTip = await git(worker, "rev-parse", "HEAD");
+    await writeFile(join(worker, "dependent.txt"), "the dependent's only change\n");
+    await git(worker, "add", ".");
+    await git(worker, "commit", "-m", "dependent checkpoint");
+
+    // Main receives equivalent predecessor content as one squash commit, not the checkpoints.
+    await git(root, "clone", "-b", "main", `file://${remote}`, land);
+    await git(land, "config", "user.email", "test@example.com");
+    await git(land, "config", "user.name", "Test");
+    await writeFile(join(land, "shared.txt"), "predecessor final\n");
+    await git(land, "add", ".");
+    await git(land, "commit", "-m", "squashed predecessor");
+    await git(land, "push", "origin", "main");
+
+    const calls: string[] = [];
+    const gh = new GitHubCli({
+      pat: "tok",
+      account: "0xbeckett",
+      apiBase: "https://api.github.com",
+      resolveRepoDir: () => worker,
+      logger: noopLog,
+      run: (async (cmd, opts) => {
+        calls.push(cmd.join(" "));
+        if (cmd[0] === "git") return realRun(cmd, opts);
+        if (cmd.join(" ").startsWith("gh repo view 0xbeckett/beckett --json name")) return ok('{"name":"beckett"}');
+        if (cmd.join(" ").includes("api --method PATCH")) return ok();
+        if (cmd.join(" ").includes("--json defaultBranchRef")) return ok("main");
+        return fail(`unrouted: ${cmd.join(" ")}`);
+      }) as never,
+    });
+    // The client normally derives an HTTPS host. The test keeps all real git transport local.
+    (gh as unknown as { gitHost: () => string }).gitHost = () => `file://${root}`;
+
+    const result = await gh.ensurePublished({
+      slug: "beckett",
+      sourceDir: worker,
+      description: "ticket title (not the worker summary)",
+      ticket: "24.3",
+      baseSha: predecessorTip,
+      commitMessage: "dependent worker summary",
+    });
+
+    expect(result.kind).toBe("pushed");
+    expect(calls.some((call) => call.startsWith("git rebase --abort"))).toBe(true);
+    expect(calls.some((call) => call.startsWith("git apply --3way"))).toBe(true);
+    expect(await git(root, "--git-dir", remote, "show", "main:dependent.txt")).toBe("the dependent's only change");
+    expect(await git(root, "--git-dir", remote, "log", "-1", "--format=%s", "main")).toBe("dependent worker summary");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("case 1 — cloned third-party upstream: fork → push to fork → PR to upstream", async () => {
