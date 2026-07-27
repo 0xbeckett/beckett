@@ -136,6 +136,8 @@ const META_ORDER = [
   "url", "domain",
   // decision
   "decided", "supersedes",
+  // calibration
+  "kind", "channel", "about", "reason",
 ];
 /** Provenance fields rendered last (Spec 08 §1.2; visibility/provenance from multiplayer §7). */
 const META_TAIL = [

@@ -112,6 +112,7 @@ import type { BranchStatusService } from "../task/status.ts";
 import { renderBranchEmbed } from "../discord/cards.ts";
 import type { MemoryStore } from "../memory/index.ts";
 import { renderOpenLoopsBlock } from "../memory/loops.ts";
+import { renderCalibrationBlock } from "../memory/calibration.ts";
 import { parseRecallCliRequest, recallCliOutput } from "../memory/recall-cli.ts";
 
 /**
@@ -510,6 +511,8 @@ export interface ConciergeSessionOptions {
   catalogBlock?: () => string;
   /** Freshly-read, visibility-gated open-loop ledger. Empty preserves the historic prompt exactly. */
   openLoopsBlock?: () => string;
+  /** Freshly-read, per-channel calibration bar for THIS session's channel. Empty → no block. */
+  calibrationBlock?: () => string;
 }
 
 /**
@@ -537,6 +540,8 @@ export class ConciergeSession {
   private readonly catalogBlock: () => string;
   /** The lazily-read open-loop block; empty means no prompt change for stores without loops. */
   private readonly openLoopsBlock: () => string;
+  /** The lazily-read per-channel calibration block; empty means no prompt change for this channel. */
+  private readonly calibrationBlock: () => string;
   /**
    * Unforgeable per-process issuer credential (OPS-80 §9.3): exported into the child's env as
    * `BECKETT_SESSION_TOKEN`, echoed back on every `beckett …` bus call, and resolved by the
@@ -609,6 +614,7 @@ export class ConciergeSession {
     this.handoffWindow = opts.handoffWindow ?? (() => "");
     this.catalogBlock = opts.catalogBlock ?? (() => "");
     this.openLoopsBlock = opts.openLoopsBlock ?? (() => "");
+    this.calibrationBlock = opts.calibrationBlock ?? (() => "");
     this.sessionId = crypto.randomUUID();
   }
 
@@ -1514,6 +1520,10 @@ export class ConciergeSession {
     // returns "" for no open loops, preserving the old prompt byte-for-byte in that case.
     const openLoops = this.openLoopsBlock().trim();
     if (openLoops) blocks.push(openLoops);
+    // The per-channel calibration bar rides the same warm store, re-read per launch. Scoped to this
+    // session's channel and "" for a channel with no records, so the prompt is byte-identical then.
+    const calibration = this.calibrationBlock().trim();
+    if (calibration) blocks.push(calibration);
     if (persona.trim()) blocks.push(`<persona>\n${persona}\n</persona>`);
     return blocks.join("\n\n");
   }
@@ -1837,6 +1847,9 @@ export class Concierge {
           catalogBlock: () => this.extensionCatalogBlock(),
           // Loops live in the same warm store and are re-read for every child launch.
           openLoopsBlock: () => this.openLoopsBlock(),
+          // The calibration bar is per-channel: the pool scope IS the channel id (session_scope
+          // "channel"), so a global-scope session simply matches no records and renders nothing.
+          calibrationBlock: () => this.calibrationBlock(scope),
           // Crash-loop alarm (issue #24): a repeating child crash (bad auth/config) pings the ops
           // channel instead of surfacing only as per-message "something broke" replies.
           onCrashLoop: (info) => {
@@ -2070,6 +2083,14 @@ export class Concierge {
   /** Fresh, bounded session-start loop ledger. SELF scope includes public/owner, never DM loops. */
   openLoopsBlock(): string {
     return renderOpenLoopsBlock(this.memory);
+  }
+
+  /**
+   * Fresh, bounded, per-channel calibration bar for `channelId`. Scoped hard to the room, so a
+   * global-scope session (no channel) or one with no records renders nothing.
+   */
+  calibrationBlock(channelId: string): string {
+    return renderCalibrationBlock(this.memory, channelId);
   }
 
   /** Wire the instant-tick hook for freshly-filed tickets (v4-main, issue #33). See {@link ticketFiledListener}. */
