@@ -305,12 +305,23 @@ interface LedgeredWorker {
   lastCheckpointSha?: string;
 }
 
+interface StallFingerprintRecord {
+  fingerprint: string;
+  cycles: number;
+}
+
+interface RepeatedStallGiveUp extends StallFingerprintRecord {
+  stage: string;
+}
+
 interface DispatcherRuntimeState {
   version: 1;
   baseShaForTicket: Record<string, string>;
   reworkCount: Record<string, number>;
   implementRetries: Record<string, number>;
   reviewInfraRetries: Record<string, number>;
+  /** Last silent-work fingerprint and consecutive matching cycles (issue #44). */
+  stallFingerprints?: Record<string, StallFingerprintRecord>;
   /** Incomplete design-check passes; bounded so an owner is always eventually paged. */
   designCycles?: Record<string, number>;
   /** Crash-recovery worker ledger, keyed by ticket id (absent in pre-ledger state files). */
@@ -345,6 +356,20 @@ function parseNumberRecord(value: unknown, field: string): Record<string, number
   for (const [key, item] of Object.entries(value)) {
     if (!Number.isInteger(item) || item < 0) throw new Error(`${field}.${key} must be a non-negative integer`);
     out[key] = item;
+  }
+  return out;
+}
+
+/** Lenient repeat-stall parse: stale/malformed evidence never prevents the dispatcher booting. */
+function parseStallFingerprints(value: unknown): Record<string, StallFingerprintRecord> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, StallFingerprintRecord> = {};
+  for (const [ticketId, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const record = raw as Record<string, unknown>;
+    if (typeof record.fingerprint !== "string" || !record.fingerprint.trim()) continue;
+    if (!Number.isInteger(record.cycles) || (record.cycles as number) < 1) continue;
+    out[ticketId] = { fingerprint: record.fingerprint, cycles: record.cycles as number };
   }
   return out;
 }
@@ -398,6 +423,7 @@ function parseRuntimeState(value: unknown): DispatcherRuntimeState {
     reworkCount: parseNumberRecord(raw.reworkCount, "reworkCount"),
     implementRetries: parseNumberRecord(raw.implementRetries, "implementRetries"),
     reviewInfraRetries: parseNumberRecord(raw.reviewInfraRetries, "reviewInfraRetries"),
+    stallFingerprints: parseStallFingerprints(raw.stallFingerprints),
     designCycles: raw.designCycles === undefined ? {} : parseNumberRecord(raw.designCycles, "designCycles"),
     liveWorkers: parseLedger(raw.liveWorkers),
     pendingSteers: parseSteers(raw.pendingSteers),
@@ -494,6 +520,10 @@ export class Dispatcher {
   private readonly implementRetries = new Map<string, number>();
   /** Per-ticket count of review crashes or malformed verdicts; separate from real rework cycles. */
   private readonly reviewInfraRetries = new Map<string, number>();
+  /** Last silent-worker fingerprint + consecutive matching cycles; persisted across a daemon restart. */
+  private readonly stallFingerprints = new Map<string, StallFingerprintRecord>();
+  /** Workers selected for a repeat-stall park; consumes their synthetic abort finish exactly once. */
+  private readonly repeatedStallGiveUps = new Map<string, RepeatedStallGiveUp>();
   /** Per-ticket incomplete design-check count, bounded by the configured design-cycle cap. */
   private readonly designCycles = new Map<string, number>();
   /** Crash-recovery ledger for CURRENTLY live workers (persisted; see {@link LedgeredWorker}). */
@@ -1037,9 +1067,23 @@ export class Dispatcher {
     this.cancelSpawnRetry(ticketId);
     this.implementRetries.delete(ticketId);
     this.reviewInfraRetries.delete(ticketId);
+    this.stallFingerprints.delete(ticketId);
     this.liveLedger.delete(ticketId);
     this.releaseRepo(ticketId);
     this.persistRuntimeState();
+  }
+
+  /** Record the evidence present when a silent worker is killed. A changed fingerprint starts a
+   * fresh count: a false negative costs one respawn; a false positive would abandon live work. */
+  private recordStallFingerprint(ticketId: string, fingerprint: string): StallFingerprintRecord {
+    const previous = this.stallFingerprints.get(ticketId);
+    const next: StallFingerprintRecord =
+      previous?.fingerprint === fingerprint
+        ? { fingerprint, cycles: previous.cycles + 1 }
+        : { fingerprint, cycles: 1 };
+    this.stallFingerprints.set(ticketId, next);
+    this.persistRuntimeState();
+    return next;
   }
 
   private async listAllIssues(): Promise<Ticket[]> {
@@ -2149,17 +2193,40 @@ export class Dispatcher {
       return;
     }
 
-    this.trace(ticket, `${stage}:wedge`, "failed", `worker remained silent for ${idleMin}m; aborting`, "silent worker alert");
-    this.logger.warn("worker stalled through its status check — aborting for retry (strike 2)", {
+    // The handle derives this from the normalized tool/file events that were already journaled.
+    // No evidence means no comparison: an extra respawn is safer than guessing that two quiet
+    // workers failed the same way.
+    const activity = handle.stallFingerprint();
+    const fingerprint = activity ? `${stage}: ${activity}` : null;
+    const repeated = fingerprint ? this.recordStallFingerprint(ticket.id, fingerprint) : null;
+    const repeatLimit = this.config.supervise?.max_repeated_stall_fingerprints ?? 2;
+    const giveUp = repeated !== null && repeated.cycles >= repeatLimit;
+    const evidence = fingerprint ? `; fingerprint ${fingerprint}` : "; no actionable tool/file evidence";
+
+    this.trace(
+      ticket,
+      `${stage}:wedge`,
+      "failed",
+      `worker remained silent for ${idleMin}m; aborting${evidence}`,
+      "silent worker alert",
+    );
+    this.logger.warn("worker stalled through its status check — aborting", {
       ticket: ticket.identifier,
       stage,
       workerId: handle.id,
       idleMin,
+      ...(fingerprint ? { fingerprint, identicalCycles: repeated!.cycles, repeatLimit } : {}),
+      ...(giveUp ? { givingUp: true } : {}),
     });
+    // Set this BEFORE aborting: a driver may synchronously emit its terminal event during abort,
+    // and onWorkerDone must route that race to the park path rather than normal retry handling.
+    if (giveUp && repeated) {
+      this.repeatedStallGiveUps.set(handle.id, { ...repeated, stage });
+    }
     await handle.abort("stalled: no activity through two stall windows");
     if (handle.result) return; // finish raced the abort; the onDone path owns the outcome
-    // Route through the normal finished-with-error machinery: commit WIP, bounded retry
-    // (implement) / review-infra retry (review), park on exhaustion — never a wedged slot.
+    // Route through the normal finished-with-error machinery, except a repeated fingerprint parks
+    // through the dedicated path below. The normal one-stall retry remains unchanged.
     void this.onWorkerDone(
       ticket,
       stage,
@@ -2480,6 +2547,9 @@ export class Dispatcher {
     summary: string,
     spendMeta?: SpendStageMeta,
   ): Promise<void> {
+    // Set by the stall watchdog before aborting. It must be read before any await below because
+    // abort can synchronously deliver the driver's terminal event into this handler.
+    const repeatedStall = this.repeatedStallGiveUps.get(handle.id);
     this.trace(
       ticket,
       stage,
@@ -2518,6 +2588,10 @@ export class Dispatcher {
     if (spend) summary = summary ? `${summary}\n\n${spend}` : spend;
 
     try {
+      if (repeatedStall) {
+        await this.giveUpAfterRepeatedStall(ticket, handle, repeatedStall);
+        return;
+      }
       // The stage's own finish handler advances the ticket (registry, OPS-180); a worker on an
       // unregistered stage gets the old generic status comment.
       const stageDef = this.stages.get(stage);
@@ -2533,6 +2607,7 @@ export class Dispatcher {
         error: (err as Error).message,
       });
     } finally {
+      this.repeatedStallGiveUps.delete(handle.id);
       // Runs on the error path too: a throwing finish must not leak the id, or the watchdog is
       // permanently blinded to this ticket.
       this.finishing.delete(ticket.id);
@@ -2585,6 +2660,45 @@ export class Dispatcher {
         error: (err as Error).message,
       });
       return false;
+    }
+  }
+
+  /** Park after the same recorded tool/file activity silenced multiple workers. This deliberately
+   * bypasses the normal stage retry policy: that policy is correct for a one-off crash, but would
+   * otherwise replay a deterministic stall indefinitely. */
+  private async giveUpAfterRepeatedStall(
+    ticket: Ticket,
+    handle: TicketWorkerHandle,
+    repeated: RepeatedStallGiveUp,
+  ): Promise<void> {
+    const sha = await this.commitWip(ticket, handle);
+    const at = sha ? ` Its work-in-progress is committed at \`${sha.slice(0, 9)}\`.` : "";
+    try {
+      const moved = await this.advanceTicket(
+        ticket,
+        "todo",
+        `I stopped automatic restarts after **${repeated.cycles} identical silent cycles**. ` +
+          `The repeated stall fingerprint was \`${repeated.fingerprint}\`. Moving this back to ` +
+          `**todo** so a human can inspect the deterministic failure instead of another worker ` +
+          `replaying it.${at}`,
+      );
+      if (moved) {
+        // The ticket comment is durable evidence; do not make a later human restart inherit an
+        // old count and get parked after one fresh stall.
+        this.stallFingerprints.delete(ticket.id);
+        this.persistRuntimeState();
+      }
+      this.logger.warn("repeated silent-worker fingerprint — automatic respawn stopped", {
+        ticket: ticket.identifier,
+        stage: repeated.stage,
+        fingerprint: repeated.fingerprint,
+        identicalCycles: repeated.cycles,
+      });
+    } catch (err) {
+      this.logger.warn("could not park ticket after repeated silent-worker fingerprint", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
     }
   }
 
@@ -3297,6 +3411,7 @@ export class Dispatcher {
     this.reworkCount.delete(ticketId);
     this.implementRetries.delete(ticketId);
     this.reviewInfraRetries.delete(ticketId);
+    this.stallFingerprints.delete(ticketId);
     this.designCycles.delete(ticketId);
     this.liveTickets.delete(ticketId);
     this.liveLedger.delete(ticketId);
@@ -3388,6 +3503,7 @@ export class Dispatcher {
       this.replaceMap(this.reworkCount, parsed.reworkCount);
       this.replaceMap(this.implementRetries, parsed.implementRetries);
       this.replaceMap(this.reviewInfraRetries, parsed.reviewInfraRetries);
+      this.replaceMap(this.stallFingerprints, parsed.stallFingerprints ?? {});
       this.replaceMap(this.designCycles, parsed.designCycles ?? {});
       // Workers the previous daemon left behind — consumed by recoverFromCrash() at boot.
       if (parsed.liveWorkers && Object.keys(parsed.liveWorkers).length > 0) {
@@ -3407,6 +3523,7 @@ export class Dispatcher {
           ...Object.keys(parsed.reworkCount),
           ...Object.keys(parsed.implementRetries),
           ...Object.keys(parsed.reviewInfraRetries),
+          ...Object.keys(parsed.stallFingerprints ?? {}),
           ...Object.keys(parsed.designCycles ?? {}),
         ]).size,
       });
@@ -3426,6 +3543,7 @@ export class Dispatcher {
       reworkCount: Object.fromEntries(this.reworkCount),
       implementRetries: Object.fromEntries(this.implementRetries),
       reviewInfraRetries: Object.fromEntries(this.reviewInfraRetries),
+      stallFingerprints: Object.fromEntries(this.stallFingerprints),
       designCycles: Object.fromEntries(this.designCycles),
       liveWorkers: Object.fromEntries(this.liveLedger),
       pendingSteers: Object.fromEntries(this.pendingSteers),
@@ -3443,7 +3561,7 @@ export class Dispatcher {
     }
   }
 
-  private replaceMap<T extends string | number>(map: Map<string, T>, values: Record<string, T>): void {
+  private replaceMap<T>(map: Map<string, T>, values: Record<string, T>): void {
     map.clear();
     for (const [key, value] of Object.entries(values)) map.set(key, value);
   }

@@ -60,6 +60,10 @@ function makeHandle(ticket: Ticket, stage: string, harness = "claude") {
     nudges: [] as string[],
     aborted: false,
     reaped: false,
+    fingerprint: null as string | null,
+    stallFingerprint() {
+      return h.fingerprint;
+    },
     nudgeReceipt: "delivered" as string, // tests override to simulate queued/will-restart/dropped
     async nudge(t: string) {
       h.nudges.push(t);
@@ -1281,6 +1285,51 @@ describe("stall escalation ladder (issue #21)", () => {
     // The abort routed through onImplementIncomplete: WIP narrated + a fresh retry worker.
     expect(client.comments.some((c) => c.body.includes("retrying"))).toBe(true);
     expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(2);
+  });
+
+  test("two identical silent fingerprints park the ticket instead of respawning forever", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    created[0].fingerprint = "Bash: bun test src/browser/profile-cache.ts";
+    created[0].stall(640_000, 2);
+    await tick();
+    await tick();
+    expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(2);
+
+    created[1].fingerprint = "Bash: bun test src/browser/profile-cache.ts";
+    created[1].stall(640_000, 2);
+    await tick();
+    await tick();
+
+    expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(2);
+    expect(client.setStateCalls.at(-1)).toMatchObject({ id: ticket.id, state: "todo" });
+    const comment = client.comments.at(-1)!.body;
+    expect(comment).toContain("2 identical silent cycles");
+    expect(comment).toContain("implement: Bash: bun test src/browser/profile-cache.ts");
+  });
+
+  test("different silent fingerprints keep the normal respawn path", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    created[0].fingerprint = "Read: src/browser/profile-cache.ts";
+    created[0].stall(640_000, 2);
+    await tick();
+    await tick();
+
+    created[1].fingerprint = "Bash: bun test src/browser/profile-cache.ts";
+    created[1].stall(640_000, 2);
+    await tick();
+    await tick();
+
+    expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(3);
+    expect(client.setStateCalls.some((call) => call.state === "todo")).toBe(false);
+    expect(client.comments.some((comment) => comment.body.includes("identical silent cycles"))).toBe(false);
   });
 
   test("a stall signal after a real finish is ignored (no double handling)", async () => {
