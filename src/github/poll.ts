@@ -15,8 +15,10 @@
  * it lives: a cross-fork PR into a third-party upstream is watched exactly like one on our own org
  * (#31 — the v1 "our-org-only" gate silently left every cross-org PR with no watcher at all). A PR
  * that was never registered is never polled, which is why an unknown PR produces nothing: there's
- * simply no entry for it. A watched repo that goes private or is deleted under us (a read that
- * 404s/403s) is dropped once, so it never becomes a poll that fails forever every tick.
+ * simply no entry for it. A watched repo that goes private or is deleted under us (a read that hard-
+ * 404s/410s/403s for several ticks RUNNING) is dropped once, so it never becomes a poll that fails
+ * forever every tick — while a transient failure (5xx, timeout, rate-limit, abuse block) is a no-op
+ * that leaves the watch untouched, so one bad response never wipes the registry.
  *
  * WHAT COUNTS AS MATERIAL. New reviews (approval / changes-requested / plain review comment), new
  * conversation comments, a CI conclusion (failures loudest), a merge, or a close. Explicitly NOT
@@ -269,10 +271,11 @@ export class GitHubPrPoller {
    * One poll cycle. Prune the PRs that reached a terminal state last tick (their merged/closed
    * event already fired), then read + diff every remaining watched PR. Never throws: a TRANSIENT
    * read failure for one PR is logged and skipped, leaving its snapshot untouched so it retries next
-   * tick, while a read that proves the repo PERMANENTLY unreadable (404/403 — deleted or gone
-   * private) drops the entry once so it never becomes a poll that fails forever. Mutates + persists
-   * the snapshot BEFORE returning events, so a crash between persist and relay loses a ping rather
-   * than re-firing one.
+   * tick, while a repo that HARD-fails (404/410/genuine-403) for {@link HARD_FAILURES_BEFORE_DROP}
+   * ticks running — proving it deleted or gone private — has its entry dropped once so it never
+   * becomes a poll that fails forever. At most one watch is dropped per sweep, so a shared fault
+   * can't wipe the registry. Mutates + persists the snapshot BEFORE returning events, so a crash
+   * between persist and relay loses a ping rather than re-firing one.
    */
   async poll(): Promise<PrPollEvent[]> {
     // Drop terminal entries from the registry (their event fired last tick). They are gone from the
@@ -293,12 +296,12 @@ export class GitHubPrPoller {
           return { kind: "read", entry, signals };
         } catch (err) {
           const message = (err as Error).message;
-          // A repo that went private or was deleted under us (404/403) is PERMANENTLY unreadable:
-          // retrying it every tick would fail forever. Drop it (below) instead of skipping-and-
-          // retrying. Any other failure — a network blip, a rate-limit, a transient 5xx — is
-          // transient, so leave the snapshot untouched and try again next tick.
-          if (isRepoUnreadable(message)) return { kind: "drop", entry };
-          this.logger.warn("prSignals failed — skipping PR this tick", {
+          // Only a HARD failure — a 404/410 or a genuine "no access" 403 — is a candidate for
+          // dropping, and even then not until HARD_FAILURES_BEFORE_DROP of them in a row (counted
+          // below). Everything else — a network blip, a timeout, a rate-limit, an abuse block, a
+          // transient 5xx — is transient: leave the snapshot untouched and try again next tick.
+          if (classifyReadFailure(message) === "hard") return { kind: "hard-fail", entry };
+          this.logger.warn("prSignals failed — skipping PR this tick (transient)", {
             repo: entry.repo,
             number: entry.number,
             error: message,
@@ -308,8 +311,10 @@ export class GitHubPrPoller {
       }),
     );
 
-    // A drop is a definitive read (the repo is gone), not a failure, so it counts as the tick
-    // making progress for health purposes alongside a successful read.
+    // A hard failure is a definitive read (the repo answered "gone"), not a blip, so — like a
+    // successful read — it counts as the tick making progress for health purposes. Only a tick
+    // where EVERY active PR failed transiently (or there was nothing to read) is a non-progressing
+    // one that arms the consecutive-failure alarm.
     if (results.some((r) => r !== null)) {
       this.consecutiveFailures = 0;
       this.lastPollAt = this.now();
@@ -319,18 +324,52 @@ export class GitHubPrPoller {
 
     const events: PrPollEvent[] = [];
     let changed = pruned;
+    // A single sweep may drop AT MOST ONE watch. If a shared fault (a brief org-wide 403, say) makes
+    // several PRs look hard on the same tick, we refuse to wipe the whole registry in one pass:
+    // the rest keep their (now at-threshold) counters and would drop one-per-tick only if the fault
+    // truly persists — by which point a real transient would have cleared and reset them.
+    let droppedThisSweep = false;
     for (const result of results) {
       if (!result) continue;
-      if (result.kind === "drop") {
-        // ONE log line, then the entry is gone from the registry (and the durable file below), so a
-        // now-unreadable PR never turns into a poll that fails forever every tick.
+      if (result.kind === "hard-fail") {
+        result.entry.hardFailures += 1;
+        changed = true;
+        if (result.entry.hardFailures < HARD_FAILURES_BEFORE_DROP) {
+          // Not yet convinced the repo is gone — one bad response is never enough. No warn spam:
+          // debug only, so the eventual drop is still a SINGLE warn line.
+          this.logger.debug("hard read failure — not dropping yet (needs consecutive failures)", {
+            repo: result.entry.repo,
+            number: result.entry.number,
+            hardFailures: result.entry.hardFailures,
+          });
+          continue;
+        }
+        if (droppedThisSweep) {
+          // At threshold, but this sweep already spent its one drop — defer to a later tick so a
+          // shared fault can't clear more than one watch at once.
+          this.logger.debug("unreadable PR at drop threshold — deferring (one drop per sweep)", {
+            repo: result.entry.repo,
+            number: result.entry.number,
+          });
+          continue;
+        }
+        // Threshold reached: the repo has answered "gone" HARD_FAILURES_BEFORE_DROP ticks running.
+        // ONE log line, then the entry is gone from the registry (and the durable file below), so it
+        // never turns into a poll that fails forever every tick.
         this.entries.delete(prKey(result.entry.repo, result.entry.number));
+        droppedThisSweep = true;
         this.logger.warn("dropping unreadable PR (repo went private or was deleted)", {
           repo: result.entry.repo,
           number: result.entry.number,
+          hardFailures: result.entry.hardFailures,
         });
-        changed = true;
         continue;
+      }
+      // A successful read clears any accumulated hard-failure streak: a repo that answers again was
+      // only ever transiently gone.
+      if (result.entry.hardFailures !== 0) {
+        result.entry.hardFailures = 0;
+        changed = true;
       }
       const before = JSON.stringify(result.entry);
       events.push(...this.diff(result.entry, result.signals));
@@ -506,6 +545,10 @@ export class GitHubPrPoller {
             ...entry,
             seenReviewIds: Array.isArray(entry.seenReviewIds) ? entry.seenReviewIds : [],
             seenCommentIds: Array.isArray(entry.seenCommentIds) ? entry.seenCommentIds : [],
+            // Default for entries persisted before this field existed. It is a purely in-flight
+            // streak counter, so starting a reloaded entry at 0 is correct — a restart mid-outage
+            // simply re-earns the streak against a live repo (and clears instantly if it recovered).
+            hardFailures: typeof entry.hardFailures === "number" ? entry.hardFailures : 0,
           });
         }
       }

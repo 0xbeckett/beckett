@@ -234,10 +234,8 @@ describe("GitHubPrPoller", () => {
     expect(p.stats().watching).toBe(2);
   });
 
-  test("a watched repo that goes unreadable (404/403) is dropped once, not re-polled forever", async () => {
-    const r = new FakeReader();
-    r.set("0xbeckett/foo", 96, [signals()]); // seeds fine first
-    // A reader that throws a 404-style message for a repo that vanished under us.
+  test("a watched repo that stays unreadable (404) is dropped once after N consecutive hard failures", async () => {
+    // A reader that throws a 404-style message for a repo that vanished under us, every tick.
     const gone: GitHubPrReader = {
       async prSignals() {
         throw new Error("gh pr view (signals) failed (1): GraphQL: Could not resolve to a Repository with the name 'x/y'. (repository)");
@@ -249,7 +247,13 @@ describe("GitHubPrPoller", () => {
       const p = new GitHubPrPoller({ reader: gone, account: "0xbeckett", logger: quiet as never, statePath, now: () => 1_000 });
       p.watch({ ...WATCH });
       expect(p.stats().watching).toBe(1);
-      expect(await p.poll()).toEqual([]); // 404 → dropped, no throw, no event
+      // A SINGLE hard failure must NOT drop the watch — one bad response is never enough.
+      expect(await p.poll()).toEqual([]);
+      expect(p.stats().watching).toBe(1); // still watched after 1 hard tick
+      expect(await p.poll()).toEqual([]);
+      expect(p.stats().watching).toBe(1); // still watched after 2 hard ticks
+      // The third consecutive hard failure crosses the threshold → dropped, no throw, no event.
+      expect(await p.poll()).toEqual([]);
       expect(p.stats().watching).toBe(0);
       // The drop is durable: it is gone from the registry file, so it is never re-polled.
       const reloaded = new GitHubPrPoller({ reader: gone, account: "0xbeckett", logger: quiet as never, statePath, now: () => 1_000 });
@@ -257,6 +261,79 @@ describe("GitHubPrPoller", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("a transient failure NEVER drops a watch, however many times it recurs", async () => {
+    // Each of these is transient — a 5xx, a timeout, a secondary rate-limit / abuse block (both
+    // surface as 403s and must NOT be mistaken for a gone repo), and a raw network error.
+    const transientMessages = [
+      "gh: HTTP 503 Service Unavailable (https://api.github.com)",
+      "request to https://api.github.com failed, reason: ETIMEDOUT",
+      "You have exceeded a secondary rate limit. Please wait a few minutes (HTTP 403)",
+      "API rate limit exceeded (HTTP 403)",
+      "was submitted too quickly. Please retry — abuse detection (HTTP 403)",
+      "getaddrinfo ENOTFOUND api.github.com",
+    ];
+    let i = 0;
+    const flaky: GitHubPrReader = {
+      async prSignals() {
+        throw new Error(transientMessages[i++ % transientMessages.length]!);
+      },
+    };
+    const dir = mkdtempSync(join(tmpdir(), "gh-poll-"));
+    const statePath = join(dir, "github-prs.json");
+    try {
+      const p = new GitHubPrPoller({ reader: flaky, account: "0xbeckett", logger: quiet as never, statePath, now: () => 1_000 });
+      p.watch({ ...WATCH });
+      expect(p.stats().watching).toBe(1);
+      // Far more ticks than the hard-failure threshold — the registry must stay intact throughout.
+      for (let tick = 0; tick < 10; tick++) {
+        expect(await p.poll()).toEqual([]);
+        expect(p.stats().watching).toBe(1);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("one hard failure then a good read resets the streak — a blip never drops a watch", async () => {
+    let call = 0;
+    const blip: GitHubPrReader = {
+      async prSignals(repo, n) {
+        call++;
+        // First read seeds. Second read hard-404s (a momentary edge blip). Every read after is fine.
+        if (call === 2) throw new Error("HTTP 404: Not Found");
+        return signals({ repo, number: n } as never);
+      },
+    };
+    const p = new GitHubPrPoller({ reader: blip, account: "0xbeckett", logger: quiet as never, now: () => 1_000 });
+    p.watch({ ...WATCH });
+    expect(await p.poll()).toEqual([]); // seed
+    expect(await p.poll()).toEqual([]); // hard blip (streak = 1)
+    expect(p.stats().watching).toBe(1);
+    // Two more good reads: the streak was reset to 0 by the recovery, so nothing ever drops.
+    expect(await p.poll()).toEqual([]);
+    expect(await p.poll()).toEqual([]);
+    expect(p.stats().watching).toBe(1);
+  });
+
+  test("a shared hard fault never clears more than one watch in a single sweep", async () => {
+    // Two watched PRs on repos that BOTH hard-fail every tick (a shared org-wide outage look-alike).
+    const gone: GitHubPrReader = {
+      async prSignals() {
+        throw new Error("HTTP 404: Not Found");
+      },
+    };
+    const p = new GitHubPrPoller({ reader: gone, account: "0xbeckett", logger: quiet as never, now: () => 1_000 });
+    p.watch({ ...WATCH, repo: "0xbeckett/a", number: 1 });
+    p.watch({ ...WATCH, repo: "0xbeckett/b", number: 2 });
+    expect(p.stats().watching).toBe(2);
+    await p.poll(); // both: streak 1
+    await p.poll(); // both: streak 2
+    await p.poll(); // both hit threshold on the SAME sweep — but only ONE may drop
+    expect(p.stats().watching).toBe(1);
+    await p.poll(); // the deferred one drops on the next sweep
+    expect(p.stats().watching).toBe(0);
   });
 
   test("a hand-opened cross-org PR survives a simulated restart (persisted registry)", async () => {
@@ -321,6 +398,50 @@ describe("GitHubPrPoller", () => {
     expect(await p.poll()).toEqual([]); // did not throw
     r.set("0xbeckett/foo", 96, [signals()]);
     expect(await p.poll()).toEqual([]); // seeds cleanly on retry
+  });
+
+  test("a pr-open-style registration stamps the origin channel onto the persisted watch and the relay event", async () => {
+    // Register exactly the way the manual pr-create path does (repo/number/url/title + origin
+    // channel, no ticket): a hand-opened cross-org PR that has no origin TICKET channel, so the
+    // stamped `channel` is the ONLY thing that can route its events — the relay drops any PR event
+    // whose resolved channel is empty.
+    const dir = mkdtempSync(join(tmpdir(), "gh-poll-"));
+    const statePath = join(dir, "github-prs.json");
+    try {
+      const r = new FakeReader();
+      r.set("betterwright/betterwright", 66, [
+        signals({ url: "https://github.com/betterwright/betterwright/pull/66", number: 66 }), // seed
+        signals({
+          url: "https://github.com/betterwright/betterwright/pull/66",
+          number: 66,
+          reviews: [rev("r1", "upstreamer", "CHANGES_REQUESTED")],
+        }),
+      ]);
+      const p = poller(r, { statePath });
+      p.watch({
+        repo: "betterwright/betterwright",
+        number: 66,
+        url: "https://github.com/betterwright/betterwright/pull/66",
+        title: "reimplement #65",
+        channel: "chan-open",
+        // no ticket — a hand-opened PR outside any ticket
+      });
+
+      // (1) The persisted watch record the relay's routing reads MUST carry the origin channel.
+      const persisted = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, { channel?: string }>;
+      expect(persisted["betterwright/betterwright#66"]!.channel).toBe("chan-open");
+
+      // (2) And it must reach the relay: the event's PrRef carries that channel through, which is
+      // exactly what `Concierge.channelForPr` falls back to when there's no ticket/workspace route.
+      await p.poll(); // seed
+      const ev = await p.poll();
+      expect(ev).toHaveLength(1);
+      expect(ev[0]!.kind).toBe("review");
+      expect(ev[0]!.pr.channel).toBe("chan-open");
+      expect(ev[0]!.pr.ticket).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("re-watch refreshes a previously-unknown channel without replaying history", async () => {

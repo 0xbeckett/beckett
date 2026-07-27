@@ -8,12 +8,12 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Concierge, type ConciergeSession } from "./index.ts";
 import { validateConfig } from "../config.ts";
-import type { WatchRequest } from "../github/poll.ts";
+import { GitHubPrPoller, type WatchRequest } from "../github/poll.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
 
 const tmpDirs: string[] = [];
@@ -82,6 +82,41 @@ test("pr.watch forwards a hand-opened PR (channel stamped) to the wired registra
       author: "0xbeckett",
     },
   ]);
+});
+
+test("pr.watch through a real poller persists the origin channel onto the watch record", async () => {
+  // The end-to-end proof: register a PR the way `beckett gh pr create` does (over the bus), wired to
+  // a REAL GitHubPrPoller, and assert the origin channel actually lands on the poller's persisted
+  // watch record — the record `Concierge.channelForPr` reads to route the PR's events. Without it,
+  // a hand-opened cross-org PR (no origin ticket channel) has nothing to route on and is dropped.
+  const concierge = harness();
+  const dir = mkdtempSync(join(tmpdir(), "beckett-pr-watch-poller-"));
+  tmpDirs.push(dir);
+  const statePath = join(dir, "github-prs.json");
+  const poller = new GitHubPrPoller({
+    reader: { async prSignals() { throw new Error("unused"); } },
+    account: "0xbeckett",
+    logger: { info() {}, warn() {}, debug() {}, error() {}, child() { return this; } } as never,
+    statePath,
+    now: () => 1_000,
+  });
+  concierge.setPrWatchRegistrar((req) => poller.watch(req));
+
+  const res = await concierge.onBusRequest({
+    cmd: "pr.watch",
+    args: {
+      repo: "betterwright/betterwright",
+      number: 66,
+      url: "https://github.com/betterwright/betterwright/pull/66",
+      title: "reimplement #65",
+      channel: "chan-open",
+      author: "0xbeckett",
+    },
+  });
+  expect(res.ok).toBe(true);
+
+  const persisted = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, { channel?: string }>;
+  expect(persisted["betterwright/betterwright#66"]!.channel).toBe("chan-open");
 });
 
 test("pr.watch rejects an incomplete payload without touching the registrar", async () => {
