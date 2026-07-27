@@ -164,7 +164,7 @@ export const SPINE: SpineEntry[] = [
   },
   {
     id: "dream",
-    cliHelp: "dream ls|show <date>",
+    cliHelp: "dream ls|show <date> | dream propose|proposals ls|show|accept|reject",
     verbs: [{ name: "dream", load: async () => (await import("./dream-cli.ts")).runDream }],
   },
 

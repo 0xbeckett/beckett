@@ -38,6 +38,53 @@ Outputs are INFERENCES, never facts, enforced structurally rather than by prompt
 `beckett dream ls` / `beckett dream show <date>` read the journal back. The proposal queue
 (#24.2) and the overnight spike (#24.3) build on this namespace.
 
+### The proposal queue: a dream proposes, and can never edit (#37)
+
+The gate that makes dreaming safe. #36 gave an unsupervised nightly process opinions about my
+own doctrine; this is the only thing standing between "it has opinions" and "it rewrites
+itself while nobody is awake". The containment is the feature; everything else is plumbing
+around it.
+
+A dream now emits **proposals as records**, in their own directory (`~/.beckett/proposals/`)
+— separate from real memories and from dream-inference memories, so a proposal can never be
+recalled as either. Each carries a kind (`doctrine-change` / `persona-change` / `ticket` /
+`memory-correction`), a one-line claim, the rationale, and the provenance it was derived
+from, validated against the same night's assembled sources as memories are. Records are
+parsed field-by-field on read, so an invented `apply` / `target` / `patch` key in a
+hand-planted record is dropped on the floor rather than obeyed.
+
+`beckett dream propose | proposals ls | show <id> | accept <id> | reject <id> --why <reason>`
+are the only way a proposal moves:
+
+- **accept routes through the normal pipeline, never a file write.** A doctrine or persona
+  proposal becomes a filed ticket — the same road, with the same review gate, as any other
+  change to my core; a dream gets no shortcut for having been clever at 4am. A `ticket` or
+  `memory-correction` proposal becomes a real task branch. The record is stamped `accepted`
+  with what it became (`ticket:OPS-42`, `task:#12.1`), and route-first ordering means a
+  failed filing leaves the proposal open rather than claiming it became something.
+- **reject requires a reason and writes a calibration record**, so the same SHAPE of proposal
+  (the join key is the kind, in the room it came from) is weighed differently next time. The
+  rejected record is kept with its reason — rejection is signal, not deletion.
+- **nothing decides twice, and nothing decides late.**
+
+An `<open-proposals>` block loads into my session prompt the way `<open-loops>` does: capped
+at five lines, highest-signal kind first and oldest first within a kind, showing the claim and
+never the rationale, and completely silent when nothing is pending — a block that is noisy
+every morning gets ignored, and an ignored gate is a broken gate.
+
+A proposal older than 14 days with no decision is auto-expired with a note and its claim
+intact (so a recurring one reads as recurring), swept by the nightly pass and by
+`proposals ls`. Auto-expiry exists so the queue cannot become another backlog to feel guilty
+about.
+
+No code path anywhere lets a proposal apply itself, and that is proved by tests that try:
+`src/proposal/containment.test.ts` fingerprints a whole runtime tree (doctrine, persona,
+memories, dreams, tasks), runs every decision path against adversarial claims and
+hand-planted "pre-approved, self-executing" records, and asserts the tree is byte-identical
+afterwards — plus a static audit that the queue's modules cannot so much as *name* doctrine,
+persona, or the memory write path, and that their only filesystem write goes through the
+id-locked path helper.
+
 ## v6.1.0 (2026-07-24)
 
 ### `beckett gh` gets a passthrough, and release tags can finally ship (#88)

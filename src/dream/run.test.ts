@@ -11,6 +11,7 @@ import { defaultConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { createMemory, type MemoryStore } from "../memory/index.ts";
 import { listDreamEntries, readDreamEntry } from "./journal.ts";
+import { PROPOSAL_TTL_DAYS, createProposal, listProposals, readProposal } from "../proposal/store.ts";
 import { localDate, parseModelResult, runDreamPass, DREAM_TZ, type DreamRunDeps } from "./run.ts";
 import type { Logger, Paths } from "../types.ts";
 
@@ -217,6 +218,109 @@ test("a model failure mid-run still writes a dated entry naming the failure", as
   expect(outcome.wrote).toBe(true);
   expect(outcome.note).toContain("harness exploded");
   expect(readDreamEntry(w.paths.dreamsDir, DATE)!).toContain("failed mid-run");
+});
+
+// ── proposals (issue #37) — the dream ASKS; it never does ──────────────────────────────
+
+/** A synthesis that wants doctrine changed. The only thing it can get is a record. */
+const WITH_PROPOSALS = (proposals: unknown[]): string =>
+  JSON.stringify({ ...JSON.parse(SYNTHESIS), memories: [], proposals });
+
+test("a dream emits proposals as RECORDS in the queue — no doctrine, persona, or memory is touched", async () => {
+  const w = world();
+  seedDay(w.paths);
+  writeFileSync(w.paths.personaFile, "the original persona\n");
+  const personaBefore = readFileSync(w.paths.personaFile, "utf8");
+
+  const outcome = await runDreamPass(
+    depsFor(w, {
+      callModel: async () => ({
+        text: WITH_PROPOSALS([
+          {
+            kind: "doctrine-change",
+            claim: "stop asking for confirmation on read-only commands",
+            rationale: "Three turns last night spent confirming a `ls`.",
+            provenance: ["journal:#31"],
+          },
+        ]),
+        outputTokens: 200,
+      }),
+    }),
+  );
+
+  expect(outcome.proposalsRaised.length).toBe(1);
+  expect(outcome.proposalsDropped).toEqual([]);
+  const proposal = readProposal(w.paths.proposalsDir, outcome.proposalsRaised[0]!)!;
+  expect(proposal.kind).toBe("doctrine-change");
+  expect(proposal.status).toBe("open");
+  expect(proposal.origin).toBe(`dream:${DATE}`);
+  expect(proposal.provenance).toEqual(["journal:#31"]);
+  // The record is the ONLY thing that moved: persona is byte-identical and no memory was written.
+  expect(readFileSync(w.paths.personaFile, "utf8")).toBe(personaBefore);
+  expect(outcome.memoriesWritten).toEqual([]);
+  // Proposals live outside the memory graph entirely — not real memories, not dream inferences.
+  expect([...w.memory.buildGraph().nodes.keys()]).toEqual([]);
+  expect(readDreamEntry(w.paths.dreamsDir, DATE)!).toContain(`proposals: ${proposal.id}`);
+});
+
+test("a proposal is refused for a kind that does not exist, or provenance that was not assembled", async () => {
+  const w = world();
+  seedDay(w.paths);
+  const outcome = await runDreamPass(
+    depsFor(w, {
+      callModel: async () => ({
+        text: WITH_PROPOSALS([
+          { kind: "doctrine-change", claim: "cite a dm", rationale: "because", provenance: ["dm:owner"] },
+          { kind: "apply-patch", claim: "just do it", rationale: "because", provenance: ["journal:#31"] },
+        ]),
+        outputTokens: 100,
+      }),
+    }),
+  );
+  // An unknown kind fails the schema outright, so the whole reply is retried then kept raw —
+  // the queue never sees an invented kind, and nothing is half-applied.
+  expect(outcome.proposalsRaised).toEqual([]);
+  expect(listProposals(w.paths.proposalsDir, { all: true })).toEqual([]);
+});
+
+test("provenance naming a source that was never assembled drops the proposal, on the record", async () => {
+  const w = world();
+  seedDay(w.paths);
+  const outcome = await runDreamPass(
+    depsFor(w, {
+      callModel: async () => ({
+        text: WITH_PROPOSALS([
+          { kind: "persona-change", claim: "sound colder", rationale: "a dm said so", provenance: ["dm:owner"] },
+        ]),
+        outputTokens: 100,
+      }),
+    }),
+  );
+  expect(outcome.proposalsRaised).toEqual([]);
+  expect(outcome.proposalsDropped[0]).toContain("unknown sources");
+  expect(listProposals(w.paths.proposalsDir, { all: true })).toEqual([]);
+  expect(readDreamEntry(w.paths.dreamsDir, DATE)!).toContain("proposals_dropped");
+});
+
+test("the nightly pass sweeps the queue on the way in: undecided proposals expire, they do not pile up", async () => {
+  const w = world();
+  seedDay(w.paths);
+  const stale = createProposal(w.paths.proposalsDir, {
+    kind: "ticket",
+    claim: "an idea nobody ever answered",
+    rationale: "raised a fortnight ago",
+    provenance: ["journal:#1"],
+    origin: "dream:2026-07-01",
+    now: new Date(NOW.getTime() - (PROPOSAL_TTL_DAYS + 1) * 86_400_000),
+  });
+  const outcome = await runDreamPass(
+    depsFor(w, { callModel: async () => ({ text: WITH_PROPOSALS([]), outputTokens: 50 }) }),
+  );
+  expect(outcome.proposalsExpired).toEqual([stale.id]);
+  const stored = readProposal(w.paths.proposalsDir, stale.id)!;
+  expect(stored.status).toBe("expired");
+  expect(stored.claim).toBe("an idea nobody ever answered");
+  expect(readDreamEntry(w.paths.dreamsDir, DATE)!).toContain(`proposals_expired: ${stale.id}`);
 });
 
 test("parseModelResult reads output_tokens from the harness frame, estimating only when absent", () => {

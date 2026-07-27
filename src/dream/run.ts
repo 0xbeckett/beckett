@@ -14,7 +14,9 @@
  *      memories (`MemoryStore.rememberDream`, which forces `type: dream`/`inference: true`/a
  *      provenance list and refuses to touch any existing node). Proposed memories whose
  *      provenance names a source that was not actually assembled tonight are DROPPED, counted,
- *      and noted. Doctrine and persona have no write path here at all.
+ *      and noted. Doctrine and persona have no write path here at all — the pass can only PROPOSE
+ *      a change to them, as an inert record in the proposal queue ({@link ../proposal/store.ts},
+ *      issue #37) that a waking session has to accept before anything moves.
  *   2. **The budget is a ceiling, not a target.** Model OUTPUT tokens are summed across calls;
  *      before each call the remaining budget is checked, and tripping the ceiling stops the
  *      pass cleanly with a partial journal entry marked truncated — never a silent death. A
@@ -35,6 +37,7 @@ import { createMemory, DREAM_NAME_RE, type MemoryStore } from "../memory/index.t
 import { createChannelContextStore, type ChannelContextStore } from "../concierge/channel-context.ts";
 import { assembleDreamInputs, type DreamInputs, type DreamSourceSection } from "./assemble.ts";
 import { DREAM_TRUNCATED_LINE, dreamEntryPath, writeDreamEntry } from "./journal.ts";
+import { PROPOSAL_KINDS, createProposal, sweepExpiredProposals } from "../proposal/store.ts";
 
 /** The dream's home timezone — matches the builtin routine's fire window. */
 export const DREAM_TZ = "America/Los_Angeles";
@@ -43,6 +46,8 @@ export const DREAM_TZ = "America/Los_Angeles";
 const CONDENSE_AT_CHARS = 12_000;
 /** Most dream memories worth keeping per night; the rest is journal material. */
 const MEMORIES_PER_NIGHT_MAX = 5;
+/** Most proposals raisable per night (issue #37). The queue is a gate, not an inbox. */
+const PROPOSALS_PER_NIGHT_MAX = 3;
 /** Wall-clock cap per model call — a wedged child must not hold the nightly pass forever. */
 const MODEL_CALL_TIMEOUT_MS = 10 * 60_000;
 
@@ -84,6 +89,12 @@ export interface DreamRunOutcome {
   memoriesWritten: string[];
   /** Slugs dropped with the reason (bad provenance, over the cap, name collision…). */
   memoriesDropped: string[];
+  /** Proposal ids raised tonight (issue #37) — records in the queue, never edits. */
+  proposalsRaised: string[];
+  /** Proposed changes refused before they became records, with the reason. */
+  proposalsDropped: string[];
+  /** Proposal ids the pass auto-expired on the way in (14 days undecided). */
+  proposalsExpired: string[];
   note: string | null;
 }
 
@@ -101,6 +112,21 @@ const DreamSynthesisSchema = z.object({
         slug: z.string(),
         description: z.string(),
         note: z.string().optional(),
+        provenance: z.array(z.string()).min(1),
+      }),
+    )
+    .default([]),
+  /**
+   * Proposed changes to how I work (issue #37). These become RECORDS in the proposal queue —
+   * the schema has no field for a file, a path, or a patch, because a dream cannot make a
+   * change, only ask a waking session for one.
+   */
+  proposals: z
+    .array(
+      z.object({
+        kind: z.enum(PROPOSAL_KINDS),
+        claim: z.string(),
+        rationale: z.string(),
         provenance: z.array(z.string()).min(1),
       }),
     )
@@ -127,6 +153,9 @@ export async function runDreamPass(deps: DreamRunDeps): Promise<DreamRunOutcome>
     budget,
     memoriesWritten: [],
     memoriesDropped: [],
+    proposalsRaised: [],
+    proposalsDropped: [],
+    proposalsExpired: [],
     note: null,
   };
 
@@ -137,6 +166,14 @@ export async function runDreamPass(deps: DreamRunDeps): Promise<DreamRunOutcome>
     outcome.note = (err as Error).message;
     logger.info("dream: skipped", { date, note: outcome.note });
     return outcome;
+  }
+
+  // The queue is swept on the way in, before anything is added to it: an undecided proposal is
+  // expired with its claim intact rather than left to pile up into a backlog to feel guilty about.
+  try {
+    outcome.proposalsExpired = sweepExpiredProposals(paths.proposalsDir, now).map((p) => p.id);
+  } catch (err) {
+    logger.warn("dream: proposal expiry sweep failed", { error: String(err) });
   }
 
   const memory = deps.memory !== undefined ? deps.memory : defaultMemory(paths, logger);
@@ -165,6 +202,9 @@ export async function runDreamPass(deps: DreamRunDeps): Promise<DreamRunOutcome>
       truncated: outcome.truncated,
       memoriesWritten: outcome.memoriesWritten,
       memoriesDropped: outcome.memoriesDropped,
+      proposalsRaised: outcome.proposalsRaised,
+      proposalsDropped: outcome.proposalsDropped,
+      proposalsExpired: outcome.proposalsExpired,
       body,
     });
     outcome.path = writeDreamEntry(paths.dreamsDir, date, entry, { force: deps.force });
@@ -287,6 +327,34 @@ export async function runDreamPass(deps: DreamRunDeps): Promise<DreamRunOutcome>
       }
     }
 
+    // 4. Proposals (issue #37) — RECORDS in the queue, checked against the same provenance
+    //    vocabulary as the memories. A proposal is the only way this pass can reach doctrine,
+    //    persona, or an existing memory, and it reaches them by asking, not by writing.
+    const wanted = synthesis.proposals.slice(0, PROPOSALS_PER_NIGHT_MAX);
+    for (const extra of synthesis.proposals.slice(PROPOSALS_PER_NIGHT_MAX)) {
+      outcome.proposalsDropped.push(`${extra.kind} (over the ${PROPOSALS_PER_NIGHT_MAX}-per-night cap)`);
+    }
+    for (const p of wanted) {
+      const unknown = p.provenance.filter((s) => !known.has(s.trim()));
+      if (unknown.length) {
+        outcome.proposalsDropped.push(`${p.kind} (provenance names unknown sources: ${unknown.join(", ")})`);
+        continue;
+      }
+      try {
+        const record = createProposal(paths.proposalsDir, {
+          kind: p.kind,
+          claim: p.claim,
+          rationale: p.rationale,
+          provenance: p.provenance.map((s) => s.trim()),
+          origin: `dream:${date}`,
+          now,
+        });
+        outcome.proposalsRaised.push(record.id);
+      } catch (err) {
+        outcome.proposalsDropped.push(`${p.kind} (${(err as Error).message})`);
+      }
+    }
+
     return finish(synthesisBody(synthesis), { truncated: remaining() <= 0 });
   } catch (err) {
     // "Rather than dying silently": a model/system failure still leaves a dated, honest entry.
@@ -309,6 +377,9 @@ interface ComposeInput {
   truncated: boolean;
   memoriesWritten: string[];
   memoriesDropped: string[];
+  proposalsRaised: string[];
+  proposalsDropped: string[];
+  proposalsExpired: string[];
   body: string[];
 }
 
@@ -324,6 +395,9 @@ function composeEntry(c: ComposeInput): string {
     `sources: ${c.inputs.sourceIds.join(", ") || "(none)"}`,
     `memories: ${c.memoriesWritten.join(", ") || "(none)"}`,
     ...(c.memoriesDropped.length ? [`memories_dropped: ${c.memoriesDropped.join("; ")}`] : []),
+    `proposals: ${c.proposalsRaised.join(", ") || "(none)"}`,
+    ...(c.proposalsDropped.length ? [`proposals_dropped: ${c.proposalsDropped.join("; ")}`] : []),
+    ...(c.proposalsExpired.length ? [`proposals_expired: ${c.proposalsExpired.join(", ")}`] : []),
     ...(c.inputs.notes.length ? [`notes: ${c.inputs.notes.join("; ")}`] : []),
     "-->",
     "",
@@ -403,10 +477,15 @@ function synthesisPrompt(inputs: DreamInputs, date: string): string {
     "                    keeping beyond tonight. Each: {\"slug\": kebab-case, \"description\": one",
     "                    line, \"note\": short markdown body, \"provenance\": array of source ids",
     "                    FROM THE LIST BELOW that the inference is actually derived from}.",
+    '  "proposals":      array (0–' + String(PROPOSALS_PER_NIGHT_MAX) + " entries; most nights 0) of changes to how you WORK that",
+    "                    tonight actually earned. Each: {\"kind\": one of " + PROPOSAL_KINDS.join("|") + ",",
+    "                    \"claim\": ONE line stating the change, \"rationale\": why, \"provenance\":",
+    "                    array of source ids FROM THE LIST BELOW}.",
     "",
-    "Rules: these are inferences, not facts — do not state them as observations. Do not propose",
-    "doctrine, persona, or memory edits; you cannot make them and this pass will refuse. A quiet",
-    "day deserves a short entry, not padding.",
+    "Rules: these are inferences, not facts — do not state them as observations. You cannot EDIT",
+    "doctrine, persona, or any memory — not tonight, not ever; a proposal is the only door, and a",
+    "waking session decides it. Do not describe a file, a path, or a patch: state the claim. A",
+    "quiet day deserves a short entry, not padding, and no proposals at all.",
     "",
     `Valid provenance ids: ${inputs.sourceIds.join(", ") || "(none)"}`,
     ...(inputs.notes.length ? ["", `Assembly caveats: ${inputs.notes.join("; ")}`] : []),

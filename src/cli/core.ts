@@ -78,7 +78,7 @@ const RESTRICTED_PROJECT = (process.env.BECKETT_SELF_PROJECT?.trim() || "beckett
  * yourself"), and to confirm with the user only when the routing is genuinely ambiguous (volition
  * doctrine — the request is the confirmation; the review pipeline is the safety).
  */
-function guardRestrictedProject(project: string | undefined, confirmed: boolean): void {
+export function guardRestrictedProject(project: string | undefined, confirmed: boolean): void {
   if (!project) return; // no project → per-ticket sandbox, never the self-repo
   if (projectSlug(project) !== RESTRICTED_PROJECT) return;
   if (confirmed) return;

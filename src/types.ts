@@ -632,6 +632,7 @@ export interface Paths {
   presetsFile: string; // <beckettDir>/presets.json — user-defined named cast presets (OPS-110)
   journalDir: string; // <beckettDir>/journal — private per-ticket worker progress journals
   dreamsDir: string; // <beckettDir>/dreams — nightly dream journal entries (issue #36)
+  proposalsDir: string; // <beckettDir>/proposals — the dream proposal queue (issue #37)
   workspacesFile: string; // <beckettDir>/workspaces.json — user-opened thread → ticket routing
 }
 
