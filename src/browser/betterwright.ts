@@ -42,8 +42,6 @@ const MAX_LEASES_HARD_CAP = 16;
 const MAX_PROFILE_BYTES = 512 * 1024 * 1024;
 /** Per-lease growth allowance, measured from each lease's own acquire baseline. */
 const MAX_PROFILE_GROWTH_BYTES = 100 * 1024 * 1024;
-/** Bound bridge source while retaining enough screenshots for a normal agent run. */
-const MAX_ATTACHMENTS_PER_LEASE = 64;
 /** Prune disposable caches before they can make a dormant profile unavailable. */
 const PROFILE_PRUNE_HIGH_WATER_MARK = 0.7;
 
@@ -244,9 +242,6 @@ export function createBetterWrightRuntime(
       const target = join(resolve(lease.artifactsDir), `betterwright-${Date.now()}-${copied.length}-${basename(image.path)}`);
       copyFileSync(image.path, target);
       lease.attachments.set(target, image.path);
-      while (lease.attachments.size > MAX_ATTACHMENTS_PER_LEASE) {
-        lease.attachments.delete(lease.attachments.keys().next().value!);
-      }
       copied.push(target);
     }
     return copied;

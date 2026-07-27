@@ -266,6 +266,13 @@ test("evaluator never receives a screenshot path and daemon delivers a trusted P
     expect(evaluated.value).toBe("[screenshot queued: shot-link]");
     expect(evaluated.screenshots).toHaveLength(1);
     expect(evaluated.screenshots[0]).not.toContain(join("nofollow", "artifacts"));
+    // The display copy is deleted by MCP after vision delivery; the separately
+    // reported source remains a validated same-run path for attachFile.
+    expect(evaluated.attachments).toHaveLength(1);
+    expect(evaluated.attachments![0]).toContain(join("nofollow", "artifacts"));
+    expect(readFileSync(evaluated.attachments![0]!).subarray(0, 8)).toEqual(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    );
     expect(readFileSync(evaluated.screenshots[0]!).subarray(0, 8)).toEqual(
       Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     );
