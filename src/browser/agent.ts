@@ -30,7 +30,7 @@ export interface BrowserAgentRun {
   requesterId: string;
   /** Jingle entry backing this run's `secrets` object; the name only — values stay in memory. */
   credsEntry: string | null;
-  /** Dispatch-time conversation background; persisted so a queued run keeps it across a restart. */
+  /** Dispatch-time conversation background, retained in the durable ledger for the run record. */
   context: string | null;
   startedAt: number;
   finishedAt: number | null;
@@ -524,7 +524,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     const { run } = dispatch;
     starting = dispatch;
     try {
-      // A run re-queued across a restart lost its in-memory secrets; re-read them at start.
+      // A queued run deliberately holds no secret values; resolve its named entry only at start.
       if (!dispatch.secrets && run.credsEntry) {
         if (!keychain) throw new Error("keychain credentials are unavailable - jingle reader is not wired");
         dispatch.secrets = await keychain.read(run.credsEntry);
@@ -843,7 +843,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
         // The keychain read above stays fail-fast VALIDATION only: secret values must not sit
         // in daemon memory for an unbounded queue wait, so they are dropped here and re-read
         // by startDispatch when the lease frees (credsEntry set + secrets null — the same
-        // path a post-restart requeue takes).
+        // path a queued dispatch takes when it reaches the lease).
         dispatch.secrets = null;
         queue.push(dispatch);
         persistLedger();

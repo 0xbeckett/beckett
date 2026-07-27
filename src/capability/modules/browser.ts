@@ -11,7 +11,7 @@
  *   2. the per-run `claude -p` LEG subprocesses, owned by the background {@link BrowserAgent}.
  *
  * Ordering constraints the lifecycle carries (they are the reason the hooks split this way):
- *   - `start` (agent.recover — the durable-ledger re-report + queued-run re-queue) rides the
+ *   - `start` (agent.recover — the durable-ledger restart-cancellation re-report) rides the
  *     registry's startAll sweep, which `shell/main.ts` runs AFTER `concierge.start()` and the
  *     dispatcher's crash recovery — outcomes must never re-report into a dead concierge.
  *   - `stop` settles live runs first (`agent.stopAll`) and only THEN kills the host
@@ -309,7 +309,7 @@ export const createBrowserExtension =
             });
         },
         // Rides the registry's startAll sweep — after concierge.start() and dispatcher crash
-        // recovery — so stranded-run re-reports land in a live concierge and queued runs re-queue.
+        // recovery — so restart-cancellation reports land in a live concierge.
         start: async () => {
           await requireAgent().recover();
         },
