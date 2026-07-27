@@ -301,3 +301,27 @@ exports[`bus: an unknown command is refused with the exact unknown-command shape
   "ok": false,
 }
 `;
+
+exports[`bus: pr.watch validates repo/number/url and no-ops without a wired poller (#31) 1`] = `
+{
+  "error": "pr.watch needs repo, a positive number, and url",
+  "ok": false,
+}
+`;
+
+exports[`bus: pr.watch validates repo/number/url and no-ops without a wired poller (#31) 2`] = `
+{
+  "error": "pr.watch needs repo, a positive number, and url",
+  "ok": false,
+}
+`;
+
+exports[`bus: pr.watch validates repo/number/url and no-ops without a wired poller (#31) 3`] = `
+{
+  "data": {
+    "reason": "no GitHub poller (no PAT?)",
+    "watching": false,
+  },
+  "ok": true,
+}
+`;

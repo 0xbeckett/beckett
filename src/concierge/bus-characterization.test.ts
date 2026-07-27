@@ -112,6 +112,18 @@ test("bus: ticket.courier without a wired dispatcher is refused", async () => {
   expect(await run("ticket.courier", { id: "OPS-1" })).toMatchSnapshot();
 });
 
+test("bus: pr.watch validates repo/number/url and no-ops without a wired poller (#31)", async () => {
+  expect(await run("pr.watch", {})).toMatchSnapshot();
+  expect(await run("pr.watch", { repo: "x/y", number: 0, url: "u" })).toMatchSnapshot();
+  expect(
+    await run("pr.watch", {
+      repo: "betterwright/betterwright",
+      number: 66,
+      url: "https://github.com/betterwright/betterwright/pull/66",
+    }),
+  ).toMatchSnapshot();
+});
+
 // ── status ────────────────────────────────────────────────────────────────────────────────
 
 test("bus: status assembles discord + concierge halves (no provider wired)", async () => {
