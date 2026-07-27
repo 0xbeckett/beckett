@@ -1401,6 +1401,62 @@ const BROWSER_USAGE =
   '  |  beckett browser stop <run-id> [--reason "<why>"]\n' +
   '  |  beckett browser exec "<betterwright javascript>"';
 
+const BROWSER_SUBCOMMANDS = ["status", "watch", "steer", "stop", "exec"] as const;
+const BROWSER_SUBCOMMAND_ALIASES: Record<string, (typeof BROWSER_SUBCOMMANDS)[number]> = {
+  list: "status",
+  ls: "status",
+  ps: "status",
+  logs: "watch",
+  log: "watch",
+  show: "status",
+  info: "status",
+  help: "status",
+  run: "status",
+  task: "status",
+};
+
+function editDistanceAtMostOne(left: string, right: string): boolean {
+  if (Math.abs(left.length - right.length) > 1) return false;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < left.length && j < right.length) {
+    if (left[i] === right[j]) {
+      i++;
+      j++;
+    } else if (++edits > 1) {
+      return false;
+    } else if (left.length > right.length) {
+      i++;
+    } else if (left.length < right.length) {
+      j++;
+    } else {
+      i++;
+      j++;
+    }
+  }
+  return edits + (left.length - i) + (right.length - j) <= 1;
+}
+
+/**
+ * Detect the easy-to-make `browser ls`/`browser stats` mistake before it can consume a browser
+ * lane. This only considers one unflagged, whitespace-free positional, so real task prose is
+ * never mistaken for a subcommand.
+ */
+export function browserTaskSubcommandMistake(argv: string[]): { token: string; nearest: string } | null {
+  const { _, flags } = parse(argv);
+  if (_.length !== 1 || Object.keys(flags).length !== 0) return null;
+  const token = _[0]!;
+  if (!token || /\s/.test(token)) return null;
+
+  const normalized = token.toLowerCase();
+  const alias = BROWSER_SUBCOMMAND_ALIASES[normalized];
+  if (alias) return { token, nearest: alias };
+
+  const nearest = BROWSER_SUBCOMMANDS.find((subcommand) => editDistanceAtMostOne(normalized, subcommand));
+  return nearest ? { token, nearest } : null;
+}
+
 export async function runBrowser(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   if (sub === "status") {
@@ -1452,7 +1508,15 @@ export async function runBrowser(argv: string[]): Promise<void> {
       fail((err as Error).message);
     }
   }
-  const { _, flags } = parse(sub === "run" ? rest : argv);
+  const dispatchArgv = sub === "run" ? rest : argv;
+  const mistakenSubcommand = browserTaskSubcommandMistake(dispatchArgv);
+  if (mistakenSubcommand) {
+    fail(
+      `"${mistakenSubcommand.token}" looks like a browser subcommand; ` +
+        `did you mean \`beckett browser ${mistakenSubcommand.nearest}\`?\n${BROWSER_USAGE}`,
+    );
+  }
+  const { _, flags } = parse(dispatchArgv);
   const task = _.join(" ").trim();
   if (!task) {
     fail(BROWSER_USAGE);
