@@ -48,6 +48,7 @@ import {
   type BrowserEvaluatorSession,
 } from "./evaluator-runner.ts";
 import { createIsolatedBrowserRuntime } from "./isolated.ts";
+import { pruneChromeProfileCaches } from "./profile-cache.ts";
 import { sleep, spawnSubprocess, type SpawnedProcess, type SpawnProcess } from "./subprocess.ts";
 
 const MAX_CODE_CHARS = 100_000;
@@ -61,6 +62,7 @@ const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_DOWNLOADS_PER_LEASE = 4;
 const MAX_PROFILE_BYTES = 512 * 1024 * 1024;
 const MAX_PROFILE_GROWTH_BYTES = 100 * 1024 * 1024;
+const PROFILE_PRUNE_HIGH_WATER_MARK = 0.7;
 const PROFILE_WATCH_MIN_INTERVAL_MS = 100;
 const PROFILE_WATCH_MAX_INTERVAL_MS = 2_000;
 const CONTROLLER_GUARD_INTERVAL_MS = 100;
@@ -1197,7 +1199,22 @@ export function createLocalBrowserRuntime(deps: CreateLocalBrowserRuntimeDeps): 
 
       // Reserve before the first await so concurrent cold-start calls cannot both acquire.
       reserved = { ...lease };
+      let cachePruneReclaimed: number | null = null;
       try {
+        let profileBytes = await allocatedDirectoryBytes(profileDir, maxProfileBytes + 1);
+        if (profileBytes > maxProfileBytes * PROFILE_PRUNE_HIGH_WATER_MARK) {
+          // A warm persistent context may still own this profile after the prior
+          // lease. Close it first; pruning an open Chrome profile is unsafe.
+          if (context) await closeContext(context);
+          cachePruneReclaimed = (await pruneChromeProfileCaches(profileDir)).reclaimedBytes;
+          profileBytes = await allocatedDirectoryBytes(profileDir, maxProfileBytes + 1);
+        }
+        if (profileBytes > maxProfileBytes) {
+          const pruneDetail = cachePruneReclaimed === null
+            ? "cache prune was not needed"
+            : `cache prune reclaimed ${cachePruneReclaimed} bytes, still over`;
+          throw new Error(`browser profile storage budget exceeded (${pruneDetail}; profile=${profileBytes}, lease growth=0 bytes)`);
+        }
         const ctx = await ensureContext();
         if (stopped || reserved?.runId !== lease.runId) throw new Error("browser acquisition was interrupted");
         mkdirSync(lease.artifactsDir, { recursive: true, mode: 0o700 });
@@ -1207,7 +1224,7 @@ export function createLocalBrowserRuntime(deps: CreateLocalBrowserRuntimeDeps): 
         active = {
           ...lease,
           activePage: page,
-          events: [],
+          events: cachePruneReclaimed === null ? [] : [`[profile cache pruned] reclaimed ${cachePruneReclaimed} bytes`],
           screenshots: [],
           state: Object.create(null),
           pendingDownloads: new Set(),

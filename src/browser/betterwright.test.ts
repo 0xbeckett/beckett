@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -304,6 +304,28 @@ test("the kill switch also engages via the singleLease dep override", async () =
   });
   try {
     expect(runtime.maxConcurrentLeases).toBe(1);
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("acquire prunes an oversized disposable cache before warming a lease", async () => {
+  const settings = settingsFor();
+  const defaultDir = join(settings.profileDir, "betterwright", "browser", "profile", "Default");
+  mkdirSync(join(defaultDir, "Cache"), { recursive: true });
+  writeFileSync(join(defaultDir, "Cache", "large.bin"), Buffer.alloc(256 * 1024));
+  writeFileSync(join(defaultDir, "Cookies"), "signed-in");
+  const fake = new FakeBetterWright();
+  const runtime = createBetterWrightRuntime(settings, quietLog, {
+    createBrowser: () => fake,
+    maxProfileBytes: 128 * 1024,
+  });
+  try {
+    await runtime.acquire(leaseFor("cache-recovery"));
+    expect(existsSync(join(defaultDir, "Cache"))).toBe(false);
+    expect(readFileSync(join(defaultDir, "Cookies"), "utf8")).toBe("signed-in");
+    const result = await runtime.evaluate("cache-recovery", "return 1");
+    expect(result.events.join("\n")).toContain("profile cache pruned] reclaimed");
   } finally {
     await runtime.stop();
   }

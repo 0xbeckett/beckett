@@ -19,10 +19,10 @@
  */
 
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { BetterWright, NetworkPolicy, piImageArtifacts } from "betterwright";
 import type { Logger } from "../types.ts";
+import { measureDirectoryBytes, pruneChromeProfileCaches } from "./profile-cache.ts";
 import type {
   BrowserCheckpoint,
   BrowserEvalResult,
@@ -42,6 +42,8 @@ const MAX_LEASES_HARD_CAP = 16;
 const MAX_PROFILE_BYTES = 512 * 1024 * 1024;
 /** Per-lease growth allowance, measured from each lease's own acquire baseline. */
 const MAX_PROFILE_GROWTH_BYTES = 100 * 1024 * 1024;
+/** Prune disposable caches before they can make a dormant profile unavailable. */
+const PROFILE_PRUNE_HIGH_WATER_MARK = 0.7;
 
 /** The slice of the betterwright client this adapter drives; injectable for tests. */
 export interface BetterWrightClient {
@@ -135,26 +137,6 @@ function boundedBudget(value: number | undefined, hardLimit: number): number {
   return Math.min(hardLimit, Math.floor(value));
 }
 
-/** Best-effort allocated-bytes scan of the shared profile; races are treated as stable. */
-async function measureDirectoryBytes(root: string, stopAfter = Number.POSITIVE_INFINITY): Promise<number> {
-  const pending = [root];
-  let total = 0;
-  while (pending.length > 0 && total <= stopAfter) {
-    const current = pending.pop()!;
-    try {
-      const stat = await lstat(current);
-      if (stat.isSymbolicLink()) continue;
-      total += Number.isFinite(stat.blocks) && stat.blocks > 0 ? stat.blocks * 512 : Math.max(0, stat.size);
-      if (stat.isDirectory()) {
-        for (const entry of await readdir(current)) pending.push(join(current, entry));
-      }
-    } catch {
-      // Chromium churns cache files under the profile; the next scan sees stable state.
-    }
-  }
-  return total;
-}
-
 export function createBetterWrightRuntime(
   settings: BrowserHostSettings,
   logger: Logger,
@@ -170,7 +152,8 @@ export function createBetterWrightRuntime(
   const maxLeases = killSwitch ? 1 : Math.min(MAX_LEASES_HARD_CAP, Math.max(1, configuredMax));
   const maxProfileBytes = boundedBudget(deps.maxProfileBytes, MAX_PROFILE_BYTES);
   const maxProfileGrowthBytes = boundedBudget(deps.maxProfileGrowthBytes, MAX_PROFILE_GROWTH_BYTES);
-  const measureProfileBytes = deps.measureProfileBytes ?? (() => measureDirectoryBytes(home, maxProfileBytes + 1));
+  const profileRoot = resolve(settings.profileDir);
+  const measureProfileBytes = deps.measureProfileBytes ?? (() => measureDirectoryBytes(profileRoot, maxProfileBytes + 1));
 
   const createBrowser = deps.createBrowser ?? ((options) => new BetterWright(options) as unknown as BetterWrightClient);
   const browser = createBrowser({
@@ -345,7 +328,22 @@ export function createBetterWrightRuntime(
       leases.set(active.session, active);
       launches++;
       try {
-        active.profileBytesAtAcquire = await measureProfileBytes();
+        let profileBytes = await measureProfileBytes();
+        let cachePruneReclaimed: number | null = null;
+        if (profileBytes > maxProfileBytes * PROFILE_PRUNE_HIGH_WATER_MARK && leases.size === 1) {
+          // This is before BetterWright starts a session. With another lease live its
+          // worker may own the profile, so never risk deleting a cache under Chrome.
+          cachePruneReclaimed = (await pruneChromeProfileCaches(profileRoot)).reclaimedBytes;
+          profileBytes = await measureProfileBytes();
+          pushLeaseEvent(active, `[profile cache pruned] reclaimed ${cachePruneReclaimed} bytes`);
+        }
+        if (profileBytes > maxProfileBytes) {
+          const pruneDetail = cachePruneReclaimed === null
+            ? "cache prune was skipped while another browser lease was active"
+            : `cache prune reclaimed ${cachePruneReclaimed} bytes, still over`;
+          throw new Error(`browser profile storage budget exceeded for run ${lease.runId} (${pruneDetail}; profile=${profileBytes}, lease growth=0 bytes)`);
+        }
+        active.profileBytesAtAcquire = profileBytes;
         // Start the BetterWright worker now so unavailable browser setup fails
         // before the agent begins its turn.
         await runOnLease(active, () => execute(active, "return page.url()"));
