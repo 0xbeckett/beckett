@@ -105,6 +105,15 @@ class FakeGateway implements DiscordGateway {
     if (index >= 0) this.posts.splice(index, 1);
   }
 
+  async fetchMessageAuthorId(channelId: string, messageId: string): Promise<string | null> {
+    const post = this.posts.find((p) => p.channelId === channelId && p.id === messageId);
+    return post ? this.botUserId() : null;
+  }
+
+  botUserId(): string {
+    return "fake-bot";
+  }
+
   async sendTyping(channelId: string): Promise<void> {
     this.typings.push(channelId);
   }
