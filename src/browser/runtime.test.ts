@@ -474,7 +474,7 @@ test("an oversized persistent profile is rejected before Chromium starts", async
       channelId: null,
       artifactsDir: join(dir, "browser-agent", "oversized-profile", "artifacts"),
       controlToken: CONTROL_TOKEN,
-    })).rejects.toThrow("storage ceiling");
+    })).rejects.toThrow("cache prune reclaimed 0 bytes, still over");
     expect(runtime.stats().launches).toBe(0);
   } finally {
     await runtime.stop();
