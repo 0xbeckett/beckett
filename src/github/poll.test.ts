@@ -3,7 +3,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitHubPrPoller } from "./poll.ts";
-import { parsePrUrl, type PrSignals } from "./types.ts";
+import { parsePrUrl, type GitHubPrReader, type PrSignals } from "./types.ts";
 
 const quiet = { info() {}, warn() {}, debug() {}, error() {}, child() { return quiet; } } as const;
 
@@ -195,12 +195,98 @@ describe("GitHubPrPoller", () => {
     expect((await p.poll()).map((e) => e.kind)).toEqual(["closed"]);
   });
 
-  test("PRs outside our org are never watched (v1 scope)", async () => {
+  test("a cross-org PR we opened is watched and polled (#31 — no org gate)", async () => {
+    const r = new FakeReader();
+    r.set("betterwright/betterwright", 65, [
+      signals({ url: "https://github.com/betterwright/betterwright/pull/65", number: 65 }),
+      signals({
+        url: "https://github.com/betterwright/betterwright/pull/65",
+        number: 65,
+        reviews: [rev("r1", "upstreamer", "CHANGES_REQUESTED")],
+      }),
+    ]);
+    const p = poller(r);
+    p.watch({
+      ...WATCH,
+      repo: "betterwright/betterwright",
+      url: "https://github.com/betterwright/betterwright/pull/65",
+      number: 65,
+    });
+    expect(p.stats().watching).toBe(1);
+    await p.poll(); // seed
+    const ev = await p.poll();
+    expect(ev).toHaveLength(1);
+    expect(ev[0]!.kind).toBe("review");
+    expect(ev[0]!.pr.repo).toBe("betterwright/betterwright");
+  });
+
+  test("the defensive author check refuses a PR we did not author", async () => {
     const r = new FakeReader();
     const p = poller(r);
-    p.watch({ ...WATCH, repo: "someoneelse/foo", url: "https://github.com/someoneelse/foo/pull/1", number: 1 });
-    expect(await p.poll()).toEqual([]);
+    // A registration that stamps an author who is NOT us is the one thing the gate rejects.
+    p.watch({ ...WATCH, repo: "someoneelse/foo", number: 1, author: "someoneelse" });
     expect(p.stats().watching).toBe(0);
+    // An absent author is the vouched-ours common case and IS watched, even cross-org.
+    p.watch({ ...WATCH, repo: "someoneelse/foo", number: 1 });
+    expect(p.stats().watching).toBe(1);
+    // Our own login stamped explicitly is fine too (case-insensitive).
+    p.watch({ ...WATCH, repo: "someoneelse/bar", number: 2, author: "0XBECKETT" });
+    expect(p.stats().watching).toBe(2);
+  });
+
+  test("a watched repo that goes unreadable (404/403) is dropped once, not re-polled forever", async () => {
+    const r = new FakeReader();
+    r.set("0xbeckett/foo", 96, [signals()]); // seeds fine first
+    // A reader that throws a 404-style message for a repo that vanished under us.
+    const gone: GitHubPrReader = {
+      async prSignals() {
+        throw new Error("gh pr view (signals) failed (1): GraphQL: Could not resolve to a Repository with the name 'x/y'. (repository)");
+      },
+    };
+    const dir = mkdtempSync(join(tmpdir(), "gh-poll-"));
+    const statePath = join(dir, "github-prs.json");
+    try {
+      const p = new GitHubPrPoller({ reader: gone, account: "0xbeckett", logger: quiet as never, statePath, now: () => 1_000 });
+      p.watch({ ...WATCH });
+      expect(p.stats().watching).toBe(1);
+      expect(await p.poll()).toEqual([]); // 404 → dropped, no throw, no event
+      expect(p.stats().watching).toBe(0);
+      // The drop is durable: it is gone from the registry file, so it is never re-polled.
+      const reloaded = new GitHubPrPoller({ reader: gone, account: "0xbeckett", logger: quiet as never, statePath, now: () => 1_000 });
+      expect(reloaded.stats().watching).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a hand-opened cross-org PR survives a simulated restart (persisted registry)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gh-poll-"));
+    const statePath = join(dir, "github-prs.json");
+    try {
+      // Open by hand on a third-party upstream: registered + persisted, never seeded (no poll yet).
+      const r1 = new FakeReader();
+      const p1 = poller(r1, { statePath });
+      p1.watch({
+        repo: "betterwright/betterwright",
+        number: 66,
+        url: "https://github.com/betterwright/betterwright/pull/66",
+        title: "reimplement #65",
+        channel: "chan-open",
+      });
+      expect(existsSync(statePath)).toBe(true);
+
+      // Restart: a fresh poller re-loads it from the registry file with its routing intact, then
+      // baselines on the first read and emits nothing (no spurious refire of pre-existing history).
+      const r2 = new FakeReader();
+      r2.set("betterwright/betterwright", 66, [
+        signals({ url: "https://github.com/betterwright/betterwright/pull/66", number: 66 }),
+      ]);
+      const p2 = poller(r2, { statePath });
+      expect(p2.stats().watching).toBe(1);
+      expect(await p2.poll()).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("persisted state means a restart never re-fires an already-surfaced review", async () => {

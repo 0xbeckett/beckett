@@ -456,6 +456,13 @@ async function boot(): Promise<BootedSystem> {
     for (const p of pollers.values()) p.poke();
   });
 
+  // #31: a PR opened by hand from the concierge seat (`beckett gh pr create`) reaches the poller
+  // through the `pr.watch` bus op, which lands here. Wired only when a poller exists (a PAT is set);
+  // otherwise the bus op reports its clean no-op. `watch` persists immediately, so a hand-opened PR
+  // is durable the same way a dispatcher-opened one is and re-arms across a restart via the poller's
+  // registry file.
+  if (prPoller) concierge.setPrWatchRegistrar((req) => prPoller.watch(req));
+
   // Extension registration (the registry itself is constructed above, pre-dispatcher — Phase 5).
   // Phase 1 organs (stateless) register here; later phases move a migrating organ's setup into
   // lifecycle.{init,start} instead of adding boot lines.
@@ -592,14 +599,20 @@ async function boot(): Promise<BootedSystem> {
   });
   await statusDashboard.start();
   if (prPoller) {
-    // Re-arm the watch list from the registry after a restart. This used to skip every task with
-    // no `threadId` and route the rest at that thread, which made sense only while Beckett opened
-    // a thread per task: under the user-owned thread model `threadId` is almost never set (`&12`
-    // writes the workspace registry, not the task), so the skip silently stopped watching nearly
-    // every open PR across a restart. Watch them all and stamp the ORIGIN channel as the
-    // fallback; the live destination is resolved per event in `Concierge.channelForPr`, which
-    // consults the workspace registry. Re-watching is safe: a known PR only refreshes its
-    // routing, and a newly-seeded one records its current state and emits nothing.
+    // Re-arm the watch list after a restart. Two sources, both restored here. (1) Hand-opened PRs
+    // (`beckett gh pr create`, #31) live ONLY in the poller's own persisted registry
+    // (github-prs.json) — its constructor already re-loaded them via `load()`, so they survive a
+    // restart with no work needed in this loop. (2) Task-branch PRs live in the task store, a
+    // separate file, and are re-watched below.
+    //
+    // This loop used to skip every task with no `threadId` and route the rest at that thread, which
+    // made sense only while Beckett opened a thread per task: under the user-owned thread model
+    // `threadId` is almost never set (`&12` writes the workspace registry, not the task), so the
+    // skip silently stopped watching nearly every open PR across a restart. Watch them all and stamp
+    // the ORIGIN channel as the fallback; the live destination is resolved per event in
+    // `Concierge.channelForPr`, which consults the workspace registry. Re-watching is safe: a known
+    // PR only refreshes its routing, and a newly-seeded one records its current state and emits
+    // nothing.
     for (const task of tasks.list()) {
       for (const branch of task.branches) {
         if (!branch.pullRequest || !branch.ticket) continue;

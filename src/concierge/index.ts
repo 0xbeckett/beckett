@@ -35,6 +35,7 @@ import pkg from "../../package.json" with { type: "json" };
 import type { Config, IncomingMessage, Logger, ProactivityMode, ThreadCreated } from "../types.ts";
 import type { PollEvent, TicketComment, Ticket } from "../tracker/types.ts";
 import type { PrPollEvent, PrRef } from "../github/types.ts";
+import type { WatchRequest } from "../github/poll.ts";
 import type { GitHubActivityEvent } from "../github/activity.ts";
 import { resolveGitHubOwner } from "../github/owner.ts";
 import { log as rootLog } from "../log.ts";
@@ -1759,6 +1760,14 @@ export class Concierge {
    */
   private ticketFiledListener: (() => void) | null = null;
   /**
+   * Registers a hand-opened PR with the daemon's GitHub poller (#31). v4-main wires this to
+   * `prPoller.watch` when a PAT (and thus a poller) exists; null otherwise, so the `pr.watch` bus
+   * op then reports a clean no-op instead of half-working. Serves `beckett gh pr create`'s
+   * best-effort registration so a PR opened by hand — including a cross-org upstream PR — gets a
+   * watcher too, not just the ones the dispatcher opens for a ticket.
+   */
+  private prWatchRegistrar: ((req: WatchRequest) => void) | null = null;
+  /**
    * The quick-agent runner wired in by v4-main — serves `beckett quick …` from the
    * control bus (the NO-TICKET lane). Null until wired: the bus op then answers with a clear
    * "not available" error instead of half-working.
@@ -2096,6 +2105,11 @@ export class Concierge {
   /** Wire the instant-tick hook for freshly-filed tickets (v4-main, issue #33). See {@link ticketFiledListener}. */
   setTicketFiledListener(fn: NonNullable<Concierge["ticketFiledListener"]>): void {
     this.ticketFiledListener = fn;
+  }
+
+  /** Wire the hand-opened-PR registrar (#31). See {@link prWatchRegistrar}. */
+  setPrWatchRegistrar(fn: NonNullable<Concierge["prWatchRegistrar"]>): void {
+    this.prWatchRegistrar = fn;
   }
 
   /** Wire the quick-agent runner (v4-main). See {@link quickRunner}. */
@@ -3070,6 +3084,42 @@ export class Concierge {
                 /* best-effort — filing never depends on the poke */
               }
               return { ok: true, data: { tracked: true } };
+            },
+          },
+          {
+            name: "pr.watch",
+            summary: "register a hand-opened PR with the GitHub poller (#31)",
+            handle: async (req) => {
+              // `beckett gh pr create` tells the daemon it just opened a PR so the poller watches it
+              // too — the dispatcher's `onPrOpened` only registers the PRs it opened for a ticket,
+              // leaving a hand-run create (or a cross-org upstream PR) with no watcher. Best-effort:
+              // the create already succeeded on GitHub and never depends on this.
+              const repo = typeof req.args.repo === "string" ? req.args.repo.trim() : "";
+              const number = Number(req.args.number);
+              const url = typeof req.args.url === "string" ? req.args.url.trim() : "";
+              const title = typeof req.args.title === "string" ? req.args.title : "";
+              if (!repo || !Number.isInteger(number) || number < 1 || !url) {
+                return { ok: false, error: "pr.watch needs repo, a positive number, and url" };
+              }
+              if (!this.prWatchRegistrar) {
+                return { ok: true, data: { watching: false, reason: "no GitHub poller (no PAT?)" } };
+              }
+              const str = (v: unknown): string | undefined =>
+                typeof v === "string" && v.trim() ? v.trim() : undefined;
+              try {
+                this.prWatchRegistrar({
+                  repo,
+                  number,
+                  url,
+                  title,
+                  channel: str(req.args.channel),
+                  ticket: str(req.args.ticket),
+                  author: str(req.args.author),
+                });
+              } catch (err) {
+                return { ok: false, error: `pr.watch failed: ${(err as Error).message}` };
+              }
+              return { ok: true, data: { watching: true, repo, number } };
             },
           },
         ],

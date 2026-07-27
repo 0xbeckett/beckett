@@ -63,6 +63,28 @@ function buildGh(config: Config, dir: string | undefined): GitHubCli {
   });
 }
 
+/**
+ * Best-effort: tell the running daemon to watch a just-opened PR (#31). The `gh` surface is a
+ * stateless subprocess with no handle on the in-daemon poller, so it forwards over the control bus
+ * — the same one-shot dial `beckett ticket create` uses for workspace routing. A dead/busy socket
+ * is swallowed: the PR is already open on GitHub, and re-arm on the next daemon restart re-loads it
+ * from the poller's persisted registry regardless. Lazy-imports keep the CLI cold-start minimal.
+ */
+async function notifyWatchPr(
+  config: Config,
+  req: { repo: string; number: number; url: string; title: string; channel?: string; author?: string },
+): Promise<void> {
+  try {
+    const { join } = await import("node:path");
+    const { buildPaths } = await import("../../paths.ts");
+    const { callBus } = await import("../../shell/control-bus.ts");
+    const sock = join(buildPaths(config).beckettDir, "control.sock");
+    await callBus(sock, "pr.watch", req, 5_000);
+  } catch {
+    /* best-effort: no daemon / busy bus — the PR is already open and survives via the poller's file */
+  }
+}
+
 // ── v6 invocation schemas (one per gh operation, for routing prose + per-op posture) ─────────
 
 const RepoCreateArgs = z.object({
@@ -180,10 +202,24 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
       const n = Number(_[1]);
       if (action === "create") {
         for (const k of ["repo", "base", "head", "title", "body"]) if (!flags[k]) fail(`gh pr create needs --${k}`);
-        out(await gh.openPR({
+        const created = await gh.openPR({
           repo, base: String(flags.base), head: String(flags.head),
           title: String(flags.title), body: String(flags.body), draft: Boolean(flags.draft),
-        }));
+        });
+        // #31: a PR opened by hand from the concierge seat has no dispatcher `onPrOpened` to
+        // register it, so tell the daemon's poller to watch it too — including a cross-org upstream
+        // PR the poller now watches. Best-effort over the control bus (`--channel <id>` stamps the
+        // origin room when the caller knows it); a missing/busy daemon must never fail a create that
+        // already succeeded on GitHub.
+        await notifyWatchPr(config, {
+          repo,
+          number: created.number,
+          url: created.url,
+          title: String(flags.title),
+          channel: flags.channel ? String(flags.channel) : undefined,
+          author: loadIdentity(config).github.account,
+        });
+        out(created);
       }
       if (action === "merge") {
         if (!repo || !n) fail("usage: beckett gh pr merge <num> --repo <owner/name> [--strategy squash|merge|rebase]");

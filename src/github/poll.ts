@@ -109,6 +109,30 @@ export type PrEventSink = (events: PrPollEvent[]) => void | Promise<void>;
 /** Review verdicts that are worth a ping (a plain "COMMENTED" review is a review comment). */
 const MATERIAL_REVIEW = new Set(["APPROVED", "CHANGES_REQUESTED", "COMMENTED"]);
 
+/** One PR's per-tick read outcome: a live read, a permanent drop (repo gone), or a transient skip. */
+type ReadResult =
+  | { kind: "read"; entry: PrState; signals: PrSignals }
+  | { kind: "drop"; entry: PrState }
+  | null;
+
+/**
+ * Does a failed read mean the repo is PERMANENTLY unreadable — deleted, or gone private under us —
+ * rather than a transient blip? The reader wraps `gh`'s stderr, so we match the signatures GitHub
+ * emits for a gone/forbidden repo (a missing repo GraphQL-resolves to nothing; a REST 404/403).
+ * A rate-limit is a 403 too but is explicitly transient, so it is never treated as unreadable.
+ */
+function isRepoUnreadable(message: string): boolean {
+  const m = message.toLowerCase();
+  if (m.includes("rate limit")) return false;
+  return (
+    m.includes("could not resolve to a repository") ||
+    m.includes("not found") ||
+    m.includes("resource not accessible") ||
+    m.includes("must have push access") ||
+    /\b40[34]\b/.test(m)
+  );
+}
+
 export class GitHubPrPoller {
   private readonly reader: GitHubPrReader;
   private readonly account: string;
@@ -215,21 +239,29 @@ export class GitHubPrPoller {
 
     const active = [...this.entries.values()];
     const results = await Promise.all(
-      active.map(async (entry) => {
+      active.map(async (entry): Promise<ReadResult> => {
         try {
           const signals = await this.reader.prSignals(entry.repo, entry.number);
-          return { entry, signals };
+          return { kind: "read", entry, signals };
         } catch (err) {
+          const message = (err as Error).message;
+          // A repo that went private or was deleted under us (404/403) is PERMANENTLY unreadable:
+          // retrying it every tick would fail forever. Drop it (below) instead of skipping-and-
+          // retrying. Any other failure — a network blip, a rate-limit, a transient 5xx — is
+          // transient, so leave the snapshot untouched and try again next tick.
+          if (isRepoUnreadable(message)) return { kind: "drop", entry };
           this.logger.warn("prSignals failed — skipping PR this tick", {
             repo: entry.repo,
             number: entry.number,
-            error: (err as Error).message,
+            error: message,
           });
           return null;
         }
       }),
     );
 
+    // A drop is a definitive read (the repo is gone), not a failure, so it counts as the tick
+    // making progress for health purposes alongside a successful read.
     if (results.some((r) => r !== null)) {
       this.consecutiveFailures = 0;
       this.lastPollAt = this.now();
@@ -241,6 +273,17 @@ export class GitHubPrPoller {
     let changed = pruned;
     for (const result of results) {
       if (!result) continue;
+      if (result.kind === "drop") {
+        // ONE log line, then the entry is gone from the registry (and the durable file below), so a
+        // now-unreadable PR never turns into a poll that fails forever every tick.
+        this.entries.delete(prKey(result.entry.repo, result.entry.number));
+        this.logger.warn("dropping unreadable PR (repo went private or was deleted)", {
+          repo: result.entry.repo,
+          number: result.entry.number,
+        });
+        changed = true;
+        continue;
+      }
       const before = JSON.stringify(result.entry);
       events.push(...this.diff(result.entry, result.signals));
       if (JSON.stringify(result.entry) !== before) changed = true;
