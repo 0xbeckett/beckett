@@ -27,7 +27,7 @@ const SUPPORTED_PROTOCOL_VERSIONS = new Set([
 export const BROWSER_TOOL_DEFINITION = {
   name: TOOL_NAME,
   description:
-    "Run JavaScript in Beckett's warm BetterWright session. Top-level await works. Globals include page, pages, openPage, usePage, snapshot, screenshot, human, dialogs, overlays, and captcha. Return plain data from the script.",
+    "Run JavaScript in Beckett's warm BetterWright session. Top-level await works. Globals include page, pages, openPage, usePage, snapshot, screenshot, attachFile, human, dialogs, overlays, and captcha. Return plain data from the script.",
   inputSchema: {
     type: "object",
     properties: {

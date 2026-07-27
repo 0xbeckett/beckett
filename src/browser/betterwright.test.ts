@@ -236,6 +236,29 @@ test("proof capture is per-lease and lands under each lease's own artifacts dir"
   }
 });
 
+test("the bridge exposes attachFile only for screenshots captured by this lease", async () => {
+  const shot = join(scratch, "attach-source.png");
+  writeFileSync(shot, PNG_SIGNATURE);
+  const fake = new FakeBetterWright((call) => call.code.includes("CAPTURE_ATTACHABLE")
+    ? { artifacts: [{ kind: "debug", media: `MEDIA:${shot}` }] }
+    : {});
+  const runtime = createBetterWrightRuntime(settingsFor(), quietLog, { createBrowser: () => fake });
+  try {
+    await runtime.acquire(leaseFor("attachable"));
+    const captured = await runtime.evaluate("attachable", "return await screenshot('CAPTURE_ATTACHABLE')");
+    const source = captured.screenshots[0]!;
+    await runtime.evaluate("attachable", `return await attachFile('input[type=file]', ${JSON.stringify(source)})`);
+    const call = fake.calls.at(-1)!;
+    expect(call.code).toContain("const attachFile");
+    expect(call.code).toContain(source);
+    expect(call.code).toContain(shot);
+    expect(call.code).toContain("input.setInputFiles(approvedPath)");
+    expect(call.code).toContain("refuses paths outside this run's approved screenshot artifacts");
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("acquiring past the default cap of 3 throws a catchable error rather than hanging", async () => {
   const fake = new FakeBetterWright();
   const runtime = createBetterWrightRuntime(settingsFor(), quietLog, { createBrowser: () => fake });

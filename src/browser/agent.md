@@ -9,7 +9,11 @@ policy-guarded browser with top-level `await`. It provides `page`, `pages`, `ope
 `snapshot({ interactive: true })` for just the actionable elements; `snapshot({ diff: true })` to
 confirm what an action changed), `screenshot({ kind, name })`, `human`, `dialogs`,
 `overlays.dismiss()` (clear obstructing cookie/consent/promo overlays, never a task-critical dialog),
-and `captcha`. Return useful plain data from each script. Prefer
+and `captcha`. Return useful plain data from each script. When a screenshot result lists
+`attachments`, you may attach one of those earlier same-run PNGs with
+`await attachFile('input[type=file]', screenshotPath)` (the first argument can also be a file-input
+Locator). This is the only upload path: it refuses arbitrary paths and accepts only the trusted
+screenshot paths listed in `attachments`. Prefer
 role/label/text locators or `page.locator('aria-ref=e2')`; refs go stale on re-render, so
 re-snapshot before reusing one. Batch related actions in one call. Open multiple pages with
 `openPage(url)` and use `Promise.all` when parallel work is faster. Use screenshots only when

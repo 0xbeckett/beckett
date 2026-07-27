@@ -647,36 +647,25 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
     await rpc("restore", { runId: current.runId, checkpoint }, settings.navigationTimeoutMs + 5_000);
   }
 
-  function trustedPng(source: string, current: BrowserLease): string {
+  function trustedPng(source: string, current: BrowserLease, preserveSource = false): string {
     const existing = delivered.get(source);
     if (existing) return existing;
-    const sourcePath = resolve(source);
     const artifactsDir = resolve(current.artifactsDir);
-    if (!pathIsWithin(artifactsDir, sourcePath)) throw new Error("browser screenshot escaped the run artifacts directory");
-
-    let fd: number | null = null;
+    let trusted: TrustedPngFile | null = null;
     let deliveryTarget: string | null = null;
     try {
-      fd = openSync(sourcePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      const stat = fstatSync(fd);
-      if (!stat.isFile()) throw new Error("browser screenshot is not a regular file");
-      if (stat.size < PNG_SIGNATURE.length || stat.size > MAX_SCREENSHOT_BYTES) {
-        throw new Error(`browser screenshot size ${stat.size} is outside the allowed range`);
-      }
-      const signature = Buffer.alloc(PNG_SIGNATURE.length);
-      if (readSync(fd, signature, 0, signature.length, 0) !== signature.length || !signature.equals(PNG_SIGNATURE)) {
-        throw new Error("browser screenshot is not a PNG");
-      }
-
+      // This is the shared containment/regular-file/size/PNG signature gate for
+      // both visual delivery and the later attachFile bridge.
+      trusted = openTrustedArtifactPng(source, artifactsDir);
       const deliveryDir = join(dirname(artifactsDir), "deliveries");
       mkdirSync(deliveryDir, { recursive: true, mode: 0o700 });
-      deliveryTarget = join(deliveryDir, `${basename(sourcePath, ".png")}-${randomUUID().slice(0, 8)}.png`);
+      deliveryTarget = join(deliveryDir, `${basename(trusted.sourcePath, ".png")}-${randomUUID().slice(0, 8)}.png`);
       const output = openSync(deliveryTarget, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
       try {
         const buffer = Buffer.allocUnsafe(64 * 1024);
         let offset = 0;
-        while (offset < stat.size) {
-          const count = readSync(fd, buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
+        while (offset < trusted.size) {
+          const count = readSync(trusted.fd, buffer, 0, Math.min(buffer.length, trusted.size - offset), offset);
           if (count <= 0) throw new Error("browser screenshot ended while copying");
           let written = 0;
           while (written < count) written += writeSync(output, buffer, written, count - written);
@@ -697,17 +686,26 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
       }
       throw error;
     } finally {
-      if (fd !== null) closeSync(fd);
-      try {
-        unlinkSync(sourcePath);
-      } catch {
-        // The trusted copy is authoritative; source cleanup is best effort.
+      if (trusted) closeSync(trusted.fd);
+      if (!preserveSource && trusted) {
+        try {
+          unlinkSync(trusted.sourcePath);
+        } catch {
+          // The trusted copy is authoritative; source cleanup is best effort.
+        }
       }
     }
   }
 
   function deliverEvaluation(result: BrowserEvalResult, current: BrowserLease): BrowserEvalResult {
-    return { ...result, screenshots: result.screenshots.map((path) => trustedPng(path, current)) };
+    const attachments = result.screenshots.map((path) => assertTrustedArtifactPng(path, current.artifactsDir));
+    return {
+      ...result,
+      screenshots: attachments.map((path) => trustedPng(path, current, true)),
+      // Unlike display copies, these source files remain under the per-run
+      // artifact directory so a later attachFile can name only this trusted PNG.
+      attachments,
+    };
   }
 
   async function terminateLeaseHost(): Promise<void> {

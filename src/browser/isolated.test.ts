@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { validateConfig } from "../config.ts";
 import type { Logger } from "../types.ts";
 import { buildBrowserEvaluatorLaunch } from "./evaluator-runner.ts";
-import { buildBrowserHostLaunch, createIsolatedBrowserRuntime } from "./isolated.ts";
+import { assertTrustedArtifactPng, buildBrowserHostLaunch, createIsolatedBrowserRuntime } from "./isolated.ts";
 import { browserHostSettings, type BrowserHostSettings } from "./runtime.ts";
 
 const quietLog = (() => {
@@ -230,6 +230,19 @@ test("isolated leases require the exact high-entropy control capability", async 
     rmSync(dir, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("attachment validation refuses a PNG path outside the run artifacts directory", () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-browser-attachment-boundary-test-"));
+  try {
+    const artifactsDir = join(dir, "run", "artifacts");
+    const outside = join(dir, "outside.png");
+    mkdirSync(artifactsDir, { recursive: true });
+    writeFileSync(outside, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    expect(() => assertTrustedArtifactPng(outside, artifactsDir)).toThrow("escaped the run artifacts directory");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("evaluator never receives a screenshot path and daemon delivers a trusted PNG", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-nofollow-test-"));

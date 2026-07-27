@@ -91,7 +91,9 @@ self-contained post task.
 - The X credentials live in the **jingle keychain** under `x.com`. They are passed to the
   browser lane via `--creds x.com` and resolved *below the model's transcript* (issue #58) —
   **no secret is ever hardcoded or inlined** into the routine, the task string, or the plan.
-- The action runs on the dedicated background browser agent, never in the scheduler process.
+- The action runs on the dedicated background browser agent, never in the scheduler process. Browser
+  tasks can attach a screenshot captured earlier in the same run when the post needs an image;
+  arbitrary local files are never uploadable from a lane.
 - `channelId` / `requesterId` (where the lane reports its outcome/questions) are resolved at
   fire time from `BECKETT_ROUTINE_CHANNEL_ID` and `DISCORD_OWNER_ID` — no id is baked into
   source.
