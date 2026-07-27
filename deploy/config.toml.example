@@ -139,3 +139,5 @@ peer_burst_per_min = 5
 [dream]
 output_token_budget = 150000
 model = ""
+spike_output_token_budget = 60000
+spike_repo = ""

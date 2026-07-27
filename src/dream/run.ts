@@ -22,6 +22,12 @@
  *      pass cleanly with a partial journal entry marked truncated — never a silent death. A
  *      quiet day short-circuits before the first model call and costs nothing.
  *
+ * The one generative exception is the overnight spike (issue #38, {@link ./spike.ts}): at most
+ * ONE per night, only when the synthesis pairs two open loops with a written rationale, run in
+ * a throwaway git worktree behind the worker scope guard, on a sub-budget carved out of the
+ * same ceiling. Its branch is never merged and its output is a proposal + artifact — evidence
+ * for a waking decision, never work that lands.
+ *
  * Disk-gentle: everything is assembled in memory; the journal entry is written exactly once at
  * the end (memory files are each their own single create — a namespace, not churn).
  */
@@ -38,6 +44,15 @@ import { createChannelContextStore, type ChannelContextStore } from "../concierg
 import { assembleDreamInputs, type DreamInputs, type DreamSourceSection } from "./assemble.ts";
 import { DREAM_TRUNCATED_LINE, dreamEntryPath, writeDreamEntry } from "./journal.ts";
 import { PROPOSAL_KINDS, createProposal, sweepExpiredProposals } from "../proposal/store.ts";
+import {
+  SPIKE_DISALLOWED_TOOLS,
+  SPIKE_MAX_TURNS,
+  SPIKE_TIMEOUT_MS,
+  runSpike,
+  sweepSpikes,
+  type SpikeHarnessCall,
+  type SpikeRecord,
+} from "./spike.ts";
 
 /** The dream's home timezone — matches the builtin routine's fire window. */
 export const DREAM_TZ = "America/Los_Angeles";
@@ -74,6 +89,10 @@ export interface DreamRunDeps {
   routineId?: string;
   /** Replace an existing entry for the date (manual re-runs only). */
   force?: boolean;
+  /** Injectable for tests; default = a real one-shot `claude -p` INSIDE the spike worktree. */
+  spikeHarness?: SpikeHarnessCall;
+  /** Injectable for tests; default = the real {@link runSpike}. */
+  runSpikeImpl?: typeof runSpike;
 }
 
 export interface DreamRunOutcome {
@@ -95,6 +114,12 @@ export interface DreamRunOutcome {
   proposalsDropped: string[];
   /** Proposal ids the pass auto-expired on the way in (14 days undecided). */
   proposalsExpired: string[];
+  /** Tonight's overnight spike record (issue #38), or null — null is the common case. */
+  spike: SpikeRecord | null;
+  /** Why there is no spike (or why it was dropped/abandoned before starting). */
+  spikeNote: string | null;
+  /** Spike ids whose worktree + branch were garbage-collected on the way in (findings kept). */
+  spikesGced: string[];
   note: string | null;
 }
 
@@ -106,6 +131,21 @@ const DreamSynthesisSchema = z.object({
   forget: z.string(),
   /** Two open loops that might combine into a small overnight spike (#24.3 consumes this). */
   combine: z.string().nullable().optional(),
+  /**
+   * The overnight spike (issue #38): at most ONE per night, and almost always null — the
+   * schema holds a single object, not an array, so "one spike per night" is structural. The
+   * pass validates the pair against tonight's real source ids before anything is built.
+   */
+  spike: z
+    .object({
+      slug: z.string(),
+      pair: z.array(z.string()).length(2),
+      question: z.string(),
+      rationale: z.string(),
+      plan: z.string().default(""),
+    })
+    .nullable()
+    .optional(),
   memories: z
     .array(
       z.object({
@@ -156,6 +196,9 @@ export async function runDreamPass(deps: DreamRunDeps): Promise<DreamRunOutcome>
     proposalsRaised: [],
     proposalsDropped: [],
     proposalsExpired: [],
+    spike: null,
+    spikeNote: null,
+    spikesGced: [],
     note: null,
   };
 
@@ -174,6 +217,19 @@ export async function runDreamPass(deps: DreamRunDeps): Promise<DreamRunOutcome>
     outcome.proposalsExpired = sweepExpiredProposals(paths.proposalsDir, now).map((p) => p.id);
   } catch (err) {
     logger.warn("dream: proposal expiry sweep failed", { error: String(err) });
+  }
+
+  // Spike GC rides the same way-in sweep (issue #38): worktrees + branches past their TTL with
+  // no accepted proposal are dropped, findings kept. Thirty stale worktrees are not evidence.
+  try {
+    outcome.spikesGced = await sweepSpikes({
+      spikesDir: paths.spikesDir,
+      proposalsDir: paths.proposalsDir,
+      logger,
+      now,
+    });
+  } catch (err) {
+    logger.warn("dream: spike gc sweep failed", { error: String(err) });
   }
 
   const memory = deps.memory !== undefined ? deps.memory : defaultMemory(paths, logger);
@@ -205,6 +261,9 @@ export async function runDreamPass(deps: DreamRunDeps): Promise<DreamRunOutcome>
       proposalsRaised: outcome.proposalsRaised,
       proposalsDropped: outcome.proposalsDropped,
       proposalsExpired: outcome.proposalsExpired,
+      spike: outcome.spike,
+      spikeNote: outcome.spikeNote,
+      spikesGced: outcome.spikesGced,
       body,
     });
     outcome.path = writeDreamEntry(paths.dreamsDir, date, entry, { force: deps.force });
@@ -355,7 +414,51 @@ export async function runDreamPass(deps: DreamRunDeps): Promise<DreamRunOutcome>
       }
     }
 
-    return finish(synthesisBody(synthesis), { truncated: remaining() <= 0 });
+    // 5. The overnight spike (issue #38) — at most one, run LAST so the reflective outputs
+    //    above are already secured, and gated on an explicit rationale plus a real pair. Most
+    //    nights `spike` is null, and that is the system working: not spiking must stay cheap.
+    const plan = synthesis.spike ?? null;
+    if (!plan) {
+      outcome.spikeNote = "no pairing worth a spike tonight";
+    } else {
+      const dropReason = spikePlanProblem(plan, known);
+      if (dropReason) {
+        outcome.spikeNote = `spike dropped: ${dropReason}`;
+      } else if (remaining() <= 0) {
+        // The ceiling was already spent on reflection: abandon the spike, never the journal.
+        outcome.spikeNote = "spike abandoned before start: the nightly ceiling was already spent";
+      } else {
+        // The sub-budget is carved OUT of the nightly ceiling — never in addition to it.
+        const spikeBudget = Math.min(config.dream.spike_output_token_budget, remaining());
+        try {
+          const impl = deps.runSpikeImpl ?? runSpike;
+          const record = await impl({
+            spikesDir: paths.spikesDir,
+            proposalsDir: paths.proposalsDir,
+            repoRoot: spikeRepoRoot(config, paths),
+            logger,
+            date,
+            plan: {
+              slug: plan.slug,
+              pair: [plan.pair[0]!.trim(), plan.pair[1]!.trim()],
+              question: plan.question,
+              rationale: plan.rationale,
+              plan: plan.plan,
+            },
+            budget: spikeBudget,
+            callHarness: deps.spikeHarness ?? defaultSpikeHarnessCall(config, logger),
+            now: () => now,
+          });
+          spent += Math.max(0, Math.floor(record.outputTokens) || 0);
+          outcome.spike = record;
+        } catch (err) {
+          outcome.spikeNote = `spike failed before it could leave a record: ${String(err)}`;
+          logger.warn("dream: spike failed", { date, error: String(err) });
+        }
+      }
+    }
+
+    return finish(synthesisBody(synthesis, outcome), { truncated: remaining() <= 0 });
   } catch (err) {
     // "Rather than dying silently": a model/system failure still leaves a dated, honest entry.
     logger.warn("dream: pass failed mid-run", { date, error: String(err) });
@@ -380,6 +483,9 @@ interface ComposeInput {
   proposalsRaised: string[];
   proposalsDropped: string[];
   proposalsExpired: string[];
+  spike: SpikeRecord | null;
+  spikeNote: string | null;
+  spikesGced: string[];
   body: string[];
 }
 
@@ -398,6 +504,10 @@ function composeEntry(c: ComposeInput): string {
     `proposals: ${c.proposalsRaised.join(", ") || "(none)"}`,
     ...(c.proposalsDropped.length ? [`proposals_dropped: ${c.proposalsDropped.join("; ")}`] : []),
     ...(c.proposalsExpired.length ? [`proposals_expired: ${c.proposalsExpired.join(", ")}`] : []),
+    c.spike
+      ? `spike: ${c.spike.id} [${c.spike.status}] artifact: ${c.spike.findingPath}`
+      : `spike: (none${c.spikeNote ? ` — ${c.spikeNote}` : ""})`,
+    ...(c.spikesGced.length ? [`spikes_gced: ${c.spikesGced.join(", ")}`] : []),
     ...(c.inputs.notes.length ? [`notes: ${c.inputs.notes.join("; ")}`] : []),
     "-->",
     "",
@@ -413,7 +523,7 @@ function composeEntry(c: ComposeInput): string {
   return lines.join("\n");
 }
 
-function synthesisBody(s: DreamSynthesis): string[] {
+function synthesisBody(s: DreamSynthesis, outcome: DreamRunOutcome): string[] {
   return [
     "## what happened",
     s.what_happened.trim() || "—",
@@ -427,7 +537,58 @@ function synthesisBody(s: DreamSynthesis): string[] {
     "## worth forgetting",
     s.forget.trim() || "—",
     ...(s.combine?.trim() ? ["", "## loops that might combine", s.combine.trim()] : []),
+    "",
+    "## overnight spike",
+    ...spikeBody(outcome),
   ];
+}
+
+/**
+ * The journal's spike section (issue #38). The common case — no spike — is ONE line; the walls
+ * only earn their tokens on a night something was actually built.
+ */
+function spikeBody(outcome: DreamRunOutcome): string[] {
+  const spike = outcome.spike;
+  if (!spike) return [`No spike tonight — ${outcome.spikeNote ?? "nothing paired"}.`];
+  return [
+    `${spike.id} [${spike.status}] — ${spike.pair.join(" + ")}`,
+    `- question: ${spike.question}`,
+    `- why together: ${spike.rationale}`,
+    `- artifact: ${spike.findingPath}${spike.diffPath ? ` (diff: ${spike.diffPath})` : ""}`,
+    `- branch: ${spike.branch} — branch-only; never merged, never pushed, never deployed`,
+    spike.proposalId
+      ? `- morning decision: proposal ${spike.proposalId} in the queue`
+      : `- no proposal raised${spike.note ? ` (${spike.note})` : ""}`,
+    ...(spike.proposalId && spike.note ? [`- note: ${spike.note}`] : []),
+  ];
+}
+
+/**
+ * Why a proposed pairing cannot run, or null when it is sound. The bar is explicit: two REAL,
+ * DISTINCT sources from tonight's assembly, each an open loop or a calibration/recurring-error
+ * record, at least one a loop — plus a written question and rationale. Anything else is a
+ * one-line drop, because not spiking must be cheap and unembarrassing.
+ */
+export function spikePlanProblem(
+  plan: { slug: string; pair: string[]; question: string; rationale: string },
+  known: Set<string>,
+): string | null {
+  const pair = plan.pair.map((p) => p.trim());
+  if (pair.length !== 2 || pair[0] === pair[1]) return "the pair must be two DISTINCT sources";
+  const unknown = pair.filter((p) => !known.has(p));
+  if (unknown.length) return `pair names unknown sources: ${unknown.join(", ")}`;
+  if (!pair.every((p) => /^(loop|calibration):/.test(p))) {
+    return "the pair must be open loops or calibration records (loop:* / calibration:*)";
+  }
+  if (!pair.some((p) => p.startsWith("loop:"))) return "at least one side must be an open loop";
+  if (!plan.question.trim()) return "a spike needs the one question it answers";
+  if (!plan.rationale.trim()) return "a spike needs a written rationale for why the pairing beats either loop alone";
+  return null;
+}
+
+/** The repo a spike worktree is cut from: config override, else Beckett's own checkout. */
+function spikeRepoRoot(config: Config, paths: Paths): string {
+  return config.dream.spike_repo.trim() || join(paths.projects, "beckett");
 }
 
 function truncatedBody(inputs: DreamInputs, why: string): string[] {
@@ -473,6 +634,15 @@ function synthesisPrompt(inputs: DreamInputs, date: string): string {
     '  "forget":         markdown — what is worth letting go of',
     '  "combine":        markdown or null — ONLY if two OPEN LOOPS genuinely combine into one',
     "                    small overnight spike worth proposing; name both loop ids; else null",
+    '  "spike":          object or null — ALMOST ALWAYS null; a spike every night is a bug.',
+    "                    Only when two open loops (or a loop and a recurring error) combine into",
+    "                    ONE tiny overnight prototype that teaches something NEITHER loop does",
+    '                    alone: {"slug": kebab-case, "pair": [exactly two ids from the list',
+    '                    below, loop:* or calibration:*, at least one loop], "question": the one',
+    '                    question the prototype answers, "rationale": why the combination is',
+    '                    worth more than either alone, "plan": 2-4 lines, tiny}. The prototype',
+    "                    is branch-only evidence for a waking decision — never a contribution;",
+    '                    if the idea needs a day of work, say so in "combine" and leave this null.',
     '  "memories":       array (0–' + String(MEMORIES_PER_NIGHT_MAX) + " entries; most nights 0–2) of durable INFERENCES worth",
     "                    keeping beyond tonight. Each: {\"slug\": kebab-case, \"description\": one",
     "                    line, \"note\": short markdown body, \"provenance\": array of source ids",
@@ -577,6 +747,61 @@ export function defaultDreamModelCall(config: Config, logger: Logger): DreamMode
       const code = await proc.exited;
       if (timedOut) throw new Error(`dream model call timed out after ${MODEL_CALL_TIMEOUT_MS / 60_000}m`);
       if (code !== 0) throw new Error(`dream model call exited ${code}: ${stderr.trim().slice(0, 400)}`);
+      return parseModelResult(stdout, logger);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+/**
+ * The default spike harness (issue #38): ONE `claude -p` run INSIDE the spike worktree — the
+ * only dream-engine child that holds tools, which is exactly why it runs behind the worker
+ * scope guard (delivered via `--settings`, baked by {@link runSpike}) plus explicit deny rules
+ * for push/GitHub/deploy. Turn-capped, wall-clock-capped, and its output tokens are read from
+ * the result frame so the pass can charge them against the nightly ceiling.
+ */
+export function defaultSpikeHarnessCall(config: Config, logger: Logger): SpikeHarnessCall {
+  const bin = config.harness.claude.bin;
+  const model = config.dream.model.trim() || config.concierge.model;
+  return async (prompt, opts) => {
+    const proc = Bun.spawn(
+      [
+        bin,
+        "-p",
+        prompt,
+        "--model",
+        model,
+        "--output-format",
+        "json",
+        "--permission-mode",
+        config.harness.claude.permission_mode,
+        "--settings",
+        opts.settingsPath,
+        "--max-turns",
+        String(SPIKE_MAX_TURNS),
+        "--disallowedTools",
+        SPIKE_DISALLOWED_TOOLS,
+      ],
+      { cwd: opts.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: childEnv() },
+    );
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        proc.kill();
+      } catch {
+        /* ignore */
+      }
+    }, SPIKE_TIMEOUT_MS);
+    try {
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      const code = await proc.exited;
+      if (timedOut) throw new Error(`spike harness timed out after ${SPIKE_TIMEOUT_MS / 60_000}m`);
+      if (code !== 0) throw new Error(`spike harness exited ${code}: ${stderr.trim().slice(0, 400)}`);
       return parseModelResult(stdout, logger);
     } finally {
       clearTimeout(timer);
