@@ -85,8 +85,15 @@ test("renderCalibrationBlock is channel-scoped, bounded to 10, and empty when th
   await seed(memory, "other-room", "999", "elsewhere", "veto", "2026-06-01");
   expect(renderCalibrationBlock(memory, "111")).toBe("");
 
-  for (let i = 0; i < 12; i++) {
-    await seed(memory, `rec-${String(i).padStart(2, "0")}`, "111", `class-${i}`, "veto", `2026-07-${String(i + 1).padStart(2, "0")}`);
+  // Distinct word-slug classes so the memory dedup (stemmed similarity) keeps them separate,
+  // as genuinely distinct calibration classes are in practice.
+  const classes = [
+    "replay-recovery", "localhost-links", "proactive-recut", "weekend-pings", "verbose-acks",
+    "premature-deploy", "scope-creep", "over-testing", "silent-retries", "noisy-logs",
+    "eager-refactor", "duplicate-tickets",
+  ];
+  for (let i = 0; i < classes.length; i++) {
+    await seed(memory, `rec-${classes[i]}`, "111", classes[i]!, "veto", `2026-07-${String(i + 1).padStart(2, "0")}`);
   }
   const block = renderCalibrationBlock(memory, "111");
   expect(block.startsWith("<calibration>")).toBe(true);
@@ -95,8 +102,8 @@ test("renderCalibrationBlock is channel-scoped, bounded to 10, and empty when th
   const bodyLines = block.split("\n").slice(1, -1);
   expect(bodyLines).toHaveLength(11); // 10 records + the overflow pointer
   expect(bodyLines[10]).toBe("+2 more — run `beckett calibration`");
-  // Newest first: 2026-07-12 leads.
-  expect(bodyLines[0]).toMatch(/^- \[veto\] 2026-07-12 class-11 — "/);
+  // Newest first: 2026-07-12 (duplicate-tickets) leads.
+  expect(bodyLines[0]).toMatch(/^- \[veto\] 2026-07-12 duplicate-tickets — "/);
 });
 
 test("a malformed or unreadable memory directory makes the block render empty rather than throwing", () => {

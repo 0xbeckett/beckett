@@ -82,10 +82,13 @@ test("empty catalog and loop stores leave the composed prompt byte-identical", (
   const bare = composedPrompt(new ConciergeSession({ config }));
   const emptyCatalog = composedPrompt(new ConciergeSession({ config, catalogBlock: () => "" }));
   const emptyLoops = composedPrompt(new ConciergeSession({ config, openLoopsBlock: () => "" }));
+  const emptyCalibration = composedPrompt(new ConciergeSession({ config, calibrationBlock: () => "" }));
   expect(bare).not.toContain("<extension-catalog>");
   expect(bare).not.toContain("<open-loops>");
+  expect(bare).not.toContain("<calibration>");
   expect(emptyCatalog).toBe(bare);
   expect(emptyLoops).toBe(bare);
+  expect(emptyCalibration).toBe(bare);
 });
 
 test("the fresh loop block composes after catalog and before persona", () => {
@@ -98,6 +101,19 @@ test("the fresh loop block composes after catalog and before persona", () => {
   const prompt = composedPrompt(session);
   expect(prompt.indexOf("<extension-catalog>")).toBeLessThan(prompt.indexOf("<open-loops>"));
   expect(prompt.indexOf("<open-loops>")).toBeLessThan(prompt.indexOf("<persona>"));
+});
+
+test("the per-channel calibration block composes after open-loops and before persona", () => {
+  const config = tempConfig();
+  const session = new ConciergeSession({
+    config,
+    openLoopsBlock: () => "<open-loops>\\n- OVERDUE 2026-07-01 [commitment] I owe this\\n</open-loops>",
+    calibrationBlock: () => '<calibration>\\n- [veto] 2026-07-27 replay-missed — "nah its fine"\\n</calibration>',
+  });
+  const prompt = composedPrompt(session);
+  expect(prompt.indexOf("<open-loops>")).toBeLessThan(prompt.indexOf("<calibration>"));
+  expect(prompt.indexOf("<calibration>")).toBeLessThan(prompt.indexOf("<persona>"));
+  expect(prompt).toContain("replay-missed");
 });
 
 // ── the concierge wiring ─────────────────────────────────────────────────────────────────
