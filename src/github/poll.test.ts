@@ -299,11 +299,11 @@ describe("GitHubPrPoller", () => {
   test("one hard failure then a good read resets the streak — a blip never drops a watch", async () => {
     let call = 0;
     const blip: GitHubPrReader = {
-      async prSignals(repo, n) {
+      async prSignals() {
         call++;
         // First read seeds. Second read hard-404s (a momentary edge blip). Every read after is fine.
         if (call === 2) throw new Error("HTTP 404: Not Found");
-        return signals({ repo, number: n } as never);
+        return signals();
       },
     };
     const p = new GitHubPrPoller({ reader: blip, account: "0xbeckett", logger: quiet as never, now: () => 1_000 });
