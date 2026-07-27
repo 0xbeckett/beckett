@@ -21,6 +21,7 @@
  * key, not the file, is the contract.
  */
 
+import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import type { Config } from "../types.ts";
 import { ActionClass, CapabilityRegistry, type Capability } from "./index.ts";
@@ -33,6 +34,7 @@ const int = z.number().int();
 const posInt = int.min(1);
 const browserOutputChars = int.min(4_096).max(1_000_000);
 const nonNegInt = int.min(0);
+const browserAttachmentRoot = z.string().refine(isAbsolute, "must be an absolute directory path").transform((path) => resolve(path));
 
 export function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -502,6 +504,9 @@ export const configFragments = {
       browser_eval_timeout_ms: posInt.default(60_000),
       browser_max_output_chars: browserOutputChars.default(24_000),
       browser_question_wait_secs: posInt.default(3_600),
+      // Default roots are the run artifacts plus paths.imagesDir. This opt-in list
+      // can widen attachment reads, including '/' for deliberately broad access.
+      browser_attach_roots: z.array(browserAttachmentRoot).default([]),
     })
     .strict()
     .default({}),

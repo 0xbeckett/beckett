@@ -151,6 +151,8 @@ export interface BrowserHostSettings {
   navigationTimeoutMs: number;
   evalTimeoutMs: number;
   maxOutputChars: number;
+  /** Global configured roots; each lease adds its own artifactsDir at attachment time. */
+  attachmentRoots?: string[];
 }
 
 interface ActiveLease extends BrowserLease {
@@ -222,7 +224,8 @@ export type BrowserBudgetOverrides = Pick<
 >;
 
 export function browserHostSettings(config: Config): BrowserHostSettings {
-  const beckettDir = buildPaths(config).beckettDir;
+  const paths = buildPaths(config);
+  const beckettDir = paths.beckettDir;
   const browserRoot = resolve(beckettDir, "browser");
   const configuredProfile = config.quick.browser_profile_dir;
   const profileDir = isAbsolute(configuredProfile)
@@ -243,12 +246,19 @@ export function browserHostSettings(config: Config): BrowserHostSettings {
     navigationTimeoutMs: config.quick.browser_navigation_timeout_ms,
     evalTimeoutMs: config.quick.browser_eval_timeout_ms,
     maxOutputChars: config.quick.browser_max_output_chars,
+    attachmentRoots: [...new Set([resolve(paths.imagesDir), ...config.quick.browser_attach_roots])],
   };
 }
 
 /** The production runtime always crosses an OS process and sandbox boundary. */
 export function createBrowserRuntime(deps: CreateBrowserRuntimeDeps): BrowserRuntime {
-  return createIsolatedBrowserRuntime({ settings: browserHostSettings(deps.config), logger: deps.logger, backend: "betterwright" });
+  const settings = browserHostSettings(deps.config);
+  if (deps.config.quick.browser_attach_roots.length > 0) {
+    deps.logger.warn("browser attachment access widened beyond the default roots", {
+      roots: deps.config.quick.browser_attach_roots,
+    });
+  }
+  return createIsolatedBrowserRuntime({ settings, logger: deps.logger, backend: "betterwright" });
 }
 
 /** Keep filenames boring and force every artifact below the trusted per-run directory. */

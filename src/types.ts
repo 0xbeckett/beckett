@@ -847,6 +847,8 @@ export interface Config {
     browser_max_output_chars: number;
     /** How long a screenshot-backed user question may remain parked before expiring. */
     browser_question_wait_secs: number;
+    /** Extra absolute roots whose validated media files a browser run may attach. */
+    browser_attach_roots: string[];
   };
   /**
    * Restart "what's new" announcement — instance-specific, OFF by default (empty channel), so a

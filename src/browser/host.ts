@@ -79,17 +79,20 @@ function decodeSettings(): BrowserHostSettings {
     parsed.evalTimeoutMs,
     parsed.maxOutputChars,
   ];
+  const attachmentRoots = parsed.attachmentRoots ?? [];
   if (
     typeof parsed.profileDir !== "string" ||
     !parsed.profileDir.startsWith("/") ||
     typeof parsed.artifactsRoot !== "string" ||
     !parsed.artifactsRoot.startsWith("/") ||
+    !Array.isArray(attachmentRoots) ||
+    attachmentRoots.some((root) => typeof root !== "string" || !root.startsWith("/")) ||
     typeof parsed.headless !== "boolean" ||
     numeric.some((value) => typeof value !== "number" || !Number.isFinite(value) || value <= 0)
   ) {
     throw new Error("invalid browser host settings");
   }
-  return parsed as BrowserHostSettings;
+  return { ...parsed, attachmentRoots } as BrowserHostSettings;
 }
 
 function decodeBudgetOverrides(): BrowserBudgetOverrides {

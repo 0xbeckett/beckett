@@ -13,7 +13,6 @@ import {
   closeSync,
   constants,
   existsSync,
-  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -31,6 +30,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import type { Logger } from "../types.ts";
+import { openTrustedBrowserAttachment, type TrustedBrowserAttachment } from "./attachments.ts";
 import { runBrowserEvaluator } from "./evaluator-runner.ts";
 import type { BrowserHostRequest, BrowserHostResponse, BrowserHostMethod } from "./host.ts";
 import type {
@@ -50,8 +50,6 @@ const HOST_PATH = join(MODULE_DIR, "host.ts");
 const HOST_BUNDLES = new Map<string, Promise<string>>();
 const MAX_HOST_LINE_CHARS = 32 * 1024 * 1024;
 const MAX_CODE_CHARS = 100_000;
-const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 type HostChild = ReturnType<typeof Bun.spawn>;
 type SandboxMode = "auto" | "none" | "macos";
@@ -63,39 +61,15 @@ interface PendingRequest {
   reject(error: Error): void;
 }
 
-interface TrustedPngFile {
-  sourcePath: string;
-  fd: number;
-  size: number;
-}
-
 /**
- * Open a PNG only after proving it is a regular, bounded file below the given
- * run's artifact directory. The open descriptor is retained for callers that
- * need to copy the exact checked bytes without a path-based TOCTOU window.
+ * Visual browser captures remain PNGs because MCP delivers them as image/png;
+ * upload validation itself is broader (see attachments.ts).
  */
-function openTrustedArtifactPng(source: string, artifactsDir: string): TrustedPngFile {
-  const sourcePath = resolve(source);
-  const root = resolve(artifactsDir);
-  if (!pathIsWithin(root, sourcePath)) throw new Error("browser screenshot escaped the run artifacts directory");
-
-  let fd: number | null = null;
-  try {
-    fd = openSync(sourcePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) throw new Error("browser screenshot is not a regular file");
-    if (stat.size < PNG_SIGNATURE.length || stat.size > MAX_SCREENSHOT_BYTES) {
-      throw new Error(`browser screenshot size ${stat.size} is outside the allowed range`);
-    }
-    const signature = Buffer.alloc(PNG_SIGNATURE.length);
-    if (readSync(fd, signature, 0, signature.length, 0) !== signature.length || !signature.equals(PNG_SIGNATURE)) {
-      throw new Error("browser screenshot is not a PNG");
-    }
-    return { sourcePath, fd, size: stat.size };
-  } catch (error) {
-    if (fd !== null) closeSync(fd);
-    throw error;
-  }
+function openTrustedArtifactPng(source: string, artifactsDir: string): TrustedBrowserAttachment {
+  const trusted = openTrustedBrowserAttachment(source, [artifactsDir]);
+  if (trusted.kind === "png") return trusted;
+  closeSync(trusted.fd);
+  throw new Error("browser screenshot is not a PNG");
 }
 
 /** Public for focused boundary tests and for every future artifact consumer. */
@@ -260,6 +234,11 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
     for (const [name, value] of Object.entries(leaseEnv)) args.push("--setenv", name, value);
     args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
     addLinuxSystemMounts(args);
+    // Attachment roots are read-only. They are mounted before the writable profile/artifact
+    // overlays so the explicit run roots keep their existing write policy even when '/' is set.
+    for (const root of attachmentRoots(options.settings)) {
+      if (existsSync(root)) args.push("--ro-bind", root, root);
+    }
     // bwrap creates missing parents for bind destinations. /runtime is explicit because its child
     // is a file mount rather than a directory mount.
     args.push(
@@ -318,6 +297,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
         cloakCacheDir: options.backend === "betterwright" ? options.cloakCacheDir : undefined,
         profileDir: options.settings.profileDir,
         artifactsRoot: options.settings.artifactsRoot,
+        attachmentRoots: attachmentRoots(options.settings),
         hostTmp,
       });
       return {
@@ -1011,6 +991,10 @@ function addLinuxSystemMounts(args: string[]): void {
   }
 }
 
+function attachmentRoots(settings: BrowserHostSettings): string[] {
+  return [...new Set((settings.attachmentRoots ?? []).map((root) => resolve(root)))];
+}
+
 function macSandboxProfile(paths: {
   repoRoot: string;
   execPath: string;
@@ -1018,6 +1002,7 @@ function macSandboxProfile(paths: {
   cloakCacheDir?: string;
   profileDir: string;
   artifactsRoot: string;
+  attachmentRoots: string[];
   hostTmp: string;
 }): string {
   const read = [
@@ -1033,6 +1018,7 @@ function macSandboxProfile(paths: {
     ...(paths.cloakCacheDir ? [paths.cloakCacheDir] : []),
     paths.profileDir,
     paths.artifactsRoot,
+    ...paths.attachmentRoots,
     realpathIfPossible(paths.hostTmp),
   ];
   const write = [paths.profileDir, paths.artifactsRoot, realpathIfPossible(paths.hostTmp)];
