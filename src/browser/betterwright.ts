@@ -194,6 +194,8 @@ export function createBetterWrightRuntime(
     publicSearchPolicy: "block",
   });
 
+  // Keyed by BetterWright session name (currently the unique run id), never by
+  // a global active slot. Requests resolve the same deterministic session name.
   const leases = new Map<string, ActiveLease>();
   // Session-scoped download approval. This is intentionally a set rather than
   // browser configuration: every `run` gets only its own session's bit.
@@ -340,7 +342,7 @@ export function createBetterWrightRuntime(
         profileBytesAtAcquire: 0,
         profileBudgetError: null,
       };
-      leases.set(lease.runId, active);
+      leases.set(active.session, active);
       launches++;
       try {
         active.profileBytesAtAcquire = await measureProfileBytes();
@@ -354,7 +356,7 @@ export function createBetterWrightRuntime(
           live: leases.size,
         });
       } catch (error) {
-        leases.delete(lease.runId);
+        leases.delete(active.session);
         releaseDownloadReference(active);
         throw error;
       }
@@ -418,7 +420,7 @@ export function createBetterWrightRuntime(
           });
           return proofFiles;
         } finally {
-          leases.delete(lease.runId);
+          leases.delete(lease.session);
           releaseDownloadReference(lease);
           if (browser.closeSession) await browser.closeSession(lease.session).catch(() => undefined);
           logger.info("BetterWright browser lease released", { runId: lease.runId, live: leases.size });
