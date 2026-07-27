@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### The overnight spike: two loops, one branch-only prototype (#38)
+
+The generative half of the dream engine. When the nightly synthesis notices that two open
+loops (or a loop and a recurring error) are secretly one problem, it may pair them — with an
+explicit written rationale for why the combination is worth more than either alone — into at
+most ONE tiny overnight spike. Most nights it doesn't, and that costs one journal line: not
+spiking is the common case, and the bar is real because saying "no pairing tonight" is cheap.
+
+A spike is a question asked in code, not a contribution. The walls are structural:
+
+- it runs in its own throwaway git worktree on a `dream/spike/<date>-<slug>` branch, behind
+  the SAME PreToolUse scope guard every worker runs behind (rooted at the spike worktree, so
+  a write anywhere else is denied — tested against the real hook script), plus explicit deny
+  rules for `git push` / `gh` / `beckett deploy`;
+- the branch is never merged, never pushed, never deployed, and never enters the tracker —
+  neither `src/dream/spike.ts` nor anything downstream has a verb that could, the same
+  no-door-to-open design as the proposal store;
+- it runs on a sub-budget (`[dream] spike_output_token_budget`, default 60k) carved OUT of
+  the nightly ceiling, never in addition to it; blowing it abandons the spike with a note —
+  the journal entry is never the thing sacrificed;
+- every spike leaves a lookable artifact regardless of outcome — a durable `finding.md`
+  (plus `diff.patch`) under `~/.beckett/dreams/spikes/<id>/`, outside the worktree,
+  referenced by path from that night's dream journal entry;
+- the morning surface is the #37 proposal queue: a finished spike files an inert
+  `ticket`-kind proposal carrying the artifact path, so acting on it is a decision made
+  awake, through the queue's normal accept/reject doors;
+- garbage collection keeps the learning and drops the branches: spikes past 30 days with no
+  accepted proposal lose their worktree and branch on the next pass's way-in sweep, findings
+  kept.
+
+`beckett dream spikes ls|show` reads records and findings back — read-only by design.
+
 ### The dream engine: a nightly, budgeted replay of my own day (#36)
 
 A new `dream` routine kind rides the self lane once a night, at a random minute inside

@@ -633,6 +633,7 @@ export interface Paths {
   journalDir: string; // <beckettDir>/journal — private per-ticket worker progress journals
   dreamsDir: string; // <beckettDir>/dreams — nightly dream journal entries (issue #36)
   proposalsDir: string; // <beckettDir>/proposals — the dream proposal queue (issue #37)
+  spikesDir: string; // <beckettDir>/dreams/spikes — overnight spike records + durable findings (issue #38)
   workspacesFile: string; // <beckettDir>/workspaces.json — user-opened thread → ticket routing
 }
 
@@ -883,6 +884,13 @@ export interface Config {
     output_token_budget: number;
     /** Model for the pass. Empty = the concierge model (a dream is Beckett, not a specialist). */
     model: string;
+    /** Sub-budget for the overnight spike (issue #38), carved OUT OF `output_token_budget` —
+     *  never in addition to it. The spike gets `min(this, whatever the pass has left)`; a pass
+     *  that already spent its ceiling abandons the spike with a note instead. Default 60_000. */
+    spike_output_token_budget: number;
+    /** Repo the spike's throwaway worktree is cut from. Empty = `<projects>/beckett`
+     *  (Beckett's own project checkout — the loops a dream can pair are Beckett's own). */
+    spike_repo: string;
   };
 }
 

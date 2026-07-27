@@ -323,6 +323,157 @@ test("the nightly pass sweeps the queue on the way in: undecided proposals expir
   expect(readDreamEntry(w.paths.dreamsDir, DATE)!).toContain(`proposals_expired: ${stale.id}`);
 });
 
+// ── the overnight spike (issue #38) ─────────────────────────────────────────────────────
+
+import { openLoop } from "../memory/loops.ts";
+import { spikePlanProblem } from "./run.ts";
+import type { SpikeRecord } from "./spike.ts";
+
+/** Two open loops on the ledger so `loop:alpha` / `loop:beta` are real source ids tonight. */
+async function seedLoops(memory: MemoryStore): Promise<void> {
+  for (const name of ["alpha", "beta"]) {
+    await openLoop(memory, {
+      name,
+      kind: "commitment",
+      due: "2026-08-01",
+      source: "self",
+      description: `the ${name} loop`,
+    });
+  }
+}
+
+const SPIKE = {
+  slug: "pair-probe",
+  pair: ["loop:alpha", "loop:beta"],
+  question: "are these one problem?",
+  rationale: "both reduce to the same rendering step",
+  plan: "render one through the other",
+};
+
+function fakeRecord(over: Partial<SpikeRecord> = {}): SpikeRecord {
+  return {
+    id: `spike-${DATE}-pair-probe`,
+    date: DATE,
+    pair: SPIKE.pair,
+    question: SPIKE.question,
+    rationale: SPIKE.rationale,
+    plan: SPIKE.plan,
+    repoRoot: "/repo",
+    branch: `dream/spike/${DATE}-pair-probe`,
+    worktree: "/w",
+    status: "done",
+    outputTokens: 700,
+    budget: 60_000,
+    findingPath: `/spikes/spike-${DATE}-pair-probe/finding.md`,
+    diffPath: null,
+    proposalId: "prop-2026-07-26-overnight-spike",
+    created: NOW.toISOString(),
+    gcAt: null,
+    note: null,
+    ...over,
+  };
+}
+
+test("no pairing is the common case: one cheap line in the journal, no spike machinery touched", async () => {
+  const w = world();
+  seedDay(w.paths);
+  let spikeCalls = 0;
+  const outcome = await runDreamPass(
+    depsFor(w, {
+      callModel: async () => ({ text: SYNTHESIS, outputTokens: 500 }),
+      runSpikeImpl: (async () => (spikeCalls++, fakeRecord())) as never,
+    }),
+  );
+
+  expect(outcome.spike).toBeNull();
+  expect(outcome.spikeNote).toBe("no pairing worth a spike tonight");
+  expect(spikeCalls).toBe(0);
+  const entry = readDreamEntry(w.paths.dreamsDir, DATE)!;
+  expect(entry).toContain("spike: (none — no pairing worth a spike tonight)");
+  expect(entry).toContain("No spike tonight — no pairing worth a spike tonight.");
+});
+
+test("a valid pairing runs at most ONE spike under a sub-budget carved from the ceiling, and the journal points at its artifact", async () => {
+  const w = world();
+  seedDay(w.paths);
+  await seedLoops(w.memory);
+  const withSpike = { ...JSON.parse(SYNTHESIS), spike: SPIKE };
+  const budgets: number[] = [];
+  const outcome = await runDreamPass(
+    depsFor(w, {
+      callModel: async () => ({ text: JSON.stringify(withSpike), outputTokens: 500 }),
+      runSpikeImpl: (async (spikeDeps: { budget: number; plan: { pair: string[] } }) => {
+        budgets.push(spikeDeps.budget);
+        expect(spikeDeps.plan.pair).toEqual(["loop:alpha", "loop:beta"]);
+        return fakeRecord();
+      }) as never,
+    }),
+  );
+
+  // The sub-budget is min(config carve, what the pass had left) — carved OUT of the ceiling.
+  expect(budgets).toEqual([Math.min(defaultConfig().dream.spike_output_token_budget, 150_000 - 500)]);
+  expect(outcome.spike!.id).toBe(`spike-${DATE}-pair-probe`);
+  // The spike's spend counts against the SAME nightly ceiling as the reflection calls.
+  expect(outcome.outputTokens).toBe(500 + 700);
+
+  const entry = readDreamEntry(w.paths.dreamsDir, DATE)!;
+  expect(entry).toContain("## overnight spike");
+  expect(entry).toContain(`spike: spike-${DATE}-pair-probe [done] artifact: /spikes/spike-${DATE}-pair-probe/finding.md`);
+  expect(entry).toContain("never merged, never pushed, never deployed");
+  expect(entry).toContain("proposal prop-2026-07-26-overnight-spike");
+});
+
+test("a pairing that names non-loop or unassembled sources is dropped in one line — no worktree, no harness", async () => {
+  const w = world();
+  seedDay(w.paths);
+  const laundered = { ...JSON.parse(SYNTHESIS), spike: { ...SPIKE, pair: ["journal:#31", "loop:phantom"] } };
+  let spikeCalls = 0;
+  const outcome = await runDreamPass(
+    depsFor(w, {
+      callModel: async () => ({ text: JSON.stringify(laundered), outputTokens: 100 }),
+      runSpikeImpl: (async () => (spikeCalls++, fakeRecord())) as never,
+    }),
+  );
+  expect(spikeCalls).toBe(0);
+  expect(outcome.spike).toBeNull();
+  expect(outcome.spikeNote).toContain("spike dropped");
+  expect(readDreamEntry(w.paths.dreamsDir, DATE)!).toContain("spike: (none — spike dropped");
+});
+
+test("a ceiling already spent abandons the spike with a note — the journal is never the thing sacrificed", async () => {
+  const w = world();
+  seedDay(w.paths);
+  await seedLoops(w.memory);
+  const withSpike = { ...JSON.parse(SYNTHESIS), spike: SPIKE };
+  let spikeCalls = 0;
+  const outcome = await runDreamPass(
+    depsFor(w, {
+      budget: 500, // synthesis eats exactly the ceiling; nothing is left for the spike
+      callModel: async () => ({ text: JSON.stringify(withSpike), outputTokens: 500 }),
+      runSpikeImpl: (async () => (spikeCalls++, fakeRecord())) as never,
+    }),
+  );
+  expect(spikeCalls).toBe(0);
+  expect(outcome.wrote).toBe(true);
+  expect(outcome.spikeNote).toContain("abandoned before start");
+  expect(readDreamEntry(w.paths.dreamsDir, DATE)!).toContain("spike abandoned before start");
+});
+
+test("spikePlanProblem spells out the bar: distinct, assembled, loop-shaped sources with a written why", () => {
+  const known = new Set(["loop:a", "loop:b", "calibration:c", "journal:#1"]);
+  const base = { slug: "s", pair: ["loop:a", "loop:b"], question: "q?", rationale: "because together" };
+  expect(spikePlanProblem(base, known)).toBeNull();
+  expect(spikePlanProblem({ ...base, pair: ["loop:a", "calibration:c"] }, known)).toBeNull();
+  expect(spikePlanProblem({ ...base, pair: ["loop:a", "loop:a"] }, known)).toContain("DISTINCT");
+  expect(spikePlanProblem({ ...base, pair: ["loop:a", "loop:zzz"] }, known)).toContain("unknown sources");
+  expect(spikePlanProblem({ ...base, pair: ["loop:a", "journal:#1"] }, known)).toContain("open loops or calibration");
+  expect(spikePlanProblem({ ...base, pair: ["calibration:c", "calibration:c2"] }, new Set([...known, "calibration:c2"]))).toContain(
+    "at least one side must be an open loop",
+  );
+  expect(spikePlanProblem({ ...base, question: " " }, known)).toContain("question");
+  expect(spikePlanProblem({ ...base, rationale: "" }, known)).toContain("rationale");
+});
+
 test("parseModelResult reads output_tokens from the harness frame, estimating only when absent", () => {
   const withUsage = parseModelResult(JSON.stringify({ result: "hello", usage: { output_tokens: 42 } }));
   expect(withUsage).toEqual({ text: "hello", outputTokens: 42 });

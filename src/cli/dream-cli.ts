@@ -10,6 +10,10 @@
  *                           the config token ceiling, and writes only to `~/.beckett/dreams/`
  *                           plus create-only `dream`-namespace memories.
  *   - `dream propose`       file a proposal by hand (issue #37)
+ *   - `dream spikes …`      ls | show — read overnight-spike records + findings back (issue
+ *                           #38). Read-only: a spike is built by the nightly pass and decided
+ *                           through the proposal queue; there is no CLI verb that merges,
+ *                           pushes, or revives one.
  *   - `dream proposals …`   ls | show | accept | reject | expire — THE only way a proposal
  *                           moves. Accepting a doctrine or persona proposal files a normal
  *                           ticket; accepting a ticket or memory-correction proposal allocates
@@ -17,6 +21,7 @@
  *                           edit doctrine, persona, or a memory.
  */
 
+import { readFileSync } from "node:fs";
 import { listDreamEntries, readDreamEntry } from "../dream/journal.ts";
 import {
   PROPOSAL_KINDS,
@@ -35,7 +40,8 @@ const USAGE =
   "usage: beckett dream ls [--json] | dream show <YYYY-MM-DD> | dream run [--force] [--routine <id>] [--requester <id>] | " +
   `dream propose --kind ${PROPOSAL_KINDS.join("|")} --claim <one line> --why <rationale> --from <src,src> [--channel <id>] | ` +
   "dream proposals ls [--all|--json] | proposals show <id> | proposals accept <id> [--board <name>] | " +
-  "proposals reject <id> --why <reason> [--about <slug>] | proposals expire";
+  "proposals reject <id> --why <reason> [--about <slug>] | proposals expire | " +
+  "dream spikes ls [--json] | spikes show <id>";
 
 export async function runDream(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
@@ -89,6 +95,10 @@ export async function runDream(argv: string[]): Promise<void> {
 
   if (sub === "proposals") {
     await runProposals(rest);
+  }
+
+  if (sub === "spikes" || sub === "spike") {
+    await runSpikes(rest);
   }
 
   if (sub === "run") {
@@ -227,6 +237,55 @@ async function runProposals(argv: string[]): Promise<void> {
     "usage: beckett dream proposals ls [--all|--json] | proposals show <id> | proposals accept <id> | " +
       "proposals reject <id> --why <reason> | proposals expire",
   );
+}
+
+/**
+ * The overnight-spike readback (issue #38). Deliberately read-only: `ls` lists records, `show`
+ * prints one record plus its durable finding. Acting on a spike goes through `dream proposals
+ * accept|reject` like everything else a dream asks for.
+ */
+async function runSpikes(argv: string[]): Promise<void> {
+  const [sub, ...rest] = argv;
+  // Imported lazily like `dream run`: ls/show of OTHER verbs must never drag this graph in.
+  const { listSpikes, readSpike } = await import("../dream/spike.ts");
+  const { flags, _ } = parse(rest);
+
+  if (!sub || sub === "ls" || sub === "list" || sub.startsWith("--")) {
+    const listFlags = sub?.startsWith("--") ? parse(argv).flags : flags;
+    const spikes = listSpikes(paths.spikesDir);
+    if (listFlags.json) out({ spikes });
+    if (!spikes.length) out("(no spikes yet — most nights, that's the system working)");
+    out(
+      spikes
+        .map(
+          (s) =>
+            `- ${s.id} [${s.status}] ${s.pair.join(" + ")}\n  ${s.question}\n  artifact: ${s.findingPath}` +
+            (s.proposalId ? `\n  proposal: ${s.proposalId}` : ""),
+        )
+        .join("\n"),
+    );
+  }
+
+  if (sub === "show") {
+    const id = _[0]?.trim() ?? rest[0]?.trim();
+    if (!id) fail("usage: beckett dream spikes show <id>");
+    let record: ReturnType<typeof readSpike> = null;
+    try {
+      record = readSpike(paths.spikesDir, id!);
+    } catch (err) {
+      fail((err as Error).message);
+    }
+    if (!record) fail(`no such spike: ${id}`);
+    let finding = "";
+    try {
+      finding = readFileSync(record!.findingPath, "utf8");
+    } catch {
+      finding = "(finding file unreadable)";
+    }
+    out(`${JSON.stringify(record, null, 2)}\n\n${finding}`);
+  }
+
+  fail("usage: beckett dream spikes ls [--json] | spikes show <id>");
 }
 
 /** A sweep must never be the thing that breaks a read-only verb. */
