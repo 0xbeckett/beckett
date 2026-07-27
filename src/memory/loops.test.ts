@@ -82,6 +82,9 @@ test("close and drop round-trip through MemoryStore without losing body or unkno
   const dropped = await settleLoop(memory, "drop-me", "dropped", "ro released this", SELF_AUDIENCE);
   expect(closed.status).toBe("done");
   expect(dropped.status).toBe("dropped");
+  expect(listLoops(memory, { all: true, audience: SELF_AUDIENCE }).map((loop) => loop.status)).toEqual([
+    "done", "dropped",
+  ]);
 
   const fresh = createMemory({ memoryDir: dir, logger: quiet, git: false });
   const closeNode = fresh.buildGraph().nodes.get("close-me")!;
