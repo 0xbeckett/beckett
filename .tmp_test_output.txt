@@ -862,3 +862,33 @@ undeployed {
 {"level":"warn","ts":"2026-07-28T03:59:28.075Z","component":"dispatch.dispatcher","msg":"ticket cancelled — aborting worker","ticket":"OPS-BAD","workerId":"wk_1"}
 {"level":"error","ts":"2026-07-28T03:59:28.075Z","component":"dispatch.dispatcher","msg":"event handling failed — continuing with the rest of the batch","kind":"cancelled","ticket":"OPS-BAD","error":"abort exploded"}
 {"level":"warn","ts":"2026-07-28T03:59:28.075Z","component":"dispatch.dispatcher","msg":"ticket cancelled — aborting worker","ticket":"OPS-OK","workerId":"wk_2"}
+{"level":"error","ts":"2026-07-28T03:59:57.925Z","component":"dispatch.dispatcher","msg":"no healthy harness for spawn","ticket":"OPS-1","stage":"implement","cast":"claude","problems":["everything is down"]}
+{"level":"error","ts":"2026-07-28T03:59:57.925Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-1","stage":"implement","error":"no healthy harness available (all preflights failed — check `beckett doctor`)"}
+{"level":"error","ts":"2026-07-28T03:59:57.927Z","component":"dispatch.dispatcher","msg":"no healthy harness for spawn","ticket":"OPS-1","stage":"implement","cast":"claude","problems":["everything is down"]}
+{"level":"error","ts":"2026-07-28T03:59:57.928Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-1","stage":"implement","error":"no healthy harness available (all preflights failed — check `beckett doctor`)"}
+{"level":"info","ts":"2026-07-28T03:59:57.942Z","component":"dispatch.dispatcher","msg":"worker spawned for ticket","ticket":"OPS-1","stage":"implement","workerId":"wk_3","harness":"claude"}
+{"level":"error","ts":"2026-07-28T03:59:58.039Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"OPS-B","repoRoot":"/tmp/repo/OPS-B","error":"dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-28T03:59:58.039Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-B","stage":"implement","error":"could not allocate a worktree under `/tmp/repo/OPS-B`: dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-28T03:59:58.039Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"INT-2","repoRoot":"/tmp/repo/INT-2","error":"dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-28T03:59:58.039Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"INT-2","stage":"design","error":"could not allocate a worktree under `/tmp/repo/INT-2`: dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-28T03:59:58.057Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"INT-2","repoRoot":"/tmp/repo/INT-2","error":"dependency INT-1 belongs to a different project"}
+{"level":"error","ts":"2026-07-28T03:59:58.057Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"INT-2","stage":"design","error":"could not allocate a worktree under `/tmp/repo/INT-2`: dependency INT-1 belongs to a different project"}
+{"level":"info","ts":"2026-07-28T04:00:20.092Z","component":"concierge.pool","msg":"evicted idle concierge session entry","scope":"chan-live"}
+{"level":"info","ts":"2026-07-28T04:00:20.092Z","component":"concierge.pool","msg":"recycled idle concierge session child (idle timer)","scope":"chan-dead"}
+{"level":"info","ts":"2026-07-28T04:01:20.098Z","component":"concierge.pool","msg":"evicted idle concierge session entry","scope":"chan-dead"}
+
+src/browser/runtime.test.ts:
+865 |     });
+866 |     await Bun.sleep(0);
+867 |     const stopping = runtime.stop();
+868 |     finishLaunch!(fakeContext);
+869 |     await stopping;
+870 |     await expect(acquisition).rejects.toThrow("stopped while Chromium was starting");
+                                            ^
+error: expect(received).toThrow(expected)
+
+Expected substring: "stopped while Chromium was starting"
+Received message: "browser runtime is stopped"
+
+      at <anonymous> (/home/beckett/Projects/beckett/.beckett/worktrees/#59/src/browser/runtime.test.ts:870:39)
+(fail) stop waits for and closes an in-flight Chromium launch [3.00ms]
