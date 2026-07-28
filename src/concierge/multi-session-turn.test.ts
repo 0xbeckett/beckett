@@ -131,11 +131,26 @@ function harness(opts: { deferAsks?: boolean } = {}) {
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
+/**
+ * Await until each named channel's turn has gone live (its session recorded an `ask`). buildTurn's
+ * shared-context prefix now primes the #73 semantic index before it can score cross-channel context
+ * (issue #74), so a turn goes live a few macrotasks after `onMessage` rather than within a single
+ * `tick()`. In production nothing observes a turn before its session's child starts on `ask`, so
+ * this only tightens the test's barrier — the concurrency/claiming properties below are unchanged.
+ */
+async function whenLive(h: ReturnType<typeof harness>, ...channelIds: string[]): Promise<void> {
+  for (let i = 0; i < 500; i++) {
+    if (channelIds.every((c) => (h.sessionFor(c)?.asks.length ?? 0) >= 1)) return;
+    await tick();
+  }
+  throw new Error(`turns never went live for ${channelIds.join(", ")}`);
+}
+
 test("mentions in two channels run concurrently on their own sessions and reply to their own channels", async () => {
   const h = harness({ deferAsks: true });
   const turnA = h.concierge.onMessage(msg("m-a", "how goes channel a?", { channelId: CHAN_A }));
   const turnB = h.concierge.onMessage(msg("m-b", "and channel b?", { channelId: CHAN_B }));
-  await tick();
+  await whenLive(h, CHAN_A, CHAN_B);
 
   // BOTH turns are in flight at once — the single-session era would have queued B behind A.
   const a = h.sessionFor(CHAN_A)!;
@@ -167,7 +182,7 @@ test("discord.reply claims the turn in ITS channel even with two turns live", as
   const h = harness({ deferAsks: true });
   const turnA = h.concierge.onMessage(msg("m-a", "channel a asks", { channelId: CHAN_A }));
   const turnB = h.concierge.onMessage(msg("m-b", "channel b asks", { channelId: CHAN_B }));
-  await tick();
+  await whenLive(h, CHAN_A, CHAN_B);
 
   // The model answering channel B replies via the CLI while A's turn is ALSO live.
   const res = await h.concierge.onBusRequest({
@@ -193,7 +208,7 @@ test("proactivity set auto stays owner-gated when several turns are live (no cha
   const h = harness({ deferAsks: true });
   void h.concierge.onMessage(msg("m-a", "owner here", { channelId: CHAN_A, userId: OWNER }));
   void h.concierge.onMessage(msg("m-b", "member here", { channelId: CHAN_B }));
-  await tick();
+  await whenLive(h, CHAN_A, CHAN_B);
 
   // Two live turns, target channel has no live turn → ambiguous → denied (never guesses).
   const denied = await h.concierge.onBusRequest({
@@ -217,7 +232,7 @@ test("a cross-channel reply carrying its issuer token never claims the target ch
   const h = harness({ deferAsks: true });
   const turnA = h.concierge.onMessage(msg("m-a", "channel a asks", { channelId: CHAN_A }));
   const turnB = h.concierge.onMessage(msg("m-b", "channel b asks", { channelId: CHAN_B }));
-  await tick();
+  await whenLive(h, CHAN_A, CHAN_B);
 
   // A's turn cross-posts into B ("let #b know…") while B's own mention turn is live. The issuer
   // token resolves the op to A's turn — B's turn is untouched.
@@ -244,7 +259,7 @@ test("owner-gated ops are authorized by the ISSUING turn's speaker, not the targ
   const h = harness({ deferAsks: true });
   void h.concierge.onMessage(msg("m-a", "owner here", { channelId: CHAN_A, userId: OWNER }));
   void h.concierge.onMessage(msg("m-b", "member here", { channelId: CHAN_B }));
-  await tick();
+  await whenLive(h, CHAN_A, CHAN_B);
 
   // The member's turn (in B) targets the owner's channel A: pre-token, channel-first correlation
   // let A's live owner turn authorize it — the confused deputy. The token pins it to B's turn.
