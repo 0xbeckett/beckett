@@ -1,24 +1,24 @@
 {
-  "generated_at": "2026-07-28T21:14:59.619Z",
+  "generated_at": "2026-07-28T21:24:27.387Z",
   "source_file": "~/Projects/metrics/data/telemetry-runs.json",
-  "telemetry_generated_at": "2026-07-28T21:14:45.667Z",
-  "total_runs": 3303,
-  "costed_runs": 3278,
+  "telemetry_generated_at": "2026-07-28T21:23:56.571Z",
+  "total_runs": 3304,
+  "costed_runs": 3279,
   "unrated_model_sessions": 25,
   "normalisation": {
-    "runs_measured": 3303,
-    "total_tokens": 3794089564,
-    "total_compute_hours": 1232.7,
-    "tokens_per_compute_hour": 3077869
+    "runs_measured": 3304,
+    "total_tokens": 3798747009,
+    "total_compute_hours": 1232.9,
+    "tokens_per_compute_hour": 3081044
   },
   "wall_clock": {
     "median_seconds": 97.9,
-    "p90_seconds": 1329.1
+    "p90_seconds": 1328.5
   },
   "review_cycle_distribution": [
     {
       "cycles": "0",
-      "runs": 2791,
+      "runs": 2792,
       "pct": 84.5
     },
     {
@@ -150,9 +150,9 @@
         "runs": 1,
         "review_cycles": 0,
         "last_ts": "2026-07-28T21:06:35.639Z",
-        "compute_hours": 0.13,
-        "charge_usd": 0.21,
-        "credits": 0.13
+        "compute_hours": 0.29,
+        "charge_usd": 0.48,
+        "credits": 0.29
       },
       {
         "id": "#96",

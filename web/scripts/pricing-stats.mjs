@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pricing-stats.mjs — derive Beckett's public pricing figures from real telemetry.
+// pricing-stats.mjs: derive Beckett's public pricing figures from real telemetry.
 //
 // Reads every real agent run this install has executed and emits a summary JSON
 // that web/public/pricing.html reads. EVERY figure on the pricing page traces
@@ -33,11 +33,11 @@ const TELEMETRY = process.env.TELEMETRY_FILE
 const OUT = resolve(HERE, "../public/pricing-data.json");
 
 // ---------------------------------------------------------------------------
-// POLICY INPUTS — set here, not measured. Two numbers compose the price of a
+// POLICY INPUTS: set here, not measured. Two numbers compose the price of a
 // compute hour: the flat rate for the hour, and the one platform fee on top.
 // ---------------------------------------------------------------------------
 
-// 1. FLAT COMPUTE RATE — what an hour of Beckett's compute costs, before the
+// 1. FLAT COMPUTE RATE: what an hour of Beckett's compute costs, before the
 //    platform fee. It covers the host machine and runtime that turn your tokens
 //    into shipped work; it does NOT cover the model tokens themselves, which run
 //    on your own subscription. This is the single value to change if the machine
@@ -47,14 +47,14 @@ const COMPUTE_RATE = {
   basis: "the host machine and runtime, amortised over the hours it runs",
 };
 
-// 2. PLATFORM FEE — the single margin line, stated on its own. It is what pays
+// 2. PLATFORM FEE: the single margin line, stated on its own. It is what pays
 //    for the presence and the seat: the GitHub identity, the pipeline, the
 //    Discord presence, the machine kept alive between tasks.
 const PLATFORM_FEE = {
   pct: 10, // percent, applied to the flat compute charge
 };
 
-// PREPAID BILLING — one credit is one compute hour, priced at the flat rate plus
+// PREPAID BILLING: one credit is one compute hour, priced at the flat rate plus
 // the platform fee. Credits are loaded up front and invoiced. Unused credits
 // roll over on the account for up to two years. If Beckett winds down, the
 // remaining balance is refunded at that same per-credit value.
@@ -63,7 +63,7 @@ const BILLING = {
   wind_down_refund: true, // remaining credits refunded at equal value on shutdown
 };
 
-// ENTERPRISE — team and enterprise contracts are negotiated, not self-serve.
+// ENTERPRISE: team and enterprise contracts are negotiated, not self-serve.
 const ENTERPRISE = {
   contact_email: "contact@frgmt.xyz",
 };
@@ -143,7 +143,7 @@ const walled = runs.filter(
 );
 
 // ---------------------------------------------------------------------------
-// THE NORMALISATION — tokens per compute hour, measured from the log.
+// THE NORMALISATION: tokens per compute hour, measured from the log.
 //
 // One compute hour is defined as the token throughput this install actually
 // sustains in one hour of wall-clock work: total tokens moved, divided by total
@@ -227,7 +227,7 @@ const allTasks = Object.entries(byTask)
   .filter((t) => t.hours > 0);
 
 // ---------------------------------------------------------------------------
-// Worked example — a REAL ticket, its REAL compute, itemised into the two
+// Worked example: a REAL ticket, its REAL compute, itemised into the two
 // billed lines (flat compute + platform fee) with the model tokens shown as the
 // quantity that ran on your own subscription. Selected deterministically: among
 // substantial tickets (>= 3 runs, at least one review cycle, compute in a sane
@@ -267,7 +267,7 @@ const workedExample = {
 };
 
 // ---------------------------------------------------------------------------
-// "What a load buys" — three concrete size bands drawn from the compute-hour
+// "What a load buys": three concrete size bands drawn from the compute-hour
 // distribution. Each band is anchored to a percentile, then resolved to the
 // REAL ticket nearest that percentile so the example is an actual ticket. The
 // counts are just budget ÷ that ticket's real charge.
