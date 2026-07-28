@@ -4,22 +4,22 @@
   "threads": 4,
   "reps": 3,
   "tts": {
-    "load_s": 0.89,
-    "peak_rss_mb": 1311.8,
+    "load_s": 0.92,
+    "peak_rss_mb": 1313.9,
     "cases": {
       "short": {
         "words": 15,
         "audio_dur_s": 4.33,
-        "ttfa_s": 1.853,
-        "total_gen_s": 1.853,
-        "rtf": 0.428
+        "ttfa_s": 2.633,
+        "total_gen_s": 2.633,
+        "rtf": 0.608
       },
       "long": {
         "words": 66,
         "audio_dur_s": 21.25,
-        "ttfa_s": 8.272,
-        "total_gen_s": 8.272,
-        "rtf": 0.389
+        "ttfa_s": 9.909,
+        "total_gen_s": 9.909,
+        "rtf": 0.466
       }
     }
   },
@@ -27,29 +27,29 @@
     "cases": {
       "3s": {
         "utterance_s": 3,
-        "latency_s": 1.41,
-        "rtf": 0.47
+        "latency_s": 1.683,
+        "rtf": 0.561
       },
       "5s": {
         "utterance_s": 5,
-        "latency_s": 1.513,
-        "rtf": 0.303
+        "latency_s": 1.79,
+        "rtf": 0.358
       },
       "10s": {
         "utterance_s": 10,
-        "latency_s": 1.881,
-        "rtf": 0.188
+        "latency_s": 1.935,
+        "rtf": 0.193
       }
     },
-    "peak_rss_mb": 284.4
+    "peak_rss_mb": 284.1
   },
   "roundtrip": {
     "utterance_s": 5,
-    "stt_latency_s": 1.513,
+    "stt_latency_s": 1.79,
     "model_turn_s": 2.0,
-    "tts_ttfa_s": 1.853,
-    "stack_overhead_s": 3.366,
-    "full_roundtrip_s": 5.366,
+    "tts_ttfa_s": 2.633,
+    "stack_overhead_s": 4.423,
+    "full_roundtrip_s": 6.423,
     "bottleneck": "TTS"
   }
 }
