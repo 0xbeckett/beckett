@@ -1,0 +1,5 @@
+(fail) mentions in two channels run concurrently on their own sessions and reply to their own channels [4.00ms]
+(fail) discord.reply claims the turn in ITS channel even with two turns live [5000.94ms]
+(fail) proactivity set auto stays owner-gated when several turns are live (no channel match → denied) [122.00ms]
+(fail) a cross-channel reply carrying its issuer token never claims the target channel's live turn [5000.94ms]
+(fail) owner-gated ops are authorized by the ISSUING turn's speaker, not the target channel's [4.00ms]
