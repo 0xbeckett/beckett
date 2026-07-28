@@ -3199,6 +3199,47 @@ export class Dispatcher {
   }
 
   /**
+   * After a direct push lands a ticket's work on a project's `main` (#91), fast-forward that
+   * project's OWN checkout (`~/Projects/<slug>` — {@link repoByTicket}, distinct from the
+   * ticket's disposable per-worker worktree) to the landed commit. Tunnel-served mockups read
+   * their files straight out of that working copy, so without this it keeps serving the
+   * pre-land build until a human fast-forwards it by hand (observed twice: task #27, task #65).
+   * Never called for a PR (`kind: "pr"`) — that landing is a future human merge, not a done
+   * `main` push — nor for a ticket funneled onto a non-`main` `targetBranch`, which is out of
+   * scope here. Best-effort and silent on the happy path; any skip or failure is logged with its
+   * reason so a human can tell why a checkout didn't move.
+   */
+  private async fastForwardProjectCheckout(ticket: Ticket): Promise<void> {
+    const targetBranch = ticket.targetBranch?.trim();
+    if (targetBranch && targetBranch.toLowerCase() !== "main") return;
+    const repoRoot = this.repoByTicket.get(ticket.id) ?? this.resolveRepoRoot(ticket);
+    const slug = projectSlug(ticket.project || ticket.identifier);
+    const remoteUrl = `https://github.com/${this.githubOwner}/${slug}.git`;
+    try {
+      const result = await this.git.fastForwardCheckout(repoRoot, remoteUrl, "main");
+      if (result.status === "skipped") {
+        this.logger.info("project checkout left alone after land", {
+          ticket: ticket.identifier,
+          repoRoot,
+          reason: result.reason,
+        });
+      } else {
+        this.logger.info("fast-forwarded project checkout after land", {
+          ticket: ticket.identifier,
+          repoRoot,
+          sha: result.sha,
+        });
+      }
+    } catch (err) {
+      this.logger.warn("fast-forward of project checkout after land failed", {
+        ticket: ticket.identifier,
+        repoRoot,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  /**
    * Publish a done ticket's checkout to GitHub and report the outcome. `skipped` when no `publishRepo`
    * was injected (tests / no PAT) — there's nothing to gate on, so the caller still marks it done.
    * `published` carries HOW it shipped (a repo push vs. a PR needing a human merge) so `done` wording
@@ -3398,7 +3439,12 @@ export class Dispatcher {
       await this.postComment(ticket.id, "GitHub publish succeeded; removing `beckett:publish-pending` hold.");
       // A completed ticket has no future stage; its owner may now release the worktree. WIP stays
       // available for the human who will resume it from todo.
-      if (op.purpose === "done") await this.disposeWorktree(ticket.id);
+      if (op.purpose === "done") {
+        await this.disposeWorktree(ticket.id);
+        // Same durable-retry land as the immediate path above (#91): a direct push just landed on
+        // main, so bring the project's own checkout up to date. Best-effort; never gates `done`.
+        if (pub.status === "published" && pub.kind === "pushed") await this.fastForwardProjectCheckout(ticket);
+      }
       return { action: "remove" };
     }
 
@@ -3594,6 +3640,9 @@ export class Dispatcher {
       // Fire-and-forget: `done` is already written above, so the finish returns immediately and the
       // best-effort screenshot never gates it.
       this.captureScreenshotThenDispose(ticket);
+      // A direct push (not a PR awaiting a human merge) just landed on main — bring the project's
+      // own checkout up to date (#91). Best-effort; never gates `done`.
+      if (pub.status === "published" && pub.kind === "pushed") await this.fastForwardProjectCheckout(ticket);
     }
     return advanced;
   }

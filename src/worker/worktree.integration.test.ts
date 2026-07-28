@@ -19,6 +19,7 @@ import {
   excludeFromGit,
   refExists,
   mergeBranchesIntoWorktree,
+  fastForwardCheckout,
   SCAFFOLDING_DIR,
 } from "./worktree.ts";
 
@@ -39,11 +40,12 @@ async function initRepo(dir: string): Promise<void> {
 
 let root: string; // holds a bare "origin" + the local clone that stands in for ~/Projects/<slug>
 let repo: string;
+let origin: string;
 
 /** A project repo cloned from a bare origin, shaped like a provisioned `~/Projects/<slug>`. */
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "beckett-wt-"));
-  const origin = join(root, "origin.git");
+  origin = join(root, "origin.git");
   const seed = join(root, "seed");
   repo = join(root, "clone");
 
@@ -172,5 +174,63 @@ describe("worktree lifecycle (real git)", () => {
     const handle = await createWorktree({ repoRoot: repo, workspace: ws, branch: "beckett/t1", baseRef: "origin/does-not-exist" });
     expect(existsSync(handle.workspace)).toBe(true);
     expect((await run(["rev-parse", "--abbrev-ref", "HEAD"], ws)).stdout.trim()).toBe("beckett/t1");
+  });
+
+  describe("fastForwardCheckout (#91 — land keeps ~/Projects/<slug> current)", () => {
+    /** Simulate a ticket landing directly on `main`: push a new commit to `origin` from a fresh clone, exactly as a direct-push publish would. */
+    async function pushLandingCommit(): Promise<string> {
+      const pusher = mkdtempSync(join(tmpdir(), "beckett-pusher-"));
+      try {
+        await run(["clone", origin, pusher], root);
+        await run(["config", "user.email", "beckett@test"], pusher);
+        await run(["config", "user.name", "Beckett"], pusher);
+        await run(["config", "commit.gpgsign", "false"], pusher);
+        writeFileSync(join(pusher, "landed.txt"), "landed\n");
+        await run(["add", "-A"], pusher);
+        await run(["commit", "-m", "ticket work"], pusher);
+        await run(["push", "origin", "main"], pusher);
+        return (await run(["rev-parse", "HEAD"], pusher)).stdout.trim();
+      } finally {
+        rmSync(pusher, { recursive: true, force: true });
+      }
+    }
+
+    test("a clean checkout on main is fast-forwarded to the landed commit", async () => {
+      const landedSha = await pushLandingCommit();
+      expect((await run(["rev-parse", "HEAD"], repo)).stdout.trim()).not.toBe(landedSha); // still stale
+
+      const result = await fastForwardCheckout(repo, origin, "main");
+
+      expect(result.status).toBe("fast-forwarded");
+      expect(result.sha).toBe(landedSha);
+      expect((await run(["rev-parse", "HEAD"], repo)).stdout.trim()).toBe(landedSha);
+      expect(existsSync(join(repo, "landed.txt"))).toBe(true);
+    });
+
+    test("a dirty checkout is left untouched and the skip is logged with the reason", async () => {
+      const landedSha = await pushLandingCommit();
+      const staleSha = (await run(["rev-parse", "HEAD"], repo)).stdout.trim();
+      writeFileSync(join(repo, "uncommitted.txt"), "wip\n"); // dirty the working tree
+
+      const result = await fastForwardCheckout(repo, origin, "main");
+
+      expect(result.status).toBe("skipped");
+      expect(result.reason).toMatch(/uncommitted/i);
+      // Never fast-forwarded, never merged/forced — HEAD didn't move and the dirty file survived.
+      expect((await run(["rev-parse", "HEAD"], repo)).stdout.trim()).toBe(staleSha);
+      expect((await run(["rev-parse", "HEAD"], repo)).stdout.trim()).not.toBe(landedSha);
+      expect(existsSync(join(repo, "uncommitted.txt"))).toBe(true);
+    });
+
+    test("a checkout on another branch (incl. detached HEAD) is left untouched", async () => {
+      await pushLandingCommit();
+      await run(["checkout", "-b", "some-other-branch"], repo);
+
+      const result = await fastForwardCheckout(repo, origin, "main");
+
+      expect(result.status).toBe("skipped");
+      expect(result.reason).toMatch(/some-other-branch/);
+      expect((await run(["rev-parse", "--abbrev-ref", "HEAD"], repo)).stdout.trim()).toBe("some-other-branch");
+    });
   });
 });
