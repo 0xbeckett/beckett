@@ -1604,7 +1604,13 @@ describe("rework cap", () => {
   });
 
   test("a rework-cap human hold stays inert to the staffing watchdog", async () => {
-    const client = new FakeClient();
+    const client = new FakeClient() as FakeClient & { park(id: string): Promise<void> };
+    // Model Bored: pausing is durable but its board keeps projecting the review column.
+    client.park = async (id) => {
+      const ticket = client.board.find((t) => t.id === id)!;
+      ticket.parked = true;
+      ticket.parkReason = "operator_pause";
+    };
     const config = { ...cfg(2), supervise: { max_rework_cycles: 1 } } as unknown as Config;
     const d = new Dispatcher({
       gitOps: gitFakes,
@@ -1628,7 +1634,7 @@ describe("rework cap", () => {
     expect(spawnCalls).toHaveLength(1);
   });
 
-  test("retry exhaustion and courier publication failure also remain inert", async () => {
+  test("retry exhaustion also remains inert", async () => {
     const client = new FakeClient() as FakeClient & { park(id: string): Promise<void> };
     client.park = async (id) => {
       const ticket = client.board.find((t) => t.id === id)!;
