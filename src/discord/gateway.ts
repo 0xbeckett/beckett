@@ -1293,21 +1293,13 @@ function redactUnsafeDiscordUrls(content: string, onRedaction: (host: string) =>
   });
 }
 
-function isUnsafeDiscordUrl(value: string): boolean {
-  let host: string;
-  try {
-    host = new URL(value).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-  // URL.hostname brackets IPv6 literals in current runtimes; accept either representation.
-  host = host.replace(/^\[|\]$/g, "").replace(/\.$/, "");
-  if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host === "local" || host.endsWith(".local")) return true;
-  const octets = host.split(".");
-  if (octets.length !== 4 || octets.some((octet) => !/^\d+$/.test(octet))) return false;
-  const [first, second = 0] = octets.map(Number);
-  return first === 127 || first === 10 || first === 192 && second === 168 || first === 172 && second >= 16 && second <= 31;
-}
+/**
+ * Whether an outbound Discord URL is unsafe to post — a host recipients cannot reach. The
+ * classification now lives in the shared {@link isInternalUrl} (`src/net/url-safety.ts`) so the
+ * preview feature strips the exact same hosts this boundary redacts; the alias keeps the local
+ * call sites (and the redaction characterization suite) byte-identical.
+ */
+const isUnsafeDiscordUrl = isInternalUrl;
 
 /** Discord channel/thread names are 1-100 characters. Keep task names stable and single-line. */
 export function taskThreadName(raw: string): string {
