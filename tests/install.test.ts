@@ -2,10 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { parseEnvInventory } from "../src/ops/doctor.ts";
 
 const REPO = resolve(import.meta.dir, "..");
 const INSTALLER = join(REPO, "install.sh");
 const UNIT_INSTALLER = join(REPO, "deploy/install.sh");
+const ENV_EXAMPLE = join(REPO, ".env.example");
 const VALID_DISCORD_ID = ["123456789", "012345678"].join("");
 const tempDirs: string[] = [];
 const TEST_AS_BECKETT = [
