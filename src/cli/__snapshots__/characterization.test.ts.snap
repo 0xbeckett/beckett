@@ -472,7 +472,8 @@ exports[`cli: identity: show of an unknown user returns null 1`] = `
   "stdout": 
 "{
   "userId": "42",
-  "identity": null
+  "identity": null,
+  "person": null
 }
 "
 ,

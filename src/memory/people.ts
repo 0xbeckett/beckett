@@ -90,12 +90,9 @@ export function renderPersonBlock(
   try {
     const person = getPerson(store, discordId, audience);
     if (!person) return "";
-    const header = [
-      person.address ? `address:${JSON.stringify(person.address)}` : "",
-      person.isOwner ? "role:owner" : "",
-    ]
-      .filter(Boolean)
-      .join(" ");
+    // Address only — deliberately NOT `role:owner`. Authority is the live, code-stamped turn
+    // header; a stored file must never be able to assert it (doctrine: "the stamp is authority").
+    const header = person.address ? `address:${JSON.stringify(person.address)}` : "";
     const all = person.notes.split("\n");
     const lines = all.slice(0, PERSON_BLOCK_LINES);
     if (all.length > lines.length) {
