@@ -477,6 +477,8 @@ export interface OpenPRParams {
   title: string;
   body: string;
   draft?: boolean;
+  /** Labels to apply on creation (e.g. `["proactive"]`). Absent/empty → an unlabelled PR. */
+  labels?: string[];
 }
 export interface UpdatePRParams {
   title?: string;

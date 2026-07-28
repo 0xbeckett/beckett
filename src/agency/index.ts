@@ -994,6 +994,9 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
       "--body", p.body,
     ];
     if (p.draft) args.push("--draft");
+    // Labels applied at creation (e.g. `proactive`). gh takes `--label` once per name; an unknown
+    // label makes gh fail the create, so callers pass only labels the repo actually has.
+    for (const label of p.labels ?? []) if (label.trim()) args.push("--label", label.trim());
     const r = await this.runner(args, { cwd: this.opts.resolveRepoDir(p.repo), env: this.ghEnv() });
     if (r.code !== 0) {
       throw new Error(`gh pr create failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
