@@ -69,7 +69,7 @@ import {
 } from "../../memory/recall-cli.ts";
 import { startRoutineMaintenance } from "../../memory/maintain.ts";
 import { fail, out, parse } from "../../cli/io.ts";
-import type { MemoryNode, NodeType, RememberIntent } from "../../types.ts";
+import type { MemoryNode, NodeType, RelationType, RememberIntent } from "../../types.ts";
 
 /**
  * Build the provenance/visibility metadata a `remember` write carries (multiplayer §7), THROWING
@@ -351,13 +351,23 @@ export const createMemoryExtension =
         const { flags } = parse(rest);
         const op = (flags.op as RememberIntent["op"]) ?? "create";
         const name = flags.name as string;
-        if (!name) fail("usage: beckett memory remember --name <n> [--op create] [--type t] [--desc d] [--reason r] [--body <text>] [--link to:field,...] [--visibility public|owner|dm] [--dm-with <id>] [--by <userId>] [--by-name <name>]");
+        if (!name) fail("usage: beckett memory remember --name <n> [--op create] [--type t] [--desc d] [--reason r] [--body <text>] [--link to[:field[:rel]][@YYYY-MM-DD],...] [--visibility public|owner|dm] [--dm-with <id>] [--by <userId>] [--by-name <name>]");
         let body = flags.body as string | undefined;
         if (flags["body-stdin"]) body = await Bun.stdin.text();
+        // `--link to[:field[:rel]][@date]` — field defaults to `body`; rel is a closed-vocab
+        // relation, date an ISO observation stamp (issue #60). Unknown rel / malformed date are
+        // dropped downstream by applyLinks, never emitted.
         const links = flags.link
           ? String(flags.link).split(",").map((s) => {
-              const [to, field] = s.split(":");
-              return { to: to!, field: field ?? "body" };
+              const at = s.indexOf("@");
+              const date = at >= 0 ? s.slice(at + 1).trim() || undefined : undefined;
+              const [to, field, rel] = (at >= 0 ? s.slice(0, at) : s).split(":");
+              return {
+                to: to!.trim(),
+                field: (field ?? "body").trim() || "body",
+                rel: (rel?.trim() || undefined) as RelationType | undefined,
+                date,
+              };
             })
           : undefined;
         // Provenance + visibility (multiplayer §7) ride in metadata. Absent flags write nothing,
@@ -491,7 +501,12 @@ export const createMemoryExtension =
                 type: a.type ? (a.type as NodeType) : undefined,
                 description: a.description,
                 body: a.body,
-                links: a.links?.map((l) => ({ to: l.to, field: l.field ?? "body" })),
+                links: a.links?.map((l) => ({
+                  to: l.to,
+                  field: l.field ?? "body",
+                  rel: l.rel,
+                  date: l.date,
+                })),
                 metadata,
                 source: "conversation",
                 reason: a.reason ?? `remember via ext.invoke (${call.origin?.surface ?? "bus"})`,
