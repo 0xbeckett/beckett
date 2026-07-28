@@ -38,6 +38,10 @@ import {
   Partials,
   Events,
   type Message,
+  type MessageReaction,
+  type PartialMessageReaction,
+  type User,
+  type PartialUser,
   type MessageCreateOptions,
   type MessageEditOptions,
   AttachmentBuilder,
@@ -53,6 +57,7 @@ import type {
   DiscordGateway,
   DiscordMessageEditPayload,
   IncomingMessage,
+  IncomingReaction,
   DiscordComponentInteraction,
   ReplyContextMessage,
   ReplyOptions,
@@ -269,9 +274,11 @@ export class DiscordJsGateway implements DiscordGateway {
         GatewayIntentBits.MessageContent, // PRIVILEGED — without it message.content is empty (Risk-E)
         GatewayIntentBits.DirectMessages, // 1:1 DMs (still ambient — the DM is the channel)
         GatewayIntentBits.GuildVoiceStates, // NON-privileged; required by @discordjs/voice to join (#81)
+        GatewayIntentBits.GuildMessageReactions, // NON-privileged; deliver reactionAdd on guild messages (#103)
       ],
-      // DM channels/messages arrive uncached → partials so we still get the event.
-      partials: [Partials.Channel, Partials.Message],
+      // Uncached surfaces arrive as partials so we still get the event: DM channels/messages, and a
+      // reaction (plus its message and user) on a message posted before the daemon cached it (#103).
+      partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
     });
     this.client = client;
 

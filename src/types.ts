@@ -290,6 +290,30 @@ export interface IncomingMessage {
 
 
 /**
+ * A single reaction ADDED to a message, normalized off the gateway's reaction event (#103). A
+ * reaction is a second, cheaper trigger for the same actions a component click carries: authority
+ * always comes from the Discord-authenticated {@link userId}, never from the emoji or the message
+ * it lands on. The gateway drops reactions from bots (including Beckett) before this is built, and
+ * fetches partial reactions/messages so an emoji on an uncached message still resolves its author
+ * and components.
+ */
+export interface IncomingReaction {
+  /** The reacted-to message id. */
+  messageId: string;
+  channelId: string;
+  guildId: string | null;
+  /** Discord-authenticated reacting user, never a value supplied by message content. */
+  userId: string;
+  /** Unicode emoji char (e.g. "✅") or a custom emoji's name; null when Discord sends neither. */
+  emoji: string | null;
+  /** Author id of the reacted-to message, or null when it could not be resolved. */
+  messageAuthorId: string | null;
+  /** custom_ids of the action components on the reacted-to message — transport data, never authority. */
+  messageComponentIds: string[];
+}
+
+
+/**
  * A person's thread that just SURFACED to Beckett, normalized off the gateway's thread-create
  * event. These can be adopted as workspaces; Beckett-created numbered task threads use
  * {@link TaskThreadCreated}.
@@ -1126,6 +1150,19 @@ export interface DiscordGateway {
    * ephemerally before calling this, so handlers may do slow work and only edit the reply.
    */
   onInteraction?(cb: (interaction: DiscordComponentInteraction) => void | Promise<void>): void;
+  /**
+   * Register the handler for reactions ADDED to a message (#103). The gateway fetches partial
+   * reactions/messages and drops bot reactions (incl. Beckett's own) before calling this, so the
+   * handler always sees a fully-resolved reaction from a human. Optional because injected partial
+   * test gateways predate this surface — guard with `typeof gateway.onReaction === "function"`.
+   */
+  onReaction?(cb: (reaction: IncomingReaction) => void | Promise<void>): void;
+  /**
+   * Add a single reaction to a message — the cheapest acknowledgement Discord offers (#103). The
+   * emoji is a unicode char (e.g. "✅") or a `name:id` custom-emoji ref. Optional so injected test
+   * gateways need no fake; guard with `typeof gateway.addReaction === "function"`.
+   */
+  addReaction?(channelId: string, messageId: string, emoji: string): Promise<void>;
   /**
    * Join a thread so Beckett stays subscribed to it and a post can unarchive it. Best-effort:
    * implementations swallow permission/unknown-channel failures and never reject. Optional
