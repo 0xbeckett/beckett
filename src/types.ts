@@ -808,6 +808,12 @@ export interface Config {
     profile_update_messages: number;
     /** Max other channels named in the cross-channel awareness footer. */
     awareness_max_channels: number;
+    /** #74 — inject the actual relevant lines from other guild channels, not just the footer. Kill switch: false. */
+    cross_channel_enabled: boolean;
+    /** Own token budget for the cross-channel context block (separate from inject_budget_tokens). */
+    cross_channel_budget_tokens: number;
+    /** Minimum blended relevance score a cross-channel hit must clear to be injected (else the block is omitted). */
+    cross_channel_min_score: number;
     /**
      * Messages fetched either side of a reply target that sits outside the session's window
      * (the "message plus N before and after" reply-context injection).

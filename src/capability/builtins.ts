@@ -451,6 +451,22 @@ export const configFragments = {
       profile_model: z.string().min(1).default("claude-haiku-4-5"),
       profile_update_messages: posInt.default(20),
       awareness_max_channels: posInt.default(5),
+      // Cross-channel context injection (#74): a third framed turn block that pushes the ACTUAL
+      // relevant lines from OTHER guild channels — scored against the inbound message through the
+      // #73 semantic+keyword search — so a topic settled in #media isn't re-derived from scratch
+      // in #general. Supplements the awareness footer (which only names channels); the model can
+      // still `channels search` on demand. `enabled = false` is the kill switch back to
+      // search-on-demand only — the footer keeps shipping either way.
+      cross_channel_enabled: z.boolean().default(true),
+      // Its OWN token budget, separate from inject_budget_tokens (which covers THIS channel's
+      // unseen window). The injected cross-channel lines never share that ceiling.
+      cross_channel_budget_tokens: posInt.default(1200),
+      // Relevance gate: a hit's blended score (distinct keyword terms matched + a floored
+      // semantic-similarity bonus in [SEM_FLOOR..1]) must reach this to be injected. The block is
+      // omitted entirely when nothing clears it — an irrelevant block every turn is worse than no
+      // block. Default 0.5: any literal content-word overlap scores ≥1 and passes, while a strong
+      // paraphrase-only hit can too; lower it toward SEM_FLOOR (0.12) to admit weaker paraphrases.
+      cross_channel_min_score: z.number().positive().default(0.5),
       // Reply-context injection: a native reply to a message OUTSIDE the session's window gets
       // the target plus this many messages before and after it fetched from Discord, stamped
       // with how long ago the exchange happened. 5 gives the ±5 window around the target.
