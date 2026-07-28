@@ -79,10 +79,12 @@ const effectivePerHour = round(
   2,
 );
 
-// Convert a dollar figure to compute-hour credits at the effective rate.
-const toCredits = (usd, dp = 1) => round(usd / effectivePerHour, dp);
-// Convert compute hours to the dollars Beckett bills (flat + fee).
-const chargeForHours = (hours, dp = 2) => round(hours * effectivePerHour, dp);
+// Compute hours are always displayed to two decimals; one credit is one such
+// hour. Every money figure derives from the SAME rounded hours the page shows,
+// so a reader who multiplies the displayed hours by the rate lands on the exact
+// charge the page prints. `chargeForHours` therefore rounds hours first.
+const displayHours = (hours) => round(hours, 2);
+const chargeForHours = (hours) => round(displayHours(hours) * effectivePerHour, 2);
 
 // ---------------------------------------------------------------------------
 // Statistics helpers
@@ -100,7 +102,11 @@ function percentile(sortedAsc, p) {
 
 function round(n, dp = 2) {
   const f = 10 ** dp;
-  return Math.round(n * f) / f;
+  // Round half away from zero, with a tiny epsilon so a value that is exactly
+  // half in decimal but a hair under in binary (e.g. 1.425) still rounds up.
+  // This keeps the worked example reader-checkable: displayed hours times the
+  // displayed rate lands on the displayed charge.
+  return Math.round(n * f + Math.sign(n) * 1e-9) / f;
 }
 
 // Total tokens a run moved: fresh input + output + cache traffic. This is the
@@ -215,7 +221,7 @@ const allTasks = Object.entries(byTask)
       review_cycles: rc,
       last_ts: ts,
       charge: chargeForHours(hours),
-      credits: round(hours, 2), // 1 credit = 1 compute hour
+      credits: displayHours(hours), // 1 credit = 1 compute hour
     };
   })
   .filter((t) => t.hours > 0);
@@ -239,7 +245,9 @@ if (exCandidates.length === 0) {
 }
 
 const chosen = exCandidates[Math.floor((exCandidates.length - 1) / 2)];
-const exCompute = round(chosen.hours * COMPUTE_RATE.per_hour, 2);
+// Itemise from the DISPLAYED hours so the two lines add to the total on-page.
+const exHours = displayHours(chosen.hours);
+const exCompute = round(exHours * COMPUTE_RATE.per_hour, 2);
 const exFee = round((exCompute * PLATFORM_FEE.pct) / 100, 2);
 const exTotal = round(exCompute + exFee, 2);
 
@@ -247,14 +255,14 @@ const workedExample = {
   ticket: chosen.id,
   runs: chosen.runs,
   wall_clock_seconds: round(chosen.wall, 1),
-  compute_hours: round(chosen.hours, 2),
+  compute_hours: exHours,
   tokens: chosen.tokens,
   review_cycles: chosen.review_cycles,
   lines: {
     compute_cost: exCompute,
     platform_fee: exFee,
     total: exTotal,
-    total_credits: round(chosen.hours, 2),
+    total_credits: exHours,
   },
 };
 
@@ -284,9 +292,9 @@ const loadExamples = EXAMPLE_BANDS.map((band) => {
     percentile: band.pct,
     example_ticket: rep.id,
     runs: rep.runs,
-    compute_hours: round(rep.hours, 2),
+    compute_hours: displayHours(rep.hours),
     charge_usd: rep.charge,
-    credits: round(rep.hours, 2),
+    credits: displayHours(rep.hours),
     covers: LOAD_BUDGETS.map((b) => ({
       budget_usd: b,
       count: rep.charge > 0 ? Math.floor(b / rep.charge) : 0,
@@ -305,9 +313,9 @@ const recentTasks = allTasks
     runs: t.runs,
     review_cycles: t.review_cycles,
     last_ts: t.last_ts,
-    compute_hours: round(t.hours, 2),
+    compute_hours: displayHours(t.hours),
     charge_usd: t.charge,
-    credits: round(t.hours, 2),
+    credits: displayHours(t.hours),
   }));
 
 const medianHours = percentile(hoursAsc, 50);
@@ -315,9 +323,9 @@ const loadValue = {
   budgets_usd: LOAD_BUDGETS,
   task_count: allTasks.length,
   task_charge: {
-    median_hours: round(medianHours, 2),
+    median_hours: displayHours(medianHours),
     median_usd: chargeForHours(medianHours),
-    median_credits: round(medianHours, 2),
+    median_credits: displayHours(medianHours),
   },
   examples: loadExamples,
   recent_tasks: recentTasks,

@@ -1,15 +1,15 @@
 {
-  "generated_at": "2026-07-28T21:12:29.720Z",
+  "generated_at": "2026-07-28T21:14:08.809Z",
   "source_file": "~/Projects/metrics/data/telemetry-runs.json",
-  "telemetry_generated_at": "2026-07-28T21:11:40.580Z",
+  "telemetry_generated_at": "2026-07-28T21:13:43.796Z",
   "total_runs": 3303,
   "costed_runs": 3278,
   "unrated_model_sessions": 25,
   "normalisation": {
     "runs_measured": 3303,
-    "total_tokens": 3792439675,
-    "total_compute_hours": 1232.5,
-    "tokens_per_compute_hour": 3077142
+    "total_tokens": 3793220848,
+    "total_compute_hours": 1232.7,
+    "tokens_per_compute_hour": 3077255
   },
   "wall_clock": {
     "median_seconds": 97.9,
@@ -67,7 +67,7 @@
     "task_count": 284,
     "task_charge": {
       "median_hours": 0.34,
-      "median_usd": 0.57,
+      "median_usd": 0.56,
       "median_credits": 0.34
     },
     "examples": [
@@ -75,8 +75,8 @@
         "key": "quick",
         "label": "a quick fix",
         "percentile": 10,
-        "example_ticket": "OPS-37",
-        "runs": 1,
+        "example_ticket": "OPS-87",
+        "runs": 2,
         "compute_hours": 0.06,
         "charge_usd": 0.1,
         "credits": 0.06,
@@ -126,7 +126,7 @@
         "example_ticket": "OPS-193",
         "runs": 2,
         "compute_hours": 0.34,
-        "charge_usd": 0.57,
+        "charge_usd": 0.56,
         "credits": 0.34,
         "covers": [
           {
@@ -139,7 +139,7 @@
           },
           {
             "budget_usd": 50,
-            "count": 87
+            "count": 89
           }
         ]
       }
@@ -150,18 +150,18 @@
         "runs": 1,
         "review_cycles": 0,
         "last_ts": "2026-07-28T21:06:35.639Z",
-        "compute_hours": 0.04,
-        "charge_usd": 0.06,
-        "credits": 0.04
+        "compute_hours": 0.11,
+        "charge_usd": 0.18,
+        "credits": 0.11
       },
       {
         "id": "#96",
         "runs": 4,
         "review_cycles": 0,
         "last_ts": "2026-07-28T21:04:43.881Z",
-        "compute_hours": 0.82,
-        "charge_usd": 1.35,
-        "credits": 0.82
+        "compute_hours": 0.91,
+        "charge_usd": 1.5,
+        "credits": 0.91
       },
       {
         "id": "#93",
@@ -178,7 +178,7 @@
         "review_cycles": 0,
         "last_ts": "2026-07-28T20:36:30.201Z",
         "compute_hours": 1.3,
-        "charge_usd": 2.14,
+        "charge_usd": 2.15,
         "credits": 1.3
       },
       {
@@ -205,7 +205,7 @@
         "review_cycles": 0,
         "last_ts": "2026-07-28T19:43:57.791Z",
         "compute_hours": 0.52,
-        "charge_usd": 0.85,
+        "charge_usd": 0.86,
         "credits": 0.52
       },
       {
