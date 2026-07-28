@@ -3,7 +3,8 @@
  * =======================================================================================
  * The first organ on the v6 extension contract (Phase 1, docs/v6-architecture.md §6): the
  * `beckett image …` surface (in-process generation via `agency/imagegen.ts` — Codex by
- * default, `--model fal-ai/...` routes to the fal.ai queue).
+ * default, `--model fal-ai/...` routes to the fal.ai queue, `--model openrouter/...` routes
+ * to OpenRouter).
  *
  * Two entrypoints share ONE core (`generateMedia`):
  *   - the CLI verb keeps its historical argv parse + `out`/`fail` contract byte-for-byte
@@ -35,7 +36,7 @@ const GenerateArgs = z
     refs: z.array(z.string()).optional(),
     /** Ask for a transparent (alpha) background. */
     transparent: z.boolean().optional(),
-    /** Codex model override, or a fal-ai/... slug to route to fal. */
+    /** Codex model override, or a fal-ai/... or openrouter/... slug to route elsewhere. */
     model: z.string().optional(),
     /** Generate a video instead of an image (fal only). */
     video: z.boolean().optional(),
@@ -58,7 +59,7 @@ export const createImageExtension: ExtensionFactory = ({ paths, logger }): Exten
     const prompt = _.join(" ").trim();
     if (!prompt)
       fail(
-        'usage: beckett image [video] "<prompt>" [--out <path>] [--size 1024x1024|1536x1024|1024x1536|auto] [--ref <file[,file]>] [--transparent] [--model <codex-model|fal-ai/...>]',
+        'usage: beckett image [video] "<prompt>" [--out <path>] [--size 1024x1024|1536x1024|1024x1536|auto] [--ref <file[,file]>] [--transparent] [--model <codex-model|fal-ai/...|openrouter/...>]',
       );
     if (video && !String(flags.model ?? "").startsWith("fal-ai/")) {
       fail('beckett image video requires a fal video model, e.g. --model "fal-ai/bytedance/seedance/..."');
@@ -81,7 +82,8 @@ export const createImageExtension: ExtensionFactory = ({ paths, logger }): Exten
     manifest: {
       id: "image",
       version: "1.0.0",
-      summary: "in-process image/video generation (Codex by default; fal-ai/... routes to fal)",
+      summary:
+        "in-process image/video generation (Codex by default; fal-ai/... routes to fal, openrouter/... routes to OpenRouter)",
       actionClass: ActionClass.FREE,
       kind: "extension",
     },
@@ -93,8 +95,9 @@ export const createImageExtension: ExtensionFactory = ({ paths, logger }): Exten
         description:
           "Generate or edit a raster image — a logo, banner, sprite, illustration, mockup " +
           "graphic, or any \"make me a picture of…\" ask. Codex renders by default; pass a " +
-          "fal-ai/... model to route to the fal queue instead (required for video). Reference " +
-          "images turn the call into an edit. Returns the saved file path.",
+          "fal-ai/... model to route to the fal queue instead (required for video), or an " +
+          "openrouter/... model (e.g. openrouter/google/gemini-2.5-flash-image) to route to " +
+          "OpenRouter. Reference images turn the call into an edit. Returns the saved file path.",
         input: GenerateArgs,
         examples: [
           "make a logo for the docs site",
@@ -133,7 +136,7 @@ export const createImageExtension: ExtensionFactory = ({ paths, logger }): Exten
         name: "image",
         summary: "generate or edit a raster image (or a fal video)",
         usage:
-          'beckett image [video] "<prompt>" [--out <path>] [--size 1024x1024|1536x1024|1024x1536|auto] [--ref <file[,file]>] [--transparent] [--model <codex-model|fal-ai/...>]',
+          'beckett image [video] "<prompt>" [--out <path>] [--size 1024x1024|1536x1024|1024x1536|auto] [--ref <file[,file]>] [--transparent] [--model <codex-model|fal-ai/...|openrouter/...>]',
         run: runImage,
       },
     ],

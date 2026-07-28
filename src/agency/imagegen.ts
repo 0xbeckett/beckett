@@ -46,7 +46,10 @@ export interface ImageGenOptions {
   refs?: string[];
   /** Ask for a transparent (alpha) background — uses Codex's built-in chroma-key flow. */
   transparent?: boolean;
-  /** Optional model override. `fal-ai/...` slugs route to fal.ai; anything else stays Codex. */
+  /**
+   * Optional model override. `fal-ai/...` slugs route to fal.ai, `openrouter/...` slugs route
+   * to OpenRouter (e.g. `openrouter/google/gemini-2.5-flash-image`); anything else stays Codex.
+   */
   model?: string;
   /** Requested media kind. Defaults to image, except obvious fal video models (e.g. seedance). */
   media?: "image" | "video";
@@ -63,7 +66,7 @@ export interface ImageGenResult {
   /** True if we had to move the artifact from Codex's default dir to `path`. */
   relocated: boolean;
   /** Backend/provider metadata (omitted for the legacy Codex path). */
-  provider?: "fal";
+  provider?: "fal" | "openrouter";
   model?: string;
   media?: "image" | "video";
   url?: string;
@@ -103,6 +106,10 @@ function resolveCodexBin(home: string, override?: string): string {
 
 function isFalModel(model: string | undefined): boolean {
   return !!model?.trim().toLowerCase().startsWith("fal-ai/");
+}
+
+function isOpenRouterModel(model: string | undefined): boolean {
+  return !!model?.trim().toLowerCase().startsWith("openrouter/");
 }
 
 function inferFalMedia(model: string, requested?: "image" | "video"): "image" | "video" {
@@ -354,6 +361,203 @@ export class FalMediaGen {
   }
 }
 
+function extractOpenRouterError(json: any, fallback = "unknown OpenRouter error"): string {
+  if (typeof json?.error?.message === "string") return json.error.message;
+  if (typeof json?.message === "string") return json.message;
+  try {
+    const s = JSON.stringify(json);
+    if (s && s !== "{}") return s.slice(0, 800);
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+
+const MIME_EXT: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+};
+
+/** First `choices[].message.images[].image_url.url` in an OpenRouter chat-completions response. */
+function findOpenRouterImageUrl(json: any): string | undefined {
+  const choices = Array.isArray(json?.choices) ? json.choices : [];
+  for (const choice of choices) {
+    const images = choice?.message?.images;
+    if (!Array.isArray(images)) continue;
+    for (const img of images) {
+      const url = img?.image_url?.url ?? img?.url;
+      if (typeof url === "string" && url) return url;
+    }
+  }
+  return undefined;
+}
+
+export interface OpenRouterImageProviderOptions {
+  apiKey?: string;
+  baseUrl?: string;
+  referer?: string;
+  appTitle?: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+  beckettDir?: string;
+}
+
+/** OpenRouter chat-completions image backend: POST prompt, decode the returned image, save it. */
+export class OpenRouterImageGen {
+  private readonly home = homedir();
+  private readonly imagesDir: string;
+  private readonly logger: Logger;
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+  private readonly referer: string;
+  private readonly appTitle: string;
+  private readonly timeoutMs: number;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(deps: ImageGenDeps & OpenRouterImageProviderOptions) {
+    this.imagesDir = deps.imagesDir;
+    this.logger = deps.logger;
+    this.baseUrl = (deps.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+    this.appTitle = deps.appTitle ?? "Beckett image";
+    this.timeoutMs = deps.timeoutMs ?? 180_000;
+    this.fetchImpl = deps.fetchImpl ?? fetch;
+
+    if (!deps.apiKey) {
+      const beckettDir = deps.beckettDir ?? process.env.BECKETT_DIR ?? join(this.home, ".beckett");
+      try {
+        loadEnvFile(join(beckettDir, ".env"));
+      } catch {
+        /* missing/unreadable env becomes the clean missing-key error below */
+      }
+    }
+    const key = [deps.apiKey, process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_KEY].find((v) => v?.trim()) ?? "";
+    if (!key.trim()) {
+      throw new ImageGenError(
+        "OpenRouter key not on box: no OPENROUTER_API_KEY or OPENROUTER_KEY in ~/.beckett/.env — openrouter image generation is unavailable",
+      );
+    }
+    this.apiKey = key.trim();
+    this.referer = (deps.referer ?? process.env.OPENROUTER_REFERER ?? "").trim();
+  }
+
+  async generate(opts: ImageGenOptions & { model: string }): Promise<ImageGenResult> {
+    const prompt = opts.prompt?.trim();
+    if (!prompt) throw new ImageGenError("empty prompt");
+    if (opts.refs?.length) throw new ImageGenError("openrouter image generation does not support --ref yet");
+    if (opts.transparent) throw new ImageGenError("openrouter image generation does not support --transparent yet");
+    if (opts.media === "video") throw new ImageGenError("openrouter image generation does not support video yet");
+
+    const model = opts.model.trim().replace(/^openrouter\//i, "");
+    if (!model) throw new ImageGenError("openrouter model slug is required (e.g. openrouter/google/gemini-2.5-flash-image)");
+
+    const size = opts.size ?? DEFAULT_SIZE;
+    if (size !== "auto" && !ALLOWED_SIZES.has(size)) {
+      throw new ImageGenError(`bad --size "${size}"; allowed: ${[...ALLOWED_SIZES].join(", ")}`);
+    }
+
+    this.logger.info("openrouter gen submit", { model, size });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let json: any;
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          ...(this.referer ? { "HTTP-Referer": this.referer } : {}),
+          "X-Title": this.appTitle,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: prompt }],
+          modalities: ["image", "text"],
+        }),
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        json = { rawText: text };
+      }
+      if (!res.ok) {
+        throw new ImageGenError(
+          `openrouter ${res.status} ${res.statusText}: ${extractOpenRouterError(json, text.slice(0, 500))}`.trim(),
+        );
+      }
+    } catch (err) {
+      if ((err as Error).name === "AbortError") {
+        throw new ImageGenError(`openrouter request timed out after ${Math.round(this.timeoutMs / 1000)}s`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const imageUrl = findOpenRouterImageUrl(json);
+    if (!imageUrl) {
+      throw new ImageGenError(`openrouter ${model} response did not include a generated image`);
+    }
+
+    const dataMatch = /^data:([^;]+);base64,(.+)$/s.exec(imageUrl);
+    const mimeType = dataMatch?.[1];
+    const base64Payload = dataMatch?.[2];
+    const ext = (mimeType && MIME_EXT[mimeType.toLowerCase()]) || "png";
+    const outPath = opts.out
+      ? isAbsolute(opts.out)
+        ? opts.out
+        : resolve(opts.out)
+      : join(this.imagesDir, `${Date.now()}-${slugify(prompt)}.${ext}`);
+    mkdirSync(dirname(outPath), { recursive: true });
+
+    if (base64Payload !== undefined) {
+      writeFileSync(outPath, Buffer.from(base64Payload, "base64"));
+    } else {
+      await this.downloadAsset(imageUrl, outPath);
+    }
+
+    const bytes = statSync(outPath).size;
+    if (bytes === 0) {
+      rmSync(outPath, { force: true });
+      throw new ImageGenError(`openrouter wrote an empty file at ${outPath}`);
+    }
+    return {
+      path: outPath,
+      bytes,
+      size,
+      prompt,
+      edited: false,
+      relocated: false,
+      provider: "openrouter",
+      model,
+      media: "image",
+      url: dataMatch ? undefined : imageUrl,
+      raw: json,
+    };
+  }
+
+  private async downloadAsset(url: string, outPath: string): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120_000);
+    try {
+      const res = await this.fetchImpl(url, { method: "GET", signal: controller.signal });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new ImageGenError(`openrouter asset download ${res.status} ${res.statusText}: ${text.slice(0, 500)}`.trim());
+      }
+      writeFileSync(outPath, new Uint8Array(await res.arrayBuffer()));
+    } catch (err) {
+      if ((err as Error).name === "AbortError") throw new ImageGenError("openrouter asset download timed out after 120s");
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export class CodexImageGen {
   private readonly home = homedir();
   private readonly imagesDir: string;
@@ -374,6 +578,14 @@ export class CodexImageGen {
 
     if (isFalModel(opts.model)) {
       return new FalMediaGen({ imagesDir: this.imagesDir, logger: this.logger }).generate({
+        ...opts,
+        prompt,
+        model: opts.model!.trim(),
+      });
+    }
+
+    if (isOpenRouterModel(opts.model)) {
+      return new OpenRouterImageGen({ imagesDir: this.imagesDir, logger: this.logger }).generate({
         ...opts,
         prompt,
         model: opts.model!.trim(),
