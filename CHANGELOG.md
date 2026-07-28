@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.11.1 (2026-07-28)
+
 ### The documented install actually works on a clean machine (#72)
 
 The README pitches Beckett as forkable — "rename it, point it at your own Discord, and you have
@@ -38,7 +40,6 @@ The complete clean-host break record is retained here rather than relying on loo
 - **A secretless install staged units but had no health endpoint.** The service now provides a
   status-only `healthy-pending-configuration` control socket, and `deploy/install.sh` waits for
   that real response instead of declaring readiness from a process state alone.
-
 
 ## v6.9.0 (2026-07-27)
 
