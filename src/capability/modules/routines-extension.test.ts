@@ -527,7 +527,11 @@ test("asCapability projects the carried v5 facets into the pinned CLI spine slot
   // body, launched by the scheduler, so it stays unadvertised (like spend/journal/config) and the
   // composed `beckett` command list the CLI characterization suite pins is byte-identical.
   expect(projected.cliHelp).toBe("routine list|inspect|add|remove|fire");
-  expect(projected.cliVerbs.map((v) => v.name)).toEqual(["routine deps-update", "routine"]);
+  expect(projected.cliVerbs.map((v) => v.name)).toEqual([
+    "routine deps-update",
+    "routine proactive-sweep",
+    "routine",
+  ]);
   expect(projected.cliVerbs.every((v) => typeof v.run === "function")).toBe(true);
   expect(projected.busCommands).toEqual([]);
 

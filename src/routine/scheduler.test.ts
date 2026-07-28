@@ -46,10 +46,15 @@ test("fires exactly once per period (idempotent) and delegates dispatch off-proc
   await scheduler.tick();
   await scheduler.tick();
 
-  // Two dispatches total across three ticks — the shitpost AND the nightly dream (issue #36;
-  // with rng 0 its 03:00 PT roll is long past by 12:30 PT), each exactly once per period.
-  expect(calls.length).toBe(2);
-  expect(calls.map((c) => c.routineId).sort()).toEqual(["daily-x-shitpost", "nightly-dream"]);
+  // Three dispatches total across three ticks — the shitpost, the nightly dream (issue #36; with
+  // rng 0 its 03:00 PT roll is long past by 12:30 PT), AND the proactive rot sweep (issue #79; its
+  // 09:00–10:30 PT window is also past by 12:30 PT), each exactly once per period.
+  expect(calls.length).toBe(3);
+  expect(calls.map((c) => c.routineId).sort()).toEqual([
+    "daily-x-shitpost",
+    "nightly-dream",
+    "proactive-sweep",
+  ]);
   const shitpost = calls.find((c) => c.routineId === "daily-x-shitpost")!;
   expect(shitpost.credsEntry).toBe("x.com");
   const dream = calls.find((c) => c.routineId === "nightly-dream")!;
@@ -118,10 +123,10 @@ test("does not fire before the chosen time", async () => {
   });
   stoppers.push(scheduler.stop);
   await scheduler.tick();
-  // The pre-rolled 12:45 PT shitpost must NOT fire at 12:30 (the seeded nightly-dream, whose
-  // window is long past, is the only dispatch this tick).
+  // The pre-rolled 12:45 PT shitpost must NOT fire at 12:30 (only the seeded routines whose windows
+  // are long past — nightly-dream and the proactive sweep — dispatch this tick).
   expect(calls.filter((c) => c.routineId === "daily-x-shitpost").length).toBe(0);
-  expect(calls.every((c) => c.routineId === "nightly-dream")).toBe(true);
+  expect(calls.every((c) => c.routineId === "nightly-dream" || c.routineId === "proactive-sweep")).toBe(true);
 });
 
 test("fireNow dry-run returns the plan WITHOUT dispatching (no live post)", async () => {
