@@ -20,12 +20,27 @@ in `healthy-pending-configuration` with the required config documented:
   undocumented keys the installer itself wrote. Documented both, and added a regression test
   (`tests/install.test.ts`) asserting every installer-seeded key stays in the inventory.
 
-Earlier passes on this ticket taught the installer to provision the bored tracker itself (clone +
-build + a loopback `bored.service`), made the live browser smoke opt-in
-(`BECKETT_INSTALL_BROWSER_SMOKE=1`) so a container without a finished sandbox policy still reaches
-pending-configuration, fixed Pi version detection (a missing `pi` no longer reads as "already
-installed"), kept `curl | bash` working under `set -u` (no `BASH_SOURCE`), and corrected the
-README's dead `docs/V3.md` links, stale bored prerequisite, and missing MIT license section.
+The complete clean-host break record is retained here rather than relying on loom-desk state:
+
+- **The piped README command died under `set -u`.** stdin-fed Bash has no `BASH_SOURCE[0]`; the
+  entry guard now safely falls back to `$0`, so `curl | bash` and a downloaded script have the same
+  behavior.
+- **Pi was silently skipped.** `runuser`'s missing-command diagnostic was treated as a version
+  string, so `sort -V` claimed a nonexistent Pi was current. Version detection now ignores stderr.
+- **Bored's own installer aborted at `loginctl enable-linger`.** The public installer had already
+  enabled lingering as root, but bored redundantly retried it as the unprivileged service user,
+  where stock polkit correctly says access denied. A transient, invocation-only `loginctl` shim
+  acknowledges that redundant subcommand while passing every other call through.
+- **The mandatory browser smoke stopped otherwise-valid fresh hosts.** Chromium and its Linux
+  dependencies are still provisioned, while the live sandbox smoke is explicitly opt-in with
+  `BECKETT_INSTALL_BROWSER_SMOKE=1`; this leaves a status-only daemon available until host policy
+  is complete.
+- **A secretless install staged units but had no health endpoint.** The service now provides a
+  status-only `healthy-pending-configuration` control socket, and `deploy/install.sh` waits for
+  that real response instead of declaring readiness from a process state alone.
+
+The README was also corrected for its dead `docs/V3.md` links, stale bored prerequisite, and
+missing MIT license section.
 
 ## v6.9.0 (2026-07-27)
 
