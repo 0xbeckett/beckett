@@ -286,7 +286,9 @@ function writeWorkerMeta(
         mcpServers: {
           betterwright: {
             command: "npx",
-            args: ["betterwright", "mcp"],
+            // Workers run in their own project checkout, so make npx resolve Beckett's pinned
+            // dependency rather than downloading a browser package into the worker's project.
+            args: ["--no-install", "--prefix", join(import.meta.dir, "..", ".."), "betterwright", "mcp"],
             env: {
               BETTERWRIGHT_HOME: join(metaDir, "betterwright"),
               BETTERWRIGHT_HEADLESS: "1",
