@@ -94,6 +94,18 @@
   .nofees li b{color:var(--ink);font-weight:600}
   .nofees li::before{content:"✕";position:absolute;left:0;top:0;font-family:var(--pix);font-size:13px;color:var(--cy-deep)}
 
+  /* collapsible "where the number comes from" */
+  .whence{margin-top:24px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:var(--bevel),var(--drop);padding:0 20px}
+  .whence>summary{cursor:pointer;list-style:none;padding:16px 4px;font-family:var(--disp);font-weight:600;
+    font-size:16px;color:var(--ink);display:flex;align-items:center;gap:10px}
+  .whence>summary::-webkit-details-marker{display:none}
+  .whence>summary::before{content:"▸";font-family:var(--mono);font-size:13px;color:var(--cy-deep);
+    transition:transform .15s ease}
+  .whence[open]>summary::before{transform:rotate(90deg)}
+  .whence .whence-lead{font-size:14.5px;line-height:1.55;color:var(--dim);margin:2px 0 4px;max-width:none}
+  .whence .ledger{margin:14px 0 22px}
+
   .prov{margin-top:20px;font-size:12.5px;color:var(--dim)}
   .prov .num{color:var(--ink)}
 
@@ -327,6 +339,42 @@
       setAll('gen_date', (d.generated_at||'').slice(0,10));
       setAll('source_file', d.source_file || '—');
 
+      // credit unit + load-value scalars
+      var lv = d.load_value || {};
+      var creditUsd = d.credit ? d.credit.usd_per_credit : 0;
+      setAll('credit_usd', usd(creditUsd));
+      setAll('credit_per_5', creditUsd ? Math.round(5 / creditUsd).toLocaleString() : '—');
+      setAll('task_median_credits', lv.task_cost ? lv.task_cost.median_credits : '—');
+      setAll('task_median_usd', lv.task_cost ? usd(lv.task_cost.median_usd) : '—');
+
+      // "what a load buys" table — real task cost -> count per budget
+      var bb = document.querySelector('[data-bind="buys_rows"]');
+      var examples = lv.examples || [];
+      if (bb) bb.innerHTML = examples.map(function(e){
+        var cells = e.covers.map(function(c){ return '<td class="n">'+c.count+'</td>'; }).join('');
+        return '<tr><th scope="row">'+esc(e.label)+'</th>'+
+               '<td class="n">'+usd(e.cost_usd)+' · '+e.credits+' cr</td>'+cells+'</tr>';
+      }).join('');
+      // plain-language summary at $5: "7 quick fixes, 3 small features, or 1 typical task"
+      var five = examples.map(function(e){
+        var c = (e.covers.find(function(x){ return x.budget_usd === 5; })||{}).count;
+        var name = e.label.replace(/^a\s+/,'');
+        return c + ' ' + name + (c === 1 ? '' : 's');
+      });
+      if (five.length) {
+        var summary = five.slice(0,-1).join(', ') + (five.length>1?', or ':'') + five[five.length-1];
+        setAll('buys_summary', summary);
+      }
+
+      // recent tasks -> credits table
+      var rr = document.querySelector('[data-bind="recent_rows"]');
+      if (rr) rr.innerHTML = (lv.recent_tasks || []).map(function(t){
+        return '<tr><th scope="row">'+esc(t.id)+'</th>'+
+               '<td class="n">'+t.runs+'</td>'+
+               '<td class="n">'+usd(t.cost_usd)+'</td>'+
+               '<td class="n">'+t.credits+' cr</td></tr>';
+      }).join('');
+
       // rate table
       var rt = document.querySelector('[data-bind="rate_rows"]');
       if (rt) rt.innerHTML = d.model_rates.tiers.map(function(t){
@@ -356,7 +404,7 @@
         rows += '<div class="row"><span class="lbl"><b>Platform fee</b> · '+d.platform_fee.pct+'% margin</span>'+
                 '<span class="amt">'+usd(w.lines.platform_fee)+'</span></div>';
         rows += '<div class="row total"><span class="lbl">Ticket total</span>'+
-                '<span class="amt">'+usd(w.lines.total)+'</span></div>';
+                '<span class="amt">'+usd(w.lines.total)+' · '+w.lines.total_credits+' cr</span></div>';
         er.innerHTML = rows;
       }
 
