@@ -1815,6 +1815,7 @@ describe("crash recovery", () => {
       });
       await after.recoverFromCrash();
 
+      spawnCalls.length = 0; // ignore the pre-crash spawn; only the post-restart attempt matters
       failNextResumeSpawn = true;
       await after.handle(stateChanged(ticket, "in_progress"));
       await tick();
@@ -1822,9 +1823,8 @@ describe("crash recovery", () => {
       // The resume was attempted (session recorded) but failed. #68: rather than a silent fresh
       // restart, the interrupted ticket is parked in todo with an explicit comment — and NO fresh
       // worker is spawned in its place.
-      const resumeAttempt = spawnCalls.at(-1);
-      expect(resumeAttempt!.resumeSessionId).toBe("sess-1");
-      expect(spawnCalls.filter((c) => c.resumeSessionId === undefined)).toHaveLength(0);
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0]!.resumeSessionId).toBe("sess-1");
       expect(client.setStateCalls).toContainEqual({ id: ticket.id, state: "todo" });
       expect(client.comments.at(-1)!.body).toContain("mid-run when a deploy restarted the daemon");
     } finally {
@@ -1963,14 +1963,17 @@ describe("deploy drain then resume-or-park (#68)", () => {
       });
       await after.recoverFromCrash();
 
+      spawnCalls.length = 0; // ignore the pre-deploy spawn; only the post-restart attempt matters
       failNextResumeSpawn = true; // the persisted session is stale — resume throws
       await after.handle(stateChanged(ticket, "in_progress"));
       await tick();
 
-      // Parked in todo with an explicit deploy comment; NO fresh (resumeSessionId-less) worker.
+      // Parked in todo with an explicit deploy comment; the only spawn was the (failed) resume
+      // attempt — NO fresh, session-less worker was started in its place.
       expect(client.setStateCalls).toContainEqual({ id: ticket.id, state: "todo" });
       expect(client.comments.at(-1)!.body).toContain("mid-run when a deploy restarted the daemon");
-      expect(spawnCalls.filter((c) => c.resumeSessionId === undefined)).toHaveLength(0);
+      expect(spawnCalls).toHaveLength(1);
+      expect(spawnCalls[0]!.resumeSessionId).toBe("sess-1");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
