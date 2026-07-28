@@ -78,6 +78,14 @@ export abstract class BaseDriver {
   protected lastProgressTs = 0;
   /** When the last `stalled` signal was emitted — at most one per silent window. */
   protected lastStallEmitTs = 0;
+  /**
+   * `toolId`s of tool calls seen without a matching `tool_result` (issue #83). A single long
+   * foreground tool call (docker build, dep install, a test suite) emits `tool_call` up front then
+   * nothing until `tool_result` minutes later — that is a demonstrably-alive worker, not a wedge,
+   * so {@link tickStall} stays silent while this is non-empty. The wall-clock hard cap still backs
+   * a tool call that never returns.
+   */
+  protected readonly inFlightTools = new Set<string>();
   /** Incremented per child process; an exit whose gen != current is a superseded child (ignored). */
   protected childGen = 0;
 
@@ -376,6 +384,9 @@ export abstract class BaseDriver {
   protected tickStall(): void {
     const stallS = this.config.supervise?.worker_stall_s ?? 0;
     if (!stallS || this.lastProgressTs <= 0 || this.workerState === "paused") return;
+    // A tool call in flight means the worker is demonstrably alive, just silent for the length of
+    // a long foreground call (issue #83). The wall-clock hard cap still backs a call that hangs.
+    if (this.inFlightTools.size > 0) return;
     const now = Date.now();
     const idleMs = now - this.lastProgressTs;
     if (idleMs < stallS * 1000) return;
