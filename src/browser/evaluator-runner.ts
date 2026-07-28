@@ -256,7 +256,7 @@ export async function runBrowserEvaluator(
   const snippetBudgetMs = request.evalTimeoutMs + 2_000;
   let phase: "startup" | "snippet" | "teardown" = "startup";
   let killedPhase: "startup" | "snippet" | "teardown" | null = null;
-  let timer: ReturnType<typeof setTimeout>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const armTimer = (budgetMs: number) => {
     timer = setTimeout(() => {
       killedPhase = phase;
