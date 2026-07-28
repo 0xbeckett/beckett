@@ -315,7 +315,7 @@ export interface ReplyOptions {
   replyToUserId?: string;
   files?: string[]; // local file paths to attach (image-only posts OK)
   embeds?: DiscordEmbed[]; // rich status cards; never carry raw diffs or secret account data
-  buttons?: DiscordLinkButton[]; // URL-only actions such as Open PR / Checks / Comments
+  buttons?: DiscordButton[]; // link and interaction controls; component clicks require no OAuth scope
   /**
    * Send content and attachments in exactly one Discord API message. This bypasses text
    * transforms, human-cadence splitting, and inter-message delays; over-2000 content is
@@ -348,6 +348,29 @@ export interface DiscordEmbed {
 export interface DiscordLinkButton {
   label: string;
   url: string;
+}
+
+/** A non-link message component. Its custom id is transport data, never authority. */
+export interface DiscordActionButton {
+  label: string;
+  customId: string;
+  /** Dangerous actions render red; everything else uses Discord's primary style. */
+  danger?: boolean;
+}
+
+export type DiscordButton = DiscordLinkButton | DiscordActionButton;
+
+/** A normalized button/select interaction after the gateway has deferred an ephemeral reply. */
+export interface DiscordComponentInteraction {
+  customId: string;
+  /** Discord-authenticated clicking user, never a value supplied by custom_id/message content. */
+  userId: string;
+  channelId: string;
+  isThread: boolean;
+  parentChannelId?: string;
+  channelName?: string;
+  /** The initial response was already deferred by the gateway inside Discord's three-second SLA. */
+  editReply(content: string): Promise<void>;
 }
 
 export interface TaskThreadCreated {
@@ -1083,6 +1106,11 @@ export interface DiscordGateway {
    * activity/progress threads are gone; the worker firehose goes to the private ticket journal.
    */
   onThreadCreate(cb: (t: ThreadCreated) => void | Promise<void>): void;
+  /**
+   * Register a button/select component callback. The concrete gateway defers every component
+   * ephemerally before calling this, so handlers may do slow work and only edit the reply.
+   */
+  onInteraction?(cb: (interaction: DiscordComponentInteraction) => void | Promise<void>): void;
   /**
    * Join a thread so Beckett stays subscribed to it and a post can unarchive it. Best-effort:
    * implementations swallow permission/unknown-channel failures and never reject. Optional

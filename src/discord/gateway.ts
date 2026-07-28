@@ -45,6 +45,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
+  MessageFlags,
   EmbedBuilder,
   ThreadAutoArchiveDuration,
 } from "discord.js";
@@ -52,6 +53,7 @@ import type {
   DiscordGateway,
   DiscordMessageEditPayload,
   IncomingMessage,
+  DiscordComponentInteraction,
   ReplyContextMessage,
   ReplyOptions,
   TaskThreadCreated,
@@ -188,6 +190,9 @@ export class DiscordJsGateway implements DiscordGateway {
 
   /** Handler for user-created threads ({@link onThreadCreate}); numbered task threads register directly. */
   private threadHandler: ((t: ThreadCreated) => void | Promise<void>) | undefined;
+
+  /** Component callback. Components need no applications.commands OAuth scope or slash command. */
+  private interactionHandler: ((i: DiscordComponentInteraction) => void | Promise<void>) | undefined;
 
   /** Outbound posts buffered while disconnected (Spec 01 §6 — flushed on reconnect). */
   private readonly outbound: QueuedPost[] = [];
@@ -628,6 +633,12 @@ export class DiscordJsGateway implements DiscordGateway {
     this.threadHandler = cb;
   }
 
+  /** Register the single versioned component router owned by the Concierge. */
+  onInteraction(cb: (i: DiscordComponentInteraction) => void | Promise<void>): void {
+    if (this.interactionHandler) this.logger.warn("discord interaction handler replaced");
+    this.interactionHandler = cb;
+  }
+
   /**
    * Join a thread so Beckett stays a member of it: Discord keeps delivering to members, an
    * archived thread unarchives when a member posts, and the thread stops silently falling out of
@@ -714,6 +725,44 @@ export class DiscordJsGateway implements DiscordGateway {
             error: String(err),
           }),
         );
+    });
+
+    // Components are interactions, not slash commands: Guilds is sufficient, so no OAuth scope
+    // or bot re-invite is needed. Acknowledge first, before routing or any disk/network work, to
+    // meet Discord's three-second interaction deadline. All outcomes are ephemeral by design.
+    client.on(Events.InteractionCreate, (interaction) => {
+      if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
+      this.lastEventTs = Date.now();
+      void Promise.resolve()
+        .then(async () => {
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+          const channel = interaction.channel;
+          const normalized: DiscordComponentInteraction = {
+            customId: interaction.customId,
+            userId: interaction.user.id,
+            channelId: interaction.channelId,
+            isThread: channel?.isThread() === true,
+            ...(channel?.isThread() && channel.parentId ? { parentChannelId: channel.parentId } : {}),
+            ...(channel && "name" in channel && typeof channel.name === "string" ? { channelName: channel.name } : {}),
+            editReply: async (content) => { await interaction.editReply({ content }); },
+          };
+          const handler = this.interactionHandler;
+          if (!handler) {
+            await normalized.editReply("That control is not available right now.");
+            return;
+          }
+          await handler(normalized);
+        })
+        .catch(async (err) => {
+          this.logger.error("discord interaction handler threw", {
+            interactionId: interaction.id,
+            error: String(err),
+          });
+          // deferReply can itself fail (expired/deleted interaction); only edit when it succeeded.
+          if (interaction.deferred || interaction.replied) {
+            await interaction.editReply({ content: "That action could not be completed." }).catch(() => undefined);
+          }
+        });
     });
 
     // A person's thread SURFACED → a workspace candidate. We deliberately no longer drop
@@ -1061,7 +1110,7 @@ export class DiscordJsGateway implements DiscordGateway {
       ...opts,
       embeds: opts.embeds === undefined ? undefined : this.redactEmbeds(channelId, opts.embeds),
       buttons: opts.buttons?.flatMap((button) => {
-        if (!isUnsafeDiscordUrl(button.url)) return [button];
+        if (!("url" in button) || !isUnsafeDiscordUrl(button.url)) return [button];
         this.logger.warn("redacted internal URL from outbound discord message", {
           channelId,
           location: "button.url",
@@ -1382,9 +1431,13 @@ function isTransientTransportError(error: unknown): boolean {
 
 function buildButtonRow(buttons: NonNullable<ReplyOptions["buttons"]>): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    buttons.slice(0, 5).map((button) =>
-      new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel(button.label.slice(0, 80)).setURL(button.url)
-    ),
+    buttons.slice(0, 5).map((button) => {
+      const built = new ButtonBuilder().setLabel(button.label.slice(0, 80));
+      if ("url" in button) return built.setStyle(ButtonStyle.Link).setURL(button.url);
+      return built
+        .setStyle(button.danger ? ButtonStyle.Danger : ButtonStyle.Primary)
+        .setCustomId(button.customId);
+    }),
   );
 }
 
