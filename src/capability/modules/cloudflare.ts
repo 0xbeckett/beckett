@@ -332,15 +332,18 @@ export const createDeployExtension: ExtensionFactory = ({ logger }): Extension =
         if (!ticket || !slug) return "";
         const wantsDeploy = ticketMentionsDeploy(ticket);
         const isFrontend = ticketTouchesFrontend(ticket);
-        if (!wantsDeploy && !isFrontend) return "";
+        const isVisual = isFrontend || ticketMentionsVisualWork(ticket);
+        if (!wantsDeploy && !isVisual) return "";
         const apex = apexDomain();
         const parts: string[] = [];
         if (wantsDeploy) parts.push(deployDurabilityNote(slug, apex));
-        // A frontend branch earns a review preview (#76): reviewers open the page, not the diff.
-        if (isFrontend) {
+        if (isVisual) {
           parts.push(
             "For visual/frontend work, use the BetterWright MCP browser tool to open your local URL and capture a screenshot; never hunt for a Chrome binary or write service units just to inspect it.",
           );
+        }
+        // A frontend branch earns a review preview (#76): reviewers open the page, not the diff.
+        if (isFrontend) {
           parts.push(previewBriefNote(slug, apex));
         }
         return parts.join("\n");
@@ -405,6 +408,12 @@ export function ticketMentionsDeploy(ticket: { title: string; body: string; crit
 export function ticketTouchesFrontend(ticket: { title: string; body: string; criteria: string[] }): boolean {
   const text = `${ticket.title}\n${ticket.body}\n${ticket.criteria.join("\n")}`;
   return /frontend|front-end|\bui\b|\bux\b|web ?app|webpage|\bpage\b|dashboard|component|react|vue|svelte|tailwind|css|html|styling|stylesheet|landing|responsive/i.test(text);
+}
+
+/** Visual work needs a browser look even when its ticket does not use frontend vocabulary. */
+export function ticketMentionsVisualWork(ticket: { title: string; body: string; criteria: string[] }): boolean {
+  const text = `${ticket.title}\n${ticket.body}\n${ticket.criteria.join("\n")}`;
+  return /\bvisual\b|typography|\bvoxel|canvas|animation|particle|\bgame\b|look and feel|design/i.test(text);
 }
 
 /**

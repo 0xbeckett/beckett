@@ -2,7 +2,7 @@
 
 /** Capture a local page with BetterWright, without a separately-managed browser. */
 
-import { mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { BetterWright } from "betterwright";
 
@@ -65,16 +65,18 @@ const browser = new BetterWright({
 
 try {
   const result = await browser.run(
-    `
+    `(async () => {
       await page.setViewportSize({ width: ${options.width}, height: ${options.height} });
       await page.goto(${JSON.stringify(options.url)}, { waitUntil: 'networkidle' });
       ${options.waitMs ? `await page.waitForTimeout(${options.waitMs});` : ""}
-      await page.screenshot({ path: ${JSON.stringify(options.output)}, type: 'png' });
-      return { url: page.url() };
-    `,
+      return await screenshot({ kind: 'proof', name: 'shot', type: 'png' });
+    })()`,
     { timeout: 45 },
   );
   if (!result.ok) throw new Error(result.error);
+  const artifact = result.result as { path?: unknown };
+  if (typeof artifact?.path !== "string") throw new Error("BetterWright did not return a screenshot artifact");
+  copyFileSync(artifact.path, options.output);
   process.stdout.write(`wrote ${options.output}\n`);
 } catch (error) {
   process.stderr.write(
