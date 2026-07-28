@@ -3144,8 +3144,8 @@ export class Dispatcher {
       await this.parkForHuman(
         ticket,
         `The worker ${reason} again — that's ${this.caps.implementRetries} retries with no clean finish, ` +
-          `so I'm stopping automatic retries and parking this for a human. Its WIP is committed${at}.` +
-          `${link}\n\nWhere it stopped:\n${summary}`,
+          `so I'm stopping automatic retries and moving this back to **todo** for a human. Its WIP is committed${at}.` +
+          `${link}\n\nWhere it stopped:\n${summary}`, 
       );
       this.logger.warn("implement retries exhausted — returned ticket to todo", {
         ticket: ticket.identifier,
@@ -3306,7 +3306,16 @@ export class Dispatcher {
       `🏷️ **Label: \`beckett:publish-human\`**\n\nGitHub publish cannot be retried automatically (${error}). ` +
       `Please courier the committed work from \`${op.repoRoot}\`. Compare-link fallback: ${this.compareLink(op)}. ` +
       `It remains in **in_review** for a human; no worktree was disposed.`;
-    await this.parkForHuman(ticket, body);
+    // Modern bored persists a paused run. Older adapters retain the historical in_review hold;
+    // the dispatcher marker still makes that active-looking state inert to the watchdog.
+    if (this.clientForTicketId(ticket.id, ticket.projectId).park) {
+      await this.parkForHuman(ticket, body);
+    } else {
+      this.humanHolds.set(ticket.id, "awaiting courier");
+      this.persistRuntimeState();
+      if (ticket.state === "in_review") await this.postComment(ticket.id, body);
+      else await this.advanceTicket(ticket, "in_review", body);
+    }
   }
 
   private compareLink(op: PublishOperation): string {

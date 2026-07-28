@@ -232,6 +232,7 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
     ...(over.branchRef ? { branchRef: over.branchRef } : {}),
     ...(over.targetBranch ? { targetBranch: over.targetBranch } : {}),
     ...(over.startState ? { startState: over.startState } : {}),
+    ...(over.parked ? { parked: true, ...(over.parkReason ? { parkReason: over.parkReason } : {}) } : {}),
     projectId: over.projectId ?? "proj-1",
     url: "http://x",
     updatedAt: "now",
@@ -1602,6 +1603,59 @@ describe("rework cap", () => {
     expect(client.comments.some((c) => c.body.includes("stopping"))).toBe(true);
   });
 
+  test("a rework-cap human hold stays inert to the staffing watchdog", async () => {
+    const client = new FakeClient();
+    const config = { ...cfg(2), supervise: { max_rework_cycles: 1 } } as unknown as Config;
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config,
+      resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+    });
+    const ticket = makeTicket({ id: "cap", identifier: "OPS-CAP", state: "in_review" });
+    client.board = [ticket];
+
+    await d.handle(stateChanged(ticket, "in_review"));
+    await tick();
+    created[0]!.finish("success", "still broken", doneSignal("blocked"));
+    await tick();
+    expect(spawnCalls).toHaveLength(1); // the original reviewer only
+
+    // Bored projects this human hold as in_review; two full grace windows must not buy a reviewer.
+    const t0 = 7_000_000;
+    expect(await d.reconcileStaffing(t0)).toEqual({ restaffed: [], parked: [] });
+    expect(await d.reconcileStaffing(t0 + 121_000)).toEqual({ restaffed: [], parked: [] });
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  test("retry exhaustion and courier publication failure also remain inert", async () => {
+    const client = new FakeClient() as FakeClient & { park(id: string): Promise<void> };
+    client.park = async (id) => {
+      const ticket = client.board.find((t) => t.id === id)!;
+      ticket.parked = true;
+      ticket.parkReason = "operator_pause";
+    };
+    const config = { ...cfg(2), supervise: { max_implement_retries: 0 } } as unknown as Config;
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config,
+      resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+    });
+    const exhausted = makeTicket({ id: "retry", identifier: "OPS-RETRY", state: "in_progress" });
+    client.board = [exhausted];
+    await d.handle(stateChanged(exhausted, "in_progress"));
+    await tick();
+    created[0]!.finish("error", "harness died");
+    await tick();
+    expect(exhausted.parked).toBe(true);
+
+    const t0 = 8_000_000;
+    expect(await d.reconcileStaffing(t0)).toEqual({ restaffed: [], parked: [] });
+    expect(await d.reconcileStaffing(t0 + 121_000)).toEqual({ restaffed: [], parked: [] });
+    expect(spawnCalls).toHaveLength(1);
+  });
+
   test("rework cap is config-driven ([supervise] max_rework_cycles, OPS-180)", async () => {
     const client = new FakeClient();
     const config = { ...cfg(5), supervise: { max_rework_cycles: 1 } } as unknown as Config;
@@ -2538,6 +2592,52 @@ describe("staffing watchdog (issue #9)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("a courier-needed publish failure is a durable hold, not a review wedge", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-watchdog-courier-"));
+    try {
+      const client = new FakeClient() as FakeClient & { park(id: string): Promise<void> };
+      client.park = async (id) => {
+        const ticket = client.board.find((t) => t.id === id)!;
+        ticket.parked = true;
+        ticket.parkReason = "operator_pause";
+      };
+      const d = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(),
+        resolveRepoRoot: () => "/tmp/repo",
+        publishOutboxPath: join(dir, "publish.jsonl"),
+        publishRepo: async () => { throw new Error("gh api failed (403): cross-fork PAT limit"); },
+      });
+      const ticket = makeTicket({ id: "courier", identifier: "OPS-COURIER", casting: { implement: { harness: "claude", effort: "low" } } });
+      client.board = [ticket];
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      created[0]!.finish("success", "ready to ship");
+      await tick();
+      expect(ticket.parked).toBe(true);
+
+      const t0 = 9_000_000;
+      expect(await d.reconcileStaffing(t0)).toEqual({ restaffed: [], parked: [] });
+      expect(await d.reconcileStaffing(t0 + 121_000)).toEqual({ restaffed: [], parked: [] });
+      expect(spawnCalls).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("honors a tracker-projected durable human hold", async () => {
+    const { d, client } = newDispatcher();
+    // Bored's paused workflow still projects its last active column (here in_review).
+    const ticket = makeTicket({ id: "hold", identifier: "OPS-HOLD", state: "in_review", parked: true, parkReason: "operator_pause" });
+    client.board = [ticket];
+
+    const t0 = 4_000_000;
+    expect(await d.reconcileStaffing(t0)).toEqual({ restaffed: [], parked: [] });
+    expect(await d.reconcileStaffing(t0 + 121_000)).toEqual({ restaffed: [], parked: [] });
+    expect(spawnCalls).toHaveLength(0);
   });
 
   test("does not resurrect a ticket cancelled after the watchdog listed it", async () => {

@@ -44,6 +44,25 @@ test("req retries transient 5xx responses and not caller errors", async () => {
   await expect(privateReq(rejected, "GET", "/health")).rejects.toBeInstanceOf(BoredApiError);
 });
 
+test("a Bored pause is hydrated as a durable human hold despite its active state projection", async () => {
+  let current = ticket("in_review");
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(String(url));
+    if (init?.method === "GET" && u.pathname === "/tickets/%231") return Response.json({ ticket: current });
+    if (init?.method === "POST" && u.pathname === "/tickets/%231/pause") {
+      current = { ...current, stateReason: "operator_pause" };
+      return Response.json({ ticket: current });
+    }
+    throw new Error(`unexpected bored route: ${init?.method} ${u.pathname}`);
+  }) as unknown as typeof fetch;
+  const client = new BoredClient({ config, logger: quiet, fetch: fetchImpl });
+
+  await client.park("#1");
+  await expect(client.getIssue("#1")).resolves.toMatchObject({
+    state: "in_review", parked: true, parkReason: "operator_pause",
+  });
+});
+
 test("list, create, state, journal comments, and cancellation use bored HTTP endpoints", async () => {
   const requests: Array<{ method: string; path: string; body?: Record<string, unknown> }> = [];
   let current = ticket();
