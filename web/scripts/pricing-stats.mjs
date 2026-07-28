@@ -68,6 +68,22 @@ const SEAT = {
   monthly_usd: 20, // per person, per month
 };
 
+// CREDIT UNIT — policy, not telemetry. One credit is a FIXED dollar of
+// underlying spend, identical across every model. A cheaper model doesn't make a
+// credit "worth more" — it simply burns fewer credits for the same task, because
+// the same real dollars bought it. Change this constant and every credit figure
+// on the page rescales together.
+const CREDIT = {
+  usd_per_credit: 0.1, // 1 credit = $0.10 of underlying spend — the fixed unit
+};
+
+// Load amounts a reader might top up with. Used only to answer "I load $X, now
+// what" — the counts they map to are derived from real task cost below.
+const LOAD_BUDGETS = [5, 20, 50]; // USD
+
+// Convert a dollar figure to credits at the fixed rate.
+const toCredits = (usd, dp = 1) => round(usd / CREDIT.usd_per_credit, dp);
+
 // ---------------------------------------------------------------------------
 // Statistics helpers
 // ---------------------------------------------------------------------------
