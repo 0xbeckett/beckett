@@ -2057,8 +2057,10 @@ export class Dispatcher {
     // benign forward transition (backlog→todo→in_progress) can clear the reservation via a stale
     // park even though the ticket still wants exactly this worker.
     if (this.staffing.get(ticket.id) !== reservation) {
-      const reservationWasDropped = !this.staffing.has(ticket.id);
       const fresh = await this.freshStateOrNull(ticket);
+      // The fresh-state read itself awaits. Re-check after it: another event may have admitted a
+      // newer spawn while this old worker was waiting, and it must retain ownership.
+      const reservationWasDropped = !this.staffing.has(ticket.id);
       const wantsThisStage = fresh != null && this.stages.forState(fresh)?.name === stage;
       if (!wantsThisStage || !reservationWasDropped) {
         this.logger.info("ticket no longer staffed mid-spawn — discarding worker", {
