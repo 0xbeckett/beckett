@@ -102,6 +102,8 @@ export interface TrackerClientLike {
   setState(id: string, state: TicketState): Promise<void>;
   /** Durably pause an active workflow for a human (bored keeps projecting its active state). */
   park?(id: string): Promise<void>;
+  /** Resume a native human hold for an explicit operator re-staff. */
+  resume?(id: string): Promise<void>;
   /** Fetch a ticket before dispatcher-initiated state changes, so human terminal moves win. */
   getIssue?(id: string): Promise<Ticket | null>;
   /** Post a comment on a ticket; returns the created comment. */
@@ -784,13 +786,12 @@ export class Dispatcher {
       reason,
     });
     this.trace(ticket, stage, "held", `interrupted mid-${stage} by a restart; ${reason} — parked in todo`);
-    await this.advanceTicket(
+    await this.parkForHuman(
       ticket,
-      "todo",
       `A **${stage}** worker was mid-run when a deploy restarted the daemon, and ${reason}. ` +
-        "Rather than silently restarting the in-flight work from scratch, I've parked this in " +
-        "**todo** — any checkpointed progress is committed in the worktree as WIP. Move it back to " +
-        "**in_progress** to pick it up with a fresh worker whenever you're ready.",
+        "Rather than silently restarting the in-flight work from scratch, I've parked this for a " +
+        "human — any checkpointed progress is committed in the worktree as WIP. Use `beckett ticket " +
+        "restaff` to pick it up with a fresh worker whenever you're ready.",
     );
   }
 
@@ -950,13 +951,12 @@ export class Dispatcher {
           });
           this.trace(ticket, "watchdog", "held", "re-staff did not take — parked in todo for a human");
           this.forgetWedgeClock(ticket.id);
-          const ok = await this.advanceTicket(
+          const ok = await this.parkForHuman(
             ticket,
-            "todo",
             "A worker for this ticket was never established (it stayed in **" +
               `${ticket.state}** with nothing running), and an automatic re-staff did not take. I've ` +
-              "parked it in **todo** so it costs no tokens while it waits — move it back to " +
-              "**in_progress** to try again.",
+              "parked it for a human so it costs no tokens while it waits — use `beckett ticket restaff` " +
+              "to try again.",
           ).catch((err) => {
             this.logger.warn("staffing watchdog: park failed", {
               ticket: ticket.identifier,
@@ -975,6 +975,17 @@ export class Dispatcher {
       this.watchdogInFlight = false;
     }
     return { restaffed, parked };
+  }
+
+  /** True when the tracker or dispatcher has explicitly handed this ticket to a human. */
+  private isParkedForHuman(ticket: Ticket): boolean {
+    return ticket.parked === true || this.humanHolds.has(ticket.id);
+  }
+
+  /** Clear a fallback human hold once an operator has resumed the ticket. */
+  private clearHumanHold(ticketId: string): void {
+    if (!this.humanHolds.delete(ticketId)) return;
+    this.persistRuntimeState();
   }
 
   /** Clear a ticket's watchdog wedge clock + re-staff marker (it is healthy / gone). */
@@ -1494,6 +1505,9 @@ export class Dispatcher {
     // a ticket held in in_review by the publish outbox has already passed review and is heading to
     // done, so there is nothing to preview. Fire-and-forget; never blocks staffing.
     if (to === "in_review" && !this.publishOutbox?.has(ticket.id)) this.ensurePreview(ticket);
+    // A fallback hold is cleared when a tracker actively reports the ticket running again; native
+    // Bored holds carry `ticket.parked` and survive this projection unchanged.
+    if (!ticket.parked && this.humanHolds.has(ticket.id)) this.clearHumanHold(ticket.id);
     // A Bored pause deliberately leaves the projected state active. It is an explicit human hold,
     // so it must beat both event-driven staffing and the liveness watchdog.
     if (this.isParkedForHuman(ticket)) {
@@ -1838,6 +1852,10 @@ export class Dispatcher {
     }
 
     const handle = this.workers.get(ticket.id);
+    if (ticket.parked && this.clientForTicketId(ticket.id, ticket.projectId).resume) {
+      await this.clientForTicketId(ticket.id, ticket.projectId).resume!(ticket.id);
+    }
+    this.clearHumanHold(ticket.id);
     this.trace(ticket, "restaff", "started", "operator requested re-staff");
     this.cancelSpawnRetry(ticket.id);
     this.dropPending(ticket.id);
@@ -2581,12 +2599,11 @@ export class Dispatcher {
 
     this.implementRetries.delete(ticket.id);
     this.persistRuntimeState();
-    await this.advanceTicket(
+    await this.parkForHuman(
       ticket,
-      "todo",
       `Could not start a ${stage} worker after ${this.caps.implementRetries} attempts ` +
-        `(${err.message}). Parking this in **todo** — nothing is running and nothing will ` +
-        `auto-retry; move it back to **in_progress** once the cause is fixed.`,
+        `(${err.message}). Parking this for a human — nothing is running and nothing will ` +
+        `auto-retry; use \`beckett ticket restaff\` once the cause is fixed.`,
     );
     this.logger.warn("spawn retries exhausted — parked ticket", { ticket: ticket.identifier, stage });
   }
@@ -2650,12 +2667,11 @@ export class Dispatcher {
         this.substituteRetries.delete(ticket.id);
         this.castOverrides.delete(ticket.id);
         this.persistRuntimeState();
-        await this.advanceTicket(
+        await this.parkForHuman(
           ticket,
-          "todo",
           `${cause}, and I've already substituted harnesses ${this.caps.harnessSubstitutions} times ` +
-            `for this ticket without it settling. Parking in **todo** to stop thrashing across ` +
-            `harnesses — move it back to **in_progress** once the capacity/login issue is fixed. ` +
+            `for this ticket without it settling. Parking for a human to stop thrashing across ` +
+            `harnesses — use \`beckett ticket restaff\` once the capacity/login issue is fixed. ` +
             `WIP committed${at}.\n\n${summary}`,
         );
         this.logger.warn("harness-substitution budget exhausted — parked ticket", {
@@ -2670,12 +2686,11 @@ export class Dispatcher {
     if (errorClass === "auth") {
       this.implementRetries.delete(ticket.id);
       this.persistRuntimeState();
-      await this.advanceTicket(
+      await this.parkForHuman(
         ticket,
-        "todo",
-        `${cause} and no other harness is available, so I'm parking this in **todo** — retrying ` +
+        `${cause} and no other harness is available, so I'm parking this for a human — retrying ` +
           `would burn tokens against a closed door. Fix: ${LOGIN_HINTS[failed] ?? `re-auth ${failed}`}, ` +
-          `then move the ticket back to **in_progress**. WIP is committed${at}.\n\n${summary}`,
+          `then use \`beckett ticket restaff\`. WIP is committed${at}.\n\n${summary}`,
       );
       this.logger.warn("auth failure — parked ticket for re-login", {
         ticket: ticket.identifier,
@@ -2705,11 +2720,10 @@ export class Dispatcher {
     }
     this.implementRetries.delete(ticket.id);
     this.persistRuntimeState();
-    await this.advanceTicket(
+    await this.parkForHuman(
       ticket,
-      "todo",
       `${cause} and it hasn't cleared after ${this.caps.implementRetries} backed-off retries. Parking ` +
-        `in **todo**; move it back to **in_progress** when capacity returns. WIP committed${at}.`,
+        `for a human; use \`beckett ticket restaff\` when capacity returns. WIP committed${at}.`,
     );
     this.logger.warn("rate-limit retries exhausted — parked ticket", { ticket: ticket.identifier });
   }
@@ -3004,13 +3018,11 @@ export class Dispatcher {
     const sha = await this.commitWip(ticket, handle);
     const at = sha ? ` Its work-in-progress is committed at \`${sha.slice(0, 9)}\`.` : "";
     try {
-      const moved = await this.advanceTicket(
+      const moved = await this.parkForHuman(
         ticket,
-        "todo",
         `I stopped automatic restarts after **${repeated.cycles} identical silent cycles**. ` +
-          `The repeated stall fingerprint was \`${repeated.fingerprint}\`. Moving this back to ` +
-          `**todo** so a human can inspect the deterministic failure instead of another worker ` +
-          `replaying it.${at}`,
+          `The repeated stall fingerprint was \`${repeated.fingerprint}\`. Parking this for a ` +
+          `human to inspect the deterministic failure instead of another worker replaying it.${at}`,
       );
       if (moved) {
         // The ticket comment is durable evidence; do not make a later human restart inherit an
@@ -3129,12 +3141,11 @@ export class Dispatcher {
           : `\n\nWIP pushed: ${pub.url}`
         : "";
     try {
-      await this.advanceTicket(
+      await this.parkForHuman(
         ticket,
-        "todo",
         `The worker ${reason} again — that's ${this.caps.implementRetries} retries with no clean finish, ` +
-          `so I'm stopping automatic retries and moving this back to **todo** so it isn't stuck in ` +
-          `progress. Its WIP is committed${at}.${link}\n\nWhere it stopped:\n${summary}`,
+          `so I'm stopping automatic retries and parking this for a human. Its WIP is committed${at}.` +
+          `${link}\n\nWhere it stopped:\n${summary}`,
       );
       this.logger.warn("implement retries exhausted — returned ticket to todo", {
         ticket: ticket.identifier,
@@ -3295,8 +3306,7 @@ export class Dispatcher {
       `🏷️ **Label: \`beckett:publish-human\`**\n\nGitHub publish cannot be retried automatically (${error}). ` +
       `Please courier the committed work from \`${op.repoRoot}\`. Compare-link fallback: ${this.compareLink(op)}. ` +
       `It remains in **in_review** for a human; no worktree was disposed.`;
-    if (ticket.state === "in_review") await this.postComment(ticket.id, body);
-    else await this.advanceTicket(ticket, "in_review", body);
+    await this.parkForHuman(ticket, body);
   }
 
   private compareLink(op: PublishOperation): string {
@@ -3366,11 +3376,12 @@ export class Dispatcher {
       const link = pub.status === "published"
         ? pub.kind === "pr" ? `\n\nPR opened (needs your merge): ${pub.prUrl ?? pub.url}` : `\n\nShipped: ${pub.url}`
         : "";
-      const state = op.purpose === "done" ? "done" : "todo";
       const message = op.purpose === "done"
         ? `${op.messagePrefix}${link}\n\n${op.summary}`
-        : `WIP published${link}. Automatic implementation retries are exhausted, so this is parked in **todo** for a human.\n\n${op.summary}`;
-      const advanced = await this.advanceTicket(ticket, state, message, op.purpose === "done" ? { promoteDependents: true } : {});
+        : `WIP published${link}. Automatic implementation retries are exhausted, so this is parked for a human.\n\n${op.summary}`;
+      const advanced = op.purpose === "done"
+        ? await this.advanceTicket(ticket, "done", message, { promoteDependents: true })
+        : await this.parkForHuman(ticket, message);
       if (!advanced) return { action: "keep", operation: op };
       await this.postComment(ticket.id, "GitHub publish succeeded; removing `beckett:publish-pending` hold.");
       // A completed ticket has no future stage; its owner may now release the worktree. WIP stays
@@ -3497,8 +3508,8 @@ export class Dispatcher {
 
     this.reviewInfraRetries.delete(ticket.id);
     this.persistRuntimeState();
-    await this.postComment(
-      ticket.id,
+    await this.parkForHuman(
+      ticket,
       `${reason} Review still did not produce a reliable verdict after ${this.caps.reviewInfraRetries} ` +
         `retry, so I'm leaving this in **in_review** for a human instead of marking it done or ` +
         `sending it back as failed work.\n\n${summary}`,
@@ -3538,13 +3549,11 @@ export class Dispatcher {
       }
       // Compatibility for embedders that have not configured persistence yet. Production always
       // wires publishOutboxPath, so it takes the self-healing branch above.
-      await this.advanceTicket(
+      await this.parkForHuman(
         ticket,
-        "todo",
         `The work is complete, but I couldn't publish it to GitHub (${pub.error}). It's committed ` +
-          `locally in \`${this.resolveRepoRoot(ticket)}\` — moving this ticket to **todo** for a ` +
-          `human/courier to push or PR. I'm NOT marking it done, and parking it so no worker keeps ` +
-          `burning tokens.\n\n${summary}`,
+          `locally in \`${this.resolveRepoRoot(ticket)}\` for a human/courier to push or PR. I'm ` +
+          `NOT marking it done, and parking it so no worker keeps burning tokens.\n\n${summary}`,
       );
       return false;
     }
@@ -3643,6 +3652,53 @@ export class Dispatcher {
         ticket: ticket.identifier,
         error: (err as Error).message,
       });
+      return false;
+    }
+  }
+
+  /**
+   * Put a ticket in a durable human hold. Bored's `/pause` preserves the run-level parked fact
+   * while its board projection remains `in_progress`/`in_review`; the watchdog reads that fact
+   * instead of mistaking an intentionally workerless ticket for a wedge. The persisted map keeps
+   * the same safety property for older tracker adapters that only understand `todo`.
+   */
+  private async parkForHuman(ticket: Ticket, comment: string): Promise<boolean> {
+    this.humanHolds.set(ticket.id, "awaiting human");
+    this.forgetWedgeClock(ticket.id);
+    this.persistRuntimeState();
+    const client = this.clientForTicketId(ticket.id, ticket.projectId);
+    if (client.park) {
+      try {
+        await client.park(ticket.id);
+        await this.postComment(ticket.id, comment);
+        this.trace(ticket, "park", "held", "durably parked for a human");
+        return true;
+      } catch (err) {
+        // Keep the persisted hold even if the backend pause fails: spending another worker while
+        // a human handoff is being reported is worse than waiting for the operator to intervene.
+        this.logger.warn("native tracker park failed; retaining dispatcher human hold", {
+          ticket: ticket.identifier,
+          error: (err as Error).message,
+        });
+        await this.postComment(ticket.id, comment);
+        return false;
+      }
+    }
+    // Legacy adapters represent the hold with a non-staffable column. If it is already in review,
+    // retain that useful board position and let the persisted marker provide the missing distinction.
+    // The map also protects the small write/reprojection window and survives a rejected legacy write.
+    if (ticket.state === "in_review") {
+      await this.postComment(ticket.id, comment);
+      return true;
+    }
+    try {
+      return await this.advanceTicket(ticket, "todo", comment);
+    } catch (err) {
+      this.logger.warn("legacy tracker park failed; retaining dispatcher human hold", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
+      await this.postComment(ticket.id, comment);
       return false;
     }
   }

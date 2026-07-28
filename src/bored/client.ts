@@ -210,6 +210,12 @@ export class BoredClient {
     this.logger.info("ticket parked for a human", { ticketId: id });
   }
 
+  /** Explicit dispatcher/operator re-staffing resumes a native human hold first. */
+  async resume(id: string): Promise<void> {
+    await this.req("POST", `${this.ticketPath(id)}/resume`, {});
+    this.logger.info("ticket resumed from human hold", { ticketId: id });
+  }
+
   /** Bored's event journal is its comment-equivalent; nudges are the human text dispatch consumes. */
   async listComments(ticketId: string, since?: string, opts: { inclusive?: boolean } = {}): Promise<TicketComment[]> {
     const events = await this.listEvents(ticketId);

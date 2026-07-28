@@ -19,6 +19,8 @@ export interface TrackerClient {
   setIssueState(id: string, state: TicketState): Promise<void>;
   /** Durably pause an active workflow for a human; its projected state may remain active. */
   park(id: string): Promise<void>;
+  /** Resume a native human hold for an explicit operator re-staff. */
+  resume(id: string): Promise<void>;
   listComments(ticketId: string, since?: string, opts?: { inclusive?: boolean }): Promise<TicketComment[]>;
   addComment(ticketId: string, body: string): Promise<TicketComment>;
   board(): string;
