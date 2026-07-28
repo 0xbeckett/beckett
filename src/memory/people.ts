@@ -151,9 +151,12 @@ export async function upsertPerson(store: MemoryStore, input: UpsertPersonInput)
 
   const note = input.note?.trim();
   const today = input.today ?? new Date().toISOString().slice(0, 10);
+  // Every note is DATED — a person file is a ledger of observations, not a set of eternal claims.
+  // A multi-line note gets the stamp on its own line so a whole section still reads as prose.
+  const stamped = note ? `**Note (${today}):**${note.includes("\n") ? "\n\n" : " "}${note}` : "";
   const body = [
     existing?.notes.trim() ?? "",
-    note ? `**Note (${today}):** ${note}` : "",
+    stamped,
     ...(input.links ?? []).filter((l) => /^[a-z0-9-]+$/.test(l)).map((l) => `[[${l}]]`),
   ]
     .filter(Boolean)
