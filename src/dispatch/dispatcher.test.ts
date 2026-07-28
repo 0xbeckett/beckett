@@ -1604,34 +1604,45 @@ describe("rework cap", () => {
   });
 
   test("a rework-cap human hold stays inert to the staffing watchdog", async () => {
-    const client = new FakeClient() as FakeClient & { park(id: string): Promise<void> };
-    // Model Bored: pausing is durable but its board keeps projecting the review column.
-    client.park = async (id) => {
-      const ticket = client.board.find((t) => t.id === id)!;
-      ticket.parked = true;
-      ticket.parkReason = "operator_pause";
-    };
-    const config = { ...cfg(2), supervise: { max_rework_cycles: 1 } } as unknown as Config;
-    const d = new Dispatcher({
-      gitOps: gitFakes,
-      client,
-      config,
-      resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
-    });
-    const ticket = makeTicket({ id: "cap", identifier: "OPS-CAP", state: "in_review" });
-    client.board = [ticket];
+    const dir = mkdtempSync(join(tmpdir(), "beckett-rework-hold-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher.json");
+      const client = new FakeClient() as FakeClient & { park(id: string): Promise<void> };
+      // Bored bridge gates already project as in_review; the dispatcher-side hold is the durable
+      // distinction between that normal review gate and a deliberate human handoff.
+      client.park = async () => {};
+      const config = { ...cfg(2), supervise: { max_rework_cycles: 1 } } as unknown as Config;
+      const d = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config,
+        runtimeStatePath,
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+      });
+      const ticket = makeTicket({ id: "cap", identifier: "OPS-CAP", state: "in_review" });
+      client.board = [ticket];
 
-    await d.handle(stateChanged(ticket, "in_review"));
-    await tick();
-    created[0]!.finish("success", "still broken", doneSignal("blocked"));
-    await tick();
-    expect(spawnCalls).toHaveLength(1); // the original reviewer only
+      await d.handle(stateChanged(ticket, "in_review"));
+      await tick();
+      created[0]!.finish("success", "still broken", doneSignal("blocked"));
+      await tick();
+      expect(spawnCalls).toHaveLength(1); // the original reviewer only
 
-    // Bored projects this human hold as in_review; two full grace windows must not buy a reviewer.
-    const t0 = 7_000_000;
-    expect(await d.reconcileStaffing(t0)).toEqual({ restaffed: [], parked: [] });
-    expect(await d.reconcileStaffing(t0 + 121_000)).toEqual({ restaffed: [], parked: [] });
-    expect(spawnCalls).toHaveLength(1);
+      // Reload with Bored still projecting the same in_review state. The persisted hold must win.
+      const after = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config,
+        runtimeStatePath,
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+      });
+      const t0 = 7_000_000;
+      expect(await after.reconcileStaffing(t0)).toEqual({ restaffed: [], parked: [] });
+      expect(await after.reconcileStaffing(t0 + 121_000)).toEqual({ restaffed: [], parked: [] });
+      expect(spawnCalls).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("retry exhaustion also remains inert", async () => {

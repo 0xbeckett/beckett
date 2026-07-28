@@ -53,7 +53,6 @@ const BoredTicketSchema = z.object({
   needs: z.array(z.string()).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
-  stateReason: z.string().optional(),
 }).passthrough();
 const EventSchema = z.object({
   seq: z.number(),
@@ -168,19 +167,12 @@ export class BoredClient {
     // translates the dispatcher's lifecycle writes into Bored's documented workflow verbs.
     switch (state) {
       case "in_progress": {
-        // A deliberate human hold is a paused Bored run, which still projects to its previous
-        // active column. Resume it before applying the requested lifecycle transition.
-        let current = await this.getIssue(id);
-        if (current?.parked) {
-          await this.req("POST", `${this.ticketPath(id)}/resume`, {});
-          current = await this.getIssue(id);
-        }
         // A reviewer sending work back for rework is Bored's `fail` edge, while an unstaffed
-        // todo ticket starts at the entry gate. If a paused implementation resumed into its
-        // requested state there is no second workflow verb to issue.
+        // todo ticket starts at the entry gate. Read once to choose the documented verb.
+        const current = await this.getIssue(id);
         if (current?.state === "in_review") {
           await this.req("POST", `${this.ticketPath(id)}/gate`, { node: "beckett_review", verdict: "fail" });
-        } else if (current?.state !== "in_progress") {
+        } else {
           await this.req("POST", `${this.ticketPath(id)}/staff`, {});
         }
         break;
@@ -204,16 +196,18 @@ export class BoredClient {
     return this.setState(id, state);
   }
 
-  /** Pause the workflow run: bored persists this hold even though it still projects as in_review. */
+  /**
+   * Beckett's bridge uses Bored human gates, which are already workflow-parked while still
+   * projected as active columns. The dispatcher persists the explicit hold in its runtime state;
+   * there is no second Bored transition to request here.
+   */
   async park(id: string): Promise<void> {
-    await this.req("POST", `${this.ticketPath(id)}/pause`, {});
-    this.logger.info("ticket parked for a human", { ticketId: id });
+    this.logger.info("ticket parked for a human in dispatcher state", { ticketId: id });
   }
 
-  /** Explicit dispatcher/operator re-staffing resumes a native human hold first. */
+  /** An explicit dispatcher re-staff owns resuming its local hold; Bored's bridge gate stays put. */
   async resume(id: string): Promise<void> {
-    await this.req("POST", `${this.ticketPath(id)}/resume`, {});
-    this.logger.info("ticket resumed from human hold", { ticketId: id });
+    this.logger.info("ticket resumed from dispatcher human hold", { ticketId: id });
   }
 
   /** Bored's event journal is its comment-equivalent; nudges are the human text dispatch consumes. */
@@ -302,7 +296,6 @@ export class BoredClient {
       projectId: `bored:${this.boardName}`,
       url: `${this.apiBase}/tickets/${encodeURIComponent(raw.ref)}`,
       updatedAt: raw.updatedAt,
-      ...(raw.stateReason ? { parked: true, parkReason: raw.stateReason } : {}),
       ...(raw.originChannel ? { originChannel: raw.originChannel } : {}),
     };
   }
