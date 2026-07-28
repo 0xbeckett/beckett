@@ -2783,3 +2783,61 @@ describe("pipeline latency (issue #33)", () => {
     expect(okAborted).toBe(true);
   });
 });
+
+// ── branch preview lifecycle (#76) ──────────────────────────────────────────────────────────
+describe("branch preview lifecycle (#76)", () => {
+  function withPreview(over: { ensureOutcome?: any } = {}) {
+    const client = new FakeClient();
+    const ensureCalls: Ticket[] = [];
+    const teardownCalls: Ticket[] = [];
+    const preview = {
+      ensure: async (t: Ticket) => {
+        ensureCalls.push(t);
+        return over.ensureOutcome ?? { status: "ready", url: "https://ops-1-preview.0xbeckett.me", host: "ops-1-preview.0xbeckett.me" };
+      },
+      teardown: async (t: Ticket) => {
+        teardownCalls.push(t);
+      },
+    };
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config: cfg(2),
+      resolveRepoRoot: (ticket) => `/tmp/repo/${ticket.project ?? ticket.identifier}`,
+      preview,
+    });
+    return { d, client, ensureCalls, teardownCalls };
+  }
+
+  test("surfaces a reachable preview URL as a comment when a ticket enters in_review", async () => {
+    const { d, client, ensureCalls } = withPreview();
+    await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
+    await tick();
+    expect(ensureCalls.length).toBe(1);
+    const previewComment = client.comments.find((c) => c.body.includes("https://ops-1-preview.0xbeckett.me"));
+    expect(previewComment).toBeDefined();
+    expect(previewComment!.body).toContain("Preview (while in review)");
+  });
+
+  test("posts NO preview comment when the preview is not reachable (skipped outcome)", async () => {
+    const { d, client, ensureCalls } = withPreview({ ensureOutcome: { status: "skipped", reason: "preview did not respond" } });
+    await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
+    await tick();
+    expect(ensureCalls.length).toBe(1);
+    expect(client.comments.some((c) => c.body.includes("Preview"))).toBe(false);
+  });
+
+  test("tears the preview down when the ticket is cancelled", async () => {
+    const { d, teardownCalls } = withPreview();
+    await d.handle(stateChanged(makeTicket({ state: "cancelled" }), "cancelled", "in_review"));
+    await tick();
+    expect(teardownCalls.length).toBe(1);
+  });
+
+  test("tears the preview down when the ticket lands (done)", async () => {
+    const { d, teardownCalls } = withPreview();
+    await d.handle(stateChanged(makeTicket({ state: "done" }), "done", "in_review"));
+    await tick();
+    expect(teardownCalls.length).toBe(1);
+  });
+});
