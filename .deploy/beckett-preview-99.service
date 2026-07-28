@@ -1,0 +1,12 @@
+[Unit]
+Description=Beckett site CTA/copy legibility preview (ticket #99), beckett-preview.0xbeckett.me
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/beckett/Projects/beckett/.beckett/worktrees/#99/web/public
+ExecStart=/usr/bin/python3 -m http.server 8799 --bind 127.0.0.1
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

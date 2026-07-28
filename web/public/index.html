@@ -78,7 +78,7 @@
   .hz{position:relative}
   /* closest-side keeps the fade inside the box: the mask must reach zero before
      the element's own edge or the backdrop-filter shows a rectangle. */
-  .hz::before,.hz::after{content:"";position:absolute;inset:-34px -70px;z-index:-1;
+  .hz::before,#cta .hz::after{content:"";position:absolute;inset:-34px -70px;z-index:-1;
     pointer-events:none;transition:opacity .7s;
     -webkit-mask-image:radial-gradient(closest-side,#000 52%,transparent 100%);
     mask-image:radial-gradient(closest-side,#000 52%,transparent 100%)}
