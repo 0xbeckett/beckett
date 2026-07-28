@@ -1795,7 +1795,7 @@ describe("crash recovery", () => {
     }
   });
 
-  test("a failed resume falls back to a fresh worker instead of stranding the ticket", async () => {
+  test("a failed resume PARKS the ticket instead of silently restarting it from scratch (#68)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-resumefail-"));
     try {
       const runtimeStatePath = join(dir, "dispatcher-state.json");
@@ -1804,9 +1804,10 @@ describe("crash recovery", () => {
       await before.handle(stateChanged(ticket, "in_progress"));
       await tick();
 
+      const client = new FakeClient();
       const after = new Dispatcher({
     gitOps: gitFakes,
-        client: new FakeClient(),
+        client,
         config: cfg(2),
         resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
         runtimeStatePath,
@@ -1818,10 +1819,14 @@ describe("crash recovery", () => {
       await after.handle(stateChanged(ticket, "in_progress"));
       await tick();
 
-      const [resumeAttempt, freshFallback] = spawnCalls.slice(-2);
+      // The resume was attempted (session recorded) but failed. #68: rather than a silent fresh
+      // restart, the interrupted ticket is parked in todo with an explicit comment — and NO fresh
+      // worker is spawned in its place.
+      const resumeAttempt = spawnCalls.at(-1);
       expect(resumeAttempt!.resumeSessionId).toBe("sess-1");
-      expect(freshFallback!.resumeSessionId).toBeUndefined();
-      expect(freshFallback!.stage).toBe("implement");
+      expect(spawnCalls.filter((c) => c.resumeSessionId === undefined)).toHaveLength(0);
+      expect(client.setStateCalls).toContainEqual({ id: ticket.id, state: "todo" });
+      expect(client.comments.at(-1)!.body).toContain("mid-run when a deploy restarted the daemon");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1882,6 +1887,90 @@ describe("crash recovery", () => {
 
       // Re-enters review, resuming the interrupted review session — never a fresh implement.
       expect(spawnCalls.at(-1)).toMatchObject({ stage: "review", resumeSessionId: "sess-1" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── #68: a deploy drains in-flight workers, then RESUMES or PARKS them (never silent restart) ──
+describe("deploy drain then resume-or-park (#68)", () => {
+  function readState(path: string) {
+    return JSON.parse(readFileSync(path, "utf8"));
+  }
+
+  test("a deploy drains the in-flight worker; the restart RESUMES its stage, never re-staffs fresh", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-deploy-resume-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const ticket = makeTicket();
+      const { d: before } = newDispatcher(2, { runtimeStatePath });
+      await before.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      expect(created[0].stage).toBe("implement");
+
+      // A deploy: gracefully drain the live worker (abort + WIP commit), then the daemon restarts.
+      const drain = await before.drainForShutdown("SIGTERM", 1000);
+      expect(drain).toMatchObject({ liveWorkers: 1, completed: 1, timedOut: false });
+      expect(created[0].aborted).toBe(true);
+      // The drain committed the in-flight WIP and KEPT the ledger so the next boot can resume it.
+      expect(commitCalls.some((c) => c.message.includes("WIP"))).toBe(true);
+      expect(readState(runtimeStatePath).liveWorkers[ticket.id]).toMatchObject({
+        stage: "implement",
+        sessionId: "sess-1",
+      });
+
+      const client = new FakeClient();
+      const after = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(2),
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+        runtimeStatePath,
+        sweepOrphan: () => false,
+      });
+      await after.recoverFromCrash();
+      await after.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+
+      // The re-staffed worker RESUMES the drained session — the in-flight work is not thrown away.
+      expect(spawnCalls.at(-1)).toMatchObject({ stage: "implement", resumeSessionId: "sess-1" });
+      // Never parked: resume succeeded.
+      expect(client.setStateCalls.some((c) => c.state === "todo")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("when the drained worker's session cannot resume, the restart PARKS it with a comment (never silent restart)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-deploy-park-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const ticket = makeTicket();
+      const { d: before } = newDispatcher(2, { runtimeStatePath });
+      await before.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      await before.drainForShutdown("SIGTERM", 1000);
+
+      const client = new FakeClient();
+      const after = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(2),
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+        runtimeStatePath,
+        sweepOrphan: () => false,
+      });
+      await after.recoverFromCrash();
+
+      failNextResumeSpawn = true; // the persisted session is stale — resume throws
+      await after.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+
+      // Parked in todo with an explicit deploy comment; NO fresh (resumeSessionId-less) worker.
+      expect(client.setStateCalls).toContainEqual({ id: ticket.id, state: "todo" });
+      expect(client.comments.at(-1)!.body).toContain("mid-run when a deploy restarted the daemon");
+      expect(spawnCalls.filter((c) => c.resumeSessionId === undefined)).toHaveLength(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
