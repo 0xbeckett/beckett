@@ -50,6 +50,31 @@ function createLocalBrowserRuntime(options: CreateLocalBrowserRuntimeDeps): Brow
   };
 }
 
+/**
+ * Chromium delivers Browser.downloadWillBegin/downloadProgress on its own schedule, so the guard
+ * events an evaluation observes depend on how much of that traffic landed before the snippet
+ * returned. Keep draining the lease log with short follow-up evaluations until the guard reports,
+ * instead of asserting on whatever happened to arrive inside one fixed sleep.
+ */
+async function leaseEventsContaining(
+  runtime: BrowserRuntime,
+  runId: string,
+  seen: string[],
+  needle: string,
+  timeoutMs = 15_000,
+): Promise<string> {
+  const collected = [...seen];
+  const deadline = Date.now() + timeoutMs;
+  while (!collected.join("\n").includes(needle) && Date.now() < deadline) {
+    // A drain evaluation is only a probe: let a transient evaluator/CDP hiccup retry rather than
+    // fail the test in place of the assertion below.
+    const drained = await runtime.evaluate(runId, "await page.waitForTimeout(100);")
+      .catch(() => ({ events: [] as string[] }));
+    collected.push(...drained.events);
+  }
+  return collected.join("\n");
+}
+
 let server: ReturnType<typeof Bun.serve>;
 let baseUrl: string;
 let slowDownloadBytes = 0;
@@ -346,7 +371,8 @@ test("CDP cancels slow and concurrent downloads before they exceed the lease agg
       await started;
       await page.waitForTimeout(500);
     `);
-    expect(slowState.events.join("\n")).toContain("aggregate budget exceeded");
+    expect(await leaseEventsContaining(runtime, "slow-download", slowState.events, "aggregate budget exceeded"))
+      .toContain("aggregate budget exceeded");
     await runtime.release("slow-download", false);
     expect(slowDownloadCanceled).toBeGreaterThan(0);
     expect(slowDownloadBytes).toBeLessThan(8 * 1024 * 1024);
@@ -368,7 +394,8 @@ test("CDP cancels slow and concurrent downloads before they exceed the lease agg
       }));
       await page.waitForTimeout(500);
     `);
-    expect(concurrentState.events.join("\n")).toContain("aggregate budget exceeded");
+    expect(await leaseEventsContaining(runtime, "concurrent-downloads", concurrentState.events, "aggregate budget exceeded"))
+      .toContain("aggregate budget exceeded");
     await runtime.release("concurrent-downloads", false);
     const artifactBytes = readdirSync(concurrentArtifacts)
       .reduce((sum, name) => sum + statSync(join(concurrentArtifacts, name)).size, 0);
@@ -420,7 +447,8 @@ test("root CDP counts raw-target downloads once, caps their files, and restores 
         await session.detach().catch(() => undefined);
       }
     `);
-    expect(attempted.events.join("\n")).toContain("download count exceeded 2");
+    expect(await leaseEventsContaining(runtime, "raw-downloads", attempted.events, "download count exceeded 2"))
+      .toContain("download count exceeded 2");
     // Tiny transfers can complete before Browser.cancelDownload lands; the guard then deletes
     // the landed file on the completion event, ~100ms deferred. Wait for that cleanup rather
     // than racing it — the invariant is that excess files do not PERSIST, not that the cancel
@@ -851,10 +879,17 @@ test("stop waits for and closes an in-flight Chromium launch", async () => {
       closes++;
     },
   } as unknown as BrowserContext;
+  let launchStarted: (() => void) | undefined;
+  const launchInFlight = new Promise<void>((resolveStarted) => {
+    launchStarted = resolveStarted;
+  });
   const runtime = createInjectedLocalBrowserRuntime({
     settings: browserHostSettings(config),
     logger: quietLog,
-    launchPersistentContext: (() => launching) as typeof chromium.launchPersistentContext,
+    launchPersistentContext: (() => {
+      launchStarted!();
+      return launching;
+    }) as typeof chromium.launchPersistentContext,
   });
   try {
     const acquisition = runtime.acquire({
@@ -863,7 +898,10 @@ test("stop waits for and closes an in-flight Chromium launch", async () => {
       artifactsDir: join(dir, "browser-agent", "starting", "artifacts"),
       controlToken: CONTROL_TOKEN,
     });
-    await Bun.sleep(0);
+    // acquire does async profile bookkeeping before it launches Chromium; a bare tick yield can
+    // land stop() before that finishes, which is the ordinary "runtime is stopped" rejection.
+    // This test is about the launch-in-flight path, so wait until the launch is actually running.
+    await launchInFlight;
     const stopping = runtime.stop();
     finishLaunch!(fakeContext);
     await stopping;
