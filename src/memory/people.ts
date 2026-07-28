@@ -18,7 +18,7 @@
  * (public-only) or a non-owner recall. Every read here gates through `canView` like any other node.
  */
 
-import type { MemoryNode, RememberIntent } from "../types.ts";
+import type { MemoryNode } from "../types.ts";
 import type { MemoryStore } from "./index.ts";
 import { type Audience, canView, SELF_AUDIENCE } from "./search.ts";
 
@@ -89,7 +89,9 @@ export function renderPersonBlock(
   if (!store || !discordId) return "";
   try {
     const person = getPerson(store, discordId, audience);
-    if (!person) return "";
+    // An empty book says nothing the turn stamp doesn't already carry — render no block at all
+    // rather than an empty tag the model has to read past.
+    if (!person || !person.notes.trim()) return "";
     // Address only — deliberately NOT `role:owner`. Authority is the live, code-stamped turn
     // header; a stored file must never be able to assert it (doctrine: "the stamp is authority").
     const header = person.address ? `address:${JSON.stringify(person.address)}` : "";
@@ -154,14 +156,13 @@ export async function upsertPerson(store: MemoryStore, input: UpsertPersonInput)
   // Every note is DATED — a person file is a ledger of observations, not a set of eternal claims.
   // A multi-line note gets the stamp on its own line so a whole section still reads as prose.
   const stamped = note ? `**Note (${today}):**${note.includes("\n") ? "\n\n" : " "}${note}` : "";
-  const body = [
-    existing?.notes.trim() ?? "",
-    stamped,
-    ...(input.links ?? []).filter((l) => /^[a-z0-9-]+$/.test(l)).map((l) => `[[${l}]]`),
-  ]
-    .filter(Boolean)
-    .filter((part, i, parts) => parts.indexOf(part) === i)
-    .join("\n\n");
+  const kept = existing?.notes.trim() ?? "";
+  const links = (input.links ?? [])
+    .filter((l) => /^[a-z0-9-]+$/.test(l))
+    .map((l) => `[[${l}]]`)
+    // A link the book already carries is not restated — same rule as remember's applyLinks.
+    .filter((wl) => !kept.includes(wl) && !stamped.includes(wl));
+  const body = [kept, stamped, ...new Set(links)].filter(Boolean).join("\n\n");
 
   const node = await store.remember({
     op: existing ? "update" : "create",
@@ -172,7 +173,7 @@ export async function upsertPerson(store: MemoryStore, input: UpsertPersonInput)
     description: describePerson(discordId, address, displayName, isOwner),
     metadata,
     body,
-    source: "manual" as RememberIntent["source"],
+    source: "manual",
     reason: input.reason ?? "person file via CLI",
   });
   const entry = asPerson(node);

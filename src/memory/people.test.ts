@@ -144,7 +144,7 @@ test("renderPersonBlock collapses an overlong book to a bounded excerpt plus a p
   const lines = renderPersonBlock(memory, WORM).split("\n");
   // <person …>, 24 body lines, the pointer, </person>
   expect(lines).toHaveLength(27);
-  expect(lines[25]).toBe(`+16 more lines — run \`beckett recall ${WORM}\``);
+  expect(lines[25]).toBe(`+18 more lines — run \`beckett recall ${WORM}\``);
 });
 
 test("upsertPerson rejects a non-snowflake id", async () => {

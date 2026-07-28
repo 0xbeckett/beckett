@@ -373,6 +373,9 @@ export async function runIdentity(argv: string[]): Promise<void> {
     const { flags } = parse(rest);
     const id = flags.user ? String(flags.user).trim() : "";
     if (!id) fail('usage: beckett identity set --user <discordId> [--name "X"] [--known "Y"] [--notes "..."] [--clear-name]');
+    // Shape-check here, not just inside upsertIdentity: a notes-only set writes no json record at
+    // all, and a bogus id must still be a hard error rather than a soft person-file warning.
+    if (!/^\d{1,20}$/.test(id)) fail(`invalid discord id: ${id}`);
     const patch: Parameters<typeof upsertIdentity>[2] = {};
     // --name is the "call me X" case → preferred_address (what they want to be called).
     if (flags.name !== undefined) patch.preferred_address = String(flags.name);
