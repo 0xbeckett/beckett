@@ -60,6 +60,7 @@ function fakeScheduler(log: string[]): RoutineScheduler {
         dream: false,
         browserTask: "check the thing",
         depsUpdate: null,
+        proactiveSweep: null,
         selfPrompt: null,
         preview: "check the thing",
         credsEntry: "x.com",

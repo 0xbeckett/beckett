@@ -59,6 +59,7 @@ import {
 } from "../../routine/watch.ts";
 import { defaultDepsUpdateDeps, runDepsUpdate } from "../../ops/deps-update.ts";
 import { defaultProactiveSweepDeps, runProactiveSweep } from "../../ops/proactive-sweep.ts";
+import { PROACTIVE_SWEEP_ID } from "../../routine/builtins.ts";
 import { defaultRepoRoot } from "../../version/index.ts";
 import { loadIdentity } from "../../agency/index.ts";
 import type { AgentDefinition, AgentRunner } from "../../agent/index.ts";
@@ -827,6 +828,7 @@ export const createRoutinesExtension =
             credsEntry: plan.credsEntry,
             browserTask: plan.browserTask,
             depsUpdate: plan.depsUpdate,
+            proactiveSweep: plan.proactiveSweep,
             selfPrompt: plan.selfPrompt,
             note: "dry-run did NOT run the agent or post. To fire for real: beckett routine fire " + id + " --force",
           });
@@ -854,15 +856,48 @@ export const createRoutinesExtension =
         }
       }
 
+      // Manage the proactive rot sweep's EXPLICIT opt-in repo list (issue #79) — the config the sweep
+      // gates on. `list` shows it; `add`/`remove` opt a repo in / out. This is the ONLY way a repo
+      // gets swept: there is no "all repos" switch. The `--routine` flag targets a non-default sweep
+      // routine; it defaults to the built-in `proactive-sweep`.
+      if (sub === "proactive") {
+        const { _, flags } = parse(rest);
+        const [op, ...repoArgs] = _;
+        const targetId = flags.routine ? String(flags.routine) : PROACTIVE_SWEEP_ID;
+        const routine = await store.get(targetId);
+        if (!routine) fail(`no such routine: ${targetId}`);
+        if (routine!.action.kind !== "proactive-sweep") fail(`routine ${targetId} is not a proactive-sweep routine`);
+        const current = (routine!.action as { repos: string[] }).repos;
+
+        if (!op || op === "list") {
+          out({ routine: targetId, enabled: routine!.enabled, repos: current });
+        } else if (op === "add" || op === "remove") {
+          if (repoArgs.length === 0) fail(`usage: beckett routine proactive ${op} <owner/name> [<owner/name>...]`);
+          const next =
+            op === "add"
+              ? [...current, ...repoArgs]
+              : current.filter((r) => !repoArgs.includes(r));
+          try {
+            const updated = await store.setProactiveRepos(targetId, next);
+            out({ routine: targetId, enabled: updated.enabled, repos: (updated.action as { repos: string[] }).repos });
+          } catch (err) {
+            fail((err as Error).message);
+          }
+        } else {
+          fail("usage: beckett routine proactive list | add <owner/name>... | remove <owner/name>...");
+        }
+      }
+
       fail(
         "usage: beckett routine list | inspect <id> | add <id> ... | remove <id> | enable <id> | disable <id> | " +
-          "fire <id> [--dry-run|--force] | watch-mode <id> live|dry-run",
+          "fire <id> [--dry-run|--force] | watch-mode <id> live|dry-run | proactive list|add|remove <owner/name>",
       );
     }
 
     /** Kept for the CLI dry-run/plan output: which executor a lane actually hands the work to. */
     function describeLaneTarget(plan: RoutineDispatchPlan): string {
       if (plan.lane === "deps-update") return "beckett routine deps-update (local maintenance subprocess)";
+      if (plan.lane === "proactive-sweep") return "beckett routine proactive-sweep (local maintenance subprocess)";
       if (plan.lane === "self") return "the concierge (a framed SYSTEM turn — wakes Beckett, never the browser)";
       if (plan.lane === "agent") return `invoke agent ${plan.agentId} → beckett browser (background lane)`;
       return "beckett browser (background lane)";
@@ -1131,6 +1166,13 @@ export const createRoutinesExtension =
           usage:
             "beckett routine deps-update [--repo <owner/name>] [--base main] [--source <checkout>] [--channel <id>]",
           run: runRoutineDepsUpdate,
+        },
+        {
+          name: "routine proactive-sweep",
+          summary: "sweep opted-in repos for rot (red CI / advisories / broken README links) and open labelled PRs",
+          usage:
+            "beckett routine proactive-sweep [--repos <owner/name,owner/name>] [--channel <id>]",
+          run: runRoutineProactiveSweep,
         },
         {
           name: "routine",
