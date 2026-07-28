@@ -10,7 +10,7 @@
 export const LOCAL_EMBEDDING_MODEL = "beckett-local-hash-v1";
 export const EMBEDDING_DIMENSIONS = 384;
 
-const STOP_WORDS = new Set([
+export const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "i", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "was", "what", "when", "where", "with", "you", "your",
 ]);
 

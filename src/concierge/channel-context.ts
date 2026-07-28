@@ -27,6 +27,22 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import {
+  channelDocId,
+  channelDocument,
+  channelEntryText,
+  channelMossDir,
+  cosineSim,
+  embedLocal,
+  openChannelMoss,
+  RANKING_SEMANTIC_WEIGHT,
+  SEM_FLOOR,
+  SEM_TOPK_CAP,
+  SEM_WEIGHT,
+  type LocalMoss,
+  type MossDocument,
+} from "./channel-moss.ts";
+import { STOP_WORDS } from "../moss-local/index.ts";
 import type { Logger } from "../types.ts";
 
 /** One captured message in a channel's shared window. */

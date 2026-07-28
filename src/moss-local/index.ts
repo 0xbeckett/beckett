@@ -13,7 +13,7 @@ import { deserializeFromBinary, Index, serializeToBinary, type DocumentInfo } fr
 import { resolveBeckettDir } from "../paths.ts";
 import { EMBEDDING_DIMENSIONS, embedLocal, LOCAL_EMBEDDING_MODEL } from "./embedding.ts";
 
-export { EMBEDDING_DIMENSIONS, embedLocal, LOCAL_EMBEDDING_MODEL } from "./embedding.ts";
+export { EMBEDDING_DIMENSIONS, embedLocal, LOCAL_EMBEDDING_MODEL, STOP_WORDS } from "./embedding.ts";
 
 export type MetadataValue = string | number | boolean;
 export type MossMetadata = Record<string, MetadataValue>;
@@ -135,6 +135,7 @@ export class LocalMoss {
   private persistTimer?: ReturnType<typeof setTimeout>;
   private persistChain: Promise<void> = Promise.resolve();
   private dirty = false;
+  private closed = false;
 
   private constructor(indexName: string, dataDir: string, persistenceDelayMs: number) {
     if (!Number.isFinite(persistenceDelayMs) || persistenceDelayMs < 0) {
@@ -196,7 +197,7 @@ export class LocalMoss {
       clearTimeout(this.persistTimer);
       this.persistTimer = undefined;
     }
-    if (!this.dirty) return this.persistChain;
+    if (this.closed || !this.dirty) return this.persistChain;
     this.dirty = false;
     // A failed best-effort timer write must not poison later explicit flushes/syncs.
     this.persistChain = this.persistChain.catch(() => {}).then(() => this.persist());
@@ -250,7 +251,23 @@ export class LocalMoss {
     }
   }
 
+  /**
+   * Abandon this handle: stop the coalescing timer and block any further durable write. The
+   * on-disk `.moss`/`.docs.json` are a disposable cache, so a caller that has just deleted
+   * them (e.g. a privacy wipe) uses this to guarantee an orphaned instance's pending persist
+   * timer can never rewrite the files it just removed. Queries against a disposed handle are
+   * undefined — drop the reference and reopen.
+   */
+  dispose(): void {
+    this.closed = true;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+  }
+
   private schedulePersist(): void {
+    if (this.closed) return;
     this.dirty = true;
     if (this.persistTimer) return;
     this.persistTimer = setTimeout(() => {
