@@ -1064,20 +1064,27 @@ export class Dispatcher {
   }
 
   /**
-   * Drop a ticket's in-memory job (issue #65): its worker-table entry, mid-spawn reservation, retry
-   * counters, pending backed-off retry timer, crash-recovery ledger row, and repo lease. Used when a
-   * respawn is refused because the ticket is no longer active. Best-effort and idempotent — the
-   * worker process is already dead by the time this runs (a live one is torn down by onCancelled).
+   * Drop a terminal ticket's in-memory job (issue #65): its worker-table entry, mid-spawn
+   * reservation, queued/retry work, recovery resume hint, counters, ledger row, and repo lease.
+   * Used when the final spawn-state read refuses a terminal ticket. Best-effort and idempotent —
+   * the worker process is already dead by the time this runs (a live one is torn down by
+   * onCancelled).
    */
   private releaseJob(ticketId: string): void {
     this.workers.delete(ticketId);
     this.staffing.delete(ticketId);
-    this.liveTickets.delete(ticketId);
+    this.dropPending(ticketId);
     this.cancelSpawnRetry(ticketId);
+    this.castOverrides.delete(ticketId);
+    this.baseShaForTicket.delete(ticketId);
+    this.reworkCount.delete(ticketId);
     this.implementRetries.delete(ticketId);
     this.reviewInfraRetries.delete(ticketId);
     this.stallFingerprints.delete(ticketId);
+    this.designCycles.delete(ticketId);
+    this.liveTickets.delete(ticketId);
     this.liveLedger.delete(ticketId);
+    this.resumables.delete(ticketId);
     this.releaseRepo(ticketId);
     this.persistRuntimeState();
   }

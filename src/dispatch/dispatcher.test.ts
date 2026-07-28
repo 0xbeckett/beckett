@@ -2369,6 +2369,24 @@ describe("staffing watchdog (issue #9)", () => {
     }
   });
 
+  test("does not resurrect a ticket cancelled after the watchdog listed it", async () => {
+    const { d, client } = newDispatcher();
+    const ticket = makeTicket({ id: "race", identifier: "OPS-RACE", state: "in_progress" });
+    client.board = [ticket]; // watchdog's list snapshot still sees this as staffable
+    client.getIssue = async () => ({ ...ticket, state: "cancelled" }); // final launch read wins
+
+    const t0 = 3_000_000;
+    await d.reconcileStaffing(t0);
+    const result = await d.reconcileStaffing(t0 + 121_000);
+    await tick();
+
+    // The watchdog did attempt recovery from its stale list, but the single launch gateway saw the
+    // cancellation and refused to create a process.
+    expect(result.restaffed).toEqual(["race"]);
+    expect(spawnCalls).toHaveLength(0);
+    expect(d.live()).toEqual([]);
+  });
+
   test("leaves healthy, pre-grace, queued, and terminal/parked tickets alone", async () => {
     const { d, client } = newDispatcher(1);
     const live = makeTicket({ id: "live", identifier: "OPS-L", state: "in_progress" });
