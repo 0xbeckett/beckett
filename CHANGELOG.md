@@ -39,8 +39,6 @@ The complete clean-host break record is retained here rather than relying on loo
   status-only `healthy-pending-configuration` control socket, and `deploy/install.sh` waits for
   that real response instead of declaring readiness from a process state alone.
 
-The README was also corrected for its dead `docs/V3.md` links, stale bored prerequisite, and
-missing MIT license section.
 
 ## v6.9.0 (2026-07-27)
 
