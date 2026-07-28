@@ -7,6 +7,15 @@
 const { chromium } = require("playwright");
 const { createContext, runInContext } = require("node:vm");
 const { inspect } = require("node:util");
+const { writeSync } = require("node:fs");
+
+// Phase markers the daemon-side runner (evaluator-runner.ts) watches on fd 1 to bracket the
+// untrusted snippet, so it can apply a generous wall-clock budget to startup/teardown but a tight
+// one to the snippet itself. Written with writeSync so they reach the pipe even when the snippet is
+// about to block the event loop (a synchronous infinite loop never yields, so buffered writes would
+// never flush). \x02 never appears in JSON output. Keep byte-identical to the copies in the runner.
+const EVAL_STARTED_MARKER = "\x02beckett:eval-started\x02";
+const EVAL_FINISHED_MARKER = "\x02beckett:eval-finished\x02";
 
 const MAX_INPUT_CHARS = 1_000_000;
 const MAX_CODE_CHARS = 100_000;

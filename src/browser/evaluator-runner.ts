@@ -13,6 +13,13 @@ import { spawnSubprocess, type SpawnedProcess, type SpawnProcess } from "./subpr
 const MAX_EVALUATOR_MESSAGE_CHARS = 1_000_000;
 const MAX_EVALUATOR_STDERR_CHARS = 16_000;
 
+// Phase markers evaluator.cjs writes to fd 1 (via writeSync, so they flush even as the snippet is
+// about to block the event loop). They bracket the untrusted snippet: STARTED right before it runs,
+// FINISHED once it settles. \x02 never appears in JSON.stringify output, so they are safe to strip
+// from the response. Keep these byte-identical to the copies in evaluator.cjs.
+const EVAL_STARTED_MARKER = "\x02beckett:eval-started\x02";
+const EVAL_FINISHED_MARKER = "\x02beckett:eval-finished\x02";
+
 export interface BrowserEvaluatorSession {
   endpoint: string;
   origin: string;
@@ -230,32 +237,64 @@ export async function runBrowserEvaluator(
   input.write(payload);
   input.end();
 
-  // evaluator.cjs already bounds the *snippet* at evalTimeoutMs deterministically (its clock starts
-  // after connectOverCDP), and returns a clean "timed out" envelope for a genuine snippet timeout.
-  // This wall-clock timer is only a backstop for a wedged child, so it must budget for everything
-  // that happens OUTSIDE the snippet clock: a fresh Node cold-start, chromium.connectOverCDP (itself
-  // allowed up to actionTimeoutMs), and browser.close() on teardown. The old evalTimeoutMs + 750
-  // assumed startup ≈ 0 — invisible in production (evalTimeoutMs 60s) but far tighter than a single
-  // CDP connect once tests shrink evalTimeoutMs to 30–100ms, so under CPU load an ordinary startup
-  // tripped it and hard-killed the child mid-launch, surfacing a spurious "outcome is uncertain".
-  // Match the RPC backstop formula in isolated.ts: startup budget (actionTimeoutMs + 5s) + snippet.
-  const backstopMs = request.evalTimeoutMs + request.actionTimeoutMs + 5_000;
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    killChildGroup(child);
-  }, backstopMs);
+  // Phase-scoped wall-clock backstops. evaluator.cjs bounds an ordinary (async) snippet internally at
+  // evalTimeoutMs — its clock starts only after connectOverCDP — and returns a clean "timed out"
+  // envelope. But a snippet that blocks the event loop synchronously (`while (true) {}`) starves
+  // those in-process timers, so a hard process kill is the ONLY thing that can stop it, and that kill
+  // must be tight (bounded by evalTimeoutMs). The SAME process also has to spawn a cold Node, connect
+  // Playwright over CDP (allowed up to actionTimeoutMs) and close the browser — none of which belong
+  // on the snippet clock. One timer cannot serve both roles: the old `evalTimeoutMs + 750` assumed
+  // startup ≈ 0 (invisible when evalTimeoutMs is 60s in production, but far tighter than a single CDP
+  // connect once the tests shrink evalTimeoutMs to 30–100ms), so under CPU load an ordinary startup
+  // tripped it and the child was hard-killed mid-launch — the spurious "outcome is uncertain" this
+  // ticket chases. So the evaluator brackets the snippet with STARTED/FINISHED markers and we swap
+  // budgets on those transitions:
+  //   • startup / teardown → actionTimeoutMs + 5s  (generous: cold start, CDP connect, browser.close)
+  //   • snippet            → evalTimeoutMs   + 2s  (tight: kills an event-loop-blocking snippet)
+  // The snippet budget is measured from the STARTED marker, so it is load-independent.
+  const startupBudgetMs = request.actionTimeoutMs + 5_000;
+  const snippetBudgetMs = request.evalTimeoutMs + 2_000;
+  let phase: "startup" | "snippet" | "teardown" = "startup";
+  let killedPhase: "startup" | "snippet" | "teardown" | null = null;
+  let timer: ReturnType<typeof setTimeout>;
+  const armTimer = (budgetMs: number) => {
+    timer = setTimeout(() => {
+      killedPhase = phase;
+      killChildGroup(child);
+    }, budgetMs);
+  };
+  armTimer(startupBudgetMs);
+  const enterPhase = (next: "snippet" | "teardown", budgetMs: number) => {
+    // Ignore a duplicate/out-of-order marker rather than rewinding the budget.
+    if ((next === "snippet" && phase !== "startup") || (next === "teardown" && phase !== "snippet")) return;
+    phase = next;
+    clearTimeout(timer);
+    armTimer(budgetMs);
+  };
   try {
-    const [stdout, stderr, exitCode] = await Promise.all([
-      readBounded(child.stdout, MAX_EVALUATOR_MESSAGE_CHARS),
+    const [rawStdout, stderr, exitCode] = await Promise.all([
+      readEvaluatorStdout(
+        child.stdout,
+        MAX_EVALUATOR_MESSAGE_CHARS,
+        () => enterPhase("snippet", snippetBudgetMs),
+        () => enterPhase("teardown", startupBudgetMs),
+      ),
       readBounded(child.stderr, MAX_EVALUATOR_STDERR_CHARS),
       child.exited,
     ]);
-    if (timedOut) {
+    if (killedPhase === "snippet") {
       throw new Error(
         `playwright_eval timed out after ${request.evalTimeoutMs}ms; browser-side work may have continued, so the outcome is uncertain. Inspect current state before retrying any action`,
       );
     }
+    if (killedPhase === "startup") {
+      // The snippet never ran, so nothing model code did is in question — this is a slow/wedged host,
+      // not an uncertain browser outcome.
+      throw new Error(`browser evaluator did not start within ${startupBudgetMs}ms`);
+    }
+    // A teardown kill (browser.close ran long) is best-effort cleanup only: the snippet already
+    // finished and wrote its envelope before close, so fall through and return that result.
+    const stdout = rawStdout.split(EVAL_STARTED_MARKER).join("").split(EVAL_FINISHED_MARKER).join("");
     let response: BrowserEvaluatorOutput;
     try {
       response = JSON.parse(stdout.trim()) as BrowserEvaluatorOutput;
@@ -263,7 +302,7 @@ export async function runBrowserEvaluator(
       throw new Error(`browser evaluator returned invalid output${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
     }
     if (typeof response.ok !== "boolean") throw new Error("browser evaluator returned an invalid response envelope");
-    if (response.ok && exitCode !== 0) {
+    if (response.ok && exitCode !== 0 && !killedPhase) {
       throw new Error(stderr.trim() || `browser evaluator exited with code ${exitCode}`);
     }
     return response;
@@ -274,6 +313,41 @@ export async function runBrowserEvaluator(
       await child.exited.catch(() => undefined);
     }
   }
+}
+
+/**
+ * Like readBounded, but watches the stream for evaluator.cjs's STARTED/FINISHED phase markers and
+ * fires the callbacks the first time each is seen. Detection runs against the cumulative text so a
+ * marker split across chunk boundaries still resolves. Markers are left in the returned text; the
+ * caller strips them.
+ */
+async function readEvaluatorStdout(
+  stream: ReadableStream<Uint8Array> | number | null | undefined,
+  maxChars: number,
+  onStarted: () => void,
+  onFinished: () => void,
+): Promise<string> {
+  if (!stream || typeof stream === "number") return "";
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let sawStarted = false;
+  let sawFinished = false;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+    if (text.length > maxChars) throw new Error("browser evaluator output exceeded size limit");
+    if (!sawStarted && text.includes(EVAL_STARTED_MARKER)) {
+      sawStarted = true;
+      onStarted();
+    }
+    if (!sawFinished && text.includes(EVAL_FINISHED_MARKER)) {
+      sawFinished = true;
+      onFinished();
+    }
+  }
+  return text + decoder.decode();
 }
 
 async function readBounded(
