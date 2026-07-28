@@ -490,15 +490,10 @@ export class Dispatcher {
    * (the async `spawnWorker` gap — worktree alloc + harness launch). This is the airtight
    * per-ticket dedup reservation: it is added SYNCHRONOUSLY the instant a spawn is admitted,
    * before any `await`, so a second event for the same ticket arriving during the gap is
-   * rejected instead of launching a duplicate worker. Without it, duplicate spawns landed on
-   * the same ticket id, the second `workers.set` overwrote (orphaning the first process), and
-   * `atCap()` undercounted → the concurrency cap was silently bypassed (runaway fan-out).
-   */
-  /**
-   * Admitted, not-yet-live spawn reservations. The opaque token matters: a replacement spawn may
-   * take over an old spawn's slot while the old async path is still unwinding. A Set let that old
-   * path delete the replacement's reservation in its `finally`, recreating the workerless gap
-   * this guard is meant to prevent.
+   * rejected instead of launching a duplicate worker. The opaque token also means a replacement
+   * spawn can take over while the retiring async path unwinds without its `finally` deleting the
+   * replacement reservation. Without either property, duplicate spawns could overwrite a live
+   * handle or `atCap()` could undercount and silently bypass the concurrency cap.
    */
   private readonly staffing = new Map<string, symbol>();
   /**
