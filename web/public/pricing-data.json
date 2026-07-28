@@ -1,25 +1,25 @@
 {
-  "generated_at": "2026-07-28T04:59:37.424Z",
+  "generated_at": "2026-07-28T05:09:17.505Z",
   "source_file": "~/Projects/metrics/data/telemetry-runs.json",
-  "telemetry_generated_at": "2026-07-28T04:58:53.314Z",
+  "telemetry_generated_at": "2026-07-28T05:09:05.526Z",
   "rate_table_effective_date": "2026-07-16",
-  "total_runs": 3174,
-  "costed_runs": 3138,
+  "total_runs": 3161,
+  "costed_runs": 3125,
   "unrated_model_sessions": 36,
   "cost_per_run": {
-    "median": 0.2783,
-    "p90": 1.9966
+    "median": 0.2834,
+    "p90": 2.008
   },
   "wall_clock": {
-    "median_seconds": 84.4,
-    "p90_seconds": 1253.5
+    "median_seconds": 85.6,
+    "p90_seconds": 1260.8
   },
   "cost_by_harness": [
     {
       "key": "claude-code",
-      "runs": 2602,
-      "median_cost": 0.3407,
-      "total_cost": 2385.9
+      "runs": 2589,
+      "median_cost": 0.3459,
+      "total_cost": 2387.89
     },
     {
       "key": "pi",
@@ -37,9 +37,9 @@
   "cost_by_model": [
     {
       "key": "claude-opus-4-8",
-      "runs": 1311,
-      "median_cost": 0.5375,
-      "total_cost": 1600.42
+      "runs": 1306,
+      "median_cost": 0.5402,
+      "total_cost": 1602.52
     },
     {
       "key": "claude-opus-5",
@@ -73,9 +73,9 @@
     },
     {
       "key": "claude-haiku-4-5-20251001",
-      "runs": 482,
-      "median_cost": 0.0201,
-      "total_cost": 17.32
+      "runs": 474,
+      "median_cost": 0.0215,
+      "total_cost": 17.21
     },
     {
       "key": "claude-sonnet-4-6",
@@ -99,8 +99,8 @@
   "review_cycle_distribution": [
     {
       "cycles": "0",
-      "runs": 2802,
-      "pct": 88.3
+      "runs": 2789,
+      "pct": 88.2
     },
     {
       "cycles": "1",
@@ -181,8 +181,8 @@
     ],
     "task_count": 281,
     "task_cost": {
-      "median_usd": 4.07,
-      "median_credits": 40.7
+      "median_usd": 4.14,
+      "median_credits": 41.4
     },
     "examples": [
       {
@@ -235,10 +235,10 @@
         "key": "typical",
         "label": "a typical task",
         "percentile": 50,
-        "example_ticket": "OPS-8",
+        "example_ticket": "OPS-54",
         "runs": 2,
-        "cost_usd": 4.07,
-        "credits": 40.7,
+        "cost_usd": 4.14,
+        "credits": 41.4,
         "covers": [
           {
             "budget_usd": 5,
@@ -261,8 +261,8 @@
         "runs": 4,
         "review_cycles": 0,
         "last_ts": "2026-07-28T04:57:33.623Z",
-        "cost_usd": 3.67,
-        "credits": 36.7
+        "cost_usd": 6.25,
+        "credits": 62.5
       },
       {
         "id": "#62",
