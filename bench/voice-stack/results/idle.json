@@ -1,0 +1,55 @@
+{
+  "label": "idle",
+  "load_workers": 0,
+  "threads": 4,
+  "reps": 3,
+  "tts": {
+    "load_s": 0.89,
+    "peak_rss_mb": 1311.8,
+    "cases": {
+      "short": {
+        "words": 15,
+        "audio_dur_s": 4.33,
+        "ttfa_s": 1.853,
+        "total_gen_s": 1.853,
+        "rtf": 0.428
+      },
+      "long": {
+        "words": 66,
+        "audio_dur_s": 21.25,
+        "ttfa_s": 8.272,
+        "total_gen_s": 8.272,
+        "rtf": 0.389
+      }
+    }
+  },
+  "stt": {
+    "cases": {
+      "3s": {
+        "utterance_s": 3,
+        "latency_s": 1.41,
+        "rtf": 0.47
+      },
+      "5s": {
+        "utterance_s": 5,
+        "latency_s": 1.513,
+        "rtf": 0.303
+      },
+      "10s": {
+        "utterance_s": 10,
+        "latency_s": 1.881,
+        "rtf": 0.188
+      }
+    },
+    "peak_rss_mb": 284.4
+  },
+  "roundtrip": {
+    "utterance_s": 5,
+    "stt_latency_s": 1.513,
+    "model_turn_s": 2.0,
+    "tts_ttfa_s": 1.853,
+    "stack_overhead_s": 3.366,
+    "full_roundtrip_s": 5.366,
+    "bottleneck": "TTS"
+  }
+}

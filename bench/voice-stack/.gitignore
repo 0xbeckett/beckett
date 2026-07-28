@@ -1,0 +1,9 @@
+# Large model artifacts + build output — fetched/built by setup.sh, not committed.
+models/
+whisper.cpp/
+fixtures/
+.venv/
+.buildlogs/
+__pycache__/
+_probe.*
+
