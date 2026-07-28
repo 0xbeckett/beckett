@@ -7,7 +7,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ChannelType } from "discord.js";
+import { ChannelType, Events, MessageFlags } from "discord.js";
 import type { ReplyOptions } from "../types.ts";
 import { chunkReply } from "./chunk.ts";
 import {
@@ -372,6 +372,38 @@ test("a live browser-question id stays classified during the post-to-ledger hand
   });
   expect(normalized.repliedToBrowserQuestion).toBe(true);
   expect(normalized.repliedToBotUnverified).toBeUndefined();
+});
+
+test("interactionCreate defers component clicks ephemerally before routing", async () => {
+  const gateway = new DiscordJsGateway();
+  const listeners = new Map<string, (...args: any[]) => void>();
+  const client = {
+    on: (event: string, cb: (...args: any[]) => void) => listeners.set(event, cb),
+  };
+  (gateway as unknown as { client: unknown }).client = client;
+  (gateway as unknown as { wireListeners: (c: unknown) => void }).wireListeners(client);
+  const deferred: unknown[] = [];
+  const replies: unknown[] = [];
+  gateway.onInteraction(async (interaction) => {
+    expect(interaction.userId).toBe("owner-1");
+    await interaction.editReply("done");
+  });
+
+  listeners.get(Events.InteractionCreate)!({
+    id: "interaction-1",
+    isButton: () => true,
+    isStringSelectMenu: () => false,
+    customId: "beckett:v1:attach:12",
+    user: { id: "owner-1" },
+    channelId: "thread-1",
+    channel: { isThread: () => true, parentId: "parent-1", name: "work" },
+    deferReply: async (payload: unknown) => { deferred.push(payload); },
+    editReply: async (payload: unknown) => { replies.push(payload); },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(deferred).toEqual([{ flags: MessageFlags.Ephemeral }]);
+  expect(replies).toEqual([{ content: "done" }]);
 });
 
 test("both a freshly created thread and one Beckett was added to reach onThreadCreate; bot/parentless ones do not", async () => {

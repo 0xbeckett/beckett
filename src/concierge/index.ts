@@ -108,7 +108,10 @@ import {
   renderUnavailableReplyContext,
 } from "./reply-context.ts";
 import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
-import type { DiscordEmbed, DiscordLinkButton, TaskThreadCreated } from "../types.ts";
+import type { DiscordButton, DiscordEmbed, TaskThreadCreated } from "../types.ts";
+import { ComponentRouter, componentId, type ComponentActionContext } from "../discord/interactions.ts";
+import { GitHubCli, loadIdentity } from "../agency/index.ts";
+import { createTrackerClient } from "../tracker/client.ts";
 import { TaskStore, displayTaskName, type TaskBranch, type WorkTask } from "../task/store.ts";
 import type { BranchStatusService } from "../task/status.ts";
 import { renderBranchEmbed } from "../discord/cards.ts";
@@ -1686,6 +1689,8 @@ export class Concierge {
   /** User-facing `#N` / `#N.x` organization; tracker ticket ids stay behind this boundary. */
   private readonly tasks: TaskStore;
   private branchStatus: BranchStatusService | null;
+  /** The one registry for Discord message-component verbs. */
+  private readonly componentRouter: ComponentRouter;
   /** The ONE long-lived graph/Moss owner for `memory.recall` control-bus requests — the memory
    *  extension's warm store, wired by v4-main via {@link setMemoryStore} (or injected in tests).
    *  Null until wired: the bus command then answers with a clear "not wired" error. */
@@ -1868,6 +1873,8 @@ export class Concierge {
     this.gateway = opts.gateway ?? createDiscordGateway({ config: this.config, logger: this.log });
     this.tasks = opts.tasks ?? new TaskStore(tasksStateFile(this.config, this.log));
     this.branchStatus = opts.branchStatus ?? null;
+    this.componentRouter = new ComponentRouter((userId) => this.accessLevelFor(userId));
+    this.registerComponentActions();
     this.memory = opts.memory ?? null;
     this.turnGate = new TurnGate(Math.max(1, this.config.concierge?.max_concurrent_turns ?? 3));
     const makeSession =
@@ -2569,9 +2576,12 @@ export class Concierge {
     // not depend on each other. Workspace recovery does require Discord, so chain it from the
     // gateway readiness promise; it can still overlap any remaining Claude warm-up.
     this.gateway.onMessage((m) => this.onMessage(m));
-    // Guarded: injected partial test gateways may predate the thread-create surface.
+    // Guarded: injected partial test gateways may predate either additive event surface.
     if (typeof this.gateway.onThreadCreate === "function") {
       this.gateway.onThreadCreate((t) => this.onThreadCreated(t));
+    }
+    if (typeof this.gateway.onInteraction === "function") {
+      this.gateway.onInteraction((interaction) => this.componentRouter.dispatch(interaction));
     }
     const systemWarm = this.pool.warm(SYSTEM_SCOPE);
     const gatewayReady = this.gateway.start();
@@ -2633,7 +2643,7 @@ export class Concierge {
   private async postCards(
     embeds: DiscordEmbed[],
     recordText: string,
-    buttons?: DiscordLinkButton[],
+    buttons?: DiscordButton[],
     replyToMessageId?: string,
     replyToUserId?: string,
   ): Promise<string> {
@@ -4432,11 +4442,18 @@ export class Concierge {
     if (branchRef && this.branchStatus) {
       try {
         const card = await this.branchStatus.read(branchRef);
-        const buttons = card.pullRequest
-          ? [{ label: "Open PR", url: card.pullRequest.url }]
-          : card.publication
-            ? [{ label: "Open repository", url: card.publication.url }]
-            : undefined;
+        const buttons: DiscordButton[] = [];
+        if (card.pullRequest) buttons.push({ label: "Open PR", url: card.pullRequest.url });
+        else if (card.publication) buttons.push({ label: "Open repository", url: card.publication.url });
+        // The id carries only a versioned verb and public task/branch ref. The router freshly
+        // derives the clicker's authority from Discord and access.txt; never from this card.
+        if (card.status === "done" && card.pullRequest?.state === "OPEN") {
+          buttons.push({ label: "Merge branch", customId: componentId("merge", card.ref) });
+        }
+        if (card.status !== "cancelled") {
+          buttons.push({ label: "Cancel branch", customId: componentId("cancel", card.ref), danger: true });
+        }
+        buttons.push({ label: "Attach to this thread", customId: componentId("attach", String(card.taskNumber)) });
         await this.postCards(
           [renderBranchEmbed(card)],
           `Branch card for #${branchRef}`,
@@ -5262,6 +5279,95 @@ export class Concierge {
       this.log.warn("maintainer list load failed; treating as empty", { err: String(err) });
       return new Set();
     }
+  }
+
+  /**
+   * Register one handler per component verb. The listener never knows action semantics; adding a
+   * control is deliberately one registry line here plus its narrow handler.
+   */
+  private registerComponentActions(): void {
+    this.componentRouter
+      .register("attach", (ctx) => this.attachFromComponent(ctx))
+      .register("merge", (ctx) => this.mergeFromComponent(ctx))
+      .register("cancel", (ctx) => this.cancelFromComponent(ctx));
+  }
+
+  /** Component equivalent of `&12`: interaction channel/thread is Discord-authenticated context. */
+  private async attachFromComponent(ctx: ComponentActionContext): Promise<string> {
+    const { interaction, target } = ctx;
+    if (!interaction.isThread) return "Open the target thread first, then use Attach there.";
+    if (!this.workspaces.contextFor(interaction.channelId)) {
+      // ThreadCreate may have happened while the daemon was down. The same access resolver that
+      // admitted this click guards this lazy registration; no component/message author is trusted.
+      this.workspaces.registerThread({
+        threadId: interaction.channelId,
+        parentChannelId: interaction.parentChannelId ?? "",
+        name: interaction.channelName ?? "",
+        creatorId: interaction.userId,
+        newlyCreated: false,
+      });
+      this.joinThreadBestEffort(interaction.channelId);
+    }
+    const hit = this.tasks.resolveTaskRef(target);
+    if (!hit) return `No task #${target}. Check the reference and try again.`;
+    const task = hit.task;
+    this.workspaces.attachTasks(interaction.channelId, [String(task.number)]);
+    for (const branch of task.branches) {
+      this.workspaces.bindBranch(interaction.channelId, branch.ref, branch.ticket?.identifier);
+    }
+    this.pendingWorkspaceSeeds.set(interaction.channelId, this.buildAttachSeed([task]));
+    this.log.info("work attached to workspace by component", {
+      threadId: interaction.channelId,
+      userId: interaction.userId,
+      task: task.number,
+    });
+    return renderAttachRecap([task]);
+  }
+
+  /** Merge is a maintainer operation; the explicit button click is the human confirmation. */
+  private async mergeFromComponent(ctx: ComponentActionContext): Promise<string> {
+    if (ctx.access !== "owner" && ctx.access !== "maintainer") {
+      return "Only the owner or a maintainer may merge a branch.";
+    }
+    const found = this.tasks.getBranch(ctx.target);
+    if (!found) return `No branch #${ctx.target}.`;
+    if (found.branch.status !== "done") return `Branch #${ctx.target} is not finished yet.`;
+    const pr = found.branch.pullRequest;
+    if (!pr) return `Branch #${ctx.target} has no pull request to merge.`;
+    const identity = loadIdentity(this.config);
+    if (!identity.github.pat) return "GitHub is not configured for this Beckett.";
+    const github = new GitHubCli({
+      pat: identity.github.pat,
+      account: identity.github.account,
+      owner: identity.github.owner,
+      apiBase: identity.github.apiBase,
+      resolveRepoDir: () => process.cwd(),
+      logger: this.log,
+    });
+    await github.mergePR(pr.repo, pr.number, "squash");
+    this.log.info("branch merged by component", { branch: found.branch.ref, byUserId: ctx.interaction.userId });
+    return `Merged branch #${found.branch.ref}.`;
+  }
+
+  /** Cancel updates the tracker when started, and the local branch registry in the same click. */
+  private async cancelFromComponent(ctx: ComponentActionContext): Promise<string> {
+    if (ctx.access !== "owner" && ctx.access !== "maintainer") {
+      return "Only the owner or a maintainer may cancel a branch.";
+    }
+    const found = this.tasks.getBranch(ctx.target);
+    if (!found) return `No branch #${ctx.target}.`;
+    if (found.branch.status === "cancelled") return `Branch #${ctx.target} is already cancelled.`;
+    if (found.branch.ticket) {
+      const tracker = createTrackerClient({
+        config: this.config,
+        board: found.branch.ticket.board,
+        logger: this.log,
+      });
+      await tracker.setState(found.branch.ticket.id, "cancelled");
+    }
+    await this.tasks.setBranchStatus(found.branch.ref, "cancelled");
+    this.log.info("branch cancelled by component", { branch: found.branch.ref, byUserId: ctx.interaction.userId });
+    return `Cancelled branch #${found.branch.ref}.`;
   }
 
   private accessLevelFor(userId: string): AccessLevel {

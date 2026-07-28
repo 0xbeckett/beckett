@@ -495,6 +495,13 @@ export class TaskStore {
     });
   }
 
+  /** Explicit local lifecycle update for component controls before the next tracker poll arrives. */
+  async setBranchStatus(branchRef: string, status: TaskBranchStatus): Promise<TaskBranch> {
+    return this.updateBranch(branchRef, (branch) => {
+      branch.status = status;
+    });
+  }
+
   private async updateTask(ref: string | number, change: (task: WorkTask) => void): Promise<WorkTask> {
     return this.mutate((registry) => {
       const number = normalizeTaskNumber(ref);
