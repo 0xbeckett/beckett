@@ -63,9 +63,15 @@ const PLATFORM_FEE = {
   pct: 12, // percent, applied to (model cost + compute cost)
 };
 
-// 4. HUMAN SEATS — per-person monthly, separate from any task cost.
+// 4. HUMAN SEATS — per person, per month. A seat is NOT an additive floor that
+//    buys nothing: it INCLUDES a month of credits worth exactly its price, at the
+//    fixed credit rate. At $20/seat and $0.10/credit that's 200 included credits
+//    ($20 of real underlying spend). A light user's work draws down that allowance
+//    and never costs more than the seat; a heavy user loads more on top at the
+//    same per-credit rate — no tier jump. Included credits reset each month and do
+//    not roll over; separately purchased credits never expire.
 const SEAT = {
-  monthly_usd: 20, // per person, per month
+  monthly_usd: 20, // per person, per month — delivered AS this much in credits
 };
 
 // CREDIT UNIT — policy, not telemetry. One credit is a FIXED dollar of
