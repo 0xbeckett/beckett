@@ -132,6 +132,13 @@ export interface Ticket {
   url: string; // deep link to the ticket on the tracker
   updatedAt: string; // ISO-8601; the poll cursor / change key
   /**
+   * The tracker has durably paused this ticket for a human. This is deliberately
+   * independent of `state`: bored projects a paused run as `in_review`.
+   */
+  parked?: boolean;
+  /** Human-readable tracker reason for the durable park, when available. */
+  parkReason?: string;
+  /**
    * Discord channel that filed this ticket, stamped by the Concierge at creation so worker/ticket
    * updates can be routed back to the conversation that asked (the closed agent loop). Absent for
    * tickets created outside Discord (e.g. straight on the tracker). Stored natively by bored —

@@ -203,6 +203,8 @@ export interface StageOps {
   postComment(ticketId: string, body: string): Promise<void>;
   /** Move the ticket's ticket state with a comment; false when a human terminal move won. */
   advanceTicket(ticket: Ticket, state: TicketState, comment: string): Promise<boolean>;
+  /** Durably hold a ticket for a human even when the tracker projects it as an active state. */
+  parkForHuman(ticket: Ticket, comment: string): Promise<boolean>;
   /** Commit whatever is in the ticket's checkout as a WIP snapshot; sha or null. Never throws. */
   commitWip(ticket: Ticket, handle: TicketWorkerHandle): Promise<string | null>;
   /** Safety-net commit of a finished implementation; true when something was committed. */
@@ -623,8 +625,8 @@ const reviewStage: StageDefinition = {
     ops.counters.rework.set(ticket.id, cycles);
     ops.persistRuntimeState();
     if (cycles >= ops.caps.reworkCycles) {
-      await ops.postComment(
-        ticket.id,
+      await ops.parkForHuman(
+        ticket,
         `Review found issues, and this is rework cycle ${cycles}/${ops.caps.reworkCycles} — stopping ` +
           `automatic rework and leaving this in **in_review** for a human to take over.\n\n${summary}`,
       );

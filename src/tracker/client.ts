@@ -17,6 +17,8 @@ export interface TrackerClient {
   createIssue(input: CreateTicketInput): Promise<Ticket>;
   setState(id: string, state: TicketState): Promise<void>;
   setIssueState(id: string, state: TicketState): Promise<void>;
+  /** Durably pause an active workflow for a human; its projected state may remain active. */
+  park(id: string): Promise<void>;
   listComments(ticketId: string, since?: string, opts?: { inclusive?: boolean }): Promise<TicketComment[]>;
   addComment(ticketId: string, body: string): Promise<TicketComment>;
   board(): string;

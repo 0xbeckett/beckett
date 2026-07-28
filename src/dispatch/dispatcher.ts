@@ -100,6 +100,8 @@ import {
 export interface TrackerClientLike {
   /** Move a ticket to a new lifecycle state (resolves state_map name → ticket state UUID). */
   setState(id: string, state: TicketState): Promise<void>;
+  /** Durably pause an active workflow for a human (bored keeps projecting its active state). */
+  park?(id: string): Promise<void>;
   /** Fetch a ticket before dispatcher-initiated state changes, so human terminal moves win. */
   getIssue?(id: string): Promise<Ticket | null>;
   /** Post a comment on a ticket; returns the created comment. */
@@ -355,6 +357,8 @@ interface DispatcherRuntimeState {
   liveWorkers?: Record<string, LedgeredWorker>;
   /** Steering comments awaiting the next worker, keyed by ticket id (issue #22 — restart-proof). */
   pendingSteers?: Record<string, string[]>;
+  /** Backend-independent fallback holds for trackers that cannot durably pause a workflow. */
+  humanHolds?: Record<string, string>;
 }
 
 /** Outcome of {@link Dispatcher.publishProject} — gates whether a ticket may be marked done. */
@@ -456,6 +460,7 @@ function parseRuntimeState(value: unknown): DispatcherRuntimeState {
     designCycles: raw.designCycles === undefined ? {} : parseNumberRecord(raw.designCycles, "designCycles"),
     liveWorkers: parseLedger(raw.liveWorkers),
     pendingSteers: parseSteers(raw.pendingSteers),
+    humanHolds: raw.humanHolds === undefined ? {} : parseStringRecord(raw.humanHolds, "humanHolds"),
   };
 }
 
@@ -582,6 +587,8 @@ export class Dispatcher {
   private readonly unstaffedSince = new Map<string, number>();
   /** Tickets the watchdog has already re-staffed once; a still-workerless second sighting parks them. */
   private readonly watchdogRestaffed = new Set<string>();
+  /** Explicit human handoffs, including a fallback for trackers without a native pause verb. */
+  private readonly humanHolds = new Map<string, string>();
   /** Tickets already told (once) that they hit their per-task budget ceiling (#77) — no repeat spam. */
   private readonly budgetBlocked = new Set<string>();
   /**
@@ -678,6 +685,7 @@ export class Dispatcher {
       trace: (ticket, stage, outcome, message, error) => this.trace(ticket, stage, outcome, message, error),
       postComment: (ticketId, body) => this.postComment(ticketId, body),
       advanceTicket: (ticket, state, comment) => this.advanceTicket(ticket, state, comment),
+      parkForHuman: (ticket, comment) => this.parkForHuman(ticket, comment),
       commitWip: (ticket, handle) => this.commitWip(ticket, handle),
       commitContribution: (ticket, handle) => this.commitContribution(ticket, handle),
       spawnStage: (ticket, stage) => this.spawnGuarded(ticket, stage),
@@ -883,6 +891,13 @@ export class Dispatcher {
       const wedged = new Set<string>();
       for (const ticket of all) {
         const staffs = this.stages.forState(ticket.state);
+        // A human hold is a durable workflow condition, not an inference from worker liveness.
+        // bored deliberately projects a paused run back onto in_progress/in_review, so consult it
+        // before treating that active-looking state as a wedge.
+        if (this.isParkedForHuman(ticket)) {
+          this.forgetWedgeClock(ticket.id);
+          continue;
+        }
         // Not a staffable state, or a design ticket the guard won't staff → not a wedge; forget it.
         if (!staffs || (staffs.entryGuard && !staffs.entryGuard(ticket))) {
           this.forgetWedgeClock(ticket.id);
@@ -1479,6 +1494,15 @@ export class Dispatcher {
     // a ticket held in in_review by the publish outbox has already passed review and is heading to
     // done, so there is nothing to preview. Fire-and-forget; never blocks staffing.
     if (to === "in_review" && !this.publishOutbox?.has(ticket.id)) this.ensurePreview(ticket);
+    // A Bored pause deliberately leaves the projected state active. It is an explicit human hold,
+    // so it must beat both event-driven staffing and the liveness watchdog.
+    if (this.isParkedForHuman(ticket)) {
+      this.forgetWedgeClock(ticket.id);
+      this.logger.info("ticket is parked for a human — not staffing", { ticket: ticket.identifier, state: to });
+      return;
+    }
+    // If a tracker reports the ticket unparked again, an operator deliberately resumed it.
+    this.clearHumanHold(ticket.id);
     // A state a registered stage staffs from (design → design, in_progress → implement,
     // in_review → review) spawns that stage's worker; terminal/held states fall through below.
     const staffs = this.stages.forState(to);
@@ -3822,6 +3846,7 @@ export class Dispatcher {
       this.replaceMap(this.reviewInfraRetries, parsed.reviewInfraRetries);
       this.replaceMap(this.stallFingerprints, parsed.stallFingerprints ?? {});
       this.replaceMap(this.designCycles, parsed.designCycles ?? {});
+      this.replaceMap(this.humanHolds, parsed.humanHolds ?? {});
       // Workers the previous daemon left behind — consumed by recoverFromCrash() at boot.
       if (parsed.liveWorkers && Object.keys(parsed.liveWorkers).length > 0) {
         this.recoveredWorkers = parsed.liveWorkers;
@@ -3865,6 +3890,7 @@ export class Dispatcher {
       designCycles: Object.fromEntries(this.designCycles),
       liveWorkers: Object.fromEntries(this.liveLedger),
       pendingSteers: Object.fromEntries(this.pendingSteers),
+      humanHolds: Object.fromEntries(this.humanHolds),
     };
     try {
       mkdirSync(dirname(this.runtimeStatePath), { recursive: true });

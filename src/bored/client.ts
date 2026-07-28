@@ -53,6 +53,7 @@ const BoredTicketSchema = z.object({
   needs: z.array(z.string()).default([]),
   createdAt: z.string(),
   updatedAt: z.string(),
+  stateReason: z.string().optional(),
 }).passthrough();
 const EventSchema = z.object({
   seq: z.number(),
@@ -167,12 +168,19 @@ export class BoredClient {
     // translates the dispatcher's lifecycle writes into Bored's documented workflow verbs.
     switch (state) {
       case "in_progress": {
+        // A deliberate human hold is a paused Bored run, which still projects to its previous
+        // active column. Resume it before applying the requested lifecycle transition.
+        let current = await this.getIssue(id);
+        if (current?.parked) {
+          await this.req("POST", `${this.ticketPath(id)}/resume`, {});
+          current = await this.getIssue(id);
+        }
         // A reviewer sending work back for rework is Bored's `fail` edge, while an unstaffed
-        // todo ticket starts at the entry gate. Read once to choose the documented verb.
-        const current = await this.getIssue(id);
+        // todo ticket starts at the entry gate. If a paused implementation resumed into its
+        // requested state there is no second workflow verb to issue.
         if (current?.state === "in_review") {
           await this.req("POST", `${this.ticketPath(id)}/gate`, { node: "beckett_review", verdict: "fail" });
-        } else {
+        } else if (current?.state !== "in_progress") {
           await this.req("POST", `${this.ticketPath(id)}/staff`, {});
         }
         break;
@@ -194,6 +202,12 @@ export class BoredClient {
 
   setIssueState(id: string, state: TicketState): Promise<void> {
     return this.setState(id, state);
+  }
+
+  /** Pause the workflow run: bored persists this hold even though it still projects as in_review. */
+  async park(id: string): Promise<void> {
+    await this.req("POST", `${this.ticketPath(id)}/pause`, {});
+    this.logger.info("ticket parked for a human", { ticketId: id });
   }
 
   /** Bored's event journal is its comment-equivalent; nudges are the human text dispatch consumes. */
@@ -282,6 +296,7 @@ export class BoredClient {
       projectId: `bored:${this.boardName}`,
       url: `${this.apiBase}/tickets/${encodeURIComponent(raw.ref)}`,
       updatedAt: raw.updatedAt,
+      ...(raw.stateReason ? { parked: true, parkReason: raw.stateReason } : {}),
       ...(raw.originChannel ? { originChannel: raw.originChannel } : {}),
     };
   }
