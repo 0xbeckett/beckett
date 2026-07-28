@@ -221,8 +221,8 @@ function buildMeshes(vox, glow) {
   const group = new THREE.Group();
   const m4 = new THREE.Matrix4(), col = new THREE.Color();
 
-  function instanced(list, material, name, tint) {
-    const mesh = new THREE.InstancedMesh(BOX, material, list.length);
+  function instanced(list, material, name, tint, geo) {
+    const mesh = new THREE.InstancedMesh(geo || BOX, material, list.length);
     list.forEach((v, i) => {
       m4.setPosition(v.x, v.y, v.z);
       mesh.setMatrixAt(i, m4);
@@ -234,12 +234,18 @@ function buildMeshes(vox, glow) {
     return mesh;
   }
   if (lit.length) {
-    const mesh = instanced(lit, new THREE.MeshLambertMaterial(), 'lit', (v) => {
-      // baked texture: per-voxel brightness jitter + soft AO when covered
-      let f = 0.94 + 0.12 * rnd(v.x * 3 + 7, v.y * 5 + 1, v.z * 7 + 3);
-      if (solid.has(v.x + '|' + (v.y + 1) + '|' + v.z)) f *= 0.82;
+    // BOX_AO carries per-face + vertical soft shading in its vertex colors;
+    // the tint below adds per-voxel jitter and neighbour-aware crevice AO so
+    // corners and seams read as contact shadows, not flat colour fields.
+    const mesh = instanced(lit, new THREE.MeshLambertMaterial({ vertexColors: true }), 'lit', (v) => {
+      let f = 0.95 + 0.10 * rnd(v.x * 3 + 7, v.y * 5 + 1, v.z * 7 + 3);
+      let occ = 0;
+      if (solid.has(v.x + '|' + (v.y + 1) + '|' + v.z)) occ += 1.7;   // capped: strong AO
+      for (const [dx, dy, dz] of AO_NB)
+        if (solid.has((v.x + dx) + '|' + (v.y + dy) + '|' + (v.z + dz))) occ += 0.3;
+      f *= 1 - Math.min(0.34, occ * 0.068);
       return f;
-    });
+    }, BOX_AO);
     mesh.castShadow = mesh.receiveShadow = true;
   }
   const hard = glow.filter(v => !v.soft), soft = glow.filter(v => v.soft);
@@ -248,6 +254,35 @@ function buildMeshes(vox, glow) {
   return group;
 }
 const BOX = new THREE.BoxGeometry(1, 1, 1);
+
+/* neighbours sampled for baked crevice AO: the four sides and the four
+   above-diagonals, so voxels tucked under overhangs or into seams darken. */
+const AO_NB = [
+  [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1],
+  [1, 1, 0], [-1, 1, 0], [0, 1, 1], [0, 1, -1],
+];
+
+/* BOX_AO: a unit cube whose vertex colours bake soft per-face shading and a
+   gentle vertical gradient (tops catch light, undersides fall into shade).
+   Multiplied against each voxel's instance colour, it turns the flat Lambert
+   blocks into rounded, corner-shaded ones without any per-fragment cost. */
+function aoBox() {
+  const g = new THREE.BoxGeometry(1, 1, 1);
+  const pos = g.attributes.position, nor = g.attributes.normal;
+  const col = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const nx = nor.getX(i), ny = nor.getY(i), nz = nor.getZ(i);
+    let f;
+    if (ny > 0.5) f = 1.05;                        // top: brightest
+    else if (ny < -0.5) f = 0.70;                  // underside: deep shade
+    else f = 0.90 + nz * 0.06 + nx * 0.03;         // sides: +z toward camera, subtle x tilt
+    f *= 0.93 + 0.07 * (pos.getY(i) + 0.5);        // vertical gradient within the face
+    col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = f;
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return g;
+}
+const BOX_AO = aoBox();
 
 /* ── island factories ──────────────────────────────────────────────────── */
 function makeIsland(kind, r, seed, flagIx) {
@@ -429,11 +464,15 @@ function makePost(renderer) {
 /* ── scene ─────────────────────────────────────────────────────────────── */
 export function startWorld(canvas, opts = {}) {
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // phones/tablets render the same world at reduced density: fewer particles,
+  // a lighter pixel ratio and a smaller shadow map, to hold a smooth frame.
+  const mobile = matchMedia('(pointer: coarse)').matches || innerWidth < 760;
+  const Q = (big, small) => (mobile ? small : big);   // density picker
   let renderer;
   try {
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: !mobile, powerPreference: 'high-performance' });
   } catch (e) { return false; }
-  renderer.setPixelRatio(Math.min(1.75, devicePixelRatio || 1));
+  renderer.setPixelRatio(Math.min(mobile ? 1.3 : 1.75, devicePixelRatio || 1));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -476,7 +515,7 @@ export function startWorld(canvas, opts = {}) {
   const sun = new THREE.DirectionalLight(CYCLE[0].sun, CYCLE[0].sunI);
   sun.position.set(...CYCLE[0].sunPos);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.mapSize.set(Q(1024, 512), Q(1024, 512));
   sun.shadow.camera.left = sun.shadow.camera.bottom = -34;
   sun.shadow.camera.right = sun.shadow.camera.top = 34;
   sun.shadow.camera.near = 40; sun.shadow.camera.far = 220;
