@@ -1647,11 +1647,7 @@ describe("rework cap", () => {
 
   test("retry exhaustion also remains inert", async () => {
     const client = new FakeClient() as FakeClient & { park(id: string): Promise<void> };
-    client.park = async (id) => {
-      const ticket = client.board.find((t) => t.id === id)!;
-      ticket.parked = true;
-      ticket.parkReason = "operator_pause";
-    };
+    client.park = async () => {}; // Bored remains in its projected active column.
     const config = { ...cfg(2), supervise: { max_implement_retries: 0 } } as unknown as Config;
     const d = new Dispatcher({
       gitOps: gitFakes,
@@ -1665,7 +1661,7 @@ describe("rework cap", () => {
     await tick();
     created[0]!.finish("error", "harness died");
     await tick();
-    expect(exhausted.parked).toBe(true);
+    expect(exhausted.state).toBe("in_progress"); // projected state did not change
 
     const t0 = 8_000_000;
     expect(await d.reconcileStaffing(t0)).toEqual({ restaffed: [], parked: [] });
@@ -2615,11 +2611,7 @@ describe("staffing watchdog (issue #9)", () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-watchdog-courier-"));
     try {
       const client = new FakeClient() as FakeClient & { park(id: string): Promise<void> };
-      client.park = async (id) => {
-        const ticket = client.board.find((t) => t.id === id)!;
-        ticket.parked = true;
-        ticket.parkReason = "operator_pause";
-      };
+      client.park = async () => {}; // Bored remains in its projected active column.
       const d = new Dispatcher({
         gitOps: gitFakes,
         client,
@@ -2634,7 +2626,7 @@ describe("staffing watchdog (issue #9)", () => {
       await tick();
       created[0]!.finish("success", "ready to ship");
       await tick();
-      expect(ticket.parked).toBe(true);
+      expect(ticket.state).toBe("in_progress"); // courier hold survives without a state write
 
       const t0 = 9_000_000;
       expect(await d.reconcileStaffing(t0)).toEqual({ restaffed: [], parked: [] });
