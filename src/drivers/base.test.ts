@@ -175,6 +175,26 @@ test("a progress event resets the stall clock; echoes and stall signals do not",
   expect(d.lastProgressTs).toBeGreaterThan(stale);
 });
 
+test("an unmatched tool_call suppresses the stall signal; its tool_result restarts the clock (issue #83)", () => {
+  const d = makeDriver();
+  const events: WorkerEvent[] = [];
+  d.onEvent((e) => events.push(e));
+  d.workerState = "running";
+
+  // A single long foreground tool call: tool_call up front, then silence for 3x the stall window.
+  d.emit({ kind: "tool_call", tool: "Bash", input: {}, toolId: "t1", ts: Date.now() });
+  d.lastProgressTs = Date.now() - 900_000; // 3x the 300s window with the call still in flight
+  d.tickStall();
+  d.tickStall();
+  expect(events.filter((e) => e.kind === "stalled")).toHaveLength(0);
+
+  // The matching tool_result clears the in-flight call and restarts the clock (it is progress) …
+  d.emit({ kind: "tool_result", toolId: "t1", isError: false, ts: Date.now() });
+  d.lastProgressTs = Date.now() - 301_000; // … so a further silent window past the result DOES stall
+  d.tickStall();
+  expect(events.filter((e) => e.kind === "stalled")).toHaveLength(1);
+});
+
 test("stall detection is off when worker_stall_s is 0", () => {
   const d = new TestDriver() as unknown as Guts;
   (d as unknown as { config: { supervise: { worker_stall_s: number } } }).config = {

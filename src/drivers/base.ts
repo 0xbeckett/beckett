@@ -235,6 +235,7 @@ export abstract class BaseDriver {
     this.spawnedAt = this.spawnedAt || Date.now();
     this.lastActivityTs = Date.now();
     this.lastProgressTs = Date.now(); // launch counts as progress — the stall clock starts now
+    this.inFlightTools.clear(); // a fresh child has no tools in flight; drop any left by a dead one
 
     const sessionReady = new Promise<SpawnResult>((resolve, reject) => {
       this.resolveSession = resolve;
@@ -511,6 +512,9 @@ export abstract class BaseDriver {
     // Our own stall signal is not activity — counting it would reset the very clock it reports.
     if (e.kind !== "stalled") this.lastActivityTs = e.ts;
     if (BaseDriver.PROGRESS_KINDS.has(e.kind)) this.lastProgressTs = e.ts;
+    // Track tool calls in flight so a long foreground call can't look like a wedge (issue #83).
+    if (e.kind === "tool_call") this.inFlightTools.add(e.toolId);
+    else if (e.kind === "tool_result") this.inFlightTools.delete(e.toolId);
     for (const cb of this.subscribers) {
       try {
         cb(e);
