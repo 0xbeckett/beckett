@@ -30,7 +30,16 @@ const dir = mkdtempSync(join(tmpdir(), "beckett-betterwright-smoke-"));
 const socket = join(dir, "control.sock");
 const server = Bun.serve({
   port: 0,
-  fetch() {
+  async fetch(request) {
+    // The parallel-session check needs one request to remain in flight while a
+    // different BetterWright session completes its own browser work.
+    if (new URL(request.url).pathname === "/parallel-slow") {
+      await Bun.sleep(1_500);
+      return new Response("slow", { headers: { "content-type": "text/plain" } });
+    }
+    if (new URL(request.url).pathname === "/parallel-fast") {
+      return new Response("fast", { headers: { "content-type": "text/plain" } });
+    }
     return new Response(`<!doctype html><title>BetterWright smoke</title>
       <main><label>Message <input aria-label="Message"></label><button>Save</button><output></output></main>
       <script>document.querySelector('button').onclick = () => {
@@ -194,7 +203,40 @@ try {
     throw new Error(`persistent BetterWright state failed: ${String(persisted.value)}`);
   }
   await runtime.release("betterwright-smoke-restart", false);
-  process.stdout.write("betterwright browser MCP smoke passed\n");
+
+  // The production adapter intentionally leaves `profile` unset: these are two
+  // named sessions in its one backward-compatible default profile. A slow page
+  // load in alpha must not block beta, which proves the session daemon accepted
+  // both leases without attempting a second owner for that profile lock.
+  const alphaRunId = "betterwright-parallel-alpha";
+  const betaRunId = "betterwright-parallel-beta";
+  await Promise.all([alphaRunId, betaRunId].map((parallelRunId) => runtime.acquire({
+    runId: parallelRunId,
+    channelId: null,
+    artifactsDir: join(dir, "browser-agent", parallelRunId, "artifacts"),
+    controlToken: token,
+  })));
+  let alphaFinished = false;
+  const alpha = runtime.evaluate(
+    alphaRunId,
+    `await page.goto(${JSON.stringify(`${baseUrl}/parallel-slow`)}); return await page.textContent('body')`,
+    token,
+  ).finally(() => { alphaFinished = true; });
+  // Give alpha's navigation a chance to reach the shared daemon before beta
+  // starts. The endpoint remains slow enough for the assertion below to be
+  // deterministic without imposing a timing threshold on the fast session.
+  await Bun.sleep(100);
+  const beta = await runtime.evaluate(
+    betaRunId,
+    `await page.goto(${JSON.stringify(`${baseUrl}/parallel-fast`)}); return await page.textContent('body')`,
+    token,
+  );
+  if (beta.value !== "fast") throw new Error(`parallel beta session failed: ${String(beta.value)}`);
+  if (alphaFinished) throw new Error("parallel alpha session completed before beta; parallelism was not exercised");
+  const alphaResult = await alpha;
+  if (alphaResult.value !== "slow") throw new Error(`parallel alpha session failed: ${String(alphaResult.value)}`);
+  await Promise.all([runtime.release(alphaRunId, false), runtime.release(betaRunId, false)]);
+  process.stdout.write("betterwright browser MCP and default-profile parallel-session smoke passed\n");
 } finally {
   if (mcp) await mcp.stop().catch(() => undefined);
   stopBus?.();

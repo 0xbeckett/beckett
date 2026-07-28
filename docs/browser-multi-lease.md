@@ -48,3 +48,20 @@ without a revert.
 Both vars are read by the adapter and forwarded into the sandboxed browser host by
 `src/browser/isolated.ts`, so setting them in the daemon's environment takes effect
 inside the isolated host process.
+
+## #96 BetterWright 1.5.1 parallel verification
+
+`bun run browser:smoke` was run with BetterWright **1.5.1**. Its production-host
+check acquires `betterwright-parallel-alpha` and `betterwright-parallel-beta` at
+the same time, holds alpha in a 1.5-second local navigation, and asserts beta's
+separate session completes before alpha. The observed result was:
+
+```text
+betterwright browser MCP and default-profile parallel-session smoke passed
+```
+
+No named profile is needed: Beckett creates one `BetterWright` client without a
+`profile` option and passes each lease's run id as its `session`. Those sessions
+share the backward-compatible default profile and its daemon, so no second
+worker attempts to own (or collide on) that profile lock. Named profiles remain
+an upstream identity feature and are not exposed as Beckett configuration.
