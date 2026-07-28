@@ -10,12 +10,12 @@ cd "$(dirname "$0")"
 
 need=(models/kokoro-v1.0.onnx models/voices-v1.0.bin models/ggml-base.en.bin
       whisper.cpp/build/bin/whisper-cli)
-for f in "${need[@]}"; do
-  if [[ ! -e "$f" ]]; then
-    echo "Missing $f — run ./setup.sh first to fetch models and build whisper.cpp." >&2
-    exit 1
-  fi
-done
+missing=0
+for f in "${need[@]}"; do [[ -e "$f" ]] || missing=1; done
+if [[ "$missing" == 1 ]]; then
+  echo "Prerequisites missing — running ./setup.sh (fetch models + build whisper.cpp) ..."
+  ./setup.sh
+fi
 
 # STT fixtures (3s/5s/10s speech clips) — generate if absent.
 if [[ ! -f fixtures/utt_10s.wav ]]; then
