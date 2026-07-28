@@ -17,7 +17,7 @@
  * Owner/maintainer only, enforced the same way the daemon enforces it.
  */
 
-import { Client, GatewayIntentBits } from "discord.js";
+import { Client, Events, GatewayIntentBits } from "discord.js";
 import { VoiceGateway } from "../../src/discord/voice/gateway.ts";
 import {
   createDiscordVoiceBackendFactory,
@@ -53,7 +53,7 @@ async function main(): Promise<void> {
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
   });
   await client.login(token);
-  await new Promise<void>((r) => client.once("clientReady", () => r()));
+  await new Promise<void>((r) => client.once(Events.ClientReady, () => r()));
   logger.info("logged in", { tag: client.user?.tag });
 
   const channel = await resolveVoiceChannel(client, guildId, channelName);
