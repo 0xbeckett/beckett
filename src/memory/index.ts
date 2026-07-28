@@ -104,8 +104,41 @@ const STRUCTURAL_FIELDS = new Set(["members", "owners", "applies_to", "supersede
 /** Reverse edges worth following on expansion; incidental prose backlinks are dropped (§3.2). */
 const HIGH_VALUE_BACKLINK_FIELDS = new Set(["members", "owners", "applies_to", "supersedes"]);
 
-/** `[[kebab-name]]` or `[[kebab-name|alias]]` — a directed graph edge (Spec 08 §2.2). */
-const WIKILINK = /\[\[([a-z0-9-]+)(?:\|([^\]]+))?\]\]/g;
+/**
+ * The closed relation vocabulary for typed edges (issue #60) — five types plus untyped. This is
+ * deliberately NOT an extensible registry: a link's type is either one of these or absent.
+ */
+export const RELATION_TYPES = [
+  "supersedes",
+  "caused-by",
+  "about",
+  "contradicts",
+  "part-of",
+] as const;
+const RELATION_ALT = RELATION_TYPES.join("|");
+const RELATION_TYPE_SET: ReadonlySet<string> = new Set(RELATION_TYPES);
+
+/**
+ * A directed graph edge (Spec 08 §2.2), optionally typed + dated (issue #60):
+ *
+ *   [[name]]                          bare — untyped, undated (unchanged, zero migration)
+ *   [[name|alias]]                    display alias           (unchanged)
+ *   [[supersedes:name]]               typed edge
+ *   [[supersedes:name @2026-07-14]]   typed + dated
+ *   [[name @2026-07-14]]              untyped + dated
+ *
+ * Groups: 1 = relation type (closed vocab, optional), 2 = target name, 3 = display alias,
+ * 4 = ISO observation date. A prefix that isn't in the vocab isn't a type — the `:` then can't
+ * belong to a (colon-free) kebab name, so the whole token simply isn't a link. The alias group
+ * is lazy so a trailing ` @YYYY-MM-DD` reads as the date, while an alias that itself contains
+ * `@` (no valid trailing date) still absorbs it — bare and aliased links are untouched.
+ */
+const WIKILINK = new RegExp(
+  `\\[\\[(?:(${RELATION_ALT}):)?([a-z0-9-]+)(?:\\|([^\\]]+?))?(?:\\s*@(\\d{4}-\\d{2}-\\d{2}))?\\]\\]`,
+  "g",
+);
+/** Non-global copy for single-match parsing (a global regex's lastIndex is stateful). */
+const WIKILINK_ONE = new RegExp(WIKILINK.source);
 
 /** Subdirectory (top-level) that holds archived nodes — on disk, out of the graph. */
 const ARCHIVE_DIR = "archive";
@@ -947,7 +980,7 @@ export function recallOver(
           node,
           score: edgeWeight(e),
           via: "link",
-          reason: `linked ${outE.includes(e) ? "to" : "from"} ${name} via ${e.field}`,
+          reason: edgeReason(e, outE.includes(e), name),
         });
       }
     }
@@ -994,7 +1027,29 @@ function recency(node: MemoryNode, now: number): number {
 }
 
 function edgeWeight(e: MemoryEdge): number {
+  // A typed relation is an intentional edge (issue #60), so it outranks an incidental prose
+  // mention even when it lives in the body — this is how recall weighs a superseding fact above
+  // the one it superseded. Untyped body mentions stay the weakest signal.
+  if (e.rel) return 5;
   return e.field === "body" ? 2 : 5; // structural edges outrank incidental prose mentions
+}
+
+/**
+ * Human-readable expansion reason that surfaces an edge's relation type and observation date
+ * (issue #60), so a recall answer can say "supersedes X (observed 2026-07-14)" instead of a bare
+ * "linked". `seed` is the frontier node the hop started from; `isOut` distinguishes an out-edge
+ * (seed → target) from a followed backlink (linker → seed). A frontmatter field that is itself a
+ * relation name (e.g. `supersedes:`) reads as that relation even without an inline `rel:` prefix.
+ */
+function edgeReason(e: MemoryEdge, isOut: boolean, seed: string): string {
+  const when = e.date ? ` (observed ${e.date})` : "";
+  const rel = e.rel ?? (RELATION_TYPE_SET.has(e.field) ? (e.field as RelationType) : undefined);
+  if (rel) {
+    // Directional statement "subject rel object": for an out-edge the seed is the subject and
+    // the expanded target (e.to) the object; for a backlink the linking node (e.from) is.
+    return isOut ? `${seed} ${rel} ${e.to}${when}` : `${e.from} ${rel} ${seed}${when}`;
+  }
+  return `linked ${isOut ? "to" : "from"} ${seed} via ${e.field}${when}`;
 }
 
 // =======================================================================================
@@ -1099,17 +1154,22 @@ function leadLine(body: string): string {
   return "";
 }
 
-/** Materialize `links` into the content so the next graph build re-extracts them (Spec 08 §2.2). */
+/** Materialize `links` into the content so the next graph build re-extracts them (Spec 08 §2.2).
+ *  A link may carry a relation type + observation date (issue #60); both are optional and a bare
+ *  link stays bare. An unknown type or malformed date is dropped, never emitted. */
 function applyLinks(content: NodeContent, links?: RememberIntent["links"]): void {
   if (!links) return;
-  for (const { to, field } of links) {
+  for (const { to, field, rel, date } of links) {
     if (!/^[a-z0-9-]+$/.test(to)) continue;
-    const wl = `[[${to}]]`;
+    const relPart = rel && RELATION_TYPE_SET.has(rel) ? `${rel}:` : "";
+    const datePart = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? ` @${date}` : "";
+    const wl = `[[${relPart}${to}${datePart}]]`;
     if (STRUCTURAL_FIELDS.has(field)) {
       const arr = asStringArray(content.metadata[field]);
       if (!arr.some((x) => extractName(x) === to)) arr.push(wl);
       content.metadata[field] = arr;
-    } else if (!content.body.includes(wl)) {
+    } else if (![...content.body.matchAll(WIKILINK)].some((m) => m[2] === to)) {
+      // Don't double-link a target the body already references in any form (bare/typed/dated).
       content.body = `${content.body.trim()}\n\n${wl}`.trim();
     }
   }
@@ -1138,18 +1198,24 @@ export function parseMemoryFile(
   const cleanBody = stripGeneratedBacklinks(body).trim();
   const edges: MemoryEdge[] = [];
   const seen = new Set<string>();
-  const add = (to: string, field: string, alias?: string) => {
-    const key = `${field} ${to}`;
+  const add = (
+    to: string,
+    field: string,
+    extra: { alias?: string; rel?: RelationType; date?: string } = {},
+  ) => {
+    // Key on rel too: two typed edges to the same target (e.g. `[[supersedes:x]]` and
+    // `[[about:x]]`) are distinct relations, not a duplicate to collapse.
+    const key = `${field} ${extra.rel ?? ""} ${to}`;
     if (seen.has(key)) return;
     seen.add(key);
-    edges.push({ from: name, to, field, alias });
+    edges.push({ from: name, to, field, alias: extra.alias, rel: extra.rel, date: extra.date });
   };
 
   // (a) structural edges from link-typed frontmatter fields (higher weight).
   for (const field of STRUCTURAL_FIELDS) {
     for (const v of asStringArray(meta[field])) {
       const m = matchWikilink(v);
-      if (m) add(m.name, field, m.alias);
+      if (m) add(m.name, field, { alias: m.alias, rel: m.rel, date: m.date });
     }
   }
   // (b) prose edges from the body — but NOT from inside code (fenced blocks or inline `spans`).
@@ -1157,7 +1223,7 @@ export function parseMemoryFile(
   //     examples in backticks; those are illustrations, not edges. Extracting them mints bogus
   //     phantom nodes (`name`, `wikilinks`) that the maintenance report then flags forever.
   for (const m of stripCodeForLinks(cleanBody).matchAll(WIKILINK)) {
-    add(m[1]!, "body", m[2]);
+    add(m[2]!, "body", { rel: m[1] as RelationType | undefined, alias: m[3], date: m[4] });
   }
 
   const node: MemoryNode = {
@@ -1676,9 +1742,13 @@ function stripCodeForLinks(body: string): string {
     .replace(/(`+)(?:(?!\1)[\s\S])*?\1/g, blank);
 }
 
-function matchWikilink(v: string): { name: string; alias?: string } | null {
-  const m = v.match(/\[\[([a-z0-9-]+)(?:\|([^\]]+))?\]\]/);
-  if (m) return { name: m[1]!, alias: m[2] };
+function matchWikilink(
+  v: string,
+): { name: string; alias?: string; rel?: RelationType; date?: string } | null {
+  const m = v.match(WIKILINK_ONE);
+  if (m) {
+    return { name: m[2]!, alias: m[3], rel: m[1] as RelationType | undefined, date: m[4] };
+  }
   const bare = v.trim();
   if (/^[a-z0-9-]+$/.test(bare)) return { name: bare };
   return null;
