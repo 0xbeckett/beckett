@@ -855,6 +855,11 @@ export class DiscordJsGateway implements DiscordGateway {
     const client = this.client;
     if (!client) throw new Error("discord gateway not started");
 
+    // This is the last common boundary before discord.js. Keep this here, rather than relying on
+    // callers, so turns, acks, ticket updates, and queued posts get the same protection.
+    content = this.redactOutboundText(channelId, "content", content);
+    opts = this.redactOutboundOptions(channelId, opts);
+
     if (opts?.singleMessage) {
       if (content.length > DISCORD_MAX_CHARS) {
         throw new Error(`single-message Discord post exceeds ${DISCORD_MAX_CHARS} characters`);
@@ -970,10 +975,67 @@ export class DiscordJsGateway implements DiscordGateway {
     }
     const message = await channel.messages.fetch(messageId);
     const edit: MessageEditOptions = { allowedMentions: { parse: [] } };
-    if (payload.content !== undefined) edit.content = payload.content;
-    if (payload.embeds !== undefined) edit.embeds = payload.embeds.map((embed) => new EmbedBuilder(embed));
+    if (payload.content !== undefined) {
+      edit.content = this.redactOutboundText(channelId, "edit.content", payload.content);
+    }
+    if (payload.embeds !== undefined) {
+      edit.embeds = this.redactEmbeds(channelId, payload.embeds).map((embed) => new EmbedBuilder(embed));
+    }
     await message.edit(edit);
     this.lastEventTs = Date.now();
+  }
+
+  /** Remove URLs that recipients cannot use before they cross the public Discord boundary. */
+  private redactOutboundText(channelId: string, location: string, content: string): string {
+    return redactUnsafeDiscordUrls(content, (host) => {
+      this.logger.warn("redacted internal URL from outbound discord message", { channelId, location, host });
+    });
+  }
+
+  private redactEmbeds(channelId: string, embeds: NonNullable<ReplyOptions["embeds"]>) {
+    return embeds.map((embed) => {
+      const safe = {
+        ...embed,
+        title: embed.title === undefined ? undefined : this.redactOutboundText(channelId, "embed.title", embed.title),
+        description: embed.description === undefined
+          ? undefined
+          : this.redactOutboundText(channelId, "embed.description", embed.description),
+        footer: embed.footer === undefined
+          ? undefined
+          : { ...embed.footer, text: this.redactOutboundText(channelId, "embed.footer", embed.footer.text) },
+        fields: embed.fields?.map((field) => ({
+          ...field,
+          name: this.redactOutboundText(channelId, "embed.field.name", field.name),
+          value: this.redactOutboundText(channelId, "embed.field.value", field.value),
+        })),
+      };
+      if (embed.url && isUnsafeDiscordUrl(embed.url)) {
+        this.logger.warn("redacted internal URL from outbound discord message", {
+          channelId,
+          location: "embed.url",
+          host: new URL(embed.url).hostname,
+        });
+        delete safe.url;
+      }
+      return safe;
+    });
+  }
+
+  private redactOutboundOptions(channelId: string, opts: ReplyOptions | undefined): ReplyOptions | undefined {
+    if (!opts) return opts;
+    return {
+      ...opts,
+      embeds: opts.embeds === undefined ? undefined : this.redactEmbeds(channelId, opts.embeds),
+      buttons: opts.buttons?.flatMap((button) => {
+        if (!isUnsafeDiscordUrl(button.url)) return [button];
+        this.logger.warn("redacted internal URL from outbound discord message", {
+          channelId,
+          location: "button.url",
+          host: new URL(button.url).hostname,
+        });
+        return [];
+      }),
+    };
   }
 
   /** Store the current value only: reconnect must never replay a stale progress history. */
@@ -1214,6 +1276,37 @@ function stripUserMention(content: string, userId: string): string {
   // Discord rejects an entirely empty text message. Keep the reply deliverable if a model emitted
   // only the redundant mention, without restoring a second notification.
   return stripped || "\u200b";
+}
+
+/** URLs are deliberately recognized only in outbound Discord text, not as a general content filter. */
+const DISCORD_URL = /https?:\/\/[^\s<>"'()[\]{}]+/gi;
+
+function redactUnsafeDiscordUrls(content: string, onRedaction: (host: string) => void): string {
+  return content.replace(DISCORD_URL, (candidate) => {
+    // Keep sentence punctuation outside the replacement; URL pathname/query punctuation is
+    // immaterial once the unusable link is removed.
+    const punctuation = candidate.match(/[.,!?;:]+$/)?.[0] ?? "";
+    const url = candidate.slice(0, candidate.length - punctuation.length);
+    if (!isUnsafeDiscordUrl(url)) return candidate;
+    onRedaction(new URL(url).hostname);
+    return `[internal link removed]${punctuation}`;
+  });
+}
+
+function isUnsafeDiscordUrl(value: string): boolean {
+  let host: string;
+  try {
+    host = new URL(value).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  // URL.hostname brackets IPv6 literals in current runtimes; accept either representation.
+  host = host.replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host === "local" || host.endsWith(".local")) return true;
+  const octets = host.split(".");
+  if (octets.length !== 4 || octets.some((octet) => !/^\d+$/.test(octet))) return false;
+  const [first, second = 0] = octets.map(Number);
+  return first === 127 || first === 10 || first === 192 && second === 168 || first === 172 && second >= 16 && second <= 31;
 }
 
 /** Discord channel/thread names are 1-100 characters. Keep task names stable and single-line. */

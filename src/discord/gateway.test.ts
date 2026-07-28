@@ -530,6 +530,37 @@ function fakeSendableGateway() {
   return { sent, payloads, callSendNow };
 }
 
+test("outbound Discord messages redact internal ticket URLs but preserve public URLs", async () => {
+  const redactions: Array<Record<string, unknown> | undefined> = [];
+  const logger = {
+    debug: () => {}, info: () => {}, error: () => {}, child: () => logger,
+    warn: (_message: string, fields?: Record<string, unknown>) => { redactions.push(fields); },
+  };
+  const payloads: Array<Record<string, unknown>> = [];
+  const gateway = new DiscordJsGateway({ logger });
+  const channel = {
+    isSendable: () => true,
+    send: async (payload: Record<string, unknown>) => {
+      payloads.push(payload);
+      return { id: "msg-1" };
+    },
+  };
+  (gateway as unknown as { client: unknown }).client = { channels: { fetch: async () => channel } };
+
+  await (gateway as unknown as {
+    sendNow: (channelId: string, content: string, opts?: ReplyOptions) => Promise<string>;
+  }).sendNow(
+    "Ticket http://127.0.0.1:7770/tickets/%2342 is filed; see https://github.com/0xbeckett/beckett too.",
+  );
+
+  const content = payloads[0]?.content as string;
+  expect(content).not.toContain("http://127.0.0.1:7770/tickets/%2342");
+  expect(content).toContain("Ticket [internal link removed] is filed");
+  expect(content).toContain("https://github.com/0xbeckett/beckett");
+  expect(redactions).toHaveLength(1);
+  expect(redactions[0]).toMatchObject({ channelId: "chan-1", host: "127.0.0.1" });
+});
+
 test("direct replies use a native reply and whitelist only its author", async () => {
   const { payloads, callSendNow } = fakeSendableGateway();
   const userId = "1151230208783945818";
