@@ -1,0 +1,12 @@
+[Unit]
+Description=Beckett site typography preview (ticket #92)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/beckett/Projects/beckett/.beckett/worktrees/#92/web/public
+ExecStart=/usr/bin/python3 -m http.server 8792 --bind 127.0.0.1
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
