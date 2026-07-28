@@ -604,10 +604,8 @@ export class MemoryStore implements Memory {
     metadata.updated = now;
 
     const dupPart = [dup.description, dup.body].filter(Boolean).join("\n\n");
-    const body = `${canonical.body.trim()}\n\n## Merged from ${dup.name} (${now.slice(0, 10)})\n\n${dupPart}`
-      .replaceAll(`[[${dup.name}]]`, `[[${canonical.name}]]`)
-      .replaceAll(`[[${dup.name}|`, `[[${canonical.name}|`)
-      .trim();
+    const mergedBody = `${canonical.body.trim()}\n\n## Merged from ${dup.name} (${now.slice(0, 10)})\n\n${dupPart}`;
+    const body = renameWikilinkTarget(mergedBody, dup.name, canonical.name).trim();
 
     this.atomicWrite(
       canonical.path,
@@ -635,7 +633,8 @@ export class MemoryStore implements Memory {
     }
   }
 
-  /** Retarget `[[from]]` / `[[from|alias]]` wikilinks in one file (body AND frontmatter). */
+  /** Retarget every wikilink pointing at `from` in one file (body AND frontmatter), preserving
+   *  any relation type, alias, and observation date on each edge (issue #60). */
   private rewriteWikilinks(path: string, from: string, to: string): void {
     let raw: string;
     try {
@@ -643,7 +642,7 @@ export class MemoryStore implements Memory {
     } catch {
       return;
     }
-    const next = raw.replaceAll(`[[${from}]]`, `[[${to}]]`).replaceAll(`[[${from}|`, `[[${to}|`);
+    const next = renameWikilinkTarget(raw, from, to);
     if (next !== raw) {
       this.atomicWrite(path, next);
       this.rawCache.set(path, next);
@@ -1290,14 +1289,18 @@ function composeBody(body: string, links: string[]): string {
   return (base ? base + "\n\n" : "") + section;
 }
 
-/** Inbound edges rendered as `[[from]] (field)` lines, deduped + stably sorted (Spec 08 §2.5). */
+/** Inbound edges rendered as `[[from]] (field)` lines, deduped + stably sorted (Spec 08 §2.5).
+ *  A typed and/or dated edge (issue #60) annotates the field: `[[from]] (supersedes, 2026-07-14)`
+ *  so the relation and its observation date ride along on the generated backlink. */
 function backlinkLines(g: MemoryGraph, name: string): string[] {
   const seen = new Set<string>();
   const lines: string[] = [];
   for (const e of (g.in.get(name) ?? []).slice().sort((a, b) =>
     a.from === b.from ? a.field.localeCompare(b.field) : a.from.localeCompare(b.from),
   )) {
-    const line = `[[${e.from}]] (${e.field})`;
+    const rel = e.rel ?? (RELATION_TYPE_SET.has(e.field) ? e.field : undefined);
+    const parts = [rel ?? e.field, e.date].filter(Boolean);
+    const line = `[[${e.from}]] (${parts.join(", ")})`;
     if (seen.has(line)) continue;
     seen.add(line);
     lines.push(line);
@@ -1757,6 +1760,21 @@ function matchWikilink(
 function extractName(v: string): string {
   const m = matchWikilink(v);
   return m ? m.name : v.trim();
+}
+
+/**
+ * Retarget every `[[…name…]]` edge whose target is `from` to point at `to`, preserving that
+ * edge's relation-type prefix, `|alias`, and ` @date` (issue #60). Used by merge/rename so a
+ * typed or dated inbound link isn't silently downgraded to a bare (or broken) one.
+ */
+function renameWikilinkTarget(text: string, from: string, to: string): string {
+  return text.replace(new RegExp(WIKILINK.source, "g"), (whole, rel, nm, alias, date) => {
+    if (nm !== from) return whole;
+    const relPart = rel ? `${rel}:` : "";
+    const aliasPart = alias != null ? `|${alias}` : "";
+    const datePart = date ? ` @${date}` : "";
+    return `[[${relPart}${to}${aliasPart}${datePart}]]`;
+  });
 }
 
 function pushEdge(map: Map<string, MemoryEdge[]>, key: string, e: MemoryEdge): void {
