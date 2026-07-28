@@ -625,6 +625,69 @@ async function boot(): Promise<BootedSystem> {
   concierge.setBrowserRuntime(browser);
   concierge.setBrowserAgent(browserAgent);
 
+  // Frontend result screenshot (#75): when a ticket that touched a frontend lands, serve its built
+  // branch locally, capture ONE screenshot through the shared persistent browser, and attach it to
+  // the ticket record (+ its channel ping). Wired here — not in the dispatcher's construction —
+  // because the browser runtime is only built now. Best-effort throughout; `BECKETT_FRONTEND_SCREENSHOT=0`
+  // opts a box out entirely.
+  if (process.env.BECKETT_FRONTEND_SCREENSHOT !== "0") {
+    const shotLog = logger.child("screenshot");
+    const captureScreenshot = async (url: string, ticket: ScreenshotTicketRef): Promise<string | null> => {
+      // The persistent browser is a single exclusive resource: yield it to any live background run
+      // rather than racing for the lease. A missed screenshot is fine; a broken browser run is not.
+      const busy = browserAgent
+        .stats()
+        ?.runs.some((run) => run.state === "running" || run.state === "waiting" || run.state === "queued");
+      if (busy) {
+        shotLog.info("browser busy — skipping screenshot", { ticket: ticket.identifier });
+        return null;
+      }
+      const runId = `screenshot-${crypto.randomUUID()}`;
+      const controlToken = crypto.randomUUID();
+      const artifactsDir = join(beckettDir, "browser-agent", "screenshots", ticket.id, runId);
+      try {
+        await browser.acquire({ runId, channelId: ticket.originChannel ?? null, artifactsDir, controlToken });
+        const code =
+          `await page.goto(${JSON.stringify(url)}, { waitUntil: "load", timeout: 20000 });\n` +
+          `await page.waitForTimeout(1500);\n` +
+          `return await screenshot("frontend");`;
+        const result = await browser.evaluate(runId, code, controlToken);
+        return result.screenshots?.[0] ?? null;
+      } catch (err) {
+        shotLog.warn("screenshot capture failed", { ticket: ticket.identifier, error: (err as Error).message });
+        return null;
+      } finally {
+        if (browser.hasLease(runId)) await browser.release(runId, false).catch(() => undefined);
+      }
+    };
+    const attachScreenshot = async (ticket: ScreenshotTicketRef, pngPath: string): Promise<void> => {
+      const caption = `📸 Frontend screenshot of the built branch for **${ticket.identifier}**.`;
+      // Post to the channel first (when there is one): that upload also gives us a hosted URL to
+      // embed on the ticket, since a tracker comment can render an image but cannot host bytes.
+      let hostedUrl: string | null = null;
+      if (ticket.originChannel) {
+        try {
+          hostedUrl = (await gateway.postImage?.(ticket.originChannel, caption, pngPath)) ?? null;
+        } catch (err) {
+          shotLog.warn("screenshot channel ping failed", { ticket: ticket.identifier, error: (err as Error).message });
+        }
+      }
+      const body = hostedUrl
+        ? `${BECKETT_COMMENT_MARKER}\n📸 **Frontend screenshot** of the built branch:\n\n![${ticket.identifier} frontend](${hostedUrl})`
+        : `${BECKETT_COMMENT_MARKER}\n📸 **Frontend screenshot** of the built branch captured at \`${pngPath}\`.`;
+      await client.addComment(ticket.id, body);
+    };
+    dispatcher.setScreenshotCapturer(
+      createFrontendScreenshotHook({
+        changedFiles: async (workspace, baseRef) => worktreeDiffNames(workspace, baseRef),
+        serve: (repoRoot) => serveBuild(repoRoot, { logger: shotLog }),
+        screenshot: captureScreenshot,
+        attach: attachScreenshot,
+        logger: shotLog,
+      }),
+    );
+  }
+
   // The quick extension's init built the ONE runner every surface shares. Phase 3 keeps the
   // concierge's quick.run/quick.list bus command bodies v5-shaped (bus-characterization pins
   // their not-wired refusal), so the runner still arrives through the setter.

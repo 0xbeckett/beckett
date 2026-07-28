@@ -1021,6 +1021,12 @@ export interface DiscordGateway {
   /** Post to a channel; returns the bot message id (for reply correlation). */
   post(channelId: string, content: string, opts?: ReplyOptions): Promise<string>;
   /**
+   * Post a single image and return its Discord CDN URL (or null when it can't be resolved). Used to
+   * surface a frontend result screenshot as a channel ping AND to embed that hosted image on the
+   * ticket record (#75). Never throws — degrades to null.
+   */
+  postImage?(channelId: string, content: string, filePath: string): Promise<string | null>;
+  /**
    * Edit an existing bot message. Rejections are typed DiscordMessageEditError subclasses so
    * periodic callers can distinguish a deleted message from retryable Discord outages.
    */
