@@ -567,6 +567,14 @@ export class Dispatcher {
   private recoveredWorkers: Record<string, LedgeredWorker> | null = null;
   /** Per-ticket resume hints produced by recovery: the next same-stage spawn resumes this session. */
   private readonly resumables = new Map<string, { stage: string; sessionId: string; harness: string }>();
+  /**
+   * Tickets whose worker was interrupted mid-run by a daemon restart/deploy (#68), keyed by ticket
+   * id and recording the stage that was in flight. The next spawn for that stage must RESUME the
+   * persisted harness session (via {@link resumables}) or, when resume proves impossible, PARK the
+   * ticket with an explicit comment — a deploy must NEVER silently restart in-flight work from
+   * scratch. Cleared once the worker is back in flight, parked, or the job is torn down.
+   */
+  private readonly restartInterrupted = new Map<string, { stage: string }>();
 
   /**
    * Steering comments that arrived while no worker could take them (issue #22): pre-spawn, the
@@ -666,7 +674,9 @@ export class Dispatcher {
    *      the checkout with no watchdog; ps-verified so a recycled pid is never killed),
    *   2. commit any ghost WIP in its checkout so re-staff base-sha captures aren't polluted,
    *   3. record a resume hint so the re-staffed same-stage worker resumes the persisted session
-   *      instead of re-paying the whole ticket's exploration cost.
+   *      instead of re-paying the whole ticket's exploration cost, AND flag the ticket as
+   *      restart-interrupted (#68) so that if resume proves impossible the next spawn PARKS it with
+   *      a comment rather than silently restarting the in-flight work from scratch.
    * The ledger is then cleared (those workers are no longer live).
    */
   async recoverFromCrash(): Promise<void> {
@@ -707,6 +717,10 @@ export class Dispatcher {
       if (w.sessionId) {
         this.resumables.set(ticketId, { stage: w.stage, sessionId: w.sessionId, harness: w.harness });
       }
+      // #68: this worker was interrupted mid-run by the restart. Its next spawn must resume the
+      // session recorded above or, if resume is impossible, park the ticket with a comment — the
+      // deploy must never silently re-staff the in-flight work from a fresh prompt.
+      this.restartInterrupted.set(ticketId, { stage: w.stage });
     }
     this.persistRuntimeState(); // liveLedger is empty now — clears the on-disk ledger
     for (const [ticketId, w] of entries) this.traceRecovered(ticketId, w, "passed", "restart recovery complete");
@@ -715,6 +729,32 @@ export class Dispatcher {
       sweptOrphans: swept,
       resumable: this.resumables.size,
     });
+  }
+
+  /**
+   * Park a ticket whose restart-interrupted worker cannot be resumed (#68) — the worker-side
+   * equivalent of the browser drain's "refuse rather than orphan" contract. A deploy must never
+   * silently restart in-flight work from scratch, so when no harness session survives to resume,
+   * the ticket is moved to `todo` with an explicit comment naming why. Its checkpointed progress is
+   * already committed as WIP in the worktree, so a human can pick it up. Routed through
+   * {@link advanceTicket}, which honours the terminal-state guard (a ticket a human already moved to
+   * cancelled/done is left alone).
+   */
+  private async parkUnresumableWorker(ticket: Ticket, stage: string, reason: string): Promise<void> {
+    this.logger.warn("parking restart-interrupted worker that cannot resume", {
+      ticket: ticket.identifier,
+      stage,
+      reason,
+    });
+    this.trace(ticket, stage, "held", `interrupted mid-${stage} by a restart; ${reason} — parked in todo`);
+    await this.advanceTicket(
+      ticket,
+      "todo",
+      `A **${stage}** worker was mid-run when a deploy restarted the daemon, and ${reason}. ` +
+        "Rather than silently restarting the in-flight work from scratch, I've parked this in " +
+        "**todo** — any checkpointed progress is committed in the worktree as WIP. Move it back to " +
+        "**in_progress** to pick it up with a fresh worker whenever you're ready.",
+    );
   }
 
   /**
@@ -1099,6 +1139,7 @@ export class Dispatcher {
     this.liveTickets.delete(ticketId);
     this.liveLedger.delete(ticketId);
     this.resumables.delete(ticketId);
+    this.restartInterrupted.delete(ticketId);
     this.releaseRepo(ticketId);
     this.persistRuntimeState();
   }
@@ -2025,6 +2066,24 @@ export class Dispatcher {
       resumeSessionId = undefined; // the persisted session belongs to the unhealthy harness
       spec = healthy;
     }
+
+    // #68: a worker interrupted mid-run by a deploy/restart must RESUME its session or be PARKED —
+    // never silently restarted from scratch. `resumeSessionId` is now final: recovery armed it iff a
+    // session was captured, and an unhealthy-harness substitution above would have dropped it. If
+    // this exact stage was interrupted but no session survives to resume, park the ticket for a
+    // human instead of spawning a fresh worker that would discard the in-flight work. The
+    // terminal-state guard (#46.1) still holds — advanceTicket bounces a ticket already moved to a
+    // terminal state, so a cancelled/done ticket is never parked.
+    const interrupted = this.restartInterrupted.get(ticket.id);
+    if (interrupted && interrupted.stage === stage && !resumeSessionId) {
+      this.restartInterrupted.delete(ticket.id);
+      await this.parkUnresumableWorker(
+        ticket,
+        stage,
+        "no harness session survived the restart to resume from",
+      );
+      return; // launchSpawn's finally releases the reservation + pumps
+    }
     const branch = gitBranchForTicket(ticket);
 
     // Capture the diff base the first time a ticket implements: HEAD-before-any-new-work is how a
@@ -2107,28 +2166,35 @@ export class Dispatcher {
       if (!await this.maySpawn(ticket, stage)) return;
       handle = await spawnWorker({ ...spawnArgs, resumeSessionId });
     } catch (err) {
-      // A failed RESUME (stale session file, harness drift) must degrade to a fresh worker —
-      // never strand the ticket on a recovery optimization.
+      // #68: a failed RESUME (stale session file, harness drift) is exactly "resume is impossible"
+      // for a worker the deploy interrupted mid-run. Rather than silently restarting the in-flight
+      // work from a fresh prompt, park it with an explicit comment so a human sees why. Every
+      // resumeSessionId originates from restart recovery, so this always corresponds to an
+      // interrupted worker.
       if (resumeSessionId) {
-        this.logger.warn("session resume failed — falling back to a fresh worker", {
+        this.restartInterrupted.delete(ticket.id);
+        this.logger.warn("session resume failed — parking the restart-interrupted ticket", {
           ticket: ticket.identifier,
           stage,
           error: (err as Error).message,
         });
-        try {
-          // The failed resume itself may have taken long enough for the ticket to be cancelled.
-          // Re-check again because this is a distinct process launch.
-          if (!await this.maySpawn(ticket, stage)) return;
-          handle = await spawnWorker(spawnArgs);
-        } catch (err2) {
-          await this.onSpawnFailure(ticket, stage, err2 as Error);
-          return; // launchSpawn's finally releases the reservation + pumps
-        }
+        // The failed resume itself may have taken long enough for the ticket to be cancelled; the
+        // terminal-state guard (#46.1) below drops it instead of parking a no-longer-active ticket.
+        if (!await this.maySpawn(ticket, stage)) return;
+        await this.parkUnresumableWorker(
+          ticket,
+          stage,
+          `resuming its harness session failed (${(err as Error).message})`,
+        );
+        return; // launchSpawn's finally releases the reservation + pumps
       } else {
         await this.onSpawnFailure(ticket, stage, err as Error);
         return; // launchSpawn's finally releases the reservation + pumps
       }
     }
+    // The worker started (resumed, or a legitimately fresh spawn for a stage the restart did not
+    // interrupt) — it is back in flight, so it can no longer be mistaken for unresumable work.
+    this.restartInterrupted.delete(ticket.id);
 
     // If the ticket's reservation was dropped from {@link staffing} DURING the spawn gap, something
     // touched it (cancel/park/restaff, or a stale out-of-order park event — issue #9). Before
@@ -3507,6 +3573,7 @@ export class Dispatcher {
     this.liveTickets.delete(ticketId);
     this.liveLedger.delete(ticketId);
     this.resumables.delete(ticketId);
+    this.restartInterrupted.delete(ticketId);
     this.persistRuntimeState();
   }
 
