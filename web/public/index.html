@@ -17,17 +17,21 @@
   :root{
     --ink:#2b2743;
     --dim:#565170;
-    --faint:#8b87a3;
+    --faint:#5f5a7a;      /* meta text, darkened to clear AA on the pastels */
     --cy:#8fd8de;         /* pastel cyan, the primary surface accent */
-    --cy-deep:#3f96a2;    /* readable cyan for links and labels */
+    --cy-deep:#2b7681;    /* readable cyan for links and labels (AA on light) */
     --lv:#b9a8e8;         /* pastel lavender */
     --lv-deep:#7a68b8;
     --panel:rgba(255,255,255,.84);
     --line:rgba(43,39,67,.16);
-    --disp:"Pixelify Sans",system-ui,sans-serif;
-    --pix:"DotGothic16",ui-monospace,monospace;
+    --disp:"Pixelify Sans",system-ui,sans-serif;   /* pixel display: wordmark + hero only */
     --sans:"Inter",system-ui,-apple-system,sans-serif;
     --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+    /* one type scale: three sizes, hierarchy from weight and colour */
+    --t-hero:clamp(46px,6.8vw,84px);
+    --t-head:clamp(28px,4vw,44px);
+    --t-body:17px;
+    --measure:68ch;
     --eo:cubic-bezier(.16,1,.3,1);
     /* the block material, light edition: a lifted white slab with a soft
        lavender-ink offset drop. Same cube world as the canvas, softer light. */
@@ -40,7 +44,7 @@
     /* the sky, as CSS: also the no-WebGL floor. It lives on html so the canvas
        can sit at z-index:-1 and content needs no stacking tricks to beat it. */
     background:linear-gradient(180deg,#bfe6ee 0%,#d3e2f2 34%,#e4ddf5 58%,#d9cff0 100%) fixed}
-  body{color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.5;
+  body{color:var(--ink);font-family:var(--sans);font-size:var(--t-body);line-height:1.6;
     -webkit-font-smoothing:antialiased;overflow-x:hidden;font-feature-settings:"cv11","ss01"}
   ::selection{background:var(--lv);color:#241f3d}
   ::-webkit-scrollbar{width:12px}
