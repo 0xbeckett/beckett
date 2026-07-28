@@ -36,6 +36,20 @@ h1,h2,.brand,.f-l,.btn{font-feature-settings:normal;font-variant-ligatures:none}
   background:
     radial-gradient(88% 72% at 42% 40%,rgba(244,247,252,.78),rgba(244,247,252,.34) 58%,transparent 78%),
     linear-gradient(180deg,rgba(244,247,252,.45) 0,transparent 30%)}
+/* the reading lane: the column runs straight through the islands, so the strip
+   of world directly behind it goes soft and pale and the copy always wins. The
+   world outside the column keeps every cube at full contrast. Fixed, so it is
+   one composited layer however long the page gets, and feathered at both sides
+   so there is no visible stripe — on phones it runs wider than the viewport,
+   which puts the feather off-screen entirely. Sits above .scrim (z-index -1)
+   and below .page (z-index 1). */
+body::before{content:"";position:fixed;z-index:0;pointer-events:none;
+  top:0;bottom:0;left:50%;width:min(1060px,168%);transform:translateX(-50%);
+  -webkit-backdrop-filter:blur(6px) saturate(.68) brightness(1.05);
+  backdrop-filter:blur(6px) saturate(.68) brightness(1.05);
+  background:linear-gradient(90deg,transparent,rgba(247,249,254,.5) 24%,rgba(247,249,254,.5) 76%,transparent);
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 16%,#000 84%,transparent);
+  mask-image:linear-gradient(90deg,transparent,#000 16%,#000 84%,transparent)}
 
 nav{position:sticky;top:0;z-index:40;backdrop-filter:blur(14px);
   background:linear-gradient(rgba(248,250,254,.9),rgba(248,250,254,.62));
