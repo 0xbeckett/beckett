@@ -284,6 +284,46 @@ function aoBox() {
 }
 const BOX_AO = aoBox();
 
+/* sub-voxel surface scatter: tiny grass tufts, pebbles and moss standing on
+   the turf. Finer than the world grid, so the closest island reads with a
+   lot more grain up close without adding a single full-size voxel. One
+   instanced mesh, deterministic placement, no shadows. */
+const TUFT = [0x9ed8c3, 0x8ccab2, 0xb7e2c1, 0xcbe8cf];
+const PEBBLE = [0xc9c4d9, 0xb6b0cc, 0xd7cfe6];
+function surfaceScatter(tops, seed, top) {
+  const items = [];
+  for (const t of tops) {
+    if (t.h <= 0) continue;                              // rim/edge cells: skip
+    const r0 = rnd(t.gx * 5 + 13, t.gy * 7 + 3, seed);
+    if (r0 > 0.5) continue;                              // ~half the cells stay bare
+    const kind = rnd(t.gx + 2, t.gy - 4, seed + 5);
+    const jx = (rnd(t.gx, t.gy, seed + 1) - 0.5) * 0.6;
+    const jz = (rnd(t.gx, t.gy, seed + 2) - 0.5) * 0.6;
+    const y = top(t.gx, t.gy);
+    if (kind < 0.62) {                                   // grass tuft: a slim upright blade
+      items.push({ x: t.gx + jx, y: y + 0.28, z: t.gy + jz, s: [0.24, 0.62, 0.24],
+        c: TUFT[(t.gx * 3 + t.gy + seed) & 3] });
+    } else if (kind < 0.86) {                            // pebble: a low flat chip
+      items.push({ x: t.gx + jx, y: y - 0.18, z: t.gy + jz, s: [0.42, 0.26, 0.42],
+        c: PEBBLE[(t.gx + t.gy * 2) % 3] });
+    } else {                                             // micro-bloom: a bright fleck
+      items.push({ x: t.gx + jx, y: y + 0.34, z: t.gy + jz, s: [0.22, 0.22, 0.22],
+        c: P.flower[(t.gx * 7 + t.gy * 13 & 1023) % P.flower.length] });
+    }
+  }
+  const mesh = new THREE.InstancedMesh(BOX_AO, new THREE.MeshLambertMaterial({ vertexColors: true }), items.length);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), po = new THREE.Vector3(), col = new THREE.Color();
+  items.forEach((it, i) => {
+    po.set(it.x, it.y, it.z); sc.set(it.s[0], it.s[1], it.s[2]);
+    m4.compose(po, q, sc);
+    mesh.setMatrixAt(i, m4);
+    mesh.setColorAt(i, col.setHex(it.c));
+  });
+  mesh.name = 'detail';
+  mesh.castShadow = false; mesh.receiveShadow = true;
+  return mesh;
+}
+
 /* ── island factories ──────────────────────────────────────────────────── */
 function makeIsland(kind, r, seed, flagIx) {
   const vox = [], glow = [];
@@ -352,6 +392,7 @@ function makeIsland(kind, r, seed, flagIx) {
   }
   if (flagIx !== undefined) flag(vox, r - 2, top(r - 2, 0), 0, flagIx);
   const group = buildMeshes(vox, glow);
+  if (kind === 'home') group.add(surfaceScatter(tops, seed, top));   // fine grain up close
   group.userData.anchors = anchors;
   return group;
 }
@@ -587,11 +628,39 @@ export function startWorld(canvas, opts = {}) {
     clouds.push(g);
   });
 
+  /* NEW EFFECT — atmospheric haze: soft billboards of drifting mist strung low
+     over the sea between the islands. They take the sky's fog colour, so the
+     gaps between islands read as air and depth rather than a flat fall-off.
+     Very low opacity: they thicken distance, they never draw the eye. */
+  const hazeTex = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const x = c.getContext('2d');
+    const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,0.9)');
+    g.addColorStop(0.5, 'rgba(255,255,255,0.3)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+    return new THREE.CanvasTexture(c);
+  })();
+  const hazeMat = new THREE.SpriteMaterial({
+    map: hazeTex, transparent: true, opacity: 0.15, depthWrite: false, fog: false,
+    color: new THREE.Color(CYCLE[0].fog),
+  });
+  const haze = [];
+  for (let i = 0; i < Q(7, 4); i++) {
+    const s = new THREE.Sprite(hazeMat);
+    const bx = (rnd(i, 31, 1) - 0.5) * 260, by = -8 + rnd(i, 32, 2) * 22, bz = -150 + rnd(i, 33, 3) * 210;
+    s.position.set(bx, by, bz);
+    const sc = 78 + rnd(i, 34, 4) * 74; s.scale.set(sc, sc * 0.5, 1);
+    s.userData = { sp: 0.5 + rnd(i, 35, 5) * 0.9 };
+    scene.add(s); haze.push(s);
+  }
+
   /* blossom petals: a slow pastel drift around the home island. The pointer
      is wind: fast moves push them sideways. */
   let petals = null;
   {
-    const N = 100, pos = new Float32Array(N * 3), col = new Float32Array(N * 3), ph = [];
+    const N = Q(100, 46), pos = new Float32Array(N * 3), col = new Float32Array(N * 3), ph = [];
     const tint = new THREE.Color();
     for (let i = 0; i < N; i++) {
       pos[i * 3] = (rnd(i, 1, 1) - 0.5) * 70;
@@ -663,7 +732,7 @@ export function startWorld(canvas, opts = {}) {
      Points parented to the island so they bob with it. */
   let falls = null;
   {
-    const N = 150, M = 26;
+    const N = Q(150, 72), M = Q(26, 12);
     const pos = new Float32Array((N + M) * 3), col = new Float32Array((N + M) * 3), vel = [];
     const c1 = new THREE.Color(P.water), c2 = new THREE.Color(0xeffbfd);
     const fx = home.userData.anchors.falls || [-5.5, 0.4, 12.6];
@@ -698,7 +767,7 @@ export function startWorld(canvas, opts = {}) {
   /* stars: a camera-locked dome that fades in with the night */
   let stars = null;
   {
-    const N = 340, pos = new Float32Array(N * 3), aPh = new Float32Array(N), aSz = new Float32Array(N);
+    const N = Q(340, 150), pos = new Float32Array(N * 3), aPh = new Float32Array(N), aSz = new Float32Array(N);
     for (let i = 0; i < N; i++) {
       const az = rnd(i, 11, 3) * Math.PI * 2, el = 0.06 + rnd(i, 12, 7) * 1.35;
       const r = 460;
@@ -744,7 +813,7 @@ export function startWorld(canvas, opts = {}) {
      pointer. Amber and cyan, blinking out of phase. */
   let flies = null;
   {
-    const N = 34, base = [], pos = new Float32Array(N * 3), aPh = new Float32Array(N), aC = new Float32Array(N);
+    const N = Q(34, 18), base = [], pos = new Float32Array(N * 3), aPh = new Float32Array(N), aC = new Float32Array(N);
     for (let i = 0; i < N; i++) {
       base.push(new THREE.Vector3((rnd(i, 21, 1) - 0.5) * 26, 3 + rnd(i, 22, 2) * 8, (rnd(i, 23, 3) - 0.5) * 26));
       aPh[i] = rnd(i, 24, 4) * 6.28;
@@ -879,6 +948,9 @@ export function startWorld(canvas, opts = {}) {
     glowHardMats.forEach(m => m.color.setScalar(1 + 1.9 * night));
     glowSoftMats.forEach(m => m.color.setScalar(0.78 + 0.22 * day));
     cloudMats.forEach(m => m.color.setScalar(0.26 + 0.74 * day));
+    // haze wears the fog's colour and thins a touch at night so the network glows through
+    hazeMat.color.copy(scene.fog.color);
+    hazeMat.opacity = 0.11 + 0.07 * day;
     if (petals) petals.pts.material.color.setScalar(0.5 + 0.5 * day);
     arcMat.opacity = 0.3 + 0.34 * night;
     packets.forEach(pk => {
