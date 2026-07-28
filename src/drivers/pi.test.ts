@@ -14,6 +14,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PiDriver, piPreflight } from "./pi.ts";
+import { probeCommand } from "./preflight-probe.ts";
 import type { Config, WorkerEvent } from "../types.ts";
 
 /** Minimal config exposing just what the parser reads. */
@@ -364,6 +365,60 @@ test("preflight rejects Node below the current Pi package's 22.19 floor", async 
     expect(pf.ok).toBe(false);
     expect(pf.nodeVersion).toBe("v22.18.0");
     expect(pf.problems.join(" ")).toContain("node >=22.19.0");
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── issue #54: a timed-out probe must NOT be misread as a broken pi. ──
+
+test("probeCommand classifies a KILLED (timed-out) probe as timedOut, not a failure — and retries", () => {
+  // A child that outlives every budget is killed each time; probeCommand must report the KILL
+  // (exitCode null) as timedOut, escalate through both budgets, and land on the larger budget.
+  const r = probeCommand(["sh", "-c", "sleep 5"], process.env, { budgets: [150, 250] });
+  expect(r.ok).toBe(false);
+  expect(r.timedOut).toBe(true);
+  expect(r.exitCode).toBeNull();
+  expect(r.attempts).toBe(2); // starved once, retried at the longer budget
+  expect(r.budgetMs).toBe(250); // reports the FINAL (largest) budget it gave up on
+  expect(r.signalCode).toBeTruthy();
+});
+
+test("probeCommand classifies a real non-zero exit as a failure, NOT a timeout (no retry)", () => {
+  // A binary that ran and chose to exit non-zero is genuinely broken — a longer budget won't help,
+  // so it must return immediately with the real exit code and timedOut=false.
+  const r = probeCommand(["sh", "-c", "echo boom >&2; exit 3"], process.env, { budgets: [2000, 4000] });
+  expect(r.ok).toBe(false);
+  expect(r.timedOut).toBe(false);
+  expect(r.exitCode).toBe(3);
+  expect(r.attempts).toBe(1); // a real fault is not retried
+  expect(r.stderr).toContain("boom");
+});
+
+test("preflight reports a real non-zero `pi --version` exit as an EXIT, not a timeout", () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-broken-pi-"));
+  const oldHome = process.env.HOME;
+  try {
+    const bin = join(dir, "pi-broken");
+    writeFileSync(bin, "#!/bin/sh\necho 'pi: fatal' >&2\nexit 1\n", "utf8");
+    chmodSync(bin, 0o755);
+    const authDir = join(dir, ".pi/agent");
+    mkdirSync(authDir, { recursive: true });
+    writeFileSync(join(authDir, "auth.json"), '{"openai-codex":{}}\n', "utf8");
+    process.env.HOME = dir;
+
+    const brokenConfig = {
+      harness: { pi: { ...(config.harness as { pi: object }).pi, bin } },
+    } as unknown as Config;
+    return piPreflight(brokenConfig).then((pf) => {
+      expect(pf.ok).toBe(false);
+      const joined = pf.problems.join(" ");
+      // The genuine-fault branch: names the exit code, and must NOT claim a timeout.
+      expect(joined).toContain("exited 1");
+      expect(joined).not.toContain("TIMED OUT");
+    });
   } finally {
     if (oldHome === undefined) delete process.env.HOME;
     else process.env.HOME = oldHome;

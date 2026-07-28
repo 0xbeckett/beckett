@@ -46,6 +46,7 @@ import { join } from "node:path";
 import { OneShotDriver } from "./base.ts";
 import { classifyHarnessFailure } from "./failure.ts";
 import { childEnv } from "../env.ts";
+import { probeCommand } from "./preflight-probe.ts";
 
 /** codex item `type`s that represent a tool invocation (counted once per item id). */
 const TOOL_ITEM_TYPES = new Set(["command_execution", "mcp_tool_call", "web_search"]);
@@ -81,8 +82,13 @@ export function estimateUsd(model: string, tokens: TokenUsage): number | null {
   return (uncachedInput * p.input + tokens.cacheRead * p.cacheRead + tokens.output * p.output) / 1_000_000;
 }
 
-/** Preflight subprocess timeout — a wedged `--version` must not stall the dispatcher. */
-const PREFLIGHT_TIMEOUT_MS = 10_000;
+/**
+ * Escalating preflight budgets (ms): a first try that survives machine load, then a roomier retry
+ * if it is KILLED. The old flat 10s could time out under heavy concurrent workers, and — because
+ * `Bun.spawnSync` reports a timeout kill as `exitCode: null` — that starvation read as a broken
+ * codex rather than a slow box (issue #54). A wedged `--version` still can't stall forever.
+ */
+const PREFLIGHT_BUDGETS_MS = [30_000, 60_000] as const;
 
 /**
  * Static "is codex usable right now?" check (issue #17): binary resolves and reports a version,
@@ -94,18 +100,24 @@ export async function codexPreflight(config: Config): Promise<{ ok: boolean; pro
   const problems: string[] = [];
   const bin = config.harness.codex.bin;
 
-  try {
-    // Explicit env so Bun resolves the executable against the LIVE process PATH (issue #30 —
-    // without it, spawnSync uses the startup PATH and `beckett doctor`'s override is invisible).
-    const v = Bun.spawnSync({ cmd: [bin, "--version"], env: childEnv(), stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
-    if (!v.success) {
-      problems.push(`\`${bin} --version\` exited ${v.exitCode}: ${v.stderr.toString().trim() || "(no output)"}`);
-    }
-  } catch (err) {
+  // Explicit env so Bun resolves the executable against the LIVE process PATH (issue #30 —
+  // without it, spawnSync uses the startup PATH and `beckett doctor`'s override is invisible).
+  // probeCommand separates a KILLED probe (timed out under load — retried, then reported as a
+  // timeout) from a real non-zero exit, so a slow box never masquerades as a broken codex (#54).
+  const v = probeCommand([bin, "--version"], childEnv(), { budgets: PREFLIGHT_BUDGETS_MS });
+  if (v.spawnError) {
     problems.push(
-      `codex binary "${bin}" is not runnable on PATH (${(err as Error).message}). ` +
+      `codex binary "${bin}" is not runnable on PATH (${v.spawnError.message}). ` +
         `Install codex or fix config.harness.codex.bin.`,
     );
+  } else if (v.timedOut) {
+    problems.push(
+      `\`${bin} --version\` TIMED OUT — killed by ${v.signalCode ?? "signal"} after ${v.attempts} ` +
+        `attempt(s), the last with a ${v.budgetMs / 1000}s budget. codex was NOT confirmed broken; ` +
+        `the probe was starved (likely heavy concurrent load). Retry when the box is quieter.`,
+    );
+  } else if (!v.ok) {
+    problems.push(`\`${bin} --version\` exited ${v.exitCode}: ${v.stderr.trim() || "(no output)"}`);
   }
 
   const authPath = join(process.env.HOME ?? "", ".codex/auth.json");

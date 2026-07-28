@@ -54,6 +54,7 @@ import type {
 import { childEnv } from "../env.ts";
 import { BaseDriver, type Child } from "./base.ts";
 import { classifyHarnessFailure } from "./failure.ts";
+import { probeCommand } from "./preflight-probe.ts";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -77,8 +78,13 @@ interface PendingNudge {
   timer: ReturnType<typeof setTimeout>;
 }
 
-/** Preflight subprocess timeout — a wedged `--version` must not stall the dispatcher. */
-const PREFLIGHT_TIMEOUT_MS = 10_000;
+/**
+ * Escalating preflight budgets (ms): a first try that survives machine load, then a roomier retry
+ * if it is KILLED. The old flat 10s could time out under heavy concurrent workers, and — because
+ * `Bun.spawnSync` reports a timeout kill as `exitCode: null` — that starvation read as a broken
+ * claude rather than a slow box (issue #54). A wedged `--version` still can't stall forever.
+ */
+const PREFLIGHT_BUDGETS_MS = [30_000, 60_000] as const;
 
 /**
  * Static "is claude usable right now?" check (issue #17): binary resolves and reports a version
@@ -90,19 +96,25 @@ export async function claudePreflight(config: Config): Promise<{ ok: boolean; pr
   const problems: string[] = [];
   const bin = config.harness.claude.bin;
 
-  try {
-    // Explicit env: Bun resolves the executable against the CHILD env's PATH when one is passed,
-    // but against the process's STARTUP PATH when it isn't — which made this preflight blind to
-    // `beckett doctor`'s daemon-PATH override (issue #30) while pi's (which passes env) saw it.
-    const v = Bun.spawnSync({ cmd: [bin, "--version"], env: childEnv(), stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
-    if (!v.success) {
-      problems.push(`\`${bin} --version\` exited ${v.exitCode}: ${v.stderr.toString().trim() || "(no output)"}`);
-    }
-  } catch (err) {
+  // Explicit env: Bun resolves the executable against the CHILD env's PATH when one is passed,
+  // but against the process's STARTUP PATH when it isn't — which made this preflight blind to
+  // `beckett doctor`'s daemon-PATH override (issue #30) while pi's (which passes env) saw it.
+  // probeCommand separates a KILLED probe (timed out under load — retried, then reported as a
+  // timeout) from a real non-zero exit, so a slow box never masquerades as a broken claude (#54).
+  const v = probeCommand([bin, "--version"], childEnv(), { budgets: PREFLIGHT_BUDGETS_MS });
+  if (v.spawnError) {
     problems.push(
-      `claude binary "${bin}" is not runnable on PATH (${(err as Error).message}). ` +
+      `claude binary "${bin}" is not runnable on PATH (${v.spawnError.message}). ` +
         `Install claude or fix config.harness.claude.bin.`,
     );
+  } else if (v.timedOut) {
+    problems.push(
+      `\`${bin} --version\` TIMED OUT — killed by ${v.signalCode ?? "signal"} after ${v.attempts} ` +
+        `attempt(s), the last with a ${v.budgetMs / 1000}s budget. claude was NOT confirmed broken; ` +
+        `the probe was starved (likely heavy concurrent load). Retry when the box is quieter.`,
+    );
+  } else if (!v.ok) {
+    problems.push(`\`${bin} --version\` exited ${v.exitCode}: ${v.stderr.trim() || "(no output)"}`);
   }
 
   if (process.platform === "linux") {
