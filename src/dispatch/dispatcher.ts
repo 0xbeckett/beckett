@@ -1034,24 +1034,32 @@ export class Dispatcher {
   }
 
   /**
-   * Respawn a worker for a ticket ONLY if it is still active (issue #65). A crash/exit or a delayed
-   * backed-off retry must never resurrect a worker against a ticket a human has since cancelled (or
-   * that reached done) — that was the OPS churn where `✗ implement error` looped straight into
-   * `▸ implement worker started` until a full daemon restart reconciled against the tracker. When the
-   * live state is terminal we drop the in-memory job instead of spawning.
+   * Re-read the tracker immediately before a process launch. This is deliberately shared by EVERY
+   * staffing route (normal state transition, watchdog, recovery resume, operator restaff, and
+   * delayed retry): a `Ticket` retained by any of those routes is only a snapshot, so cancellation
+   * and done always win over a late spawn.
+   */
+  private async maySpawn(ticket: Ticket, stage: string): Promise<boolean> {
+    const liveState = await this.currentTicketState(ticket);
+    if (liveState !== "cancelled" && liveState !== "done") return true;
+
+    this.logger.info("skipping spawn — ticket no longer active", {
+      ticket: ticket.identifier,
+      stage,
+      state: liveState,
+    });
+    this.trace(ticket, stage, "held", `ticket is ${liveState}; not spawning`);
+    this.releaseJob(ticket.id);
+    return false;
+  }
+
+  /**
+   * Respawn a worker for a ticket ONLY if it is still active (issue #65). This early guard avoids
+   * admitting a known-terminal retry; {@link doSpawn} repeats the same check immediately before
+   * process launch so a cancel racing provisioning/worktree allocation cannot slip through.
    */
   private async respawnIfActive(ticket: Ticket, stage: string): Promise<void> {
-    const liveState = await this.currentTicketState(ticket);
-    if (liveState === "cancelled" || liveState === "done") {
-      this.logger.info("skipping respawn — ticket no longer active", {
-        ticket: ticket.identifier,
-        stage,
-        state: liveState,
-      });
-      this.trace(ticket, stage, "held", `ticket is ${liveState}; not respawning`);
-      this.releaseJob(ticket.id);
-      return;
-    }
+    if (!await this.maySpawn(ticket, stage)) return;
     this.spawnGuarded(ticket, stage);
   }
 
@@ -2029,6 +2037,10 @@ export class Dispatcher {
 
     let handle: TicketWorkerHandle;
     try {
+      // This is the final admission gate: no route reaches spawnWorker without a tracker read
+      // directly beforehand. In particular, recovery/watchdog tickets can sit in provisioning
+      // long enough for a human cancellation to arrive.
+      if (!await this.maySpawn(ticket, stage)) return;
       handle = await spawnWorker({ ...spawnArgs, resumeSessionId });
     } catch (err) {
       // A failed RESUME (stale session file, harness drift) must degrade to a fresh worker —
@@ -2040,6 +2052,9 @@ export class Dispatcher {
           error: (err as Error).message,
         });
         try {
+          // The failed resume itself may have taken long enough for the ticket to be cancelled.
+          // Re-check again because this is a distinct process launch.
+          if (!await this.maySpawn(ticket, stage)) return;
           handle = await spawnWorker(spawnArgs);
         } catch (err2) {
           await this.onSpawnFailure(ticket, stage, err2 as Error);

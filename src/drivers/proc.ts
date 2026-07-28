@@ -143,7 +143,17 @@ export async function killProcessTree(
     child.exited.then(() => true),
     new Promise<boolean>((r) => setTimeout(() => r(false), opts.graceMs)),
   ]);
-  if (exitedInTime) return;
+  if (exitedInTime) {
+    // A cooperative harness leader can exit on SIGTERM while one of its children ignores it.
+    // The leader's exit does NOT mean its setsid process group is empty: the surviving child keeps
+    // the old PGID and becomes an orphan. Always sweep that group before reporting abort complete.
+    // For a non-group launch this intentionally falls back to the already-exited leader only.
+    if (opts.groupKill) {
+      opts.log?.info("harness leader exited on SIGTERM — sweeping remaining process group", { pid });
+      signal("SIGKILL");
+    }
+    return;
+  }
 
   opts.log?.warn("harness did not exit on SIGTERM — SIGKILL the process tree", { pid });
   signal("SIGKILL");

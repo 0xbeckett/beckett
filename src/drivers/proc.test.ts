@@ -64,15 +64,12 @@ describe("killGroup", () => {
 });
 
 /**
- * The OPS-50 orphan bug, end-to-end: a wall-clock reap must kill the harness AND every descendant
- * it forked (bash-tool runs, MCP servers, sub-agents), not just the harness pid. This spawns a REAL
- * process tree the way {@link wrapProcessGroup} does at launch — a `setsid` group leader that forks a
- * long-lived `sleep` descendant — then reaps it via {@link killProcessTree} and proves, via live
- * `process.kill(pid, 0)` liveness probes, that the descendant does NOT survive as an orphan. Gated on
- * `setsid` (Linux target); on an image without it the group-kill path is unreachable so the test is a
- * no-op the runner reports as skipped.
+ * Cancellation regression: a worker leader can cooperate with SIGTERM while a tool/MCP child ignores
+ * it. The old early return after the leader exited left that child orphaned. This starts that exact
+ * process group and proves cancellation's process-tree reap kills the TERM-resistant orphan too.
+ * Gated on `setsid` (Linux target); on an image without it the group-kill path is unreachable.
  */
-describe("killProcessTree (live process tree)", () => {
+describe("killProcessTree cancellation (live process group)", () => {
   const alive = (pid: number): boolean => {
     try {
       process.kill(pid, 0);
@@ -87,11 +84,15 @@ describe("killProcessTree (live process tree)", () => {
   };
 
   test.if(Bun.which("setsid") !== null)(
-    "reaps the harness AND its forked descendant — no orphan survives the group kill",
+    "cancel reaps a TERM-resistant forked descendant — no orphan survives",
     async () => {
-      // A "harness" that forks a descendant (the long sleep) and then blocks — exactly the shape a
-      // real worker leaves behind (harness + bash-tool/MCP child) when the wall-clock cap trips.
-      const { cmd, groupKill } = wrapProcessGroup("bash", ["-c", "echo READY=$$; sleep 300 & echo CHILD=$!; wait"]);
+      // The leader exits cleanly on cancellation, but its child explicitly ignores SIGTERM. This is
+      // the critical orphan shape: killing only / waiting only for the leader would report success
+      // while the child kept running in the ticket workspace.
+      const { cmd, groupKill } = wrapProcessGroup("bash", [
+        "-c",
+        "trap 'exit 0' TERM; (trap '' TERM; exec sleep 300) & echo CHILD=$!; wait",
+      ]);
       expect(groupKill).toBe(true);
 
       const child = Bun.spawn({ cmd, stdout: "pipe", stderr: "pipe" });

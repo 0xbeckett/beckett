@@ -1762,6 +1762,39 @@ describe("crash recovery", () => {
     }
   });
 
+  test("cancelled ticket is never re-spawned after crash recovery", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-recover-cancel-"));
+    try {
+      const runtimeStatePath = join(dir, "dispatcher-state.json");
+      const ticket = makeTicket();
+      const { d: before } = newDispatcher(2, { runtimeStatePath });
+      await before.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      expect(spawnCalls).toHaveLength(1); // daemon dies with this worker recorded in its ledger
+
+      // The restarted daemon receives a stale in_progress staffing event, but the tracker is
+      // authoritative and now says cancelled. Recovery must never launch a resumed worker.
+      const client = new FakeClient();
+      client.board = [{ ...ticket, state: "cancelled" }];
+      const after = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(2),
+        resolveRepoRoot: (t) => `/tmp/repo/${t.project ?? t.identifier}`,
+        runtimeStatePath,
+        sweepOrphan: () => false,
+      });
+      await after.recoverFromCrash();
+      await after.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+
+      expect(spawnCalls).toHaveLength(1);
+      expect(after.live()).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a failed resume falls back to a fresh worker instead of stranding the ticket", async () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-dispatch-resumefail-"));
     try {
