@@ -36,7 +36,7 @@ import { projectSlug } from "../tracker/cast.ts";
 import { createTrackerClient, type TrackerClient } from "../tracker/client.ts";
 import { boredBaseUrl } from "../bored/client.ts";
 import { createTrackerPoller, type TrackerPoller } from "../tracker/poll.ts";
-import { createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
+import { BECKETT_COMMENT_MARKER, createDispatcher, type Dispatcher } from "../dispatch/dispatcher.ts";
 import { createStagesExtension, stageViewOf } from "../dispatch/stages.ts";
 import { createGitHubPrPoller, type GitHubPrPoller } from "../github/poll.ts";
 import { createGitHubActivityPoller, type GitHubActivityPoller } from "../github/activity.ts";
@@ -60,6 +60,8 @@ import { readLocalBranchStats } from "../git/branch-stats.ts";
 import { CfDns, apexDomain } from "../agency/cloudflare.ts";
 import { TunnelDeployer } from "./deploy.ts";
 import { PreviewManager, fetchProbe, type PreviewTicket } from "../preview/index.ts";
+import { serveBuild } from "../preview/serve-build.ts";
+import { createFrontendScreenshotHook, type ScreenshotTicketRef } from "../preview/screenshot.ts";
 import { gitBranchForTicket } from "../git/branch-name.ts";
 import { reconcileTaskTickets } from "../task/reconcile.ts";
 import { createAgentMailApi, defaultMailStateFile, safeMailError } from "../mail/index.ts";
@@ -104,6 +106,25 @@ function resolveRepoRoot(ticket: Ticket): string {
 function diffFileNames(repoRoot: string, branch: string): string[] {
   try {
     const r = Bun.spawnSync(["git", "-C", repoRoot, "diff", "--name-only", `main...${branch}`], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    if (!r.success) return [];
+    return r.stdout.toString().split("\n").map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The files a ticket's BUILT worktree changed vs. its fork base (#75) — the diff that decides
+ * whether a finished ticket earns a result screenshot, and of what. Runs in the worktree against
+ * the captured base SHA so it reflects the built branch, not `main`. Best-effort: any git failure
+ * yields an empty list (→ no screenshot), never a throw.
+ */
+function worktreeDiffNames(workspace: string, baseRef: string): string[] {
+  try {
+    const r = Bun.spawnSync(["git", "-C", workspace, "diff", "--name-only", baseRef], {
       stdout: "pipe",
       stderr: "ignore",
     });

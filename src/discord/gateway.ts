@@ -461,6 +461,28 @@ export class DiscordJsGateway implements DiscordGateway {
   }
 
   /**
+   * Post a single image and return its Discord CDN URL (or null when it can't be resolved). Used to
+   * surface a frontend result screenshot as the channel ping AND to embed that same hosted image on
+   * the ticket record (#75) — a tracker comment can render `![](url)` but cannot host bytes. Never
+   * throws: a failed URL lookup (offline/queued/permissions) degrades to null, leaving the caller to
+   * fall back to referencing the file by path.
+   */
+  async postImage(channelId: string, content: string, filePath: string): Promise<string | null> {
+    const messageId = await this.post(channelId, content, { files: [filePath], singleMessage: true });
+    try {
+      const client = this.client;
+      if (!client) return null;
+      const channel = await client.channels.fetch(channelId);
+      const messages = (channel as { messages?: { fetch: (id: string) => Promise<Message> } } | null)?.messages;
+      if (!messages) return null;
+      const msg = await messages.fetch(messageId);
+      return msg.attachments.first()?.url ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * PATCH an existing message. Offline/transient edits are retained as one latest-only value per
    * message for reconnect, but reject immediately with a typed transient error so a periodic
    * caller never hangs across a gateway blip. Deleted messages and permission failures are typed

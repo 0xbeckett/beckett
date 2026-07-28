@@ -230,7 +230,20 @@ export interface DispatcherDeps {
     ensure: (ticket: Ticket) => Promise<{ status: "ready"; url: string; host: string } | { status: "skipped"; reason: string }>;
     teardown: (ticket: Ticket) => Promise<void>;
   };
+  /**
+   * Frontend result screenshot (#75). On a ticket's finish — while its built worktree is still on
+   * disk — capture ONE screenshot of the built branch and attach it to the ticket (+ channel ping).
+   * Wired via {@link Dispatcher.setScreenshotCapturer} rather than here because the browser runtime
+   * it drives is constructed AFTER the dispatcher. Best-effort: `capture` must never throw, and the
+   * dispatcher fires it and forgets it, so it can never fail or stall the finish. Omitted → no-op.
+   */
+  screenshot?: ScreenshotHook;
   logger?: Logger;
+}
+
+/** The finish-path screenshot capturer the dispatcher fires and forgets (#75). Never throws. */
+export interface ScreenshotHook {
+  capture(input: { ticket: Ticket; workspace: string; baseRef: string }): Promise<unknown>;
 }
 
 /**
@@ -471,6 +484,8 @@ export class Dispatcher {
   private readonly onBeforePublish?: DispatcherDeps["onBeforePublish"];
   private readonly onBranchWorkspace?: DispatcherDeps["onBranchWorkspace"];
   private readonly preview?: DispatcherDeps["preview"];
+  /** Set post-construction (browser runtime is built after the dispatcher). See {@link ScreenshotHook}. */
+  private screenshot?: ScreenshotHook;
   private readonly logger: Logger;
   private readonly advanceOutbox?: AdvanceOutbox;
   private readonly publishOutbox?: PublishOutbox;
@@ -622,6 +637,7 @@ export class Dispatcher {
     this.onBeforePublish = deps.onBeforePublish;
     this.onBranchWorkspace = deps.onBranchWorkspace;
     this.preview = deps.preview;
+    this.screenshot = deps.screenshot;
     this.logger = deps.logger ?? log.child("dispatch.dispatcher");
     this.advanceOutbox = deps.advanceOutboxPath
       ? new AdvanceOutbox(deps.advanceOutboxPath, this.logger.child("advance-outbox"))
@@ -1630,6 +1646,45 @@ export class Dispatcher {
     void this.preview.teardown(ticket).catch((err) =>
       this.logger.warn("preview teardown failed", { ticket: ticket.identifier, error: (err as Error).message }),
     );
+  }
+
+  /** Wire the finish-path frontend screenshot capturer (#75). See {@link ScreenshotHook}. */
+  setScreenshotCapturer(hook: ScreenshotHook): void {
+    this.screenshot = hook;
+  }
+
+  /**
+   * On a ticket's landing (#75): capture ONE screenshot of its built frontend from the still-present
+   * worktree, THEN tear the worktree down. Fire-and-forget — the finish has already written `done`,
+   * so this never blocks it; the capture is gated to frontend changes and is best-effort (its
+   * `capture` never throws). Disposal runs in `finally` so a screenshot attempt can never leak a
+   * worktree, and `disposeWorktree` is idempotent if a later path disposes it first.
+   */
+  private captureScreenshotThenDispose(ticket: Ticket): void {
+    const hook = this.screenshot;
+    const workspace = this.workspaceByTicket.get(ticket.id);
+    void (async () => {
+      try {
+        if (hook && workspace) {
+          const baseRef = this.baseShaForTicket.get(ticket.id) ?? "HEAD";
+          await hook.capture({ ticket, workspace, baseRef });
+        }
+      } catch (err) {
+        // Defence in depth: the hook already swallows its own failures, but a finish path must never
+        // surface a screenshot error.
+        this.logger.warn("frontend screenshot failed (skipped)", {
+          ticket: ticket.identifier,
+          error: (err as Error).message,
+        });
+      } finally {
+        await this.disposeWorktree(ticket.id).catch((err) =>
+          this.logger.warn("worktree dispose after screenshot failed", {
+            ticket: ticket.identifier,
+            error: (err as Error).message,
+          }),
+        );
+      }
+    })();
   }
 
   private async onCancelled(ticket: Ticket): Promise<void> {
@@ -3391,7 +3446,10 @@ export class Dispatcher {
       // Landed → tear down the review preview too. This advance is `observe`d into the poller, so the
       // poller's own `done` event won't re-fire; tear down here (idempotent either way).
       this.teardownPreview(ticket);
-      await this.disposeWorktree(ticket.id);
+      // Capture a frontend screenshot from the still-present built worktree, THEN dispose it (#75).
+      // Fire-and-forget: `done` is already written above, so the finish returns immediately and the
+      // best-effort screenshot never gates it.
+      this.captureScreenshotThenDispose(ticket);
     }
     return advanced;
   }
