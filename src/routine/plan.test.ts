@@ -75,6 +75,26 @@ test("deps-update carries an explicit repo/base/source when the routine names th
   expect(plan.preview).toContain("0xbeckett/beckett");
 });
 
+test("proactive-sweep action → its OWN lane carrying the opt-in repo list, nothing browser-shaped", () => {
+  const plan = buildDispatchPlan(routine({ kind: "proactive-sweep", repos: ["me/a", "me/b"] }));
+  expect(plan.lane).toBe("proactive-sweep");
+  expect(plan.proactiveSweep).toEqual({ repos: ["me/a", "me/b"] });
+  // Like deps-update, nothing here can be mistaken for browser work (issue #79).
+  expect(plan.browserTask).toBeNull();
+  expect(plan.agentId).toBeNull();
+  expect(plan.agentInput).toBeNull();
+  expect(plan.depsUpdate).toBeNull();
+  expect(plan.credsEntry).toBeNull();
+  expect(plan.preview).toContain("me/a, me/b");
+});
+
+test("proactive-sweep with an EMPTY opt-in list carries it faithfully and previews 'nothing swept'", () => {
+  const plan = buildDispatchPlan(routine({ kind: "proactive-sweep", repos: [] }));
+  expect(plan.lane).toBe("proactive-sweep");
+  expect(plan.proactiveSweep).toEqual({ repos: [] });
+  expect(plan.preview).toContain("no repos are opted in");
+});
+
 test("self action → its OWN lane carrying only the prompt, nothing a browser dispatcher could act on", () => {
   const plan = buildDispatchPlan(routine({ kind: "self", prompt: "look over the board and nudge anything stalled" }));
   expect(plan.lane).toBe("self");

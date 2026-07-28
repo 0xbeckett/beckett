@@ -71,3 +71,17 @@ test("removing a built-in sticks across a restart (not re-seeded)", async () => 
   expect(await restored.get("daily-x-shitpost")).toBeNull();
   expect(JSON.parse(readFileSync(path, "utf8")).removedBuiltins).toContain("daily-x-shitpost");
 });
+
+test("setProactiveRepos edits the built-in sweep's opt-in list (de-duped, order-stable)", async () => {
+  const { store } = makeStore();
+  // Ships enabled but with an EMPTY list — dormant until a repo is opted in.
+  const seeded = await store.get("proactive-sweep");
+  expect(seeded!.action.kind).toBe("proactive-sweep");
+  if (seeded!.action.kind === "proactive-sweep") expect(seeded!.action.repos).toEqual([]);
+
+  const updated = await store.setProactiveRepos("proactive-sweep", ["me/a", " me/b ", "me/a"]);
+  if (updated.action.kind === "proactive-sweep") expect(updated.action.repos).toEqual(["me/a", "me/b"]);
+
+  // It refuses to write repos onto a non-sweep routine.
+  await expect(store.setProactiveRepos("daily-x-shitpost", ["me/a"])).rejects.toThrow(/not a "proactive-sweep"/);
+});
