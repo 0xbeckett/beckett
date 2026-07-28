@@ -711,7 +711,13 @@ test("a timed-out evaluator marks the outcome uncertain and leaves the lease ins
     paths: { beckett_dir: dir },
     quick: {
       browser_profile_dir: "browser/profile",
-      browser_eval_timeout_ms: 30,
+      // The eval budget bounds EVERY snippet on this lease, including the trivial recovery
+      // `page.title()` below — one CDP round-trip. Under CPU load that round-trip was measured at
+      // ~64ms, so the former 30ms budget tripped the in-process timeout on the recovery itself and
+      // reported it as a spurious timeout (the load-only flake this ticket chases). 250ms clears a
+      // loaded round-trip with wide margin while staying well under the timed-out snippet's own
+      // ~1s+ runtime below, so the intended timeout still fires deterministically.
+      browser_eval_timeout_ms: 250,
     },
   });
   const runtime = createLocalBrowserRuntime({ settings: browserHostSettings(config), logger: quietLog });
@@ -724,11 +730,15 @@ test("a timed-out evaluator marks the outcome uncertain and leaves the lease ins
     });
     await expect(runtime.evaluate("slow", `
       await page.setContent('<title>before-timeout</title>');
-      await page.evaluate(() => setTimeout(() => { document.title = 'after-timeout'; }, 150));
-      await page.waitForTimeout(250);
+      // Fire the title change AFTER the 250ms eval budget so it lands once the evaluator has given
+      // up — that is the "browser-side work may have continued" the recovery must observe.
+      await page.evaluate(() => setTimeout(() => { document.title = 'after-timeout'; }, 400));
+      // Well past the eval budget so the snippet is unambiguously over-budget under any load; the
+      // in-process timeout still fires at ~250ms, so this does not lengthen the test.
+      await page.waitForTimeout(2_000);
     `)).rejects.toThrow("outcome is uncertain");
     expect(runtime.hasLease("slow")).toBe(true);
-    await Bun.sleep(180);
+    await Bun.sleep(450);
     expect((await runtime.evaluate("slow", "return await page.title()")).value).toBe("after-timeout");
     await runtime.release("slow", false);
 
@@ -947,7 +957,17 @@ test("disposable evaluator contains vm escape and async infinite loop", async ()
 
     const startedAt = Date.now();
     await expect(runtime.evaluate("isolated", "await 0; while (true) {}", CONTROL_TOKEN)).rejects.toThrow("timed out");
-    expect(Date.now() - startedAt).toBeLessThan(4_000);
+    // The `.rejects.toThrow("timed out")` above is the real invariant: an event-loop-blocking
+    // snippet is contained by a hard process kill (no in-process timer can fire once the loop
+    // never yields) and attributed as a timeout, deterministically, under any load.
+    // This bound only guards PROMPTNESS. It must cover the disposable evaluator's cold start — a
+    // fresh sandboxed Node plus a Playwright connectOverCDP, measured at ~2.5s under CPU load and
+    // spikier under full-suite load — PLUS the snippet-kill budget (evalTimeoutMs 100ms + the
+    // runner's 2000ms slack, measured from the STARTED marker). The former 4000ms assumed a
+    // near-instant cold start (~0.5s idle) and so flaked once startup alone approached it. 8000ms
+    // clears a loaded cold start plus the kill with margin, and still proves the loop is contained
+    // rather than hanging until the 60s test timeout.
+    expect(Date.now() - startedAt).toBeLessThan(8_000);
     expect(runtime.hasLease("isolated")).toBe(true);
   } finally {
     if (runtime.hasLease("isolated")) await runtime.release("isolated", false).catch(() => undefined);
