@@ -155,17 +155,20 @@ Have these ready when prompted:
   Numbered task threads inherit their parent channel's visibility, so put task creation in a
   suitably private parent when task names are sensitive. Discord's [bot quick start](https://docs.discord.com/developers/quick-start/getting-started)
   walks through creation and Guild Install;
-- a GitHub PAT and the matching GitHub username;
-- a Claude Code subscription login. Pi and Codex logins are needed only when those workers are
-  enabled.
+- your Discord user ID (Developer Mode → right-click your user → Copy User ID), as well as the bot token;
+- a GitHub PAT (classic `repo` + `workflow`, or a fine-grained token with equivalent repository and
+  Actions write access) and the matching GitHub username;
+- a Claude Code subscription login. Pi is enabled by default, so either complete its login too or
+  answer **no** when the installer asks to enable it. Codex needs a login only when enabled.
 
-Browser/device authentication cannot be completed on someone else's behalf, so a fresh install
-stays safely staged instead of crash-looping. The installer prints the exact login commands and
-one rerun command; that rerun starts Beckett only after required secrets and enabled harness
-credentials exist. Before startup it starts the bored tracker (Beckett files, steers, and completes
-every ticket through it) and confirms it is reachable, validates the GitHub PAT belongs to the
-configured account, and then runs `beckett doctor`. Every rerun is idempotent, preserves custom
-config/secrets, and explicitly restarts an already-running daemon onto the new code.
+Browser/device authentication cannot be completed on someone else's behalf. On a fresh install,
+the `beckett-v4` user service therefore starts in **`healthy-pending-configuration`** mode rather
+than crash-looping: `sudo -iu beckett beckett status --pretty` lists exactly what remains. It accepts
+only `status` until the required secrets and enabled harness credentials exist. The installer prints
+the exact login commands and one rerun command; that rerun starts bored (Beckett files, steers, and
+completes every ticket through it), confirms the tracker is reachable, validates the GitHub PAT
+belongs to the configured account, and then runs `beckett doctor`. Every rerun is idempotent,
+preserves custom config/secrets, and explicitly restarts an already-running daemon onto the new code.
 
 Installing a fork is the same flow:
 
@@ -177,7 +180,8 @@ curl -fsSL https://raw.githubusercontent.com/0xbeckett/beckett/main/install.sh |
 The manual/advanced path remains in [`deploy/host-setup.md`](deploy/host-setup.md).
 `deploy/install.sh` is the lower-level unit refresher; `--no-start` links the units and enforces a
 stopped/disabled daemon, while the default path restarts onto current code and waits for a real
-control-socket response before reporting readiness.
+control-socket response before reporting either normal readiness or
+`healthy-pending-configuration`.
 
 **Auth is subscription-only by design.** Beckett drives `claude` / `codex` / `pi` through their
 own `~/.claude` / `~/.codex` / `~/.pi` logins — it deliberately refuses `ANTHROPIC_*` / `OPENAI_*`
@@ -187,9 +191,9 @@ API keys from `.env` (see [`src/env.ts`](src/env.ts)). Log those CLIs in as thei
 
 Two files, both under `~/.beckett/` on the box (never in git):
 
-- **`.env`** — secrets: `DISCORD_TOKEN`, `GITHUB_PAT`,
+- **`.env`** — secrets and instance identity: `DISCORD_TOKEN`, `DISCORD_OWNER_ID`, `GITHUB_PAT`,
   `DISCORD_ALERT_WEBHOOK_URL`, … The committed `.env.example` is the full inventory with per-key
-  mint/scope notes.
+  mint/scope notes. The pending daemon will not become fully live until the first three are set.
 - **`config.toml`** — runtime overrides. Validation is **strict**: every key is defaulted, so a
   near-empty file boots, but an unknown or out-of-range value is a loud refuse-to-start.
   [`deploy/config.toml.example`](deploy/config.toml.example) is every key at its default (it's

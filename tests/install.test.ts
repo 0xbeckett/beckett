@@ -477,24 +477,32 @@ describe("systemd unit installer staging", () => {
     expect(await Bun.file(join(home, ".config/systemd/user/beckett-heartbeat.timer")).exists()).toBeTrue();
   });
 
-  test("start refuses incomplete credentials before enabling", async () => {
+  test("start keeps an incomplete fresh install healthy-pending-configuration", async () => {
     const home = tempDir("beckett-unit-incomplete-");
     const binDir = join(home, "bin");
     const calls = join(home, "systemctl.log");
+    mkdirSync(join(home, ".local/bin"), { recursive: true });
     mkdirSync(binDir);
     fakeSystemctl(binDir);
+    writeExecutable(
+      join(home, ".local/bin/beckett"),
+      '#!/bin/sh\nprintf \'{\\n  "state": "healthy-pending-configuration"\\n}\\n\'\n',
+    );
 
     const result = await run(["bash", UNIT_INSTALLER], {
       env: {
         HOME: home,
         PATH: binDir + ":" + process.env.PATH,
         SYSTEMCTL_LOG: calls,
+        BECKETT_START_TIMEOUT_SECS: "2",
       },
     });
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("DISCORD_TOKEN is missing");
-    expect(readFileSync(calls, "utf8")).toContain("--user disable --now beckett-v4.service");
-    expect(await Bun.file(join(home, ".config/systemd/user/beckett-v4.service")).exists()).toBeTrue();
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("healthy-pending-configuration");
+    const log = readFileSync(calls, "utf8");
+    expect(log).toContain("--user enable beckett-v4.service");
+    expect(log).toContain("--user restart beckett-v4.service");
+    expect(log).not.toContain("--user enable --now beckett-heartbeat.timer");
   });
 
   test("complete credentials enable only after a real CLI readiness check", async () => {

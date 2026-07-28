@@ -983,6 +983,8 @@ print_finish() {
     return
   fi
 
+  printf '\nThe daemon is running in healthy-pending-configuration mode. Check it with:\n'
+  printf '  sudo -iu %s beckett status --pretty\n' "${BECKETT_USER}"
   printf '\nFinish the account logins as the %s user:\n' "${BECKETT_USER}"
   [ -s "${BECKETT_HOME}/.claude/.credentials.json" ] ||
     printf '  sudo -iu %s claude auth login\n' "${BECKETT_USER}"
