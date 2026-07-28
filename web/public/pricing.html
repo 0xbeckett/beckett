@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Beckett · Pricing</title>
-<meta name="description" content="Load credits, Beckett spends them on your work. One credit = a fixed $0.10 of real spend, the same on every model. See what $5 / $20 / $50 buys, from real run telemetry." />
+<meta name="description" content="Bring your own model subscription. Beckett normalises your run time into compute hours, charges a flat rate for them plus one 10% platform fee, and bills it prepaid. Every number is derived from real run telemetry." />
 <meta name="theme-color" content="#bfe6ee" />
 <meta property="og:title" content="Beckett · Pricing" />
-<meta property="og:description" content="Load $5, here's what runs. Credits are a fixed $0.10 of real spend, same on every model, and every number comes from real tasks." />
+<meta property="og:description" content="You bring the subscription. Beckett charges for compute hours plus a 10% platform fee, prepaid, with rollover. Every number comes from real runs." />
 <meta property="og:type" content="website" />
 <link rel="icon" href="/logo.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -17,24 +17,26 @@
 <style>
   /* pricing.html: page-specific components, built from page.css tokens only.
      One type scale (var(--t-*) from page.css): numbers ride the head size in
-     JetBrains Mono, everything else sits on the body size. Hierarchy comes from
+     JetBrains Mono, everything else sits on the body size in Inter. The pixel
+     display face is inherited only where page.css already puts it (the wordmark
+     and the one hero line); body copy never uses it. Hierarchy comes from
      weight and colour, not extra sizes. */
   :root{ --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,monospace }
   .num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;letter-spacing:-.01em}
 
-  /* the seat, the plan stated once and up front */
-  .seat-card{margin-top:26px;border:1px solid var(--lv-deep);background:var(--panel);backdrop-filter:blur(6px);
+  /* a stated-once card: the model summary, and the prepaid guarantee */
+  .card{margin-top:26px;border:1px solid var(--lv-deep);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:inset 3px 0 0 var(--lv-deep),var(--bevel),var(--drop);padding:22px 24px}
-  .seat-head{font-family:var(--sans);font-weight:600;font-size:var(--t-body);line-height:1.4;color:var(--ink)}
-  .seat-head .num{color:var(--ink)}
-  .seat-lines{list-style:none;margin:18px 0 0;padding:0;display:grid;gap:12px}
-  .seat-lines li{position:relative;padding-left:26px;font-size:var(--t-body);line-height:1.55;color:var(--dim)}
-  .seat-lines li b{color:var(--ink);font-weight:600}
-  .seat-lines li::before{content:"→";position:absolute;left:0;top:0;font-family:var(--mono);color:var(--cy-deep)}
-  .seat-fine{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);display:grid;gap:8px}
-  .seat-fine span{position:relative;padding-left:22px;font-size:var(--t-body);line-height:1.5;color:var(--dim)}
-  .seat-fine span b{color:var(--ink);font-weight:600}
-  .seat-fine span::before{content:"·";position:absolute;left:8px;top:-2px;font-family:var(--sans);color:var(--lv-deep)}
+  .card-head{font-family:var(--sans);font-weight:600;font-size:var(--t-body);line-height:1.4;color:var(--ink)}
+  .card-head .num{color:var(--ink)}
+  .card-lines{list-style:none;margin:18px 0 0;padding:0;display:grid;gap:12px}
+  .card-lines li{position:relative;padding-left:26px;font-size:var(--t-body);line-height:1.55;color:var(--dim)}
+  .card-lines li b{color:var(--ink);font-weight:600}
+  .card-lines li::before{content:"→";position:absolute;left:0;top:0;font-family:var(--mono);color:var(--cy-deep)}
+  .card-fine{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);display:grid;gap:8px}
+  .card-fine span{position:relative;padding-left:22px;font-size:var(--t-body);line-height:1.5;color:var(--dim)}
+  .card-fine span b{color:var(--ink);font-weight:600}
+  .card-fine span::before{content:"·";position:absolute;left:8px;top:-2px;font-family:var(--sans);color:var(--lv-deep)}
 
   /* the cost-line ledger */
   .ledger{list-style:none;margin:26px 0 0;padding:0;display:grid;gap:14px}
@@ -48,7 +50,7 @@
   /* the margin line stands alone, accented so it can never hide inside another */
   .line.margin{border-color:var(--lv-deep);box-shadow:inset 3px 0 0 var(--lv-deep),var(--bevel),var(--drop)}
 
-  /* rate table */
+  /* tables (load-value, recent tickets) */
   .rate-wrap{margin-top:22px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:var(--bevel),var(--drop);overflow-x:auto}
   table.rates{width:100%;border-collapse:collapse;font-size:var(--t-body)}
@@ -77,8 +79,7 @@
   .row .lbl b{color:var(--ink);font-weight:600}
   .row .amt{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
     font-size:var(--t-body);color:var(--ink);white-space:nowrap}
-  .row.sub .lbl{padding-left:16px;color:var(--dim)}
-  .row.sub .amt{color:var(--dim)}
+  .row.muted .amt{color:var(--dim)}
   .row.total{border-bottom:none;padding-top:13px;margin-top:2px;border-top:2px solid var(--ink)}
   .row.total .lbl{font-family:var(--sans);font-weight:600;font-size:var(--t-body);color:var(--ink)}
   .row.total .amt{font-size:var(--t-body);font-weight:600;color:var(--ink)}
@@ -106,18 +107,6 @@
   .nofees li{position:relative;padding-left:26px;font-size:var(--t-body);color:var(--dim);line-height:1.5}
   .nofees li b{color:var(--ink);font-weight:600}
   .nofees li::before{content:"✕";position:absolute;left:0;top:0;font-family:var(--sans);color:var(--cy-deep)}
-
-  /* collapsible "where the number comes from" */
-  .whence{margin-top:24px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
-    box-shadow:var(--bevel),var(--drop);padding:0 20px}
-  .whence>summary{cursor:pointer;list-style:none;padding:16px 4px;font-family:var(--sans);font-weight:600;
-    font-size:var(--t-body);color:var(--ink);display:flex;align-items:center;gap:10px}
-  .whence>summary::-webkit-details-marker{display:none}
-  .whence>summary::before{content:"▸";font-family:var(--mono);color:var(--cy-deep);
-    transition:transform .15s ease}
-  .whence[open]>summary::before{transform:rotate(90deg)}
-  .whence .whence-lead{font-size:var(--t-body);line-height:1.55;color:var(--dim);margin:2px 0 4px;max-width:none}
-  .whence .ledger{margin:14px 0 22px}
 
   .prov{margin-top:20px;font-size:var(--t-body);color:var(--dim)}
   .prov .num{color:var(--ink)}
@@ -147,100 +136,99 @@
 
 <main class="page">
   <header class="intro" id="top">
-    <h1 class="rv">Load <span class="num" style="font-family:var(--mono);letter-spacing:-.02em">$5</span>.<br><span class="g">Here's what runs.</span></h1>
-    <p class="lead rv">Your seat is <b style="color:var(--ink);font-weight:600">$20/month</b> and comes with <b style="color:var(--ink);font-weight:600">200 credits</b> already in it. One credit is a fixed <b style="color:var(--ink);font-weight:600">$0.10 of real underlying spend</b>, the same on every model, so a cheaper model just burns fewer credits for the same task. A light month never costs past the seat; a heavy month loads more at the same rate. So the question isn't a rate card, it's simple: what runs? Every figure below is derived from <b style="color:var(--ink);font-weight:600">real runs</b>, <span class="num" data-bind="total_runs">…</span> of them, not a spreadsheet someone wished into being.</p>
+    <h1 class="rv">Bring your own subscription.<br><span class="g">Pay for the hours.</span></h1>
+    <p class="lead rv">You already pay for <b style="color:var(--ink);font-weight:600">Claude Max 20x</b>, or you hold your own <b style="color:var(--ink);font-weight:600">API keys</b>. Beckett runs on that and does not resell you model tokens. What you pay Beckett for is the work those tokens turn into: your run time, normalised into <b style="color:var(--ink);font-weight:600">compute hours</b> at a flat rate, plus one <b style="color:var(--ink);font-weight:600">10% platform fee</b>. Every figure below is derived from <b style="color:var(--ink);font-weight:600">real runs</b>, <span class="num" data-bind="total_runs">…</span> of them, not a spreadsheet someone wished into being.</p>
   </header>
 
-  <section class="passage" id="seat">
-    <h2 class="rv">The seat is the plan. <span class="g">Credits are already in it.</span></h2>
-    <p class="rv">A seat is <span class="num" data-bind="seat">…</span> per person per month, and it isn't a floor you pay before anything runs. It arrives <em>as</em> <span class="num" data-bind="seat_credits">…</span> credits: <span class="num" data-bind="seat_included_usd">…</span> of real underlying spend, at the same fixed <span class="num" data-bind="credit_usd">…</span> a credit. Your work draws those down. Only if you outrun them do you load more, at the exact same rate, no tier jump.</p>
+  <section class="passage" id="byo">
+    <h2 class="rv">You bring the model. <span class="g">Beckett brings the coworker.</span></h2>
+    <p class="rv">The tokens run on the subscription you already have, Claude Max 20x or your own API keys, and the model bill stays yours. Beckett never touches it: not at cost, not at markup, because Beckett does not resell tokens. All Beckett charges for is the compute those tokens ran on, and one platform fee on top.</p>
 
-    <div class="seat-card rv">
-      <div class="seat-head"><span class="num" data-bind="seat">…</span>/seat/month includes <span class="num" data-bind="seat_credits">…</span> credits (<span class="num" data-bind="seat_included_usd">…</span> of real spend)</div>
-      <ul class="seat-lines">
-        <li><b>Light month.</b> Your work draws down the included <span class="num" data-bind="seat_credits">…</span> credits. You never pay past the <span class="num" data-bind="seat">…</span> seat.</li>
-        <li><b>Heavy month.</b> Run out and you load more on top at the same <span class="num" data-bind="credit_usd">…</span> a credit, no tier jump, no surprise rate.</li>
+    <div class="card rv">
+      <div class="card-head">What you pay for, and what you don't</div>
+      <ul class="card-lines">
+        <li><b>Your subscription pays the model.</b> Claude Max 20x or your own API keys. The token bill is yours and stays yours.</li>
+        <li><b>Beckett charges for compute hours.</b> Your run time, normalised into hours at a flat rate. That is the machine, not the tokens.</li>
+        <li><b>One platform fee on top.</b> A flat <span class="num" data-bind="platform_fee">…</span>, and only that. It pays for the presence and the seat.</li>
       </ul>
-      <div class="seat-fine">
-        <span><b>Included credits reset each month</b>, they don't roll over.</span>
-        <span><b>Credits you buy separately never expire.</b></span>
+    </div>
+  </section>
+
+  <section class="passage" id="compute">
+    <h2 class="rv">One compute hour = <span class="num" data-bind="tph">…</span> tokens.</h2>
+    <p class="rv">A compute hour is not a figure we picked. It is the token throughput this install actually sustains in one hour of real work: every token moved across <span class="num" data-bind="norm_hours">…</span> hours of runs, divided by those hours. That is <span class="num" data-bind="tph">…</span> tokens an hour, measured, and it re-derives every time this page builds. Your run time gets counted in those hours, and the hours are what you pay for.</p>
+
+    <div class="tiles rv">
+      <div class="tile"><div class="t-k">tokens / compute hour</div><div class="t-v num" data-bind="tph_compact">…</div><div class="t-s">measured throughput</div></div>
+      <div class="tile"><div class="t-k">flat rate</div><div class="t-v num" data-bind="flat_rate">…</div><div class="t-s">per compute hour</div></div>
+      <div class="tile"><div class="t-k">platform fee</div><div class="t-v num" data-bind="platform_fee">…</div><div class="t-s">on top, the only margin</div></div>
+      <div class="tile"><div class="t-k">effective rate</div><div class="t-v num" data-bind="effective_rate">…</div><div class="t-s">per hour, all in</div></div>
+    </div>
+
+    <ul class="ledger rv">
+      <li class="line">
+        <h3>The flat compute rate.</h3>
+        <p><span class="fig num" data-bind="flat_rate">…</span> per compute hour, before the fee. It is <b data-bind="compute_basis">…</b>. It covers the machine and the runtime that turn your tokens into shipped work; it does not cover the model tokens, which ran on your own subscription. If the machine cost moves, this number moves, and you see it here.</p>
+      </li>
+      <li class="line margin">
+        <h3>One platform fee, in the open.</h3>
+        <p>A flat <span class="fig num" data-bind="platform_fee">…</span> on top of the compute charge, and the only margin there is. It is what pays for the presence and the seat: the GitHub identity, the pipeline, the Discord presence, the machine kept alive between tasks. It is this line, and only this line. If it ever moves, you will see it move here.</p>
+      </li>
+    </ul>
+    <p class="rate-note rv">Add them and the whole rate card is one number: <b style="color:var(--ink);font-weight:600"><span class="num" data-bind="effective_rate">…</span> an hour</b> of work, and nothing per token.</p>
+  </section>
+
+  <section class="passage" id="prepaid">
+    <h2 class="rv">Prepaid. <span class="g">One credit is one compute hour.</span></h2>
+    <p class="rv">Credits are loaded up front and invoiced, so you always know the balance. One credit buys one compute hour at the effective <span class="num" data-bind="effective_rate">…</span>, and your work draws them down as it ships. There is no seat to pay before anything runs, and no tier to jump when you run more.</p>
+
+    <div class="card rv">
+      <div class="card-head">Prepaid, with the balance kept honest</div>
+      <ul class="card-lines">
+        <li><b>Loaded up front.</b> You buy credits and get an invoice. One credit is one compute hour at <span class="num" data-bind="effective_rate">…</span>.</li>
+        <li><b>Rollover.</b> Unused credits stay on your account for up to <span class="num" data-bind="rollover_years">…</span> years. Nothing you paid for evaporates at the end of a month.</li>
+        <li><b>Wind-down guarantee.</b> If Beckett shuts down, the remaining balance is refunded at equal value, the same <span class="num" data-bind="effective_rate">…</span> a credit you loaded it at.</li>
+      </ul>
+      <div class="card-fine">
+        <span><b>No seat, no floor.</b> You pay for hours that run, not for showing up.</span>
+        <span><b>No tier jumps.</b> The rate is the same on the first credit and the ten-thousandth.</span>
       </div>
     </div>
   </section>
 
   <section class="passage" id="load">
-    <h2 class="rv">One credit = <span class="num" data-bind="credit_usd">…</span>. Same on every model.</h2>
-    <p class="rv">A credit is a fixed dollar of real spend, <span class="num" data-bind="credit_usd">…</span> of it, not a per-model token that means something different depending on which model ran. Load $5 and you hold <span class="num" data-bind="credit_per_5">…</span> credits; a cheaper model just burns fewer of them for the same task. So here's the only question that matters: what does a real task cost, and how many does a load cover?</p>
+    <h2 class="rv">What a load covers.</h2>
+    <p class="rv">Load <span class="num" data-bind="budget_lo">…</span>, <span class="num" data-bind="budget_mid">…</span>, or <span class="num" data-bind="budget_hi">…</span>, and here is what real tickets drew from it. Each row is an actual ticket at the 10th, 25th, and 50th percentile of compute, its hours counted straight from the run log, its charge the effective rate on those hours.</p>
 
-    <div class="tiles rv">
-      <div class="tile"><div class="t-k">one credit</div><div class="t-v num" data-bind="credit_usd">…</div><div class="t-s">fixed spend, any model</div></div>
-      <div class="tile"><div class="t-k">$5 loads</div><div class="t-v num" data-bind="credit_per_5">…</div><div class="t-s">credits</div></div>
-      <div class="tile"><div class="t-k">median task</div><div class="t-v num" data-bind="task_median_credits">…</div><div class="t-s">credits · <span class="num" data-bind="task_median_usd">…</span></div></div>
-    </div>
-
-    <div class="rate-wrap rv" style="margin-top:22px">
+    <div class="rate-wrap rv">
       <table class="rates">
-        <caption>real task cost → how many each load covers</caption>
+        <caption>real ticket compute → how many each load covers</caption>
         <thead>
-          <tr data-bind="buys_head"><th scope="col">Example task</th><th scope="col" style="text-align:right">Cost</th></tr>
+          <tr data-bind="buys_head"><th scope="col">Example task</th><th scope="col" style="text-align:right">Charge</th></tr>
         </thead>
         <tbody data-bind="buys_rows"><!-- filled from pricing-data.json --></tbody>
       </table>
     </div>
-    <p class="rate-note rv">Each row is a real ticket at the 10th / 25th / 50th percentile of task cost. Load $5 and that's about <span class="num" data-bind="buys_summary">…</span>. Cost shown in dollars and credits (<span class="num" data-bind="credit_usd">…</span> each).</p>
+    <p class="rate-note rv">Load <span class="num" data-bind="budget_lo">…</span> and that is about <span class="num" data-bind="buys_summary">…</span>. Charge shown in dollars and credits (one credit = one compute hour at <span class="num" data-bind="effective_rate">…</span>).</p>
   </section>
 
   <section class="passage" id="recent">
-    <h2 class="rv">What real tickets actually cost.</h2>
-    <p class="rv">The most recent tickets this install finished, newest first, each in dollars and in the same fixed credit unit. Not a projection; what already ran.</p>
+    <h2 class="rv">What real tickets actually drew.</h2>
+    <p class="rv">The most recent tickets this install finished, newest first, each in compute hours and the charge those hours came to. Not a projection; what already ran.</p>
     <div class="rate-wrap rv">
       <table class="rates">
-        <caption>recent real tickets · dollars and credits</caption>
+        <caption>recent real tickets · compute and charge</caption>
         <thead>
-          <tr><th scope="col">Ticket</th><th scope="col" style="text-align:right">Runs</th><th scope="col" style="text-align:right">Cost</th><th scope="col" style="text-align:right">Credits</th></tr>
+          <tr><th scope="col">Ticket</th><th scope="col" style="text-align:right">Runs</th><th scope="col" style="text-align:right">Compute</th><th scope="col" style="text-align:right">Charge</th></tr>
         </thead>
         <tbody data-bind="recent_rows"><!-- filled from pricing-data.json --></tbody>
       </table>
     </div>
-
-    <details class="whence rv">
-      <summary>Where the number comes from</summary>
-      <p class="whence-lead">Every credit above is real underlying spend at <span class="num" data-bind="credit_usd">…</span> each. That spend is three lines, kept apart on purpose, pass-through model cost, compute at a stated hourly rate, and one visible platform fee. (Your <span class="num" data-bind="seat">…</span> seat isn't a fourth line on top, it's <span class="num" data-bind="seat_credits">…</span> of these credits, prepaid.) Add them up yourself; the math re-runs from telemetry every time this page builds.</p>
-      <ul class="ledger">
-        <li class="line">
-          <h3>Pass-through tokens.</h3>
-          <p>What the model provider charges, passed straight through at published per-Mtok rates. No markup hidden in the token price. Cache reads bill at a fraction of fresh input, roughly <span class="num" data-bind="cache_read_x">…</span>×, so long-context work stays cheap on the second pass.</p>
-        </li>
-        <li class="line">
-          <h3>Wall-clock time.</h3>
-          <p>Worker wall-clock and browser-session time at a stated hourly rate of <span class="fig num" data-bind="compute_rate">…</span> per hour. Today that rate is <b data-bind="compute_basis">…</b>. When a task moves onto a VM, this becomes <b data-bind="compute_vm_basis">…</b>, a number change, not a new pricing model.</p>
-        </li>
-        <li class="line margin">
-          <h3>One number, in the open.</h3>
-          <p>Our margin, and the only one. A flat <span class="fig num" data-bind="platform_fee">…</span> on top of model + compute. It isn't buried in a marked-up token rate or a padded hourly, it's this line, and only this line. If it ever moves, you'll see it move here.</p>
-        </li>
-      </ul>
-    </details>
   </section>
 
-  <section class="passage">
-    <h2 class="rv">The rate table.</h2>
-    <p class="rv">Published per-million-token rates, passed through unchanged. These are the numbers the platform fee sits <em>beside</em>, never inside.</p>
-    <div class="rate-wrap rv">
-      <table class="rates">
-        <caption>per-Mtok rates · pass-through</caption>
-        <thead>
-          <tr><th scope="col">Model</th><th scope="col" style="text-align:right">Input</th><th scope="col" style="text-align:right">Output</th></tr>
-        </thead>
-        <tbody data-bind="rate_rows"><!-- filled from pricing-data.json --></tbody>
-      </table>
-    </div>
-    <p class="rate-note rv">Cache reads bill at ≈<span class="num" data-bind="cache_read_x">…</span>× the input rate. Rate table effective <span class="num" data-bind="rate_effective">…</span>.</p>
-  </section>
-
-  <section class="passage">
+  <section class="passage" id="example">
     <h2 class="rv">One ticket, itemised.</h2>
-    <p class="rv">Not a hypothetical. A real ticket pulled from the telemetry, its real cost, broken into the three cost lines, the way a month-summary card itemises model calls, compute hours, and one margin into a single total.</p>
+    <p class="rv">Not a hypothetical. A real ticket pulled from the telemetry, its real compute, broken into the two lines Beckett bills. The model tokens are shown as the quantity they were, not a charge, because they ran on your own subscription.</p>
     <div class="receipt rv" data-bind="receipt">
       <div class="r-top">
         <span class="r-id" data-bind="ex_id">…</span>
@@ -259,11 +247,27 @@
     <h2 class="rv">What we don't charge for.</h2>
     <p class="rv">The costs that are ours to eat, not yours to pay. A coworker who bills you for its own mistakes isn't a coworker.</p>
     <ul class="nofees rv">
-      <li><b>Retries we caused.</b> If Beckett crashed, looped, or re-ran itself because of our bug, that compute is on us.</li>
+      <li><b>Retries we caused.</b> If Beckett crashed, looped, or re-ran itself because of our bug, those hours are on us.</li>
       <li><b>Failed review cycles.</b> When our own reviewer sends work back, the rework isn't a line on your bill.</li>
-      <li><b>Our overhead.</b> Orchestration, scheduling, the plumbing between agents, that's the cost of running the service, not a task cost.</li>
-      <li><b>Idle presence.</b> A seat sitting quietly in your Discord doesn't burn credits, the included allowance is for work that ships, not for showing up.</li>
+      <li><b>Our overhead.</b> Orchestration, scheduling, the plumbing between agents, that's the cost of running the service, not a compute hour.</li>
+      <li><b>Idle presence.</b> A seat sitting quietly in your Discord doesn't burn credits. You pay for work that ships, not for showing up.</li>
     </ul>
+  </section>
+
+  <section class="passage" id="enterprise">
+    <h2 class="rv">Teams and enterprise.</h2>
+    <p class="rv">Multiple seats, a shared balance, volume, invoicing terms, a private deployment: those are negotiated, not self-serve. Tell us the shape of the team and what you need, and we will write a contract to fit.</p>
+    <div class="card rv">
+      <div class="card-head">Negotiated contracts for teams</div>
+      <ul class="card-lines">
+        <li><b>Volume and terms.</b> Committed hours, shared balances across seats, and invoicing that suits your finance team.</li>
+        <li><b>Private deployment.</b> Your own machines or cloud, your own subscription, the same compute-hour model underneath.</li>
+        <li><b>One address.</b> Write to <a href="mailto:contact@frgmt.xyz" data-bind="enterprise_link" style="color:var(--ink);font-weight:600">contact@frgmt.xyz</a> and we will take it from there.</li>
+      </ul>
+    </div>
+    <div class="cta-row rv" style="margin-top:24px">
+      <a class="btn btn-primary btn-lg" data-bind="enterprise_cta" href="mailto:contact@frgmt.xyz">Email contact@frgmt.xyz »</a>
+    </div>
   </section>
 
   <section class="passage">
@@ -271,25 +275,14 @@
     <p class="rv">Everything above is derived from this install's own run log by a committed, re-runnable script. Here's the shape of that log, so the model isn't asking you to take it on faith.</p>
     <div class="tiles rv">
       <div class="tile"><div class="t-k">runs measured</div><div class="t-v num" data-bind="total_runs">…</div><div class="t-s">real agent runs</div></div>
-      <div class="tile"><div class="t-k">median cost / run</div><div class="t-v num" data-bind="cost_median">…</div><div class="t-s">half cost less</div></div>
-      <div class="tile"><div class="t-k">p90 cost / run</div><div class="t-v num" data-bind="cost_p90">…</div><div class="t-s">9 in 10 cost less</div></div>
+      <div class="tile"><div class="t-k">compute measured</div><div class="t-v num" data-bind="norm_hours">…</div><div class="t-s">hours of real work</div></div>
+      <div class="tile"><div class="t-k">tokens moved</div><div class="t-v num" data-bind="norm_tokens">…</div><div class="t-s">across those hours</div></div>
       <div class="tile"><div class="t-k">median wall-clock</div><div class="t-v num" data-bind="wall_median">…</div><div class="t-s">per run</div></div>
       <div class="tile"><div class="t-k">p90 wall-clock</div><div class="t-v num" data-bind="wall_p90">…</div><div class="t-s">per run</div></div>
     </div>
 
-    <div class="k rv" style="margin-top:34px">cost by harness</div>
-    <div class="rate-wrap rv">
-      <table class="rates">
-        <caption>total spend, by harness</caption>
-        <thead>
-          <tr><th scope="col">Harness</th><th scope="col" style="text-align:right">Runs</th><th scope="col" style="text-align:right">Median</th><th scope="col" style="text-align:right">Total</th></tr>
-        </thead>
-        <tbody data-bind="harness_rows"><!-- filled --></tbody>
-      </table>
-    </div>
-
-    <div class="k rv" style="margin-top:34px">review-cycle distribution</div>
-    <p class="rv" style="margin-bottom:2px">How often work needed another pass. Most runs land clean on the first try; the long tail is rework we mostly don't bill for.</p>
+    <h3 class="rv" style="font-family:var(--sans);font-weight:600;font-size:var(--t-body);color:var(--ink);margin:34px 0 2px">How often work needed another pass</h3>
+    <p class="rv" style="margin-bottom:2px">Most runs land clean on the first try; the long tail is rework we mostly don't bill for.</p>
     <div class="dist rv" data-bind="dist_rows"><!-- filled --></div>
 
     <p class="prov rv">Generated <span class="num" data-bind="gen_date">…</span> from <span class="num" data-bind="source_file">…</span> by <code>web/scripts/pricing-stats.mjs</code>. Re-run the script and this page moves with the data.</p>
@@ -333,52 +326,66 @@
       var h = Math.floor(m/60); m = m%60;
       return h + 'h ' + (m<10?'0':'') + m + 'm';
     };
+    var hrs = function(n){ return Number(n).toFixed(2) + ' h'; };
+    var compact = function(n){
+      n = Number(n);
+      if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
+      if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+      if (n >= 1e3) return (n/1e3).toFixed(0) + 'k';
+      return String(n);
+    };
     var esc = function(t){ var d=document.createElement('div'); d.textContent=t; return d.innerHTML; };
     var setAll = function(key, val){
       document.querySelectorAll('[data-bind="'+key+'"]').forEach(function(el){ el.textContent = val; });
     };
 
     fetch('/pricing-data.json', {cache:'no-cache'}).then(function(r){ return r.json(); }).then(function(d){
+      var cr = d.compute_rate || {};
+      var norm = d.normalisation || {};
+
       // headline scalars
       setAll('total_runs', Number(d.total_runs).toLocaleString());
-      setAll('cache_read_x', d.model_rates.cache_read_multiplier);
-      setAll('compute_rate', usd(d.compute_rate.per_hour));
-      setAll('compute_basis', d.compute_rate.basis);
-      setAll('compute_vm_basis', d.compute_rate.vm_basis);
       setAll('platform_fee', d.platform_fee.pct + '%');
-      setAll('seat', usd(d.seat.monthly_usd, 0));
-      setAll('seat_credits', Number(d.seat.included_credits).toLocaleString());
-      setAll('seat_included_usd', usd(d.seat.included_usd, 0));
-      setAll('rate_effective', d.rate_table_effective_date || '…');
-      setAll('cost_median', usd(d.cost_per_run.median));
-      setAll('cost_p90', usd(d.cost_per_run.p90));
+      setAll('flat_rate', usd(cr.per_hour));
+      setAll('effective_rate', usd(cr.effective_per_hour));
+      setAll('compute_basis', cr.basis);
+      setAll('tph', Number(norm.tokens_per_compute_hour).toLocaleString());
+      setAll('tph_compact', compact(norm.tokens_per_compute_hour));
+      setAll('norm_hours', Number(norm.total_compute_hours).toLocaleString());
+      setAll('norm_tokens', compact(norm.total_tokens));
+      setAll('rollover_years', d.credit ? d.credit.rollover_years : '…');
       setAll('wall_median', dur(d.wall_clock.median_seconds));
       setAll('wall_p90', dur(d.wall_clock.p90_seconds));
       setAll('gen_date', (d.generated_at||'').slice(0,10));
       setAll('source_file', d.source_file || '…');
 
-      // credit unit + load-value scalars
-      var lv = d.load_value || {};
-      var creditUsd = d.credit ? d.credit.usd_per_credit : 0;
-      setAll('credit_usd', usd(creditUsd));
-      setAll('credit_per_5', creditUsd ? Math.round(5 / creditUsd).toLocaleString() : '…');
-      setAll('task_median_credits', lv.task_cost ? lv.task_cost.median_credits : '…');
-      setAll('task_median_usd', lv.task_cost ? usd(lv.task_cost.median_usd) : '…');
+      // enterprise mailto
+      var email = (d.enterprise && d.enterprise.contact_email) || 'contact@frgmt.xyz';
+      document.querySelectorAll('[data-bind="enterprise_link"]').forEach(function(el){
+        el.textContent = email; el.setAttribute('href', 'mailto:' + email);
+      });
+      document.querySelectorAll('[data-bind="enterprise_cta"]').forEach(function(el){
+        el.textContent = 'Email ' + email + ' »'; el.setAttribute('href', 'mailto:' + email);
+      });
 
-      // "what a load buys" table, real task cost -> count per budget
+      // "what a load buys" table, real ticket compute -> count per budget
+      var lv = d.load_value || {};
       var budgets = lv.budgets_usd || [];
+      setAll('budget_lo', budgets[0] != null ? usd(budgets[0],0) : '…');
+      setAll('budget_mid', budgets[1] != null ? usd(budgets[1],0) : '…');
+      setAll('budget_hi', budgets[2] != null ? usd(budgets[2],0) : '…');
       var bh = document.querySelector('[data-bind="buys_head"]');
       if (bh) bh.innerHTML = '<th scope="col">Example task</th>'+
-        '<th scope="col" style="text-align:right">Cost</th>'+
+        '<th scope="col" style="text-align:right">Charge</th>'+
         budgets.map(function(b){ return '<th scope="col" style="text-align:right">'+usd(b,0)+'</th>'; }).join('');
       var bb = document.querySelector('[data-bind="buys_rows"]');
       var examples = lv.examples || [];
       if (bb) bb.innerHTML = examples.map(function(e){
         var cells = e.covers.map(function(c){ return '<td class="n">'+c.count+'</td>'; }).join('');
         return '<tr><th scope="row">'+esc(e.label)+'</th>'+
-               '<td class="n">'+usd(e.cost_usd)+' · '+e.credits+' cr</td>'+cells+'</tr>';
+               '<td class="n">'+usd(e.charge_usd)+' · '+e.credits+' cr</td>'+cells+'</tr>';
       }).join('');
-      // plain-language summary at $5: "7 quick fixes, 3 small features, or 1 typical task"
+      // plain-language summary at $5: "50 quick fixes, 23 small features, or 8 typical tasks"
       var plural = function(w){ return /(x|s|sh|ch)$/.test(w) ? w + 'es' : w + 's'; };
       var five = examples.map(function(e){
         var c = (e.covers.find(function(x){ return x.budget_usd === 5; })||{}).count;
@@ -390,21 +397,13 @@
         setAll('buys_summary', summary);
       }
 
-      // recent tasks -> credits table
+      // recent tickets -> compute + charge table
       var rr = document.querySelector('[data-bind="recent_rows"]');
       if (rr) rr.innerHTML = (lv.recent_tasks || []).map(function(t){
         return '<tr><th scope="row">'+esc(t.id)+'</th>'+
                '<td class="n">'+t.runs+'</td>'+
-               '<td class="n">'+usd(t.cost_usd)+'</td>'+
-               '<td class="n">'+t.credits+' cr</td></tr>';
-      }).join('');
-
-      // rate table
-      var rt = document.querySelector('[data-bind="rate_rows"]');
-      if (rt) rt.innerHTML = d.model_rates.tiers.map(function(t){
-        return '<tr><th scope="row">'+esc(t.label)+'</th>'+
-               '<td class="n">'+usd(t.input)+'</td>'+
-               '<td class="n">'+usd(t.output)+'</td></tr>';
+               '<td class="n">'+t.credits+' cr</td>'+
+               '<td class="n">'+usd(t.charge_usd)+'</td></tr>';
       }).join('');
 
       // worked example
@@ -416,37 +415,24 @@
       var er = document.querySelector('[data-bind="ex_rows"]');
       if (er) {
         var rows = '';
-        rows += '<div class="row"><span class="lbl"><b>Model cost</b> · pass-through tokens</span>'+
-                '<span class="amt">'+usd(w.lines.model_cost)+'</span></div>';
-        w.models.forEach(function(m){
-          rows += '<div class="row sub"><span class="lbl">'+esc(m.tier)+' · '+m.runs+' run'+(m.runs===1?'':'s')+
-                  '</span><span class="amt">'+usd(m.cost)+'</span></div>';
-        });
-        rows += '<div class="row"><span class="lbl"><b>Compute cost</b> · '+dur(w.wall_clock_seconds)+
-                ' @ '+usd(d.compute_rate.per_hour)+'/hr</span>'+
+        rows += '<div class="row muted"><span class="lbl"><b>Model tokens</b> · on your own subscription</span>'+
+                '<span class="amt">'+compact(w.tokens)+' tok</span></div>';
+        rows += '<div class="row"><span class="lbl"><b>Compute</b> · '+hrs(w.compute_hours)+
+                ' @ '+usd(cr.per_hour)+'/hr</span>'+
                 '<span class="amt">'+usd(w.lines.compute_cost)+'</span></div>';
-        rows += '<div class="row"><span class="lbl"><b>Platform fee</b> · '+d.platform_fee.pct+'% margin</span>'+
+        rows += '<div class="row"><span class="lbl"><b>Platform fee</b> · '+d.platform_fee.pct+'% on top</span>'+
                 '<span class="amt">'+usd(w.lines.platform_fee)+'</span></div>';
-        rows += '<div class="row total"><span class="lbl">Ticket total</span>'+
+        rows += '<div class="row total"><span class="lbl">Beckett total</span>'+
                 '<span class="amt">'+usd(w.lines.total)+' · '+w.lines.total_credits+' cr</span></div>';
         er.innerHTML = rows;
       }
-
-      // harness breakdown
-      var hb = document.querySelector('[data-bind="harness_rows"]');
-      if (hb) hb.innerHTML = d.cost_by_harness.map(function(h){
-        return '<tr><th scope="row">'+esc(h.key)+'</th>'+
-               '<td class="n">'+Number(h.runs).toLocaleString()+'</td>'+
-               '<td class="n">'+usd(h.median_cost)+'</td>'+
-               '<td class="n">'+usd(h.total_cost)+'</td></tr>';
-      }).join('');
 
       // review-cycle distribution bars
       var db = document.querySelector('[data-bind="dist_rows"]');
       if (db) {
         var max = Math.max.apply(null, d.review_cycle_distribution.map(function(x){return x.pct;})) || 1;
         db.innerHTML = d.review_cycle_distribution.map(function(x){
-          var label = x.cycles==='0' ? 'clean' : x.cycles + (x.cycles==='3+'?' cyc':' cyc');
+          var label = x.cycles==='0' ? 'clean' : x.cycles + ' cyc';
           return '<div class="bar-row">'+
             '<span class="bl">'+esc(label)+'</span>'+
             '<span class="track" role="img" aria-label="'+x.pct+' percent"><span style="width:'+(x.pct/max*100)+'%"></span></span>'+
