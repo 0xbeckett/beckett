@@ -134,7 +134,7 @@
 
 <main class="page">
   <header class="intro" id="top">
-    <h1 class="rv">Load $5.<br><span class="g">Here's what runs.</span></h1>
+    <h1 class="rv">Load <span class="num" style="font-family:var(--mono);letter-spacing:-.02em">$5</span>.<br><span class="g">Here's what runs.</span></h1>
     <p class="lead rv">You load credits; Beckett spends them on your work. One credit is a fixed <b style="color:var(--ink);font-weight:600">$0.10 of real underlying spend</b> — the same on every model, so a cheaper model just burns fewer credits for the same task. So the question isn't a rate card, it's simple: load $5, what runs? Every figure below is derived from <b style="color:var(--ink);font-weight:600">real runs</b> — <span class="num" data-bind="total_runs">—</span> of them — not a spreadsheet someone wished into being.</p>
   </header>
 
@@ -153,7 +153,7 @@
       <table class="rates">
         <caption>real task cost → how many each load covers</caption>
         <thead>
-          <tr><th scope="col">Example task</th><th scope="col" style="text-align:right">Cost</th><th scope="col" style="text-align:right">$5</th><th scope="col" style="text-align:right">$20</th><th scope="col" style="text-align:right">$50</th></tr>
+          <tr data-bind="buys_head"><th scope="col">Example task</th><th scope="col" style="text-align:right">Cost</th></tr>
         </thead>
         <tbody data-bind="buys_rows"><!-- filled from pricing-data.json --></tbody>
       </table>
@@ -348,6 +348,11 @@
       setAll('task_median_usd', lv.task_cost ? usd(lv.task_cost.median_usd) : '—');
 
       // "what a load buys" table — real task cost -> count per budget
+      var budgets = lv.budgets_usd || [];
+      var bh = document.querySelector('[data-bind="buys_head"]');
+      if (bh) bh.innerHTML = '<th scope="col">Example task</th>'+
+        '<th scope="col" style="text-align:right">Cost</th>'+
+        budgets.map(function(b){ return '<th scope="col" style="text-align:right">'+usd(b,0)+'</th>'; }).join('');
       var bb = document.querySelector('[data-bind="buys_rows"]');
       var examples = lv.examples || [];
       if (bb) bb.innerHTML = examples.map(function(e){
