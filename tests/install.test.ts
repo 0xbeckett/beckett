@@ -525,7 +525,7 @@ describe("systemd unit installer staging", () => {
       { mode: 0o600 },
     );
     writeFileSync(join(home, ".claude/.credentials.json"), "{}\n", { mode: 0o600 });
-    writeExecutable(join(home, ".local/bin/beckett"), "#!/bin/sh\nexit 0\n");
+    writeExecutable(join(home, ".local/bin/beckett"), "#!/bin/sh\nprintf '{}\\n'\n");
 
     const result = await run(["bash", UNIT_INSTALLER], {
       env: {
