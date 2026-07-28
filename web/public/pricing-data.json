@@ -1,31 +1,31 @@
 {
-  "generated_at": "2026-07-28T05:09:17.505Z",
+  "generated_at": "2026-07-28T05:35:48.936Z",
   "source_file": "~/Projects/metrics/data/telemetry-runs.json",
-  "telemetry_generated_at": "2026-07-28T05:09:05.526Z",
+  "telemetry_generated_at": "2026-07-28T05:34:59.257Z",
   "rate_table_effective_date": "2026-07-16",
-  "total_runs": 3161,
-  "costed_runs": 3125,
-  "unrated_model_sessions": 36,
+  "total_runs": 3158,
+  "costed_runs": 3135,
+  "unrated_model_sessions": 23,
   "cost_per_run": {
-    "median": 0.2834,
-    "p90": 2.008
+    "median": 0.2884,
+    "p90": 2.0018
   },
   "wall_clock": {
-    "median_seconds": 85.6,
-    "p90_seconds": 1260.8
+    "median_seconds": 86.5,
+    "p90_seconds": 1261.2
   },
   "cost_by_harness": [
     {
       "key": "claude-code",
-      "runs": 2589,
-      "median_cost": 0.3459,
-      "total_cost": 2387.89
+      "runs": 2598,
+      "median_cost": 0.3505,
+      "total_cost": 2398.22
     },
     {
       "key": "pi",
-      "runs": 462,
+      "runs": 463,
       "median_cost": 0.0061,
-      "total_cost": 317.55
+      "total_cost": 317.71
     },
     {
       "key": "codex",
@@ -38,14 +38,14 @@
     {
       "key": "claude-opus-4-8",
       "runs": 1306,
-      "median_cost": 0.5402,
-      "total_cost": 1602.52
+      "median_cost": 0.5415,
+      "total_cost": 1604.42
     },
     {
       "key": "claude-opus-5",
-      "runs": 354,
-      "median_cost": 0.5645,
-      "total_cost": 465.13
+      "runs": 367,
+      "median_cost": 0.5656,
+      "total_cost": 473.68
     },
     {
       "key": "claude-sonnet-5",
@@ -55,9 +55,9 @@
     },
     {
       "key": "gpt-5.6-terra",
-      "runs": 158,
-      "median_cost": 0.4698,
-      "total_cost": 232.78
+      "runs": 159,
+      "median_cost": 0.4598,
+      "total_cost": 232.94
     },
     {
       "key": "gpt-5.5",
@@ -73,9 +73,9 @@
     },
     {
       "key": "claude-haiku-4-5-20251001",
-      "runs": 474,
-      "median_cost": 0.0215,
-      "total_cost": 17.21
+      "runs": 472,
+      "median_cost": 0.0223,
+      "total_cost": 17.22
     },
     {
       "key": "claude-sonnet-4-6",
@@ -85,9 +85,9 @@
     },
     {
       "key": "claude-sonnet-4-5-20250929",
-      "runs": 15,
-      "median_cost": 0.1822,
-      "total_cost": 4.92
+      "runs": 13,
+      "median_cost": 0.1897,
+      "total_cost": 4.79
     },
     {
       "key": "gpt-5.6-luna",
@@ -99,7 +99,7 @@
   "review_cycle_distribution": [
     {
       "cycles": "0",
-      "runs": 2789,
+      "runs": 2786,
       "pct": 88.2
     },
     {
@@ -168,7 +168,12 @@
     "pct": 12
   },
   "seat": {
-    "monthly_usd": 20
+    "monthly_usd": 20,
+    "included_usd": 20,
+    "included_credits": 200,
+    "included_reset": "monthly",
+    "included_rolls_over": false,
+    "purchased_expires": false
   },
   "credit": {
     "usd_per_credit": 0.1
@@ -189,10 +194,10 @@
         "key": "quick",
         "label": "a quick fix",
         "percentile": 10,
-        "example_ticket": "OPS-40",
+        "example_ticket": "OPS-28",
         "runs": 1,
-        "cost_usd": 0.69,
-        "credits": 6.9,
+        "cost_usd": 0.7,
+        "credits": 7,
         "covers": [
           {
             "budget_usd": 5,
@@ -204,7 +209,7 @@
           },
           {
             "budget_usd": 50,
-            "count": 72
+            "count": 71
           }
         ]
       },
@@ -257,12 +262,36 @@
     ],
     "recent_tasks": [
       {
+        "id": "#66",
+        "runs": 4,
+        "review_cycles": 0,
+        "last_ts": "2026-07-28T05:31:46.483Z",
+        "cost_usd": 6.34,
+        "credits": 63.4
+      },
+      {
+        "id": "#65",
+        "runs": 8,
+        "review_cycles": 0,
+        "last_ts": "2026-07-28T05:15:44.013Z",
+        "cost_usd": 11.68,
+        "credits": 116.8
+      },
+      {
+        "id": "#64",
+        "runs": 3,
+        "review_cycles": 0,
+        "last_ts": "2026-07-28T05:13:02.826Z",
+        "cost_usd": 1.12,
+        "credits": 11.2
+      },
+      {
         "id": "#63",
         "runs": 4,
         "review_cycles": 0,
         "last_ts": "2026-07-28T04:57:33.623Z",
-        "cost_usd": 6.25,
-        "credits": 62.5
+        "cost_usd": 6.6,
+        "credits": 66
       },
       {
         "id": "#62",
@@ -295,30 +324,6 @@
         "last_ts": "2026-07-28T03:54:23.836Z",
         "cost_usd": 16.33,
         "credits": 163.3
-      },
-      {
-        "id": "#56",
-        "runs": 7,
-        "review_cycles": 7,
-        "last_ts": "2026-07-28T03:07:59.584Z",
-        "cost_usd": 18.21,
-        "credits": 182.1
-      },
-      {
-        "id": "#57",
-        "runs": 4,
-        "review_cycles": 0,
-        "last_ts": "2026-07-28T02:25:03.320Z",
-        "cost_usd": 7.08,
-        "credits": 70.8
-      },
-      {
-        "id": "#55",
-        "runs": 3,
-        "review_cycles": 0,
-        "last_ts": "2026-07-28T02:03:58.167Z",
-        "cost_usd": 1.61,
-        "credits": 16.1
       }
     ]
   },

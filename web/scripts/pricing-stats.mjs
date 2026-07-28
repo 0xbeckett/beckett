@@ -340,6 +340,18 @@ const recentTasks = allTasks
     credits: toCredits(round(t.cost, 2)),
   }));
 
+// The seat, expressed as the plan it is: a monthly price that arrives AS credits.
+// $20 at $0.10/credit = 200 included credits ($20 of real spend). Included credits
+// reset monthly (no roll-over); separately purchased credits never expire.
+const seat = {
+  monthly_usd: SEAT.monthly_usd,
+  included_usd: SEAT.monthly_usd, // the seat price is delivered as credits
+  included_credits: toCredits(SEAT.monthly_usd, 0), // 200 at $0.10
+  included_reset: "monthly", // included credits reset each month; no roll-over
+  included_rolls_over: false,
+  purchased_expires: false, // separately purchased credits never expire
+};
+
 const loadValue = {
   budgets_usd: LOAD_BUDGETS,
   task_count: allTasks.length,
@@ -378,7 +390,7 @@ const out = {
   model_rates: MODEL_RATES,
   compute_rate: COMPUTE_RATE,
   platform_fee: PLATFORM_FEE,
-  seat: SEAT,
+  seat,
   credit: CREDIT,
 
   // "I load $5, now what" — load-value examples + recent tasks in credits

@@ -20,7 +20,22 @@
   :root{ --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,monospace }
   .num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;letter-spacing:-.01em}
 
-  /* the four-line ledger */
+  /* the seat — the plan, stated once and up front */
+  .seat-card{margin-top:26px;border:1px solid var(--lv-deep);background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:inset 3px 0 0 var(--lv-deep),var(--bevel),var(--drop);padding:22px 24px}
+  .seat-card .k{font-family:var(--pix);font-size:12px;color:var(--lv-deep);margin-bottom:12px}
+  .seat-head{font-family:var(--disp);font-weight:600;font-size:22px;line-height:1.28;color:var(--ink)}
+  .seat-head .num{color:var(--ink)}
+  .seat-lines{list-style:none;margin:18px 0 0;padding:0;display:grid;gap:12px}
+  .seat-lines li{position:relative;padding-left:26px;font-size:15px;line-height:1.55;color:var(--dim)}
+  .seat-lines li b{color:var(--ink);font-weight:600}
+  .seat-lines li::before{content:"→";position:absolute;left:0;top:0;font-family:var(--mono);font-size:14px;color:var(--cy-deep)}
+  .seat-fine{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);display:grid;gap:8px}
+  .seat-fine span{position:relative;padding-left:22px;font-size:13.5px;line-height:1.5;color:var(--dim)}
+  .seat-fine span b{color:var(--ink);font-weight:600}
+  .seat-fine span::before{content:"·";position:absolute;left:8px;top:-2px;font-family:var(--pix);font-size:15px;color:var(--lv-deep)}
+
+  /* the cost-line ledger */
   .ledger{list-style:none;margin:26px 0 0;padding:0;display:grid;gap:14px}
   .line{border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:var(--bevel),var(--drop);padding:18px 20px;position:relative}
@@ -135,11 +150,30 @@
 <main class="page">
   <header class="intro" id="top">
     <h1 class="rv">Load <span class="num" style="font-family:var(--mono);letter-spacing:-.02em">$5</span>.<br><span class="g">Here's what runs.</span></h1>
-    <p class="lead rv">You load credits; Beckett spends them on your work. One credit is a fixed <b style="color:var(--ink);font-weight:600">$0.10 of real underlying spend</b> — the same on every model, so a cheaper model just burns fewer credits for the same task. So the question isn't a rate card, it's simple: load $5, what runs? Every figure below is derived from <b style="color:var(--ink);font-weight:600">real runs</b> — <span class="num" data-bind="total_runs">—</span> of them — not a spreadsheet someone wished into being.</p>
+    <p class="lead rv">Your seat is <b style="color:var(--ink);font-weight:600">$20/month</b> and comes with <b style="color:var(--ink);font-weight:600">200 credits</b> already in it. One credit is a fixed <b style="color:var(--ink);font-weight:600">$0.10 of real underlying spend</b> — the same on every model, so a cheaper model just burns fewer credits for the same task. A light month never costs past the seat; a heavy month loads more at the same rate. So the question isn't a rate card, it's simple: what runs? Every figure below is derived from <b style="color:var(--ink);font-weight:600">real runs</b> — <span class="num" data-bind="total_runs">—</span> of them — not a spreadsheet someone wished into being.</p>
   </header>
 
+  <section class="passage" id="seat">
+    <div class="k rv">01 · the seat</div>
+    <h2 class="rv">The seat is the plan. <span class="g">Credits are already in it.</span></h2>
+    <p class="rv">A seat is <span class="num" data-bind="seat">—</span> per person per month — and it isn't a floor you pay before anything runs. It arrives <em>as</em> <span class="num" data-bind="seat_credits">—</span> credits: <span class="num" data-bind="seat_included_usd">—</span> of real underlying spend, at the same fixed <span class="num" data-bind="credit_usd">—</span> a credit. Your work draws those down. Only if you outrun them do you load more — at the exact same rate, no tier jump.</p>
+
+    <div class="seat-card rv">
+      <div class="k">the plan, in one line</div>
+      <div class="seat-head"><span class="num" data-bind="seat">—</span>/seat/month includes <span class="num" data-bind="seat_credits">—</span> credits (<span class="num" data-bind="seat_included_usd">—</span> of real spend)</div>
+      <ul class="seat-lines">
+        <li><b>Light month.</b> Your work draws down the included <span class="num" data-bind="seat_credits">—</span> credits. You never pay past the <span class="num" data-bind="seat">—</span> seat.</li>
+        <li><b>Heavy month.</b> Run out and you load more on top at the same <span class="num" data-bind="credit_usd">—</span> a credit — no tier jump, no surprise rate.</li>
+      </ul>
+      <div class="seat-fine">
+        <span><b>Included credits reset each month</b> — they don't roll over.</span>
+        <span><b>Credits you buy separately never expire.</b></span>
+      </div>
+    </div>
+  </section>
+
   <section class="passage" id="load">
-    <div class="k rv">01 · what a load buys</div>
+    <div class="k rv">02 · what a load buys</div>
     <h2 class="rv">One credit = <span class="num" data-bind="credit_usd">—</span>. Same on every model.</h2>
     <p class="rv">A credit is a fixed dollar of real spend — <span class="num" data-bind="credit_usd">—</span> of it — not a per-model token that means something different depending on which model ran. Load $5 and you hold <span class="num" data-bind="credit_per_5">—</span> credits; a cheaper model just burns fewer of them for the same task. So here's the only question that matters: what does a real task cost, and how many does a load cover?</p>
 
@@ -162,7 +196,7 @@
   </section>
 
   <section class="passage" id="recent">
-    <div class="k rv">02 · recent tasks, in credits</div>
+    <div class="k rv">03 · recent tasks, in credits</div>
     <h2 class="rv">What real tickets actually cost.</h2>
     <p class="rv">The most recent tickets this install finished, newest first — each in dollars and in the same fixed credit unit. Not a projection; what already ran.</p>
     <div class="rate-wrap rv">
@@ -177,7 +211,7 @@
 
     <details class="whence rv">
       <summary>Where the number comes from</summary>
-      <p class="whence-lead">Every credit above is real underlying spend at <span class="num" data-bind="credit_usd">—</span> each. That spend is four lines, kept apart on purpose — pass-through model cost, compute at a stated hourly rate, one visible platform fee, and human seats billed separately. Add them up yourself; the math re-runs from telemetry every time this page builds.</p>
+      <p class="whence-lead">Every credit above is real underlying spend at <span class="num" data-bind="credit_usd">—</span> each. That spend is three lines, kept apart on purpose — pass-through model cost, compute at a stated hourly rate, and one visible platform fee. (Your <span class="num" data-bind="seat">—</span> seat isn't a fourth line on top — it's <span class="num" data-bind="seat_credits">—</span> of these credits, prepaid.) Add them up yourself; the math re-runs from telemetry every time this page builds.</p>
       <ul class="ledger">
         <li class="line">
           <div class="k">model cost</div>
@@ -194,17 +228,12 @@
           <h3>One number, in the open.</h3>
           <p>Our margin, and the only one. A flat <span class="fig num" data-bind="platform_fee">—</span> on top of model + compute. It isn't buried in a marked-up token rate or a padded hourly — it's this line, and only this line. If it ever moves, you'll see it move here.</p>
         </li>
-        <li class="line">
-          <div class="k">human seats</div>
-          <h3>Per person, per month.</h3>
-          <p><span class="fig num" data-bind="seat">—</span> per person per month, for the humans in the loop — separate from anything a task costs. Seats pay for presence and access; tasks pay for work. Mixing them is how "per-seat" bills quietly become "per-everything".</p>
-        </li>
       </ul>
     </details>
   </section>
 
   <section class="passage">
-    <div class="k rv">03 · model cost</div>
+    <div class="k rv">04 · model cost</div>
     <h2 class="rv">The rate table.</h2>
     <p class="rv">Published per-million-token rates, passed through unchanged. These are the numbers the platform fee sits <em>beside</em>, never inside.</p>
     <div class="rate-wrap rv">
@@ -220,7 +249,7 @@
   </section>
 
   <section class="passage">
-    <div class="k rv">04 · a real ticket</div>
+    <div class="k rv">05 · a real ticket</div>
     <h2 class="rv">One ticket, itemised.</h2>
     <p class="rv">Not a hypothetical. A real ticket pulled from the telemetry, its real cost, broken into the four lines — the way a month-summary card itemises seats, model calls, and compute hours into one total.</p>
     <div class="receipt rv" data-bind="receipt">
@@ -238,19 +267,19 @@
   </section>
 
   <section class="passage">
-    <div class="k rv">05 · the fine print, un-fine</div>
+    <div class="k rv">06 · the fine print, un-fine</div>
     <h2 class="rv">What we don't charge for.</h2>
     <p class="rv">The costs that are ours to eat, not yours to pay. A coworker who bills you for its own mistakes isn't a coworker.</p>
     <ul class="nofees rv">
       <li><b>Retries we caused.</b> If Beckett crashed, looped, or re-ran itself because of our bug, that compute is on us.</li>
       <li><b>Failed review cycles.</b> When our own reviewer sends work back, the rework isn't a line on your bill.</li>
       <li><b>Our overhead.</b> Orchestration, scheduling, the plumbing between agents — that's the cost of running the service, not a task cost.</li>
-      <li><b>Idle presence.</b> A seat sitting quietly in your Discord doesn't meter. You pay when work happens.</li>
+      <li><b>Idle presence.</b> A seat sitting quietly in your Discord doesn't burn credits — the included allowance is for work that ships, not for showing up.</li>
     </ul>
   </section>
 
   <section class="passage">
-    <div class="k rv">06 · the receipts</div>
+    <div class="k rv">07 · the receipts</div>
     <h2 class="rv">Where the numbers come from.</h2>
     <p class="rv">Everything above is derived from this install's own run log by a committed, re-runnable script. Here's the shape of that log, so the model isn't asking you to take it on faith.</p>
     <div class="tiles rv">
