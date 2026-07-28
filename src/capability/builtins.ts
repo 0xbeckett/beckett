@@ -352,6 +352,9 @@ export const configFragments = {
       max_implement_retries: posInt.default(3),
       // Max review infra/schema retries before the ticket is left in_review for a human.
       max_review_infra_retries: posInt.default(1),
+      // Max healthy-harness substitutions for one ticket before it's parked (#84). A clean
+      // substitution is not a spawn failure, so it has its own budget separate from spawn retries.
+      max_harness_substitutions: posInt.default(6),
     })
     .default({}),
   models: z

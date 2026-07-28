@@ -62,6 +62,9 @@ export interface RetryCaps {
   implementRetries: number;
   /** Max review infra/schema retries before the dispatcher waits for a human verdict. */
   reviewInfraRetries: number;
+  /** Max healthy-harness substitutions (auth/rate-limit recovery) before parking (#84). A clean
+   *  substitution is not a spawn failure, so it is bounded by this OWN budget, not implementRetries. */
+  harnessSubstitutions: number;
 }
 
 /** Resolve the retry caps from config, falling back to the historical defaults. */
@@ -71,6 +74,7 @@ export function retryCapsFor(config: Config): RetryCaps {
     designCycles: config.supervise?.max_design_cycles ?? 2,
     implementRetries: config.supervise?.max_implement_retries ?? 3,
     reviewInfraRetries: config.supervise?.max_review_infra_retries ?? 1,
+    harnessSubstitutions: config.supervise?.max_harness_substitutions ?? 6,
   };
 }
 

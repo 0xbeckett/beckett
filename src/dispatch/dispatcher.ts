@@ -547,6 +547,13 @@ export class Dispatcher {
   private readonly reworkCount = new Map<string, number>();
   /** Per-ticket count of implement workers that ended without a clean finish, to bound auto-retry. */
   private readonly implementRetries = new Map<string, number>();
+  /**
+   * Per-ticket count of HEALTHY-harness substitutions from classed-failure recovery (#84). A clean
+   * substitution (pi rate-limited → carry on with claude) is not a spawn failure, so it must not
+   * spend an {@link implementRetries} slot — but it still needs its OWN bound so a substitute-thrash
+   * loop (every harness failing in turn) can't spin forever. Bounded by {@link RetryCaps.harnessSubstitutions}.
+   */
+  private readonly substituteRetries = new Map<string, number>();
   /** Per-ticket count of review crashes or malformed verdicts; separate from real rework cycles. */
   private readonly reviewInfraRetries = new Map<string, number>();
   /** Last silent-worker fingerprint + consecutive matching cycles; persisted across a daemon restart. */

@@ -688,6 +688,11 @@ export interface Config {
     /** Max review infra/schema retries before the ticket is left in_review for a human.
      *  Default 1 (was MAX_REVIEW_INFRA_RETRIES; OPS-180). */
     max_review_infra_retries: number;
+    /** Max healthy-harness substitutions (auth/rate-limit recovery) for one ticket before the
+     *  dispatcher stops thrashing across harnesses and parks it. A clean substitution is NOT a
+     *  spawn failure, so it has its OWN budget, separate from `max_implement_retries` (#84).
+     *  Default 6. */
+    max_harness_substitutions: number;
   };
   models: {
     /** Default review-stage model (issue #27); per-ticket casts override. */
