@@ -1733,13 +1733,11 @@ export class Dispatcher {
 
   /**
    * Reserve the ticket's slot SYNCHRONOUSLY BEFORE the async spawn, so two spawns racing through
-   * {@link spawnGuarded} can't both pass the dedup/cap checks. `replaces` atomically hands an
-   * already-counted slot from a discarded mid-spawn worker to the ticket's current stage. The
-   * token makes the retiring spawn's `finally` harmless: it can only release *its own* reservation,
-   * never the replacement's.
+   * {@link spawnGuarded} can't both pass the dedup/cap checks. The token makes a retiring spawn's
+   * `finally` harmless: it can only release *its own* reservation, never one established by an
+   * immediate re-staff for the ticket's current stage.
    */
-  private launchSpawn(ticket: Ticket, stage: string, repoRoot: string, replaces?: symbol): void {
-    if (replaces && this.staffing.get(ticket.id) !== replaces) return; // a newer event owns it
+  private launchSpawn(ticket: Ticket, stage: string, repoRoot: string): void {
     const reservation = Symbol(`${ticket.id}:${stage}`);
     this.staffing.set(ticket.id, reservation);
     this.trace(ticket, `${stage}:staff`, "started", "staffing admitted");
@@ -2077,9 +2075,10 @@ export class Dispatcher {
         await handle.abort("ticket no longer active");
         await handle.reap();
         // The discard was legitimate, but the ticket may still be active in a DIFFERENT staffable
-        // stage (it moved forward while we spawned). Transfer THIS counted reservation directly to
-        // that stage before this path unwinds. In particular, do not defer with setTimeout: the old
-        // `finally` used to delete the new spawn's shared Set entry, which was the unblock wedge.
+        // stage (it moved forward while we spawned). Re-staff that stage NOW, through the normal
+        // cap guard. Do not defer with setTimeout: the old `finally` used to delete the new spawn's
+        // shared Set entry, which was the unblock wedge. Reservation tokens make this immediate
+        // call safe — the retiring path can no longer clobber the new reservation.
         // If another event already owns a new reservation, it is responsible for staffing instead.
         if (reservationWasDropped && fresh) {
           const staffs = this.stages.forState(fresh);
@@ -2091,7 +2090,7 @@ export class Dispatcher {
               to: staffs.name,
               state: fresh,
             });
-            this.launchSpawn(restaffTicket, staffs.name, repoRoot, reservation);
+            this.spawnGuarded(restaffTicket, staffs.name);
           }
         }
         return;

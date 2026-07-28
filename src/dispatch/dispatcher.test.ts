@@ -2237,6 +2237,42 @@ describe("mid-spawn staffing race (issue #9)", () => {
     expect(d.live().filter((w) => w.state === "live")).toHaveLength(1);
   });
 
+  test("an unblocked branch re-staffs its current stage in the same turn after its spawn reservation is lost", async () => {
+    const { d, client } = newDispatcher();
+    const blocker = makeTicket({ id: "a", identifier: "OPS-A", state: "done", branchRef: "1.1", project: "project" });
+    const dependent = makeTicket({
+      id: "b", identifier: "OPS-B", state: "backlog", branchRef: "1.2", project: "project", blockedBy: ["OPS-A"],
+    });
+    client.board = [blocker, dependent];
+
+    let release!: () => void;
+    spawnGate = new Promise<void>((r) => (release = r));
+
+    // Finishing A unblocks the --needs task branch B and admits its implement spawn. A real (but briefly observed) park
+    // then drops that reservation while spawnWorker is still returning its handle.
+    await d.handle(stateChanged(blocker, "done", "in_review"));
+    await tick();
+    expect(spawnCalls).toEqual([expect.objectContaining({ ticketId: "b", stage: "implement" })]);
+    dependent.state = "todo";
+    await d.handle(stateChanged(dependent, "todo", "in_progress"));
+
+    // Before the old spawn returns, the authoritative board has progressed again — this time to
+    // review. This is the predecessor-finish/spawn race: B must not remain running without a
+    // worker while a deferred setTimeout waits behind the retiring spawn's finally.
+    dependent.state = "in_review";
+    release();
+    // Only drain promise jobs, deliberately not the timer queue. The review spawn must already be
+    // admitted; the old deferred setTimeout implementation cannot satisfy this assertion.
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+
+    expect(created[0]!.aborted).toBe(true);
+    expect(spawnCalls).toEqual([
+      expect.objectContaining({ ticketId: "b", stage: "implement" }),
+      expect.objectContaining({ ticketId: "b", stage: "review" }),
+    ]);
+    expect(d.live().filter((w) => w.state === "live")).toHaveLength(1);
+  });
+
   test("a GENUINE park (ticket really moved to todo) still tears the mid-spawn worker down", async () => {
     const { d, client } = newDispatcher();
     const ticket = makeTicket({ id: "b", identifier: "OPS-B", state: "in_progress" });
