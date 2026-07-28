@@ -81,7 +81,7 @@ ignored_authors = ["github-actions[bot]", "dependabot[bot]"]
 [proactivity]
 enabled = false
 default_mode = "off"
-triage_provider = "claude"
+triage_provider = "cerebras"
 triage_threshold = 0.55
 burst_quiet_secs = 8
 engaged_quiet_secs = 4
@@ -90,7 +90,7 @@ max_interjections_per_hour = 0
 engaged_window_secs = 180
 offer_ttl_secs = 600
 transcript_window = 15
-triage_model = "claude-haiku-4-5"
+triage_model = "gemma-4-31b"
 
 [shared_context]
 enabled = true
