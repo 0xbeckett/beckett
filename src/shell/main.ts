@@ -43,7 +43,10 @@ import { createGitHubActivityPoller, type GitHubActivityPoller } from "../github
 import { parsePrUrl } from "../github/types.ts";
 import { preflightFor } from "../drivers/index.ts";
 import { CARDS_CHANNEL_ID, createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
-import { createDiscordGateway } from "../discord/gateway.ts";
+import { createDiscordGateway, DiscordJsGateway } from "../discord/gateway.ts";
+import { VoiceGateway, type VoiceBackendFactory } from "../discord/voice/gateway.ts";
+import { classify, loadAccess, type AccessLevel } from "../discord/access.ts";
+import { loadMaintainers } from "../discord/maintainers.ts";
 import { createSystemMetricsReader } from "../system-metrics.ts";
 import { createStatusSnapshotCollector } from "../status/snapshot.ts";
 import { createStatusDashboardService, statusDashboardMessagePath, type StatusDashboardService } from "../status/service.ts";
@@ -162,6 +165,7 @@ interface BootedSystem {
   mailPoller: AgentMailPoller | null;
   dispatcher: Dispatcher;
   concierge: Concierge;
+  voiceGateway: VoiceGateway;
   statusDashboard: StatusDashboardService;
   quick: QuickRunner;
   browserAgent: BrowserAgent;
@@ -732,6 +736,41 @@ async function boot(): Promise<BootedSystem> {
   //    before we begin polling. (Constructed above so its progress sink could be wired in.)
   await concierge.start();
 
+  // ── Voice transport (#81) ──────────────────────────────────────────────────────────────────
+  // Join/leave a voice channel, receive per-speaker audio, play audio back — TRANSPORT ONLY (no
+  // STT/TTS in this branch). It rides the SAME gateway connection (a bot has one WebSocket; voice
+  // uses that guild's adapter), so it is wired here, after the gateway is live via concierge.start.
+  //
+  // Authorization mirrors the four elevated verbs EXACTLY: owner + maintainers only, resolved
+  // from Discord's AUTHENTICATED author id via the same classify()/access.txt/maintainers.txt
+  // machinery the rest of the daemon uses — never from chat content. The gate is code-enforced
+  // inside VoiceGateway (see canControlVoice).
+  const voiceOwnerId = (): string | undefined => process.env.DISCORD_OWNER_ID?.trim() || undefined;
+  const authorizeVoice = (userId: string): AccessLevel => {
+    try {
+      return classify(userId, voiceOwnerId(), loadAccess(paths.accessFile), loadMaintainers(paths.maintainersFile));
+    } catch (err) {
+      logger.warn("voice authorize classify failed; treating as outsider", { userId, error: String(err) });
+      return "outsider";
+    }
+  };
+  // The @discordjs/voice backend is imported LAZILY so a box missing its optional native/opus/
+  // encryption deps degrades to "voice join fails with a clear error" rather than failing boot.
+  const voiceBackendFactory: VoiceBackendFactory = async ({ guildId, channelId }) => {
+    const client = gateway instanceof DiscordJsGateway ? gateway.discordClient() : undefined;
+    if (!client) throw new Error("discord gateway not started; cannot join voice");
+    const { createDiscordVoiceBackendFactory } = await import("../discord/voice/backend-discordjs.ts");
+    return createDiscordVoiceBackendFactory(client, { logger: logger.child("voice.backend") })({
+      guildId,
+      channelId,
+    });
+  };
+  const voiceGateway = new VoiceGateway({
+    backendFactory: voiceBackendFactory,
+    authorize: authorizeVoice,
+    logger: logger.child("voice"),
+  });
+
   // The dashboard is one durable message in the existing cards channel. Its collector owns all
   // I/O; the renderer remains a pure snapshot → embed function.
   const statusCollector = createStatusSnapshotCollector({
@@ -898,7 +937,7 @@ async function boot(): Promise<BootedSystem> {
 
   logger.info("beckett v4 online", { liveWorkers: dispatcher.live().length, boards: [...pollers.keys()] });
 
-  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, statusDashboard, quick, browserAgent, browser, extensions, lifecycleLedgerPath };
+  return { config, logger, client, clients, poller, pollers, prPoller, activityPoller, mailPoller, dispatcher, concierge, voiceGateway, statusDashboard, quick, browserAgent, browser, extensions, lifecycleLedgerPath };
 }
 
 /** Tear the system down in reverse boot order. Best-effort: one failure never blocks the rest. */
@@ -911,6 +950,12 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
   // straggler maintain pass is serialized + best-effort by construction. Memory registered
   // LAST, so its stop runs FIRST in the reverse sweep.
   sys.statusDashboard.stop();
+  // Leave any voice channel before the gateway goes down so Beckett doesn't linger connected.
+  try {
+    await sys.voiceGateway.leaveAll();
+  } catch (err) {
+    sys.logger.warn("voice leaveAll on shutdown failed", { error: (err as Error).message });
+  }
   sys.prPoller?.stop();
   sys.activityPoller?.stop();
   sys.mailPoller?.stop();
