@@ -17,6 +17,7 @@
     "telemetry:refresh": "bun scripts/ops/telemetry-harvest.ts",
     "code-stats:refresh": "bun scripts/ops/code-stats-harvest.ts",
     "moss:smoke": "bun test src/moss-local/index.test.ts",
+    "voice:loopback": "bun scripts/voice/loopback.ts",
     "bench:startup": "bun scripts/bench/startup.ts",
     "moss:bench": "bun scripts/bench/moss-local.ts",
     "memory:bench": "bun scripts/bench/recall-memory.ts",
