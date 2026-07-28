@@ -147,11 +147,20 @@ export interface ChannelContextStore {
   /** Every channel with a non-empty bounded window, newest activity first. */
   listChannels(): ChannelInfo[];
   /**
-   * Keyword search across stored windows. HARD-scoped to guild channels: a channel with no
-   * recorded meta or a null guildId (DMs, pre-meta data) is never searched — privacy is
-   * enforced here, not in doctrine.
+   * Search across stored windows, blending a semantic pass (the local Moss index) with the
+   * literal keyword pass. HARD-scoped to guild channels: a channel with no recorded meta or a
+   * null guildId (DMs, pre-meta data) is never searched — privacy is enforced here, not in
+   * doctrine. Synchronous: it uses the index only once {@link ensureIndexed} has primed it, and
+   * always falls back to the keyword scorer when the index is missing or fails.
    */
   search(query: string, opts?: ChannelSearchOptions): ChannelSearchHit[];
+  /**
+   * Bring the semantic index up to date with the current guild windows (open it on first
+   * call, then reconcile only the channels that changed since the last call — never a rebuild
+   * per query). Await it before {@link search} for semantic ranking; skipping it degrades
+   * search to the keyword scorer. Best-effort — a broken runtime is logged, never thrown.
+   */
+  ensureIndexed(): Promise<void>;
   getProfile(channelId: string): ChannelProfile | null;
   /** Write a channel's rolling profile; the store stamps `updatedAt`. */
   setProfile(channelId: string, profile: Omit<ChannelProfile, "updatedAt">): void;
@@ -191,6 +200,21 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
   // Warn once per hostile id — a misbehaving caller shouldn't flood the log.
   const warnedChannelIds = new Set<string>();
   let watermarks: Record<string, WatermarkRecord> | null = null;
+
+  // ── semantic index (issue #73) — a disposable Moss cache derived from the guild windows.
+  // `moss` is opened lazily by ensureIndexed(); `indexed` mirrors which messageIds are in it,
+  // `dirty` is the set of channels whose index slice needs reconciling. `mossFailed` latches a
+  // broken runtime so search stays on the keyword fallback without retrying every call.
+  let moss: LocalMoss | null = null;
+  let mossOpening: Promise<LocalMoss | null> | null = null;
+  let mossFailed = false;
+  const indexed = new Map<string, Set<string>>();
+  const dirty = new Set<string>();
+
+  function markIndexDirty(channelId: string): void {
+    if (mossFailed) return;
+    dirty.add(channelId);
+  }
 
   function channelFile(channelId: string): string {
     return join(channelsDir, `${channelId}${JSONL_EXT}`);
@@ -266,6 +290,8 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
       }
     }
     appendsSinceCompact.set(channelId, 0);
+    // Compaction can drop entries out of the bounded window — the index must shed them too.
+    markIndexDirty(channelId);
   }
 
   /**
@@ -464,6 +490,93 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
     });
   }
 
+  // ── semantic index lifecycle (issue #73) ───────────────────────────────────────────────
+
+  /** Open (once) the Moss index, hydrating `indexed` from any persisted docs. Latches failure. */
+  async function openMoss(): Promise<LocalMoss | null> {
+    if (mossFailed) return null;
+    if (moss) return moss;
+    if (!mossOpening) {
+      mossOpening = (async () => {
+        try {
+          const m = await openChannelMoss(channelsDir, logger);
+          for (const d of m.list()) {
+            const cid = d.metadata?.channelId;
+            const mid = d.metadata?.messageId;
+            if (typeof cid === "string" && typeof mid === "string") {
+              (indexed.get(cid) ?? indexed.set(cid, new Set()).get(cid)!).add(mid);
+            }
+          }
+          // First contact: reconcile every guild window (initial build / migrate a pre-index
+          // store) and every channel already in the persisted index (prune stale/no-longer-guild).
+          for (const id of guildChannelIds()) dirty.add(id);
+          for (const id of indexed.keys()) dirty.add(id);
+          return m;
+        } catch (err) {
+          logger.warn("channel search: local moss unavailable — using the keyword fallback", {
+            error: (err as Error).message,
+          });
+          mossFailed = true;
+          return null;
+        }
+      })();
+    }
+    moss = await mossOpening;
+    return moss;
+  }
+
+  /**
+   * Reconcile the dirty channels' index slices against their live guild windows: upsert
+   * newly-appended entries (content is immutable per messageId, so an already-indexed id is
+   * never re-embedded), delete entries that dropped out of the window (compaction/TTL) and
+   * everything belonging to a channel that is not — or no longer — a guild channel. Incremental
+   * by construction: an unchanged store reconciles nothing.
+   */
+  async function reconcileIndex(m: LocalMoss): Promise<void> {
+    if (dirty.size === 0) return;
+    const targets = [...dirty];
+    dirty.clear();
+    const ms = getMetas();
+    const upserts: MossDocument[] = [];
+    const deletes: string[] = [];
+    for (const id of targets) {
+      if (!CHANNEL_ID_RE.test(id)) continue;
+      const meta = ms[id];
+      const isGuild = !!meta && meta.guildId !== null;
+      const have = indexed.get(id) ?? new Set<string>();
+      const want = new Set<string>();
+      if (isGuild) {
+        for (const e of bounded(ensureLoaded(id))) {
+          const doc = channelDocument(id, e);
+          if (!doc) continue;
+          want.add(e.messageId);
+          if (!have.has(e.messageId)) upserts.push(doc);
+        }
+      }
+      for (const mid of have) if (!want.has(mid)) deletes.push(channelDocId(id, mid));
+      if (want.size > 0) indexed.set(id, want);
+      else indexed.delete(id);
+    }
+    if (deletes.length > 0) await m.delete(deletes);
+    if (upserts.length > 0) await m.upsert(upserts);
+    await m.flush();
+  }
+
+  /** Drop the in-memory index handle and delete its on-disk cache (a wipe / reset). */
+  function dropIndex(): void {
+    moss?.dispose();
+    moss = null;
+    mossOpening = null;
+    mossFailed = false;
+    indexed.clear();
+    dirty.clear();
+    try {
+      rmSync(channelMossDir(channelsDir), { recursive: true, force: true });
+    } catch {
+      /* best-effort — the cache rebuilds from the windows on the next ensureIndexed */
+    }
+  }
+
   return {
     append(channelId: string, entry: ChannelEntry): void {
       if (!validChannelId(channelId)) return;
@@ -483,6 +596,7 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
           error: (err as Error).message,
         });
       }
+      markIndexDirty(channelId);
       const appends = (appendsSinceCompact.get(channelId) ?? 0) + 1;
       if (appends >= compactEvery) compact(channelId);
       else appendsSinceCompact.set(channelId, appends);
@@ -526,6 +640,8 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
       if (cur && cur.name === name && cur.guildId === meta.guildId) return;
       ms[channelId] = { name, guildId: meta.guildId };
       persistJsonMap(META_FILE, ms);
+      // A guildId that just appeared/changed flips whether this channel is indexable.
+      if (!cur || cur.guildId !== meta.guildId) markIndexDirty(channelId);
     },
 
     getMeta(channelId: string): ChannelMeta | null {
@@ -558,27 +674,72 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
       return out.sort((a, b) => b.lastTs - a.lastTs);
     },
 
+    async ensureIndexed(): Promise<void> {
+      const m = await openMoss();
+      if (!m) return;
+      try {
+        await reconcileIndex(m);
+      } catch (err) {
+        logger.warn("channel search: index sync failed — search will use the keyword fallback", {
+          error: (err as Error).message,
+        });
+      }
+    },
+
     search(query: string, opts: ChannelSearchOptions = {}): ChannelSearchHit[] {
-      const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];
-      if (terms.length === 0) return [];
+      // Keyword terms: distinct, stopwords stripped so "the/is/of" no longer inflate a score.
+      const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))].filter(
+        (t) => !STOP_WORDS.has(t),
+      );
+      const trimmed = query.trim();
+      if (terms.length === 0 && !trimmed) return [];
       const limit = Math.max(1, opts.limit ?? DEFAULT_SEARCH_LIMIT);
       const radius = Math.max(0, opts.contextRadius ?? DEFAULT_CONTEXT_RADIUS);
       const ms = getMetas();
       let ids = guildChannelIds(opts.guildId);
       if (opts.channelId !== undefined) ids = ids.filter((id) => id === opts.channelId);
+      const idSet = new Set(ids);
 
-      // Score = distinct terms matched (a crude trailing-s stem catches movie/movies), then
-      // recency. Windows are hard-capped per channel, so a full scan stays cheap.
+      // Semantic pass (issue #73): when the index is primed (ensureIndexed already awaited) and
+      // healthy, retrieve candidates through Moss and score each by calibrated cosine over the
+      // offline embeddings, floored to reject hash-collision noise. Failure is caught and the
+      // keyword pass carries the search alone — a search never hard-errors. DMs cannot appear:
+      // they are never indexed, and every hit is re-gated to `idSet` (guild windows) below.
+      const semScores = new Map<string, number>();
+      if (!mossFailed && moss && moss.docCount > 0 && trimmed) {
+        try {
+          const qEmb = embedLocal(trimmed);
+          const topK = Math.min(moss.docCount, SEM_TOPK_CAP);
+          for (const hit of moss.query(trimmed, undefined, { topK, semanticWeight: RANKING_SEMANTIC_WEIGHT }).docs) {
+            const cid = hit.metadata?.channelId;
+            const mid = hit.metadata?.messageId;
+            if (typeof cid !== "string" || typeof mid !== "string" || !idSet.has(cid)) continue;
+            const rel = cosineSim(qEmb, embedLocal(hit.text));
+            if (rel >= SEM_FLOOR) semScores.set(channelDocId(cid, mid), rel);
+          }
+        } catch (err) {
+          logger.warn("channel search: semantic scoring failed — keyword only", {
+            error: (err as Error).message,
+          });
+          semScores.clear();
+        }
+      }
+
+      // Blended score = distinct keyword terms matched (a crude trailing-s stem catches
+      // movie/movies) + the semantic relevance of a passing hit, then recency. Windows are
+      // hard-capped per channel, so a full scan stays cheap.
       const raw: Array<{ channelId: string; index: number; window: ChannelEntry[]; score: number }> = [];
       for (const id of ids) {
         const window = bounded(ensureLoaded(id));
         for (let i = 0; i < window.length; i++) {
-          const hay = `${window[i]!.content}\n${window[i]!.authorName}`.toLowerCase();
+          const hay = channelEntryText(window[i]!).toLowerCase();
           let score = 0;
           for (const t of terms) {
             const stem = t.replace(/s$/, "");
             if (hay.includes(t) || (stem.length >= 3 && hay.includes(stem))) score += 1;
           }
+          const sem = semScores.get(channelDocId(id, window[i]!.messageId));
+          if (sem !== undefined) score += SEM_WEIGHT * sem;
           if (score > 0) raw.push({ channelId: id, index: i, window, score });
         }
       }
@@ -679,6 +840,11 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
       if (marksChanged) persistWatermarks();
       if (metasChanged) persistJsonMap(META_FILE, ms);
       if (profilesChanged) persistJsonMap(PROFILES_FILE, ps);
+      // The index is derived from message content — a wipe (the privacy path) must take it
+      // along, at rest too. Drop the whole cache; it rebuilds from surviving windows on the
+      // next ensureIndexed. dispose() first so an orphaned persist timer can't rewrite the
+      // files we just deleted.
+      dropIndex();
       return wiped;
     },
   };

@@ -3707,7 +3707,10 @@ export class Concierge {
               const channelId =
                 typeof req.args.channelId === "string" && req.args.channelId.trim() ? req.args.channelId.trim() : undefined;
               const limit = clampInt(req.args.limit, 1, 25, 8);
-              const hits = this.channelStoreForOps()
+              const store = this.channelStoreForOps();
+              // Prime the semantic index (incremental) before the synchronous blended search.
+              await store.ensureIndexed();
+              const hits = store
                 .search(query, { limit, channelId })
                 .map((h) => ({
                   channelId: h.channelId,

@@ -681,7 +681,9 @@ export async function runChannels(argv: string[]): Promise<void> {
     const channelId = typeof flags.channel === "string" && flags.channel.trim() ? flags.channel.trim() : undefined;
     await busOrDirect("channels.search", { query, limit, ...(channelId ? { channelId } : {}) }, async () => {
       const { renderEntryLine } = await import("../concierge/channel-context.ts");
-      const hits = (await directStore()).search(query, { limit, channelId }).map((h) => ({
+      const store = await directStore();
+      await store.ensureIndexed();
+      const hits = store.search(query, { limit, channelId }).map((h) => ({
         channelId: h.channelId,
         channelName: h.channelName,
         ts: h.entry.ts,
