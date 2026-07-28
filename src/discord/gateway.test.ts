@@ -49,6 +49,64 @@ function fakeEditableGateway(edit: (payload: Record<string, unknown>) => Promise
   return gateway;
 }
 
+test("postImage uploads the screenshot and returns its Discord CDN url (#75)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shot-"));
+  const png = join(dir, "frontend.png");
+  writeFileSync(png, "PNG");
+  try {
+    const sent: Array<{ files?: unknown }> = [];
+    const message = { id: "m-1", attachments: { first: () => ({ url: "https://cdn.discord/frontend.png" }) } };
+    const channel = {
+      isSendable: () => true,
+      isTextBased: () => true,
+      send: async (payload: { files?: unknown }) => {
+        sent.push(payload);
+        return message;
+      },
+      messages: { fetch: async (id: string) => (id === "m-1" ? message : null) },
+    };
+    const gateway = new DiscordJsGateway();
+    (gateway as unknown as { client: unknown; connected: boolean }).client = {
+      channels: { fetch: async () => channel },
+    };
+    (gateway as unknown as { connected: boolean }).connected = true;
+
+    const url = await gateway.postImage("chan-1", "shot", png);
+    expect(url).toBe("https://cdn.discord/frontend.png");
+    expect(sent).toHaveLength(1); // the file was posted as the channel ping
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("postImage degrades to null when the CDN url can't be resolved (#75)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shot-"));
+  const png = join(dir, "frontend.png");
+  writeFileSync(png, "PNG");
+  try {
+    const channel = {
+      isSendable: () => true,
+      isTextBased: () => true,
+      send: async () => ({ id: "m-2" }),
+      messages: {
+        fetch: async () => {
+          throw new Error("message gone");
+        },
+      },
+    };
+    const gateway = new DiscordJsGateway();
+    (gateway as unknown as { client: unknown; connected: boolean }).client = {
+      channels: { fetch: async () => channel },
+    };
+    (gateway as unknown as { connected: boolean }).connected = true;
+
+    const url = await gateway.postImage("chan-1", "shot", png);
+    expect(url).toBe(null); // channel ping still happened; only the embed url is unavailable
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("editMessage PATCHes content and embeds while connected", async () => {
   const patches: Array<Record<string, unknown>> = [];
   const gateway = fakeEditableGateway(async (payload) => { patches.push(payload); });

@@ -2566,6 +2566,58 @@ describe("worktrees (v3.2)", () => {
     expect(worktreeRemoves).toContain(ws); // shipped → torn down
   });
 
+  test("a landed ticket fires the frontend screenshot from its built worktree, THEN disposes it (#75)", async () => {
+    const { d } = newDispatcher();
+    const captures: Array<{ id: string; workspace: string; baseRef: string }> = [];
+    let workspaceAtCaptureStillPresent = false;
+    d.setScreenshotCapturer({
+      capture: async ({ ticket, workspace, baseRef }) => {
+        captures.push({ id: ticket.id, workspace, baseRef });
+        // The worktree must still exist WHEN the screenshot runs (built branch, not main).
+        workspaceAtCaptureStillPresent = !worktreeRemoves.includes(workspace);
+        return { status: "attached" };
+      },
+    });
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "implemented");
+    await tick();
+    const ws = worktreeAdds[0]!.workspace;
+
+    created.at(-1)!.finish("success", "looks good", doneSignal("complete"));
+    await tick();
+    await tick();
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]!.id).toBe("tkt-1");
+    expect(captures[0]!.workspace).toBe(ws);
+    expect(workspaceAtCaptureStillPresent).toBe(true); // captured before disposal
+    expect(worktreeRemoves).toContain(ws); // disposed after the capture
+  });
+
+  test("a screenshot capturer that throws never blocks the finish or the worktree teardown (#75)", async () => {
+    const { d, client } = newDispatcher();
+    d.setScreenshotCapturer({
+      capture: async () => {
+        throw new Error("screenshot subsystem exploded");
+      },
+    });
+    const ticket = makeTicket();
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    created[0].finish("success", "implemented");
+    await tick();
+    const ws = worktreeAdds[0]!.workspace;
+
+    created.at(-1)!.finish("success", "looks good", doneSignal("complete"));
+    await tick();
+    await tick();
+
+    expect(client.setStateCalls).toContainEqual({ id: "tkt-1", state: "done" }); // still marked done
+    expect(worktreeRemoves).toContain(ws); // still torn down despite the throw
+  });
+
   test("a cancelled ticket's worktree is torn down", async () => {
     const { d } = newDispatcher();
     const ticket = makeTicket();
