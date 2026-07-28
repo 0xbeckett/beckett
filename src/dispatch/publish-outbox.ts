@@ -11,6 +11,8 @@ import type { Ticket } from "../tracker/types.ts";
 import type { Logger } from "../types.ts";
 
 export const PUBLISH_RETRY_DELAYS_MS = [60_000, 5 * 60_000, 30 * 60_000] as const;
+/** Longest a retry hold can legitimately be scheduled out; anything beyond is a sentinel/bug. */
+export const MAX_PUBLISH_RETRY_DELAY_MS = Math.max(...PUBLISH_RETRY_DELAYS_MS);
 export type PublishPurpose = "done" | "wip";
 
 export interface PublishOperation {

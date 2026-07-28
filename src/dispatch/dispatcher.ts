@@ -71,6 +71,7 @@ import { appendSpendRecord, readSpendLedger, spendForTicket, type SpendOutcome }
 import {
   PublishOutbox,
   PUBLISH_RETRY_DELAYS_MS,
+  MAX_PUBLISH_RETRY_DELAY_MS,
   classifyPublishError,
   type PublishOperation,
   type PublishPurpose,
@@ -3358,7 +3359,10 @@ export class Dispatcher {
 
   /** Visible state for the board: comments are durable across tracker versions, including label text. */
   private async holdForPublish(ticket: Ticket, op: PublishOperation, error: string, delayMs: number): Promise<void> {
-    const retry = Math.round(delayMs / 60_000);
+    // Never format a raw delay: a sentinel or miscomputed value must not surface as an absurd ETA.
+    // Clamp into [0, longest configured retry] so the comment can only ever show a plausible wait.
+    const clampedMs = Math.min(Math.max(0, delayMs), MAX_PUBLISH_RETRY_DELAY_MS);
+    const retry = Math.round(clampedMs / 60_000);
     const body =
       `🏷️ **Label: \`beckett:publish-pending\`**\n\nGitHub publish attempt ${op.attempt} failed ` +
       `(${error}). The completed work is held in **in_review** with its worktree intact; retry ${op.attempt + 1} ` +
@@ -3392,6 +3396,15 @@ export class Dispatcher {
   }
 
   /**
+   * A permanent park (see parkPermanentPublish) marks its row never-due with a far-future
+   * nextAttemptAt sentinel. A genuine retry is only ever scheduled within the configured backoff,
+   * so any hold beyond the longest configured delay is a sentinel, not a real wait.
+   */
+  private isPermanentlyParkedPublish(op: PublishOperation): boolean {
+    return op.nextAttemptAt - Date.now() > MAX_PUBLISH_RETRY_DELAY_MS;
+  }
+
+  /**
    * Repair the append-before-tracker-write crash window without running a retry ahead of schedule.
    * A state other than the expected hold is a human intervention and relinquishes the row.
    */
@@ -3401,6 +3414,17 @@ export class Dispatcher {
     const current = await this.clientForTicketId(op.ticket.id, op.ticket.projectId).getIssue?.(op.ticket.id);
     if (!current || current.state === "in_review") return null;
     if (current.state === "in_progress") {
+      // Ask what kind of row this is instead of doing arithmetic on its nextAttemptAt. A row parked
+      // by parkPermanentPublish carries a never-due sentinel (MAX_SAFE_INTEGER); reading that as a
+      // retry delay re-labels a human-courier row as auto-retrying with an absurd ETA (issue #109).
+      if (this.isPermanentlyParkedPublish(op)) {
+        await this.parkPermanentPublish(
+          current,
+          op,
+          "recovering a permanently parked publish request after an interrupted state update",
+        );
+        return { action: "keep", operation: op };
+      }
       await this.holdForPublish(
         current,
         op,
