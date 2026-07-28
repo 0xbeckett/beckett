@@ -1023,8 +1023,12 @@ print_finish() {
     return
   fi
 
-  printf '\nThe daemon is running in healthy-pending-configuration mode. Check it with:\n'
-  printf '  sudo -iu %s beckett status --pretty\n' "${BECKETT_USER}"
+  if [ "${NO_START}" -eq 1 ]; then
+    printf '\nThe daemon was left stopped because --no-start was supplied, and the configuration is still incomplete. Once the values below are filled in, start it with the validated path:\n'
+  else
+    printf '\nThe daemon is running in healthy-pending-configuration mode. Check it with:\n'
+    printf '  sudo -iu %s beckett status --pretty\n' "${BECKETT_USER}"
+  fi
   printf '\nFinish the account logins as the %s user:\n' "${BECKETT_USER}"
   [ -s "${BECKETT_HOME}/.claude/.credentials.json" ] ||
     printf '  sudo -iu %s claude auth login\n' "${BECKETT_USER}"
