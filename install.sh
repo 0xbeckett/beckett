@@ -393,8 +393,11 @@ install_user_toolchain() {
     log "Codex CLI already installed ($(as_beckett codex --version | head -n 1))"
   fi
 
+  # Discard stderr, not merge it: a missing `pi` makes runuser print "exec: pi: not found", and
+  # capturing that with 2>&1 hands version_ge a non-empty string that sort -V ranks ABOVE 0.78.0,
+  # so the installer would falsely report "already installed" and never install Pi at all.
   local pi_version=""
-  pi_version="$(as_beckett pi --version 2>&1 | head -n 1 || true)"
+  pi_version="$(as_beckett pi --version 2>/dev/null | head -n 1 || true)"
   if [ -n "${pi_version}" ] && version_ge "${pi_version}" "0.78.0"; then
     log "Pi already installed (${pi_version})"
   else
@@ -472,7 +475,35 @@ provision_tracker() {
   # keeps the tracker stopped exactly like Beckett; start_tracker brings it up on the validated start
   # path. --worker /bin/false with --max-workers 1 keeps bored a pure ticket store — Beckett spawns and
   # drives every worker itself over the control bus, never through bored's seat runner.
-  as_beckett_user_service "${BORED_CHECKOUT}/scripts/install-systemd-user-service.sh" \
+  #
+  # bored's installer ends with `loginctl enable-linger "$USER"` under `set -e`. A non-root user cannot
+  # set its own linger without an interactive polkit agent, so on a stock VPS — and in the from-zero
+  # check container — that call fails "Access denied" and aborts the whole install. We already enabled
+  # linger for ${BECKETT_USER} as root in ensure_beckett_user, so this call is redundant: shim loginctl
+  # for just this invocation to swallow enable-linger and pass every other subcommand to the real
+  # binary. The shim lives in a throwaway dir prepended to PATH; it never touches the installed system.
+  local uid runtime_dir shim_dir shim_tmp
+  uid="$(id -u "${BECKETT_USER}")"
+  runtime_dir="/run/user/${uid}"
+  shim_dir="${BECKETT_HOME}/.local/share/beckett-install-shim"
+  as_beckett rm -rf -- "${shim_dir}"
+  as_beckett mkdir -p "${shim_dir}"
+  shim_tmp="$(mktemp)"
+  TEMP_PATHS+=("${shim_tmp}" "${shim_dir}")
+  cat > "${shim_tmp}" <<'SHIM'
+#!/usr/bin/env bash
+# Transient shim installed by Beckett's installer; root already enabled linger for the service user.
+if [ "${1:-}" = "enable-linger" ]; then exit 0; fi
+exec /usr/bin/loginctl "$@"
+SHIM
+  chown "${BECKETT_USER}:${BECKETT_USER}" "${shim_tmp}"
+  as_beckett install -m 0755 "${shim_tmp}" "${shim_dir}/loginctl"
+
+  as_beckett env \
+    XDG_RUNTIME_DIR="${runtime_dir}" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
+    PATH="${shim_dir}:$(beckett_path)" \
+    "${BORED_CHECKOUT}/scripts/install-systemd-user-service.sh" \
     --source "${BORED_CHECKOUT}" \
     --repo "${BECKETT_REPO}" \
     --root "${BORED_STATE}" \
@@ -480,6 +511,7 @@ provision_tracker() {
     --worker /bin/false \
     --max-workers 1 \
     --owner-dm owner
+  as_beckett rm -rf -- "${shim_dir}"
 }
 
 start_tracker() {
