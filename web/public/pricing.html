@@ -385,10 +385,11 @@
         return '<tr><th scope="row">'+esc(e.label)+'</th>'+
                '<td class="n">'+usd(e.charge_usd)+' · '+e.credits+' cr</td>'+cells+'</tr>';
       }).join('');
-      // plain-language summary at $5: "50 quick fixes, 23 small features, or 8 typical tasks"
+      // plain-language summary at the lowest load: "50 quick fixes, 23 small features, or 8 typical tasks"
+      var lowBudget = budgets[0];
       var plural = function(w){ return /(x|s|sh|ch)$/.test(w) ? w + 'es' : w + 's'; };
       var five = examples.map(function(e){
-        var c = (e.covers.find(function(x){ return x.budget_usd === 5; })||{}).count;
+        var c = (e.covers.find(function(x){ return x.budget_usd === lowBudget; })||{}).count;
         var name = e.label.replace(/^a\s+/,'');
         return c + ' ' + (c === 1 ? name : plural(name));
       });

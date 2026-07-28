@@ -1,0 +1,13 @@
+[Unit]
+Description=Beckett pricing rework preview (ticket #94), beckett-preview.0xbeckett.me
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/beckett/Projects/beckett/.beckett/worktrees/#94/web/public
+ExecStart=/usr/bin/python3 -m http.server 8796 --bind 127.0.0.1
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
