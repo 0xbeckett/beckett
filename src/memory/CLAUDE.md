@@ -75,6 +75,26 @@ plus an explicit "check before filing" instruction — this is the fix for the m
 depended on the model remembering to look. The field is optional and absent reads as `[]`, so
 loops predating linking need no migration.
 
+## Person files (`people.ts`, issue #59)
+
+`people/<discord-user-id>.md` is the standard home for everything known about a person. The node
+NAME is the Discord snowflake, so "who is this id" is one lookup and the join with the turn stamp is
+exact — which is why `renderNode` quotes an all-digit `name:` (a bare one round-trips as a Number
+and the file silently drops out of the graph). Same shape as `loops.ts` / `calibration.ts`: reads go
+straight off `buildGraph()` through `canView`, writes go through `MemoryStore.remember`.
+
+`upsertPerson` forces `visibility: owner` — person files are exactly where contact info and
+real-world identity accumulate, so they must never reach the public `MEMORY.md`. It preserves the
+existing body and APPENDS a dated note; a person file accretes, it is never overwritten.
+
+The split with `~/.beckett/identities.json` (`src/discord/identity.ts`) is load-bearing: the json is
+ONLY the structured id → address map (`display_name`, `known_name`, `preferred_address`,
+`is_owner`) that `resolveSpeaker` reads on EVERY turn to build the stamp. Do not put free text
+there, and do not make that path parse markdown. `renderPersonBlock` is the per-SPEAKER analogue of
+the per-CHANNEL calibration bar; the concierge injects it on a speaker's first turn in a session
+(it can't ride the system prompt — a session is scoped to a room, and a room has many speakers).
+It renders the address but never `role:owner`: authority is the live code-stamped turn header.
+
 ## The dream namespace (`rememberDream`, issue #36)
 
 `dream`-type nodes are INFERENCES from the nightly dream pass (`src/dream/`), never observed

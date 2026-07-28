@@ -114,7 +114,9 @@ test("renderPersonBlock is id-scoped, bounded, and empty for an unknown id or br
   await upsertPerson(memory, { discordId: WORM, address: "angry worm", note: "worm note" });
 
   const block = renderPersonBlock(memory, OWNER);
-  expect(block.startsWith(`<person user:${OWNER} address:"Jason" role:owner>`)).toBe(true);
+  expect(block.startsWith(`<person user:${OWNER} address:"Jason">`)).toBe(true);
+  // The file describes the person; it never asserts authority — that is the live turn stamp's job.
+  expect(block).not.toContain("role:owner");
   expect(block.endsWith("</person>")).toBe(true);
   expect(block).toContain("owner note");
   // Nobody else's file can ride along.

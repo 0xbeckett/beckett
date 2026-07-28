@@ -113,6 +113,7 @@ test("a speaker's person file is loaded into the session once, and never someone
     const log = { debug() {}, info() {}, warn() {}, error() {}, child: () => log };
     return log as unknown as Logger;
   })();
+  writeFileSync(join(dir, "access.txt"), `${BOB}\n`, "utf8");
   const memory = createMemory({ memoryDir: join(dir, "memory"), logger: quiet, git: false });
   await upsertPerson(memory, { discordId: ALICE, address: "Sam", note: "prefers terse answers" });
   await upsertPerson(memory, { discordId: BOB, address: "Bob", note: "bob only fact" });
@@ -121,7 +122,9 @@ test("a speaker's person file is loaded into the session once, and never someone
   const c = new Concierge({ config: config(), session: fakeSession(asks), gateway: fakeGateway(), memory });
 
   await c.onMessage(message({ userId: ALICE, authorDisplayName: "alice", messageId: "m1" }));
-  expect(stamp(asks[0]!)).toContain(`<person user:${ALICE} address:"Sam" role:owner>`);
+  expect(stamp(asks[0]!)).toContain(`<person user:${ALICE} address:"Sam">`);
+  // Authority stays with the live code-stamped turn header, never with a stored file.
+  expect(stamp(asks[0]!)).not.toContain(`address:"Sam" role:owner`);
   expect(stamp(asks[0]!)).toContain("prefers terse answers");
   // Another person's book never rides along.
   expect(stamp(asks[0]!)).not.toContain("bob only fact");
