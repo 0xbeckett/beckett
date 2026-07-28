@@ -4,9 +4,12 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT=""
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT
 readonly NAME="beckett-public-install-$$"
 readonly IMAGE="ubuntu:24.04"
+TMP_SOURCE="$(mktemp -d)"
 DOCKER=(docker)
 if ! docker info >/dev/null 2>&1; then
   DOCKER=(sudo docker)
@@ -14,6 +17,7 @@ fi
 
 cleanup() {
   "${DOCKER[@]}" rm -f "${NAME}" >/dev/null 2>&1 || true
+  rm -rf "${TMP_SOURCE}"
 }
 trap cleanup EXIT
 
@@ -30,19 +34,15 @@ trap cleanup EXIT
 tar \
   --exclude=.git --exclude=.beckett --exclude=node_modules --exclude=.bun \
   --exclude=playwright --exclude='metrics-dashboard/node_modules' \
-  -C "${ROOT}" -cf - . |
-  "${DOCKER[@]}" exec -i "${NAME}" bash -c '
-    set -Eeuo pipefail
-    mkdir /source
-    tar -xf - -C /source
-    cd /source
-    git init -b main
-    git config user.email installer-check@example.invalid
-    git config user.name installer-check
-    git add .
-    git commit -m "installer check snapshot"
-    chmod -R a+rX /source
-  '
+  -C "${ROOT}" -cf - . | tar -xf - -C "${TMP_SOURCE}"
+git -C "${TMP_SOURCE}" init -b main >/dev/null
+git -C "${TMP_SOURCE}" config user.email installer-check@example.invalid
+git -C "${TMP_SOURCE}" config user.name installer-check
+git -C "${TMP_SOURCE}" add .
+git -C "${TMP_SOURCE}" commit -m "installer check snapshot" >/dev/null
+"${DOCKER[@]}" exec "${NAME}" mkdir /source
+"${DOCKER[@]}" cp "${TMP_SOURCE}/." "${NAME}:/source"
+"${DOCKER[@]}" exec "${NAME}" chmod -R a+rX /source
 
 # Match the README's `curl | bash` execution shape (there is no script path/BASH_SOURCE entry).
 # `--non-interactive` is needed because this check deliberately has no secrets or a TTY.
@@ -57,6 +57,7 @@ tar \
   set -Eeuo pipefail
   sudo -iu beckett systemctl --user is-active --quiet beckett-v4.service
   status="$(sudo -iu beckett beckett status)"
+  # shellcheck disable=SC2016 # The jq filter must reach the container literally.
   printf "%s\n" "$status" | jq -e '"'"'.state == "healthy-pending-configuration"'"'"' >/dev/null
   test -f /home/beckett/.beckett/.env
   test -f /home/beckett/.beckett/config.toml

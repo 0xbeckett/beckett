@@ -160,7 +160,7 @@ describe("public installer input and file contracts", () => {
     expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
   });
 
-  test("browser provisioning installs Linux deps before Chromium and typecheck", () => {
+  test("browser provisioning installs Linux deps before Chromium and keeps the live smoke opt-in", () => {
     const installer = readFileSync(INSTALLER, "utf8");
     const start = installer.indexOf("install_app_dependencies() {");
     const end = installer.indexOf("\n}\n", start);
@@ -171,13 +171,15 @@ describe("public installer input and file contracts", () => {
     const dependencyInstall = block.indexOf("install --frozen-lockfile");
     const systemDeps = block.indexOf("install-deps chromium");
     const chromium = block.indexOf("install --no-shell chromium");
+    const smoke = block.indexOf("BECKETT_INSTALL_BROWSER_SMOKE");
     const typecheck = block.indexOf("run typecheck");
-    for (const marker of [dependencyInstall, systemDeps, chromium, typecheck]) {
+    for (const marker of [dependencyInstall, systemDeps, chromium, smoke, typecheck]) {
       expect(marker).toBeGreaterThanOrEqual(0);
     }
     expect(systemDeps).toBeGreaterThan(dependencyInstall);
     expect(chromium).toBeGreaterThan(systemDeps);
-    expect(typecheck).toBeGreaterThan(chromium);
+    expect(smoke).toBeGreaterThan(chromium);
+    expect(typecheck).toBeGreaterThan(smoke);
   });
 
   test("generated config is strict, private, and instance-specific", async () => {

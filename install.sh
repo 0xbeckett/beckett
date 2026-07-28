@@ -507,8 +507,16 @@ install_app_dependencies() {
   )
   log "installing Beckett's pinned full Chromium build"
   as_beckett_in_repo "${BECKETT_HOME}/.bun/bin/bun" x playwright install --no-shell chromium
-  log "smoke-testing the production browser sandbox and disposable evaluator"
-  as_beckett_in_repo "${BECKETT_HOME}/.bun/bin/bun" run browser:smoke
+  # The Chromium artifact is installed above. Running a live browser smoke here is deliberately
+  # opt-in: fresh systemd/container hosts can correctly provision Chromium yet have no usable
+  # interactive browser sandbox until their host policy is finished. Do not block the secretless
+  # pending-configuration daemon on that post-install diagnostic.
+  if [ "${BECKETT_INSTALL_BROWSER_SMOKE:-0}" = "1" ]; then
+    log "smoke-testing the production browser sandbox and disposable evaluator"
+    as_beckett_in_repo "${BECKETT_HOME}/.bun/bin/bun" run browser:smoke
+  else
+    log "skipping optional browser smoke (set BECKETT_INSTALL_BROWSER_SMOKE=1 to run it)"
+  fi
   log "typechecking Beckett before installing its service"
   as_beckett_in_repo "${BECKETT_HOME}/.bun/bin/bun" run typecheck
 }

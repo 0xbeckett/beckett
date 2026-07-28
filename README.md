@@ -143,7 +143,9 @@ bash /tmp/install-beckett.sh        # as root; otherwise: sudo bash /tmp/install
 It creates an unprivileged `beckett` account, enables user-service lingering, installs Node 24
 LTS plus Bun/Claude/Codex/Pi/GitHub CLI, clones the locked app dependencies, provisions the
 [bored](https://github.com/frgmt0/bored) ticket tracker (clone + build + a loopback `bored.service`
-user unit), writes private instance config, and links the systemd units. It deliberately does
+user unit), downloads Chromium, writes private instance config, and links the systemd units. Set
+`BECKETT_INSTALL_BROWSER_SMOKE=1` only when you want the optional live browser-sandbox smoke during
+installation (it is otherwise a post-install diagnostic). It deliberately does
 **not** grant passwordless sudo or weaken the host's AppArmor policy.
 
 Have these ready when prompted:
@@ -177,7 +179,9 @@ curl -fsSL https://raw.githubusercontent.com/0xbeckett/beckett/main/install.sh |
   bash -s -- --repo https://github.com/<you>/beckett.git
 ```
 
-The manual/advanced path remains in [`deploy/host-setup.md`](deploy/host-setup.md).
+The manual/advanced path remains in [`deploy/host-setup.md`](deploy/host-setup.md). Maintainers can
+re-run the from-zero Docker/systemd check with `./scripts/check-public-install.sh`; it uses the real
+installer and downloads, but intentionally leaves configuration blank to assert the pending state.
 `deploy/install.sh` is the lower-level unit refresher; `--no-start` links the units and enforces a
 stopped/disabled daemon, while the default path restarts onto current code and waits for a real
 control-socket response before reporting either normal readiness or
