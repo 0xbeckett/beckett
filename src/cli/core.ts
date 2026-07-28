@@ -1310,6 +1310,11 @@ export async function runStatus(argv: string[]): Promise<void> {
   if (!flags.pretty) out(data);
   const lines: string[] = [];
   lines.push(`beckett v${data.version} @ ${data.commit} — pid ${data.pid}, up ${fmtSecs(data.uptimeSecs)}`);
+  if (data.state === "healthy-pending-configuration") {
+    lines.push("state:     healthy-pending-configuration");
+    for (const problem of data.configuration?.problems ?? []) lines.push(`configure: ${problem}`);
+    out(lines.join("\n"));
+  }
   lines.push(`discord:   ${data.discord?.connected ? "connected" : "DISCONNECTED"}`);
   const p = data.poller ?? {};
   lines.push(

@@ -934,20 +934,27 @@ install_units() {
   local problems
   problems="$(readiness_problems)"
 
-  log "linking units and staging the daemon while installation checks run"
-  as_beckett env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
-    "${BECKETT_REPO}/deploy/install.sh" --no-start
-
-  if [ "${NO_START}" -eq 1 ] || [ -n "${problems}" ]; then
-    if [ -n "${problems}" ]; then
-      warn "Beckett is installed but not started:"
-      while IFS= read -r problem; do
-        [ -n "${problem}" ] && printf '  - %s\n' "${problem}" >&2
-      done <<< "${problems}"
-    fi
+  if [ "${NO_START}" -eq 1 ]; then
+    log "linking units without starting the daemon (--no-start)"
+    as_beckett env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+      "${BECKETT_REPO}/deploy/install.sh" --no-start
     return
   fi
 
+  if [ -n "${problems}" ]; then
+    log "starting the status-only daemon pending first-run configuration"
+    as_beckett env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+      "${BECKETT_REPO}/deploy/install.sh"
+    warn "Beckett is healthy-pending-configuration:"
+    while IFS= read -r problem; do
+      [ -n "${problem}" ] && printf '  - %s\n' "${problem}" >&2
+    done <<< "${problems}"
+    return
+  fi
+
+  log "linking units before the fully configured daemon starts"
+  as_beckett env XDG_RUNTIME_DIR="${runtime_dir}" DBUS_SESSION_BUS_ADDRESS="${bus}" \
+    "${BECKETT_REPO}/deploy/install.sh" --no-start
   start_tracker
   preflight_tracker
   log "configuration is complete; enabling and starting Beckett"

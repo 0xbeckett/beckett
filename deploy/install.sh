@@ -77,27 +77,9 @@ if [ "${START}" -eq 0 ]; then
   exit 0
 fi
 
-# Refuse a known crash loop on fresh hosts. The public installer calls us with --no-start until
-# the required secrets and the subscription-backed Claude login exist.
-ENV_FILE="${HOME}/.beckett/.env"
-env_value() {
-  local key="$1"
-  [ -f "${ENV_FILE}" ] || return 0
-  awk -v key="${key}" 'index($0, key "=") == 1 { value = substr($0, length(key) + 2); gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); gsub(/^\047|\047$/, "", value); gsub(/^\"|\"$/, "", value); print value; exit }' "${ENV_FILE}"
-}
-for required in DISCORD_TOKEN DISCORD_OWNER_ID GITHUB_PAT; do
-  [ -n "$(env_value "${required}")" ] || {
-    stage_units
-    echo "cannot start beckett-v4: ${required} is missing from ${ENV_FILE}; use --no-start while staging" >&2
-    exit 1
-  }
-done
-[ -s "${HOME}/.claude/.credentials.json" ] || {
-  stage_units
-  echo "cannot start beckett-v4: Claude is not logged in; run 'claude auth login' as this user" >&2
-  exit 1
-}
-
+# A fresh public install deliberately has no secrets or subscription login. The daemon recognizes
+# that state and serves a status-only `healthy-pending-configuration` control socket rather than
+# crash-looping. Once configuration is complete, this same start path boots the full daemon.
 systemctl --user enable beckett-v4.service
 systemctl --user reset-failed beckett-v4.service
 if ! systemctl --user restart beckett-v4.service; then
@@ -116,9 +98,12 @@ for _ in $(seq 1 "${BECKETT_START_TIMEOUT_SECS:-45}"); do
     sleep 1
     continue
   fi
-  if [ -x "${HOME}/.local/bin/beckett" ] && "${HOME}/.local/bin/beckett" status >/dev/null 2>&1; then
-    READY=1
-    break
+  if [ -x "${HOME}/.local/bin/beckett" ]; then
+    STATUS="$("${HOME}/.local/bin/beckett" status 2>/dev/null || true)"
+    if [ -n "${STATUS}" ]; then
+      READY=1
+      break
+    fi
   fi
   sleep 1
 done
@@ -128,6 +113,11 @@ if [ "${READY}" -ne 1 ]; then
   systemctl --user status --no-pager beckett-v4.service >&2 || true
   stage_units
   exit 1
+fi
+
+if printf '%s\n' "${STATUS:-}" | grep -q '"state": "healthy-pending-configuration"'; then
+  echo "beckett-v4 installed and healthy-pending-configuration"
+  exit 0
 fi
 
 # Weekly doctor heartbeat (issue #30) - a no-op until DISCORD_ALERT_WEBHOOK_URL is set.

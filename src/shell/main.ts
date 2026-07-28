@@ -70,6 +70,7 @@ import { reconcileTaskTickets } from "../task/reconcile.ts";
 import { createAgentMailApi, defaultMailStateFile, safeMailError } from "../mail/index.ts";
 import { createAgentMailPoller, defaultMailListenerStateFile, type AgentMailPoller } from "../mail/listener.ts";
 import { ExtensionRegistry, type ExtensionContext } from "../ext/index.ts";
+import { pendingConfigurationProblems, startPendingConfigurationDaemon } from "./pending.ts";
 // NOTE: the Phase 4 organs (github/dns/deploy/mail) are deliberately NOT daemon-registered yet —
 // deploy.create's in-daemon host side effects (cloudflared + ~/.cloudflared/config.yml) need
 // sign-off first (cli-cascade spec, open question 5).
@@ -989,6 +990,27 @@ async function shutdown(sys: BootedSystem, signal: string): Promise<void> {
 
 /** Boot the system and install graceful-shutdown signal handlers. */
 async function main(): Promise<void> {
+  // A clean public install deliberately has no Discord token or subscription login yet. Do not
+  // crash-loop while the operator completes those browser/device logins: expose a tiny status-only
+  // daemon instead. Once every required item exists, the next service restart takes the normal boot.
+  const config = loadConfig();
+  const configurationProblems = pendingConfigurationProblems(config);
+  if (configurationProblems.length > 0) {
+    const stopPending = startPendingConfigurationDaemon({
+      config,
+      version: BECKETT_VERSION,
+      problems: configurationProblems,
+    });
+    rootLog.child("shell.v4").warn("healthy-pending-configuration", { problems: configurationProblems });
+    for (const sig of ["SIGINT", "SIGTERM"] as const) {
+      process.once(sig, () => {
+        stopPending();
+        process.exit(0);
+      });
+    }
+    return;
+  }
+
   const sys = await boot();
 
   let stopping = false;
