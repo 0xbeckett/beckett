@@ -363,3 +363,22 @@ test("a conversational branch-status reference returns the rich card without an 
   expect(posts[0]?.options?.buttons?.[0]?.label).toBe("Open PR");
   expect(branchCardReference("please change #42.1 instead")).toBeNull();
 });
+
+test("a branch card requested inside a thread keeps attach controls in that current thread", async () => {
+  const branchStatus = {
+    read: async () => ({
+      ref: "42.1", title: "Voting API", taskNumber: 42, taskTitle: "Voting", status: "done",
+      source: "pull_request", pullRequest: { number: 9, url: "https://github.com/acme/voting/pull/9", state: "OPEN", draft: false },
+      updatedAt: "2026-07-12T00:00:00.000Z",
+    }),
+  } as unknown as BranchStatusService;
+  const { concierge, posts } = harness({ branchStatus });
+  await concierge.onMessage({
+    messageId: "thread-branch-question", userId: OWNER, channelId: "thread-1", guildId: "guild-1",
+    content: "#42.1", repliedToId: null, mentionsBot: true, authorIsBot: false, createdAt: 1,
+    attachments: [], isThread: true, parentChannelId: "channel-1",
+  });
+
+  expect(posts[0]?.channelId).toBe("thread-1");
+  expect(posts[0]?.options?.buttons).toContainEqual({ label: "Attach to this thread", customId: "beckett:v1:attach:42" });
+});

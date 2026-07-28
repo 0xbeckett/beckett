@@ -109,12 +109,12 @@ import {
 } from "./reply-context.ts";
 import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
 import type { DiscordButton, DiscordEmbed, TaskThreadCreated } from "../types.ts";
-import { ComponentRouter, componentId, type ComponentActionContext } from "../discord/interactions.ts";
+import { ComponentRouter, type ComponentActionContext } from "../discord/interactions.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createTrackerClient } from "../tracker/client.ts";
 import { TaskStore, displayTaskName, type TaskBranch, type WorkTask } from "../task/store.ts";
 import type { BranchStatusService } from "../task/status.ts";
-import { renderBranchEmbed } from "../discord/cards.ts";
+import { branchCardButtons, renderBranchEmbed } from "../discord/cards.ts";
 import type { MemoryStore } from "../memory/index.ts";
 import { renderOpenLoopsBlock } from "../memory/loops.ts";
 import { renderCalibrationBlock } from "../memory/calibration.ts";
@@ -2639,15 +2639,18 @@ export class Concierge {
     this.branchStatus = provider;
   }
 
-  /** Post every rich status card in the dedicated cards channel, never the triggering channel. */
+  /** Post cards to the dashboard, except a thread-local card whose controls act on that thread. */
   private async postCards(
     embeds: DiscordEmbed[],
     recordText: string,
     buttons?: DiscordButton[],
     replyToMessageId?: string,
     replyToUserId?: string,
+    targetChannelId?: string,
   ): Promise<string> {
-    const channelId = cardsChannelId();
+    // A thread-local card is the one place "attach to this thread" has an unambiguous target.
+    // All other cards retain the dedicated dashboard channel.
+    const channelId = targetChannelId ?? cardsChannelId();
     const messageId = await this.gateway.post(channelId, "", {
       ...(replyToMessageId ? { replyToMessageId } : {}),
       ...(replyToUserId ? { replyToUserId } : {}),
@@ -4442,24 +4445,15 @@ export class Concierge {
     if (branchRef && this.branchStatus) {
       try {
         const card = await this.branchStatus.read(branchRef);
-        const buttons: DiscordButton[] = [];
-        if (card.pullRequest) buttons.push({ label: "Open PR", url: card.pullRequest.url });
-        else if (card.publication) buttons.push({ label: "Open repository", url: card.publication.url });
-        // The id carries only a versioned verb and public task/branch ref. The router freshly
-        // derives the clicker's authority from Discord and access.txt; never from this card.
-        if (card.status === "done" && card.pullRequest?.state === "OPEN") {
-          buttons.push({ label: "Merge branch", customId: componentId("merge", card.ref) });
-        }
-        if (card.status !== "cancelled") {
-          buttons.push({ label: "Cancel branch", customId: componentId("cancel", card.ref), danger: true });
-        }
-        buttons.push({ label: "Attach to this thread", customId: componentId("attach", String(card.taskNumber)) });
+        const buttons = branchCardButtons(card);
+        const cardChannelId = m.isThread === true ? m.channelId : cardsChannelId();
         await this.postCards(
           [renderBranchEmbed(card)],
           `Branch card for #${branchRef}`,
           buttons,
-          m.channelId === cardsChannelId() ? m.messageId : undefined,
-          m.channelId === cardsChannelId() ? m.userId : undefined,
+          m.channelId === cardChannelId ? m.messageId : undefined,
+          m.channelId === cardChannelId ? m.userId : undefined,
+          cardChannelId,
         );
         return;
       } catch (err) {

@@ -1,12 +1,29 @@
 /** Pure renderers for compact Discord embeds. They receive aggregates, never source patches. */
-import type { DiscordEmbed } from "../types.ts";
+import type { DiscordButton, DiscordEmbed } from "../types.ts";
 import type { BranchCardSnapshot } from "../task/status.ts";
+import { componentId } from "./interactions.ts";
 
 const GREEN = 0x2ea043;
 const RED = 0xda3633;
 const AMBER = 0xd29922;
 const BLUE = 0x2f81f7;
 const GRAY = 0x6e7681;
+
+/** The real controls carried with a branch card; link controls and interactions share one row. */
+export function branchCardButtons(card: BranchCardSnapshot): DiscordButton[] {
+  const buttons: DiscordButton[] = [];
+  if (card.pullRequest) buttons.push({ label: "Open PR", url: card.pullRequest.url });
+  else if (card.publication) buttons.push({ label: "Open repository", url: card.publication.url });
+  if (card.status === "done" && card.pullRequest?.state === "OPEN") {
+    buttons.push({ label: "Merge branch", customId: componentId("merge", card.ref) });
+  }
+  if (card.status !== "cancelled") {
+    buttons.push({ label: "Cancel branch", customId: componentId("cancel", card.ref), danger: true });
+  }
+  // The interaction channel (not this card's author/location) is the workspace target.
+  buttons.push({ label: "Attach to this thread", customId: componentId("attach", String(card.taskNumber)) });
+  return buttons;
+}
 
 export function renderBranchEmbed(card: BranchCardSnapshot): DiscordEmbed {
   const fields: NonNullable<DiscordEmbed["fields"]> = [];

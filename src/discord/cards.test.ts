@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { renderBranchEmbed } from "./cards.ts";
+import { branchCardButtons, renderBranchEmbed } from "./cards.ts";
 import type { BranchCardSnapshot } from "../task/status.ts";
 
 test("branch card shows aggregate Git and PR health without diff content", () => {
@@ -41,6 +41,22 @@ test("local cards admit that checks are unavailable", () => {
     updatedAt: "2026-07-12T00:00:00.000Z",
   });
   expect(JSON.stringify(embed)).toContain("Not published yet");
+});
+
+test("a finished branch card carries merge, cancel, and attach interaction buttons", () => {
+  const buttons = branchCardButtons({
+    ref: "7.1",
+    title: "Main",
+    taskNumber: 7,
+    taskTitle: "Uploads",
+    status: "done",
+    source: "pull_request",
+    pullRequest: { number: 3, url: "https://github.com/acme/repo/pull/3", state: "OPEN", draft: false },
+    updatedAt: "2026-07-12T00:00:00.000Z",
+  });
+  expect(buttons).toContainEqual({ label: "Merge branch", customId: "beckett:v1:merge:7.1" });
+  expect(buttons).toContainEqual({ label: "Cancel branch", customId: "beckett:v1:cancel:7.1", danger: true });
+  expect(buttons).toContainEqual({ label: "Attach to this thread", customId: "beckett:v1:attach:7" });
 });
 
 test("a done branch with an open PR and pending checks stays amber, not shipped green", () => {
