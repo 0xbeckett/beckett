@@ -12,6 +12,7 @@
     "browser:bench": "bun scripts/bench/browser-lane.ts",
     "eval:browser": "bun scripts/eval/browser-agent.ts",
     "eval:triage": "bun scripts/eval/triage-classifier.ts",
+    "eval:turns": "bun scripts/eval/turn-decisions.ts",
     "telemetry:refresh": "bun scripts/ops/telemetry-harvest.ts",
     "code-stats:refresh": "bun scripts/ops/code-stats-harvest.ts",
     "moss:smoke": "bun test src/moss-local/index.test.ts",
