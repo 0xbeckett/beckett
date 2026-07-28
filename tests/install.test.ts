@@ -434,6 +434,24 @@ describe("public installer input and file contracts", () => {
     expect(result.stdout.match(/\/usr\/sbin\/runuser/g)?.length).toBe(2);
   });
 
+  test("every key the installer seeds into a fresh .env is documented in .env.example (#72)", () => {
+    // A clean-machine install writes an .env template whose keys `beckett doctor` cross-checks
+    // against the committed .env.example inventory; an undocumented key there is a live warn on a
+    // brand-new box. Extract the exact keys from install.sh's fresh-env printf and assert each is
+    // in the inventory, so adding a seeded key without documenting it fails here instead of on a
+    // stranger's first `beckett doctor`.
+    const installer = readFileSync(INSTALLER, "utf8");
+    const template = installer.match(/printf '# Created by the Beckett installer\.[^']*'/);
+    expect(template).not.toBeNull();
+    const seeded = [...template![0].matchAll(/\\n([A-Z][A-Z0-9_]*)=/g)].map((m) => m[1]!);
+    expect(seeded.length).toBeGreaterThan(0);
+
+    const inventory = parseEnvInventory(readFileSync(ENV_EXAMPLE, "utf8"));
+    const documented = new Set([...inventory.required, ...inventory.optional]);
+    const undocumented = seeded.filter((key) => !documented.has(key));
+    expect(undocumented).toEqual([]);
+  });
+
   test("tracker preflight exercises the configured default board", async () => {
     const dir = tempDir("beckett-install-tracker-preflight-");
     const calls = join(dir, "calls");

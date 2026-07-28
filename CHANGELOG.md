@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### The documented install actually works on a clean machine (#72)
+
+The README pitches Beckett as forkable — "rename it, point it at your own Discord, and you have
+your own Beckett" — but the `curl | bash` install had never been run end-to-end off loom-desk.
+Ran it from zero in a fresh Ubuntu 24.04 + systemd container (`scripts/check-public-install.sh`,
+the committed reproducible check) and fixed every break so a stranger reaches a daemon that starts
+in `healthy-pending-configuration` with the required config documented:
+
+- **`deploy/config.toml.example` had loom-desk's Cerebras defaults baked in.** It was regenerated
+  on a box with `CEREBRAS_API_KEY` set, so the committed example pinned `triage_provider =
+  "cerebras"` / `triage_model = "gemma-4-31b"` — the *keyed* defaults, not the keyless ones the
+  drift test asserts. Regenerated it keyless; `bun test` is green again.
+- **The installer seeded `.env` keys that weren't in the inventory.** `install.sh` writes
+  `BECKETT_MAIL_ADDRESS` and `OPENROUTER_REFERER` into a fresh `~/.beckett/.env`, but neither was
+  documented in `.env.example` — so a brand-new box's very first `beckett doctor` warned about
+  undocumented keys the installer itself wrote. Documented both, and added a regression test
+  (`tests/install.test.ts`) asserting every installer-seeded key stays in the inventory.
+
+Earlier passes on this ticket taught the installer to provision the bored tracker itself (clone +
+build + a loopback `bored.service`), made the live browser smoke opt-in
+(`BECKETT_INSTALL_BROWSER_SMOKE=1`) so a container without a finished sandbox policy still reaches
+pending-configuration, fixed Pi version detection (a missing `pi` no longer reads as "already
+installed"), kept `curl | bash` working under `set -u` (no `BASH_SOURCE`), and corrected the
+README's dead `docs/V3.md` links, stale bored prerequisite, and missing MIT license section.
+
 ## v6.9.0 (2026-07-27)
 
 ### The overnight spike: two loops, one branch-only prototype (#38)
