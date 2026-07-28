@@ -399,7 +399,7 @@ export function ticketMentionsDeploy(ticket: { title: string; body: string; crit
  */
 export function ticketTouchesFrontend(ticket: { title: string; body: string; criteria: string[] }): boolean {
   const text = `${ticket.title}\n${ticket.body}\n${ticket.criteria.join("\n")}`;
-  return /frontend|front-end|\bui\b|\bux\b|web ?app|webpage|\bpage\b|dashboard|component|react|vue|svelte|tailwind|css|html|styling|stylesheet|landing|screen|button|layout|responsive|design/i.test(text);
+  return /frontend|front-end|\bui\b|\bux\b|web ?app|webpage|\bpage\b|dashboard|component|react|vue|svelte|tailwind|css|html|styling|stylesheet|landing|responsive/i.test(text);
 }
 
 /**
