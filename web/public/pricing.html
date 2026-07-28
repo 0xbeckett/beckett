@@ -12,7 +12,7 @@
 <link rel="icon" href="/logo.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&family=DotGothic16&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/page.css">
 <style>
   /* pricing.html: page-specific components, built from page.css tokens only.
@@ -23,7 +23,7 @@
   /* the seat — the plan, stated once and up front */
   .seat-card{margin-top:26px;border:1px solid var(--lv-deep);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:inset 3px 0 0 var(--lv-deep),var(--bevel),var(--drop);padding:22px 24px}
-  .seat-card .k{font-family:var(--pix);font-size:12px;color:var(--lv-deep);margin-bottom:12px}
+  .seat-card .k{font-family:var(--sans);font-size:12px;color:var(--lv-deep);margin-bottom:12px}
   .seat-head{font-family:var(--disp);font-weight:600;font-size:22px;line-height:1.28;color:var(--ink)}
   .seat-head .num{color:var(--ink)}
   .seat-lines{list-style:none;margin:18px 0 0;padding:0;display:grid;gap:12px}
@@ -33,7 +33,7 @@
   .seat-fine{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);display:grid;gap:8px}
   .seat-fine span{position:relative;padding-left:22px;font-size:13.5px;line-height:1.5;color:var(--dim)}
   .seat-fine span b{color:var(--ink);font-weight:600}
-  .seat-fine span::before{content:"·";position:absolute;left:8px;top:-2px;font-family:var(--pix);font-size:15px;color:var(--lv-deep)}
+  .seat-fine span::before{content:"·";position:absolute;left:8px;top:-2px;font-family:var(--sans);font-size:15px;color:var(--lv-deep)}
 
   /* the cost-line ledger */
   .ledger{list-style:none;margin:26px 0 0;padding:0;display:grid;gap:14px}
@@ -53,10 +53,10 @@
   .rate-wrap{margin-top:22px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:var(--bevel),var(--drop);overflow:hidden}
   table.rates{width:100%;border-collapse:collapse;font-size:14px}
-  table.rates caption{text-align:left;font-family:var(--pix);font-size:12px;color:var(--cy-deep);
+  table.rates caption{text-align:left;font-family:var(--sans);font-size:12px;color:var(--cy-deep);
     padding:12px 16px 0;caption-side:top}
   table.rates th,table.rates td{padding:10px 16px;text-align:left;border-bottom:1px solid var(--line)}
-  table.rates thead th{font-family:var(--pix);font-size:11px;font-weight:400;color:var(--dim);
+  table.rates thead th{font-family:var(--sans);font-size:11px;font-weight:400;color:var(--dim);
     text-transform:uppercase;letter-spacing:.04em}
   table.rates tbody th{font-weight:500;color:var(--ink)}
   table.rates td{color:var(--ink)}
@@ -69,7 +69,7 @@
     box-shadow:var(--bevel),var(--drop);padding:22px 22px 20px}
   .receipt .r-top{display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap}
   .receipt .r-id{font-family:var(--disp);font-weight:600;font-size:22px;color:var(--ink)}
-  .receipt .r-tag{font-family:var(--pix);font-size:12px;color:var(--cy-deep)}
+  .receipt .r-tag{font-family:var(--sans);font-size:12px;color:var(--cy-deep)}
   .receipt .r-meta{margin-top:6px;font-size:13.5px;color:var(--dim)}
   .receipt .r-meta .num{color:var(--ink);font-weight:500}
   .rows{margin-top:16px;border-top:1px solid var(--line)}
@@ -89,7 +89,7 @@
   .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:24px}
   .tile{border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:var(--bevel),var(--drop);padding:16px 18px}
-  .tile .t-k{font-family:var(--pix);font-size:11px;color:var(--cy-deep);text-transform:uppercase;letter-spacing:.03em}
+  .tile .t-k{font-family:var(--sans);font-size:11px;color:var(--cy-deep);text-transform:uppercase;letter-spacing:.03em}
   .tile .t-v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
     font-size:26px;font-weight:600;color:var(--ink);line-height:1.1;margin-top:8px}
   .tile .t-s{font-size:12.5px;color:var(--dim);margin-top:4px}
@@ -97,7 +97,7 @@
   /* review-cycle distribution bars */
   .dist{margin-top:22px;display:grid;gap:10px}
   .bar-row{display:grid;grid-template-columns:64px 1fr auto;align-items:center;gap:12px}
-  .bar-row .bl{font-family:var(--pix);font-size:12px;color:var(--dim)}
+  .bar-row .bl{font-family:var(--sans);font-size:12px;color:var(--dim)}
   .track{height:14px;background:#fff;border:1px solid var(--line);position:relative;overflow:hidden}
   .track>span{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,var(--cy),var(--lv));display:block}
   .bar-row .bv{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
@@ -107,7 +107,7 @@
   .nofees{list-style:none;margin:22px 0 0;padding:0;display:grid;gap:10px}
   .nofees li{position:relative;padding-left:26px;font-size:15px;color:var(--dim);line-height:1.5}
   .nofees li b{color:var(--ink);font-weight:600}
-  .nofees li::before{content:"✕";position:absolute;left:0;top:0;font-family:var(--pix);font-size:13px;color:var(--cy-deep)}
+  .nofees li::before{content:"✕";position:absolute;left:0;top:0;font-family:var(--sans);font-size:13px;color:var(--cy-deep)}
 
   /* collapsible "where the number comes from" */
   .whence{margin-top:24px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);

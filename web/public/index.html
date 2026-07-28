@@ -12,7 +12,7 @@
 <link rel="icon" href="/logo.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&family=DotGothic16&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root{
     --ink:#2b2743;
@@ -69,7 +69,7 @@
   /* island nameplate: follows the hovered island around the screen */
   #tip{position:fixed;left:0;top:0;z-index:35;pointer-events:none;opacity:0;
     transform:translate(-50%,-120%);transition:opacity .18s;white-space:nowrap;
-    font-family:var(--pix);font-size:13px;color:var(--ink);
+    font-family:var(--sans);font-size:13px;color:var(--ink);
     background:rgba(255,255,255,.94);border:2px solid var(--ink);padding:7px 11px 8px;
     box-shadow:4px 4px 0 rgba(64,54,110,.2)}
   #tip b{display:block;font-weight:400;font-size:11.5px;color:var(--lv-deep);margin-top:2px}
@@ -81,13 +81,13 @@
   #tether circle{fill:var(--cy-deep)}
 
   /* location tags: where in the world (and the day) each section lives */
-  .loc{display:inline-flex;align-items:center;gap:9px;font-family:var(--pix);
+  .loc{display:inline-flex;align-items:center;gap:9px;font-family:var(--sans);
     font-size:12.5px;color:var(--lv-deep);margin-bottom:14px;transition:color .6s}
   .loc::before{content:"";width:10px;height:11px;flex:none;
     background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 22'%3E%3Cpath d='M10 1 19 6 10 11 1 6z' fill='%238fd8de'/%3E%3Cpath d='M1 6v10l9 5V11z' fill='%237a68b8'/%3E%3Cpath d='M19 6v10l-9 5V11z' fill='%23b9a8e8'/%3E%3C/svg%3E") no-repeat center/contain}
 
   /* scroll hint under the hero CTAs */
-  .hint{margin-top:46px;font-family:var(--pix);font-size:12.5px;color:var(--faint);
+  .hint{margin-top:46px;font-family:var(--sans);font-size:12.5px;color:var(--faint);
     display:flex;align-items:center;gap:9px;transition:opacity .6s}
   .hint i{font-style:normal;animation:hintbob 1.6s ease-in-out infinite;display:inline-block}
   @keyframes hintbob{0%,100%{transform:translateY(-2px)}50%{transform:translateY(3px)}}
@@ -125,12 +125,12 @@
   .nav-in{max-width:1140px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;justify-content:space-between;gap:20px}
   .brand{display:flex;align-items:center;gap:11px;font-family:var(--disp);font-weight:600;font-size:19px}
   .brand .logo{width:30px;height:30px}
-  .nav-links{display:flex;gap:28px;font-family:var(--pix);font-size:13px;color:var(--dim)}
+  .nav-links{display:flex;gap:28px;font-family:var(--sans);font-size:13px;color:var(--dim)}
   .nav-links a{transition:.2s}.nav-links a:hover{color:var(--lv-deep)}
   .nav-r{display:flex;align-items:center;gap:18px}
 
   /* buttons: chunky blocks that physically sink when pressed */
-  .btn{font-family:var(--pix);font-size:14px;line-height:1.2;display:inline-flex;align-items:center;gap:8px;
+  .btn{font-family:var(--sans);font-size:14px;line-height:1.2;display:inline-flex;align-items:center;gap:8px;
     white-space:nowrap;border:2px solid var(--ink);
     transition:filter .15s,transform .06s ease,box-shadow .06s ease}
   .btn-sm{padding:8px 14px}
@@ -152,14 +152,14 @@
   h1 .g{background:linear-gradient(96deg,var(--cy-deep),var(--lv-deep));-webkit-background-clip:text;background-clip:text;color:transparent}
   .hero p.lead{margin-top:24px;font-size:18px;color:var(--dim);max-width:44ch;line-height:1.55}
   .cta-row{margin-top:34px;display:flex;gap:14px;flex-wrap:wrap}
-  .micro{margin-top:20px;font-family:var(--pix);font-size:13px;color:var(--faint)}
+  .micro{margin-top:20px;font-family:var(--sans);font-size:13px;color:var(--faint)}
 
   /* trust strip */
   .strip{width:100vw;margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);
     padding:18px 28px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
     background:rgba(255,255,255,.72);backdrop-filter:blur(8px);
     display:flex;align-items:center;gap:30px;flex-wrap:wrap;justify-content:center;
-    font-family:var(--pix);font-size:13px;color:var(--faint);position:relative;z-index:1}
+    font-family:var(--sans);font-size:13px;color:var(--faint);position:relative;z-index:1}
   .strip b{color:var(--dim);font-weight:400}
   .strip span{color:var(--lv-deep)}
 
@@ -174,7 +174,7 @@
   .c-bar{display:flex;align-items:center;gap:7px;padding:12px 15px;border-bottom:1px solid var(--line);background:#f0edfb}
   .c-bar i{width:10px;height:10px;border:1px solid rgba(43,39,67,.4)}
   .c-bar i:nth-child(1){background:#f4c9d9}.c-bar i:nth-child(2){background:#ffe2a1}.c-bar i:nth-child(3){background:#a9e3ea}
-  .c-bar span{margin-left:8px;font-family:var(--pix);font-size:12px;color:var(--faint)}
+  .c-bar span{margin-left:8px;font-family:var(--sans);font-size:12px;color:var(--faint)}
   .c-body{padding:18px 16px;font-family:var(--mono);font-size:13px;line-height:1.95;min-height:230px}
   .c-body div{white-space:pre-wrap;word-break:break-word}
   .c-body .u{color:var(--cy-deep)}.c-body .b{color:var(--ink)}.c-body .m{color:var(--dim)}.c-body .ok{color:#3e9e6e}
@@ -186,7 +186,7 @@
   .step{border:1px solid var(--line);padding:26px;background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:var(--bevel),var(--drop);transition:transform .25s var(--eo),box-shadow .25s var(--eo)}
   .step:hover{transform:translate(-2px,-4px);box-shadow:var(--bevel),var(--drop-h)}
-  .step .k{font-family:var(--pix);font-size:13px;color:var(--cy-deep);margin-bottom:34px}
+  .step .k{font-family:var(--sans);font-size:13px;color:var(--cy-deep);margin-bottom:34px}
   .step h3{font-family:var(--disp);font-size:21px;font-weight:600;margin-bottom:8px}
   .step p{color:var(--dim);font-size:14.5px;line-height:1.55}
 
@@ -196,7 +196,7 @@
   .tile:hover{transform:translate(-2px,-4px);box-shadow:var(--bevel),var(--drop-h)}
   .tile h3{font-family:var(--disp);font-weight:600;font-size:20px;margin-bottom:9px}
   .tile p{color:var(--dim);font-size:14px;line-height:1.5;max-width:38ch}
-  .tile .ic2{font-family:var(--pix);font-size:13px;color:var(--cy-deep);margin-bottom:16px}
+  .tile .ic2{font-family:var(--sans);font-size:13px;color:var(--cy-deep);margin-bottom:16px}
   .t-mid{grid-column:span 3}.t-third{grid-column:span 2}
   .tile.feat{grid-column:span 3;display:flex;flex-direction:column;justify-content:space-between;
     background:linear-gradient(160deg,rgba(143,216,222,.26),var(--panel) 55%)}
@@ -240,7 +240,7 @@
   .f-in{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;align-items:center}
   .f-l{display:flex;align-items:center;gap:11px;font-family:var(--disp);font-weight:600;font-size:18px;color:#f2f0fa}
   .f-l .logo{width:26px;height:26px}
-  .f-r{display:flex;gap:26px;font-family:var(--pix);font-size:13px;color:#b3aad4;flex-wrap:wrap}
+  .f-r{display:flex;gap:26px;font-family:var(--sans);font-size:13px;color:#b3aad4;flex-wrap:wrap}
   .f-r a:hover{color:#e6f4f6}
 
   .rv{opacity:0;transform:translateY(18px);transition:opacity .55s steps(6,end),transform .65s var(--eo)}
