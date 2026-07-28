@@ -8,7 +8,7 @@
  * Storage is a single JSON file (`~/.beckett/identities.json`), matching how the rest of
  * Beckett persists small state (access.txt, persona.md) — file-based, no DB. Shape:
  *
- *   { "<discord_id>": { display_name?, known_name?, preferred_address?, notes?,
+ *   { "<discord_id>": { display_name?, known_name?, preferred_address?,
  *                       is_owner?, created_at, updated_at }, ... }
  *
  * - `display_name`      — the live Discord display name last seen (guild nick / global name).
@@ -18,8 +18,15 @@
  * - `is_owner`          — true only for the env-provided owner ID, so the session-context
  *                         owner identity is tied to ONE id, not applied to whoever is typing.
  *
+ * SCOPE — this file is ONLY the fast id → address mapping the per-turn stamp needs, and that is
+ * why it stays structured JSON: `resolveSpeaker` reads it on EVERY inbound turn and must never
+ * parse markdown to build the `[user:… address:…]` stamp. Everything else known about a person —
+ * free-text notes, history, links to related memories — lives in their person file
+ * (`people/<discord-user-id>.md`, see `src/memory/people.ts`), which is the standard home for it.
+ *
  * PRIVACY: this maps names/handles for ADDRESSING only. It never stores — and Beckett never
- * surfaces in channel — personal contact info (email, phone, etc.). That's a standing rule.
+ * surfaces in channel — personal contact info (email, phone, etc.). That's a standing rule; the
+ * person file is where such things may be recorded, and it is written at `owner` visibility.
  *
  * Everything here is pure + file-scoped so it's unit-testable: pass a path, get a result,
  * never throw on a missing/corrupt file (degrade to empty), atomic writes via temp+rename.
@@ -36,8 +43,6 @@ export interface UserIdentity {
   known_name?: string;
   /** What they asked to be called ("call me X"). Highest-priority address. */
   preferred_address?: string;
-  /** Free-form notes about addressing/context (never contact info). */
-  notes?: string;
   /** True for the single env-provided owner id — session owner identity binds here only. */
   is_owner?: boolean;
   /** Epoch ms first recorded. */
@@ -77,7 +82,8 @@ export function loadIdentities(file: string): IdentityMap {
       if (typeof v.display_name === "string") rec.display_name = v.display_name;
       if (typeof v.known_name === "string") rec.known_name = v.known_name;
       if (typeof v.preferred_address === "string") rec.preferred_address = v.preferred_address;
-      if (typeof v.notes === "string") rec.notes = v.notes;
+      // A `notes` blob from before person files existed is dropped on load (and therefore on the
+      // next save): its home is now `people/<id>.md`. Unknown keys degrade the same way.
       if (v.is_owner === true) rec.is_owner = true;
       map[id] = rec;
     }
@@ -102,7 +108,7 @@ export function getIdentity(file: string, id: string): UserIdentity | undefined 
 
 /** Fields a caller may set on upsert (timestamps + owner flag are managed here). */
 export type IdentityPatch = Partial<
-  Pick<UserIdentity, "display_name" | "known_name" | "preferred_address" | "notes" | "is_owner">
+  Pick<UserIdentity, "display_name" | "known_name" | "preferred_address" | "is_owner">
 >;
 
 /**

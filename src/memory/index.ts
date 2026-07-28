@@ -1201,7 +1201,11 @@ function phantomNode(name: string): MemoryNode {
 /** Render a full memory file (frontmatter + body + generated backlinks). */
 export function renderNode(node: MemoryNode, g: MemoryGraph): string {
   let fm = "---\n";
-  fm += `name: ${node.name}\n`;
+  // Same rule as metadata values: an ALL-DIGIT name must be quoted or the YAML parser reads it
+  // back as a Number and `parseMemoryFile` drops the file as nameless. Person files are named
+  // for a Discord snowflake (`people/<discord-user-id>.md`), so this is the difference between
+  // a readable node and an invisible one. Kebab-case names are unaffected (rendered bare).
+  fm += `name: ${serializeMaybeQuoted(node.name)}\n`;
   fm += `description: >\n  ${node.description.replace(/\s+/g, " ").trim()}\n`;
   fm += "metadata:\n";
   for (const [key, value] of orderedMeta(node.metadata)) {
