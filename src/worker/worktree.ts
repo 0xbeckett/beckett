@@ -482,6 +482,51 @@ export async function currentBranch(repoRoot: string): Promise<string> {
   return name || "HEAD";
 }
 
+/** Outcome of {@link fastForwardCheckout}. */
+export interface FastForwardResult {
+  status: "fast-forwarded" | "skipped";
+  /** New HEAD sha, present only when `status === "fast-forwarded"`. */
+  sha?: string;
+  /** Why it was left alone, present only when `status === "skipped"`. */
+  reason?: string;
+}
+
+/**
+ * Fast-forward a project's own checkout (`~/Projects/<slug>`) to `branch`'s tip at `remoteUrl` —
+ * the tunnel-served mockups read their files straight out of this working copy, so a ticket that
+ * lands on a project's main must not leave that checkout stuck on the pre-land build (#91). ff-only,
+ * NEVER a merge and NEVER a force: any state that would need either is left untouched, and the
+ * caller gets `reason` to log rather than a thrown error. That covers a dirty tree (uncommitted
+ * changes), a detached HEAD or a checkout parked on some other branch, and a diverged/behind local
+ * history the remote tip doesn't contain (`git merge --ff-only` refuses cleanly without touching
+ * the working tree).
+ */
+export async function fastForwardCheckout(
+  repoRoot: string,
+  remoteUrl: string,
+  branch: string,
+): Promise<FastForwardResult> {
+  const onBranch = await currentBranch(repoRoot);
+  if (onBranch !== branch) {
+    return { status: "skipped", reason: `checkout is on "${onBranch}", not "${branch}"` };
+  }
+  const status = (await runGit(["status", "--porcelain"], repoRoot)).stdout.trim();
+  if (status !== "") {
+    return { status: "skipped", reason: "checkout has uncommitted changes" };
+  }
+  const fetch = await runGit(["fetch", "--quiet", remoteUrl, branch], repoRoot);
+  if (fetch.code !== 0) {
+    return { status: "skipped", reason: `fetch failed: ${fetch.stderr.trim() || fetch.stdout.trim()}` };
+  }
+  const merge = await runGit(["merge", "--ff-only", "--quiet", "FETCH_HEAD"], repoRoot);
+  if (merge.code !== 0) {
+    return { status: "skipped", reason: `fast-forward would not apply: ${merge.stderr.trim() || merge.stdout.trim()}` };
+  }
+  const sha = (await runGit(["rev-parse", "HEAD"], repoRoot)).stdout.trim();
+  logger.info("fast-forwarded project checkout", { repoRoot, branch, sha });
+  return { status: "fast-forwarded", sha };
+}
+
 /**
  * Best-effort `git fetch origin` so a fresh per-ticket worktree can branch from an up-to-date
  * `origin/main` instead of a stale local checkout (the drift that stranded OPS-59/61). Project

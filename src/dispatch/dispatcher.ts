@@ -60,6 +60,7 @@ import {
   fetchRemote,
   refExists,
   mergeBranchesIntoWorktree,
+  fastForwardCheckout,
   SCAFFOLDING_DIR,
 } from "../worker/worktree.ts";
 import { projectSlug } from "../tracker/cast.ts";
@@ -129,6 +130,7 @@ export interface GitOps {
   fetchRemote: typeof fetchRemote;
   refExists: typeof refExists;
   mergeBranchesIntoWorktree: typeof mergeBranchesIntoWorktree;
+  fastForwardCheckout: typeof fastForwardCheckout;
 }
 
 export interface DispatcherDeps {
@@ -648,6 +650,7 @@ export class Dispatcher {
       fetchRemote,
       refExists,
       mergeBranchesIntoWorktree,
+      fastForwardCheckout,
       ...deps.gitOps,
     };
     this.resolveRepoRoot = deps.resolveRepoRoot;
