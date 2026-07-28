@@ -47,7 +47,12 @@ export interface FrontendScreenshotDeps {
   /** Attach the PNG to the ticket record and (when present) its channel ping. */
   attach: (ticket: ScreenshotTicketRef, pngPath: string) => Promise<void>;
   logger: Logger;
-  /** Overall wall-clock cap; the caller's worktree is held until this resolves. Default 150s. */
+  /**
+   * Overall wall-clock backstop; the caller's worktree is held until this resolves. Keep it
+   * comfortably ABOVE serve-build's internal build cap (120s) so a normal build+capture finishes
+   * well within it — on the rare timeout the caller disposes the worktree, which must not land
+   * mid-build. Default 180s.
+   */
   timeoutMs?: number;
   /** Frontend gate override (tests); defaults to the shared {@link isFrontendChange}. */
   isFrontend?: (files: readonly string[]) => boolean;
@@ -67,7 +72,7 @@ export interface FrontendScreenshotHook {
 
 export function createFrontendScreenshotHook(deps: FrontendScreenshotDeps): FrontendScreenshotHook {
   const isFrontend = deps.isFrontend ?? isFrontendChange;
-  const timeoutMs = deps.timeoutMs ?? 150_000;
+  const timeoutMs = deps.timeoutMs ?? 180_000;
 
   return {
     async capture({ ticket, workspace, baseRef }) {
