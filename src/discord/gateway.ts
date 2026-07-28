@@ -60,6 +60,7 @@ import type {
   Logger,
 } from "../types.ts";
 import { log as rootLog } from "../log.ts";
+import { isInternalUrl } from "../net/url-safety.ts";
 import { isFederatedPeer, PeerBurstLimiter } from "./federation.ts";
 import { loadPeers } from "./peers.ts";
 import { buildPaths } from "../paths.ts";

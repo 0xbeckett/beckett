@@ -97,6 +97,14 @@ const PublicationLinkSchema = z.object({
   kind: z.enum(["pushed", "pr"]),
 });
 
+const PreviewLinkSchema = z.object({
+  /** The externally-reachable preview URL (https://<slug>-preview.<apex>). */
+  url: z.string().min(1),
+  /** The bare hostname, for teardown. */
+  host: z.string().min(1),
+  updatedAt: z.string(),
+});
+
 const DiffSummarySchema = z.object({
   additions: z.number().int().nonnegative(),
   deletions: z.number().int().nonnegative(),
@@ -118,6 +126,8 @@ const TaskBranchSchema = z.object({
   pullRequest: PullRequestLinkSchema.optional(),
   publication: PublicationLinkSchema.optional(),
   diff: DiffSummarySchema.optional(),
+  /** A live, externally-reachable preview of this branch's frontend while it is in review. */
+  preview: PreviewLinkSchema.optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
