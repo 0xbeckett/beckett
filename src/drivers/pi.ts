@@ -57,12 +57,21 @@ import type { Config, HarnessDriver, Logger, SpawnResult, SpawnSpec, TokenUsage 
 import { childEnv } from "../env.ts";
 import { OneShotDriver } from "./base.ts";
 import { classifyHarnessFailure } from "./failure.ts";
+import { probeCommand } from "./preflight-probe.ts";
 
 /** pi tool names that mutate files → we synthesize a file_change from their args.path. */
 const EDIT_TOOL_NAMES = new Set(["write", "edit", "multiedit", "multi_edit", "apply_patch"]);
 
-/** How long the preflight lets a `pi --version` / `--help` probe run before giving up. */
-const PREFLIGHT_TIMEOUT_MS = 10_000;
+/**
+ * Escalating budgets (ms) for a `pi --version` probe: a first try that survives ordinary machine
+ * load, then a roomier retry if that one is KILLED. The old flat 10s died under two heavy workers
+ * (`pi --version` runs in ~0.9s idle) and — because `Bun.spawnSync` reports a timeout kill as
+ * `exitCode: null` — that transient starvation was misread as a broken pi and silently downgraded
+ * the cast to another harness (issue #54). 30s clears the load spike; the 60s retry is the backstop.
+ */
+const PREFLIGHT_BUDGETS_MS = [30_000, 60_000] as const;
+/** Single-shot budget for the secondary probes (`node --version`, `pi --help`) — no retry needed. */
+const PREFLIGHT_TIMEOUT_MS = 30_000;
 /** Minimum pi CLI version with the `--session-id` create-if-missing contract. */
 const MIN_PI_VERSION = "0.78.0";
 /** CLI flags the driver's invocation depends on — their absence signals version/protocol drift. */
@@ -125,44 +134,55 @@ export async function piPreflight(config: Config): Promise<PiPreflight> {
     problems.push(`could not run node from the daemon PATH (${(err as Error).message}).`);
   }
 
-  // 1 — binary resolves + reports a version.
+  // 1 — binary resolves + reports a version. probeCommand draws the KILL vs FAIL line the old code
+  // erased: a timed-out probe (exitCode null) retries at a longer budget and, if it still can't
+  // answer, surfaces as an explicit TIMEOUT — never as a bare "exited null" that reads like a broken
+  // pi and silently downgrades the cast (issue #54).
   let version: string | null = null;
-  try {
-    const v = Bun.spawnSync({ cmd: [bin, "--version"], env, stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
-    if (v.success) {
-      // pi prints its version to stderr; fall back across both streams.
-      const raw = `${v.stdout.toString()}\n${v.stderr.toString()}`.trim();
-      version = raw.split("\n").map((l) => l.trim()).find(Boolean) || null;
-      if (!semverGte(version, MIN_PI_VERSION)) {
-        problems.push(`installed pi ${version} is too old; need >=${MIN_PI_VERSION} for --session-id.`);
-      }
-    } else {
-      problems.push(`\`${bin} --version\` exited ${v.exitCode}: ${v.stderr.toString().trim() || "(no output)"}`);
-    }
-  } catch (err) {
+  const probe = probeCommand([bin, "--version"], env, { budgets: PREFLIGHT_BUDGETS_MS });
+  if (probe.spawnError) {
     problems.push(
-      `pi binary "${bin}" is not runnable on PATH (${(err as Error).message}). ` +
+      `pi binary "${bin}" is not runnable on PATH (${probe.spawnError.message}). ` +
         `Install pi or fix config.harness.pi.bin.`,
     );
+  } else if (probe.ok) {
+    // pi prints its version to stderr; fall back across both streams.
+    const raw = `${probe.stdout}\n${probe.stderr}`.trim();
+    version = raw.split("\n").map((l) => l.trim()).find(Boolean) || null;
+    if (!semverGte(version, MIN_PI_VERSION)) {
+      problems.push(`installed pi ${version} is too old; need >=${MIN_PI_VERSION} for --session-id.`);
+    }
+  } else if (probe.timedOut) {
+    // KILLED, not failed: the probe never got to answer. Say TIMED OUT explicitly so the dispatcher's
+    // substitution comment blames machine load, not a broken/unauthenticated pi — and so this stops
+    // poisoning the "pi is genuinely down" diagnosis it used to mimic.
+    problems.push(
+      `\`${bin} --version\` TIMED OUT — killed by ${probe.signalCode ?? "signal"} after ${probe.attempts} ` +
+        `attempt(s), the last with a ${probe.budgetMs / 1000}s budget. pi was NOT confirmed broken; ` +
+        `the probe was starved (likely heavy concurrent load). Retry when the box is quieter or raise the budget.`,
+    );
+  } else {
+    // A real, self-chosen non-zero exit: pi ran and rejected the invocation. This one IS a fault.
+    problems.push(`\`${bin} --version\` exited ${probe.exitCode}: ${probe.stderr.trim() || "(no output)"}`);
   }
 
-  // 2 — CLI/protocol drift: confirm the flags the driver emits still exist.
-  try {
-    const h = Bun.spawnSync({ cmd: [bin, "--help"], env, stdout: "pipe", stderr: "pipe", timeout: PREFLIGHT_TIMEOUT_MS });
-    const help = `${h.stdout.toString()}\n${h.stderr.toString()}`;
-    if (!h.success) {
-      problems.push(`\`${bin} --help\` exited ${h.exitCode}: ${h.stderr.toString().trim() || "(no output)"}`);
-    } else if (help.trim()) {
-      const missing = REQUIRED_PI_FLAGS.filter((f) => !help.includes(f));
-      if (missing.length) {
-        problems.push(
-          `installed pi (${version ?? "unknown version"}) no longer advertises ${missing.join(", ")} — ` +
-            `CLI/protocol drift; the PiDriver invocation needs updating.`,
-        );
-      }
+  // 2 — CLI/protocol drift: confirm the flags the driver emits still exist. A KILLED --help probe
+  // (timeout under load) is silently tolerated — the same load already surfaced on the --version
+  // probe in (1), and a flag-drift verdict can't be trusted off a probe that never printed.
+  const h = probeCommand([bin, "--help"], env, { budgets: PREFLIGHT_BUDGETS_MS });
+  const help = `${h.stdout}\n${h.stderr}`;
+  if (h.spawnError || h.timedOut) {
+    /* a --help spawn failure / timeout is already implied by the --version probe in (1) */
+  } else if (!h.ok) {
+    problems.push(`\`${bin} --help\` exited ${h.exitCode}: ${h.stderr.trim() || "(no output)"}`);
+  } else if (help.trim()) {
+    const missing = REQUIRED_PI_FLAGS.filter((f) => !help.includes(f));
+    if (missing.length) {
+      problems.push(
+        `installed pi (${version ?? "unknown version"}) no longer advertises ${missing.join(", ")} — ` +
+          `CLI/protocol drift; the PiDriver invocation needs updating.`,
+      );
     }
-  } catch {
-    /* a --help failure is already implied by the --version failure in (1) */
   }
 
   // 3 — pi login present (subscription/OAuth; the child strips API keys and relies on this).
