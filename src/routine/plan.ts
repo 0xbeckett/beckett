@@ -64,7 +64,14 @@ export interface RoutineDispatchPlan {
    * dependency-update job, or the feed-watch poll. Only `agent`/`browser` (and, indirectly, a
    * qualifying `watch` fire) reach the browser.
    */
-  lane: "agent" | "browser" | "deps-update" | "watch" | "self" | "proactive-sweep";
+  lane:
+    | "agent"
+    | "browser"
+    | "deps-update"
+    | "watch"
+    | "self"
+    | "proactive-sweep"
+    | "spend-report";
   /** agent lane: the registry id to invoke LIVE at dispatch (null for the browser lane). */
   agentId: string | null;
   /** agent lane: the instruction handed to that agent (null for the browser lane). */
@@ -233,6 +240,28 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       preview:
         "replay the day on the self lane (dream pass): read-only assembly, budgeted reflection, " +
         "one dated journal entry under ~/.beckett/dreams, inference-only memories",
+      credsEntry: null,
+      channelId: action.channelId ?? null,
+      requesterId: action.requesterId ?? null,
+    };
+  }
+
+  if (action.kind === "spend-report") {
+    // The weekly bill (#77) gets its OWN lane, deliberately: like `deps-update`/`dream` it names no
+    // agent, no browser task, and no creds entry, so there is no shape a dispatcher could mistake
+    // for browser work. Its body reads the spend ledger and posts one per-task breakdown to the
+    // channel, run as the `beckett routine spend-report` subprocess off the scheduler tick.
+    return {
+      routineId: routine.id,
+      lane: "spend-report",
+      agentId: null,
+      agentInput: null,
+      browserTask: null,
+      depsUpdate: null,
+      proactiveSweep: null,
+      selfPrompt: null,
+      dream: false,
+      preview: `post the per-task spend bill for the last ${action.since} to the channel`,
       credsEntry: null,
       channelId: action.channelId ?? null,
       requesterId: action.requesterId ?? null,

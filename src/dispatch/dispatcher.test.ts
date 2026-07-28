@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { Config } from "../types.ts";
 import type { Ticket, TicketState, PollEvent, HarnessSpec, TicketComment } from "../tracker/types.ts";
 import type { GitOps } from "./dispatcher.ts";
+import { appendSpendRecord, type SpendRecord } from "../spend.ts";
 
 // ── controllable fake worker handle + spawn mock ────────────────────────────────────────────
 let spawnCalls: {
@@ -3061,5 +3062,81 @@ describe("branch preview lifecycle (#76)", () => {
     await d.handle(stateChanged(makeTicket({ state: "done" }), "done", "in_review"));
     await tick();
     expect(teardownCalls.length).toBe(1);
+  });
+});
+
+describe("per-task budget ceiling (#77)", () => {
+  const spendRow = (over: Partial<SpendRecord> = {}): SpendRecord => ({
+    ticketId: "OPS-1", project: "beckett", stage: "implement", harness: "claude", model: "m",
+    effort: "medium", turns: 1, toolCalls: 1, tokensIn: 1, tokensOut: 1, costUsd: 5, durationMs: 1,
+    outcome: "done", reviewTier: "self", ts: "2026-07-28T00:00:00.000Z", ...over,
+  });
+
+  function budgetDispatcher(capUsd: number, ledgerPath: string) {
+    const client = new FakeClient();
+    const config = { ...cfg(2), budget: { per_task_usd_cap: capUsd } } as unknown as Config;
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config,
+      resolveRepoRoot: (ticket: Ticket) => join("/tmp/repo", ticket.project ?? ticket.identifier),
+      spendLedgerPath: ledgerPath,
+    });
+    return { d, client };
+  }
+
+  test("a task at/over its cap is not staffed and is told why (once)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-budget-"));
+    try {
+      const ledger = join(dir, "spend.jsonl");
+      appendSpendRecord(ledger, spendRow({ costUsd: 5 })); // $5 spent, cap $3 → over
+      const { d, client } = budgetDispatcher(3, ledger);
+      await d.handle(stateChanged(makeTicket(), "in_progress"));
+      await tick();
+      expect(spawnCalls).toHaveLength(0);
+      const blocked = client.comments.filter((c) => c.body.includes("Budget ceiling reached"));
+      expect(blocked).toHaveLength(1);
+      expect(blocked[0]!.body).toContain("$5.00");
+      expect(blocked[0]!.body).toContain("$3.00");
+      // A second staffing attempt stays blocked but does NOT re-comment.
+      await d.handle(stateChanged(makeTicket(), "in_progress"));
+      await tick();
+      expect(spawnCalls).toHaveLength(0);
+      expect(client.comments.filter((c) => c.body.includes("Budget ceiling reached"))).toHaveLength(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("a task under its cap staffs normally", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-budget-"));
+    try {
+      const ledger = join(dir, "spend.jsonl");
+      appendSpendRecord(ledger, spendRow({ costUsd: 1 }));
+      const { d } = budgetDispatcher(100, ledger);
+      await d.handle(stateChanged(makeTicket(), "in_progress"));
+      await tick();
+      expect(spawnCalls).toHaveLength(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("a task with no ledger data is never blocked (existing tickets keep working)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-budget-"));
+    try {
+      const { d } = budgetDispatcher(3, join(dir, "absent.jsonl"));
+      await d.handle(stateChanged(makeTicket(), "in_progress"));
+      await tick();
+      expect(spawnCalls).toHaveLength(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("cap of 0 disables the ceiling entirely (default posture)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-budget-"));
+    try {
+      const ledger = join(dir, "spend.jsonl");
+      appendSpendRecord(ledger, spendRow({ costUsd: 9999 }));
+      const { d } = budgetDispatcher(0, ledger);
+      await d.handle(stateChanged(makeTicket(), "in_progress"));
+      await tick();
+      expect(spawnCalls).toHaveLength(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

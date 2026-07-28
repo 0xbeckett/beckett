@@ -95,6 +95,17 @@ test("proactive-sweep with an EMPTY opt-in list carries it faithfully and previe
   expect(plan.preview).toContain("no repos are opted in");
 });
 
+test("spend-report action → its OWN lane, with nothing a browser dispatcher could act on (#77)", () => {
+  const plan = buildDispatchPlan(routine({ kind: "spend-report", since: "7d" }));
+  expect(plan.lane).toBe("spend-report");
+  // Same guarantee as deps-update: no browser task, no agent, no creds — the bill never touches the web.
+  expect(plan.browserTask).toBeNull();
+  expect(plan.agentId).toBeNull();
+  expect(plan.agentInput).toBeNull();
+  expect(plan.credsEntry).toBeNull();
+  expect(plan.preview).toContain("spend bill for the last 7d");
+});
+
 test("self action → its OWN lane carrying only the prompt, nothing a browser dispatcher could act on", () => {
   const plan = buildDispatchPlan(routine({ kind: "self", prompt: "look over the board and nudge anything stalled" }));
   expect(plan.lane).toBe("self");
