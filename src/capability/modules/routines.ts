@@ -60,6 +60,7 @@ import {
 import { defaultDepsUpdateDeps, runDepsUpdate } from "../../ops/deps-update.ts";
 import { defaultProactiveSweepDeps, runProactiveSweep } from "../../ops/proactive-sweep.ts";
 import { PROACTIVE_SWEEP_ID } from "../../routine/builtins.ts";
+import { formatWeeklyBill, readSpendLedger } from "../../spend.ts";
 import { defaultRepoRoot } from "../../version/index.ts";
 import { loadIdentity } from "../../agency/index.ts";
 import type { AgentDefinition, AgentRunner } from "../../agent/index.ts";
@@ -114,6 +115,12 @@ export interface RoutinesExtensionDeps {
    * agent/registry/runner, and never posts a `routine.self` concierge wake.
    */
   spawnDream?: (argv: string[]) => void;
+  /**
+   * How the weekly spend report (#77) is launched. Default: a detached `beckett routine
+   * spend-report` subprocess, exactly like `spawnDepsUpdate`. Injected for the same reason — so a
+   * test can assert the bill forks off the scheduler tick and never resolves the browser lane.
+   */
+  spawnSpendReport?: (argv: string[]) => void;
   /** Test seams — the scheduler's injectable clock/RNG/cadence (see {@link RoutineSchedulerDeps}). */
   now?: () => Date;
   rng?: () => number;
@@ -387,6 +394,39 @@ export const createRoutinesExtension =
     }
 
     /**
+     * Launch the weekly spend report (#77) as its own `beckett routine spend-report` process — the
+     * deps-update pattern exactly: detached, not awaited, owns its own reporting (it posts the one
+     * per-task bill to `channelId` itself). It rides no browser dependency: reading the ledger and
+     * posting a summary wants neither a web session, an agent, nor credentials.
+     */
+    function spawnSpendReport(
+      plan: RoutineDispatchPlan,
+      routine: Routine,
+      origin: { channelId: string; requesterId: string },
+    ): void {
+      const since = routine.action?.kind === "spend-report" ? routine.action.since : "7d";
+      const argv = [
+        "routine", "spend-report",
+        "--routine", plan.routineId,
+        "--channel", origin.channelId,
+        "--requester", origin.requesterId,
+        "--since", since,
+      ];
+      if (deps.spawnSpendReport) {
+        deps.spawnSpendReport(argv);
+        return;
+      }
+      const proc = Bun.spawn([process.execPath, BECKETT_CLI_ENTRY, ...argv], {
+        cwd: ctx.paths.home,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      proc.unref?.();
+      ctx.logger.info("spend-report lane launched off-process", { routineId: plan.routineId, pid: proc.pid });
+    }
+
+    /**
      * The `agent` lane's body: resolve the agent LIVE from the registry (so editing its prompt —
      * or, for `watch`, the routine's target agent — takes effect with no redeploy), let it author
      * the post, then hand what it authored to the PRIVILEGED in-process browser lane. Shared by
@@ -458,6 +498,14 @@ export const createRoutinesExtension =
       // subprocess off this process; a crash in it can't reach the daemon.
       if (plan.lane === "proactive-sweep") {
         spawnProactiveSweep(plan, { channelId, requesterId });
+        return;
+      }
+
+      // The weekly bill (#77) forks here too, before every browser dependency below: reading the
+      // spend ledger and posting a per-task breakdown wants no web session, no agent, no creds. It
+      // runs as its OWN `beckett routine spend-report` subprocess, off this process.
+      if (plan.lane === "spend-report") {
+        spawnSpendReport(plan, routine, { channelId, requesterId });
         return;
       }
 
@@ -692,6 +740,47 @@ export const createRoutinesExtension =
       out(result);
     }
 
+    /**
+     * `beckett routine spend-report` (#77) — the `spend-report` action's BODY, run as its own
+     * process by {@link spawnSpendReport} (and by a human who wants this week's bill on demand). It
+     * reads the append-only spend ledger, rolls it up per task over the `--since` window, and posts
+     * EXACTLY ONE per-task breakdown to `--channel`. Reuses the existing telemetry — it invents no
+     * new metering. An empty/absent ledger posts a plain "nothing recorded" line rather than
+     * failing: a fresh install has no history to bill, and that is not an error.
+     */
+    async function runRoutineSpendReport(argv: string[]): Promise<void> {
+      const { flags } = parse(argv);
+      // `--routine` / `--requester` are provenance only — nothing here branches on them.
+      const logger = ctx.logger.child("spend-report").child(String(flags.routine ?? "manual"));
+      const since = flags.since ? String(flags.since) : "7d";
+      const channelId = flags.channel
+        ? String(flags.channel)
+        : (process.env.BECKETT_ROUTINE_CHANNEL_ID ?? "").trim();
+
+      let text: string;
+      try {
+        text = formatWeeklyBill(readSpendLedger(ctx.config.paths.spend), { since });
+      } catch (err) {
+        // A ledger read/format failure still reports — an unattended weekly job that fails silently
+        // is indistinguishable from one that never ran.
+        logger.warn("spend-report could not build the bill", { error: String(err) });
+        text = `🧾 **Weekly bill** — could not read the spend ledger (${(err as Error).message}).`;
+      }
+      logger.info("spend-report built", { since, channel: channelId || null });
+
+      if (channelId) {
+        try {
+          await callBus(join(ctx.paths.beckettDir, "control.sock"), "discord.reply", { channelId, text }, 30_000);
+        } catch (err) {
+          logger.warn("spend-report could not post its bill", { error: String(err) });
+        }
+      } else {
+        // Only reachable for a hand-run with no channel configured — the scheduler always passes one.
+        logger.info("spend-report posted nothing (no channel configured)");
+      }
+      out({ since, channelId: channelId || null, text });
+    }
+
     async function runRoutine(argv: string[]): Promise<void> {
       const sock = join(ctx.paths.beckettDir, "control.sock");
       const [sub, ...rest] = argv;
@@ -898,6 +987,7 @@ export const createRoutinesExtension =
     function describeLaneTarget(plan: RoutineDispatchPlan): string {
       if (plan.lane === "deps-update") return "beckett routine deps-update (local maintenance subprocess)";
       if (plan.lane === "proactive-sweep") return "beckett routine proactive-sweep (local maintenance subprocess)";
+      if (plan.lane === "spend-report") return "beckett routine spend-report (posts the per-task bill; never the browser)";
       if (plan.lane === "self") return "the concierge (a framed SYSTEM turn — wakes Beckett, never the browser)";
       if (plan.lane === "agent") return `invoke agent ${plan.agentId} → beckett browser (background lane)`;
       return "beckett browser (background lane)";
@@ -1173,6 +1263,14 @@ export const createRoutinesExtension =
           usage:
             "beckett routine proactive-sweep [--repos <owner/name,owner/name>] [--channel <id>]",
           run: runRoutineProactiveSweep,
+        },
+        {
+          // Like `routine deps-update`: a routine's BODY launched by the scheduler, not a browsing
+          // surface. Two-word name wins over the bare `routine` via longest-verb matching.
+          name: "routine spend-report",
+          summary: "post the per-task spend bill for a rolling window to a channel",
+          usage: "beckett routine spend-report [--since 7d] [--channel <id>]",
+          run: runRoutineSpendReport,
         },
         {
           name: "routine",

@@ -362,9 +362,13 @@ test("unknown capabilities and pre-init calls refuse with results", async () => 
 // ── the deps-update lane forks BEFORE the browser (issue #85) ─────────────────────────────
 
 /** A plan shaped like the scheduler builds one, minus the fields the lane under test ignores. */
-function planFor(kind: "deps-update" | "browser" | "self" | "dream") {
+function planFor(kind: "deps-update" | "browser" | "self" | "dream" | "spend-report") {
   return {
-    routineId: kind === "self" ? "morning-sweep" : kind === "dream" ? "nightly-dream" : "weekly-deps-update",
+    routineId:
+      kind === "self" ? "morning-sweep"
+      : kind === "dream" ? "nightly-dream"
+      : kind === "spend-report" ? "weekly-spend-report"
+      : "weekly-deps-update",
     // The dream variant (issue #36) rides the self LANE; only its `dream` flag differs.
     lane: kind === "dream" ? "self" : kind,
     agentId: null,
@@ -423,6 +427,29 @@ test("a deps-update fire launches its own process and never resolves the browser
   expect(argv.slice(0, 2)).toEqual(["routine", "deps-update"]);
   expect(argv[argv.indexOf("--base") + 1]).toBe("main");
   // The fire-time origin is threaded through so the subprocess knows where to post its one line.
+  expect(argv[argv.indexOf("--channel") + 1]).toBe("chan");
+  expect(argv[argv.indexOf("--requester") + 1]).toBe("owner-1");
+});
+
+test("a spend-report fire launches its own process and never resolves the browser lane (#77)", async () => {
+  const launched: string[][] = [];
+  const dispatcher = await dispatcherOf({
+    ...exploding(), // browserAgent/agentRegistry/agentRunner all throw if the lane reaches them
+    spawnSpendReport: (argv) => void launched.push(argv),
+  });
+
+  // Passing a real routine so the lane can read its `since`; an over-budget dispatch must never
+  // touch the browser deps (they'd throw), proving the bill forks before the browser-deps check.
+  await dispatcher.dispatch(
+    planFor("spend-report") as never,
+    { action: { kind: "spend-report", since: "14d" } } as never,
+  );
+
+  expect(launched.length).toBe(1);
+  const argv = launched[0]!;
+  expect(argv.slice(0, 2)).toEqual(["routine", "spend-report"]);
+  expect(argv[argv.indexOf("--since") + 1]).toBe("14d");
+  // The fire-time origin is threaded through so the subprocess knows where to post the bill.
   expect(argv[argv.indexOf("--channel") + 1]).toBe("chan");
   expect(argv[argv.indexOf("--requester") + 1]).toBe("owner-1");
 });
@@ -530,6 +557,7 @@ test("asCapability projects the carried v5 facets into the pinned CLI spine slot
   expect(projected.cliVerbs.map((v) => v.name)).toEqual([
     "routine deps-update",
     "routine proactive-sweep",
+    "routine spend-report",
     "routine",
   ]);
   expect(projected.cliVerbs.every((v) => typeof v.run === "function")).toBe(true);

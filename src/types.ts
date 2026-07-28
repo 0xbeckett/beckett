@@ -658,6 +658,13 @@ export interface Config {
   concurrency: {
     max_workers: number;
   };
+  budget: {
+    /** Per-task spend ceiling in USD (#77): when a task's accrued worker cost (summed from the
+     *  spend ledger) reaches this, the dispatcher stops staffing further work on it and comments
+     *  why. 0 (default) disables the ceiling. A task with no ledger rows reads as $0, so tickets
+     *  that predate the ledger are never blocked. */
+    per_task_usd_cap: number;
+  };
   supervise: {
     /** Generous backstop wall-clock cap (s) the per-worker watchdog enforces — a runaway safety
      *  net, not a work limit (drivers/proc.ts#hardCapSeconds). Floor 1800, default 3600. */

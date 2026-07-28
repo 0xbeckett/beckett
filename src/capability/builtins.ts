@@ -314,6 +314,15 @@ export const configFragments = {
       max_workers: posInt.default(2),
     })
     .default({}),
+  budget: z
+    .object({
+      // Per-task spend ceiling (#77), USD. The dispatcher sums a task's accrued worker cost from
+      // the spend ledger before staffing each stage; at/over this cap it stops staffing further
+      // work on that task and comments why. A fractional cap (e.g. 12.50) is fine — this is money,
+      // not a count. 0 disables the ceiling entirely, so a fresh install bills but never blocks.
+      per_task_usd_cap: z.number().min(0).default(0),
+    })
+    .default({}),
   supervise: z
     .object({
       // Generous, configurable backstop wall-clock cap (seconds) enforced by the per-worker
@@ -569,6 +578,7 @@ const BUILTIN_CAPABILITY_INFO: {
   [K in keyof typeof configFragments]: { id: string; summary: string };
 } = {
   concurrency: { id: "concurrency", summary: "Worker-fleet sizing (parallel worktree slots)." },
+  budget: { id: "budget", summary: "Per-task spend ceiling: stop staffing a task past its USD cap." },
   supervise: { id: "supervise", summary: "Worker watchdog: hard caps, stall detection, WIP checkpoints." },
   models: { id: "models", summary: "Cross-stage model defaults (reviewer seat)." },
   harness: { id: "harness", summary: "Coding-agent harnesses (claude/codex/pi): binaries, models, fallback order." },

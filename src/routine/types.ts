@@ -239,6 +239,22 @@ export const RoutineActionSchema = z.discriminatedUnion("kind", [
     /** Authenticated requester the fire is attributed to (optional; owner env fallback). */
     requesterId: z.string().optional(),
   }),
+  /**
+   * `spend-report` (#77): the weekly bill. Forks BEFORE every browser dependency (like
+   * `deps-update`/`dream`) — it reads the spend ledger and posts ONE per-task cost breakdown to its
+   * channel, with no agent, no browser, and no credentials. Its body runs as the
+   * `beckett routine spend-report` subprocess so the ledger read + Discord post never sit inside a
+   * scheduler tick, and a crash in it can't reach the daemon.
+   */
+  z.object({
+    kind: z.literal("spend-report"),
+    /** Rolling window billed, as a `parseSince` string (e.g. "7d"). Default matches the weekly cadence. */
+    since: z.string().min(1).default("7d"),
+    /** Discord channel the bill posts to (optional; env fallback at fire time). */
+    channelId: z.string().optional(),
+    /** Authenticated requester the fire is attributed to (optional; owner env fallback). */
+    requesterId: z.string().optional(),
+  }),
 ]);
 export type RoutineAction = z.infer<typeof RoutineActionSchema>;
 

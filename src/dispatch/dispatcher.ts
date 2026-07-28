@@ -66,7 +66,7 @@ import { projectSlug } from "../tracker/cast.ts";
 import { hardCapSeconds, sweepLedgeredWorker } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
 import { AdvanceOutbox, type AdvanceOperation } from "./advance-outbox.ts";
-import { appendSpendRecord, type SpendOutcome } from "../spend.ts";
+import { appendSpendRecord, readSpendLedger, spendForTicket, type SpendOutcome } from "../spend.ts";
 import {
   PublishOutbox,
   PUBLISH_RETRY_DELAYS_MS,
@@ -556,6 +556,8 @@ export class Dispatcher {
   private readonly unstaffedSince = new Map<string, number>();
   /** Tickets the watchdog has already re-staffed once; a still-workerless second sighting parks them. */
   private readonly watchdogRestaffed = new Set<string>();
+  /** Tickets already told (once) that they hit their per-task budget ceiling (#77) — no repeat spam. */
+  private readonly budgetBlocked = new Set<string>();
   /**
    * Tickets whose worker has finished but whose finish handler (commit/push/PR) is still running.
    * onWorkerDone frees the slot BEFORE awaiting the finish, so for that window the ticket is
@@ -868,6 +870,12 @@ export class Dispatcher {
           this.spawnRetryTimers.has(ticket.id) ||
           (ticket.state === "in_review" && (this.publishOutbox?.has(ticket.id) ?? false))
         ) {
+          this.forgetWedgeClock(ticket.id);
+          continue;
+        }
+        // A task at/over its per-task budget ceiling (#77) is intentionally unstaffed — not a
+        // wedge. Skip it so the watchdog never re-staffs it or parks it with a misleading message.
+        if (this.budgetCeiling(ticket).over) {
           this.forgetWedgeClock(ticket.id);
           continue;
         }
@@ -1801,9 +1809,59 @@ export class Dispatcher {
     return this.workers.size + this.staffing.size >= this.config.concurrency.max_workers;
   }
 
+  /**
+   * Per-task spend ceiling (#77). Sums this task's accrued cost from the spend ledger and compares
+   * it to `budget.per_task_usd_cap`. A cap of 0 (the default) disables the ceiling, and a task with
+   * NO ledger rows reads as $0 — so a ticket that predates the ledger, or one whose runs never
+   * reported cost, can never be blocked by a number it has no data for. Best-effort: a ledger read
+   * failure returns "not over" so an observability glitch can never wedge staffing.
+   */
+  private budgetCeiling(ticket: Ticket): { over: boolean; spentUsd: number; capUsd: number } {
+    const capUsd = this.config.budget?.per_task_usd_cap ?? 0;
+    if (capUsd <= 0) return { over: false, spentUsd: 0, capUsd: 0 };
+    let spentUsd = 0;
+    try {
+      spentUsd = spendForTicket(readSpendLedger(this.spendLedgerPath), ticket.identifier);
+    } catch (err) {
+      this.logger.warn("budget ceiling read failed — allowing staffing", {
+        ticket: ticket.identifier,
+        error: String(err),
+      });
+      return { over: false, spentUsd: 0, capUsd };
+    }
+    return { over: spentUsd >= capUsd, spentUsd, capUsd };
+  }
+
   /** Spawn immediately if a slot is free, else enqueue for {@link pump}. */
   private spawnGuarded(ticket: Ticket, stage: string): void {
     if (this.isStaffed(ticket.id)) return; // already staffed (live or mid-spawn)
+    // Budget gate (#77): a task at/over its per-task USD cap gets no further staffing on ANY stage.
+    // Checked before the cap/repo queues so an over-budget task never even takes a pending slot.
+    const budget = this.budgetCeiling(ticket);
+    if (budget.over) {
+      this.trace(
+        ticket,
+        `${stage}:staff`,
+        "held",
+        `per-task budget reached ($${budget.spentUsd.toFixed(2)} ≥ $${budget.capUsd.toFixed(2)})`,
+      );
+      this.logger.warn("staffing blocked: per-task budget ceiling reached", {
+        ticket: ticket.identifier,
+        stage,
+        spentUsd: budget.spentUsd,
+        capUsd: budget.capUsd,
+      });
+      if (!this.budgetBlocked.has(ticket.id)) {
+        this.budgetBlocked.add(ticket.id);
+        void this.postComment(
+          ticket.id,
+          `⛔ **Budget ceiling reached.** This task has spent ~$${budget.spentUsd.toFixed(2)} on workers, ` +
+            `at or over its per-task cap of $${budget.capUsd.toFixed(2)}, so I'm not staffing further work on it. ` +
+            "Raise `budget.per_task_usd_cap` in config (or split the remaining work into a new task) to continue.",
+        );
+      }
+      return;
+    }
     const repoRoot = this.resolveRepoRoot(ticket);
     if (this.atCap()) {
       this.pending.push({ ticket, stage, repoRoot });

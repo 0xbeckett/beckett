@@ -1726,6 +1726,9 @@ exports[`cli: config: print-default emits the full default TOML 1`] = `
 [concurrency]
 max_workers = 2
 
+[budget]
+per_task_usd_cap = 0
+
 [supervise]
 worker_hard_cap_s = 3600
 worker_stall_s = 300
