@@ -1,30 +1,30 @@
 {
-  "generated_at": "2026-07-28T21:24:27.387Z",
+  "generated_at": "2026-07-28T21:46:00.900Z",
   "source_file": "~/Projects/metrics/data/telemetry-runs.json",
-  "telemetry_generated_at": "2026-07-28T21:23:56.571Z",
-  "total_runs": 3304,
-  "costed_runs": 3279,
+  "telemetry_generated_at": "2026-07-28T21:45:52.779Z",
+  "total_runs": 3313,
+  "costed_runs": 3288,
   "unrated_model_sessions": 25,
   "normalisation": {
-    "runs_measured": 3304,
-    "total_tokens": 3798747009,
-    "total_compute_hours": 1232.9,
-    "tokens_per_compute_hour": 3081044
+    "runs_measured": 3313,
+    "total_tokens": 3812373901,
+    "total_compute_hours": 1236.9,
+    "tokens_per_compute_hour": 3082255
   },
   "wall_clock": {
-    "median_seconds": 97.9,
-    "p90_seconds": 1328.5
+    "median_seconds": 98.5,
+    "p90_seconds": 1343.6
   },
   "review_cycle_distribution": [
     {
       "cycles": "0",
-      "runs": 2792,
-      "pct": 84.5
+      "runs": 2794,
+      "pct": 84.3
     },
     {
       "cycles": "1",
-      "runs": 389,
-      "pct": 11.8
+      "runs": 394,
+      "pct": 11.9
     },
     {
       "cycles": "2",
@@ -33,8 +33,8 @@
     },
     {
       "cycles": "3+",
-      "runs": 70,
-      "pct": 2.1
+      "runs": 72,
+      "pct": 2.2
     }
   ],
   "compute_rate": {
@@ -66,9 +66,9 @@
     ],
     "task_count": 284,
     "task_charge": {
-      "median_hours": 0.34,
-      "median_usd": 0.56,
-      "median_credits": 0.34
+      "median_hours": 0.35,
+      "median_usd": 0.58,
+      "median_credits": 0.35
     },
     "examples": [
       {
@@ -99,8 +99,8 @@
         "key": "small",
         "label": "a small feature",
         "percentile": 25,
-        "example_ticket": "OPS-102",
-        "runs": 2,
+        "example_ticket": "OPS-132",
+        "runs": 1,
         "compute_hours": 0.13,
         "charge_usd": 0.21,
         "credits": 0.13,
@@ -123,11 +123,11 @@
         "key": "typical",
         "label": "a typical task",
         "percentile": 50,
-        "example_ticket": "OPS-193",
-        "runs": 2,
-        "compute_hours": 0.34,
-        "charge_usd": 0.56,
-        "credits": 0.34,
+        "example_ticket": "OPS-1",
+        "runs": 3,
+        "compute_hours": 0.35,
+        "charge_usd": 0.58,
+        "credits": 0.35,
         "covers": [
           {
             "budget_usd": 5,
@@ -135,11 +135,11 @@
           },
           {
             "budget_usd": 20,
-            "count": 35
+            "count": 34
           },
           {
             "budget_usd": 50,
-            "count": 89
+            "count": 86
           }
         ]
       }
@@ -147,21 +147,48 @@
     "recent_tasks": [
       {
         "id": "#94",
-        "runs": 1,
+        "runs": 2,
+        "review_cycles": 16,
+        "last_ts": "2026-07-28T21:43:37.169Z",
+        "compute_hours": 0.35,
+        "charge_usd": 0.58,
+        "credits": 0.35
+      },
+      {
+        "id": "#99",
+        "runs": 3,
         "review_cycles": 0,
-        "last_ts": "2026-07-28T21:06:35.639Z",
-        "compute_hours": 0.29,
-        "charge_usd": 0.48,
-        "credits": 0.29
+        "last_ts": "2026-07-28T21:43:13.201Z",
+        "compute_hours": 0.15,
+        "charge_usd": 0.25,
+        "credits": 0.15
+      },
+      {
+        "id": "#98",
+        "runs": 3,
+        "review_cycles": 0,
+        "last_ts": "2026-07-28T21:42:12.218Z",
+        "compute_hours": 0.2,
+        "charge_usd": 0.33,
+        "credits": 0.2
       },
       {
         "id": "#96",
-        "runs": 4,
+        "runs": 5,
+        "review_cycles": 5,
+        "last_ts": "2026-07-28T21:36:51.066Z",
+        "compute_hours": 1.4,
+        "charge_usd": 2.31,
+        "credits": 1.4
+      },
+      {
+        "id": "#97",
+        "runs": 3,
         "review_cycles": 0,
-        "last_ts": "2026-07-28T21:04:43.881Z",
-        "compute_hours": 0.91,
-        "charge_usd": 1.5,
-        "credits": 0.91
+        "last_ts": "2026-07-28T21:29:00.305Z",
+        "compute_hours": 0.46,
+        "charge_usd": 0.76,
+        "credits": 0.46
       },
       {
         "id": "#93",
@@ -189,33 +216,6 @@
         "compute_hours": 0.84,
         "charge_usd": 1.39,
         "credits": 0.84
-      },
-      {
-        "id": "#91",
-        "runs": 8,
-        "review_cycles": 16,
-        "last_ts": "2026-07-28T20:21:24.996Z",
-        "compute_hours": 0.96,
-        "charge_usd": 1.58,
-        "credits": 0.96
-      },
-      {
-        "id": "#90",
-        "runs": 2,
-        "review_cycles": 0,
-        "last_ts": "2026-07-28T19:43:57.791Z",
-        "compute_hours": 0.52,
-        "charge_usd": 0.86,
-        "credits": 0.52
-      },
-      {
-        "id": "#88",
-        "runs": 8,
-        "review_cycles": 8,
-        "last_ts": "2026-07-28T19:22:23.293Z",
-        "compute_hours": 1.07,
-        "charge_usd": 1.77,
-        "credits": 1.07
       }
     ]
   },
