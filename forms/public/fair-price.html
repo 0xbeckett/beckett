@@ -166,7 +166,7 @@
           <li><b>Model tokens</b> at the provider's published rate, passed straight through.</li>
           <li><b>Compute</b> — worker and browser wall-clock at a stated hourly rate.</li>
           <li><b>One margin line</b> — the platform fee on top of model + compute.</li>
-          <li><b>A human seat</b> per person, per month, separate from any task.</li>
+          <li><b>A human seat</b> — <span class="num" data-bind="seat_current">$20</span>/mo that <b>includes <span class="num" data-bind="seat_credits">200</span> credits</b>; light use never costs past it.</li>
         </ul>
       </div>
       <div class="rule exc">
@@ -230,7 +230,7 @@
 
       <div class="field" id="field_seat_monthly">
         <label for="seat_monthly">Human seat — price per person, per month</label>
-        <p class="hint">Today it's <span class="num" data-bind="seat_current">$20</span>/mo. Idle presence isn't metered, so the floor is <span class="num" data-bind="floor_seat">$0</span> — tell us what a seat's worth to you.</p>
+        <p class="hint">Today it's <span class="num" data-bind="seat_current">$20</span>/mo and includes <span class="num" data-bind="seat_credits">200</span> credits (<span class="num" data-bind="seat_included_usd">$20</span> of real spend) — light use never costs more, heavy use loads more at <span class="num" data-bind="credit_usd">$0.10</span>/credit. The floor is <span class="num" data-bind="floor_seat">$0</span> — tell us what a fair monthly seat is.</p>
         <div class="input-wrap">
           <span class="affix">$</span>
           <input type="number" inputmode="decimal" id="seat_monthly" name="seat_monthly" step="1" min="0" placeholder="e.g. 20" aria-describedby="err_seat_monthly" required />
@@ -313,15 +313,23 @@
       setAll('floor_seat', usd(FLOORS.seat_monthly, 0));
       setAll('fee_current', d.platform_fee.pct + '%');
       setAll('seat_current', usd(d.seat.monthly_usd, 0));
+      if (d.seat.included_credits != null) setAll('seat_credits', Number(d.seat.included_credits).toLocaleString());
+      if (d.seat.included_usd != null) setAll('seat_included_usd', usd(d.seat.included_usd, 0));
+      if (d.credit && d.credit.usd_per_credit != null) setAll('credit_usd', usd(d.credit.usd_per_credit));
       // set the compute input's min now that we know the real floor
       var ci = document.getElementById('compute_per_hour');
       if (ci) ci.setAttribute('min', String(FLOORS.compute_per_hour));
 
       // anchored examples, real figures
       var w = d.worked_example;
+      var seatUsd = d.seat.monthly_usd;
+      // The seat INCLUDES this much in credits; light use draws it down before any
+      // extra is charged. Subtract the allowance, never add the seat on top.
+      var includedUsd = d.seat.included_usd != null ? d.seat.included_usd : seatUsd;
       var lightTasks = 10;
       var lightTaskCost = d.cost_per_run.median * lightTasks;
-      var lightTotal = d.seat.monthly_usd + lightTaskCost;
+      var overage = Math.max(0, lightTaskCost - includedUsd);
+      var lightTotal = seatUsd + overage;
       var exWrap = document.querySelector('[data-bind="examples"]');
       if (exWrap) {
         exWrap.innerHTML = [
@@ -332,8 +340,8 @@
             p: 'Ticket '+esc(w.ticket)+', a real multi-run backend job from the log.',
             meta: '<b>'+w.runs+' runs</b> · '+dur(w.wall_clock_seconds)+' · model '+usd(w.lines.model_cost)+' + compute '+usd(w.lines.compute_cost)+' + '+d.platform_fee.pct+'% fee '+usd(w.lines.platform_fee) },
           { h: 'A month of light use', cost: usd(lightTotal),
-            p: 'One seat plus about '+lightTasks+' typical tasks over a month.',
-            meta: '<b>'+usd(d.seat.monthly_usd,0)+'</b> seat + '+lightTasks+'×'+usd(d.cost_per_run.median)+' tasks ('+usd(lightTaskCost)+')' }
+            p: 'One seat and about '+lightTasks+' typical tasks — all inside the included credits.',
+            meta: '<b>'+usd(seatUsd,0)+'</b> seat · '+lightTasks+'×'+usd(d.cost_per_run.median)+' ('+usd(lightTaskCost)+') drawn from the '+usd(includedUsd,0)+' included · '+usd(overage)+' over' }
         ].map(function(e){
           return '<li class="ex"><div class="ex-top"><h3>'+e.h+'</h3><span class="ex-cost">'+e.cost+'</span></div>'+
                  '<p>'+e.p+'</p><div class="ex-meta">'+e.meta+'</div></li>';

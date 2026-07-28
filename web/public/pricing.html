@@ -360,6 +360,8 @@
       setAll('compute_vm_basis', d.compute_rate.vm_basis);
       setAll('platform_fee', d.platform_fee.pct + '%');
       setAll('seat', usd(d.seat.monthly_usd, 0));
+      setAll('seat_credits', Number(d.seat.included_credits).toLocaleString());
+      setAll('seat_included_usd', usd(d.seat.included_usd, 0));
       setAll('rate_effective', d.rate_table_effective_date || '—');
       setAll('cost_median', usd(d.cost_per_run.median));
       setAll('cost_p90', usd(d.cost_per_run.p90));

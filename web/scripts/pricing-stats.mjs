@@ -30,7 +30,9 @@ const TELEMETRY = process.env.TELEMETRY_FILE
 const OUT = resolve(HERE, "../public/pricing-data.json");
 
 // ---------------------------------------------------------------------------
-// PRICING INPUTS — policy, not telemetry. These are the four lines of the model.
+// PRICING INPUTS — policy, not telemetry. Three of these compose a credit's real
+// spend (model + compute + platform fee); the fourth, the seat, is the monthly
+// plan that includes a block of those credits — it is not a line charged on top.
 // ---------------------------------------------------------------------------
 
 // 1. MODEL COST — pass-through token cost at published per-Mtok rates.
@@ -212,7 +214,7 @@ const reviewCycles = ["0", "1", "2", "3+"].map((bucket) => ({
 
 // ---------------------------------------------------------------------------
 // Worked example — a REAL ticket (task_id), its REAL total cost, itemised into
-// the four lines. Selected deterministically: among substantial tickets (>= 3
+// the three cost lines. Selected deterministically: among substantial tickets (>= 3
 // runs, at least one review cycle, total cost in a sane band), take the one
 // whose total cost is the median. Same data in => same ticket out.
 // ---------------------------------------------------------------------------
@@ -247,7 +249,7 @@ if (tickets.length === 0) {
 
 const chosen = tickets[Math.floor((tickets.length - 1) / 2)];
 
-// Itemise the chosen ticket into the four lines. The model-cost line is the sum
+// Itemise the chosen ticket into the three cost lines. The model-cost line is the sum
 // of the displayed per-tier costs so the itemisation adds up exactly on-page.
 const exTiers = Object.entries(chosen.models)
   .map(([tier, v]) => ({ tier, runs: v.runs, cost: round(v.cost, 2) }))
