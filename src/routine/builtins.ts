@@ -67,6 +67,15 @@ export const WEEKLY_DEPS_UPDATE_ID = "weekly-deps-update";
 export const NIGHTLY_DREAM_ID = "nightly-dream";
 
 /**
+ * Id of the proactive rot-sweep routine (issue #79): ro's ask — "let me open PRs on rot in repos
+ * without being asked." It ships ENABLED but with an EMPTY opt-in list, so it is scheduled and
+ * running yet sweeps nothing until ro names repos (`beckett routine proactive add <owner/name>`).
+ * That is the "never all repos by default" guarantee made concrete: the sweep has no repos to touch
+ * until a human adds them one by one.
+ */
+export const PROACTIVE_SWEEP_ID = "proactive-sweep";
+
+/**
  * The definitions (sans timestamps/state — the store stamps those on seed). Kept as a factory
  * so the seeder gets fresh objects and can't accidentally share mutable state.
  */
@@ -133,6 +142,23 @@ export function builtinRoutineDefs(): Array<Omit<Routine, "createdAt" | "updated
       schedule: {
         cadence: { kind: "daily" },
         window: { start: "03:00", end: "05:00", tz: "America/Los_Angeles" },
+      },
+    },
+    {
+      id: PROACTIVE_SWEEP_ID,
+      name: "proactive rot sweep",
+      builtin: true,
+      // Enabled but DORMANT: the empty `repos` list means it sweeps nothing until a human opts a
+      // repo in. It never defaults to "all repos" — there is no such option. A repo is swept only
+      // once it is named in this list.
+      enabled: true,
+      action: { kind: "proactive-sweep", repos: [] },
+      // Weekday mornings PT: like the weekly deps update, a proactive PR can sit for a human to look
+      // at without competing with active work, but a rot sweep earns a daily cadence so a freshly
+      // red default branch or a new advisory is surfaced within a day, not a week.
+      schedule: {
+        cadence: { kind: "daily" },
+        window: { start: "09:00", end: "10:30", tz: "America/Los_Angeles" },
       },
     },
   ];

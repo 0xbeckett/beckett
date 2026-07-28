@@ -58,6 +58,7 @@ import {
   type WatchLoopDeps,
 } from "../../routine/watch.ts";
 import { defaultDepsUpdateDeps, runDepsUpdate } from "../../ops/deps-update.ts";
+import { defaultProactiveSweepDeps, runProactiveSweep } from "../../ops/proactive-sweep.ts";
 import { defaultRepoRoot } from "../../version/index.ts";
 import { loadIdentity } from "../../agency/index.ts";
 import type { AgentDefinition, AgentRunner } from "../../agent/index.ts";
@@ -92,6 +93,12 @@ export interface RoutinesExtensionDeps {
    * so it is visible in one place that this lane never reaches `browserAgent`.
    */
   spawnDepsUpdate?: (argv: string[]) => void;
+  /**
+   * How the `proactive-sweep` lane is launched (issue #79). Default: a detached `beckett routine
+   * proactive-sweep` subprocess, exactly like `spawnDepsUpdate`. Injected for the same reason — so a
+   * test can assert the lane forks BEFORE (and never resolves) the browser agent/registry/runner.
+   */
+  spawnProactiveSweep?: (argv: string[]) => void;
   /**
    * How the `self` lane wakes the concierge (issue #26). Default: a `routine.self` control-bus post
    * that frames a SYSTEM turn. Injected for the same reason `spawnDepsUpdate` is — so a test can
@@ -311,6 +318,42 @@ export const createRoutinesExtension =
     }
 
     /**
+     * Launch the `proactive-sweep` lane as its own `beckett routine proactive-sweep` process (issue
+     * #79). The deps-update pattern exactly: detached, NOT awaited (it resolves once the lane has
+     * TAKEN the work), its own reporting (it posts the single summary line to `channelId` itself).
+     * Sweeping a handful of repos — each a few GitHub reads and, on a finding, a branch + a PR — can
+     * take a while and must never sit inside a scheduler tick, and a crash in it can't reach the
+     * daemon. The opt-in repo list rides argv, comma-joined; an empty list means the subprocess
+     * sweeps nothing.
+     */
+    function spawnProactiveSweep(
+      plan: RoutineDispatchPlan,
+      origin: { channelId: string; requesterId: string },
+    ): void {
+      const target = plan.proactiveSweep;
+      if (!target) throw new Error("proactive-sweep routine is missing its sweep target");
+      const argv = [
+        "routine", "proactive-sweep",
+        "--routine", plan.routineId,
+        "--channel", origin.channelId,
+        "--requester", origin.requesterId,
+        ...(target.repos.length > 0 ? ["--repos", target.repos.join(",")] : []),
+      ];
+      if (deps.spawnProactiveSweep) {
+        deps.spawnProactiveSweep(argv);
+        return;
+      }
+      const proc = Bun.spawn([process.execPath, BECKETT_CLI_ENTRY, ...argv], {
+        cwd: ctx.paths.home,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      proc.unref?.();
+      ctx.logger.info("proactive-sweep lane launched off-process", { routineId: plan.routineId, pid: proc.pid });
+    }
+
+    /**
      * Launch the dream pass (issue #36) as its own `beckett dream run` process — the deps-update
      * pattern exactly: detached, not awaited, its own reporting (a dream reports to nobody; the
      * journal under ~/.beckett/dreams IS the output). It rides the SELF lane's pre-browser fork,
@@ -405,6 +448,15 @@ export const createRoutinesExtension =
       // scheduler tick, and a crash in it can't reach the daemon.
       if (plan.lane === "deps-update") {
         spawnDepsUpdate(plan, { channelId, requesterId });
+        return;
+      }
+
+      // The proactive rot sweep (issue #79) forks here for the SAME reason deps-update does: it
+      // wants GitHub reads and PR opens, not a web session, so it must never resolve — let alone
+      // require — the browser agent or the agent registry. Its own `beckett routine proactive-sweep`
+      // subprocess off this process; a crash in it can't reach the daemon.
+      if (plan.lane === "proactive-sweep") {
+        spawnProactiveSweep(plan, { channelId, requesterId });
         return;
       }
 
@@ -582,6 +634,59 @@ export const createRoutinesExtension =
       } else {
         // Only reachable for a hand-run with no channel configured — the scheduler always passes one.
         logger.info("deps-update posted nothing (no channel configured)");
+      }
+      out(result);
+    }
+
+    /**
+     * `beckett routine proactive-sweep` — the `proactive-sweep` action's BODY, run as its own process
+     * by {@link spawnProactiveSweep} (and by a human who wants to run the sweep by hand). It owns the
+     * guarantees the routine promises:
+     *
+     *   - it sweeps ONLY the `--repos` it is handed (the routine's explicit opt-in list); no `--repos`
+     *     means it sweeps nothing and touches no GitHub API at all;
+     *   - publishing is `beckett gh` (a branch via the contents API + `beckett gh pr create`), and
+     *     there is no merge and no force-push anywhere in the path — the deliverable is labelled PRs;
+     *   - EXACTLY ONE line goes to `--channel`, UNLESS nothing was opted in (a dormant sweep stays
+     *     silent — it would be noise to report "no repos opted in" every single day).
+     */
+    async function runRoutineProactiveSweep(argv: string[]): Promise<void> {
+      const { flags } = parse(argv);
+      // `--routine` / `--requester` are provenance only — nothing about the sweep branches on them.
+      const logger = ctx.logger.child("proactive-sweep").child(String(flags.routine ?? "manual"));
+      logger.info("proactive-sweep starting", { requester: flags.requester ? String(flags.requester) : null });
+
+      let identity: { account: string; noreplyEmail: string };
+      try {
+        const loaded = loadIdentity(ctx.config);
+        identity = { account: loaded.github.account, noreplyEmail: loaded.github.noreplyEmail };
+      } catch (err) {
+        fail(`proactive-sweep cannot resolve Beckett's GitHub identity: ${(err as Error).message}`);
+        return;
+      }
+
+      const repos = flags.repos
+        ? String(flags.repos).split(",").map((r) => r.trim()).filter(Boolean)
+        : [];
+      const channelId = flags.channel
+        ? String(flags.channel)
+        : (process.env.BECKETT_ROUTINE_CHANNEL_ID ?? "").trim();
+      const dateStamp = new Date().toISOString().slice(0, 10);
+
+      const result = await runProactiveSweep(
+        { repos, author: { name: identity.account, email: identity.noreplyEmail }, dateStamp },
+        defaultProactiveSweepDeps({ beckettCli: [process.execPath, BECKETT_CLI_ENTRY], logger }),
+      );
+      logger.info("proactive-sweep finished", { status: result.status, opened: result.opened, summary: result.summary });
+
+      // Report one line — but NOT for the dormant "no repos opted in" case, which fires daily and
+      // would otherwise spam the channel. A real sweep (clean, opened, or errored) always reports.
+      if (channelId && result.status !== "no-repos") {
+        try {
+          await callBus(join(ctx.paths.beckettDir, "control.sock"), "discord.reply", { channelId, text: result.summary }, 30_000);
+        } catch (err) {
+          logger.warn("proactive-sweep could not post its summary", { error: String(err) });
+        }
       }
       out(result);
     }

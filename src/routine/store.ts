@@ -116,6 +116,26 @@ export class RoutineStore {
     });
   }
 
+  /**
+   * Replace a `proactive-sweep` routine's opt-in repo list (issue #79) — the "opt a repo in / out"
+   * lever. This IS the explicit config list the sweep gates on: nothing off it is ever touched. The
+   * list is de-duplicated and order-stable so the persisted config reads cleanly. Throws if `id`
+   * isn't a proactive-sweep routine, so a typo can never quietly write repos onto the wrong action.
+   */
+  async setProactiveRepos(id: string, repos: string[]): Promise<Routine> {
+    return this.mutate((reg) => {
+      const routine = reg.routines.find((r) => r.id === id);
+      if (!routine) throw new Error(`no such routine: ${id}`);
+      if (routine.action.kind !== "proactive-sweep") {
+        throw new Error(`routine ${id} is not a "proactive-sweep" routine`);
+      }
+      const cleaned = [...new Set(repos.map((r) => r.trim()).filter(Boolean))];
+      routine.action = { ...routine.action, repos: cleaned };
+      routine.updatedAt = this.now().toISOString();
+      return structuredClone(routine);
+    });
+  }
+
   /** Replace a routine's runtime state (the scheduler's persist path). */
   async setState(id: string, state: Routine["state"]): Promise<void> {
     await this.mutate((reg) => {
