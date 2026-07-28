@@ -147,6 +147,22 @@ test("renderPersonBlock collapses an overlong book to a bounded excerpt plus a p
   expect(lines[25]).toBe(`+18 more lines — run \`beckett recall ${WORM}\``);
 });
 
+test("links become real graph edges and are never restated on a later write", async () => {
+  const { memory } = store();
+  await upsertPerson(memory, { discordId: OWNER, note: "first", links: ["jason-design-taste"] });
+  const again = await upsertPerson(memory, {
+    discordId: OWNER,
+    note: "second",
+    links: ["jason-design-taste", "owner-lockout-guard"],
+  });
+
+  expect(again.notes.match(/\[\[jason-design-taste\]\]/g)).toHaveLength(1);
+  expect(again.notes).toContain("[[owner-lockout-guard]]");
+  // Both are edges in the graph, not just text — a phantom target is a first-class link.
+  const out = memory.buildGraph().out.get(OWNER) ?? [];
+  expect(out.map((e) => e.to).sort()).toEqual(["jason-design-taste", "owner-lockout-guard"]);
+});
+
 test("upsertPerson rejects a non-snowflake id", async () => {
   const { memory } = store();
   expect(upsertPerson(memory, { discordId: "not-an-id" })).rejects.toThrow("invalid discord id");
