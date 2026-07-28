@@ -235,6 +235,7 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
     ...(over.parked ? { parked: true, ...(over.parkReason ? { parkReason: over.parkReason } : {}) } : {}),
     projectId: over.projectId ?? "proj-1",
     url: "http://x",
+    createdAt: over.createdAt ?? "2026-07-01T00:00:00.000Z",
     updatedAt: "now",
   };
 }
@@ -3224,6 +3225,32 @@ describe("per-task budget ceiling (#77)", () => {
       await d.handle(stateChanged(makeTicket(), "in_progress"));
       await tick();
       expect(spawnCalls).toHaveLength(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("recycled identifiers ignore prior incarnations but count this ticket's later spend", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-budget-recycled-"));
+    try {
+      const ledger = join(dir, "spend.jsonl");
+      const ticket = makeTicket({
+        id: "ticket-current-93",
+        identifier: "#93",
+        createdAt: "2026-07-28T20:13:00.000Z",
+      });
+      // A former #93 exhausted its cap days before this distinct ticket was filed.
+      appendSpendRecord(ledger, spendRow({ ticketId: "#93", costUsd: 109.30, ts: "2026-07-25T12:00:00.000Z" }));
+      const first = budgetDispatcher(40, ledger);
+      await first.d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      expect(spawnCalls).toHaveLength(1); // fresh #93 begins at $0, not $109.30
+
+      // Spend after the current ticket's filing belongs to this incarnation and still trips $40.
+      appendSpendRecord(ledger, spendRow({ ticketId: "#93", costUsd: 40, ts: "2026-07-28T20:14:00.000Z" }));
+      const second = budgetDispatcher(40, ledger);
+      await second.d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      expect(spawnCalls).toHaveLength(1);
+      expect(second.client.comments.some((c) => c.body.includes("Budget ceiling reached"))).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

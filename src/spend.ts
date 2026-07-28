@@ -125,9 +125,20 @@ export function summarizeSpend(rows: SpendRecord[], options: SpendSummaryOptions
   };
 }
 
-/** Sum one ticket's accrued cost from the ledger (#77). Rows with unknown (null) cost add 0. */
-export function spendForTicket(rows: SpendRecord[], ticketId: string): number {
-  return rows.reduce((n, r) => (r.ticketId === ticketId ? n + (r.costUsd ?? 0) : n), 0);
+/**
+ * Sum one ticket incarnation's accrued cost from the ledger (#77). Rows with unknown (null) cost
+ * add 0. `notBefore` scopes a recycled display identifier to its current filing; rows with a
+ * malformed timestamp are excluded when that boundary is supplied.
+ */
+export function spendForTicket(rows: SpendRecord[], ticketId: string, notBefore?: number): number {
+  return rows.reduce((n, r) => {
+    if (r.ticketId !== ticketId) return n;
+    if (notBefore !== undefined) {
+      const at = Date.parse(r.ts);
+      if (!Number.isFinite(at) || at < notBefore) return n;
+    }
+    return n + (r.costUsd ?? 0);
+  }, 0);
 }
 
 /** One task's rollup for the per-task ledger view and the weekly bill (#77). */

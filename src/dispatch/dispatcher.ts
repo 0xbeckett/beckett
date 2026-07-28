@@ -1922,18 +1922,29 @@ export class Dispatcher {
   }
 
   /**
-   * Per-task spend ceiling (#77). Sums this task's accrued cost from the spend ledger and compares
-   * it to `budget.per_task_usd_cap`. A cap of 0 (the default) disables the ceiling, and a task with
-   * NO ledger rows reads as $0 — so a ticket that predates the ledger, or one whose runs never
-   * reported cost, can never be blocked by a number it has no data for. Best-effort: a ledger read
-   * failure returns "not over" so an observability glitch can never wedge staffing.
+   * Per-task spend ceiling (#77). Sums this ticket incarnation's accrued cost from the spend ledger
+   * and compares it to `budget.per_task_usd_cap`. Display identifiers are recycled by the tracker,
+   * so rows preceding the ticket's filing time are deliberately excluded. A cap of 0 (the default)
+   * disables the ceiling, and a task with NO ledger rows reads as $0 — so a ticket that predates the
+   * ledger, or one whose runs never reported cost, can never be blocked by a number it has no data
+   * for. Best-effort: a ledger read failure returns "not over" so an observability glitch can never
+   * wedge staffing.
    */
   private budgetCeiling(ticket: Ticket): { over: boolean; spentUsd: number; capUsd: number } {
     const capUsd = this.config.budget?.per_task_usd_cap ?? 0;
     if (capUsd <= 0) return { over: false, spentUsd: 0, capUsd: 0 };
+    // Without a filing timestamp there is no safe way to distinguish prior uses of a recycled
+    // identifier. Preserve the guard's fail-open posture rather than billing historical rows.
+    const createdAt = Date.parse(ticket.createdAt ?? "");
+    if (!Number.isFinite(createdAt)) {
+      this.logger.warn("budget ceiling ticket creation time unavailable — allowing staffing", {
+        ticket: ticket.identifier,
+      });
+      return { over: false, spentUsd: 0, capUsd };
+    }
     let spentUsd = 0;
     try {
-      spentUsd = spendForTicket(readSpendLedger(this.spendLedgerPath), ticket.identifier);
+      spentUsd = spendForTicket(readSpendLedger(this.spendLedgerPath), ticket.identifier, createdAt);
     } catch (err) {
       this.logger.warn("budget ceiling read failed — allowing staffing", {
         ticket: ticket.identifier,

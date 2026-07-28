@@ -130,6 +130,11 @@ export interface Ticket {
   startState?: TicketState;
   projectId: string; // tracker board id (the queue, e.g. "bored:ops") — NOT the code project above
   url: string; // deep link to the ticket on the tracker
+  /**
+   * Filing time, used to distinguish a recycled display identifier from its prior incarnation.
+   * Optional for legacy tracker adapters that do not expose it.
+   */
+  createdAt?: string; // ISO-8601
   updatedAt: string; // ISO-8601; the poll cursor / change key
   /**
    * The tracker has durably paused this ticket for a human. This is deliberately

@@ -295,6 +295,7 @@ export class BoredClient {
       ...(parsed.startState ? { startState: parsed.startState } : {}),
       projectId: `bored:${this.boardName}`,
       url: `${this.apiBase}/tickets/${encodeURIComponent(raw.ref)}`,
+      createdAt: raw.createdAt,
       updatedAt: raw.updatedAt,
       ...(raw.originChannel ? { originChannel: raw.originChannel } : {}),
     };
