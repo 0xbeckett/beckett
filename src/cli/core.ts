@@ -23,7 +23,14 @@ import { config, paths, SOCK } from "./context.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
 import { bundledMaintainersFile, loadMaintainers, requestMaintainerGrant, revokeMaintainer } from "../discord/maintainers.ts";
 import { loadPeers, addPeer, removePeer } from "../discord/peers.ts";
-import { loadIdentities, getIdentity, upsertIdentity, ensureSeeded } from "../discord/identity.ts";
+import {
+  loadIdentities,
+  getIdentity,
+  upsertIdentity,
+  ensureSeeded,
+  resolveAddress,
+} from "../discord/identity.ts";
+import { getPerson, upsertPerson } from "../memory/people.ts";
 import { readJournal, DEFAULT_TAIL_LINES } from "../progress/journal.ts";
 import type { Casting, Ticket, TicketState } from "../tracker/types.ts";
 import { projectSlug } from "../tracker/cast.ts";
@@ -349,8 +356,13 @@ export async function runJournal(argv: string[]): Promise<void> {
 
 // ── identity (in-process: per-user Discord name map, ~/.beckett/identities.json) ───────────
 // How Beckett records "call me X" durably against a Discord user id, and reads back who an id
-// is. Keyed on the user id from the turn stamp `[user:<id> ...]`. Addressing only — never store
-// contact info (email/phone) here; that must never surface in channel (OPS-42 privacy rule).
+// is. Keyed on the user id from the turn stamp `[user:<id> ...]`.
+//
+// The json is ONLY the fast id → address map the per-turn stamp reads (display/known/preferred
+// name + the owner flag). Everything else known about the person — free-text notes, history,
+// links to related memories — belongs in their person file `people/<id>.md`, which every `set`
+// writes alongside the json. Contact info and real-world identity may go in the person file (it
+// is written at `owner` visibility) but must never surface in channel (OPS-42 privacy rule).
 export async function runIdentity(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
   const file = paths.identitiesFile;
@@ -366,22 +378,59 @@ export async function runIdentity(argv: string[]): Promise<void> {
     if (flags.name !== undefined) patch.preferred_address = String(flags.name);
     if (flags["clear-name"]) patch.preferred_address = "";
     if (flags.known !== undefined) patch.known_name = String(flags.known);
-    if (flags.notes !== undefined) patch.notes = String(flags.notes);
     if (flags.display !== undefined) patch.display_name = String(flags.display);
-    if (Object.keys(patch).length === 0) fail("nothing to set — pass --name, --known, --notes, or --display");
+    // --notes no longer lives in the json at all; it is the person file's body.
+    const notes = flags.notes !== undefined ? String(flags.notes).trim() : "";
+    if (Object.keys(patch).length === 0 && !notes) {
+      fail("nothing to set — pass --name, --known, --notes, or --display");
+    }
     let rec;
     try {
-      rec = upsertIdentity(file, id, patch);
+      rec = Object.keys(patch).length > 0 ? upsertIdentity(file, id, patch) : getIdentity(file, id);
     } catch (err) {
       fail((err as Error).message);
     }
-    out({ ok: true, userId: id, identity: rec });
+    // The person file is the standard home for what we know: created on first `set`, and on
+    // update its existing body is preserved (a note is appended, never overwritten). Best-effort
+    // — a broken memory dir must not lose the addressing write that just succeeded.
+    let person: string | undefined;
+    let personError: string | undefined;
+    try {
+      const memory = createMemory({ memoryDir: paths.memoryDir, logger: quietLogger });
+      const entry = await upsertPerson(memory, {
+        discordId: id,
+        address: resolveAddress(rec),
+        displayName: rec?.display_name,
+        isOwner: rec?.is_owner === true,
+        ...(notes ? { note: notes } : {}),
+        reason: "identity set via CLI",
+      });
+      person = entry.node.path;
+    } catch (err) {
+      personError = (err as Error).message;
+    }
+    out({
+      ok: true,
+      userId: id,
+      identity: rec,
+      ...(person ? { person } : {}),
+      ...(personError ? { personError } : {}),
+    });
   }
   if (sub === "show") {
     const { flags, _ } = parse(rest);
     const id = (flags.user ? String(flags.user) : _[0] ?? "").trim();
     if (!id) fail("usage: beckett identity show --user <discordId>");
-    out({ userId: id, identity: getIdentity(file, id) ?? null });
+    // Read back BOTH halves: the fast json record and the person file that holds everything else.
+    let person: { path: string; notes: string } | null = null;
+    try {
+      const memory = createMemory({ memoryDir: paths.memoryDir, logger: quietLogger });
+      const entry = getPerson(memory, id);
+      if (entry) person = { path: entry.node.path, notes: entry.notes };
+    } catch {
+      // A broken memory dir must not stop `identity show` from answering the addressing question.
+    }
+    out({ userId: id, identity: getIdentity(file, id) ?? null, person });
   }
   if (sub === "list") {
     out({ identities: loadIdentities(file) });
