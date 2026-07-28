@@ -1,0 +1,197 @@
+{
+  "generated_at": "2026-07-28T04:27:22.416Z",
+  "source_file": "~/Projects/metrics/data/telemetry-runs.json",
+  "telemetry_generated_at": "2026-07-28T04:26:55.441Z",
+  "rate_table_effective_date": "2026-07-16",
+  "total_runs": 3172,
+  "costed_runs": 3136,
+  "unrated_model_sessions": 36,
+  "cost_per_run": {
+    "median": 0.2756,
+    "p90": 1.9905
+  },
+  "wall_clock": {
+    "median_seconds": 83.7,
+    "p90_seconds": 1240.3
+  },
+  "cost_by_harness": [
+    {
+      "key": "claude-code",
+      "runs": 2600,
+      "median_cost": 0.3345,
+      "total_cost": 2366.21
+    },
+    {
+      "key": "pi",
+      "runs": 462,
+      "median_cost": 0.0061,
+      "total_cost": 317.55
+    },
+    {
+      "key": "codex",
+      "runs": 74,
+      "median_cost": 0.4069,
+      "total_cost": 106.99
+    }
+  ],
+  "cost_by_model": [
+    {
+      "key": "claude-opus-4-8",
+      "runs": 1312,
+      "median_cost": 0.5353,
+      "total_cost": 1589.91
+    },
+    {
+      "key": "claude-opus-5",
+      "runs": 346,
+      "median_cost": 0.5645,
+      "total_cost": 456.49
+    },
+    {
+      "key": "claude-sonnet-5",
+      "runs": 314,
+      "median_cost": 0.4587,
+      "total_cost": 239.35
+    },
+    {
+      "key": "gpt-5.6-terra",
+      "runs": 158,
+      "median_cost": 0.4698,
+      "total_cost": 232.78
+    },
+    {
+      "key": "gpt-5.5",
+      "runs": 170,
+      "median_cost": 0.2604,
+      "total_cost": 190.54
+    },
+    {
+      "key": "claude-fable-5",
+      "runs": 107,
+      "median_cost": 0.2091,
+      "total_cost": 52.72
+    },
+    {
+      "key": "claude-haiku-4-5-20251001",
+      "runs": 488,
+      "median_cost": 0.0197,
+      "total_cost": 17.42
+    },
+    {
+      "key": "claude-sonnet-4-6",
+      "runs": 18,
+      "median_cost": 0.24,
+      "total_cost": 5.39
+    },
+    {
+      "key": "claude-sonnet-4-5-20250929",
+      "runs": 15,
+      "median_cost": 0.1822,
+      "total_cost": 4.92
+    },
+    {
+      "key": "gpt-5.6-luna",
+      "runs": 208,
+      "median_cost": 0.006,
+      "total_cost": 1.22
+    }
+  ],
+  "review_cycle_distribution": [
+    {
+      "cycles": "0",
+      "runs": 2804,
+      "pct": 88.4
+    },
+    {
+      "cycles": "1",
+      "runs": 307,
+      "pct": 9.7
+    },
+    {
+      "cycles": "2",
+      "runs": 26,
+      "pct": 0.8
+    },
+    {
+      "cycles": "3+",
+      "runs": 35,
+      "pct": 1.1
+    }
+  ],
+  "model_rates": {
+    "cache_read_multiplier": 0.1,
+    "tiers": [
+      {
+        "key": "gpt-5.6-terra",
+        "label": "gpt-5.6-terra",
+        "input": 2.5,
+        "output": 15
+      },
+      {
+        "key": "gpt-5.6-luna",
+        "label": "gpt-5.6-luna",
+        "input": 1,
+        "output": 6
+      },
+      {
+        "key": "claude-opus",
+        "label": "Claude Opus",
+        "input": 5,
+        "output": 25
+      },
+      {
+        "key": "claude-sonnet",
+        "label": "Claude Sonnet",
+        "input": 3,
+        "output": 15
+      },
+      {
+        "key": "claude-haiku",
+        "label": "Claude Haiku",
+        "input": 1,
+        "output": 5
+      },
+      {
+        "key": "claude-fable",
+        "label": "Claude Fable",
+        "input": 10,
+        "output": 50
+      }
+    ]
+  },
+  "compute_rate": {
+    "per_hour": 0.5,
+    "basis": "amortised subscription + host machine",
+    "vm_basis": "the VM's published hourly rate"
+  },
+  "platform_fee": {
+    "pct": 12
+  },
+  "seat": {
+    "monthly_usd": 20
+  },
+  "worked_example": {
+    "ticket": "#25",
+    "runs": 4,
+    "wall_clock_seconds": 1668.8,
+    "review_cycles": 4,
+    "models": [
+      {
+        "tier": "gpt-5.6-terra",
+        "runs": 2,
+        "cost": 6.36
+      },
+      {
+        "tier": "claude-sonnet",
+        "runs": 2,
+        "cost": 2.47
+      }
+    ],
+    "lines": {
+      "model_cost": 8.83,
+      "compute_cost": 0.23,
+      "platform_fee": 1.09,
+      "total": 10.15
+    }
+  }
+}

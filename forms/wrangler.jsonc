@@ -1,0 +1,22 @@
+{
+  // beckett-forms: the small forms edge worker. Mirrors web/wrangler.jsonc, but
+  // owns forms.0xbeckett.me instead of the apex. One custom-domain route, static
+  // assets served from ./public, and the worker runs first so it can own the
+  // `/` -> /fair-price redirect and the POST /submit handler before assets.
+  //
+  // NOT deployed from here. Beckett runs `wrangler deploy` and sets the
+  // FORMS_WEBHOOK_URL secret (the Discord webhook) at deploy time — this repo
+  // never commits that URL.
+  "name": "beckett-forms",
+  "compatibility_date": "2026-06-01",
+  "main": "src/index.js",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "routes": [
+    { "pattern": "forms.0xbeckett.me", "custom_domain": true }
+  ],
+  "observability": { "enabled": true }
+}
