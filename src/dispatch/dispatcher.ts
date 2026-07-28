@@ -1002,6 +1002,12 @@ export class Dispatcher {
     return this.pending.some((p) => p.ticket.id === ticketId);
   }
 
+  /** 1-based position of a ticket's deferred spawn, or null when it is not queued. */
+  private pendingPosition(ticketId: string): number | null {
+    const index = this.pending.findIndex((p) => p.ticket.id === ticketId);
+    return index === -1 ? null : index + 1;
+  }
+
   /**
    * Commit every live worker's worktree as a WIP checkpoint (OPS-125). Best-effort per worker: a
    * git failure (e.g. an index.lock race with the worker's own commit) is logged and skipped, never
@@ -1596,10 +1602,15 @@ export class Dispatcher {
         return;
       }
       this.bufferSteer(ticket, comment.body);
+      const queuePosition = this.pendingPosition(ticket.id);
       await this.postComment(
         ticket.id,
-        `No worker is live on this ticket right now, so I'm holding this comment and will hand ` +
-          `it to the next worker (it becomes part of their brief).`,
+        queuePosition === null
+          ? `No worker is live on this ticket right now, so I'm holding this comment and will hand ` +
+            `it to the next worker (it becomes part of their brief).`
+          : `This ticket is queued behind the concurrency cap (${this.workers.size + this.staffing.size}/` +
+            `${this.config.concurrency.max_workers} workers in use; queue position ${queuePosition}), so ` +
+            `I'm holding this comment and will hand it to the next worker (it becomes part of their brief).`,
       );
       return;
     }

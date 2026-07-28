@@ -1430,6 +1430,26 @@ describe("never drop a steer (issue #22)", () => {
     expect(spawnCalls[0]!.steering).toEqual(["actually cap it at 10s"]);
   });
 
+  test("a comment on a concurrency-queued ticket says where it is in the queue", async () => {
+    const { d, client } = newDispatcher(1);
+    const active = makeTicket({ id: "a", identifier: "OPS-A" });
+    const queued = makeTicket({ id: "b", identifier: "OPS-B" });
+    await d.handle(stateChanged(active, "in_progress"));
+    await tick();
+    await d.handle(stateChanged(queued, "in_progress"));
+    await tick();
+
+    await d.handle({
+      kind: "comment_added",
+      ticket: queued,
+      comment: { id: "c1", ticketId: queued.id, author: "jawrooo", body: "please add tests", createdAt: "now" },
+    });
+
+    expect(client.comments.at(-1)!.body).toContain("queued behind the concurrency cap");
+    expect(client.comments.at(-1)!.body).toContain("1/1 workers in use");
+    expect(client.comments.at(-1)!.body).toContain("queue position 1");
+  });
+
   test("a comment during the finish window (worker has a result) is held for the next stage", async () => {
     const { d, client } = newDispatcher();
     const ticket = makeTicket({ casting: { review: { harness: "claude" } } });
