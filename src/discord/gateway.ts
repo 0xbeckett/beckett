@@ -263,6 +263,7 @@ export class DiscordJsGateway implements DiscordGateway {
         GatewayIntentBits.GuildMessages, // receive messageCreate in guild channels AND their threads
         GatewayIntentBits.MessageContent, // PRIVILEGED — without it message.content is empty (Risk-E)
         GatewayIntentBits.DirectMessages, // 1:1 DMs (still ambient — the DM is the channel)
+        GatewayIntentBits.GuildVoiceStates, // NON-privileged; required by @discordjs/voice to join (#81)
       ],
       // DM channels/messages arrive uncached → partials so we still get the event.
       partials: [Partials.Channel, Partials.Message],
@@ -582,6 +583,16 @@ export class DiscordJsGateway implements DiscordGateway {
    *  gateway rather than tracking it, since only the live client knows the bot's identity. */
   botUserId(): string | undefined {
     return this.client?.user?.id;
+  }
+
+  /**
+   * The live discord.js {@link Client}, exposed narrowly so the voice transport (#81) can build a
+   * `@discordjs/voice` connection off the SAME gateway connection (a bot has one WebSocket; voice
+   * rides its guild adapter). Undefined before {@link start}. Not part of the frozen
+   * {@link DiscordGateway} contract — voice is an additive capability, not a text-surface change.
+   */
+  discordClient(): Client | undefined {
+    return this.client;
   }
 
   /** Create a dedicated task thread, or adopt/rename the current thread when already inside one. */
