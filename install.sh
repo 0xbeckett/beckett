@@ -1009,6 +1009,8 @@ main() {
   print_finish
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+# A script consumed from stdin has no BASH_SOURCE entry. Keep the documented
+# `curl | bash` path equivalent to executing a downloaded file under `set -u`.
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
   main "$@"
 fi
