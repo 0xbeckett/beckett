@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Beckett · Pricing</title>
-<meta name="description" content="How Beckett prices work: four lines you can read — model cost, compute cost, a single platform fee, and human seats. Every number derived from real run telemetry." />
+<meta name="description" content="Load credits, Beckett spends them on your work. One credit = a fixed $0.10 of real spend, the same on every model. See what $5 / $20 / $50 buys, from real run telemetry." />
 <meta name="theme-color" content="#bfe6ee" />
 <meta property="og:title" content="Beckett · Pricing" />
-<meta property="og:description" content="Priced from the meter, not the vibe. Model cost, compute, one margin line, and seats — itemised from real runs." />
+<meta property="og:description" content="Load $5, here's what runs. Credits are a fixed $0.10 of real spend — same on every model — and every number comes from real tasks." />
 <meta property="og:type" content="website" />
 <link rel="icon" href="/logo.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -122,40 +122,77 @@
 
 <main class="page">
   <header class="intro" id="top">
-    <h1 class="rv">Priced from the meter,<br><span class="g">not the vibe.</span></h1>
-    <p class="lead rv">A price is fair when you can read it. Beckett's is four lines: what the models cost, what the compute cost, one honest margin, and a seat per person. Every figure on this page is derived from <b style="color:var(--ink);font-weight:600">real runs</b> — <span class="num" data-bind="total_runs">—</span> of them — not a spreadsheet someone wished into being.</p>
+    <h1 class="rv">Load $5.<br><span class="g">Here's what runs.</span></h1>
+    <p class="lead rv">You load credits; Beckett spends them on your work. One credit is a fixed <b style="color:var(--ink);font-weight:600">$0.10 of real underlying spend</b> — the same on every model, so a cheaper model just burns fewer credits for the same task. So the question isn't a rate card, it's simple: load $5, what runs? Every figure below is derived from <b style="color:var(--ink);font-weight:600">real runs</b> — <span class="num" data-bind="total_runs">—</span> of them — not a spreadsheet someone wished into being.</p>
   </header>
 
-  <section class="passage">
-    <div class="k rv">01 · the shape</div>
-    <h2 class="rv">Four lines, each stated on its own.</h2>
-    <p class="rv">The whole point of this page is to <b>not</b> fold the margin into the token price and call it market rate. So the lines stay apart: pass-through model cost, compute at a stated hourly rate, a single platform fee you can see, and human seats billed separately from any task. Add them up yourself — the math is right here.</p>
-    <ul class="ledger rv">
-      <li class="line">
-        <div class="k">model cost</div>
-        <h3>Pass-through tokens.</h3>
-        <p>What the model provider charges, passed straight through at published per-Mtok rates. No markup hidden in the token price. Cache reads bill at a fraction of fresh input — roughly <span class="num" data-bind="cache_read_x">—</span>× — so long-context work stays cheap on the second pass.</p>
-      </li>
-      <li class="line">
-        <div class="k">compute cost</div>
-        <h3>Wall-clock time.</h3>
-        <p>Worker wall-clock and browser-session time at a stated hourly rate of <span class="fig num" data-bind="compute_rate">—</span> per hour. Today that rate is <b data-bind="compute_basis">—</b>. When a task moves onto a VM, this becomes <b data-bind="compute_vm_basis">—</b> — a number change, not a new pricing model.</p>
-      </li>
-      <li class="line margin">
-        <div class="k">platform fee · the margin line</div>
-        <h3>One number, in the open.</h3>
-        <p>Our margin, and the only one. A flat <span class="fig num" data-bind="platform_fee">—</span> on top of model + compute. It isn't buried in a marked-up token rate or a padded hourly — it's this line, and only this line. If it ever moves, you'll see it move here.</p>
-      </li>
-      <li class="line">
-        <div class="k">human seats</div>
-        <h3>Per person, per month.</h3>
-        <p><span class="fig num" data-bind="seat">—</span> per person per month, for the humans in the loop — separate from anything a task costs. Seats pay for presence and access; tasks pay for work. Mixing them is how "per-seat" bills quietly become "per-everything".</p>
-      </li>
-    </ul>
+  <section class="passage" id="load">
+    <div class="k rv">01 · what a load buys</div>
+    <h2 class="rv">One credit = <span class="num" data-bind="credit_usd">—</span>. Same on every model.</h2>
+    <p class="rv">A credit is a fixed dollar of real spend — <span class="num" data-bind="credit_usd">—</span> of it — not a per-model token that means something different depending on which model ran. Load $5 and you hold <span class="num" data-bind="credit_per_5">—</span> credits; a cheaper model just burns fewer of them for the same task. So here's the only question that matters: what does a real task cost, and how many does a load cover?</p>
+
+    <div class="tiles rv">
+      <div class="tile"><div class="t-k">one credit</div><div class="t-v num" data-bind="credit_usd">—</div><div class="t-s">fixed spend, any model</div></div>
+      <div class="tile"><div class="t-k">$5 loads</div><div class="t-v num" data-bind="credit_per_5">—</div><div class="t-s">credits</div></div>
+      <div class="tile"><div class="t-k">median task</div><div class="t-v num" data-bind="task_median_credits">—</div><div class="t-s">credits · <span class="num" data-bind="task_median_usd">—</span></div></div>
+    </div>
+
+    <div class="rate-wrap rv" style="margin-top:22px">
+      <table class="rates">
+        <caption>real task cost → how many each load covers</caption>
+        <thead>
+          <tr><th scope="col">Example task</th><th scope="col" style="text-align:right">Cost</th><th scope="col" style="text-align:right">$5</th><th scope="col" style="text-align:right">$20</th><th scope="col" style="text-align:right">$50</th></tr>
+        </thead>
+        <tbody data-bind="buys_rows"><!-- filled from pricing-data.json --></tbody>
+      </table>
+    </div>
+    <p class="rate-note rv">Each row is a real ticket at the 10th / 25th / 50th percentile of task cost. Load $5 and that's about <span class="num" data-bind="buys_summary">—</span>. Cost shown in dollars and credits (<span class="num" data-bind="credit_usd">—</span> each).</p>
+  </section>
+
+  <section class="passage" id="recent">
+    <div class="k rv">02 · recent tasks, in credits</div>
+    <h2 class="rv">What real tickets actually cost.</h2>
+    <p class="rv">The most recent tickets this install finished, newest first — each in dollars and in the same fixed credit unit. Not a projection; what already ran.</p>
+    <div class="rate-wrap rv">
+      <table class="rates">
+        <caption>recent real tickets · dollars and credits</caption>
+        <thead>
+          <tr><th scope="col">Ticket</th><th scope="col" style="text-align:right">Runs</th><th scope="col" style="text-align:right">Cost</th><th scope="col" style="text-align:right">Credits</th></tr>
+        </thead>
+        <tbody data-bind="recent_rows"><!-- filled from pricing-data.json --></tbody>
+      </table>
+    </div>
+
+    <details class="whence rv">
+      <summary>Where the number comes from</summary>
+      <p class="whence-lead">Every credit above is real underlying spend at <span class="num" data-bind="credit_usd">—</span> each. That spend is four lines, kept apart on purpose — pass-through model cost, compute at a stated hourly rate, one visible platform fee, and human seats billed separately. Add them up yourself; the math re-runs from telemetry every time this page builds.</p>
+      <ul class="ledger">
+        <li class="line">
+          <div class="k">model cost</div>
+          <h3>Pass-through tokens.</h3>
+          <p>What the model provider charges, passed straight through at published per-Mtok rates. No markup hidden in the token price. Cache reads bill at a fraction of fresh input — roughly <span class="num" data-bind="cache_read_x">—</span>× — so long-context work stays cheap on the second pass.</p>
+        </li>
+        <li class="line">
+          <div class="k">compute cost</div>
+          <h3>Wall-clock time.</h3>
+          <p>Worker wall-clock and browser-session time at a stated hourly rate of <span class="fig num" data-bind="compute_rate">—</span> per hour. Today that rate is <b data-bind="compute_basis">—</b>. When a task moves onto a VM, this becomes <b data-bind="compute_vm_basis">—</b> — a number change, not a new pricing model.</p>
+        </li>
+        <li class="line margin">
+          <div class="k">platform fee · the margin line</div>
+          <h3>One number, in the open.</h3>
+          <p>Our margin, and the only one. A flat <span class="fig num" data-bind="platform_fee">—</span> on top of model + compute. It isn't buried in a marked-up token rate or a padded hourly — it's this line, and only this line. If it ever moves, you'll see it move here.</p>
+        </li>
+        <li class="line">
+          <div class="k">human seats</div>
+          <h3>Per person, per month.</h3>
+          <p><span class="fig num" data-bind="seat">—</span> per person per month, for the humans in the loop — separate from anything a task costs. Seats pay for presence and access; tasks pay for work. Mixing them is how "per-seat" bills quietly become "per-everything".</p>
+        </li>
+      </ul>
+    </details>
   </section>
 
   <section class="passage">
-    <div class="k rv">02 · model cost</div>
+    <div class="k rv">03 · model cost</div>
     <h2 class="rv">The rate table.</h2>
     <p class="rv">Published per-million-token rates, passed through unchanged. These are the numbers the platform fee sits <em>beside</em>, never inside.</p>
     <div class="rate-wrap rv">
@@ -171,7 +208,7 @@
   </section>
 
   <section class="passage">
-    <div class="k rv">03 · a real ticket</div>
+    <div class="k rv">04 · a real ticket</div>
     <h2 class="rv">One ticket, itemised.</h2>
     <p class="rv">Not a hypothetical. A real ticket pulled from the telemetry, its real cost, broken into the four lines — the way a month-summary card itemises seats, model calls, and compute hours into one total.</p>
     <div class="receipt rv" data-bind="receipt">
@@ -189,7 +226,7 @@
   </section>
 
   <section class="passage">
-    <div class="k rv">04 · the fine print, un-fine</div>
+    <div class="k rv">05 · the fine print, un-fine</div>
     <h2 class="rv">What we don't charge for.</h2>
     <p class="rv">The costs that are ours to eat, not yours to pay. A coworker who bills you for its own mistakes isn't a coworker.</p>
     <ul class="nofees rv">
@@ -201,7 +238,7 @@
   </section>
 
   <section class="passage">
-    <div class="k rv">05 · the receipts</div>
+    <div class="k rv">06 · the receipts</div>
     <h2 class="rv">Where the numbers come from.</h2>
     <p class="rv">Everything above is derived from this install's own run log by a committed, re-runnable script. Here's the shape of that log, so the model isn't asking you to take it on faith.</p>
     <div class="tiles rv">

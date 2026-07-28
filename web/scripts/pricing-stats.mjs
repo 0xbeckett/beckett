@@ -262,7 +262,87 @@ const workedExample = {
     compute_cost: exCompute,
     platform_fee: exPlatform,
     total: exTotal,
+    total_credits: toCredits(exTotal),
   },
+};
+
+// ---------------------------------------------------------------------------
+// Task-level cost — the number a reader actually loads against. A "task" is one
+// ticket (task_id); its cost is the sum of every agent run under it. This is the
+// unit that answers "I load $5, now what". Every figure below is a real task's
+// real cost, expressed in dollars AND in the fixed credit unit.
+// ---------------------------------------------------------------------------
+
+const allTasks = Object.entries(byTask)
+  .map(([id, rs]) => {
+    const cost = rs.reduce((a, r) => a + (r.cost_usd || 0), 0);
+    const wall = rs.reduce((a, r) => a + (r.wall_clock_seconds || 0), 0);
+    const rc = rs.reduce((a, r) => a + (r.review_cycles || 0), 0);
+    const ts = rs
+      .map((r) => r.timestamp)
+      .filter(Boolean)
+      .sort()
+      .slice(-1)[0] || null;
+    return { id, runs: rs.length, cost, wall, review_cycles: rc, last_ts: ts };
+  })
+  .filter((t) => t.cost > 0);
+
+const taskCostsAsc = allTasks.map((t) => t.cost).sort((a, b) => a - b);
+
+// "What $5 buys" — three concrete size bands drawn straight from the task-cost
+// distribution. Each band is anchored to a percentile, then resolved to the REAL
+// task nearest that percentile so the example is an actual ticket, not an
+// interpolated ghost. The counts are just budget ÷ that task's real cost.
+const EXAMPLE_BANDS = [
+  { key: "quick", label: "a quick fix", pct: 10 },
+  { key: "small", label: "a small feature", pct: 25 },
+  { key: "typical", label: "a typical task", pct: 50 },
+];
+
+const loadExamples = EXAMPLE_BANDS.map((band) => {
+  const target = percentile(taskCostsAsc, band.pct);
+  // nearest real task to the percentile value
+  const rep = allTasks
+    .slice()
+    .sort((a, b) => Math.abs(a.cost - target) - Math.abs(b.cost - target))[0];
+  const cost = round(rep.cost, 2);
+  return {
+    key: band.key,
+    label: band.label,
+    percentile: band.pct,
+    example_ticket: rep.id,
+    runs: rep.runs,
+    cost_usd: cost,
+    credits: toCredits(cost),
+    // how many of THIS task each load amount covers
+    covers: LOAD_BUDGETS.map((b) => ({ budget_usd: b, count: Math.floor(b / cost) })),
+  };
+});
+
+// Recent real tasks -> credits spent. The most recent finished tickets, newest
+// first, each shown in both dollars and the fixed credit unit.
+const recentTasks = allTasks
+  .filter((t) => t.last_ts)
+  .sort((a, b) => (a.last_ts < b.last_ts ? 1 : -1))
+  .slice(0, 8)
+  .map((t) => ({
+    id: t.id,
+    runs: t.runs,
+    review_cycles: t.review_cycles,
+    last_ts: t.last_ts,
+    cost_usd: round(t.cost, 2),
+    credits: toCredits(round(t.cost, 2)),
+  }));
+
+const loadValue = {
+  budgets_usd: LOAD_BUDGETS,
+  task_count: allTasks.length,
+  task_cost: {
+    median_usd: round(percentile(taskCostsAsc, 50), 2),
+    median_credits: toCredits(round(percentile(taskCostsAsc, 50), 2)),
+  },
+  examples: loadExamples,
+  recent_tasks: recentTasks,
 };
 
 // ---------------------------------------------------------------------------
@@ -293,6 +373,10 @@ const out = {
   compute_rate: COMPUTE_RATE,
   platform_fee: PLATFORM_FEE,
   seat: SEAT,
+  credit: CREDIT,
+
+  // "I load $5, now what" — load-value examples + recent tasks in credits
+  load_value: loadValue,
 
   // the worked example
   worked_example: workedExample,
@@ -306,3 +390,5 @@ console.log(`  runs: ${out.total_runs} (costed: ${out.costed_runs})`);
 console.log(`  median cost/run: $${out.cost_per_run.median}  p90: $${out.cost_per_run.p90}`);
 console.log(`  median wall: ${out.wall_clock.median_seconds}s  p90: ${out.wall_clock.p90_seconds}s`);
 console.log(`  worked example: ${chosen.id} -> $${exTotal} total`);
+console.log(`  credit unit: 1 credit = $${CREDIT.usd_per_credit} · median task ${loadValue.task_cost.median_credits} credits ($${loadValue.task_cost.median_usd})`);
+console.log(`  load examples: ${loadExamples.map((e) => `${e.label} $${e.cost_usd}`).join(", ")}`);
