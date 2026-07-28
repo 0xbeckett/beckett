@@ -550,6 +550,7 @@ test("outbound Discord messages redact internal ticket URLs but preserve public 
   await (gateway as unknown as {
     sendNow: (channelId: string, content: string, opts?: ReplyOptions) => Promise<string>;
   }).sendNow(
+    "chan-1",
     "Ticket http://127.0.0.1:7770/tickets/%2342 is filed; see https://github.com/0xbeckett/beckett too.",
   );
 
@@ -559,6 +560,24 @@ test("outbound Discord messages redact internal ticket URLs but preserve public 
   expect(content).toContain("https://github.com/0xbeckett/beckett");
   expect(redactions).toHaveLength(1);
   expect(redactions[0]).toMatchObject({ channelId: "chan-1", host: "127.0.0.1" });
+});
+
+test("outbound Discord messages redact every prohibited internal host form", async () => {
+  const { sent, callSendNow } = fakeSendableGateway();
+  const unsafe = [
+    "http://localhost:3000/one",
+    "http://127.42.0.1/two",
+    "http://[::1]/three",
+    "http://0.0.0.0/four",
+    "http://worker.local/five",
+    "http://10.0.0.1/six",
+    "http://172.16.0.1/seven",
+    "http://192.168.1.1/eight",
+  ];
+  await callSendNow(`Updates: ${unsafe.join("; ")}.`);
+
+  for (const url of unsafe) expect(sent.join(" ")).not.toContain(url);
+  expect(sent.join(" ")).toContain("Updates:");
 });
 
 test("direct replies use a native reply and whitelist only its author", async () => {

@@ -1279,7 +1279,7 @@ function stripUserMention(content: string, userId: string): string {
 }
 
 /** URLs are deliberately recognized only in outbound Discord text, not as a general content filter. */
-const DISCORD_URL = /https?:\/\/[^\s<>"'()[\]{}]+/gi;
+const DISCORD_URL = /[a-z][a-z0-9+.-]*:\/\/[^\s<>"'(){}]+/gi;
 
 function redactUnsafeDiscordUrls(content: string, onRedaction: (host: string) => void): string {
   return content.replace(DISCORD_URL, (candidate) => {
@@ -1301,7 +1301,7 @@ function isUnsafeDiscordUrl(value: string): boolean {
     return false;
   }
   // URL.hostname brackets IPv6 literals in current runtimes; accept either representation.
-  host = host.replace(/^\[|\]$/g, "");
+  host = host.replace(/^\[|\]$/g, "").replace(/\.$/, "");
   if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host === "local" || host.endsWith(".local")) return true;
   const octets = host.split(".");
   if (octets.length !== 4 || octets.some((octet) => !/^\d+$/.test(octet))) return false;
