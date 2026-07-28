@@ -293,7 +293,7 @@ test("owner-gated ops are authorized by the ISSUING turn's speaker, not the targ
 test("tokenless correlation never falls back to a live turn in a DIFFERENT channel", async () => {
   const h = harness({ deferAsks: true });
   void h.concierge.onMessage(msg("m-a", "owner speaking", { channelId: CHAN_A, userId: OWNER }));
-  await tick();
+  await whenLive(h, CHAN_A);
 
   // Sole live turn is the owner's in A, but the target is another channel: deny, never guess —
   // pre-fix the sole-live-turn fallback would have let A's owner turn authorize this.
