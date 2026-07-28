@@ -328,8 +328,18 @@ export const createDeployExtension: ExtensionFactory = ({ logger }): Extension =
     promptBlock: {
       id: "deploy",
       priority: 30,
-      render: ({ ticket, slug }) =>
-        ticket && slug && ticketMentionsDeploy(ticket) ? deployDurabilityNote(slug, apexDomain()) : "",
+      render: ({ ticket, slug }) => {
+        if (!ticket || !slug) return "";
+        const wantsDeploy = ticketMentionsDeploy(ticket);
+        const isFrontend = ticketTouchesFrontend(ticket);
+        if (!wantsDeploy && !isFrontend) return "";
+        const apex = apexDomain();
+        const parts: string[] = [];
+        if (wantsDeploy) parts.push(deployDurabilityNote(slug, apex));
+        // A frontend branch earns a review preview (#76): reviewers open the page, not the diff.
+        if (isFrontend) parts.push(previewBriefNote(slug, apex));
+        return parts.join("\n");
+      },
     },
   };
 };
@@ -379,4 +389,35 @@ export function deployDurabilityNote(slug: string, apex: string = DEFAULT_APEX_D
 export function ticketMentionsDeploy(ticket: { title: string; body: string; criteria: string[] }): boolean {
   const text = `${ticket.title}\n${ticket.body}\n${ticket.criteria.join("\n")}`;
   return /deploy|url|site|website|host|serve|public|page|frontend|dashboard|http|tunnel|dns/i.test(text);
+}
+
+/**
+ * True when the ticket's text reads like BROWSER-FACING FRONTEND work — the gate for the review
+ * preview brief (#76). Kept text-based (a heuristic nudge for the worker); the daemon does the
+ * authoritative diff-based detection before it ever surfaces a URL. Narrower than
+ * {@link ticketMentionsDeploy}: a plain "deploy the API" ticket shouldn't ask for a page preview.
+ */
+export function ticketTouchesFrontend(ticket: { title: string; body: string; criteria: string[] }): boolean {
+  const text = `${ticket.title}\n${ticket.body}\n${ticket.criteria.join("\n")}`;
+  return /frontend|front-end|\bui\b|\bux\b|web ?app|webpage|\bpage\b|dashboard|component|react|vue|svelte|tailwind|css|html|styling|stylesheet|landing|screen|button|layout|responsive|design/i.test(text);
+}
+
+/**
+ * The review-preview recipe (#76) baked into a frontend worker's brief: stand the built frontend
+ * up at the DETERMINISTIC `<slug>-preview` hostname (not `<slug>`), so reviewers — and Beckett —
+ * find it without a round-trip, and Beckett can tear it down on land/cancel. Reuses the durable
+ * deploy path above; parameterized by slug + zone apex so it names the worker's real hostname.
+ */
+export function previewBriefNote(slug: string, apex: string = DEFAULT_APEX_DOMAIN): string {
+  return (
+    `PREVIEW FOR REVIEW (only if this branch changes a FRONTEND): reviewers should be able to OPEN ` +
+    `the page, not just read the diff. Before you finish, stand up a durable preview the SAME way as ` +
+    `the deploy recipe — but at the FIXED name \`${slug}-preview\` (NOT \`${slug}\`): build the ` +
+    `frontend, serve the build on a local port from a \`systemd --user\` unit, then ` +
+    `\`beckett deploy ${slug}-preview --port <thePort>\`, and verify ` +
+    `\`curl -fsS -o /dev/null -w '%{http_code}' https://${slug}-preview.${apex}\` prints 200. That ` +
+    `exact hostname is where reviewers and Beckett look for the preview while the ticket is in ` +
+    `review; Beckett tears it down automatically when the ticket lands or is cancelled, so you ` +
+    `don't need to remove it yourself. Never post a localhost/127.0.0.1 URL as the preview.`
+  );
 }

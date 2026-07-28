@@ -58,7 +58,7 @@ import { TaskStore } from "../task/store.ts";
 import { createBranchStatusService } from "../task/status.ts";
 import { readLocalBranchStats } from "../git/branch-stats.ts";
 import { CfDns, apexDomain } from "../agency/cloudflare.ts";
-import { TunnelDeployer } from "../shell/deploy.ts";
+import { TunnelDeployer } from "./deploy.ts";
 import { PreviewManager, fetchProbe, type PreviewTicket } from "../preview/index.ts";
 import { gitBranchForTicket } from "../git/branch-name.ts";
 import { reconcileTaskTickets } from "../task/reconcile.ts";
@@ -95,6 +95,23 @@ const PROJECTS_ROOT = process.env.BECKETT_PROJECTS_ROOT?.trim() || join(homedir(
  */
 function resolveRepoRoot(ticket: Ticket): string {
   return join(PROJECTS_ROOT, projectSlug(ticket.project || ticket.identifier || "scratch"));
+}
+
+/**
+ * The file paths a branch changed vs. `main`, for frontend-preview detection (#76). Best-effort:
+ * a missing repo/branch or any git failure yields an empty list (no preview), never a throw.
+ */
+function diffFileNames(repoRoot: string, branch: string): string[] {
+  try {
+    const r = Bun.spawnSync(["git", "-C", repoRoot, "diff", "--name-only", `main...${branch}`], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    if (!r.success) return [];
+    return r.stdout.toString().split("\n").map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -354,6 +371,42 @@ async function boot(): Promise<BootedSystem> {
   // the catalog), so registering it first constrains no lifecycle ordering below.
   extensions.register(createStagesExtension(extCtx));
 
+  // Branch previews (#76): while a frontend branch is in review, surface a live, externally-
+  // reachable URL on its ticket instead of a diff; tear it down when it lands/cancels. The worker
+  // stands the preview up via `beckett deploy <slug>-preview` (existing tunnel path); the daemon
+  // owns verify-and-surface (never an internal/unreachable link) and teardown. Wired only when the
+  // Cloudflare zone credentials exist — otherwise the dispatcher runs with no preview at all.
+  const preview = ((): { ensure: (t: Ticket) => Promise<{ status: "ready"; url: string; host: string } | { status: "skipped"; reason: string }>; teardown: (t: Ticket) => Promise<void> } | undefined => {
+    const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+    const zoneId = process.env.CLOUDFLARE_ZONE_ID?.trim();
+    if (!token || !zoneId) return undefined;
+    const previewLog = logger.child("preview");
+    const dns = new CfDns({ token, zoneId, logger: previewLog });
+    const deployer = new TunnelDeployer({ tunnelId: process.env.CLOUDFLARE_TUNNEL_ID, dns, logger: previewLog });
+    const manager = new PreviewManager({
+      deployer,
+      probe: (url) => fetchProbe(url),
+      changedFiles: async (pt) => {
+        if (!pt.branchRef) return [];
+        const repoRoot = join(PROJECTS_ROOT, pt.slug);
+        const branch = gitBranchForTicket({ identifier: pt.id, branchRef: pt.branchRef });
+        return diffFileNames(repoRoot, branch);
+      },
+      store: tasks,
+      logger: previewLog,
+      apex: apexDomain(),
+    });
+    const previewTicketOf = (t: Ticket): PreviewTicket => ({
+      id: t.id,
+      slug: projectSlug(t.project || t.identifier),
+      branchRef: t.branchRef,
+    });
+    return {
+      ensure: (t) => manager.ensure(previewTicketOf(t)),
+      teardown: (t) => manager.teardown(previewTicketOf(t)),
+    };
+  })();
+
   // 4. Dispatcher — consumes PollEvents, owns the worker lifecycle. Its workers' granular event
   //    streams are mirrored into each ticket's Discord thread via the Concierge's progress hub.
   const dispatcher = createDispatcher({
@@ -455,6 +508,7 @@ async function boot(): Promise<BootedSystem> {
         baseSha,
       }).catch((err) => logger.warn("task branch Git sync failed", { branch: ticket.branchRef, error: String(err) }));
     },
+    preview,
     logger: logger.child("dispatch"),
   });
 
