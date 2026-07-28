@@ -201,6 +201,7 @@ describe("config-driven retry caps (OPS-180)", () => {
       designCycles: 2,
       implementRetries: 3,
       reviewInfraRetries: 1,
+      harnessSubstitutions: 6,
     });
   });
 
@@ -211,9 +212,16 @@ describe("config-driven retry caps (OPS-180)", () => {
         max_design_cycles: 1,
         max_implement_retries: 7,
         max_review_infra_retries: 2,
+        max_harness_substitutions: 9,
       },
     } as unknown as Config);
-    expect(caps).toEqual({ reworkCycles: 5, designCycles: 1, implementRetries: 7, reviewInfraRetries: 2 });
+    expect(caps).toEqual({
+      reworkCycles: 5,
+      designCycles: 1,
+      implementRetries: 7,
+      reviewInfraRetries: 2,
+      harnessSubstitutions: 9,
+    });
   });
 });
 

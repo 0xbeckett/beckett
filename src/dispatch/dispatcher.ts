@@ -344,6 +344,8 @@ interface DispatcherRuntimeState {
   baseShaForTicket: Record<string, string>;
   reworkCount: Record<string, number>;
   implementRetries: Record<string, number>;
+  /** Healthy-harness substitution counts (#84); absent in pre-#84 state files. */
+  substituteRetries?: Record<string, number>;
   reviewInfraRetries: Record<string, number>;
   /** Last silent-work fingerprint and consecutive matching cycles (issue #44). */
   stallFingerprints?: Record<string, StallFingerprintRecord>;
@@ -447,6 +449,8 @@ function parseRuntimeState(value: unknown): DispatcherRuntimeState {
     baseShaForTicket: parseStringRecord(raw.baseShaForTicket, "baseShaForTicket"),
     reworkCount: parseNumberRecord(raw.reworkCount, "reworkCount"),
     implementRetries: parseNumberRecord(raw.implementRetries, "implementRetries"),
+    substituteRetries:
+      raw.substituteRetries === undefined ? {} : parseNumberRecord(raw.substituteRetries, "substituteRetries"),
     reviewInfraRetries: parseNumberRecord(raw.reviewInfraRetries, "reviewInfraRetries"),
     stallFingerprints: parseStallFingerprints(raw.stallFingerprints),
     designCycles: raw.designCycles === undefined ? {} : parseNumberRecord(raw.designCycles, "designCycles"),
@@ -1156,6 +1160,7 @@ export class Dispatcher {
     this.baseShaForTicket.delete(ticketId);
     this.reworkCount.delete(ticketId);
     this.implementRetries.delete(ticketId);
+    this.substituteRetries.delete(ticketId);
     this.reviewInfraRetries.delete(ticketId);
     this.stallFingerprints.delete(ticketId);
     this.designCycles.delete(ticketId);
@@ -2032,11 +2037,13 @@ export class Dispatcher {
     const stageDef = this.stages.get(stage);
     let spec = this.castFor(ticket, stage);
 
-    // A classed-failure recovery (auth/rate-limit substitution) pinned a one-shot cast override
-    // for this ticket-stage — it wins over the ticket's own casting.
+    // A classed-failure recovery (auth/rate-limit substitution) or operator restaff pinned a cast
+    // override for this ticket-stage — it wins over the ticket's own casting. It is NOT consumed
+    // here: a known-failing cast harness (e.g. quota-exhausted pi) must not be re-probed on every
+    // implement→review→rework cycle, so the substitute stays pinned for the ticket's lifetime and
+    // is cleared only when the job is released on done/cancel (#84).
     const override = this.castOverrides.get(ticket.id);
     if (override && override.stage === stage) {
-      this.castOverrides.delete(ticket.id);
       spec = { ...override.spec, effort: override.spec.effort ?? spec.effort };
     }
 
@@ -2522,7 +2529,10 @@ export class Dispatcher {
         ? `**${failed}**'s login looks expired/invalid`
         : `**${failed}** is rate-limited`;
 
-    // First choice: move the work to a healthy harness.
+    // First choice: move the work to a healthy harness. A clean substitution is NOT a spawn
+    // failure — claude started fine — so it must NOT spend an implementRetries slot (#84). It gets
+    // its OWN budget (caps.harnessSubstitutions) so a substitute-thrash loop still can't spin
+    // forever, but N consecutive substitutions never park a healthy ticket in todo.
     if (this.preflight) {
       const order = this.config.harness?.fallback_order ?? ["claude", "pi", "codex"];
       for (const candidate of order) {
@@ -2530,23 +2540,47 @@ export class Dispatcher {
         if (candidate !== "claude" && this.harnessEnabled(candidate) === false) continue;
         const pf = await this.preflight(candidate);
         if (!pf.ok) continue;
-        const attempts = (this.implementRetries.get(ticket.id) ?? 0) + 1;
-        this.implementRetries.set(ticket.id, attempts);
-        this.persistRuntimeState();
-        if (attempts > this.caps.implementRetries) break; // fall through to park below
+        const subs = (this.substituteRetries.get(ticket.id) ?? 0) + 1;
+        if (subs > this.caps.harnessSubstitutions) break; // thrash guard — park below
+        this.substituteRetries.set(ticket.id, subs);
+        // Pin the substitute so a later rework cycle re-spawns on it directly instead of
+        // re-probing the known-failing cast harness every cycle (#84).
         this.castOverrides.set(ticket.id, { stage: "implement", spec: { harness: candidate } });
+        this.persistRuntimeState();
         await this.postComment(
           ticket.id,
           `${cause}, so I'm continuing this ticket on **${candidate}** instead (WIP committed${at}, ` +
-            `attempt ${attempts}/${this.caps.implementRetries}).\n\nWhere it stopped:\n${summary}`,
+            `substitution ${subs}/${this.caps.harnessSubstitutions}).\n\nWhere it stopped:\n${summary}`,
         );
         this.logger.warn("classed failure — substituting harness", {
           ticket: ticket.identifier,
           errorClass,
           failed,
           substitute: candidate,
+          substitution: `${subs}/${this.caps.harnessSubstitutions}`,
         });
         await this.respawnIfActive(ticket, "implement"); // #65: skip if cancelled while classifying
+        return;
+      }
+      // A healthy substitute was found every time but the thrash budget is spent — park rather
+      // than loop across harnesses forever.
+      if ((this.substituteRetries.get(ticket.id) ?? 0) >= this.caps.harnessSubstitutions) {
+        this.substituteRetries.delete(ticket.id);
+        this.castOverrides.delete(ticket.id);
+        this.persistRuntimeState();
+        await this.advanceTicket(
+          ticket,
+          "todo",
+          `${cause}, and I've already substituted harnesses ${this.caps.harnessSubstitutions} times ` +
+            `for this ticket without it settling. Parking in **todo** to stop thrashing across ` +
+            `harnesses — move it back to **in_progress** once the capacity/login issue is fixed. ` +
+            `WIP committed${at}.\n\n${summary}`,
+        );
+        this.logger.warn("harness-substitution budget exhausted — parked ticket", {
+          ticket: ticket.identifier,
+          errorClass,
+          failed,
+        });
         return;
       }
     }
@@ -3632,6 +3666,7 @@ export class Dispatcher {
     this.baseShaForTicket.delete(ticketId);
     this.reworkCount.delete(ticketId);
     this.implementRetries.delete(ticketId);
+    this.substituteRetries.delete(ticketId);
     this.reviewInfraRetries.delete(ticketId);
     this.stallFingerprints.delete(ticketId);
     this.designCycles.delete(ticketId);
@@ -3725,6 +3760,7 @@ export class Dispatcher {
       this.replaceMap(this.baseShaForTicket, parsed.baseShaForTicket);
       this.replaceMap(this.reworkCount, parsed.reworkCount);
       this.replaceMap(this.implementRetries, parsed.implementRetries);
+      this.replaceMap(this.substituteRetries, parsed.substituteRetries ?? {});
       this.replaceMap(this.reviewInfraRetries, parsed.reviewInfraRetries);
       this.replaceMap(this.stallFingerprints, parsed.stallFingerprints ?? {});
       this.replaceMap(this.designCycles, parsed.designCycles ?? {});
@@ -3765,6 +3801,7 @@ export class Dispatcher {
       baseShaForTicket: Object.fromEntries(this.baseShaForTicket),
       reworkCount: Object.fromEntries(this.reworkCount),
       implementRetries: Object.fromEntries(this.implementRetries),
+      substituteRetries: Object.fromEntries(this.substituteRetries),
       reviewInfraRetries: Object.fromEntries(this.reviewInfraRetries),
       stallFingerprints: Object.fromEntries(this.stallFingerprints),
       designCycles: Object.fromEntries(this.designCycles),
