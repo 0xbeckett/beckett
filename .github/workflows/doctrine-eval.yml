@@ -1,0 +1,44 @@
+name: doctrine-eval
+
+# Behavioral eval of Beckett's judgment (issue #78). Runs the fixture turns in
+# src/eval/turn-fixtures.json against the model under the REAL doctrine + persona and fails the
+# build if a decision regresses. Ro's doctrine gets rewritten roughly weekly; this catches a
+# rewrite that makes Beckett worse before it ships.
+#
+# Triggered only when the governing text or the turn pipeline changes — a doctrine, persona, or
+# pipeline edit — so an unrelated PR doesn't spend model tokens.
+on:
+  push:
+    branches: [main]
+    paths: &governing
+      - "src/concierge/concierge.md" # the doctrine
+      - "src/concierge/index.ts" # DEFAULT_PERSONA + doctrine rendering + the turn pipeline
+      - "src/concierge/triage.ts" # ambient pass-vs-speak classifier
+      - "src/concierge/ambient.ts"
+      - "src/concierge/output.ts" # the send/pass delivery contract
+      - "src/eval/turn-decisions.ts" # the eval harness
+      - "src/eval/turn-fixtures.json" # the fixtures + expected decisions
+      - "scripts/eval/turn-decisions.ts" # the runner
+      - ".github/workflows/doctrine-eval.yml"
+  pull_request:
+    paths: *governing
+
+jobs:
+  turn-decisions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13 # matches ci.yml
+      - run: bun install --frozen-lockfile
+      # The eval scores fixture turns against a live model under the real doctrine + persona and
+      # exits non-zero on any regressed decision. Needs OpenRouter credentials as repo secrets. On a
+      # forked-PR runner the secrets are withheld and the runner skips (neutral, exit 0) so external
+      # contributors aren't blocked; the gate is enforced on the trusted repo where the secrets exist.
+      - name: Score turn decisions against the real doctrine
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_REFERER: ${{ secrets.OPENROUTER_REFERER || 'https://github.com/0xbeckett/beckett' }}
+          # Two runs per fixture, majority-graded, to shrug off the rare single-call wobble.
+        run: bun run eval:turns --runs=2
