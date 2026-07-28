@@ -32,7 +32,7 @@ trap cleanup EXIT
 # smallest equivalent systemd host; Beckett's own packages are still installed only by install.sh.
 "${DOCKER[@]}" build -t "${IMAGE}" - >/dev/null <<EOF
 FROM ${BASE_IMAGE}
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends systemd systemd-sysv dbus && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends systemd systemd-sysv dbus dbus-user-session && rm -rf /var/lib/apt/lists/*
 CMD ["/sbin/init"]
 EOF
 "${DOCKER[@]}" run -d --name "${NAME}" --privileged --cgroupns=host \
