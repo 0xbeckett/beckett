@@ -9,8 +9,9 @@ const quiet = (() => {
 const config = {
   tracker: { poll_secs: 5, default_board: "ops", boards: ["ops"] },
 } as unknown as Config;
-const ticket = (state: string = "todo") => ({
+const ticket = (state: string = "todo", stateReason?: string) => ({
   ref: "#1", title: "Ticket", body: "work", criteria: ["works"], state, needs: [],
+  ...(stateReason ? { stateReason } : {}),
   createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
 });
 
@@ -50,7 +51,7 @@ test("a Bored pause is hydrated as a durable human hold despite its active state
     const u = new URL(String(url));
     if (init?.method === "GET" && u.pathname === "/tickets/%231") return Response.json({ ticket: current });
     if (init?.method === "POST" && u.pathname === "/tickets/%231/pause") {
-      current = { ...current, stateReason: "operator_pause" };
+      current = ticket("in_review", "operator_pause");
       return Response.json({ ticket: current });
     }
     throw new Error(`unexpected bored route: ${init?.method} ${u.pathname}`);
