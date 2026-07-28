@@ -88,6 +88,8 @@ export interface ServeBuildDeps {
   startServer?: (docRoot: string) => Promise<ServedBuild>;
   /** Filesystem existence probe (tests inject a fake tree). */
   exists?: (p: string) => boolean;
+  /** Read a file's text — only `package.json`, for build-command detection (tests inject content). */
+  readFile?: (p: string) => string;
 }
 
 /**
@@ -102,7 +104,7 @@ export async function serveBuild(repoRoot: string, deps: ServeBuildDeps): Promis
 
     // 2. Only source present → build it, if the project declares one and its deps are installed.
     if (!docRoot) {
-      const cmd = detectBuildCommand(repoRoot, exists);
+      const cmd = detectBuildCommand(repoRoot, exists, deps.readFile);
       if (cmd && exists(join(repoRoot, "node_modules"))) {
         deps.logger.info("serve-build: building the frontend", { repoRoot, cmd: cmd.join(" ") });
         const ok = await (deps.runBuild ?? defaultRunBuild)(cmd, repoRoot, deps.buildTimeoutMs ?? 120_000);
