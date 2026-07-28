@@ -263,7 +263,7 @@ function writeWorkerMeta(
   repoRoot: string,
   scopeGuardPath: string,
   ownedGlobs: string[],
-): { doneSchemaPath: string; settingsPath: string } {
+): { doneSchemaPath: string; settingsPath: string; mcpConfigPath: string } {
   const metaDir = join(repoRoot, SCAFFOLDING_DIR);
   mkdirSync(metaDir, { recursive: true });
 
@@ -275,7 +275,30 @@ function writeWorkerMeta(
 
   const doneSchemaPath = join(metaDir, "done-schema.json");
   writeFileSync(doneSchemaPath, JSON.stringify(DONE_SCHEMA, null, 2));
-  return { doneSchemaPath, settingsPath };
+
+  // Claude Code starts this stdio server for each worker. Keep BetterWright's profile and
+  // artifacts under the worker's git-excluded scaffolding, never in a shared home directory.
+  const mcpConfigPath = join(metaDir, "betterwright-mcp.json");
+  writeFileSync(
+    mcpConfigPath,
+    JSON.stringify(
+      {
+        mcpServers: {
+          betterwright: {
+            command: "npx",
+            args: ["betterwright", "mcp"],
+            env: {
+              BETTERWRIGHT_HOME: join(metaDir, "betterwright"),
+              BETTERWRIGHT_HEADLESS: "1",
+            },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  return { doneSchemaPath, settingsPath, mcpConfigPath };
 }
 
 /** Extract a human summary from a finished event's structured done-signal or fallback text. */
@@ -416,7 +439,7 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
     // Universal guard: strip the scaffolding from the index on every commit, whoever runs it — so a
     // worker's own `git add -f .beckett && git commit` can never sweep bookkeeping into the diff (OPS-61).
     await installScaffoldingGuardHook(workspace);
-    const { doneSchemaPath, settingsPath } = writeWorkerMeta(workspace, scopeGuardPath, scope.ownedGlobs);
+    const { doneSchemaPath, settingsPath, mcpConfigPath } = writeWorkerMeta(workspace, scopeGuardPath, scope.ownedGlobs);
 
     const spec: SpawnSpec = {
       workerId: id,
@@ -432,6 +455,7 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
       resumeSessionId,
       doneSchemaPath,
       settingsPath,
+      mcpConfigPath,
     };
 
     const spawnResult = await driver.spawn(spec);

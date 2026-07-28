@@ -337,7 +337,12 @@ export const createDeployExtension: ExtensionFactory = ({ logger }): Extension =
         const parts: string[] = [];
         if (wantsDeploy) parts.push(deployDurabilityNote(slug, apex));
         // A frontend branch earns a review preview (#76): reviewers open the page, not the diff.
-        if (isFrontend) parts.push(previewBriefNote(slug, apex));
+        if (isFrontend) {
+          parts.push(
+            "For visual/frontend work, use the BetterWright MCP browser tool to open your local URL and capture a screenshot; never hunt for a Chrome binary or write service units just to inspect it.",
+          );
+          parts.push(previewBriefNote(slug, apex));
+        }
         return parts.join("\n");
       },
     },
