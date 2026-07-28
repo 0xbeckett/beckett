@@ -1101,6 +1101,16 @@ export function startWorld(canvas, opts = {}) {
   function render(t) {
     applyCycle(Math.min(1, Math.max(0, cs / docH)));
 
+    // NEW EFFECT — drifting light: a high thin cloud passing overhead, gently
+    // dimming and swinging the sun so shading breathes across the voxels
+    // instead of sitting frozen. Cheap: one light, no extra draws.
+    if (!reduced) {
+      const dr = 0.5 * Math.sin(t * 0.00007) + 0.5 * Math.sin(t * 0.00017 + 1.3);
+      sun.intensity *= 1 + dr * 0.05;
+      sun.position.x += Math.sin(t * 0.00006) * 4;
+      sun.position.z += Math.cos(t * 0.00005) * 4;
+    }
+
     islands.forEach(g => {
       const ud = g.userData;
       ud.lift += (((hover === islands.indexOf(g)) ? (islands.indexOf(g) === 0 ? 1.1 : 2.2) : 0) - ud.lift) * 0.07;
@@ -1109,6 +1119,10 @@ export function startWorld(canvas, opts = {}) {
     clouds.forEach(g => {
       g.position.x += 0.014 * g.userData.sp;
       if (g.position.x > 150) g.position.x = -150;
+    });
+    haze.forEach(s => {
+      s.position.x += 0.02 * s.userData.sp;
+      if (s.position.x > 150) s.position.x = -150;
     });
     const ba = t * 0.000021;
     bal.position.set(Math.cos(ba) * 66, 26 + Math.sin(t * 0.0004) * 2.2, Math.sin(ba) * 66 - 30);
