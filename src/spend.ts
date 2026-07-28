@@ -125,6 +125,76 @@ export function summarizeSpend(rows: SpendRecord[], options: SpendSummaryOptions
   };
 }
 
+/** Sum one ticket's accrued cost from the ledger (#77). Rows with unknown (null) cost add 0. */
+export function spendForTicket(rows: SpendRecord[], ticketId: string): number {
+  return rows.reduce((n, r) => (r.ticketId === ticketId ? n + (r.costUsd ?? 0) : n), 0);
+}
+
+/** One task's rollup for the per-task ledger view and the weekly bill (#77). */
+export interface TicketSpend {
+  ticketId: string;
+  project: string | null;
+  records: number;
+  turns: number;
+  tokensIn: number;
+  tokensOut: number;
+  /** null only when EVERY row for the task lacked cost data — a partial-unknown task still sums. */
+  costUsd: number | null;
+  unknownCostRecords: number;
+}
+
+/**
+ * Per-ticket rollup, optionally over a rolling window, sorted by cost desc then id (#77). A task
+ * whose rows all lack cost data reports `costUsd: null` rather than a misleading $0.
+ */
+export function summarizeSpendByTicket(rows: SpendRecord[], options: SpendSummaryOptions = {}): TicketSpend[] {
+  const selected = rowsSince(rows, options.since, options.now ?? Date.now());
+  const groups = new Map<string, SpendRecord[]>();
+  for (const row of selected) groups.set(row.ticketId, [...(groups.get(row.ticketId) ?? []), row]);
+  const items: TicketSpend[] = [...groups.entries()].map(([ticketId, rs]) => ({
+    ticketId,
+    project: rs.find((r) => r.project)?.project ?? null,
+    records: rs.length,
+    turns: rs.reduce((n, r) => n + r.turns, 0),
+    tokensIn: rs.reduce((n, r) => n + r.tokensIn, 0),
+    tokensOut: rs.reduce((n, r) => n + r.tokensOut, 0),
+    costUsd: rs.some((r) => r.costUsd !== null) ? rs.reduce((n, r) => n + (r.costUsd ?? 0), 0) : null,
+    unknownCostRecords: rs.filter((r) => r.costUsd === null).length,
+  }));
+  return items.sort((a, b) => (b.costUsd ?? 0) - (a.costUsd ?? 0) || a.ticketId.localeCompare(b.ticketId));
+}
+
+/** How many tasks the weekly bill enumerates before collapsing the tail into a "+N more" line. */
+const WEEKLY_BILL_MAX_ROWS = 20;
+
+/**
+ * Render the weekly per-task bill posted to the channel (#77). Pure: the caller supplies the rows
+ * (read once from the ledger) and the clock. Reuses the same aggregation the dashboard/CLI use, so
+ * a rename or a new harness shows up here with no code change. An empty ledger yields a plain
+ * "nothing recorded" line rather than an error — a fresh install has no history to bill.
+ */
+export function formatWeeklyBill(rows: SpendRecord[], options: { now?: number; since?: string } = {}): string {
+  const since = options.since ?? "7d";
+  const now = options.now ?? Date.now();
+  const byTicket = summarizeSpendByTicket(rows, { since, now });
+  const money = (n: number | null) => (n === null ? "—" : `$${n.toFixed(2)}`);
+  if (byTicket.length === 0) {
+    return "🧾 **Weekly bill** — no worker spend recorded in the last 7 days.";
+  }
+  const totalCost = summarizeSpend(rows, { since, now }).totals.costUsd;
+  const shown = byTicket.slice(0, WEEKLY_BILL_MAX_ROWS);
+  const lines = shown.map((t) => {
+    const label = t.project ? `${t.ticketId} (${t.project})` : t.ticketId;
+    const unknown = t.unknownCostRecords > 0 ? ` · ${t.unknownCostRecords} run(s) w/o cost data` : "";
+    return `• **${label}** — ${money(t.costUsd)} · ${t.records} run(s)${unknown}`;
+  });
+  if (byTicket.length > shown.length) {
+    lines.push(`• …and ${byTicket.length - shown.length} more task(s)`);
+  }
+  const header = `🧾 **Weekly bill** — ${money(totalCost)} across ${byTicket.length} task(s) over the last 7 days`;
+  return [header, "", ...lines].join("\n");
+}
+
 /** Status-card ready rolling summaries. Both boundaries use `parseSince`, not calendar days. */
 export function summarizeSpendWindows(rows: SpendRecord[], now = Date.now()) {
   return {

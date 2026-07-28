@@ -76,6 +76,13 @@ export const NIGHTLY_DREAM_ID = "nightly-dream";
 export const PROACTIVE_SWEEP_ID = "proactive-sweep";
 
 /**
+ * Id of the weekly spend-report routine (#77): once a week, read the spend ledger and post a
+ * per-task cost breakdown — "the bill" — to the configured channel. Its own lane (never the
+ * browser), run as the `beckett routine spend-report` subprocess like `deps-update`.
+ */
+export const WEEKLY_SPEND_REPORT_ID = "weekly-spend-report";
+
+/**
  * The definitions (sans timestamps/state — the store stamps those on seed). Kept as a factory
  * so the seeder gets fresh objects and can't accidentally share mutable state.
  */
@@ -159,6 +166,20 @@ export function builtinRoutineDefs(): Array<Omit<Routine, "createdAt" | "updated
       schedule: {
         cadence: { kind: "daily" },
         window: { start: "09:00", end: "10:30", tz: "America/Los_Angeles" },
+      },
+    },
+    {
+      id: WEEKLY_SPEND_REPORT_ID,
+      name: "weekly spend report",
+      builtin: true,
+      enabled: true,
+      // No channel/requester baked in: attribution comes from env at fire time. `since` bills the
+      // trailing week, matching the weekly cadence.
+      action: { kind: "spend-report", since: "7d" },
+      // Sunday mornings PT — the week's bill lands where a human reads it before the next week starts.
+      schedule: {
+        cadence: { kind: "weekly", weekday: "sunday" },
+        window: { start: "09:00", end: "10:00", tz: "America/Los_Angeles" },
       },
     },
   ];
