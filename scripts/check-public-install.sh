@@ -8,7 +8,8 @@ ROOT=""
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ROOT
 readonly NAME="beckett-public-install-$$"
-readonly IMAGE="ubuntu:24.04"
+readonly BASE_IMAGE="ubuntu:24.04"
+readonly IMAGE="beckett-public-install-systemd-$$"
 TMP_SOURCE="$(mktemp -d)"
 DOCKER=(docker)
 if ! docker info >/dev/null 2>&1; then
@@ -17,6 +18,7 @@ fi
 
 cleanup() {
   "${DOCKER[@]}" rm -f "${NAME}" >/dev/null 2>&1 || true
+  "${DOCKER[@]}" image rm -f "${IMAGE}" >/dev/null 2>&1 || true
   rm -rf "${TMP_SOURCE}"
 }
 trap cleanup EXIT
@@ -25,9 +27,17 @@ trap cleanup EXIT
   echo "Docker (or passwordless sudo for Docker) is required." >&2
   exit 1
 }
-"${DOCKER[@]}" pull "${IMAGE}" >/dev/null
+"${DOCKER[@]}" pull "${BASE_IMAGE}" >/dev/null
+# A Docker base image does not include PID-1 systemd, unlike the supported VPS images. Build the
+# smallest equivalent systemd host; Beckett's own packages are still installed only by install.sh.
+"${DOCKER[@]}" build -t "${IMAGE}" - >/dev/null <<EOF
+FROM ${BASE_IMAGE}
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends systemd systemd-sysv dbus && rm -rf /var/lib/apt/lists/*
+CMD ["/sbin/init"]
+EOF
 "${DOCKER[@]}" run -d --name "${NAME}" --privileged --cgroupns=host \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw "${IMAGE}" /sbin/init >/dev/null
+sleep 2
 
 # Make a throwaway git repository from this checkout. The installer sees it only through the
 # supported test-only file:// override; every package/tool download is otherwise real.
@@ -53,12 +63,12 @@ git -C "${TMP_SOURCE}" commit -m "installer check snapshot" >/dev/null
   cat /tmp/install-beckett.sh | bash -s -- --non-interactive
 '
 
+# shellcheck disable=SC2016 # This single-quoted body is intentionally evaluated in the container.
 "${DOCKER[@]}" exec "${NAME}" bash -c '
   set -Eeuo pipefail
   sudo -iu beckett systemctl --user is-active --quiet beckett-v4.service
   status="$(sudo -iu beckett beckett status)"
-  # shellcheck disable=SC2016 # The jq filter must reach the container literally.
-  printf "%s\n" "$status" | jq -e '"'"'.state == "healthy-pending-configuration"'"'"' >/dev/null
+  printf "%s\n" "$status" | jq -e ".state == \"healthy-pending-configuration\"" >/dev/null
   test -f /home/beckett/.beckett/.env
   test -f /home/beckett/.beckett/config.toml
   echo "clean install: healthy-pending-configuration"
