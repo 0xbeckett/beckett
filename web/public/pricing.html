@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Beckett · Pricing</title>
+<meta name="description" content="How Beckett prices work: four lines you can read — model cost, compute cost, a single platform fee, and human seats. Every number derived from real run telemetry." />
+<meta name="theme-color" content="#bfe6ee" />
+<meta property="og:title" content="Beckett · Pricing" />
+<meta property="og:description" content="Priced from the meter, not the vibe. Model cost, compute, one margin line, and seats — itemised from real runs." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="/logo.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&family=DotGothic16&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/page.css">
+<style>
+  /* pricing.html: page-specific components, built from page.css tokens only.
+     Numbers ride JetBrains Mono with tabular figures. */
+  :root{ --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,monospace }
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;letter-spacing:-.01em}
+
+  /* the four-line ledger */
+  .ledger{list-style:none;margin:26px 0 0;padding:0;display:grid;gap:14px}
+  .line{border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:var(--bevel),var(--drop);padding:18px 20px;position:relative}
+  .line .k{margin-bottom:8px}
+  .line h3{font-family:var(--disp);font-weight:600;font-size:19px;line-height:1.2;color:var(--ink);margin-bottom:6px}
+  .line p{font-size:14.5px;line-height:1.55;color:var(--dim);max-width:none}
+  .line .fig{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
+    font-size:15px;font-weight:600;color:var(--ink);margin-top:10px;display:inline-block;
+    border:1px solid var(--line);padding:4px 10px;background:#fff}
+  /* the margin line stands alone — accented so it can never hide inside another */
+  .line.margin{border-color:var(--lv-deep);box-shadow:inset 3px 0 0 var(--lv-deep),var(--bevel),var(--drop)}
+  .line.margin .k{color:var(--lv-deep)}
+
+  /* rate table */
+  .rate-wrap{margin-top:22px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:var(--bevel),var(--drop);overflow:hidden}
+  table.rates{width:100%;border-collapse:collapse;font-size:14px}
+  table.rates caption{text-align:left;font-family:var(--pix);font-size:12px;color:var(--cy-deep);
+    padding:12px 16px 0;caption-side:top}
+  table.rates th,table.rates td{padding:10px 16px;text-align:left;border-bottom:1px solid var(--line)}
+  table.rates thead th{font-family:var(--pix);font-size:11px;font-weight:400;color:var(--dim);
+    text-transform:uppercase;letter-spacing:.04em}
+  table.rates tbody th{font-weight:500;color:var(--ink)}
+  table.rates td{color:var(--ink)}
+  table.rates td.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+  table.rates tbody tr:last-child th,table.rates tbody tr:last-child td{border-bottom:none}
+  .rate-note{font-size:13px;color:var(--dim);margin-top:12px}
+
+  /* worked-example receipt */
+  .receipt{margin-top:24px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:var(--bevel),var(--drop);padding:22px 22px 20px}
+  .receipt .r-top{display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap}
+  .receipt .r-id{font-family:var(--disp);font-weight:600;font-size:22px;color:var(--ink)}
+  .receipt .r-tag{font-family:var(--pix);font-size:12px;color:var(--cy-deep)}
+  .receipt .r-meta{margin-top:6px;font-size:13.5px;color:var(--dim)}
+  .receipt .r-meta .num{color:var(--ink);font-weight:500}
+  .rows{margin-top:16px;border-top:1px solid var(--line)}
+  .row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+    padding:9px 0;border-bottom:1px solid var(--line)}
+  .row .lbl{font-size:14.5px;color:var(--dim)}
+  .row .lbl b{color:var(--ink);font-weight:600}
+  .row .amt{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
+    font-size:14.5px;color:var(--ink);white-space:nowrap}
+  .row.sub .lbl{padding-left:16px;font-size:13.5px;color:var(--faint)}
+  .row.sub .amt{color:var(--dim)}
+  .row.total{border-bottom:none;padding-top:13px;margin-top:2px;border-top:2px solid var(--ink)}
+  .row.total .lbl{font-family:var(--disp);font-weight:600;font-size:18px;color:var(--ink)}
+  .row.total .amt{font-size:18px;font-weight:600;color:var(--ink)}
+
+  /* stat tiles */
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:24px}
+  .tile{border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:var(--bevel),var(--drop);padding:16px 18px}
+  .tile .t-k{font-family:var(--pix);font-size:11px;color:var(--cy-deep);text-transform:uppercase;letter-spacing:.03em}
+  .tile .t-v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
+    font-size:26px;font-weight:600;color:var(--ink);line-height:1.1;margin-top:8px}
+  .tile .t-s{font-size:12.5px;color:var(--dim);margin-top:4px}
+
+  /* review-cycle distribution bars */
+  .dist{margin-top:22px;display:grid;gap:10px}
+  .bar-row{display:grid;grid-template-columns:64px 1fr auto;align-items:center;gap:12px}
+  .bar-row .bl{font-family:var(--pix);font-size:12px;color:var(--dim)}
+  .track{height:14px;background:#fff;border:1px solid var(--line);position:relative;overflow:hidden}
+  .track>span{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,var(--cy),var(--lv));display:block}
+  .bar-row .bv{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
+    font-size:13px;color:var(--ink);white-space:nowrap}
+
+  /* "what we don't charge for" */
+  .nofees{list-style:none;margin:22px 0 0;padding:0;display:grid;gap:10px}
+  .nofees li{position:relative;padding-left:26px;font-size:15px;color:var(--dim);line-height:1.5}
+  .nofees li b{color:var(--ink);font-weight:600}
+  .nofees li::before{content:"✕";position:absolute;left:0;top:0;font-family:var(--pix);font-size:13px;color:var(--cy-deep)}
+
+  .prov{margin-top:20px;font-size:12.5px;color:var(--faint)}
+  .prov .num{color:var(--dim)}
+
+  @media(max-width:520px){
+    table.rates th,table.rates td{padding:9px 12px}
+    .receipt{padding:20px 16px 18px}
+  }
+</style>
+</head>
+<body>
+<canvas id="world" aria-hidden="true"></canvas>
+<div class="scrim" aria-hidden="true"></div>
+
+<nav>
+  <div class="nav-in">
+    <a class="brand" href="/"><img class="logo" src="/logo.svg" alt=""/>beckett</a>
+    <div class="nav-links">
+      <a href="/#how">How it works</a>
+      <a href="/caas">Coworker as a Service</a>
+      <a href="/federation">Federation</a>
+      <a href="https://github.com/0xbeckett/beckett">GitHub</a>
+    </div>
+    <a class="btn btn-primary btn-sm" href="https://discord.gg/DfJKFawURy">Join the Commons</a>
+  </div>
+</nav>
+
+<main class="page">
+  <header class="intro" id="top">
+    <h1 class="rv">Priced from the meter,<br><span class="g">not the vibe.</span></h1>
+    <p class="lead rv">A price is fair when you can read it. Beckett's is four lines: what the models cost, what the compute cost, one honest margin, and a seat per person. Every figure on this page is derived from <b style="color:var(--ink);font-weight:600">real runs</b> — <span class="num" data-bind="total_runs">—</span> of them — not a spreadsheet someone wished into being.</p>
+  </header>
+
+  <section class="passage">
+    <div class="k rv">01 · the shape</div>
+    <h2 class="rv">Four lines, each stated on its own.</h2>
+    <p class="rv">The whole point of this page is to <b>not</b> fold the margin into the token price and call it market rate. So the lines stay apart: pass-through model cost, compute at a stated hourly rate, a single platform fee you can see, and human seats billed separately from any task. Add them up yourself — the math is right here.</p>
+    <ul class="ledger rv">
+      <li class="line">
+        <div class="k">model cost</div>
+        <h3>Pass-through tokens.</h3>
+        <p>What the model provider charges, passed straight through at published per-Mtok rates. No markup hidden in the token price. Cache reads bill at a fraction of fresh input — roughly <span class="num" data-bind="cache_read_x">—</span>× — so long-context work stays cheap on the second pass.</p>
+      </li>
+      <li class="line">
+        <div class="k">compute cost</div>
+        <h3>Wall-clock time.</h3>
+        <p>Worker wall-clock and browser-session time at a stated hourly rate of <span class="fig num" data-bind="compute_rate">—</span> per hour. Today that rate is <b data-bind="compute_basis">—</b>. When a task moves onto a VM, this becomes <b data-bind="compute_vm_basis">—</b> — a number change, not a new pricing model.</p>
+      </li>
+      <li class="line margin">
+        <div class="k">platform fee · the margin line</div>
+        <h3>One number, in the open.</h3>
+        <p>Our margin, and the only one. A flat <span class="fig num" data-bind="platform_fee">—</span> on top of model + compute. It isn't buried in a marked-up token rate or a padded hourly — it's this line, and only this line. If it ever moves, you'll see it move here.</p>
+      </li>
+      <li class="line">
+        <div class="k">human seats</div>
+        <h3>Per person, per month.</h3>
+        <p><span class="fig num" data-bind="seat">—</span> per person per month, for the humans in the loop — separate from anything a task costs. Seats pay for presence and access; tasks pay for work. Mixing them is how "per-seat" bills quietly become "per-everything".</p>
+      </li>
+    </ul>
+  </section>
+
+  <section class="passage">
+    <div class="k rv">02 · model cost</div>
+    <h2 class="rv">The rate table.</h2>
+    <p class="rv">Published per-million-token rates, passed through unchanged. These are the numbers the platform fee sits <em>beside</em>, never inside.</p>
+    <div class="rate-wrap rv">
+      <table class="rates">
+        <caption>per-Mtok rates · pass-through</caption>
+        <thead>
+          <tr><th scope="col">Model</th><th scope="col" style="text-align:right">Input</th><th scope="col" style="text-align:right">Output</th></tr>
+        </thead>
+        <tbody data-bind="rate_rows"><!-- filled from pricing-data.json --></tbody>
+      </table>
+    </div>
+    <p class="rate-note rv">Cache reads bill at ≈<span class="num" data-bind="cache_read_x">—</span>× the input rate. Rate table effective <span class="num" data-bind="rate_effective">—</span>.</p>
+  </section>
+
+  <section class="passage">
+    <div class="k rv">03 · a real ticket</div>
+    <h2 class="rv">One ticket, itemised.</h2>
+    <p class="rv">Not a hypothetical. A real ticket pulled from the telemetry, its real cost, broken into the four lines — the way a month-summary card itemises seats, model calls, and compute hours into one total.</p>
+    <div class="receipt rv" data-bind="receipt">
+      <div class="r-top">
+        <span class="r-id" data-bind="ex_id">—</span>
+        <span class="r-tag">from telemetry · real run</span>
+      </div>
+      <div class="r-meta">
+        <span class="num" data-bind="ex_runs">—</span> agent runs ·
+        <span class="num" data-bind="ex_wall">—</span> of wall-clock ·
+        <span class="num" data-bind="ex_rc">—</span> review cycles
+      </div>
+      <div class="rows" data-bind="ex_rows"><!-- filled from pricing-data.json --></div>
+    </div>
+  </section>
+
+  <section class="passage">
+    <div class="k rv">04 · the fine print, un-fine</div>
+    <h2 class="rv">What we don't charge for.</h2>
+    <p class="rv">The costs that are ours to eat, not yours to pay. A coworker who bills you for its own mistakes isn't a coworker.</p>
+    <ul class="nofees rv">
+      <li><b>Retries we caused.</b> If Beckett crashed, looped, or re-ran itself because of our bug, that compute is on us.</li>
+      <li><b>Failed review cycles.</b> When our own reviewer sends work back, the rework isn't a line on your bill.</li>
+      <li><b>Our overhead.</b> Orchestration, scheduling, the plumbing between agents — that's the cost of running the service, not a task cost.</li>
+      <li><b>Idle presence.</b> A seat sitting quietly in your Discord doesn't meter. You pay when work happens.</li>
+    </ul>
+  </section>
+
+  <section class="passage">
+    <div class="k rv">05 · the receipts</div>
+    <h2 class="rv">Where the numbers come from.</h2>
+    <p class="rv">Everything above is derived from this install's own run log by a committed, re-runnable script. Here's the shape of that log, so the model isn't asking you to take it on faith.</p>
+    <div class="tiles rv">
+      <div class="tile"><div class="t-k">runs measured</div><div class="t-v num" data-bind="total_runs">—</div><div class="t-s">real agent runs</div></div>
+      <div class="tile"><div class="t-k">median cost / run</div><div class="t-v num" data-bind="cost_median">—</div><div class="t-s">half cost less</div></div>
+      <div class="tile"><div class="t-k">p90 cost / run</div><div class="t-v num" data-bind="cost_p90">—</div><div class="t-s">9 in 10 cost less</div></div>
+      <div class="tile"><div class="t-k">median wall-clock</div><div class="t-v num" data-bind="wall_median">—</div><div class="t-s">per run</div></div>
+      <div class="tile"><div class="t-k">p90 wall-clock</div><div class="t-v num" data-bind="wall_p90">—</div><div class="t-s">per run</div></div>
+    </div>
+
+    <div class="k rv" style="margin-top:34px">cost by harness</div>
+    <div class="rate-wrap rv">
+      <table class="rates">
+        <caption>total spend, by harness</caption>
+        <thead>
+          <tr><th scope="col">Harness</th><th scope="col" style="text-align:right">Runs</th><th scope="col" style="text-align:right">Median</th><th scope="col" style="text-align:right">Total</th></tr>
+        </thead>
+        <tbody data-bind="harness_rows"><!-- filled --></tbody>
+      </table>
+    </div>
+
+    <div class="k rv" style="margin-top:34px">review-cycle distribution</div>
+    <p class="rv" style="margin-bottom:2px">How often work needed another pass. Most runs land clean on the first try; the long tail is rework we mostly don't bill for.</p>
+    <div class="dist rv" data-bind="dist_rows"><!-- filled --></div>
+
+    <p class="prov rv">Generated <span class="num" data-bind="gen_date">—</span> from <span class="num" data-bind="source_file">—</span> by <code>web/scripts/pricing-stats.mjs</code>. Re-run the script and this page moves with the data.</p>
+  </section>
+
+  <section class="outro" id="end">
+    <h2 class="rv">Read it before you buy it.</h2>
+    <p class="sub rv">That's the whole model. If a line ever stops making sense, it's a bug — tell us in the Commons.</p>
+    <div class="cta-row rv">
+      <a class="btn btn-primary btn-lg" href="https://discord.gg/DfJKFawURy">Join the Commons »</a>
+      <a class="btn btn-ghost btn-lg" href="https://github.com/0xbeckett/beckett">Read the source</a>
+    </div>
+  </section>
+</main>
+
+<div class="terra" aria-hidden="true"></div>
+<footer>
+  <div class="f-in">
+    <div class="f-l"><img class="logo" src="/logo.svg" alt=""/>beckett</div>
+    <div class="f-r">
+      <a href="https://discord.gg/DfJKFawURy">Discord</a>
+      <a href="https://github.com/0xbeckett/beckett">GitHub</a>
+      <a href="/federation">Federation</a>
+      <a href="/caas">Coworker as a Service</a>
+      <a href="/pricing">Pricing</a>
+      <a href="/v6">v6</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Every figure on this page is read from pricing-data.json — the output of
+  // web/scripts/pricing-stats.mjs — so nothing here is hand-typed.
+  (function(){
+    var usd = function(n, dp){ dp = dp==null?2:dp; return '$' + Number(n).toFixed(dp); };
+    var dur = function(s){
+      s = Math.round(Number(s));
+      if (s < 90) return s + 's';
+      var m = Math.floor(s/60), r = s%60;
+      if (m < 60) return m + 'm ' + (r<10?'0':'') + r + 's';
+      var h = Math.floor(m/60); m = m%60;
+      return h + 'h ' + (m<10?'0':'') + m + 'm';
+    };
+    var esc = function(t){ var d=document.createElement('div'); d.textContent=t; return d.innerHTML; };
+    var setAll = function(key, val){
+      document.querySelectorAll('[data-bind="'+key+'"]').forEach(function(el){ el.textContent = val; });
+    };
+
+    fetch('/pricing-data.json', {cache:'no-cache'}).then(function(r){ return r.json(); }).then(function(d){
+      // headline scalars
+      setAll('total_runs', Number(d.total_runs).toLocaleString());
+      setAll('cache_read_x', d.model_rates.cache_read_multiplier);
+      setAll('compute_rate', usd(d.compute_rate.per_hour));
+      setAll('compute_basis', d.compute_rate.basis);
+      setAll('compute_vm_basis', d.compute_rate.vm_basis);
+      setAll('platform_fee', d.platform_fee.pct + '%');
+      setAll('seat', usd(d.seat.monthly_usd, 0));
+      setAll('rate_effective', d.rate_table_effective_date || '—');
+      setAll('cost_median', usd(d.cost_per_run.median));
+      setAll('cost_p90', usd(d.cost_per_run.p90));
+      setAll('wall_median', dur(d.wall_clock.median_seconds));
+      setAll('wall_p90', dur(d.wall_clock.p90_seconds));
+      setAll('gen_date', (d.generated_at||'').slice(0,10));
+      setAll('source_file', d.source_file || '—');
+
+      // rate table
+      var rt = document.querySelector('[data-bind="rate_rows"]');
+      if (rt) rt.innerHTML = d.model_rates.tiers.map(function(t){
+        return '<tr><th scope="row">'+esc(t.label)+'</th>'+
+               '<td class="n">'+usd(t.input)+'</td>'+
+               '<td class="n">'+usd(t.output)+'</td></tr>';
+      }).join('');
+
+      // worked example
+      var w = d.worked_example;
+      setAll('ex_id', w.ticket);
+      setAll('ex_runs', w.runs);
+      setAll('ex_wall', dur(w.wall_clock_seconds));
+      setAll('ex_rc', w.review_cycles);
+      var er = document.querySelector('[data-bind="ex_rows"]');
+      if (er) {
+        var rows = '';
+        rows += '<div class="row"><span class="lbl"><b>Model cost</b> · pass-through tokens</span>'+
+                '<span class="amt">'+usd(w.lines.model_cost)+'</span></div>';
+        w.models.forEach(function(m){
+          rows += '<div class="row sub"><span class="lbl">'+esc(m.tier)+' · '+m.runs+' run'+(m.runs===1?'':'s')+
+                  '</span><span class="amt">'+usd(m.cost)+'</span></div>';
+        });
+        rows += '<div class="row"><span class="lbl"><b>Compute cost</b> · '+dur(w.wall_clock_seconds)+
+                ' @ '+usd(d.compute_rate.per_hour)+'/hr</span>'+
+                '<span class="amt">'+usd(w.lines.compute_cost)+'</span></div>';
+        rows += '<div class="row"><span class="lbl"><b>Platform fee</b> · '+d.platform_fee.pct+'% margin</span>'+
+                '<span class="amt">'+usd(w.lines.platform_fee)+'</span></div>';
+        rows += '<div class="row total"><span class="lbl">Ticket total</span>'+
+                '<span class="amt">'+usd(w.lines.total)+'</span></div>';
+        er.innerHTML = rows;
+      }
+
+      // harness breakdown
+      var hb = document.querySelector('[data-bind="harness_rows"]');
+      if (hb) hb.innerHTML = d.cost_by_harness.map(function(h){
+        return '<tr><th scope="row">'+esc(h.key)+'</th>'+
+               '<td class="n">'+Number(h.runs).toLocaleString()+'</td>'+
+               '<td class="n">'+usd(h.median_cost)+'</td>'+
+               '<td class="n">'+usd(h.total_cost)+'</td></tr>';
+      }).join('');
+
+      // review-cycle distribution bars
+      var db = document.querySelector('[data-bind="dist_rows"]');
+      if (db) {
+        var max = Math.max.apply(null, d.review_cycle_distribution.map(function(x){return x.pct;})) || 1;
+        db.innerHTML = d.review_cycle_distribution.map(function(x){
+          var label = x.cycles==='0' ? 'clean' : x.cycles + (x.cycles==='3+'?' cyc':' cyc');
+          return '<div class="bar-row">'+
+            '<span class="bl">'+esc(label)+'</span>'+
+            '<span class="track" role="img" aria-label="'+x.pct+' percent"><span style="width:'+(x.pct/max*100)+'%"></span></span>'+
+            '<span class="bv">'+x.pct+'% · '+Number(x.runs).toLocaleString()+'</span></div>';
+        }).join('');
+      }
+    }).catch(function(e){
+      var er = document.querySelector('[data-bind="ex_rows"]');
+      if (er) er.innerHTML = '<div class="row"><span class="lbl">Pricing data failed to load. Run <b>web/scripts/pricing-stats.mjs</b>.</span></div>';
+    });
+  })();
+</script>
+
+<script type="module">
+  import { startWorld } from './world.js';
+  try {
+    startWorld(document.getElementById('world'), { shots: [
+      { sel: '#top', pos: [30, 16, 44], look: [-4, 3, 0] },
+      { sel: '#end', pos: [22, 12, 36], look: [0, 3, 2] },
+    ]});
+  } catch (e) { document.getElementById('world').remove(); }
+</script>
+<script>
+  (function(){var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.16,rootMargin:'0px 0px -6% 0px'});
+    document.querySelectorAll('.rv').forEach(function(n,i){n.style.transitionDelay=(i%3*55)+'ms';io.observe(n);})})();
+</script>
+</body>
+</html>

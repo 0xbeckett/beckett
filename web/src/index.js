@@ -15,10 +15,7 @@ export default {
       url.hostname = "0xbeckett.me";
       return Response.redirect(url.toString(), 301);
     }
-    // pricing died when Beckett went open source; keep old links alive
-    if (url.pathname === "/pricing" || url.pathname === "/pricing.html") {
-      return Response.redirect(new URL("/#federation", url).toString(), 301);
-    }
+    // /pricing serves the pricing page (web/public/pricing.html) again.
     return env.ASSETS.fetch(request);
   },
 };
