@@ -6,11 +6,12 @@ name: doctrine-eval
 # rewrite that makes Beckett worse before it ships.
 #
 # Triggered only when the governing text or the turn pipeline changes — a doctrine, persona, or
-# pipeline edit — so an unrelated PR doesn't spend model tokens.
+# pipeline edit — so an unrelated PR doesn't spend model tokens. The two path lists are kept
+# identical on purpose (push and pull_request); update both together.
 on:
   push:
     branches: [main]
-    paths: &governing
+    paths:
       - "src/concierge/concierge.md" # the doctrine
       - "src/concierge/index.ts" # DEFAULT_PERSONA + doctrine rendering + the turn pipeline
       - "src/concierge/triage.ts" # ambient pass-vs-speak classifier
@@ -21,7 +22,16 @@ on:
       - "scripts/eval/turn-decisions.ts" # the runner
       - ".github/workflows/doctrine-eval.yml"
   pull_request:
-    paths: *governing
+    paths:
+      - "src/concierge/concierge.md"
+      - "src/concierge/index.ts"
+      - "src/concierge/triage.ts"
+      - "src/concierge/ambient.ts"
+      - "src/concierge/output.ts"
+      - "src/eval/turn-decisions.ts"
+      - "src/eval/turn-fixtures.json"
+      - "scripts/eval/turn-decisions.ts"
+      - ".github/workflows/doctrine-eval.yml"
 
 jobs:
   turn-decisions:
@@ -40,5 +50,5 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_REFERER: ${{ secrets.OPENROUTER_REFERER || 'https://github.com/0xbeckett/beckett' }}
-          # Two runs per fixture, majority-graded, to shrug off the rare single-call wobble.
+        # Two runs per fixture, majority-graded, to shrug off the rare single-call wobble.
         run: bun run eval:turns --runs=2
