@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Beckett · What's a fair price?</title>
+<meta name="description" content="A short survey: told what a task actually costs us, what would you call a fair price? Numbers anchored to real cost, not a vibe." />
+<meta name="theme-color" content="#bfe6ee" />
+<meta property="og:title" content="Beckett · What's a fair price?" />
+<meta property="og:description" content="You see what a task really costs us first — then you tell us what's fair. Anchored, bounded, no 'free' hand-waving." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="/logo.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400..700&family=DotGothic16&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/page.css">
+<style>
+  /* fair-price.html: form + anchor components, built from page.css tokens only. */
+  :root{ --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,monospace; --ok:#3f96a2; --bad:#b4462f }
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;letter-spacing:-.01em}
+
+  /* the floor — shown before any question */
+  .floor{margin-top:26px;border:1px solid var(--lv-deep);background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:inset 3px 0 0 var(--lv-deep),var(--bevel),var(--drop);padding:20px 22px}
+  .floor .k{font-family:var(--pix);font-size:12px;color:var(--lv-deep);margin-bottom:8px}
+  .floor .headline{font-size:17px;color:var(--ink);line-height:1.5}
+  .floor .headline b{font-weight:600}
+  .floor .headline .fig{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;color:var(--ink)}
+
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;margin-top:20px}
+  .tile{border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:var(--bevel),var(--drop);padding:15px 17px}
+  .tile .t-k{font-family:var(--pix);font-size:11px;color:var(--cy-deep);text-transform:uppercase;letter-spacing:.03em}
+  .tile .t-v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
+    font-size:24px;font-weight:600;color:var(--ink);line-height:1.1;margin-top:7px}
+  .tile .t-s{font-size:12.5px;color:var(--dim);margin-top:4px}
+
+  /* anchored examples */
+  .examples{list-style:none;margin:24px 0 0;padding:0;display:grid;gap:14px}
+  .ex{border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:var(--bevel),var(--drop);padding:18px 20px}
+  .ex .ex-top{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .ex h3{font-family:var(--disp);font-weight:600;font-size:18px;color:var(--ink);line-height:1.2}
+  .ex .ex-cost{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;font-size:18px;color:var(--ink);white-space:nowrap}
+  .ex p{font-size:14px;line-height:1.55;color:var(--dim);margin-top:8px}
+  .ex .ex-meta{font-family:var(--mono);font-size:12.5px;color:var(--dim);margin-top:8px}
+  .ex .ex-meta b{color:var(--ink);font-weight:600}
+
+  /* rules */
+  .rules{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:22px}
+  .rule{border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
+    box-shadow:var(--bevel),var(--drop);padding:16px 18px}
+  .rule .k{font-family:var(--pix);font-size:11px;text-transform:uppercase;letter-spacing:.03em;margin-bottom:8px}
+  .rule.inc .k{color:var(--cy-deep)}
+  .rule.exc .k{color:var(--lv-deep)}
+  .rule ul{list-style:none;margin:0;padding:0;display:grid;gap:7px}
+  .rule li{position:relative;padding-left:22px;font-size:14px;color:var(--dim);line-height:1.45}
+  .rule li b{color:var(--ink);font-weight:600}
+  .rule.inc li::before{content:"✓";position:absolute;left:0;color:var(--cy-deep);font-family:var(--pix);font-size:12px}
+  .rule.exc li::before{content:"✕";position:absolute;left:0;color:var(--lv-deep);font-family:var(--pix);font-size:12px}
+  @media(max-width:560px){.rules{grid-template-columns:1fr}}
+
+  /* the form */
+  form.survey{margin-top:24px;display:grid;gap:20px}
+  .field{display:grid;gap:6px}
+  .field > label{font-family:var(--pix);font-size:13px;color:var(--ink);line-height:1.35}
+  .field .hint{font-size:13px;color:var(--dim);line-height:1.45;margin:0}
+  .field .hint .num{color:var(--ink);font-weight:500}
+  .input-wrap{display:flex;align-items:stretch;border:2px solid var(--ink);background:#fff;
+    box-shadow:inset 0 2px 0 rgba(255,255,255,.9),inset 0 -2px 0 rgba(43,39,67,.06);max-width:320px}
+  .input-wrap:focus-within{outline:3px solid var(--lv-deep);outline-offset:2px}
+  .input-wrap .affix{display:flex;align-items:center;padding:0 12px;font-family:var(--mono);font-weight:600;
+    font-size:15px;color:var(--dim);background:#f2eefb;border-right:2px solid var(--ink)}
+  .input-wrap .affix.unit{border-right:none;border-left:2px solid var(--ink);background:#f2eefb;color:var(--dim)}
+  .input-wrap input{flex:1;min-width:0;min-height:44px;padding:0 12px;border:none;background:transparent;
+    font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:16px;font-weight:600;color:var(--ink)}
+  .input-wrap input:focus{outline:none}
+  .field.invalid .input-wrap{border-color:var(--bad);box-shadow:inset 0 2px 0 rgba(255,255,255,.9),inset 0 -2px 0 rgba(180,70,47,.1)}
+  .field.invalid .input-wrap .affix{border-color:var(--bad)}
+  .field .err{font-size:13px;color:var(--bad);font-weight:500;margin:0;min-height:0}
+  .field .err[hidden]{display:none}
+
+  textarea{width:100%;min-height:92px;padding:11px 13px;border:2px solid var(--ink);background:#fff;
+    font-family:var(--sans);font-size:15.5px;color:var(--ink);line-height:1.5;resize:vertical;
+    box-shadow:inset 0 2px 0 rgba(255,255,255,.9),inset 0 -2px 0 rgba(43,39,67,.06)}
+  textarea:focus-visible{outline:3px solid var(--lv-deep);outline-offset:2px}
+
+  /* honeypot — hidden from humans, present for bots */
+  .hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+
+  .submit-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:4px}
+  button.btn{cursor:pointer;min-height:44px}
+  button.btn[disabled]{opacity:.55;cursor:not-allowed;filter:grayscale(.3)}
+
+  /* status banners */
+  .banner{border:2px solid var(--ink);padding:14px 16px;font-size:14.5px;line-height:1.5;display:none}
+  .banner[data-show]{display:block}
+  .banner.err{background:#fbe8e2;border-color:var(--bad);color:#5c2416}
+  .banner.err b{color:var(--bad)}
+  .banner.ok{background:#e6f5ee;border-color:var(--ok);color:#123a34}
+  .banner.ok b{color:var(--ok)}
+
+  @media(max-width:520px){
+    .floor{padding:18px 16px}
+    .ex{padding:16px}
+  }
+</style>
+</head>
+<body>
+<div class="scrim" aria-hidden="true"></div>
+
+<nav>
+  <div class="nav-in">
+    <a class="brand" href="https://0xbeckett.me/"><img class="logo" src="/logo.svg" alt=""/>beckett</a>
+    <div class="nav-links">
+      <a href="https://0xbeckett.me/pricing">Pricing</a>
+      <a href="https://0xbeckett.me/caas">Coworker as a Service</a>
+      <a href="https://github.com/0xbeckett/beckett">GitHub</a>
+    </div>
+    <a class="btn btn-primary btn-sm" href="https://discord.gg/DfJKFawURy">Join the Commons</a>
+  </div>
+</nav>
+
+<main class="page">
+  <header class="intro" id="top">
+    <h1>What's a <span class="g">fair price?</span></h1>
+    <p class="lead">Beckett prices pass-through cost plus one stated margin. Before you answer, you'll see what a task actually costs us — then you tell us what <b style="color:var(--ink);font-weight:600">fair</b> looks like. Anchored to real numbers, not a vibe. Every figure below is read from the same live pricing data as <a href="https://0xbeckett.me/pricing">the pricing page</a>.</p>
+  </header>
+
+  <!-- THE FLOOR — shown before any question is asked -->
+  <section class="passage" aria-labelledby="floor-h">
+    <div class="k">00 · the floor</div>
+    <h2 id="floor-h">Start from what it costs us.</h2>
+    <div class="floor">
+      <div class="k">what a task costs to run</div>
+      <p class="headline">A typical Beckett task costs us <span class="fig" data-bind="typical_cost">—</span> in model&nbsp;+&nbsp;compute. The busy one-in-ten runs <span class="fig" data-bind="p90_cost">—</span>. That is our floor — the price of the work before we've earned a cent.</p>
+    </div>
+    <div class="tiles">
+      <div class="tile"><div class="t-k">typical task</div><div class="t-v num" data-bind="typical_cost">—</div><div class="t-s">median model + compute</div></div>
+      <div class="tile"><div class="t-k">busy task (p90)</div><div class="t-v num" data-bind="p90_cost">—</div><div class="t-s">9 in 10 cost less</div></div>
+      <div class="tile"><div class="t-k">compute rate</div><div class="t-v num" data-bind="compute_rate">—</div><div class="t-s">per wall-clock hour</div></div>
+      <div class="tile"><div class="t-k">today's margin</div><div class="t-v num" data-bind="platform_fee">—</div><div class="t-s">the platform fee</div></div>
+      <div class="tile"><div class="t-k">today's seat</div><div class="t-v num" data-bind="seat">—</div><div class="t-s">per person / month</div></div>
+    </div>
+  </section>
+
+  <!-- ANCHORED EXAMPLES -->
+  <section class="passage" aria-labelledby="ex-h">
+    <div class="k">01 · a sense of scale</div>
+    <h2 id="ex-h">Three real jobs, real costs.</h2>
+    <p>So "fair" has a scale to sit on. These are pulled from the telemetry, not made up.</p>
+    <ul class="examples" data-bind="examples">
+      <li class="ex"><p>Loading real figures…</p></li>
+    </ul>
+  </section>
+
+  <!-- RULES -->
+  <section class="passage" aria-labelledby="rules-h">
+    <div class="k">02 · the rules</div>
+    <h2 id="rules-h">What you'd be pricing.</h2>
+    <p>We price <b>pass-through cost plus one stated margin</b> — the platform fee, and only that. Answer for the margin and the seat you'd call fair, not for free.</p>
+    <div class="rules">
+      <div class="rule inc">
+        <div class="k">what's included</div>
+        <ul>
+          <li><b>Model tokens</b> at the provider's published rate, passed straight through.</li>
+          <li><b>Compute</b> — worker and browser wall-clock at a stated hourly rate.</li>
+          <li><b>One margin line</b> — the platform fee on top of model + compute.</li>
+          <li><b>A human seat</b> per person, per month, separate from any task.</li>
+        </ul>
+      </div>
+      <div class="rule exc">
+        <div class="k">what isn't</div>
+        <ul>
+          <li><b>Retries we caused.</b> Our bug, our compute — not your line.</li>
+          <li><b>Failed review cycles.</b> Rework our own reviewer sent back is on us.</li>
+          <li><b>Our overhead.</b> Orchestration and plumbing aren't a task cost.</li>
+          <li><b>Idle presence.</b> A quiet seat doesn't meter — you pay when work happens.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- THE FORM -->
+  <section class="passage" aria-labelledby="form-h">
+    <div class="k">03 · your answer</div>
+    <h2 id="form-h">Now — what's fair?</h2>
+    <p>Give a number for each line. Each has a floor at our cost; a below-cost answer is rejected, not quietly bumped up. Everything but the last field is required.</p>
+
+    <div class="banner err" id="banner-err" role="alert"><b>Couldn't submit.</b> <span id="banner-err-msg"></span></div>
+    <div class="banner ok" id="banner-ok" role="status"><b>Thanks — got it.</b> Your answer went straight to the team. You can close this tab.</div>
+
+    <form class="survey" id="survey" novalidate>
+      <!-- honeypot: real people never see or fill this -->
+      <div class="hp" aria-hidden="true">
+        <label for="website">Leave this field empty</label>
+        <input type="text" id="website" name="website" tabindex="-1" autocomplete="off" />
+      </div>
+
+      <div class="field" id="field_model_markup_pct">
+        <label for="model_markup_pct">Model cost — markup over pass-through</label>
+        <p class="hint">We pass model tokens through at cost. <b>0%</b> means you pay exactly what the provider bills us; the floor is <span class="num" data-bind="floor_model">0%</span>. What markup, if any, is fair?</p>
+        <div class="input-wrap">
+          <input type="number" inputmode="decimal" id="model_markup_pct" name="model_markup_pct" step="1" min="0" placeholder="e.g. 10" aria-describedby="err_model_markup_pct" required />
+          <span class="affix unit">%</span>
+        </div>
+        <p class="err" id="err_model_markup_pct" role="alert" hidden></p>
+      </div>
+
+      <div class="field" id="field_compute_per_hour">
+        <label for="compute_per_hour">Compute — price per wall-clock hour</label>
+        <p class="hint">Our stated cost is <span class="num" data-bind="floor_compute">$0.50</span>/hr — the floor. Below that is below our cost. What hourly rate is fair?</p>
+        <div class="input-wrap">
+          <span class="affix">$</span>
+          <input type="number" inputmode="decimal" id="compute_per_hour" name="compute_per_hour" step="0.05" placeholder="e.g. 0.75" aria-describedby="err_compute_per_hour" required />
+          <span class="affix unit">/hr</span>
+        </div>
+        <p class="err" id="err_compute_per_hour" role="alert" hidden></p>
+      </div>
+
+      <div class="field" id="field_platform_fee_pct">
+        <label for="platform_fee_pct">Platform fee — the one margin line</label>
+        <p class="hint">Today it's <span class="num" data-bind="fee_current">12%</span> on top of model + compute. <b>0%</b> means break-even — the floor is <span class="num" data-bind="floor_fee">0%</span>. What margin is fair?</p>
+        <div class="input-wrap">
+          <input type="number" inputmode="decimal" id="platform_fee_pct" name="platform_fee_pct" step="1" min="0" placeholder="e.g. 12" aria-describedby="err_platform_fee_pct" required />
+          <span class="affix unit">%</span>
+        </div>
+        <p class="err" id="err_platform_fee_pct" role="alert" hidden></p>
+      </div>
+
+      <div class="field" id="field_seat_monthly">
+        <label for="seat_monthly">Human seat — price per person, per month</label>
+        <p class="hint">Today it's <span class="num" data-bind="seat_current">$20</span>/mo. Idle presence isn't metered, so the floor is <span class="num" data-bind="floor_seat">$0</span> — tell us what a seat's worth to you.</p>
+        <div class="input-wrap">
+          <span class="affix">$</span>
+          <input type="number" inputmode="decimal" id="seat_monthly" name="seat_monthly" step="1" min="0" placeholder="e.g. 20" aria-describedby="err_seat_monthly" required />
+          <span class="affix unit">/mo</span>
+        </div>
+        <p class="err" id="err_seat_monthly" role="alert" hidden></p>
+      </div>
+
+      <div class="field">
+        <label for="unfair">What would make this feel unfair to you? <span style="color:var(--dim);font-family:var(--sans)">(optional)</span></label>
+        <textarea id="unfair" name="unfair" maxlength="2000" placeholder="Anything about this pricing that would put you off."></textarea>
+      </div>
+
+      <div class="submit-row">
+        <button type="submit" class="btn btn-primary btn-lg" id="submit-btn">Send my answer »</button>
+        <span style="font-size:13px;color:var(--dim)">No account, no email. One POST, then forgotten.</span>
+      </div>
+    </form>
+  </section>
+</main>
+
+<div class="terra" aria-hidden="true"></div>
+<footer>
+  <div class="f-in">
+    <div class="f-l"><img class="logo" src="/logo.svg" alt=""/>beckett</div>
+    <div class="f-r">
+      <a href="https://discord.gg/DfJKFawURy">Discord</a>
+      <a href="https://github.com/0xbeckett/beckett">GitHub</a>
+      <a href="https://0xbeckett.me/pricing">Pricing</a>
+      <a href="https://0xbeckett.me/">Home</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Every anchor figure and every floor is read from /pricing-data.json — the
+  // committed output of #41.1's pricing-stats. Nothing here is hand-typed, and the
+  // floors used for client validation are the same numbers the worker re-checks.
+  (function(){
+    var usd = function(n, dp){ dp = dp==null?2:dp; return '$' + Number(n).toFixed(dp); };
+    var dur = function(s){
+      s = Math.round(Number(s));
+      if (s < 90) return s + 's';
+      var m = Math.floor(s/60), r = s%60;
+      if (m < 60) return m + 'm ' + (r<10?'0':'') + r + 's';
+      var h = Math.floor(m/60); m = m%60;
+      return h + 'h ' + (m<10?'0':'') + m + 'm';
+    };
+    var esc = function(t){ var d=document.createElement('div'); d.textContent=t; return d.innerHTML; };
+    var setAll = function(key, val){
+      document.querySelectorAll('[data-bind="'+key+'"]').forEach(function(el){ el.textContent = val; });
+    };
+
+    // Floors default to safe values so client validation still works if the fetch
+    // fails; they are overwritten from the committed data when it loads.
+    var FLOORS = { model_markup_pct: 0, compute_per_hour: 0.5, platform_fee_pct: 0, seat_monthly: 0 };
+    var LABELS = {
+      model_markup_pct: 'Model cost markup',
+      compute_per_hour: 'Compute rate',
+      platform_fee_pct: 'Platform fee',
+      seat_monthly: 'Monthly seat'
+    };
+    var UNIT = { model_markup_pct: '%', compute_per_hour: '$/hr', platform_fee_pct: '%', seat_monthly: '$' };
+    var fmtFloor = function(k){
+      var v = FLOORS[k];
+      return (k === 'compute_per_hour' || k === 'seat_monthly') ? usd(v, v % 1 ? 2 : 0) : (v + '%');
+    };
+
+    fetch('/pricing-data.json', {cache:'no-cache'}).then(function(r){ return r.json(); }).then(function(d){
+      FLOORS.compute_per_hour = Number(d.compute_rate.per_hour);
+      setAll('typical_cost', usd(d.cost_per_run.median));
+      setAll('p90_cost', usd(d.cost_per_run.p90));
+      setAll('compute_rate', usd(d.compute_rate.per_hour) + '/hr');
+      setAll('platform_fee', d.platform_fee.pct + '%');
+      setAll('seat', usd(d.seat.monthly_usd, 0));
+
+      setAll('floor_model', FLOORS.model_markup_pct + '%');
+      setAll('floor_compute', usd(FLOORS.compute_per_hour, FLOORS.compute_per_hour % 1 ? 2 : 0));
+      setAll('floor_fee', FLOORS.platform_fee_pct + '%');
+      setAll('floor_seat', usd(FLOORS.seat_monthly, 0));
+      setAll('fee_current', d.platform_fee.pct + '%');
+      setAll('seat_current', usd(d.seat.monthly_usd, 0));
+      // set the compute input's min now that we know the real floor
+      var ci = document.getElementById('compute_per_hour');
+      if (ci) ci.setAttribute('min', String(FLOORS.compute_per_hour));
+
+      // anchored examples, real figures
+      var w = d.worked_example;
+      var lightTasks = 10;
+      var lightTaskCost = d.cost_per_run.median * lightTasks;
+      var lightTotal = d.seat.monthly_usd + lightTaskCost;
+      var exWrap = document.querySelector('[data-bind="examples"]');
+      if (exWrap) {
+        exWrap.innerHTML = [
+          { h: 'A one-off script', cost: usd(d.cost_per_run.median),
+            p: 'A small, single-run task — the median job Beckett runs.',
+            meta: '<b>'+dur(d.wall_clock.median_seconds)+'</b> wall-clock · model + compute' },
+          { h: 'A ~20-minute backend ticket', cost: usd(w.lines.total),
+            p: 'Ticket '+esc(w.ticket)+', a real multi-run backend job from the log.',
+            meta: '<b>'+w.runs+' runs</b> · '+dur(w.wall_clock_seconds)+' · model '+usd(w.lines.model_cost)+' + compute '+usd(w.lines.compute_cost)+' + '+d.platform_fee.pct+'% fee '+usd(w.lines.platform_fee) },
+          { h: 'A month of light use', cost: usd(lightTotal),
+            p: 'One seat plus about '+lightTasks+' typical tasks over a month.',
+            meta: '<b>'+usd(d.seat.monthly_usd,0)+'</b> seat + '+lightTasks+'×'+usd(d.cost_per_run.median)+' tasks ('+usd(lightTaskCost)+')' }
+        ].map(function(e){
+          return '<li class="ex"><div class="ex-top"><h3>'+e.h+'</h3><span class="ex-cost">'+e.cost+'</span></div>'+
+                 '<p>'+e.p+'</p><div class="ex-meta">'+e.meta+'</div></li>';
+        }).join('');
+      }
+    }).catch(function(){
+      var exWrap = document.querySelector('[data-bind="examples"]');
+      if (exWrap) exWrap.innerHTML = '<li class="ex"><p>Couldn\'t load the pricing figures. The floors below still apply.</p></li>';
+    });
+
+    // ---- validation + submit ----
+    var form = document.getElementById('survey');
+    var btn = document.getElementById('submit-btn');
+    var bErr = document.getElementById('banner-err');
+    var bErrMsg = document.getElementById('banner-err-msg');
+    var bOk = document.getElementById('banner-ok');
+    var KEYS = ['model_markup_pct', 'compute_per_hour', 'platform_fee_pct', 'seat_monthly'];
+
+    var showFieldError = function(k, msg){
+      var field = document.getElementById('field_'+k);
+      var err = document.getElementById('err_'+k);
+      if (field) field.classList.add('invalid');
+      if (err){ err.textContent = msg; err.hidden = false; }
+    };
+    var clearFieldError = function(k){
+      var field = document.getElementById('field_'+k);
+      var err = document.getElementById('err_'+k);
+      if (field) field.classList.remove('invalid');
+      if (err){ err.textContent = ''; err.hidden = true; }
+    };
+    KEYS.forEach(function(k){
+      var input = document.getElementById(k);
+      if (input) input.addEventListener('input', function(){ clearFieldError(k); });
+    });
+
+    var validate = function(){
+      var ok = true, answers = {}, firstBad = null;
+      KEYS.forEach(function(k){
+        var input = document.getElementById(k);
+        var raw = input ? input.value.trim() : '';
+        var n = Number(raw);
+        if (raw === '' || isNaN(n)){
+          showFieldError(k, LABELS[k] + ': enter a number.');
+          ok = false; if (!firstBad) firstBad = input;
+          return;
+        }
+        if (n < FLOORS[k]){
+          showFieldError(k, LABELS[k] + ': ' + n + UNIT[k] + ' is below our cost of ' + fmtFloor(k) + '. Pick a value at or above it — we can\'t run below cost.');
+          ok = false; if (!firstBad) firstBad = input;
+          return;
+        }
+        clearFieldError(k);
+        answers[k] = n;
+      });
+      return { ok: ok, answers: answers, firstBad: firstBad };
+    };
+
+    form.addEventListener('submit', function(ev){
+      ev.preventDefault();
+      bErr.removeAttribute('data-show');
+      bOk.removeAttribute('data-show');
+
+      var v = validate();
+      if (!v.ok){
+        bErrMsg.textContent = 'Some answers are below our cost — see the fields marked in red.';
+        bErr.setAttribute('data-show', '1');
+        if (v.firstBad) v.firstBad.focus();
+        return;
+      }
+
+      var payload = {
+        answers: v.answers,
+        unfair: document.getElementById('unfair').value,
+        website: document.getElementById('website').value // honeypot
+      };
+
+      btn.disabled = true;
+      var prev = btn.textContent;
+      btn.textContent = 'Sending…';
+
+      fetch('/fair-price/submit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function(res){
+        return res.json().catch(function(){ return { ok: res.ok }; }).then(function(body){
+          return { status: res.status, body: body };
+        });
+      }).then(function(r){
+        if (r.status >= 200 && r.status < 300 && r.body && r.body.ok){
+          form.style.display = 'none';
+          bOk.setAttribute('data-show', '1');
+          bOk.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+          // A failed submission ALWAYS surfaces — never a false success.
+          bErrMsg.textContent = (r.body && r.body.error) || 'Something went wrong. Please try again.';
+          bErr.setAttribute('data-show', '1');
+          bErr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          btn.disabled = false;
+          btn.textContent = prev;
+        }
+      }).catch(function(){
+        bErrMsg.textContent = 'Network error — your answer didn\'t send. Please try again.';
+        bErr.setAttribute('data-show', '1');
+        btn.disabled = false;
+        btn.textContent = prev;
+      });
+    });
+  })();
+</script>
+</body>
+</html>
