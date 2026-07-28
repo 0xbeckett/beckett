@@ -7,7 +7,7 @@
 <meta name="description" content="Load credits, Beckett spends them on your work. One credit = a fixed $0.10 of real spend, the same on every model. See what $5 / $20 / $50 buys, from real run telemetry." />
 <meta name="theme-color" content="#bfe6ee" />
 <meta property="og:title" content="Beckett · Pricing" />
-<meta property="og:description" content="Load $5, here's what runs. Credits are a fixed $0.10 of real spend — same on every model — and every number comes from real tasks." />
+<meta property="og:description" content="Load $5, here's what runs. Credits are a fixed $0.10 of real spend, same on every model, and every number comes from real tasks." />
 <meta property="og:type" content="website" />
 <link rel="icon" href="/logo.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -16,112 +16,110 @@
 <link rel="stylesheet" href="/page.css">
 <style>
   /* pricing.html: page-specific components, built from page.css tokens only.
-     Numbers ride JetBrains Mono with tabular figures. */
+     One type scale (var(--t-*) from page.css): numbers ride the head size in
+     JetBrains Mono, everything else sits on the body size. Hierarchy comes from
+     weight and colour, not extra sizes. */
   :root{ --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,monospace }
   .num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;letter-spacing:-.01em}
 
-  /* the seat — the plan, stated once and up front */
+  /* the seat, the plan stated once and up front */
   .seat-card{margin-top:26px;border:1px solid var(--lv-deep);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:inset 3px 0 0 var(--lv-deep),var(--bevel),var(--drop);padding:22px 24px}
-  .seat-card .k{font-family:var(--sans);font-size:12px;color:var(--lv-deep);margin-bottom:12px}
-  .seat-head{font-family:var(--disp);font-weight:600;font-size:22px;line-height:1.28;color:var(--ink)}
+  .seat-head{font-family:var(--sans);font-weight:600;font-size:var(--t-body);line-height:1.4;color:var(--ink)}
   .seat-head .num{color:var(--ink)}
   .seat-lines{list-style:none;margin:18px 0 0;padding:0;display:grid;gap:12px}
-  .seat-lines li{position:relative;padding-left:26px;font-size:15px;line-height:1.55;color:var(--dim)}
+  .seat-lines li{position:relative;padding-left:26px;font-size:var(--t-body);line-height:1.55;color:var(--dim)}
   .seat-lines li b{color:var(--ink);font-weight:600}
-  .seat-lines li::before{content:"→";position:absolute;left:0;top:0;font-family:var(--mono);font-size:14px;color:var(--cy-deep)}
+  .seat-lines li::before{content:"→";position:absolute;left:0;top:0;font-family:var(--mono);color:var(--cy-deep)}
   .seat-fine{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);display:grid;gap:8px}
-  .seat-fine span{position:relative;padding-left:22px;font-size:13.5px;line-height:1.5;color:var(--dim)}
+  .seat-fine span{position:relative;padding-left:22px;font-size:var(--t-body);line-height:1.5;color:var(--dim)}
   .seat-fine span b{color:var(--ink);font-weight:600}
-  .seat-fine span::before{content:"·";position:absolute;left:8px;top:-2px;font-family:var(--sans);font-size:15px;color:var(--lv-deep)}
+  .seat-fine span::before{content:"·";position:absolute;left:8px;top:-2px;font-family:var(--sans);color:var(--lv-deep)}
 
   /* the cost-line ledger */
   .ledger{list-style:none;margin:26px 0 0;padding:0;display:grid;gap:14px}
   .line{border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:var(--bevel),var(--drop);padding:18px 20px;position:relative}
-  .line .k{margin-bottom:8px}
-  .line h3{font-family:var(--disp);font-weight:600;font-size:19px;line-height:1.2;color:var(--ink);margin-bottom:6px}
-  .line p{font-size:14.5px;line-height:1.55;color:var(--dim);max-width:none}
+  .line h3{font-family:var(--sans);font-weight:600;font-size:var(--t-body);line-height:1.3;color:var(--ink);margin-bottom:6px}
+  .line p{font-size:var(--t-body);line-height:1.55;color:var(--dim);max-width:none}
   .line .fig{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
-    font-size:15px;font-weight:600;color:var(--ink);margin-top:10px;display:inline-block;
+    font-size:var(--t-body);font-weight:600;color:var(--ink);margin-top:10px;display:inline-block;
     border:1px solid var(--line);padding:4px 10px;background:#fff}
-  /* the margin line stands alone — accented so it can never hide inside another */
+  /* the margin line stands alone, accented so it can never hide inside another */
   .line.margin{border-color:var(--lv-deep);box-shadow:inset 3px 0 0 var(--lv-deep),var(--bevel),var(--drop)}
-  .line.margin .k{color:var(--lv-deep)}
 
   /* rate table */
   .rate-wrap{margin-top:22px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
-    box-shadow:var(--bevel),var(--drop);overflow:hidden}
-  table.rates{width:100%;border-collapse:collapse;font-size:14px}
-  table.rates caption{text-align:left;font-family:var(--sans);font-size:12px;color:var(--cy-deep);
-    padding:12px 16px 0;caption-side:top}
+    box-shadow:var(--bevel),var(--drop);overflow-x:auto}
+  table.rates{width:100%;border-collapse:collapse;font-size:var(--t-body)}
+  table.rates caption{text-align:left;font-family:var(--sans);font-size:var(--t-body);font-weight:600;color:var(--ink);
+    padding:14px 16px 4px;caption-side:top}
   table.rates th,table.rates td{padding:10px 16px;text-align:left;border-bottom:1px solid var(--line)}
-  table.rates thead th{font-family:var(--sans);font-size:11px;font-weight:400;color:var(--dim);
-    text-transform:uppercase;letter-spacing:.04em}
-  table.rates tbody th{font-weight:500;color:var(--ink)}
+  table.rates thead th{font-family:var(--sans);font-weight:500;color:var(--dim)}
+  table.rates tbody th{font-weight:600;color:var(--ink)}
   table.rates td{color:var(--ink)}
   table.rates td.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
   table.rates tbody tr:last-child th,table.rates tbody tr:last-child td{border-bottom:none}
-  .rate-note{font-size:13px;color:var(--dim);margin-top:12px}
+  .rate-note{font-size:var(--t-body);color:var(--dim);margin-top:12px}
 
   /* worked-example receipt */
   .receipt{margin-top:24px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:var(--bevel),var(--drop);padding:22px 22px 20px}
   .receipt .r-top{display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap}
-  .receipt .r-id{font-family:var(--disp);font-weight:600;font-size:22px;color:var(--ink)}
-  .receipt .r-tag{font-family:var(--sans);font-size:12px;color:var(--cy-deep)}
-  .receipt .r-meta{margin-top:6px;font-size:13.5px;color:var(--dim)}
+  .receipt .r-id{font-family:var(--sans);font-weight:600;font-size:var(--t-body);color:var(--ink)}
+  .receipt .r-tag{font-family:var(--sans);font-size:var(--t-body);color:var(--dim)}
+  .receipt .r-meta{margin-top:6px;font-size:var(--t-body);color:var(--dim)}
   .receipt .r-meta .num{color:var(--ink);font-weight:500}
   .rows{margin-top:16px;border-top:1px solid var(--line)}
   .row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;
     padding:9px 0;border-bottom:1px solid var(--line)}
-  .row .lbl{font-size:14.5px;color:var(--dim)}
+  .row .lbl{font-size:var(--t-body);color:var(--dim)}
   .row .lbl b{color:var(--ink);font-weight:600}
   .row .amt{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
-    font-size:14.5px;color:var(--ink);white-space:nowrap}
-  .row.sub .lbl{padding-left:16px;font-size:13.5px;color:var(--dim)}
+    font-size:var(--t-body);color:var(--ink);white-space:nowrap}
+  .row.sub .lbl{padding-left:16px;color:var(--dim)}
   .row.sub .amt{color:var(--dim)}
   .row.total{border-bottom:none;padding-top:13px;margin-top:2px;border-top:2px solid var(--ink)}
-  .row.total .lbl{font-family:var(--disp);font-weight:600;font-size:18px;color:var(--ink)}
-  .row.total .amt{font-size:18px;font-weight:600;color:var(--ink)}
+  .row.total .lbl{font-family:var(--sans);font-weight:600;font-size:var(--t-body);color:var(--ink)}
+  .row.total .amt{font-size:var(--t-body);font-weight:600;color:var(--ink)}
 
   /* stat tiles */
   .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:24px}
   .tile{border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:var(--bevel),var(--drop);padding:16px 18px}
-  .tile .t-k{font-family:var(--sans);font-size:11px;color:var(--cy-deep);text-transform:uppercase;letter-spacing:.03em}
+  .tile .t-k{font-family:var(--sans);font-size:var(--t-body);font-weight:600;color:var(--dim)}
   .tile .t-v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
-    font-size:26px;font-weight:600;color:var(--ink);line-height:1.1;margin-top:8px}
-  .tile .t-s{font-size:12.5px;color:var(--dim);margin-top:4px}
+    font-size:var(--t-head);font-weight:600;color:var(--ink);line-height:1.1;margin-top:6px}
+  .tile .t-s{font-size:var(--t-body);color:var(--dim);margin-top:4px}
 
   /* review-cycle distribution bars */
   .dist{margin-top:22px;display:grid;gap:10px}
-  .bar-row{display:grid;grid-template-columns:64px 1fr auto;align-items:center;gap:12px}
-  .bar-row .bl{font-family:var(--sans);font-size:12px;color:var(--dim)}
+  .bar-row{display:grid;grid-template-columns:80px 1fr auto;align-items:center;gap:12px}
+  .bar-row .bl{font-family:var(--sans);font-size:var(--t-body);color:var(--dim)}
   .track{height:14px;background:#fff;border:1px solid var(--line);position:relative;overflow:hidden}
   .track>span{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,var(--cy),var(--lv));display:block}
   .bar-row .bv{font-family:var(--mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
-    font-size:13px;color:var(--ink);white-space:nowrap}
+    font-size:var(--t-body);color:var(--ink);white-space:nowrap}
 
   /* "what we don't charge for" */
   .nofees{list-style:none;margin:22px 0 0;padding:0;display:grid;gap:10px}
-  .nofees li{position:relative;padding-left:26px;font-size:15px;color:var(--dim);line-height:1.5}
+  .nofees li{position:relative;padding-left:26px;font-size:var(--t-body);color:var(--dim);line-height:1.5}
   .nofees li b{color:var(--ink);font-weight:600}
-  .nofees li::before{content:"✕";position:absolute;left:0;top:0;font-family:var(--sans);font-size:13px;color:var(--cy-deep)}
+  .nofees li::before{content:"✕";position:absolute;left:0;top:0;font-family:var(--sans);color:var(--cy-deep)}
 
   /* collapsible "where the number comes from" */
   .whence{margin-top:24px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(6px);
     box-shadow:var(--bevel),var(--drop);padding:0 20px}
-  .whence>summary{cursor:pointer;list-style:none;padding:16px 4px;font-family:var(--disp);font-weight:600;
-    font-size:16px;color:var(--ink);display:flex;align-items:center;gap:10px}
+  .whence>summary{cursor:pointer;list-style:none;padding:16px 4px;font-family:var(--sans);font-weight:600;
+    font-size:var(--t-body);color:var(--ink);display:flex;align-items:center;gap:10px}
   .whence>summary::-webkit-details-marker{display:none}
-  .whence>summary::before{content:"▸";font-family:var(--mono);font-size:13px;color:var(--cy-deep);
+  .whence>summary::before{content:"▸";font-family:var(--mono);color:var(--cy-deep);
     transition:transform .15s ease}
   .whence[open]>summary::before{transform:rotate(90deg)}
-  .whence .whence-lead{font-size:14.5px;line-height:1.55;color:var(--dim);margin:2px 0 4px;max-width:none}
+  .whence .whence-lead{font-size:var(--t-body);line-height:1.55;color:var(--dim);margin:2px 0 4px;max-width:none}
   .whence .ledger{margin:14px 0 22px}
 
-  .prov{margin-top:20px;font-size:12.5px;color:var(--dim)}
+  .prov{margin-top:20px;font-size:var(--t-body);color:var(--dim)}
   .prov .num{color:var(--ink)}
 
   @media(max-width:520px){
@@ -150,37 +148,34 @@
 <main class="page">
   <header class="intro" id="top">
     <h1 class="rv">Load <span class="num" style="font-family:var(--mono);letter-spacing:-.02em">$5</span>.<br><span class="g">Here's what runs.</span></h1>
-    <p class="lead rv">Your seat is <b style="color:var(--ink);font-weight:600">$20/month</b> and comes with <b style="color:var(--ink);font-weight:600">200 credits</b> already in it. One credit is a fixed <b style="color:var(--ink);font-weight:600">$0.10 of real underlying spend</b> — the same on every model, so a cheaper model just burns fewer credits for the same task. A light month never costs past the seat; a heavy month loads more at the same rate. So the question isn't a rate card, it's simple: what runs? Every figure below is derived from <b style="color:var(--ink);font-weight:600">real runs</b> — <span class="num" data-bind="total_runs">—</span> of them — not a spreadsheet someone wished into being.</p>
+    <p class="lead rv">Your seat is <b style="color:var(--ink);font-weight:600">$20/month</b> and comes with <b style="color:var(--ink);font-weight:600">200 credits</b> already in it. One credit is a fixed <b style="color:var(--ink);font-weight:600">$0.10 of real underlying spend</b>, the same on every model, so a cheaper model just burns fewer credits for the same task. A light month never costs past the seat; a heavy month loads more at the same rate. So the question isn't a rate card, it's simple: what runs? Every figure below is derived from <b style="color:var(--ink);font-weight:600">real runs</b>, <span class="num" data-bind="total_runs">…</span> of them, not a spreadsheet someone wished into being.</p>
   </header>
 
   <section class="passage" id="seat">
-    <div class="k rv">01 · the seat</div>
     <h2 class="rv">The seat is the plan. <span class="g">Credits are already in it.</span></h2>
-    <p class="rv">A seat is <span class="num" data-bind="seat">—</span> per person per month — and it isn't a floor you pay before anything runs. It arrives <em>as</em> <span class="num" data-bind="seat_credits">—</span> credits: <span class="num" data-bind="seat_included_usd">—</span> of real underlying spend, at the same fixed <span class="num" data-bind="credit_usd">—</span> a credit. Your work draws those down. Only if you outrun them do you load more — at the exact same rate, no tier jump.</p>
+    <p class="rv">A seat is <span class="num" data-bind="seat">…</span> per person per month, and it isn't a floor you pay before anything runs. It arrives <em>as</em> <span class="num" data-bind="seat_credits">…</span> credits: <span class="num" data-bind="seat_included_usd">…</span> of real underlying spend, at the same fixed <span class="num" data-bind="credit_usd">…</span> a credit. Your work draws those down. Only if you outrun them do you load more, at the exact same rate, no tier jump.</p>
 
     <div class="seat-card rv">
-      <div class="k">the plan, in one line</div>
-      <div class="seat-head"><span class="num" data-bind="seat">—</span>/seat/month includes <span class="num" data-bind="seat_credits">—</span> credits (<span class="num" data-bind="seat_included_usd">—</span> of real spend)</div>
+      <div class="seat-head"><span class="num" data-bind="seat">…</span>/seat/month includes <span class="num" data-bind="seat_credits">…</span> credits (<span class="num" data-bind="seat_included_usd">…</span> of real spend)</div>
       <ul class="seat-lines">
-        <li><b>Light month.</b> Your work draws down the included <span class="num" data-bind="seat_credits">—</span> credits. You never pay past the <span class="num" data-bind="seat">—</span> seat.</li>
-        <li><b>Heavy month.</b> Run out and you load more on top at the same <span class="num" data-bind="credit_usd">—</span> a credit — no tier jump, no surprise rate.</li>
+        <li><b>Light month.</b> Your work draws down the included <span class="num" data-bind="seat_credits">…</span> credits. You never pay past the <span class="num" data-bind="seat">…</span> seat.</li>
+        <li><b>Heavy month.</b> Run out and you load more on top at the same <span class="num" data-bind="credit_usd">…</span> a credit, no tier jump, no surprise rate.</li>
       </ul>
       <div class="seat-fine">
-        <span><b>Included credits reset each month</b> — they don't roll over.</span>
+        <span><b>Included credits reset each month</b>, they don't roll over.</span>
         <span><b>Credits you buy separately never expire.</b></span>
       </div>
     </div>
   </section>
 
   <section class="passage" id="load">
-    <div class="k rv">02 · what a load buys</div>
-    <h2 class="rv">One credit = <span class="num" data-bind="credit_usd">—</span>. Same on every model.</h2>
-    <p class="rv">A credit is a fixed dollar of real spend — <span class="num" data-bind="credit_usd">—</span> of it — not a per-model token that means something different depending on which model ran. Load $5 and you hold <span class="num" data-bind="credit_per_5">—</span> credits; a cheaper model just burns fewer of them for the same task. So here's the only question that matters: what does a real task cost, and how many does a load cover?</p>
+    <h2 class="rv">One credit = <span class="num" data-bind="credit_usd">…</span>. Same on every model.</h2>
+    <p class="rv">A credit is a fixed dollar of real spend, <span class="num" data-bind="credit_usd">…</span> of it, not a per-model token that means something different depending on which model ran. Load $5 and you hold <span class="num" data-bind="credit_per_5">…</span> credits; a cheaper model just burns fewer of them for the same task. So here's the only question that matters: what does a real task cost, and how many does a load cover?</p>
 
     <div class="tiles rv">
-      <div class="tile"><div class="t-k">one credit</div><div class="t-v num" data-bind="credit_usd">—</div><div class="t-s">fixed spend, any model</div></div>
-      <div class="tile"><div class="t-k">$5 loads</div><div class="t-v num" data-bind="credit_per_5">—</div><div class="t-s">credits</div></div>
-      <div class="tile"><div class="t-k">median task</div><div class="t-v num" data-bind="task_median_credits">—</div><div class="t-s">credits · <span class="num" data-bind="task_median_usd">—</span></div></div>
+      <div class="tile"><div class="t-k">one credit</div><div class="t-v num" data-bind="credit_usd">…</div><div class="t-s">fixed spend, any model</div></div>
+      <div class="tile"><div class="t-k">$5 loads</div><div class="t-v num" data-bind="credit_per_5">…</div><div class="t-s">credits</div></div>
+      <div class="tile"><div class="t-k">median task</div><div class="t-v num" data-bind="task_median_credits">…</div><div class="t-s">credits · <span class="num" data-bind="task_median_usd">…</span></div></div>
     </div>
 
     <div class="rate-wrap rv" style="margin-top:22px">
@@ -192,13 +187,12 @@
         <tbody data-bind="buys_rows"><!-- filled from pricing-data.json --></tbody>
       </table>
     </div>
-    <p class="rate-note rv">Each row is a real ticket at the 10th / 25th / 50th percentile of task cost. Load $5 and that's about <span class="num" data-bind="buys_summary">—</span>. Cost shown in dollars and credits (<span class="num" data-bind="credit_usd">—</span> each).</p>
+    <p class="rate-note rv">Each row is a real ticket at the 10th / 25th / 50th percentile of task cost. Load $5 and that's about <span class="num" data-bind="buys_summary">…</span>. Cost shown in dollars and credits (<span class="num" data-bind="credit_usd">…</span> each).</p>
   </section>
 
   <section class="passage" id="recent">
-    <div class="k rv">03 · recent tasks, in credits</div>
     <h2 class="rv">What real tickets actually cost.</h2>
-    <p class="rv">The most recent tickets this install finished, newest first — each in dollars and in the same fixed credit unit. Not a projection; what already ran.</p>
+    <p class="rv">The most recent tickets this install finished, newest first, each in dollars and in the same fixed credit unit. Not a projection; what already ran.</p>
     <div class="rate-wrap rv">
       <table class="rates">
         <caption>recent real tickets · dollars and credits</caption>
@@ -211,29 +205,25 @@
 
     <details class="whence rv">
       <summary>Where the number comes from</summary>
-      <p class="whence-lead">Every credit above is real underlying spend at <span class="num" data-bind="credit_usd">—</span> each. That spend is three lines, kept apart on purpose — pass-through model cost, compute at a stated hourly rate, and one visible platform fee. (Your <span class="num" data-bind="seat">—</span> seat isn't a fourth line on top — it's <span class="num" data-bind="seat_credits">—</span> of these credits, prepaid.) Add them up yourself; the math re-runs from telemetry every time this page builds.</p>
+      <p class="whence-lead">Every credit above is real underlying spend at <span class="num" data-bind="credit_usd">…</span> each. That spend is three lines, kept apart on purpose, pass-through model cost, compute at a stated hourly rate, and one visible platform fee. (Your <span class="num" data-bind="seat">…</span> seat isn't a fourth line on top, it's <span class="num" data-bind="seat_credits">…</span> of these credits, prepaid.) Add them up yourself; the math re-runs from telemetry every time this page builds.</p>
       <ul class="ledger">
         <li class="line">
-          <div class="k">model cost</div>
           <h3>Pass-through tokens.</h3>
-          <p>What the model provider charges, passed straight through at published per-Mtok rates. No markup hidden in the token price. Cache reads bill at a fraction of fresh input — roughly <span class="num" data-bind="cache_read_x">—</span>× — so long-context work stays cheap on the second pass.</p>
+          <p>What the model provider charges, passed straight through at published per-Mtok rates. No markup hidden in the token price. Cache reads bill at a fraction of fresh input, roughly <span class="num" data-bind="cache_read_x">…</span>×, so long-context work stays cheap on the second pass.</p>
         </li>
         <li class="line">
-          <div class="k">compute cost</div>
           <h3>Wall-clock time.</h3>
-          <p>Worker wall-clock and browser-session time at a stated hourly rate of <span class="fig num" data-bind="compute_rate">—</span> per hour. Today that rate is <b data-bind="compute_basis">—</b>. When a task moves onto a VM, this becomes <b data-bind="compute_vm_basis">—</b> — a number change, not a new pricing model.</p>
+          <p>Worker wall-clock and browser-session time at a stated hourly rate of <span class="fig num" data-bind="compute_rate">…</span> per hour. Today that rate is <b data-bind="compute_basis">…</b>. When a task moves onto a VM, this becomes <b data-bind="compute_vm_basis">…</b>, a number change, not a new pricing model.</p>
         </li>
         <li class="line margin">
-          <div class="k">platform fee · the margin line</div>
           <h3>One number, in the open.</h3>
-          <p>Our margin, and the only one. A flat <span class="fig num" data-bind="platform_fee">—</span> on top of model + compute. It isn't buried in a marked-up token rate or a padded hourly — it's this line, and only this line. If it ever moves, you'll see it move here.</p>
+          <p>Our margin, and the only one. A flat <span class="fig num" data-bind="platform_fee">…</span> on top of model + compute. It isn't buried in a marked-up token rate or a padded hourly, it's this line, and only this line. If it ever moves, you'll see it move here.</p>
         </li>
       </ul>
     </details>
   </section>
 
   <section class="passage">
-    <div class="k rv">04 · model cost</div>
     <h2 class="rv">The rate table.</h2>
     <p class="rv">Published per-million-token rates, passed through unchanged. These are the numbers the platform fee sits <em>beside</em>, never inside.</p>
     <div class="rate-wrap rv">
@@ -245,49 +235,46 @@
         <tbody data-bind="rate_rows"><!-- filled from pricing-data.json --></tbody>
       </table>
     </div>
-    <p class="rate-note rv">Cache reads bill at ≈<span class="num" data-bind="cache_read_x">—</span>× the input rate. Rate table effective <span class="num" data-bind="rate_effective">—</span>.</p>
+    <p class="rate-note rv">Cache reads bill at ≈<span class="num" data-bind="cache_read_x">…</span>× the input rate. Rate table effective <span class="num" data-bind="rate_effective">…</span>.</p>
   </section>
 
   <section class="passage">
-    <div class="k rv">05 · a real ticket</div>
     <h2 class="rv">One ticket, itemised.</h2>
-    <p class="rv">Not a hypothetical. A real ticket pulled from the telemetry, its real cost, broken into the three cost lines — the way a month-summary card itemises model calls, compute hours, and one margin into a single total.</p>
+    <p class="rv">Not a hypothetical. A real ticket pulled from the telemetry, its real cost, broken into the three cost lines, the way a month-summary card itemises model calls, compute hours, and one margin into a single total.</p>
     <div class="receipt rv" data-bind="receipt">
       <div class="r-top">
-        <span class="r-id" data-bind="ex_id">—</span>
+        <span class="r-id" data-bind="ex_id">…</span>
         <span class="r-tag">from telemetry · real run</span>
       </div>
       <div class="r-meta">
-        <span class="num" data-bind="ex_runs">—</span> agent runs ·
-        <span class="num" data-bind="ex_wall">—</span> of wall-clock ·
-        <span class="num" data-bind="ex_rc">—</span> review cycles
+        <span class="num" data-bind="ex_runs">…</span> agent runs ·
+        <span class="num" data-bind="ex_wall">…</span> of wall-clock ·
+        <span class="num" data-bind="ex_rc">…</span> review cycles
       </div>
       <div class="rows" data-bind="ex_rows"><!-- filled from pricing-data.json --></div>
     </div>
   </section>
 
   <section class="passage">
-    <div class="k rv">06 · the fine print, un-fine</div>
     <h2 class="rv">What we don't charge for.</h2>
     <p class="rv">The costs that are ours to eat, not yours to pay. A coworker who bills you for its own mistakes isn't a coworker.</p>
     <ul class="nofees rv">
       <li><b>Retries we caused.</b> If Beckett crashed, looped, or re-ran itself because of our bug, that compute is on us.</li>
       <li><b>Failed review cycles.</b> When our own reviewer sends work back, the rework isn't a line on your bill.</li>
-      <li><b>Our overhead.</b> Orchestration, scheduling, the plumbing between agents — that's the cost of running the service, not a task cost.</li>
-      <li><b>Idle presence.</b> A seat sitting quietly in your Discord doesn't burn credits — the included allowance is for work that ships, not for showing up.</li>
+      <li><b>Our overhead.</b> Orchestration, scheduling, the plumbing between agents, that's the cost of running the service, not a task cost.</li>
+      <li><b>Idle presence.</b> A seat sitting quietly in your Discord doesn't burn credits, the included allowance is for work that ships, not for showing up.</li>
     </ul>
   </section>
 
   <section class="passage">
-    <div class="k rv">07 · the receipts</div>
     <h2 class="rv">Where the numbers come from.</h2>
     <p class="rv">Everything above is derived from this install's own run log by a committed, re-runnable script. Here's the shape of that log, so the model isn't asking you to take it on faith.</p>
     <div class="tiles rv">
-      <div class="tile"><div class="t-k">runs measured</div><div class="t-v num" data-bind="total_runs">—</div><div class="t-s">real agent runs</div></div>
-      <div class="tile"><div class="t-k">median cost / run</div><div class="t-v num" data-bind="cost_median">—</div><div class="t-s">half cost less</div></div>
-      <div class="tile"><div class="t-k">p90 cost / run</div><div class="t-v num" data-bind="cost_p90">—</div><div class="t-s">9 in 10 cost less</div></div>
-      <div class="tile"><div class="t-k">median wall-clock</div><div class="t-v num" data-bind="wall_median">—</div><div class="t-s">per run</div></div>
-      <div class="tile"><div class="t-k">p90 wall-clock</div><div class="t-v num" data-bind="wall_p90">—</div><div class="t-s">per run</div></div>
+      <div class="tile"><div class="t-k">runs measured</div><div class="t-v num" data-bind="total_runs">…</div><div class="t-s">real agent runs</div></div>
+      <div class="tile"><div class="t-k">median cost / run</div><div class="t-v num" data-bind="cost_median">…</div><div class="t-s">half cost less</div></div>
+      <div class="tile"><div class="t-k">p90 cost / run</div><div class="t-v num" data-bind="cost_p90">…</div><div class="t-s">9 in 10 cost less</div></div>
+      <div class="tile"><div class="t-k">median wall-clock</div><div class="t-v num" data-bind="wall_median">…</div><div class="t-s">per run</div></div>
+      <div class="tile"><div class="t-k">p90 wall-clock</div><div class="t-v num" data-bind="wall_p90">…</div><div class="t-s">per run</div></div>
     </div>
 
     <div class="k rv" style="margin-top:34px">cost by harness</div>
@@ -305,12 +292,12 @@
     <p class="rv" style="margin-bottom:2px">How often work needed another pass. Most runs land clean on the first try; the long tail is rework we mostly don't bill for.</p>
     <div class="dist rv" data-bind="dist_rows"><!-- filled --></div>
 
-    <p class="prov rv">Generated <span class="num" data-bind="gen_date">—</span> from <span class="num" data-bind="source_file">—</span> by <code>web/scripts/pricing-stats.mjs</code>. Re-run the script and this page moves with the data.</p>
+    <p class="prov rv">Generated <span class="num" data-bind="gen_date">…</span> from <span class="num" data-bind="source_file">…</span> by <code>web/scripts/pricing-stats.mjs</code>. Re-run the script and this page moves with the data.</p>
   </section>
 
   <section class="outro" id="end">
     <h2 class="rv">Read it before you buy it.</h2>
-    <p class="sub rv">That's the whole model. If a line ever stops making sense, it's a bug — tell us in the Commons.</p>
+    <p class="sub rv">That's the whole model. If a line ever stops making sense, it's a bug, tell us in the Commons.</p>
     <div class="cta-row rv">
       <a class="btn btn-primary btn-lg" href="https://discord.gg/DfJKFawURy">Join the Commons »</a>
       <a class="btn btn-ghost btn-lg" href="https://github.com/0xbeckett/beckett">Read the source</a>
@@ -334,8 +321,8 @@
 </footer>
 
 <script>
-  // Every figure on this page is read from pricing-data.json — the output of
-  // web/scripts/pricing-stats.mjs — so nothing here is hand-typed.
+  // Every figure on this page is read from pricing-data.json, the output of
+  // web/scripts/pricing-stats.mjs, so nothing here is hand-typed.
   (function(){
     var usd = function(n, dp){ dp = dp==null?2:dp; return '$' + Number(n).toFixed(dp); };
     var dur = function(s){
@@ -362,23 +349,23 @@
       setAll('seat', usd(d.seat.monthly_usd, 0));
       setAll('seat_credits', Number(d.seat.included_credits).toLocaleString());
       setAll('seat_included_usd', usd(d.seat.included_usd, 0));
-      setAll('rate_effective', d.rate_table_effective_date || '—');
+      setAll('rate_effective', d.rate_table_effective_date || '…');
       setAll('cost_median', usd(d.cost_per_run.median));
       setAll('cost_p90', usd(d.cost_per_run.p90));
       setAll('wall_median', dur(d.wall_clock.median_seconds));
       setAll('wall_p90', dur(d.wall_clock.p90_seconds));
       setAll('gen_date', (d.generated_at||'').slice(0,10));
-      setAll('source_file', d.source_file || '—');
+      setAll('source_file', d.source_file || '…');
 
       // credit unit + load-value scalars
       var lv = d.load_value || {};
       var creditUsd = d.credit ? d.credit.usd_per_credit : 0;
       setAll('credit_usd', usd(creditUsd));
-      setAll('credit_per_5', creditUsd ? Math.round(5 / creditUsd).toLocaleString() : '—');
-      setAll('task_median_credits', lv.task_cost ? lv.task_cost.median_credits : '—');
-      setAll('task_median_usd', lv.task_cost ? usd(lv.task_cost.median_usd) : '—');
+      setAll('credit_per_5', creditUsd ? Math.round(5 / creditUsd).toLocaleString() : '…');
+      setAll('task_median_credits', lv.task_cost ? lv.task_cost.median_credits : '…');
+      setAll('task_median_usd', lv.task_cost ? usd(lv.task_cost.median_usd) : '…');
 
-      // "what a load buys" table — real task cost -> count per budget
+      // "what a load buys" table, real task cost -> count per budget
       var budgets = lv.budgets_usd || [];
       var bh = document.querySelector('[data-bind="buys_head"]');
       if (bh) bh.innerHTML = '<th scope="col">Example task</th>'+
