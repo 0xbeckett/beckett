@@ -100,6 +100,9 @@ roster_max = 12
 profile_model = "claude-haiku-4-5"
 profile_update_messages = 20
 awareness_max_channels = 5
+cross_channel_enabled = true
+cross_channel_budget_tokens = 1200
+cross_channel_min_score = 0.5
 reply_context_surrounding = 5
 
 [concierge]
