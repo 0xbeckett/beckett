@@ -158,6 +158,7 @@ export type TaskTicketLink = z.infer<typeof TicketLinkSchema>;
 export type TaskGitLink = z.infer<typeof GitLinkSchema>;
 export type TaskPullRequestLink = z.infer<typeof PullRequestLinkSchema>;
 export type TaskPublicationLink = z.infer<typeof PublicationLinkSchema>;
+export type TaskPreviewLink = z.infer<typeof PreviewLinkSchema>;
 export type TaskDiffSummary = z.infer<typeof DiffSummarySchema>;
 export type TaskBranch = z.infer<typeof TaskBranchSchema>;
 export type WorkTask = z.infer<typeof TaskSchema>;
@@ -439,6 +440,20 @@ export class TaskStore {
   async setPublication(branchRef: string, publication: TaskPublicationLink): Promise<TaskBranch> {
     return this.updateBranch(branchRef, (branch) => {
       branch.publication = publication;
+    });
+  }
+
+  /** Record a branch's live preview URL (surfaced while it is in review). */
+  async setPreview(branchRef: string, preview: { url: string; host: string }): Promise<TaskBranch> {
+    return this.updateBranch(branchRef, (branch) => {
+      branch.preview = { ...preview, updatedAt: this.now().toISOString() };
+    });
+  }
+
+  /** Drop a branch's preview record — the preview was torn down on land/cancel. Idempotent. */
+  async clearPreview(branchRef: string): Promise<TaskBranch> {
+    return this.updateBranch(branchRef, (branch) => {
+      delete branch.preview;
     });
   }
 

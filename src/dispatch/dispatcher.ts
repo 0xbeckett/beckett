@@ -218,6 +218,18 @@ export interface DispatcherDeps {
   onBeforePublish?: (info: { ticket: Ticket }) => unknown;
   /** Persist user-facing branch Git coordinates once the isolated worktree and base are known. */
   onBranchWorkspace?: (info: { ticket: Ticket; workspace: string; gitRef: string; baseSha: string }) => void;
+  /**
+   * Branch-preview lifecycle (#76). `ensure` is called when a ticket enters `in_review`: for a
+   * frontend branch it probes the deterministic preview host and returns a `ready` outcome only
+   * when the URL is externally reachable, so the dispatcher surfaces a live link instead of a
+   * diff — and never an internal/unreachable one. `teardown` is called on done/cancel to remove
+   * the tunnel ingress + DNS. Omitted in tests / when no Cloudflare tunnel is configured → the
+   * dispatcher behaves exactly as before (no preview, no surface, no teardown).
+   */
+  preview?: {
+    ensure: (ticket: Ticket) => Promise<{ status: "ready"; url: string; host: string } | { status: "skipped"; reason: string }>;
+    teardown: (ticket: Ticket) => Promise<void>;
+  };
   logger?: Logger;
 }
 
@@ -458,6 +470,7 @@ export class Dispatcher {
   private readonly onPublished?: DispatcherDeps["onPublished"];
   private readonly onBeforePublish?: DispatcherDeps["onBeforePublish"];
   private readonly onBranchWorkspace?: DispatcherDeps["onBranchWorkspace"];
+  private readonly preview?: DispatcherDeps["preview"];
   private readonly logger: Logger;
   private readonly advanceOutbox?: AdvanceOutbox;
   private readonly publishOutbox?: PublishOutbox;
@@ -600,6 +613,7 @@ export class Dispatcher {
     this.onPublished = deps.onPublished;
     this.onBeforePublish = deps.onBeforePublish;
     this.onBranchWorkspace = deps.onBranchWorkspace;
+    this.preview = deps.preview;
     this.logger = deps.logger ?? log.child("dispatch.dispatcher");
     this.advanceOutbox = deps.advanceOutboxPath
       ? new AdvanceOutbox(deps.advanceOutboxPath, this.logger.child("advance-outbox"))
@@ -1384,6 +1398,10 @@ export class Dispatcher {
     if (courierTookPublish) {
       await this.postComment(ticket.id, "Publish retry cancelled — a human/concierge state change took courier ownership.");
     }
+    // A frontend branch entering review earns a live preview URL (#76). Gate out publish-holds:
+    // a ticket held in in_review by the publish outbox has already passed review and is heading to
+    // done, so there is nothing to preview. Fire-and-forget; never blocks staffing.
+    if (to === "in_review" && !this.publishOutbox?.has(ticket.id)) this.ensurePreview(ticket);
     // A state a registered stage staffs from (design → design, in_progress → implement,
     // in_review → review) spawns that stage's worker; terminal/held states fall through below.
     const staffs = this.stages.forState(to);
@@ -1400,6 +1418,8 @@ export class Dispatcher {
     }
     switch (to) {
       case "done": {
+        // Landed → tear down any preview (idempotent; a no-op when none was stood up).
+        this.teardownPreview(ticket);
         // Unapplied steering on a finished ticket must not vanish (issue #22): tell the human
         // how to act on it before the ticket's memory is cleared.
         const orphaned = this.takeSteers(ticket.id);
@@ -1535,8 +1555,45 @@ export class Dispatcher {
     return steers;
   }
 
+  /**
+   * A frontend branch entered review (#76): probe its deterministic preview host and, ONLY if the
+   * preview is externally reachable, surface the live URL on the ticket so reviewers open the page
+   * instead of reading the diff. Fire-and-forget — a slow probe must never gate the state machine,
+   * and a failure never surfaces a dead/internal link (the preview manager returns `skipped`).
+   */
+  private ensurePreview(ticket: Ticket): void {
+    if (!this.preview) return;
+    void (async () => {
+      try {
+        const outcome = await this.preview!.ensure(ticket);
+        if (outcome.status !== "ready") {
+          this.trace(ticket, "preview", "info", `no preview surfaced (${outcome.reason})`);
+          return;
+        }
+        this.trace(ticket, "preview", "passed", outcome.url);
+        await this.postComment(
+          ticket.id,
+          `🔎 **Preview (while in review):** ${outcome.url}\n\n` +
+            `A live, externally-reachable preview of this branch's frontend — open it instead of ` +
+            `reading the diff. It's torn down automatically when this lands or is cancelled.`,
+        );
+      } catch (err) {
+        this.logger.warn("preview ensure failed", { ticket: ticket.identifier, error: (err as Error).message });
+      }
+    })();
+  }
+
+  /** Tear down a branch's preview on a terminal transition (done/cancel). Fire-and-forget, idempotent. */
+  private teardownPreview(ticket: Ticket): void {
+    if (!this.preview) return;
+    void this.preview.teardown(ticket).catch((err) =>
+      this.logger.warn("preview teardown failed", { ticket: ticket.identifier, error: (err as Error).message }),
+    );
+  }
+
   private async onCancelled(ticket: Ticket): Promise<void> {
     this.trace(ticket, "cancel", "cancelled", "ticket cancellation received");
+    this.teardownPreview(ticket);
     this.publishOutbox?.cancel(ticket.id);
     const handle = this.workers.get(ticket.id);
     // Cancelled = the work is not wanted; held steering dies with it (deliberate, issue #22).
@@ -3264,7 +3321,12 @@ export class Dispatcher {
     // Shipped → the worktree has served its purpose; tear it down (best-effort). Only on a real
     // `done`: a park-to-todo (publish failed / retries exhausted) KEEPS the tree so a human/courier
     // can recover the committed work.
-    if (advanced) await this.disposeWorktree(ticket.id);
+    if (advanced) {
+      // Landed → tear down the review preview too. This advance is `observe`d into the poller, so the
+      // poller's own `done` event won't re-fire; tear down here (idempotent either way).
+      this.teardownPreview(ticket);
+      await this.disposeWorktree(ticket.id);
+    }
     return advanced;
   }
 
