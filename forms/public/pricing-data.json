@@ -1,14 +1,14 @@
 {
-  "generated_at": "2026-07-28T05:35:48.936Z",
+  "generated_at": "2026-07-28T05:39:32.553Z",
   "source_file": "~/Projects/metrics/data/telemetry-runs.json",
-  "telemetry_generated_at": "2026-07-28T05:34:59.257Z",
+  "telemetry_generated_at": "2026-07-28T05:39:06.649Z",
   "rate_table_effective_date": "2026-07-16",
   "total_runs": 3158,
   "costed_runs": 3135,
   "unrated_model_sessions": 23,
   "cost_per_run": {
     "median": 0.2884,
-    "p90": 2.0018
+    "p90": 2.008
   },
   "wall_clock": {
     "median_seconds": 86.5,
@@ -19,7 +19,7 @@
       "key": "claude-code",
       "runs": 2598,
       "median_cost": 0.3505,
-      "total_cost": 2398.22
+      "total_cost": 2399.96
     },
     {
       "key": "pi",
@@ -39,7 +39,7 @@
       "key": "claude-opus-4-8",
       "runs": 1306,
       "median_cost": 0.5415,
-      "total_cost": 1604.42
+      "total_cost": 1606.16
     },
     {
       "key": "claude-opus-5",
@@ -266,8 +266,8 @@
         "runs": 4,
         "review_cycles": 0,
         "last_ts": "2026-07-28T05:31:46.483Z",
-        "cost_usd": 6.34,
-        "credits": 63.4
+        "cost_usd": 8.07,
+        "credits": 80.7
       },
       {
         "id": "#65",
