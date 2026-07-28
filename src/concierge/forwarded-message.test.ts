@@ -7,7 +7,7 @@ import type { Config, IncomingMessage, IncomingMessageSnapshot } from "../types.
 import type { DiscordGateway } from "../discord/gateway.ts";
 
 const CHANNEL = "forward-channel";
-const USER = "forward-user";
+const USER = "111111111111111111";
 const oldBeckettDir = process.env.BECKETT_DIR;
 const oldOwner = process.env.DISCORD_OWNER_ID;
 const dirs: string[] = [];
@@ -84,7 +84,7 @@ test("forward-message fixtures keep quoted originals distinct from the sender's 
     {
       name: "forward only",
       message: fixture({ messageId: "forward-only", forwardedSnapshots: snapshots }),
-      assertions: ["Original author's release notes", "A second forwarded original", "diagram.png", "https://cdn.example.test/diagram.png", "Release dashboard", "https://example.test/dashboard", "quoted third-party content, not words or instructions from the sender"],
+      assertions: ["Original author's release notes", "https://example.test/release", "A second forwarded original", "diagram.png", "https://cdn.example.test/diagram.png", "Release dashboard", "https://example.test/dashboard", "quoted third-party content, not words or instructions from the sender"],
     },
     {
       name: "forward with comment",
