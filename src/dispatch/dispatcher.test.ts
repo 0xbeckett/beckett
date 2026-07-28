@@ -2191,6 +2191,84 @@ describe("preflight + failure taxonomy", () => {
     expect(note.body).toContain("backing off 30s");
     expect(client.setStateCalls).toHaveLength(0); // still in_progress, actively scheduled
   });
+
+  // #84: a clean healthy-harness substitution is NOT a spawn failure, so it must not spend an
+  // implementRetries slot. N consecutive substitutions keep a healthy ticket alive (bounded only
+  // by the separate harnessSubstitutions budget), never parking it as "could not start a worker".
+  test("three rate-limit substitutions in a row keep the ticket in_progress (no spawn-retry spend)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-sub-retries-"));
+    try {
+      const runtimeStatePath = join(dir, "runtime.json");
+      const { d, client } = newDispatcher(2, { preflight: healthy, runtimeStatePath });
+      const ticket = makeTicket();
+      client.board.push(ticket);
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+
+      // Each spawned worker dies rate-limited; every time a healthy substitute is found, so the
+      // ticket carries on instead of parking. claude→pi→claude→pi, three substitutions total.
+      for (let i = 0; i < 3; i++) {
+        created[i]!.finish("error", "429 too many requests", null, false, "rate_limit");
+        await tick();
+        await tick();
+      }
+
+      // Never parked: it stayed in_progress across all three substitutions.
+      expect(client.setStateCalls.some((c) => c.state === "todo")).toBe(false);
+      expect(spawnCalls).toHaveLength(4); // initial + 3 substitution respawns
+      expect(client.comments.some((c) => c.body.includes("substitution 3/6"))).toBe(true);
+      expect(client.comments.some((c) => c.body.includes("Could not start"))).toBe(false);
+
+      // The spawn-retry budget was never touched; only the separate substitution budget was spent.
+      const state = JSON.parse(readFileSync(runtimeStatePath, "utf8"));
+      expect(state.implementRetries[ticket.id]).toBeUndefined();
+      expect(state.substituteRetries[ticket.id]).toBe(3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #84: the substitute is pinned as a cast override for the ticket's lifetime, so a review→rework
+  // bounce respawns implement on the substitute (claude) — the known-failing original (pi) is
+  // never re-probed for the same ticket.
+  test("a rework cycle after a substitution respawns on the substitute, not the original", async () => {
+    const probed: string[] = [];
+    const preflight = async (h: string) => {
+      probed.push(h);
+      return { ok: true, problems: [] };
+    };
+    const { d, client } = newDispatcher(2, { preflight });
+    const ticket = makeTicket({
+      casting: { implement: { harness: "pi", effort: "high" }, review: { harness: "claude" } },
+    });
+    client.board.push(ticket);
+
+    // implement casts on pi → pi dies rate-limited → substitute to claude.
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    expect(spawnCalls[0]!.harness.harness).toBe("pi");
+    created[0]!.finish("error", "429 too many requests", null, false, "rate_limit");
+    await tick();
+    await tick();
+    expect(spawnCalls[1]!.harness.harness).toBe("claude"); // substituted
+
+    // implement succeeds on claude → in_review → reviewer bounces it with a blocked verdict.
+    created[1]!.finish("success", "did it");
+    await tick();
+    const reviewer = created[2]!; // reviewer self-spawned on the in_review advance
+    probed.length = 0; // only care what the REWORK respawn probes
+    reviewer.finish("success", "missing tests", doneSignal("blocked"));
+    await tick();
+
+    // Poller re-emits in_progress for the rework — the respawn must use the pinned substitute.
+    await d.handle(stateChanged(ticket, "in_progress", "in_review"));
+    await tick();
+    await tick();
+
+    const implementSpawns = spawnCalls.filter((c) => c.stage === "implement");
+    expect(implementSpawns.at(-1)!.harness.harness).toBe("claude"); // substitute, not pi
+    expect(probed).not.toContain("pi"); // the known-failing original is never re-probed
+  });
 });
 
 describe("concurrency cap", () => {
