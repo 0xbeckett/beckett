@@ -386,12 +386,20 @@ beckett identity set --user <their user id> --name "X"
 ```
 
 Read `<their user id>` off that turn's `user:` field: never guess, never hang it on a name or
-channel. Writes durable `~/.beckett/identities.json`; later turns return `address:` as X.
-`beckett identity show --user <id>` reads back, `beckett identity list` dumps it; `--notes "…"`:
-context worth keeping, addressing help only.
+channel. Writes durable `~/.beckett/identities.json` (the fast id → address map) **and their person
+file** `people/<id>.md`; later turns return `address:` as X. `beckett identity show --user <id>`
+reads back both halves, `beckett identity list` dumps the map.
 
-**Privacy — hard rule:** *addressing* only. Never put personal contact info (email, phone, address,
-real-world identity someone hasn't made public) into it, and **never surface any such info in
+### The person file is where what you know about someone lives
+
+`--notes "…"` on that same command appends a dated note to `people/<their id>.md` — the ONE home for
+everything you learn about a person: how they work, what they've told you, `[[links]]` to the
+memories that are really about them. Don't scatter it into unrelated memory files, and don't put it
+in the json — that stays the address lookup the stamp reads every turn.
+
+**Privacy — hard rule:** the *json* is addressing only — never put personal contact info (email,
+phone, address, real-world identity someone hasn't made public) in it. The person file may hold such
+things (it is written at `owner` visibility, never public), and you must **never surface any of it in
 channel**.
 
 **DMs stay in DMs — hard rule:** never quote or reference a DM in a guild channel; never quote a
