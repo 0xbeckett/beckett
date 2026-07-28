@@ -131,6 +131,28 @@ test("recall surfaces the relation type and observation date on linked context",
   expect(link!.reason).toContain("2026-07-14");
 });
 
+test("recalling the superseded fact pulls the superseding one in as linked context", async () => {
+  const store = tempStore();
+  await store.remember({
+    op: "create", name: "old-plan", type: "decision",
+    description: "the friday shipping schedule for the widget", body: "ship on friday",
+    source: "manual", reason: "seed",
+  });
+  await store.remember({
+    op: "create", name: "new-plan", type: "decision",
+    description: "an unrelated hotfix note about billing",
+    body: "This [[supersedes:old-plan @2026-07-14]].",
+    source: "manual", reason: "seed",
+  });
+  // Query matches ONLY the superseded (old) plan; the newer plan has disjoint vocabulary and
+  // reaches recall solely by the reverse typed edge.
+  const r = await store.recall({ text: "friday shipping schedule widget", k: 3 });
+  const link = r.expanded.find((x) => x.node.name === "new-plan");
+  expect(link).toBeTruthy();
+  expect(link!.reason).toContain("supersedes");
+  expect(link!.reason).toContain("2026-07-14");
+});
+
 test("a bare linked edge keeps its plain 'linked … via' reason (no false type/date)", async () => {
   const store = tempStore();
   await store.remember({

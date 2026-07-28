@@ -962,8 +962,11 @@ export function recallOver(
     const next: string[] = [];
     for (const name of frontier) {
       const outE = g.out.get(name) ?? [];
-      const backE = (g.in.get(name) ?? []).filter((e) =>
-        HIGH_VALUE_BACKLINK_FIELDS.has(e.field),
+      // Follow high-value structural backlinks AND any typed edge (issue #60): when the
+      // superseded/caused fact is what surfaced, the superseding/causing one is exactly the
+      // linked context recall should weigh alongside it.
+      const backE = (g.in.get(name) ?? []).filter(
+        (e) => HIGH_VALUE_BACKLINK_FIELDS.has(e.field) || e.rel !== undefined,
       );
       for (const e of [...outE, ...backE]) {
         // For an out-edge we hop to `to`; for a high-value backlink we hop to the linker `from`.

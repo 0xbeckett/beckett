@@ -178,7 +178,7 @@ exports[`cli: memory: remember without --name prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett memory remember --name <n> [--op create] [--type t] [--desc d] [--reason r] [--body <text>] [--link to:field,...] [--visibility public|owner|dm] [--dm-with <id>] [--by <userId>] [--by-name <name>]
+"error: usage: beckett memory remember --name <n> [--op create] [--type t] [--desc d] [--reason r] [--body <text>] [--link to[:field[:rel]][@YYYY-MM-DD],...] [--visibility public|owner|dm] [--dm-with <id>] [--by <userId>] [--by-name <name>]
 "
 ,
   "stdout": "",
