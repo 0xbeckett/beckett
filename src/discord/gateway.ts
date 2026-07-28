@@ -879,6 +879,25 @@ export class DiscordJsGateway implements DiscordGateway {
         contentType: a.contentType ?? null,
         size: a.size,
       })),
+      // Discord forwards leave `content` empty (or hold only the forwarder's comment) and put
+      // the original in this collection. Normalize it rather than passing discord.js objects past
+      // the gateway; the Concierge labels it as quoted material before the model sees it.
+      forwardedSnapshots: [...msg.messageSnapshots.values()].map((snapshot) => ({
+        content: snapshot.content,
+        attachments: [...snapshot.attachments.values()].map((a) => ({
+          id: a.id,
+          name: a.name,
+          url: a.url,
+          contentType: a.contentType ?? null,
+          size: a.size,
+        })),
+        embeds: snapshot.embeds.map((embed) => ({
+          name: embed.title ?? embed.author?.name ?? embed.provider?.name ?? "embed",
+          urls: [...new Set([embed.url, embed.image?.url, embed.thumbnail?.url, embed.video?.url].filter(
+            (url): url is string => Boolean(url),
+          ))],
+        })),
+      })),
     };
   }
 

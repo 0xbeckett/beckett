@@ -240,6 +240,19 @@ export interface IncomingAttachment {
   size: number; // bytes, as reported by Discord
 }
 
+/** An embed quoted by a Discord message forward, reduced to safe display metadata. */
+export interface IncomingForwardedEmbed {
+  name: string;
+  urls: string[];
+}
+
+/** Original material carried by Discord's message-forward snapshot, not words authored by the sender. */
+export interface IncomingMessageSnapshot {
+  content: string;
+  attachments: IncomingAttachment[];
+  embeds: IncomingForwardedEmbed[];
+}
+
 /** A captured inbound Discord message (Spec 05 §2.1). */
 export interface IncomingMessage {
   messageId: string;
@@ -271,6 +284,8 @@ export interface IncomingMessage {
   authorIsBot: boolean;
   createdAt: number;
   attachments: IncomingAttachment[]; // files dragged into the message (empty when none)
+  /** Quoted originals attached to a Discord forward (empty/absent for ordinary messages). */
+  forwardedSnapshots?: IncomingMessageSnapshot[];
 }
 
 
