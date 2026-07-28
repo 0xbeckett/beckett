@@ -131,19 +131,19 @@ test("a DM window is absent from search results, whatever the query", async () =
 test("search falls back to the substring scorer when the index cannot persist", async () => {
   const { store, channelsDir } = makeStore();
   store.noteMeta("a", { name: "a", guildId: "g1" });
-  store.append("a", entry("m1", 1_000, { content: "watched a great movie last night" }));
+  store.append("a", entry("m1", 1_000, { content: "still waiting on my reimbursement to arrive" }));
 
-  // Plant a plain file where the index cache dir needs to be: opening tolerates the missing
-  // index, but any durable write (upsert during reconcile) fails.
+  // Plant a plain file where the index cache DIR needs to be: opening the Moss runtime over a
+  // non-directory throws, so the index is genuinely unavailable for this store.
   writeFileSync(channelMossDir(channelsDir), "not a directory", "utf8");
 
-  // The index sync fails internally but is swallowed.
+  // The open failure is caught and latched, never thrown.
   await expect(store.ensureIndexed()).resolves.toBeUndefined();
 
-  // Keyword search still works (trailing-s stem finds "movie"), no throw.
-  const hits = store.search("movies");
-  expect(hits.map((h) => h.channelId)).toEqual(["a"]);
-  expect(hits[0]!.score).toBe(1);
+  // Keyword search still works (trailing-s stem finds a literal match), no throw.
+  expect(store.search("reimbursements").map((h) => h.channelId)).toEqual(["a"]);
+  // …but the semantic pass is off, so a paraphrase with no shared literal token finds nothing.
+  expect(store.search("when will the refund show up")).toEqual([]);
 });
 
 test("search returns keyword hits before the index is ever primed", () => {
