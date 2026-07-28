@@ -22,7 +22,10 @@ function arg(name: string): string | undefined {
   return process.argv.find((v) => v.startsWith(prefix))?.slice(prefix.length);
 }
 
-const DEFAULT_MODEL = process.env.TURN_EVAL_MODEL || "anthropic/claude-haiku-4.5";
+// Sonnet-4.5 is the default: prod-tier judgment that reads the doctrine closely and gives a stable
+// green baseline (no false failures), which is what a regression gate needs. Override with --model
+// or TURN_EVAL_MODEL. A weaker model (e.g. haiku) is cheaper but flakes on the subtler fixtures.
+const DEFAULT_MODEL = process.env.TURN_EVAL_MODEL || "anthropic/claude-sonnet-4.5";
 
 const model = arg("model") ?? DEFAULT_MODEL;
 const runs = Number(arg("runs") ?? "1");
