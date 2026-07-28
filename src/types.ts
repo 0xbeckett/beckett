@@ -525,12 +525,24 @@ export interface MemoryNode {
   mtime: number;
 }
 
+/**
+ * The closed vocabulary of typed edges between memories (issue #60). An edge with no
+ * `rel` is untyped — a bare `[[name]]` still means "related" and nothing more. This set is
+ * deliberately fixed (not an extensible registry): supersedes / caused-by / about /
+ * contradicts / part-of, plus untyped.
+ */
+export type RelationType = "supersedes" | "caused-by" | "about" | "contradicts" | "part-of";
+
 /** A wikilink edge between memory files (Spec 08 §2). */
 export interface MemoryEdge {
   from: string;
   to: string;
   field: string; // "body" | "members" | "owners" | ...
   alias?: string;
+  /** Relation type when the link names one from the closed vocab (issue #60); absent = untyped. */
+  rel?: RelationType;
+  /** ISO date (YYYY-MM-DD) the edge was observed, when the link carries one (issue #60). */
+  date?: string;
 }
 
 /** One line of the MEMORY.md index (Spec 08 §2.3). */
@@ -587,7 +599,7 @@ export interface RememberIntent {
   description?: string;
   metadata?: Record<string, unknown>;
   body?: string;
-  links?: { to: string; field: string }[];
+  links?: { to: string; field: string; rel?: RelationType; date?: string }[];
   source: MemoryNode["source"];
   reason: string; // logged to the event log
 }

@@ -60,6 +60,7 @@ import type {
   MemoryNode,
   NodeType,
   RecallQuery,
+  RelationType,
   RecallResult,
   RememberIntent,
   ScoredNode,
