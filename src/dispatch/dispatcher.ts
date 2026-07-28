@@ -494,7 +494,13 @@ export class Dispatcher {
    * the same ticket id, the second `workers.set` overwrote (orphaning the first process), and
    * `atCap()` undercounted → the concurrency cap was silently bypassed (runaway fan-out).
    */
-  private readonly staffing = new Set<string>();
+  /**
+   * Admitted, not-yet-live spawn reservations. The opaque token matters: a replacement spawn may
+   * take over an old spawn's slot while the old async path is still unwinding. A Set let that old
+   * path delete the replacement's reservation in its `finally`, recreating the workerless gap
+   * this guard is meant to prevent.
+   */
+  private readonly staffing = new Map<string, symbol>();
   /**
    * Legacy per-repo exclusivity map. v3.2 runs each ticket in its OWN worktree, so same-repo
    * tickets are no longer serialized — {@link launchSpawn} stops populating this, leaving the
@@ -1726,24 +1732,29 @@ export class Dispatcher {
   }
 
   /**
-   * Reserve the ticket's slot SYNCHRONOUSLY ({@link staffing}.add) BEFORE the async spawn, so two
-   * spawns racing through {@link spawnGuarded} can't both pass the dedup/cap checks. The
-   * reservation is released — into {@link workers} on success, or dropped on failure — by
-   * {@link doSpawn}; the queue is pumped once the spawn settles.
+   * Reserve the ticket's slot SYNCHRONOUSLY BEFORE the async spawn, so two spawns racing through
+   * {@link spawnGuarded} can't both pass the dedup/cap checks. `replaces` atomically hands an
+   * already-counted slot from a discarded mid-spawn worker to the ticket's current stage. The
+   * token makes the retiring spawn's `finally` harmless: it can only release *its own* reservation,
+   * never the replacement's.
    */
-  private launchSpawn(ticket: Ticket, stage: string, repoRoot: string): void {
-    this.staffing.add(ticket.id);
+  private launchSpawn(ticket: Ticket, stage: string, repoRoot: string, replaces?: symbol): void {
+    if (replaces && this.staffing.get(ticket.id) !== replaces) return; // a newer event owns it
+    const reservation = Symbol(`${ticket.id}:${stage}`);
+    this.staffing.set(ticket.id, reservation);
     this.trace(ticket, `${stage}:staff`, "started", "staffing admitted");
     // v3.2: no per-repo reservation — each ticket gets its own worktree, so same-repo tickets run
     // concurrently under the global cap. Only the `staffing` dedup + `atCap()` gate admission.
     this.repoByTicket.set(ticket.id, repoRoot);
-    void this.doSpawn(ticket, stage, repoRoot)
+    void this.doSpawn(ticket, stage, repoRoot, reservation)
       .catch(() => {
         /* doSpawn handles its own errors + ticket comment */
       })
       .finally(() => {
-        this.staffing.delete(ticket.id); // no-op if doSpawn already moved it into `workers`
-        if (!this.workers.has(ticket.id)) this.releaseRepo(ticket.id);
+        // A current-stage replacement can have taken this slot while this async path was reaping.
+        // Do not delete its reservation or release its checkout underneath it.
+        if (this.staffing.get(ticket.id) === reservation) this.staffing.delete(ticket.id);
+        if (!this.workers.has(ticket.id) && !this.staffing.has(ticket.id)) this.releaseRepo(ticket.id);
         this.pump();
       });
   }
@@ -1848,7 +1859,7 @@ export class Dispatcher {
   }
 
   /** The real spawn path (cap already checked). Registers the finish handler. */
-  private async doSpawn(ticket: Ticket, stage: string, repoRoot: string): Promise<void> {
+  private async doSpawn(ticket: Ticket, stage: string, repoRoot: string, reservation: symbol): Promise<void> {
     const stageStartedAt = Date.now();
     const stageDef = this.stages.get(stage);
     let spec = this.castFor(ticket, stage);
@@ -2052,10 +2063,11 @@ export class Dispatcher {
     // discarding a freshly-spawned, healthy worker, confirm the ticket is GENUINELY inactive: a
     // benign forward transition (backlog→todo→in_progress) can clear the reservation via a stale
     // park even though the ticket still wants exactly this worker.
-    if (!this.staffing.has(ticket.id)) {
+    if (this.staffing.get(ticket.id) !== reservation) {
+      const reservationWasDropped = !this.staffing.has(ticket.id);
       const fresh = await this.freshStateOrNull(ticket);
       const wantsThisStage = fresh != null && this.stages.forState(fresh)?.name === stage;
-      if (!wantsThisStage) {
+      if (!wantsThisStage || !reservationWasDropped) {
         this.logger.info("ticket no longer staffed mid-spawn — discarding worker", {
           ticket: ticket.identifier,
           stage,
@@ -2065,35 +2077,34 @@ export class Dispatcher {
         await handle.abort("ticket no longer active");
         await handle.reap();
         // The discard was legitimate, but the ticket may still be active in a DIFFERENT staffable
-        // stage (it moved forward while we spawned) — never leave it staffed-but-workerless. Re-staff
-        // the stage it actually needs now; a terminal/parked ticket has no stage, so this is a no-op
-        // there. Deferred a turn so THIS spawn's own launchSpawn.finally (which deletes the shared
-        // per-ticket `staffing` slot) has already run — otherwise it would clobber the re-staff's
-        // fresh reservation. The reconciliation watchdog is the catch-all for any wedge this misses.
-        if (fresh) {
+        // stage (it moved forward while we spawned). Transfer THIS counted reservation directly to
+        // that stage before this path unwinds. In particular, do not defer with setTimeout: the old
+        // `finally` used to delete the new spawn's shared Set entry, which was the unblock wedge.
+        // If another event already owns a new reservation, it is responsible for staffing instead.
+        if (reservationWasDropped && fresh) {
           const staffs = this.stages.forState(fresh);
-          if (staffs && (!staffs.entryGuard || staffs.entryGuard(ticket))) {
+          const restaffTicket = { ...ticket, state: fresh };
+          if (staffs && (!staffs.entryGuard || staffs.entryGuard(restaffTicket))) {
             this.logger.info("re-staffing discarded mid-spawn worker for the ticket's current stage", {
               ticket: ticket.identifier,
               from: stage,
               to: staffs.name,
               state: fresh,
             });
-            const restaffTicket = { ...ticket, state: fresh };
-            setTimeout(() => this.spawnGuarded(restaffTicket, staffs.name), 0).unref?.();
+            this.launchSpawn(restaffTicket, staffs.name, repoRoot, reservation);
           }
         }
         return;
       }
       // Benign: a stale transition cleared the reservation, but the ticket is verifiably still active
-      // and wants this exact worker. Re-adopt the reservation and keep the healthy worker alive.
+      // and wants this exact worker. Re-adopt OUR reservation and keep the healthy worker alive.
       this.logger.info("mid-spawn reservation cleared by a stale transition — keeping healthy worker", {
         ticket: ticket.identifier,
         stage,
         workerId: handle.id,
         state: fresh,
       });
-      this.staffing.add(ticket.id);
+      this.staffing.set(ticket.id, reservation);
     }
 
     this.workers.set(ticket.id, handle);
