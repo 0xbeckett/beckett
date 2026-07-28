@@ -1012,6 +1012,93 @@ describe("advance on finish", () => {
     }
   });
 
+  test("boot replay recovers a permanently parked publish as a human courier, never a retry ETA", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-publish-park-recovery-"));
+    try {
+      const outbox = join(dir, "publish.jsonl");
+      const client = new FakeClient();
+      let publishCalls = 0;
+      const d = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(),
+        resolveRepoRoot: () => "/tmp/repo",
+        publishOutboxPath: outbox,
+        publishRepo: async () => {
+          publishCalls++;
+          throw new Error("gh api failed (403): cross-fork PAT limit");
+        },
+      });
+      const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+      client.board = [ticket];
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      // The never-due park row is appended before this tracker hold; crash in that window.
+      client.failSetState = 1;
+      created[0].finish("success", "shipped it");
+      await tick();
+      expect(ticket.state).toBe("in_progress");
+      const row = JSON.parse(readFileSync(outbox, "utf8"));
+      expect(row.nextAttemptAt).toBe(Number.MAX_SAFE_INTEGER);
+
+      await d.replayPublishes();
+      expect(ticket.state).toBe("in_review");
+      expect(publishCalls).toBe(1); // recovery must not spend a network retry on a parked row
+      // Recovers as a human courier notice — not re-labelled as an auto-retry with an absurd ETA.
+      expect(client.comments.some((c) => c.body.includes("beckett:publish-human"))).toBe(true);
+      expect(client.comments.some((c) => c.body.includes("Please courier the committed work"))).toBe(true);
+      expect(client.comments.every((c) => !c.body.includes("beckett:publish-pending"))).toBe(true);
+      expect(client.comments.every((c) => !c.body.includes("is scheduled in"))).toBe(true);
+      // Still owned as a never-due park for a human to pick up.
+      expect(JSON.parse(readFileSync(outbox, "utf8")).nextAttemptAt).toBe(Number.MAX_SAFE_INTEGER);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("boot replay recovers a normal retry hold with its real remaining ETA, clamped sane", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-publish-eta-recovery-"));
+    try {
+      const outbox = join(dir, "publish.jsonl");
+      const client = new FakeClient();
+      let publishCalls = 0;
+      const d = new Dispatcher({
+        gitOps: gitFakes,
+        client,
+        config: cfg(),
+        resolveRepoRoot: () => "/tmp/repo",
+        publishOutboxPath: outbox,
+        publishRepo: async () => {
+          publishCalls++;
+          throw new Error("ETIMEDOUT github");
+        },
+      });
+      const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
+      client.board = [ticket];
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+      client.failSetState = 1;
+      created[0].finish("success", "shipped it");
+      await tick();
+      expect(ticket.state).toBe("in_progress");
+      // Pin an exact, plausible remaining wait so the recovered ETA is predictable.
+      const row = JSON.parse(readFileSync(outbox, "utf8"));
+      writeFileSync(outbox, JSON.stringify({ ...row, nextAttemptAt: Date.now() + 5 * 60_000 }) + "\n");
+
+      await d.replayPublishes();
+      expect(ticket.state).toBe("in_review");
+      expect(publishCalls).toBe(1); // reconciliation must not spend the scheduled retry early
+      const recovery = client.comments.find(
+        (c) => c.body.includes("beckett:publish-pending") && c.body.includes("recovering a durable publish request"),
+      );
+      expect(recovery).toBeDefined();
+      expect(recovery!.body).toContain("is scheduled in 5 minutes");
+      expect(recovery!.body).not.toContain("150090232981");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("transient publish retries back off 1m, then 5m, then 30m", async () => {
     const dir = mkdtempSync(join(tmpdir(), "beckett-publish-backoff-"));
     try {
