@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/beckett/Projects/beckett/.beckett/worktrees/#99/web/public
-ExecStart=/usr/bin/python3 -m http.server 8799 --bind 127.0.0.1
+ExecStart=/usr/bin/python3 /home/beckett/Projects/beckett/.beckett/worktrees/#99/.deploy/preview-server.py /home/beckett/Projects/beckett/.beckett/worktrees/#99/web/public 8699
 Restart=on-failure
 
 [Install]
