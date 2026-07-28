@@ -208,6 +208,9 @@ async function main() {
     let timer;
     let value;
     let evaluationError = null;
+    // Tell the runner the snippet clock starts now — its tight snippet backstop is measured from here,
+    // so startup latency (cold start, connectOverCDP) never counts against the snippet budget.
+    writeSync(1, EVAL_STARTED_MARKER);
     try {
       const pending = runInContext(`(async () => {\n${input.code}\n})()`, sandbox, {
         timeout: Math.min(evalTimeoutMs, 5_000),
@@ -224,6 +227,9 @@ async function main() {
         evaluationError += "; browser-side work may have continued, so the outcome is uncertain. Inspect current state before retrying any action";
       }
     }
+    // Snippet settled (returned, threw, or hit the in-process timeout). A snippet that blocks the
+    // event loop forever never reaches here, so the runner's snippet backstop kills it instead.
+    writeSync(1, EVAL_FINISHED_MARKER);
     const normalized = evaluationError ? { value: null, truncated: false } : normalize(value, maxOutputChars);
     outputWasTruncated ||= normalized.truncated;
     const currentPages = context.pages().filter((page) => !page.isClosed());
