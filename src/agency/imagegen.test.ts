@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CodexImageGen, FalMediaGen } from "./imagegen.ts";
+import { CodexImageGen, FalMediaGen, OpenRouterImageGen } from "./imagegen.ts";
 import type { Logger } from "../types.ts";
 
 const quiet = (() => {
@@ -13,6 +13,9 @@ const quiet = (() => {
 const savedFalKey = process.env.FAL_KEY;
 const savedFalApiKey = process.env.FAL_API_KEY;
 const savedBeckettDir = process.env.BECKETT_DIR;
+const savedOpenRouterKey = process.env.OPENROUTER_API_KEY;
+const savedOpenRouterKeyAlt = process.env.OPENROUTER_KEY;
+const savedOpenRouterReferer = process.env.OPENROUTER_REFERER;
 const tmpDirs: string[] = [];
 
 afterEach(() => {
@@ -22,6 +25,12 @@ afterEach(() => {
   else process.env.FAL_API_KEY = savedFalApiKey;
   if (savedBeckettDir === undefined) delete process.env.BECKETT_DIR;
   else process.env.BECKETT_DIR = savedBeckettDir;
+  if (savedOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+  else process.env.OPENROUTER_API_KEY = savedOpenRouterKey;
+  if (savedOpenRouterKeyAlt === undefined) delete process.env.OPENROUTER_KEY;
+  else process.env.OPENROUTER_KEY = savedOpenRouterKeyAlt;
+  if (savedOpenRouterReferer === undefined) delete process.env.OPENROUTER_REFERER;
+  else process.env.OPENROUTER_REFERER = savedOpenRouterReferer;
   for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -251,4 +260,134 @@ test("fal video models write video output and failed queue statuses expose fal's
   await expect(bad.generate({ prompt: "x", model: "fal-ai/bytedance/seedance/text-to-video", media: "video" })).rejects.toThrow(
     /fal fal-ai\/bytedance\/seedance\/text-to-video failed: seedance quota exceeded/,
   );
+});
+
+test("openrouter missing key fails cleanly before any network call", () => {
+  delete process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_KEY;
+  const dir = tmp();
+  process.env.BECKETT_DIR = dir;
+  expect(
+    () =>
+      new OpenRouterImageGen({
+        imagesDir: join(dir, "images"),
+        logger: quiet,
+        fetchImpl: (() => {
+          throw new Error("network");
+        }) as unknown as typeof fetch,
+      }),
+  ).toThrow(/OPENROUTER_API_KEY or OPENROUTER_KEY/);
+});
+
+test("openrouter reads OPENROUTER_API_KEY from the Beckett .env file", () => {
+  delete process.env.OPENROUTER_API_KEY;
+  delete process.env.OPENROUTER_KEY;
+  const dir = tmp();
+  process.env.BECKETT_DIR = dir;
+  writeFileSync(join(dir, ".env"), "OPENROUTER_API_KEY=from-file\n");
+  const gen = new OpenRouterImageGen({ imagesDir: join(dir, "images"), logger: quiet });
+  expect(gen).toBeDefined();
+  expect(String(process.env.OPENROUTER_API_KEY)).toBe("from-file");
+});
+
+test("CodexImageGen routes openrouter/... model slugs, decodes a base64 image, and does not fall back to Codex", async () => {
+  const dir = tmp();
+  const calls: Array<{ url: string; method: string; auth?: string; referer?: string; body?: string }> = [];
+  const pngBase64 = Buffer.from([1, 2, 3, 4]).toString("base64");
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    const headers = init?.headers as Record<string, string> | undefined;
+    calls.push({
+      url: u,
+      method: init?.method ?? "GET",
+      auth: headers?.Authorization,
+      referer: headers?.["HTTP-Referer"],
+      body: typeof init?.body === "string" ? init.body : undefined,
+    });
+    if (u === "https://openrouter.ai/api/v1/chat/completions") {
+      return Response.json({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "here you go",
+              images: [{ type: "image_url", image_url: { url: `data:image/png;base64,${pngBase64}` } }],
+            },
+          },
+        ],
+      });
+    }
+    return new Response("not found", { status: 404 });
+  }) as unknown as typeof fetch;
+
+  process.env.OPENROUTER_API_KEY = "sk-or-test";
+  process.env.OPENROUTER_REFERER = "https://example.test";
+  const gen = new CodexImageGen({ imagesDir: join(dir, "images"), logger: quiet, codexBin: join(dir, "unused-codex") });
+  const out = join(dir, "nano-banana.png");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchImpl;
+  try {
+    const res = await gen.generate({
+      prompt: "a small robot",
+      model: "openrouter/google/gemini-2.5-flash-image",
+      out,
+    });
+    expect(res.provider).toBe("openrouter");
+    expect(res.model).toBe("google/gemini-2.5-flash-image");
+    expect(res.path).toBe(out);
+    expect(statSync(out).size).toBe(4);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      method: "POST",
+      url: "https://openrouter.ai/api/v1/chat/completions",
+      auth: "Bearer sk-or-test",
+      referer: "https://example.test",
+    });
+    const body = JSON.parse(calls[0]!.body!);
+    expect(body).toMatchObject({
+      model: "google/gemini-2.5-flash-image",
+      messages: [{ role: "user", content: "a small robot" }],
+      modalities: ["image", "text"],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("openrouter image generation downloads a plain result URL when no base64 data URL is returned", async () => {
+  const dir = tmp();
+  const fetchImpl = (async (url: string | URL | Request) => {
+    const u = String(url);
+    if (u === "https://openrouter.ai/api/v1/chat/completions") {
+      return Response.json({
+        choices: [{ message: { images: [{ type: "image_url", image_url: { url: "https://cdn.test/out.png" } }] } }],
+      });
+    }
+    if (u === "https://cdn.test/out.png") return new Response(new Uint8Array([5, 6, 7]), { status: 200 });
+    return new Response("not found", { status: 404 });
+  }) as unknown as typeof fetch;
+
+  const out = join(dir, "url-result.png");
+  const gen = new OpenRouterImageGen({ imagesDir: join(dir, "images"), logger: quiet, apiKey: "sk-or-test", fetchImpl });
+  const res = await gen.generate({ prompt: "a cat", model: "openrouter/some/model", out });
+  expect(res.url).toBe("https://cdn.test/out.png");
+  expect(statSync(out).size).toBe(3);
+});
+
+test("openrouter image generation rejects a missing image in the response with the model's text reply", async () => {
+  const fetchImpl = (async () => Response.json({ choices: [{ message: { content: "sorry, I can't do that" } }] })) as unknown as typeof fetch;
+  const gen = new OpenRouterImageGen({ imagesDir: join(tmp(), "images"), logger: quiet, apiKey: "sk-or-test", fetchImpl });
+  await expect(gen.generate({ prompt: "x", model: "openrouter/some/model" })).rejects.toThrow(
+    /openrouter some\/model response did not include a generated image/,
+  );
+});
+
+test("openrouter image generation rejects --ref and --transparent as unsupported", async () => {
+  const gen = new OpenRouterImageGen({ imagesDir: join(tmp(), "images"), logger: quiet, apiKey: "sk-or-test" });
+  await expect(
+    gen.generate({ prompt: "x", model: "openrouter/some/model", refs: ["/tmp/ref.png"] }),
+  ).rejects.toThrow(/does not support --ref/);
+  await expect(
+    gen.generate({ prompt: "x", model: "openrouter/some/model", transparent: true }),
+  ).rejects.toThrow(/does not support --transparent/);
 });
