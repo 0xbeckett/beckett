@@ -54,13 +54,13 @@ git -C "${TMP_SOURCE}" commit -m "installer check snapshot" >/dev/null
 "${DOCKER[@]}" cp "${TMP_SOURCE}/." "${NAME}:/source"
 "${DOCKER[@]}" exec "${NAME}" chmod -R a+rX /source
 
-# Match the README's `curl | bash` execution shape (there is no script path/BASH_SOURCE entry).
-# `--non-interactive` is needed because this check deliberately has no secrets or a TTY.
+# Match the README's `curl | bash` execution shape (there is no script path/BASH_SOURCE entry)
+# and its documented `--repo` fork option. `--non-interactive` is needed because this check
+# deliberately has no secrets or a TTY.
 "${DOCKER[@]}" cp "${ROOT}/install.sh" "${NAME}:/tmp/install-beckett.sh"
 "${DOCKER[@]}" exec "${NAME}" bash -c '
   export BECKETT_ALLOW_LOCAL_REPO=1
-  export BECKETT_REPO_URL=file:///source
-  cat /tmp/install-beckett.sh | bash -s -- --non-interactive
+  cat /tmp/install-beckett.sh | bash -s -- --non-interactive --repo file:///source
 '
 
 # shellcheck disable=SC2016 # This single-quoted body is intentionally evaluated in the container.
