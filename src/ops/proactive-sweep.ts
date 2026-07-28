@@ -929,6 +929,19 @@ export function defaultProactiveSweepDeps(opts: { beckettCli: string[]; logger: 
       }
     },
     async openPr(repo, p) {
+      // `gh pr create --label X` FAILS if X doesn't exist on the repo, so ensure each label first.
+      // `label create --force` creates-or-updates, so it's idempotent across sweeps and repos.
+      for (const label of p.labels) {
+        await spawnCapture(
+          [
+            ...beckettCli, "gh", "raw", "--", "label", "create", label,
+            "--repo", repo, "--force",
+            "--description", "Opened proactively by Beckett's rot sweep",
+            "--color", "5319e7",
+          ],
+          { timeoutMs: 30_000 },
+        ).catch(() => undefined); // best-effort: a labels-disabled repo shouldn't sink the PR create
+      }
       const args = [
         ...beckettCli, "gh", "pr", "create",
         "--repo", repo,
@@ -937,7 +950,7 @@ export function defaultProactiveSweepDeps(opts: { beckettCli: string[]; logger: 
         "--title", p.title,
         "--body", p.body,
       ];
-      for (const label of p.labels) args.push("--label", label);
+      if (p.labels.length > 0) args.push("--label", p.labels.join(","));
       const r = await spawnCapture(args, { timeoutMs: 60_000 });
       if (r.code !== 0) {
         throw new Error(`gh pr create failed: ${(r.stderr || r.stdout).trim().slice(0, 200)}`);

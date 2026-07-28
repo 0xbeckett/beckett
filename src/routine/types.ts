@@ -143,6 +143,28 @@ export const RoutineActionSchema = z.discriminatedUnion("kind", [
     /** Authenticated requester the run is attributed to (optional; owner env fallback). */
     requesterId: z.string().optional(),
   }),
+  /**
+   * `proactive-sweep` (issue #79): the SECOND local maintenance lane, cut from `deps-update`'s cloth
+   * — no agent, no browser, no credentials, its own subprocess. On a schedule it looks at an EXPLICIT
+   * opt-in list of repos for three kinds of rot (red default-branch CI, dependency advisories / long-
+   * dead versions, broken README links) and opens ONE small PR per finding, labelled `proactive`. The
+   * `repos` list is the whole allow-list: it defaults to EMPTY and nothing off it is ever touched, so
+   * the sweep never runs against a repo ro didn't name (never all repos by default). Like `deps-update`
+   * it only ever opens PRs — it never merges its own PR and never force-pushes.
+   */
+  z.object({
+    kind: z.literal("proactive-sweep"),
+    /**
+     * The EXPLICIT opt-in list of `owner/name` repos to sweep. EMPTY by default: an un-configured
+     * sweep touches no repo at all. There is no "all my repos" option — a repo is swept only if it
+     * is named here.
+     */
+    repos: z.array(z.string().min(1)).default([]),
+    /** Discord channel the one-line summary is posted to (optional; env fallback). */
+    channelId: z.string().optional(),
+    /** Authenticated requester the run is attributed to (optional; owner env fallback). */
+    requesterId: z.string().optional(),
+  }),
   z.object({
     kind: z.literal("x-shitpost"),
     /** Handle posted as, for the browser task narrative (e.g. "@beckposting"). */

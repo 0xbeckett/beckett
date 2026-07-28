@@ -202,9 +202,14 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
       const n = Number(_[1]);
       if (action === "create") {
         for (const k of ["repo", "base", "head", "title", "body"]) if (!flags[k]) fail(`gh pr create needs --${k}`);
+        // `--label a,b` (comma-separated) applies each label at creation. gh fails the create if a
+        // named label doesn't exist on the repo, so the caller ensures it first (see proactive-sweep).
+        const labels = flags.label
+          ? String(flags.label).split(",").map((l) => l.trim()).filter(Boolean)
+          : undefined;
         const created = await gh.openPR({
           repo, base: String(flags.base), head: String(flags.head),
-          title: String(flags.title), body: String(flags.body), draft: Boolean(flags.draft),
+          title: String(flags.title), body: String(flags.body), draft: Boolean(flags.draft), labels,
         });
         // #31: a PR opened by hand from the concierge seat has no dispatcher `onPrOpened` to
         // register it, so tell the daemon's poller to watch it too — including a cross-org upstream

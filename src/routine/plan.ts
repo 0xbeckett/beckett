@@ -47,6 +47,12 @@ export interface DepsUpdateTarget {
   sourceRepo: string | null;
 }
 
+/** The `proactive-sweep` lane's parameters (issue #79), resolved from the action. */
+export interface ProactiveSweepTarget {
+  /** The EXPLICIT opt-in list of `owner/name` repos. Empty → the executor sweeps nothing. */
+  repos: string[];
+}
+
 /** The instruction handed to the social-media agent when a legacy `x-shitpost` routine fires. */
 export const LEGACY_SHITPOST_INPUT =
   "Compose today's shitpost — one fresh, in-voice line — and author the browser task that posts it to X.";
@@ -58,7 +64,7 @@ export interface RoutineDispatchPlan {
    * dependency-update job, or the feed-watch poll. Only `agent`/`browser` (and, indirectly, a
    * qualifying `watch` fire) reach the browser.
    */
-  lane: "agent" | "browser" | "deps-update" | "watch" | "self";
+  lane: "agent" | "browser" | "deps-update" | "watch" | "self" | "proactive-sweep";
   /** agent lane: the registry id to invoke LIVE at dispatch (null for the browser lane). */
   agentId: string | null;
   /** agent lane: the instruction handed to that agent (null for the browser lane). */
@@ -67,6 +73,8 @@ export interface RoutineDispatchPlan {
   browserTask: string | null;
   /** deps-update lane: what to update and where the PR goes (null on the other lanes). */
   depsUpdate: DepsUpdateTarget | null;
+  /** proactive-sweep lane: the opt-in repo list to sweep for rot (null on the other lanes). */
+  proactiveSweep: ProactiveSweepTarget | null;
   /** self lane: the instruction Beckett gives itself, framed as a SYSTEM turn (null elsewhere). */
   selfPrompt: string | null;
   /**
@@ -97,6 +105,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       agentInput: action.input,
       browserTask: null,
       depsUpdate: null,
+      proactiveSweep: null,
       selfPrompt: null,
       dream: false,
       preview: `invoke agent ${action.agentId}: ${action.input}`,
@@ -120,11 +129,40 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
         base: action.base,
         sourceRepo: action.sourceRepo ?? null,
       },
+      proactiveSweep: null,
       selfPrompt: null,
       dream: false,
       preview:
         `update in-range dependencies in an isolated clone, run typecheck + tests, ` +
         `open a PR against ${action.base}${action.repo ? ` on ${action.repo}` : ""}`,
+      credsEntry: null,
+      channelId: action.channelId ?? null,
+      requesterId: action.requesterId ?? null,
+    };
+  }
+
+  if (action.kind === "proactive-sweep") {
+    // Its own lane, cut from `deps-update`'s cloth (issue #79): nothing here names an agent, a
+    // browser task, or a creds entry, so — like deps-update — there is no shape a dispatcher could
+    // mistake for browser work. The plan carries only the EXPLICIT opt-in repo list; the executor
+    // (its own subprocess) reads each repo, detects rot, and opens at most one labelled PR per
+    // finding. An empty list is carried faithfully and sweeps nothing.
+    const repos = [...action.repos];
+    return {
+      routineId: routine.id,
+      lane: "proactive-sweep",
+      agentId: null,
+      agentInput: null,
+      browserTask: null,
+      depsUpdate: null,
+      proactiveSweep: { repos },
+      selfPrompt: null,
+      dream: false,
+      preview:
+        repos.length === 0
+          ? "sweep for rot — but no repos are opted in, so nothing is swept (add repos to the routine's list)"
+          : `sweep ${repos.join(", ")} for red CI / dependency advisories / broken README links, ` +
+            "opening at most one proactive-labelled PR per finding (never merges, never force-pushes)",
       credsEntry: null,
       channelId: action.channelId ?? null,
       requesterId: action.requesterId ?? null,
@@ -142,6 +180,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       agentInput: null,
       browserTask: null,
       depsUpdate: null,
+      proactiveSweep: null,
       selfPrompt: null,
       dream: false,
       preview:
@@ -166,6 +205,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       agentInput: null,
       browserTask: null,
       depsUpdate: null,
+      proactiveSweep: null,
       selfPrompt: action.prompt,
       dream: false,
       preview: `wake the concierge on its own ledger: ${action.prompt}`,
@@ -187,6 +227,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       agentInput: null,
       browserTask: null,
       depsUpdate: null,
+      proactiveSweep: null,
       selfPrompt: null,
       dream: true,
       preview:
@@ -208,6 +249,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
       agentInput: LEGACY_SHITPOST_INPUT,
       browserTask: null,
       depsUpdate: null,
+      proactiveSweep: null,
       selfPrompt: null,
       dream: false,
       preview: `invoke agent ${SOCIAL_MEDIA_AGENT_ID}: ${LEGACY_SHITPOST_INPUT}`,
@@ -225,6 +267,7 @@ export function buildDispatchPlan(routine: Routine): RoutineDispatchPlan {
     agentInput: null,
     browserTask: action.task,
     depsUpdate: null,
+    proactiveSweep: null,
     selfPrompt: null,
     dream: false,
     preview: action.task,
