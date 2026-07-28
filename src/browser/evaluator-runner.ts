@@ -230,11 +230,21 @@ export async function runBrowserEvaluator(
   input.write(payload);
   input.end();
 
+  // evaluator.cjs already bounds the *snippet* at evalTimeoutMs deterministically (its clock starts
+  // after connectOverCDP), and returns a clean "timed out" envelope for a genuine snippet timeout.
+  // This wall-clock timer is only a backstop for a wedged child, so it must budget for everything
+  // that happens OUTSIDE the snippet clock: a fresh Node cold-start, chromium.connectOverCDP (itself
+  // allowed up to actionTimeoutMs), and browser.close() on teardown. The old evalTimeoutMs + 750
+  // assumed startup ≈ 0 — invisible in production (evalTimeoutMs 60s) but far tighter than a single
+  // CDP connect once tests shrink evalTimeoutMs to 30–100ms, so under CPU load an ordinary startup
+  // tripped it and hard-killed the child mid-launch, surfacing a spurious "outcome is uncertain".
+  // Match the RPC backstop formula in isolated.ts: startup budget (actionTimeoutMs + 5s) + snippet.
+  const backstopMs = request.evalTimeoutMs + request.actionTimeoutMs + 5_000;
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     killChildGroup(child);
-  }, request.evalTimeoutMs + 750);
+  }, backstopMs);
   try {
     const [stdout, stderr, exitCode] = await Promise.all([
       readBounded(child.stdout, MAX_EVALUATOR_MESSAGE_CHARS),
