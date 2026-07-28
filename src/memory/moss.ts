@@ -86,8 +86,10 @@ export function memoryDocument(node: MemoryNode): MossDocument {
 /**
  * Make the index mirror the graph: upsert new/changed nodes (by content hash), delete
  * documents whose files are gone (archive, merge, out-of-band `rm`). Called on every
- * recall AND after every remember/maintain write, so the index can never drift for more
- * than one call — and a store predating moss is migrated wholesale on first contact.
+ * recall AND after every remember/maintain write. Its promise resolves only after the
+ * resulting snapshot is durable: callers may immediately open a second Moss handle (or
+ * process) without racing the 50ms best-effort persistence timer. A store predating Moss
+ * is migrated wholesale on first contact.
  */
 export async function syncMossWithGraph(
   moss: LocalMoss,
@@ -102,6 +104,10 @@ export async function syncMossWithGraph(
   const changed = [...desired.values()].filter((d) => currentHashes.get(d.id) !== d.metadata!.hash);
   if (stale.length > 0) await moss.delete(stale);
   if (changed.length > 0) await moss.upsert(changed);
+  // `upsert`/`delete` deliberately defer their best-effort writes so direct bulk users can
+  // coalesce them. A graph sync, however, is the memory store's completion boundary: without
+  // this barrier a fresh handle can read the previous sidecar while the timer is still pending.
+  await moss.flush();
   return { upserted: changed.length, removed: stale.length };
 }
 

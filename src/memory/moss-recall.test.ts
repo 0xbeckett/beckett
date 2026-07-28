@@ -29,11 +29,6 @@ const quietLog: Logger = (() => {
   return q as unknown as Logger;
 })();
 
-/** Deferred Moss writes are intentionally coalesced; wait past the public 50ms window for disk assertions. */
-function settleMoss(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 60));
-}
-
 function tempStore(): { store: MemoryStore; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "beckett-moss-recall-"));
   tmpDirs.push(dir);
@@ -112,7 +107,6 @@ test("recall scores are Moss-first with the normalized field-aware lexical sharp
 
   const query = "how are we deploying the documentation site?";
   const r = await store.recall({ text: query });
-  await settleMoss();
   expect(r.hits[0]!.node.name).toBe("docs-site");
 
   // Recompute the score from the persisted Moss index. Moss remains primary; the bounded
@@ -162,7 +156,6 @@ test("a pre-moss store (bare markdown files) is fully migrated on first recall",
   const store = createMemory({ memoryDir: dir, logger: quietLog, git: false });
   const r = await store.recall({ text: "where is the cloudflared tunnel token" });
   expect(r.hits.map((h) => h.node.name)).toContain("loom-desk");
-  await settleMoss();
   expect(indexedIds(dir)).toEqual(["jason", "loom-desk"]); // every existing file is indexed
 });
 
@@ -171,7 +164,6 @@ test("a pre-moss store (bare markdown files) is fully migrated on first recall",
 test("owner/dm docs live in the moss index yet NEVER reach a member viewer (fail-closed in code)", async () => {
   const { store, dir } = tempStore();
   await seedScoped(store);
-  await settleMoss();
 
   // The retrieval index itself holds all three docs — moss is not the access authority…
   expect(indexedIds(dir)).toEqual(["deploy-dm", "deploy-owner", "deploy-public"]);
@@ -204,7 +196,6 @@ test("remember and update keep the moss index in sync (content hash changes with
     op: "create", name: "fact", type: "reference",
     description: "the first wording of the fact", source: "manual", reason: "t",
   });
-  await settleMoss();
   expect(indexedIds(dir)).toEqual(["fact"]);
   const before = readFileSync(join(memoryMossDir(dir), `${MEMORY_INDEX_NAME}.docs.json`), "utf8");
 
@@ -212,7 +203,6 @@ test("remember and update keep the moss index in sync (content hash changes with
     op: "update", name: "fact", type: "reference",
     description: "a completely different second wording", source: "manual", reason: "t",
   });
-  await settleMoss();
   const after = readFileSync(join(memoryMossDir(dir), `${MEMORY_INDEX_NAME}.docs.json`), "utf8");
   expect(after).not.toBe(before);
   expect(after).toContain("completely different second wording");
@@ -234,12 +224,10 @@ test("maintain-archiving a node removes it from the moss index (delete stays in 
     description: "an expired decision headed for the archive",
     metadata: { ttl: "2020-01-01T00:00:00.000Z" }, source: "manual", reason: "t",
   });
-  await settleMoss();
   expect(indexedIds(dir)).toEqual(["doomed", "keeper"]);
 
   const report = await store.maintain();
   expect(report.archives.map((a) => a.name)).toEqual(["doomed"]);
-  await settleMoss();
   expect(indexedIds(dir)).toEqual(["keeper"]);
 
   // The post-delete index must survive a reload intact: a FRESH store (new process in real
@@ -252,13 +240,11 @@ test("maintain-archiving a node removes it from the moss index (delete stays in 
 test("an out-of-band file delete heals from the index on the next recall", async () => {
   const { store, dir } = tempStore();
   await seedScoped(store);
-  await settleMoss();
   expect(indexedIds(dir)).toContain("deploy-public");
 
   unlinkSync(store.buildGraph().nodes.get("deploy-public")!.path); // e.g. a git pull removed it
   const r = await store.recall({ text: "cloudflare tunnel deploy", audience: viewer("owner", "guild", OTHER) });
   expect(r.hits.map((h) => h.node.name)).not.toContain("deploy-public");
-  await settleMoss();
   expect(indexedIds(dir)).toEqual(["deploy-dm", "deploy-owner"]);
 });
 
@@ -267,14 +253,12 @@ test("an out-of-band file delete heals from the index on the next recall", async
 test("a corrupt .moss cache is reset and rebuilt — recall keeps working", async () => {
   const { store, dir } = tempStore();
   await seedScoped(store);
-  await settleMoss();
   writeFileSync(join(memoryMossDir(dir), `${MEMORY_INDEX_NAME}.moss`), "not a moss index");
 
   // A FRESH store must reload from disk, hit the corrupt binary, reset, and resync.
   const fresh = createMemory({ memoryDir: dir, logger: quietLog, git: false });
   const r = await fresh.recall({ text: "cloudflare tunnel deploy", audience: viewer("owner", "guild", OTHER) });
   expect(r.hits.map((h) => h.node.name).sort()).toEqual(["deploy-owner", "deploy-public"]);
-  await settleMoss();
   expect(indexedIds(dir)).toEqual(["deploy-dm", "deploy-owner", "deploy-public"]);
 });
 
