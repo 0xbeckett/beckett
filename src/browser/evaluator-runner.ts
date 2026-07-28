@@ -257,9 +257,11 @@ export async function runBrowserEvaluator(
   let phase: "startup" | "snippet" | "teardown" = "startup";
   let killedPhase: "startup" | "snippet" | "teardown" | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const __t0 = Date.now();
   const armTimer = (budgetMs: number) => {
     timer = setTimeout(() => {
       killedPhase = phase;
+      if (process.env.BECKETT_EVAL_TRACE) process.stderr.write(`\n[TRACE kill phase=${phase} at +${Date.now() - __t0}ms budget=${budgetMs}]\n`);
       killChildGroup(child);
     }, budgetMs);
   };
@@ -267,6 +269,7 @@ export async function runBrowserEvaluator(
   const enterPhase = (next: "snippet" | "teardown", budgetMs: number) => {
     // Ignore a duplicate/out-of-order marker rather than rewinding the budget.
     if ((next === "snippet" && phase !== "startup") || (next === "teardown" && phase !== "snippet")) return;
+    if (process.env.BECKETT_EVAL_TRACE) process.stderr.write(`\n[TRACE enter ${next} at +${Date.now() - __t0}ms]\n`);
     phase = next;
     clearTimeout(timer);
     armTimer(budgetMs);
