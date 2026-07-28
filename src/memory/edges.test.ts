@@ -106,28 +106,25 @@ test("a dated wikilink inside a frontmatter structural field parses its date", (
 
 // ── recall surfacing ─────────────────────────────────────────────────────────────────────
 
+// The linked targets below carry vocabulary DISJOINT from each query, so they surface only via
+// one-hop expansion (never as a direct seed) — that is exactly the "linked context" the ticket
+// asks recall to annotate with the edge's type and date.
+
 test("recall surfaces the relation type and observation date on linked context", async () => {
   const store = tempStore();
   await store.remember({
-    op: "create",
-    name: "old-plan",
-    type: "decision",
-    description: "the original rollout plan for the widget",
-    body: "Ship the widget on Friday.",
-    source: "manual",
-    reason: "seed",
+    op: "create", name: "old-plan", type: "decision",
+    description: "the friday shipping schedule", body: "ship on friday",
+    source: "manual", reason: "seed",
   });
   await store.remember({
-    op: "create",
-    name: "new-plan",
-    type: "decision",
-    description: "the revised rollout plan for the widget",
-    body: "Hold the widget. This [[supersedes:old-plan @2026-07-14]].",
-    source: "manual",
-    reason: "seed",
+    op: "create", name: "new-plan", type: "decision",
+    description: "the widget rollback choice",
+    body: "Hold it. This [[supersedes:old-plan @2026-07-14]].",
+    source: "manual", reason: "seed",
   });
 
-  const r = await store.recall({ text: "revised rollout plan widget", k: 3 });
+  const r = await store.recall({ text: "widget rollback choice", k: 3 });
   const link = r.expanded.find((x) => x.node.name === "old-plan");
   expect(link).toBeTruthy();
   expect(link!.reason).toContain("supersedes");
@@ -138,15 +135,15 @@ test("a bare linked edge keeps its plain 'linked … via' reason (no false type/
   const store = tempStore();
   await store.remember({
     op: "create", name: "desk", type: "env",
-    description: "the loom desk machine", body: "an ubuntu box",
+    description: "hardware inventory item xyzzy", body: "an ubuntu box",
     source: "manual", reason: "seed",
   });
   await store.remember({
     op: "create", name: "worker", type: "reference",
-    description: "a worker that runs on the desk", body: "Runs on [[desk]].",
+    description: "the frobnicator batch job", body: "Runs on [[desk]].",
     source: "manual", reason: "seed",
   });
-  const r = await store.recall({ text: "worker that runs on the desk", k: 3 });
+  const r = await store.recall({ text: "frobnicator batch job", k: 3 });
   const link = r.expanded.find((x) => x.node.name === "desk");
   expect(link).toBeTruthy();
   expect(link!.reason).toContain("via");
@@ -157,17 +154,17 @@ test("remember can materialize a typed, dated link and it round-trips through re
   const store = tempStore();
   await store.remember({
     op: "create", name: "cause", type: "reference",
-    description: "the flaky network the outage came from", body: "packet loss",
+    description: "flaky network packet loss on the switch", body: "packet loss",
     source: "manual", reason: "seed",
   });
   await store.remember({
     op: "create", name: "outage", type: "reference",
-    description: "the saturday outage of the api",
+    description: "the saturday api downtime incident",
     body: "api was down",
     links: [{ to: "cause", field: "body", rel: "caused-by", date: "2026-07-14" }],
     source: "manual", reason: "seed",
   });
-  const r = await store.recall({ text: "saturday outage of the api", k: 3 });
+  const r = await store.recall({ text: "saturday api downtime incident", k: 3 });
   const link = r.expanded.find((x) => x.node.name === "cause");
   expect(link).toBeTruthy();
   expect(link!.reason).toContain("caused-by");

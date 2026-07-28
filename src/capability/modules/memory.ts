@@ -53,7 +53,7 @@ import {
 } from "../../ext/contract.ts";
 import { asCapability } from "../../ext/compat.ts";
 import type { Capability, CapabilityDeps } from "../index.ts";
-import { createMemory, type MemoryStore } from "../../memory/index.ts";
+import { createMemory, RELATION_TYPES, type MemoryStore } from "../../memory/index.ts";
 import {
   type Audience,
   canView,
@@ -156,6 +156,13 @@ const RememberArgs = z
           .object({
             to: z.string().regex(KEBAB_NAME, "a link target is a kebab-case node name"),
             field: z.string().trim().min(1).optional(),
+            /** Optional typed relation from the closed vocab (issue #60); absent = untyped. */
+            rel: z.enum(RELATION_TYPES).optional(),
+            /** Optional ISO observation date (YYYY-MM-DD) the edge was noted (issue #60). */
+            date: z
+              .string()
+              .regex(/^\d{4}-\d{2}-\d{2}$/, "a link date is ISO YYYY-MM-DD")
+              .optional(),
           })
           .strict(),
       )

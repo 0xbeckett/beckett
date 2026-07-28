@@ -10,6 +10,29 @@ One markdown file per node; YAML frontmatter (`name`, `description`, `metadata.t
 SQLite-free) is **derived from the files**. Memories are dated observations, never eternal
 claims — old ones get demoted or superseded, never judged wrong by age alone.
 
+## Typed, dated edges (`[[type:name @date]]`, issue #60)
+
+A wikilink can carry an optional relation type and an optional observation date, so an edge says
+*how* and *when* two memories relate, not just *that* they do:
+
+| Form | Meaning |
+|---|---|
+| `[[name]]` | bare — untyped, undated (unchanged; every existing link keeps working) |
+| `[[name\|alias]]` | display alias (unchanged) |
+| `[[supersedes:name]]` | typed edge |
+| `[[supersedes:name @2026-07-14]]` | typed **and** dated |
+| `[[name @2026-07-14]]` | untyped, dated |
+
+The type is a **closed vocabulary of exactly five** — `supersedes`, `caused-by`, `about`,
+`contradicts`, `part-of` — plus untyped (`RELATION_TYPES` in `index.ts`). This is deliberately
+not an extensible registry: a prefix that isn't one of the five isn't a type, and since a kebab
+name can't contain `:`, such a token is simply not a link (no edge, no phantom). Parse groups
+land on `MemoryEdge.rel` / `.date`; recall's one-hop expansion turns them into a directional
+reason (`new-plan supersedes old-plan (observed 2026-07-14)`), a typed edge outranks an
+incidental prose mention (`edgeWeight`), and generated `## Backlinks` annotate the field
+(`[[from]] (supersedes, 2026-07-14)`). Merge/rename (`renameWikilinkTarget`) preserves the type,
+alias, and date. Zero migration: bare links parse and resolve exactly as before.
+
 ## Invariants — do not break these
 
 - **Files are canonical.** Never persist graph state anywhere the markdown tree can't rebuild.
