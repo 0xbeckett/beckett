@@ -20,7 +20,12 @@ import { corpusStats, scoreNode, type Audience } from "./search.ts";
 import type { Logger } from "../types.ts";
 
 const tmpDirs: string[] = [];
-afterEach(() => {
+const openStores: MemoryStore[] = [];
+afterEach(async () => {
+  // Close every store BEFORE deleting its dir: close() clears the Moss 50ms persist timer and
+  // settles any in-flight write, so a deferred persist() can't race its mkdir against the rmSync
+  // below (which resurrected the temp dir and left the next test's index write hitting ENOENT).
+  for (const store of openStores.splice(0)) await store.close();
   for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 

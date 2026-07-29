@@ -335,6 +335,19 @@ export class MemoryStore implements Memory {
     return this.moss;
   }
 
+  /**
+   * Release the Moss retrieval handle: clear its pending 50ms persist timer and settle any
+   * in-flight durable write before returning (delegates to {@link LocalMoss.close}). A store is
+   * otherwise fire-and-forget — nothing closes it — so a caller that tears down the memory dir
+   * right after a write/recall (e.g. a test `rmSync`-ing its tmpdir in `afterEach`) can race the
+   * coalescing timer's `mkdir` against the delete and see an ENOENT (or a resurrected temp dir).
+   * Await `close()` first and that race is gone. Idempotent; the handle reopens lazily on reuse.
+   */
+  async close(): Promise<void> {
+    await this.moss?.close();
+    this.moss = undefined;
+  }
+
   /** Post-write index sync for remember/maintain/reindex — best-effort, never throws
    *  (recall's own sync heals any miss on the next call). */
   private async syncMossQuietly(g: MemoryGraph): Promise<void> {

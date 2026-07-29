@@ -266,6 +266,23 @@ export class LocalMoss {
     }
   }
 
+  /**
+   * Orderly shutdown of this handle: block any further durable write, cancel the pending
+   * coalescing timer, and AWAIT the in-flight persist chain to settle. Unlike {@link dispose}
+   * (a fire-and-forget abandon for a cache that was just wiped), `close` guarantees that once it
+   * resolves no `persist()` is still running or scheduled — so a caller tearing down the handle's
+   * data dir (e.g. a test `rmSync`-ing its tmpdir) can never race the deferred timer's `mkdir`
+   * against the delete inside `atomicWrite`. Idempotent.
+   */
+  async close(): Promise<void> {
+    this.closed = true;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    await this.persistChain.catch(() => {});
+  }
+
   private schedulePersist(): void {
     if (this.closed) return;
     this.dirty = true;
