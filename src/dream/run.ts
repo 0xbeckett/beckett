@@ -36,9 +36,9 @@ import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import type { Config, Logger, Paths } from "../types.ts";
+import type { Config, LaneHarness, Logger, Paths } from "../types.ts";
 import { extractVerdictJson } from "../concierge/triage.ts";
-import { childEnv } from "../env.ts";
+import { buildLaneCommand, laneChildEnv, parseLaneOutput, resolveLaneSeat, warnLaneGaps } from "../drivers/lane.ts";
 import { createMemory, DREAM_NAME_RE, type MemoryStore } from "../memory/index.ts";
 import { createChannelContextStore, type ChannelContextStore } from "../concierge/channel-context.ts";
 import { assembleDreamInputs, type DreamInputs, type DreamSourceSection } from "./assemble.ts";
@@ -714,22 +714,43 @@ function defaultChannels(config: Config, paths: Paths, logger: Logger): ChannelC
  * Tools the one-shot reflection child is explicitly denied. The containment does NOT rest on
  * this list (the write path is this process's code, not the child's hands) — it exists so the
  * dream model cannot even READ outside its assembled input: no shell, no filesystem, no web.
+ *
+ * This is the CLAUDE spelling of "no tools" (claude has no single switch for it). pi says the
+ * same thing in one flag, `--no-tools`, which the lane seam emits instead — a stronger guarantee,
+ * since it also covers tools this list was never updated to name.
  */
 const DREAM_DISALLOWED_TOOLS =
   "Bash,BashOutput,KillShell,Read,Glob,Grep,LS,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task,TodoWrite";
 
-/** The default model seam: a tool-less one-shot `claude -p`, usage read from its JSON result. */
+/**
+ * The default model seam: a tool-less one-shot harness run, usage read from its result frames.
+ *
+ * pi by default since #125; `[harness.lanes.dream] harness = "claude"` pins it back, in which
+ * case the model falls back to this lane's historical key (`dream.model` else `concierge.model`)
+ * so the pinned behavior is exactly the pre-#125 one.
+ */
 export function defaultDreamModelCall(config: Config, logger: Logger): DreamModelCall {
-  const bin = config.harness.claude.bin;
-  const model = config.dream.model.trim() || config.concierge.model;
+  const seat = resolveLaneSeat(config, "dream", {
+    claudeModel: config.dream.model.trim() || config.concierge.model,
+  });
   // A scratch cwd (not the repo, not $HOME) so even an allowed relative read has nothing to see.
   const cwd = join(tmpdir(), "beckett-dream");
   return async (prompt: string): Promise<DreamModelResult> => {
     mkdirSync(cwd, { recursive: true });
-    const proc = Bun.spawn(
-      [bin, "-p", prompt, "--model", model, "--output-format", "json", "--disallowedTools", DREAM_DISALLOWED_TOOLS],
-      { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: childEnv() },
-    );
+    const command = buildLaneCommand(config, seat, {
+      prompt,
+      output: "json",
+      noTools: true,
+      disallowedTools: DREAM_DISALLOWED_TOOLS.split(","),
+    });
+    warnLaneGaps(logger, command);
+    const proc = Bun.spawn([command.bin, ...command.args], {
+      cwd,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: laneChildEnv(),
+    });
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -747,7 +768,7 @@ export function defaultDreamModelCall(config: Config, logger: Logger): DreamMode
       const code = await proc.exited;
       if (timedOut) throw new Error(`dream model call timed out after ${MODEL_CALL_TIMEOUT_MS / 60_000}m`);
       if (code !== 0) throw new Error(`dream model call exited ${code}: ${stderr.trim().slice(0, 400)}`);
-      return parseModelResult(stdout, logger);
+      return parseModelResult(stdout, logger, seat.harness);
     } finally {
       clearTimeout(timer);
     }
@@ -755,36 +776,46 @@ export function defaultDreamModelCall(config: Config, logger: Logger): DreamMode
 }
 
 /**
- * The default spike harness (issue #38): ONE `claude -p` run INSIDE the spike worktree — the
- * only dream-engine child that holds tools, which is exactly why it runs behind the worker
- * scope guard (delivered via `--settings`, baked by {@link runSpike}) plus explicit deny rules
- * for push/GitHub/deploy. Turn-capped, wall-clock-capped, and its output tokens are read from
- * the result frame so the pass can charge them against the nightly ceiling.
+ * The default spike harness (issue #38): ONE one-shot run INSIDE the spike worktree — the only
+ * dream-engine child that holds tools. Turn-capped where the harness supports it, wall-clock
+ * capped always, and its output tokens are read from the result frames so the pass can charge
+ * them against the nightly ceiling.
+ *
+ * CONTAINMENT, and what moving to pi (#125) costs. The spike's walls are, in order: (1) it runs
+ * in a THROWAWAY git worktree on a `dream/spike/*` branch that no code path in the tree merges,
+ * pushes, or hands to the tracker; (2) `runSpike` bakes a settings file carrying the worker scope
+ * guard plus explicit deny rules for push/gh/deploy; (3) a tool denylist; (4) a turn cap.
+ *
+ * Walls (1) and (3) hold on both harnesses. Walls (2) and (4) are claude-only: pi has no
+ * settings-file hook and no `--max-turns` (see `LANE_GAPS` in `src/drivers/lane.ts`). Under pi the
+ * lane seam reports both as unsupported and {@link warnLaneGaps} logs them by name on every spike,
+ * so this is a stated cost rather than a silent one — and the same trade the ticket workers have
+ * already been running under since #121, since `PiDriver` ignores `SpawnSpec.settingsPath` too.
+ * The named fix is a pi extension hooking `tool_call` to re-implement the scope guard and count
+ * turns; that is its own branch, not this one. Pin the lane with
+ * `[harness.lanes.dream_spike] harness = "claude"` to get walls (2) and (4) back today.
  */
 export function defaultSpikeHarnessCall(config: Config, logger: Logger): SpikeHarnessCall {
-  const bin = config.harness.claude.bin;
-  const model = config.dream.model.trim() || config.concierge.model;
+  const seat = resolveLaneSeat(config, "dream_spike", {
+    claudeModel: config.dream.model.trim() || config.concierge.model,
+  });
   return async (prompt, opts) => {
-    const proc = Bun.spawn(
-      [
-        bin,
-        "-p",
-        prompt,
-        "--model",
-        model,
-        "--output-format",
-        "json",
-        "--permission-mode",
-        config.harness.claude.permission_mode,
-        "--settings",
-        opts.settingsPath,
-        "--max-turns",
-        String(SPIKE_MAX_TURNS),
-        "--disallowedTools",
-        SPIKE_DISALLOWED_TOOLS,
-      ],
-      { cwd: opts.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: childEnv() },
-    );
+    const command = buildLaneCommand(config, seat, {
+      prompt,
+      output: "json",
+      unattended: true,
+      settingsPath: opts.settingsPath,
+      maxTurns: SPIKE_MAX_TURNS,
+      disallowedTools: SPIKE_DISALLOWED_TOOLS.split(","),
+    });
+    warnLaneGaps(logger, command, { cwd: opts.cwd });
+    const proc = Bun.spawn([command.bin, ...command.args], {
+      cwd: opts.cwd,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: laneChildEnv(),
+    });
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -802,25 +833,34 @@ export function defaultSpikeHarnessCall(config: Config, logger: Logger): SpikeHa
       const code = await proc.exited;
       if (timedOut) throw new Error(`spike harness timed out after ${SPIKE_TIMEOUT_MS / 60_000}m`);
       if (code !== 0) throw new Error(`spike harness exited ${code}: ${stderr.trim().slice(0, 400)}`);
-      return parseModelResult(stdout, logger);
+      return parseModelResult(stdout, logger, seat.harness);
     } finally {
       clearTimeout(timer);
     }
   };
 }
 
-/** Pull result text + output-token usage out of `--output-format json` stdout, defensively. */
-export function parseModelResult(stdout: string, logger?: Logger): DreamModelResult {
-  const parsed = JSON.parse(stdout.trim()) as Record<string, unknown>;
-  const text = typeof parsed.result === "string" ? parsed.result : stdout.trim();
-  const usage = (parsed.usage ?? null) as Record<string, unknown> | null;
-  const reported = usage && typeof usage.output_tokens === "number" ? usage.output_tokens : null;
-  if (reported === null) {
-    // No usage in the frame (older CLI) — estimate so the ceiling still means something.
-    logger?.warn("dream: no output_tokens in model result; estimating from length");
+/**
+ * Pull result text + output-token usage out of a finished lane process's stdout, defensively.
+ * The per-harness frame shapes live in {@link parseLaneOutput}; what's left here is the dream's
+ * own policy — a harness that reported no usage still has to cost something against the ceiling,
+ * so its output is estimated from length rather than counted as free.
+ */
+export function parseModelResult(
+  stdout: string,
+  logger?: Logger,
+  harness: LaneHarness = "claude",
+): DreamModelResult {
+  const parsed = parseLaneOutput(harness, "json", stdout);
+  if (parsed.error) throw new Error(`dream model call failed: ${parsed.error.slice(0, 400)}`);
+  const text = parsed.text;
+  if (parsed.outputTokens === null) {
+    // No usage in the frames (an older CLI, or a run that died mid-turn) — estimate so the
+    // ceiling still means something.
+    logger?.warn("dream: no output tokens in model result; estimating from length", { harness });
     return { text, outputTokens: Math.ceil(text.length / 4) };
   }
-  return { text, outputTokens: reported };
+  return { text, outputTokens: parsed.outputTokens };
 }
 
 /** Wall-clock local date (YYYY-MM-DD) in a tz — the entry's name and the memories' date stamp. */

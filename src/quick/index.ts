@@ -1,17 +1,22 @@
 /**
  * Beckett quick agents - the no-ticket lane.
  *
- * Fire-and-report errands only: each run spawns a short-lived `claude -p` harness, blocks up to
+ * Fire-and-report errands only: each run spawns a short-lived one-shot harness, blocks up to
  * the sync window for its report, and otherwise detaches and reports back through the Concierge
  * as an update turn. Anything that must pause for a human mid-run does not belong here — browser
  * / computer-use work lives in the dedicated background browser agent (`src/browser/agent.ts`).
+ *
+ * The harness is pi by default (#125) and the argv comes from the shared lane seam
+ * ({@link ../drivers/lane.ts}), not from a private `claude -p` string built here. Pin the lane
+ * back with `[harness.lanes.quick] harness = "claude"` — no code change, and the claude path
+ * restores this lane's exact pre-#125 seat (`quick.model` at `quick.effort`).
  */
 
 import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildPaths } from "../paths.ts";
-import { childEnv } from "../env.ts";
+import { buildLaneCommand, laneChildEnv, parseLaneOutput, resolveLaneSeat, warnLaneGaps } from "../drivers/lane.ts";
 import type { Config, Logger } from "../types.ts";
 
 export interface QuickAgentDef {
@@ -131,40 +136,38 @@ export function createQuickRunner(deps: CreateQuickRunnerDeps): QuickRunner {
     }
   }
 
-  function baseEnv(): Record<string, string | undefined> {
-    const env = childEnv();
-    const home = process.env.HOME ?? "";
-    const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");
-    env.PATH = env.PATH ? `${extra}:${env.PATH}` : extra;
-    return env;
-  }
 
   function spawnRun(entry: LiveRun, input: string): Promise<void> {
     const { run, runDir, systemPrompt } = entry;
-    const args = [
-      "-p",
-      input,
-      "--output-format",
-      "text",
-      "--permission-mode",
-      config.harness.claude.permission_mode,
-      "--model",
-      config.quick.model,
-      "--append-system-prompt",
-      systemPrompt,
-    ];
-    if (config.quick.effort) args.push("--effort", config.quick.effort);
+    // The seat is config, not code: `[harness.lanes.quick]` decides claude vs pi (and, under pi,
+    // which provider/model), with `quick.model` as the claude fallback so a pin restores the old
+    // behavior byte for byte.
+    const seat = resolveLaneSeat(config, "quick", { claudeModel: config.quick.model, effort: config.quick.effort });
+    const command = buildLaneCommand(config, seat, {
+      prompt: input,
+      appendSystemPrompt: systemPrompt,
+      output: "text",
+      unattended: true,
+    });
+    warnLaneGaps(logger, command, { runId: run.runId, agent: run.agent });
 
-    logger.info("quick run starting", { runId: run.runId, agent: run.agent, cwd: runDir });
+    logger.info("quick run starting", {
+      runId: run.runId,
+      agent: run.agent,
+      cwd: runDir,
+      harness: seat.harness,
+      model: seat.model,
+      provider: seat.provider || undefined,
+    });
     let child: ReturnType<typeof Bun.spawn>;
     try {
       child = spawn({
-        cmd: [config.harness.claude.bin, ...args],
+        cmd: [command.bin, ...command.args],
         cwd: runDir,
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        env: baseEnv(),
+        env: laneChildEnv(),
       });
       entry.child = child;
     } catch (error) {
@@ -200,7 +203,14 @@ export function createQuickRunner(deps: CreateQuickRunnerDeps): QuickRunner {
         );
         return;
       }
-      const report = stdout.trim();
+      const parsed = parseLaneOutput(seat.harness, "text", stdout);
+      // pi exits 0 even when its last turn died on a provider error (missing credential, backend
+      // down), so the exit code alone would report that empty run as a finished errand.
+      if (parsed.error) {
+        await finalize(entry, "error", `Agent failed: ${truncate(parsed.error, 500)}`);
+        return;
+      }
+      const report = parsed.text;
       await finalize(entry, report ? "done" : "error", report || "Agent exited cleanly but produced no report.");
     })().catch((error) => finalize(entry, "error", `Run collapsed: ${String(error)}`));
   }

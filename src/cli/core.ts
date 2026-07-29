@@ -1650,7 +1650,7 @@ function summarizeAgent(agent: AgentDefinition): Record<string, unknown> {
   return {
     id: agent.id,
     description: agent.description,
-    harness: agent.model.harness,
+    harness: agent.model.harness ?? "(lane default)",
     model: agent.model.model,
     effort: agent.model.effort || "(harness default)",
     skills: agent.skills,
@@ -1703,8 +1703,10 @@ async function createAgentFromFlags(
   if (!systemPrompt.trim()) fail(`an agent needs a --prompt (system prompt). ${usage}`);
   const model = flags.model ? String(flags.model) : "";
   if (!model.trim()) fail(`an agent needs a --model. ${usage}`);
-  const harness = flags.harness ? String(flags.harness) : "claude";
-  if (!(AGENT_HARNESSES as readonly string[]).includes(harness)) {
+  // No --harness ⇒ no pin: the agent follows the lane default (`[harness.lanes.agent]`, #125),
+  // so moving the lane moves every agent that never asked for a specific harness.
+  const harness = flags.harness ? String(flags.harness) : "";
+  if (harness && !(AGENT_HARNESSES as readonly string[]).includes(harness)) {
     fail(`--harness must be one of: ${AGENT_HARNESSES.join(", ")}`);
   }
   const effort = flags.effort !== undefined ? String(flags.effort) : "medium";
@@ -1716,7 +1718,11 @@ async function createAgentFromFlags(
       id,
       description: description.trim(),
       systemPrompt,
-      model: { harness: harness as AgentDefinition["model"]["harness"], model, effort: effort as AgentDefinition["model"]["effort"] },
+      model: {
+        ...(harness ? { harness: harness as AgentDefinition["model"]["harness"] } : {}),
+        model,
+        effort: effort as AgentDefinition["model"]["effort"],
+      },
       skills: splitList(flags.skills),
       tools: splitList(flags.tools),
       persistent: flags.persistent === true,

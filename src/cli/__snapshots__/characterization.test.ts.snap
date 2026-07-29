@@ -1770,6 +1770,31 @@ default_provider = "openai-codex"
 default_model = "gpt-5.6-terra"
 thinking = "high"
 
+[harness.lanes.quick]
+harness = "pi"
+provider = ""
+model = ""
+
+[harness.lanes.agent]
+harness = "pi"
+provider = ""
+model = ""
+
+[harness.lanes.browser]
+harness = "claude"
+provider = ""
+model = ""
+
+[harness.lanes.dream]
+harness = "pi"
+provider = ""
+model = ""
+
+[harness.lanes.dream_spike]
+harness = "pi"
+provider = ""
+model = ""
+
 [paths]
 home = "/home/beckett"
 beckett_dir = "/home/beckett/.beckett"

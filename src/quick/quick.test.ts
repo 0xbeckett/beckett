@@ -1,10 +1,11 @@
 /** Quick-runner lifecycle: the fire-and-report no-ticket lane. */
 
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Config, Logger } from "../types.ts";
+import type { Config, LaneHarness, Logger } from "../types.ts";
+import { laneConfig, writeClaudeLaneStub, writePiLaneStub } from "../test/lane-stubs.ts";
 import { createQuickRunner, findAgent, QUICK_AGENTS, type QuickRun } from "./index.ts";
 
 const quietLog = (() => {
@@ -12,23 +13,11 @@ const quietLog = (() => {
   return logger as unknown as Logger;
 })();
 
-function writeStubBin(dir: string): string {
-  const bin = join(dir, "claude-stub.sh");
-  writeFileSync(
-    bin,
-    `#!/bin/bash
-task="$2"
-printf '%s\n' "$@" > "$PWD/args.txt"
-case "$task" in *SLEEP1*) sleep 1 ;; *SLEEPLONG*) sleep 30 ;; esac
-if [[ "$task" == *FAIL* ]]; then echo "boom" >&2; exit 3; fi
-echo "REPORT:$task"
-`,
-  );
-  chmodSync(bin, 0o755);
-  return bin;
-}
-
-function makeConfig(dir: string, overrides: Partial<Config["quick"]> = {}): Config {
+function makeConfig(
+  dir: string,
+  overrides: Partial<Config["quick"]> = {},
+  lane: LaneHarness = "pi",
+): Config {
   return {
     paths: {
       beckett_dir: dir,
@@ -49,21 +38,35 @@ function makeConfig(dir: string, overrides: Partial<Config["quick"]> = {}): Conf
       max_concurrent: 2,
       ...overrides,
     },
-    harness: { claude: { bin: writeStubBin(dir), permission_mode: "bypassPermissions", extra_flags: [] } },
+    harness: {
+      claude: { bin: writeClaudeLaneStub(dir), default_model: "claude-default", permission_mode: "bypassPermissions", extra_flags: [] },
+      pi: { bin: writePiLaneStub(dir), default_provider: "openai-codex", default_model: "gpt-5.6-terra", thinking: "high" },
+      lanes: laneConfig({ quick: { harness: lane } }),
+    },
   } as unknown as Config;
 }
 
-function setup(overrides: Partial<Config["quick"]> = {}) {
+function setup(overrides: Partial<Config["quick"]> = {}, lane: LaneHarness = "pi") {
   const dir = mkdtempSync(join(tmpdir(), "quick-test-"));
   const detached: QuickRun[] = [];
   const runner = createQuickRunner({
-    config: makeConfig(dir, overrides),
+    config: makeConfig(dir, overrides, lane),
     logger: quietLog,
     onDetachedResult: (run) => {
       detached.push(run);
     },
   });
   return { dir, runner, detached };
+}
+
+/** The argv the stub recorded for the most recent run in `dir`. */
+function recordedArgs(dir: string): string[] {
+  const runs = readdirSync(join(dir, "quick"));
+  for (const run of runs) {
+    const path = join(dir, "quick", run, "args.txt");
+    if (existsSync(path)) return readFileSync(path, "utf8").trim().split("\n");
+  }
+  throw new Error("no quick run recorded its argv");
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
@@ -80,6 +83,56 @@ describe("registry", () => {
     expect(findAgent("quick-code")?.name).toBe("quick-code");
     expect(findAgent("computer-use")).toBeUndefined();
     expect(setup().runner.agents()).toHaveLength(2);
+  });
+});
+
+describe("harness lane (#125)", () => {
+  test("quick agents spawn under pi by default and return a usable report", async () => {
+    for (const agent of QUICK_AGENTS) {
+      const { dir, runner } = setup();
+      const out = await runner.run(agent.name, `summarize this for ${agent.name}`, "chan");
+      if (!("done" in out)) throw new Error("expected sync result");
+      expect(out.state).toBe("done");
+      // The report survives pi's NDJSON envelope, not just claude's plain text.
+      expect(out.result).toBe(`REPORT:summarize this for ${agent.name}`);
+
+      const args = recordedArgs(dir);
+      expect(args).toContain("--mode");
+      expect(args).toContain("json");
+      expect(args).toContain("--provider");
+      expect(args).toContain("openai-codex");
+      expect(args).toContain("gpt-5.6-terra"); // pi's default model, not the claude `quick.model`
+      expect(args).toContain("--thinking");
+      // The prompt is positional under pi and must be last.
+      expect(args.at(-1)).toBe(`summarize this for ${agent.name}`);
+      // The agent's system prompt still reaches the harness.
+      expect(args).toContain("--append-system-prompt");
+      // claude-only flags must not leak into a pi invocation.
+      expect(args).not.toContain("--permission-mode");
+      expect(args).not.toContain("--output-format");
+    }
+  });
+
+  test('[harness.lanes.quick] harness = "claude" pins the lane back, restoring its old seat', async () => {
+    const { dir, runner } = setup({}, "claude");
+    const out = await runner.run("quick-code", "say hi", "chan");
+    if (!("done" in out)) throw new Error("expected sync result");
+    expect(out).toMatchObject({ state: "done", result: "REPORT:say hi" });
+
+    const args = recordedArgs(dir);
+    expect(args).toContain("--output-format");
+    expect(args).toContain("--permission-mode");
+    expect(args).toContain("test-model"); // config.quick.model — the pre-#125 seat, unchanged
+    expect(args).toContain("--effort");
+    expect(args).not.toContain("--mode");
+  });
+
+  test("a pi run whose last turn died on a provider error is an error, not an empty success", async () => {
+    const { runner } = setup();
+    const out = await runner.run("quick-code", "PIERROR please", "chan");
+    if (!("done" in out)) throw new Error("expected sync result");
+    expect(out.state).toBe("error");
+    expect(out.result).toContain("No API key found for anthropic");
   });
 });
 

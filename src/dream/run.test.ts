@@ -4,7 +4,7 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { defaultConfig } from "../config.ts";
@@ -12,7 +12,15 @@ import { buildPaths } from "../paths.ts";
 import { createMemory, type MemoryStore } from "../memory/index.ts";
 import { listDreamEntries, readDreamEntry } from "./journal.ts";
 import { PROPOSAL_TTL_DAYS, createProposal, listProposals, readProposal } from "../proposal/store.ts";
-import { localDate, parseModelResult, runDreamPass, DREAM_TZ, type DreamRunDeps } from "./run.ts";
+import {
+  defaultDreamModelCall,
+  defaultSpikeHarnessCall,
+  localDate,
+  parseModelResult,
+  runDreamPass,
+  DREAM_TZ,
+  type DreamRunDeps,
+} from "./run.ts";
 import type { Logger, Paths } from "../types.ts";
 
 const dirs: string[] = [];
@@ -480,4 +488,111 @@ test("parseModelResult reads output_tokens from the harness frame, estimating on
   const withoutUsage = parseModelResult(JSON.stringify({ result: "hello there" }), quiet);
   expect(withoutUsage.text).toBe("hello there");
   expect(withoutUsage.outputTokens).toBeGreaterThan(0);
+});
+
+test("parseModelResult reads pi's NDJSON frames too — text from message_end, tokens from turn_end", () => {
+  const stream = [
+    '{"type":"session","id":"s"}',
+    '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"dreamt a thing"}]}}',
+    '{"type":"turn_end","message":{"usage":{"input":9,"output":77}}}',
+    '{"type":"agent_end"}',
+  ].join("\n");
+  expect(parseModelResult(stream, quiet, "pi")).toEqual({ text: "dreamt a thing", outputTokens: 77 });
+
+  // pi exits 0 after a turn that died on the provider; the ceiling must not be charged for a
+  // run that produced nothing, and the pass must see a failure rather than an empty dream.
+  const dead = [
+    '{"type":"session","id":"s"}',
+    '{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"No API key found for anthropic.","content":[]}}',
+    '{"type":"agent_end"}',
+  ].join("\n");
+  expect(() => parseModelResult(dead, quiet, "pi")).toThrow(/No API key/);
+});
+
+// ── #125: both dream call sites run under pi ──────────────────────────────────────────────
+
+/** A `pi -p --mode json` stub: records argv, answers in NDJSON, exits 0. */
+function piStub(dir: string): string {
+  const bin = join(dir, "pi-stub.sh");
+  writeFileSync(
+    bin,
+    `#!/bin/bash
+printf '%s\\n' "$@" > "${dir}/args.txt"
+echo '{"type":"session","id":"s"}'
+echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"REFLECTION"}]}}'
+echo '{"type":"turn_end","message":{"usage":{"output":33}}}'
+echo '{"type":"agent_end"}'
+`,
+  );
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
+function piLaneConfig(dir: string, lanes: Record<string, string> = {}) {
+  const config = defaultConfig();
+  config.harness.pi.bin = piStub(dir);
+  for (const [lane, harness] of Object.entries(lanes)) {
+    config.harness.lanes[lane as keyof typeof config.harness.lanes].harness = harness as "claude" | "pi";
+  }
+  return config;
+}
+
+test("the dream reflection call spawns pi, tool-less, and reads its usage back", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "dream-lane-"));
+  dirs.push(dir);
+  const result = await defaultDreamModelCall(piLaneConfig(dir), quiet)("reflect on today");
+  expect(result).toEqual({ text: "REFLECTION", outputTokens: 33 });
+
+  const args = readFileSync(join(dir, "args.txt"), "utf8").trim().split("\n");
+  expect(args).toContain("--mode");
+  expect(args).toContain("--provider");
+  // pi says "no tools" in one flag, which is stronger than claude's hand-maintained denylist.
+  expect(args).toContain("--no-tools");
+  expect(args).not.toContain("--disallowedTools");
+  expect(args.at(-1)).toBe("reflect on today");
+});
+
+test("the spike harness spawns pi inside the spike worktree", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "dream-spike-lane-"));
+  dirs.push(dir);
+  const result = await defaultSpikeHarnessCall(piLaneConfig(dir), quiet)("build the spike", {
+    cwd: dir,
+    settingsPath: join(dir, "settings.json"),
+  });
+  expect(result).toEqual({ text: "REFLECTION", outputTokens: 33 });
+
+  const args = readFileSync(join(dir, "args.txt"), "utf8").trim().split("\n");
+  expect(args).toContain("--mode");
+  expect(args).toContain("--exclude-tools");
+  // The claude-only containment flags are NOT smuggled into a pi argv as no-ops.
+  expect(args).not.toContain("--settings");
+  expect(args).not.toContain("--max-turns");
+  expect(args.at(-1)).toBe("build the spike");
+});
+
+test("pinning a dream lane back to claude restores its claude argv, including the scope-guard settings file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "dream-claude-lane-"));
+  dirs.push(dir);
+  const config = piLaneConfig(dir, { dream_spike: "claude" });
+  const claudeBin = join(dir, "claude-stub.sh");
+  writeFileSync(
+    claudeBin,
+    `#!/bin/bash
+printf '%s\\n' "$@" > "${dir}/args.txt"
+echo '{"result":"CLAUDE","usage":{"output_tokens":7}}'
+`,
+  );
+  chmodSync(claudeBin, 0o755);
+  config.harness.claude.bin = claudeBin;
+
+  const result = await defaultSpikeHarnessCall(config, quiet)("build the spike", {
+    cwd: dir,
+    settingsPath: join(dir, "settings.json"),
+  });
+  expect(result).toEqual({ text: "CLAUDE", outputTokens: 7 });
+
+  const args = readFileSync(join(dir, "args.txt"), "utf8").trim().split("\n");
+  expect(args).toContain("--settings");
+  expect(args).toContain("--max-turns");
+  expect(args).toContain("--disallowedTools");
 });

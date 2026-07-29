@@ -7,6 +7,8 @@ import { join } from "node:path";
 import type { BrowserRuntime } from "./runtime.ts";
 import type { Config, Logger } from "../types.ts";
 import type { KeychainReader } from "../secret/keychain-read.ts";
+import { laneConfig } from "../test/lane-stubs.ts";
+import { resolveLaneSeat } from "../drivers/lane.ts";
 import {
   contextPreamble,
   createBrowserAgent,
@@ -69,7 +71,32 @@ printf '%s\n' "$out"
   return bin;
 }
 
-function makeConfig(dir: string, overrides: Partial<Config["quick"]> = {}): Config {
+/**
+ * A `pi -p --mode json` stub for the browser lane. It answers in pi's NDJSON with a well-formed
+ * result object and DELIBERATELY never touches the attach marker — pi has no MCP client, so the
+ * browser tool can never register. That is exactly the failure the lane has to surface.
+ */
+function writePiStubBin(dir: string): string {
+  const bin = join(dir, "pi-stub.sh");
+  writeFileSync(
+    bin,
+    `#!/bin/bash
+printf '%s\\n' "$@" >> "$PWD/args.txt"
+echo '{"type":"session","id":"s"}'
+echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\\"status\\":\\"completed\\",\\"summary\\":\\"BROWSER:pi\\",\\"question\\":null,\\"proofApplicable\\":true}"}]}}'
+echo '{"type":"turn_end","message":{"usage":{"output":5}}}'
+echo '{"type":"agent_end"}'
+`,
+  );
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
+function makeConfig(
+  dir: string,
+  overrides: Partial<Config["quick"]> = {},
+  lane: "claude" | "pi" = "claude",
+): Config {
   return {
     paths: {
       beckett_dir: dir,
@@ -100,7 +127,11 @@ function makeConfig(dir: string, overrides: Partial<Config["quick"]> = {}): Conf
       browser_question_wait_secs: 60,
       ...overrides,
     },
-    harness: { claude: { bin: writeStubBin(dir), permission_mode: "bypassPermissions", extra_flags: [] } },
+    harness: {
+      claude: { bin: writeStubBin(dir), default_model: "claude-default", permission_mode: "bypassPermissions", extra_flags: [] },
+      pi: { bin: writePiStubBin(dir), default_provider: "anthropic", default_model: "claude-opus-5", thinking: "high" },
+      lanes: laneConfig({ browser: { harness: lane } }),
+    },
   } as unknown as Config;
 }
 
@@ -181,13 +212,14 @@ function setup(
     browser?: BrowserRuntime;
     keychain?: KeychainReader;
     dir?: string;
+    lane?: "claude" | "pi";
   } = {},
 ) {
   const dir = behavior.dir ?? mkdtempSync(join(tmpdir(), "browser-agent-test-"));
   const outcomes: BrowserAgentRun[] = [];
   const questions: { run: BrowserAgentRun; question: BrowserAgentQuestion }[] = [];
   const agent = createBrowserAgent({
-    config: makeConfig(dir, overrides),
+    config: makeConfig(dir, overrides, behavior.lane),
     logger: quietLog,
     browser: behavior.browser ?? fakeBrowser(),
     ...(behavior.keychain ? { keychain: behavior.keychain } : {}),
@@ -740,6 +772,52 @@ describe("browser tool attach", () => {
     expect(questions).toHaveLength(0);
     // One retry: the first attempt missed the tool, the second attached and completed.
     expect(countLegs(dir, runId)).toBe(2);
+  });
+});
+
+describe("harness lane (#125)", () => {
+  test("the lane stays on claude by default, and the reason is a specific missing pi capability", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "browser-lane-"));
+    const seat = resolveLaneSeat(makeConfig(dir), "browser");
+    expect(seat.harness).toBe("claude");
+
+    // Not a blanket "pi is unproven" — the gap is MCP, and only MCP. #85.1 already proved pi
+    // forwards image content, so screenshots are not what keeps this lane here.
+    const { agent, outcomes, dir: runDir } = setup();
+    const { runId } = await agent.run("plain task", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => outcomes.length === 1);
+    const args = readFileSync(join(runDir, "browser-agent", runId, "args.txt"), "utf8").split("\n");
+    expect(args).toContain("--mcp-config");
+    expect(args).toContain("--strict-mcp-config");
+    // `--tools` REPLACES claude's built-in set, so the browser agent holds the browser and nothing
+    // else. `--allowedTools` would only widen permission and leave Bash/Read/Write in its hands.
+    expect(args).toContain("--tools");
+    expect(args).not.toContain("--allowedTools");
+    expect(args).toContain("mcp__browser__betterwright_browser");
+  });
+
+  test('pinning [harness.lanes.browser] to "pi" really spawns pi — and fails loudly for the named reason', async () => {
+    const { dir, agent, outcomes, questions } = setup({}, { lane: "pi" });
+    const { runId } = await agent.run("post the thread", { channelId: "chan", requesterId: "owner" });
+    await waitUntil(() => outcomes.length === 1, 8_000);
+
+    // The lever is real: a pi argv, built by the shared seam, not a config key that does nothing.
+    const args = readFileSync(join(dir, "browser-agent", runId, "args.txt"), "utf8").split("\n");
+    expect(args).toContain("--mode");
+    expect(args).toContain("--provider");
+    expect(args).toContain("anthropic");
+    // pi has no MCP, so none of the MCP flags are smuggled in as no-ops.
+    expect(args).not.toContain("--mcp-config");
+    expect(args).not.toContain("--json-schema");
+    // …and because it cannot ENFORCE the result schema, the contract is stated in the prompt.
+    expect(args.join("\n")).toContain("OUTPUT CONTRACT");
+
+    // And the consequence is the existing loud diagnostic, not a plausible-looking fake result:
+    // the browser tool cannot attach under pi, so the run is infra-failed rather than "done".
+    expect(outcomes[0]!.state).toBe("error");
+    expect(outcomes[0]!.result).toContain("failed to attach");
+    expect(outcomes[0]!.result).toContain("pi has no MCP client");
+    expect(questions).toHaveLength(0);
   });
 });
 

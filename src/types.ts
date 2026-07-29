@@ -36,6 +36,27 @@
  */
 export type Harness = "claude" | "codex" | "pi" | (string & {});
 
+/**
+ * The non-worker agent lanes (#125): the short-lived, prompt-in/text-out agents Beckett runs
+ * OUTSIDE the ticket pipeline. Each owns a `[harness.lanes.<name>]` config block and spawns
+ * through the shared seam in `src/drivers/lane.ts`.
+ */
+export type LaneName = "quick" | "agent" | "browser" | "dream" | "dream_spike";
+
+/**
+ * Harnesses a one-shot lane can spawn. `codex` is absent on purpose: `codex exec` has no
+ * `--append-system-prompt` and no tool allow/denylist, so it cannot honor a lane seat.
+ */
+export type LaneHarness = "claude" | "pi";
+
+/** One lane's harness pin. See `src/drivers/lane.ts#resolveLaneSeat` for the precedence rules. */
+export interface HarnessLaneConfig {
+  harness: LaneHarness;
+  /** pi `--provider` for this lane. "" ⇒ `harness.pi.default_provider`. Ignored by claude. */
+  provider: string;
+  /** Model id for this lane. "" ⇒ the resolved harness's own default (see resolveLaneSeat). */
+  model: string;
+}
 
 /** Which concrete driver runs a harness process (Spec 02 §2). */
 export type DriverKind = "claude-cli-stream" | "codex-exec-oneshot" | "pi-cli-stream";
@@ -808,6 +829,13 @@ export interface Config {
       /** Reasoning depth (pi `--thinking`). */
       thinking: Effort;
     };
+    /**
+     * Per-lane harness pins for the NON-worker agent lanes (#125). Every lane in
+     * `src/drivers/lane.ts` reads its block here, so any one of them can be moved between
+     * `claude` and `pi` from config alone — these lanes fail in different ways, so the lever is
+     * per-lane rather than one fleet-wide rollback.
+     */
+    lanes: Record<LaneName, HarnessLaneConfig>;
   };
   paths: {
     home: string;

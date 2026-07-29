@@ -7,12 +7,18 @@
  * spawns the seat. Adding a new agent is `beckett agent add` (pure data) — this runner already
  * knows how to run it, no core edit and no redeploy.
  *
- * The design mirrors the quick lane ({@link ../quick/index.ts}): spawn `claude -p` with the agent's
- * system prompt appended and its granted tools scoped, block for the text output, and hand that back
- * to the caller. Unlike quick it does NOT own delivery — the CALLER decides what to do with the
- * output. That seam is what lets the daily-shitpost routine drive the `social-media` agent (which
- * AUTHORS a post) and then hand the authored task to the privileged background browser lane, so a
- * headless routine can post to X without a Discord mention token.
+ * The design mirrors the quick lane ({@link ../quick/index.ts}): spawn a one-shot harness with the
+ * agent's system prompt appended and its granted tools scoped, block for the text output, and hand
+ * that back to the caller. Unlike quick it does NOT own delivery — the CALLER decides what to do
+ * with the output. That seam is what lets the daily-shitpost routine drive the `social-media` agent
+ * (which AUTHORS a post) and then hand the authored task to the privileged background browser lane,
+ * so a headless routine can post to X without a Discord mention token.
+ *
+ * SEATS ARE REAL (#125). This lane used to REFUSE any agent whose seat wasn't claude — the schema
+ * let you register `harness: "pi"` and the runner threw on it. It now spawns whatever the seat
+ * names through the shared lane seam ({@link ../drivers/lane.ts}); an agent that names no harness
+ * follows `[harness.lanes.agent]` (pi by default), which is also the lever for pinning the whole
+ * lane back to claude without touching an agent definition.
  *
  * No secret ever flows through here — credential injection happens downstream in the browser lane,
  * keyed by an entry NAME the caller carries. This runner only turns a definition into a process.
@@ -22,7 +28,15 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildPaths } from "../paths.ts";
-import { childEnv } from "../env.ts";
+import {
+  buildLaneCommand,
+  isLaneHarness,
+  laneChildEnv,
+  parseLaneOutput,
+  resolveLaneSeat,
+  warnLaneGaps,
+  type LaneCommand,
+} from "../drivers/lane.ts";
 import type { Config, Logger } from "../types.ts";
 import type { AgentDefinition } from "./types.ts";
 
@@ -63,40 +77,38 @@ export interface AgentRunner {
 }
 
 /**
- * Build the harness argv for an agent seat. Only `claude` can be spawned in this lane today (the
- * backbone harness); `codex`/`pi` are valid seats in the schema but not yet spawnable here — the
- * throw is the clean seam where that support slots in without any caller change.
+ * Build the harness command for an agent seat. The seat's `harness` wins when the definition names
+ * one — an agent that says `pi` means it — and an agent that names none follows the lane default
+ * (`[harness.lanes.agent]`). `codex` is the one seat this lane still can't spawn: `codex exec` has
+ * neither `--append-system-prompt` nor a tool allowlist, so it cannot honor an agent definition at
+ * all. That is a harness limitation stated where it applies, not a blanket "claude only" refusal.
  *
- * `tools` (when non-empty) NARROWS the harness's tool surface via `--allowedTools`; empty = harness
- * defaults, the schema convention. Skills are globally available to the harness and named by the
- * agent's prompt, so granting a skill is documentation of intent plus (for skills the harness gates)
- * an allow entry — both flow through the same list.
+ * `tools` (when non-empty) NARROWS the harness's tool surface (`--allowedTools` / pi's `--tools`);
+ * empty = harness defaults, the schema convention. Skills are globally available to the harness and
+ * named by the agent's prompt, so granting a skill is documentation of intent plus (for skills the
+ * harness gates) an allow entry — both flow through the same list.
  */
-export function buildAgentArgs(
-  config: Config,
-  def: AgentDefinition,
-  input: string,
-): { bin: string; args: string[] } {
-  if (def.model.harness !== "claude") {
+export function buildAgentCommand(config: Config, def: AgentDefinition, input: string): LaneCommand {
+  const seatHarness = def.model.harness;
+  if (seatHarness && !isLaneHarness(seatHarness)) {
     throw new Error(
-      `agent ${def.id}: harness "${def.model.harness}" is not spawnable in the live-agent lane yet (only claude)`,
+      `agent ${def.id}: harness "${seatHarness}" cannot run in the live-agent lane — ` +
+        `codex exec has no --append-system-prompt or tool allowlist, so it cannot honor an agent seat. ` +
+        `Use claude or pi.`,
     );
   }
-  const args = [
-    "-p",
-    input,
-    "--output-format",
-    "text",
-    "--permission-mode",
-    config.harness.claude.permission_mode,
-    "--model",
-    def.model.model || config.harness.claude.default_model,
-    "--append-system-prompt",
-    def.systemPrompt,
-  ];
-  if (def.model.effort) args.push("--effort", def.model.effort);
-  if (def.tools.length > 0) args.push("--allowedTools", def.tools.join(","));
-  return { bin: config.harness.claude.bin, args };
+  const seat = resolveLaneSeat(config, "agent", {
+    harness: seatHarness,
+    model: def.model.model,
+    effort: def.model.effort,
+  });
+  return buildLaneCommand(config, seat, {
+    prompt: input,
+    appendSystemPrompt: def.systemPrompt,
+    output: "text",
+    unattended: true,
+    allowedTools: def.tools,
+  });
 }
 
 export function createAgentRunner(deps: CreateAgentRunnerDeps): AgentRunner {
@@ -107,10 +119,7 @@ export function createAgentRunner(deps: CreateAgentRunnerDeps): AgentRunner {
   mkdirSync(runsDir, { recursive: true, mode: 0o700 });
 
   function baseEnv(opts: AgentRunOptions): Record<string, string | undefined> {
-    const env = childEnv();
-    const home = process.env.HOME ?? "";
-    const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");
-    env.PATH = env.PATH ? `${extra}:${env.PATH}` : extra;
+    const env = laneChildEnv();
     // Expose the origin so an agent that wants to route a confirmation back knows where to.
     if (opts.channelId) env.BECKETT_ORIGIN_CHANNEL_ID = opts.channelId;
     if (opts.requesterId) env.BECKETT_ORIGIN_REQUESTER_ID = opts.requesterId;
@@ -129,20 +138,27 @@ export function createAgentRunner(deps: CreateAgentRunnerDeps): AgentRunner {
       const runDir = join(runsDir, runId);
       mkdirSync(runDir, { recursive: true, mode: 0o700 });
 
-      let bin: string;
-      let args: string[];
+      let command: LaneCommand;
       try {
-        ({ bin, args } = buildAgentArgs(config, def, input));
+        command = buildAgentCommand(config, def, input);
       } catch (err) {
         outcome.error = (err as Error).message;
         return outcome;
       }
+      warnLaneGaps(logger, command, { runId, agent: def.id });
 
-      logger.info("agent run starting", { runId, agent: def.id, model: def.model.model, cwd: runDir });
+      logger.info("agent run starting", {
+        runId,
+        agent: def.id,
+        harness: command.seat.harness,
+        model: command.seat.model,
+        provider: command.seat.provider || undefined,
+        cwd: runDir,
+      });
       let child: ReturnType<typeof Bun.spawn>;
       try {
         child = spawn({
-          cmd: [bin, ...args],
+          cmd: [command.bin, ...command.args],
           cwd: runDir,
           stdin: "ignore",
           stdout: "pipe",
@@ -184,7 +200,16 @@ export function createAgentRunner(deps: CreateAgentRunnerDeps): AgentRunner {
         logger.warn("agent run failed", { runId, agent: def.id, code });
         return outcome;
       }
-      const report = stdout.trim();
+      const parsed = parseLaneOutput(command.seat.harness, "text", stdout);
+      // pi exits 0 even when its final turn died on a provider error, so a clean exit code is not
+      // by itself evidence the agent ran.
+      if (parsed.error) {
+        outcome.state = "error";
+        outcome.error = `agent failed: ${truncate(parsed.error, 500)}`;
+        logger.warn("agent run failed", { runId, agent: def.id, error: parsed.error });
+        return outcome;
+      }
+      const report = parsed.text;
       if (!report) {
         outcome.state = "error";
         outcome.error = "agent exited cleanly but produced no output";
