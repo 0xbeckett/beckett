@@ -34,10 +34,18 @@ const quietLog: Logger = (() => {
   return q as unknown as Logger;
 })();
 
+/** Every store the suite opens is registered here so afterEach can close() it (settle the persist
+ *  timer) before the dir is removed. Covers tempStore() stores AND the "fresh"/pre-moss reload
+ *  stores that read the same dir across a simulated session boundary. */
+function track(store: MemoryStore): MemoryStore {
+  openStores.push(store);
+  return store;
+}
+
 function tempStore(): { store: MemoryStore; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "beckett-moss-recall-"));
   tmpDirs.push(dir);
-  return { store: createMemory({ memoryDir: dir, logger: quietLog, git: false }), dir };
+  return { store: track(createMemory({ memoryDir: dir, logger: quietLog, git: false })), dir };
 }
 
 /** Ids currently in the on-disk moss sidecar — proof of what the index holds. */
@@ -158,7 +166,7 @@ test("a pre-moss store (bare markdown files) is fully migrated on first recall",
   ].join("\n"));
   expect(existsSync(memoryMossDir(dir))).toBe(false);
 
-  const store = createMemory({ memoryDir: dir, logger: quietLog, git: false });
+  const store = track(createMemory({ memoryDir: dir, logger: quietLog, git: false }));
   const r = await store.recall({ text: "where is the cloudflared tunnel token" });
   expect(r.hits.map((h) => h.node.name)).toContain("loom-desk");
   expect(indexedIds(dir)).toEqual(["jason", "loom-desk"]); // every existing file is indexed
@@ -213,7 +221,7 @@ test("remember and update keep the moss index in sync (content hash changes with
   expect(after).toContain("completely different second wording");
 
   // And the fresh wording is retrievable via a fresh store (cross-session, from disk).
-  const fresh = createMemory({ memoryDir: dir, logger: quietLog, git: false });
+  const fresh = track(createMemory({ memoryDir: dir, logger: quietLog, git: false }));
   const r = await fresh.recall({ text: "different second wording" });
   expect(r.hits[0]!.node.name).toBe("fact");
 });
@@ -237,7 +245,7 @@ test("maintain-archiving a node removes it from the moss index (delete stays in 
 
   // The post-delete index must survive a reload intact: a FRESH store (new process in real
   // life) queries the persisted binary and only the surviving fact comes back.
-  const fresh = createMemory({ memoryDir: dir, logger: quietLog, git: false });
+  const fresh = track(createMemory({ memoryDir: dir, logger: quietLog, git: false }));
   const r = await fresh.recall({ text: "a fact that stays" });
   expect(r.hits.map((h) => h.node.name)).toEqual(["keeper"]);
 });
@@ -261,7 +269,7 @@ test("a corrupt .moss cache is reset and rebuilt — recall keeps working", asyn
   writeFileSync(join(memoryMossDir(dir), `${MEMORY_INDEX_NAME}.moss`), "not a moss index");
 
   // A FRESH store must reload from disk, hit the corrupt binary, reset, and resync.
-  const fresh = createMemory({ memoryDir: dir, logger: quietLog, git: false });
+  const fresh = track(createMemory({ memoryDir: dir, logger: quietLog, git: false }));
   const r = await fresh.recall({ text: "cloudflare tunnel deploy", audience: viewer("owner", "guild", OTHER) });
   expect(r.hits.map((h) => h.node.name).sort()).toEqual(["deploy-owner", "deploy-public"]);
   expect(indexedIds(dir)).toEqual(["deploy-dm", "deploy-owner", "deploy-public"]);
