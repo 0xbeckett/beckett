@@ -1,6 +1,7 @@
 /** Pure renderers for compact Discord embeds. They receive aggregates, never source patches. */
 import type { DiscordButton, DiscordEmbed } from "../types.ts";
-import type { BranchCardSnapshot } from "../task/status.ts";
+import type { BranchCardSnapshot, TaskCardBranchSnapshot, TaskCardSnapshot } from "../task/status.ts";
+import type { TaskBranchStatus } from "../task/store.ts";
 import { componentId } from "./interactions.ts";
 
 const GREEN = 0x2ea043;
@@ -75,6 +76,120 @@ export function renderBranchEmbed(card: BranchCardSnapshot): DiscordEmbed {
     footer: { text: `Branch ${card.status} · aggregate Git status only` },
     timestamp: card.updatedAt,
   };
+}
+
+// ── task card (#104): one self-editing embed per task, machine state only ──────────────────────
+
+/** Human label for each lifecycle state the card reflects. */
+const BRANCH_STATE_LABEL: Record<TaskBranchStatus, string> = {
+  ready: "Queued",
+  waiting: "Waiting on dependencies",
+  designing: "Designing",
+  approval: "Awaiting design approval",
+  running: "Running",
+  review: "In review",
+  blocked: "Stalled",
+  done: "Done",
+  cancelled: "Cancelled",
+};
+
+/** A dot per state so the card scans at a glance without depending on field colour. */
+const BRANCH_STATE_ICON: Record<TaskBranchStatus, string> = {
+  ready: "⚪",
+  waiting: "⚪",
+  designing: "🔵",
+  approval: "🟡",
+  running: "🔵",
+  review: "🟡",
+  blocked: "🔴",
+  done: "🟢",
+  cancelled: "⚫",
+};
+
+/**
+ * The whole task as one embed: title, aggregate colour, and a field per branch carrying its
+ * lifecycle state and — once work has produced them — the artifact and preview links. This is
+ * machine state, edited in place; it never speaks in Beckett's voice.
+ */
+export function renderTaskCardEmbed(snapshot: TaskCardSnapshot): DiscordEmbed {
+  const fields: NonNullable<DiscordEmbed["fields"]> = snapshot.branches.map((branch) => ({
+    name: truncate(`#${branch.ref} · ${branch.title}`, 240),
+    value: branchLine(branch),
+  }));
+  if (fields.length === 0) fields.push({ name: "Branches", value: "No branches yet" });
+  return {
+    title: truncate(`#${snapshot.number} - ${snapshot.title}`, 240),
+    description: taskStateLine(snapshot),
+    color: taskCardColor(snapshot),
+    fields,
+    footer: { text: "Live task card · updates in place" },
+    timestamp: snapshot.updatedAt,
+  };
+}
+
+/** The card's controls: per-branch link/merge/cancel plus one task-level attach. */
+export function taskCardButtons(snapshot: TaskCardSnapshot): DiscordButton[] {
+  const buttons: DiscordButton[] = [];
+  for (const branch of snapshot.branches) {
+    if (branch.artifact) {
+      buttons.push({
+        label: branch.artifact.kind === "pull_request"
+          ? `Open PR${branch.pullRequestNumber ? ` #${branch.pullRequestNumber}` : ""}`
+          : "Open repository",
+        url: branch.artifact.url,
+      });
+    }
+    if (branch.status === "done" && branch.pullRequestNumber) {
+      buttons.push({ label: `Merge #${branch.ref}`, customId: componentId("merge", branch.ref) });
+    }
+    if (branch.status !== "cancelled" && branch.status !== "done") {
+      buttons.push({ label: `Cancel #${branch.ref}`, customId: componentId("cancel", branch.ref), danger: true });
+    }
+  }
+  // The interaction channel (not this card's location) is the workspace target, so attach carries
+  // the task number and the click resolves the destination from where it was pressed.
+  buttons.push({ label: "Attach to this thread", customId: componentId("attach", String(snapshot.number)) });
+  return buttons;
+}
+
+function branchLine(branch: TaskCardBranchSnapshot): string {
+  const parts = [`${BRANCH_STATE_ICON[branch.status]} ${BRANCH_STATE_LABEL[branch.status]}`];
+  if (branch.artifact) {
+    parts.push(branch.artifact.kind === "pull_request"
+      ? `[PR${branch.pullRequestNumber ? ` #${branch.pullRequestNumber}` : ""}](${branch.artifact.url})`
+      : `[Repository](${branch.artifact.url})`);
+  }
+  if (branch.preview) parts.push(`[Live preview](${branch.preview.url})`);
+  return parts.join(" · ");
+}
+
+function taskStateLine(snapshot: TaskCardSnapshot): string {
+  const total = snapshot.branches.length;
+  const done = snapshot.branches.filter((b) => b.status === "done").length;
+  const cancelled = snapshot.branches.filter((b) => b.status === "cancelled").length;
+  const label = snapshot.status === "done"
+    ? "Done"
+    : snapshot.status === "cancelled"
+      ? "Cancelled"
+      : snapshot.status === "paused"
+        ? "Paused"
+        : "Active";
+  return total > 0
+    ? `**${label}** · ${done}/${total} branches done${cancelled ? ` · ${cancelled} cancelled` : ""}`
+    : `**${label}**`;
+}
+
+function taskCardColor(snapshot: TaskCardSnapshot): number {
+  if (snapshot.branches.some((b) => b.status === "blocked")) return RED;
+  if (snapshot.status === "done") return GREEN;
+  if (snapshot.status === "cancelled") return GRAY;
+  if (snapshot.branches.some((b) => b.status === "review" || b.status === "approval")) return AMBER;
+  if (snapshot.branches.some((b) => b.status === "running" || b.status === "designing")) return BLUE;
+  return GRAY;
+}
+
+function truncate(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
 function branchColor(card: BranchCardSnapshot): number {

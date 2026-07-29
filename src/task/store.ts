@@ -407,6 +407,16 @@ export class TaskStore {
     });
   }
 
+  /**
+   * Record (or replace) the id + channel of this task's one self-editing card (#104). Replacing is
+   * the deleted-card repost path: the old id is gone from Discord, so the fresh one overwrites it.
+   */
+  async setCard(taskRef: string | number, card: { channelId: string; messageId: string }): Promise<WorkTask> {
+    return this.updateTask(taskRef, (task) => {
+      task.card = { ...card, updatedAt: this.now().toISOString() };
+    });
+  }
+
   async linkTicket(
     branchRef: string,
     link: TaskTicketLink,

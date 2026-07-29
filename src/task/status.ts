@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import type { GitHubBranchCardReader, BranchCardCheckSummary, PrLifecycle } from "../github/types.ts";
 import { readLocalBranchStats, type LocalBranchStats } from "../git/branch-stats.ts";
 import { gitBranchForTicket } from "../git/branch-name.ts";
-import type { TaskBranchStatus, TaskStore } from "./store.ts";
+import type { TaskBranch, TaskBranchStatus, TaskStatus, TaskStore, WorkTask } from "./store.ts";
 
 export interface BranchCardSnapshot {
   ref: string;
@@ -21,6 +21,60 @@ export interface BranchCardSnapshot {
   review?: { decision: string; count: number };
   discussion?: { comments: number };
   updatedAt: string;
+}
+
+/**
+ * One branch as the task card shows it (#104): its public ref, title, lifecycle state, and — once
+ * work has produced one — its artifact link and live preview. Built purely from the durable task
+ * registry (no GitHub call), because a card that re-renders on every lifecycle change must be cheap
+ * and must never expose a tracker ticket identifier.
+ */
+export interface TaskCardBranchSnapshot {
+  ref: string;
+  title: string;
+  status: TaskBranchStatus;
+  /** The shipped/published thing, when it exists: an open/merged PR or a pushed branch. */
+  artifact?: { url: string; kind: "pull_request" | "published" };
+  /** A live, externally-reachable preview surfaced while the branch is in review. */
+  preview?: { url: string };
+  /** The open pull request's number, when one exists (its merge state lives on GitHub, not here). */
+  pullRequestNumber?: number;
+}
+
+/** The whole task as its one self-editing card shows it: title, aggregate state, and every branch. */
+export interface TaskCardSnapshot {
+  number: number;
+  title: string;
+  status: TaskStatus;
+  branches: TaskCardBranchSnapshot[];
+  updatedAt: string;
+}
+
+/** Project the durable task registry row onto the card snapshot. Pure and synchronous by design. */
+export function taskCardSnapshot(task: WorkTask): TaskCardSnapshot {
+  return {
+    number: task.number,
+    title: task.title,
+    status: task.status,
+    branches: task.branches.map(branchCardEntry),
+    updatedAt: task.updatedAt,
+  };
+}
+
+function branchCardEntry(branch: TaskBranch): TaskCardBranchSnapshot {
+  const artifact = branch.pullRequest
+    ? { url: branch.pullRequest.url, kind: "pull_request" as const }
+    : branch.publication
+      ? { url: branch.publication.url, kind: "published" as const }
+      : undefined;
+  return {
+    ref: branch.ref,
+    title: branch.title,
+    status: branch.status,
+    ...(artifact ? { artifact } : {}),
+    ...(branch.preview ? { preview: { url: branch.preview.url } } : {}),
+    ...(branch.pullRequest ? { pullRequestNumber: branch.pullRequest.number } : {}),
+  };
 }
 
 export interface BranchStatusServiceOptions {
