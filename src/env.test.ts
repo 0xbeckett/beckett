@@ -18,6 +18,31 @@ test("isForbiddenEnvKey keeps ordinary vars", () => {
   }
 });
 
+test("isForbiddenEnvKey allowlists ANTHROPIC_OAUTH_TOKEN but keeps the other Anthropic creds forbidden (#127)", () => {
+  // the subscription OAuth token pi needs for --provider anthropic must pass through…
+  expect(isForbiddenEnvKey("ANTHROPIC_OAUTH_TOKEN")).toBe(false);
+  // …while the API key, per-token API auth, and endpoint override all stay stripped
+  expect(isForbiddenEnvKey("ANTHROPIC_API_KEY")).toBe(true);
+  expect(isForbiddenEnvKey("ANTHROPIC_AUTH_TOKEN")).toBe(true);
+  expect(isForbiddenEnvKey("ANTHROPIC_BASE_URL")).toBe(true);
+});
+
+test("childEnv passes ANTHROPIC_OAUTH_TOKEN through but strips ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL (#127)", () => {
+  process.env.ANTHROPIC_OAUTH_TOKEN = "sk-ant-oat0-sentinel";
+  process.env.ANTHROPIC_AUTH_TOKEN = "sk-ant-api-sentinel";
+  process.env.ANTHROPIC_BASE_URL = "https://foreign.example";
+  try {
+    const env = childEnv();
+    expect(env.ANTHROPIC_OAUTH_TOKEN).toBe("sk-ant-oat0-sentinel");
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+  } finally {
+    delete process.env.ANTHROPIC_OAUTH_TOKEN;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    delete process.env.ANTHROPIC_BASE_URL;
+  }
+});
+
 test("childEnv strips forbidden vars from the live environment and layers extras", () => {
   process.env.ANTHROPIC_TEST_SENTINEL = "leak";
   process.env.BECKETT_TEST_SENTINEL = "keep";
