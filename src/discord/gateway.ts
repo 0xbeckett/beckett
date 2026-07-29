@@ -199,6 +199,9 @@ export class DiscordJsGateway implements DiscordGateway {
   /** Component callback. Components need no applications.commands OAuth scope or slash command. */
   private interactionHandler: ((i: DiscordComponentInteraction) => void | Promise<void>) | undefined;
 
+  /** Reaction callback (#103): a react is a second trigger for the component action set. */
+  private reactionHandler: ((r: IncomingReaction) => void | Promise<void>) | undefined;
+
   /** Outbound posts buffered while disconnected (Spec 01 §6 — flushed on reconnect). */
   private readonly outbound: QueuedPost[] = [];
   /**
@@ -646,6 +649,33 @@ export class DiscordJsGateway implements DiscordGateway {
     this.interactionHandler = cb;
   }
 
+  /** Register the single reaction handler owned by the Concierge (#103). A later call replaces it. */
+  onReaction(cb: (r: IncomingReaction) => void | Promise<void>): void {
+    if (this.reactionHandler) this.logger.warn("discord onReaction handler replaced");
+    this.reactionHandler = cb;
+  }
+
+  /**
+   * Add ONE reaction to a message — the cheapest acknowledgement Discord offers (#103), and the
+   * primitive behind the react-as-ack and `beckett discord react` verbs. Fetches the target so an
+   * uncached message can still be reacted to; a deleted target (Unknown Message / 10008) is a
+   * no-op rather than an error, matching {@link deleteMessage}.
+   */
+  async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    const client = this.client;
+    if (!client) throw new Error("discord gateway not started");
+    const channel = await client.channels.fetch(channelId);
+    if (!channel?.isTextBased()) throw new Error(`discord channel ${channelId} is not text based`);
+    try {
+      const message = await channel.messages.fetch(messageId);
+      await message.react(emoji);
+    } catch (error) {
+      if ((error as { code?: unknown }).code === 10_008) return; // Unknown Message — already gone
+      throw error;
+    }
+    this.lastEventTs = Date.now();
+  }
+
   /**
    * Join a thread so Beckett stays a member of it: Discord keeps delivering to members, an
    * archived thread unarchives when a member posts, and the thread stops silently falling out of
@@ -770,6 +800,29 @@ export class DiscordJsGateway implements DiscordGateway {
             await interaction.editReply({ content: "That action could not be completed." }).catch(() => undefined);
           }
         });
+    });
+
+    // A reaction ADDED to a message (#103). A reaction on a message posted before the daemon
+    // cached it arrives partial — the reaction, its message, and even its user can be stubs — so we
+    // fetch each before reading it. Bots (including ourselves) are dropped BEFORE any fetch or log:
+    // a busy channel's unrelated emoji must not cost a REST call or a log line per event.
+    client.on(Events.MessageReactionAdd, (reaction, user) => {
+      if (user.bot) return;
+      this.lastEventTs = Date.now();
+      void Promise.resolve()
+        .then(async () => {
+          const handler = this.reactionHandler;
+          if (!handler) return;
+          const normalized = await this.normalizeReaction(reaction, user);
+          if (!normalized) return;
+          await handler(normalized);
+        })
+        .catch((err) =>
+          this.logger.error("discord onReaction handler threw", {
+            messageId: reaction.message.id,
+            error: String(err),
+          }),
+        );
     });
 
     // A person's thread SURFACED → a workspace candidate. We deliberately no longer drop
@@ -905,6 +958,45 @@ export class DiscordJsGateway implements DiscordGateway {
           ))],
         })),
       })),
+    };
+  }
+
+  /**
+   * Normalize a raw reactionAdd into the contract's {@link IncomingReaction} (#103), fetching
+   * whatever arrived partial. Returns null when the reaction cannot be resolved (a deleted message,
+   * lost access) or once a fetched partial user turns out to be a bot after all — the caller then
+   * silently drops it, exactly like an unrelated emoji.
+   */
+  private async normalizeReaction(
+    reaction: MessageReaction | PartialMessageReaction,
+    user: User | PartialUser,
+  ): Promise<IncomingReaction | null> {
+    // A reaction on an uncached message arrives partial; fetch it (and the message) before we read
+    // the author or its components — the whole point of Partials.Reaction/Message.
+    if (reaction.partial) reaction = await reaction.fetch();
+    let message = reaction.message;
+    if (message.partial) message = await message.fetch();
+    // A partial user hid its bot flag; resolve it now and re-apply the self/bot guard fail-closed.
+    if (user.partial) user = await user.fetch();
+    if (user.bot) return null;
+
+    // Action-component ids ride along so the Concierge can decode which task/branch this message is
+    // for — they are transport data (a merge/cancel id encodes only a public ref), never authority.
+    const messageComponentIds: string[] = [];
+    for (const row of message.components ?? []) {
+      for (const component of (row as { components?: Array<{ customId?: string | null }> }).components ?? []) {
+        if (typeof component.customId === "string") messageComponentIds.push(component.customId);
+      }
+    }
+
+    return {
+      messageId: message.id,
+      channelId: message.channelId,
+      guildId: message.guildId ?? null,
+      userId: user.id,
+      emoji: reaction.emoji.name ?? null,
+      messageAuthorId: message.author?.id ?? null,
+      messageComponentIds,
     };
   }
 

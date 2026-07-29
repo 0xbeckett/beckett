@@ -32,7 +32,7 @@ import { dirname, join } from "node:path";
 // ONE version source (issue #29): package.json, the same file `BECKETT_VERSION` reads. Used to
 // stamp the restart release note's `-#` subheader so it tracks the shipped version, never a literal.
 import pkg from "../../package.json" with { type: "json" };
-import type { Config, IncomingMessage, Logger, ProactivityMode, ThreadCreated } from "../types.ts";
+import type { Config, IncomingMessage, IncomingReaction, Logger, ProactivityMode, ThreadCreated } from "../types.ts";
 import type { PollEvent, TicketComment, Ticket } from "../tracker/types.ts";
 import type { PrPollEvent, PrRef } from "../github/types.ts";
 import type { WatchRequest } from "../github/poll.ts";
@@ -109,7 +109,7 @@ import {
 } from "./reply-context.ts";
 import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
 import type { DiscordButton, DiscordEmbed, TaskThreadCreated } from "../types.ts";
-import { ComponentRouter, type ComponentActionContext } from "../discord/interactions.ts";
+import { ComponentRouter, decodeComponentId, type ComponentActionContext } from "../discord/interactions.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createTrackerClient } from "../tracker/client.ts";
 import { TaskStore, displayTaskName, type TaskBranch, type WorkTask } from "../task/store.ts";
@@ -2582,6 +2582,9 @@ export class Concierge {
     }
     if (typeof this.gateway.onInteraction === "function") {
       this.gateway.onInteraction((interaction) => this.componentRouter.dispatch(interaction));
+    }
+    if (typeof this.gateway.onReaction === "function") {
+      this.gateway.onReaction((reaction) => this.onReactionAdded(reaction));
     }
     const systemWarm = this.pool.warm(SYSTEM_SCOPE);
     const gatewayReady = this.gateway.start();
@@ -5364,6 +5367,40 @@ export class Concierge {
     await this.tasks.setBranchStatus(found.branch.ref, "cancelled");
     this.log.info("branch cancelled by component", { branch: found.branch.ref, byUserId: ctx.interaction.userId });
     return `Cancelled branch #${found.branch.ref}.`;
+  }
+
+  /**
+   * A reaction ADDED to a message (#103) — a second trigger for the component action set. A ✅ on a
+   * Beckett task card runs merge, an ❌ runs cancel, both through the EXACT SAME authorization +
+   * handler registry a button click uses (never a parallel copy). Everything that is not one of
+   * those two intents on one of Beckett's own task cards is dropped SILENTLY, with no per-event log:
+   * a busy channel's unrelated emoji must stay cheap and quiet.
+   */
+  private async onReactionAdded(r: IncomingReaction): Promise<void> {
+    const action = reactionActionFor(r.emoji);
+    if (!action) return; // an unrelated emoji — ignored silently, never logged per event
+
+    // The actions only make sense on Beckett's OWN task cards; a react on anyone else's message is
+    // noise. Comparing to the live bot id also drops self-reactions the gateway somehow let through.
+    const botId = this.gateway.botUserId();
+    if (!botId || r.messageAuthorId !== botId) return;
+
+    // The card's own merge/cancel buttons encode the branch ref; no ref means it is not a task card.
+    const target = reactionBranchTarget(r.messageComponentIds);
+    if (!target) return;
+
+    // Route through the ONE shared core: fresh reclassification of the reacting user, outsider
+    // refusal (no side effect), then the same verb handler the button would have run. The reaction
+    // has no ephemeral reply surface, so the returned text is logged, not shown.
+    const interaction = reactionInteraction(r);
+    const result = await this.componentRouter.execute(action, target, interaction);
+    this.log.info("discord reaction routed to component action", {
+      action,
+      target,
+      userId: r.userId,
+      channelId: r.channelId,
+      authorized: result.authorized,
+    });
   }
 
   private accessLevelFor(userId: string): AccessLevel {

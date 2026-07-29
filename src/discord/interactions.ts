@@ -60,24 +60,39 @@ export class ComponentRouter {
       await interaction.editReply("That control is unknown or out of date.");
       return;
     }
-    const handler = this.handlers.get(decoded.action);
-    if (!handler) {
-      await interaction.editReply("That control is not available here.");
-      return;
-    }
+    const result = await this.execute(decoded.action, decoded.target, interaction);
+    await interaction.editReply(result.message);
+  }
 
-    // Do this for EVERY click, rather than accepting the role/message that happened to create it.
+  /**
+   * The one authorization + dispatch core shared by every trigger. A component click routes here
+   * via {@link dispatch}; a reaction (#103) is a SECOND trigger for the same action set and routes
+   * here directly, so both get the identical fresh clicker reclassification, outsider refusal, and
+   * verb dispatch — never a parallel copy. `authorized` is false for a refusal or an unregistered
+   * action (a non-interaction caller uses it to decide whether any side effect ran).
+   */
+  async execute(
+    action: ComponentAction,
+    target: string,
+    interaction: DiscordComponentInteraction,
+  ): Promise<{ authorized: boolean; message: string }> {
+    const handler = this.handlers.get(action);
+    if (!handler) return { authorized: false, message: "That control is not available here." };
+
+    // Do this for EVERY trigger, rather than accepting the role/message that happened to create it.
     const access = this.classifyUser(interaction.userId);
     if (access === "outsider") {
-      await interaction.editReply("You are not authorized to use that control.");
-      return;
+      return { authorized: false, message: "You are not authorized to use that control." };
     }
 
     try {
-      await interaction.editReply(await handler({ ...decoded, interaction, access }));
+      return { authorized: true, message: await handler({ action, target, interaction, access }) };
     } catch {
       // Do not disclose internal errors or perform retries after a possibly ambiguous mutation.
-      await interaction.editReply("That action could not be completed. Please try again or check the branch status.");
+      return {
+        authorized: true,
+        message: "That action could not be completed. Please try again or check the branch status.",
+      };
     }
   }
 }
