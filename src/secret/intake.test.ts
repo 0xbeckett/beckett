@@ -135,6 +135,45 @@ describe("secret-link intake", () => {
     expect(secretRequestStatus(paths, minted.token).ok).toBe(true);
   });
 
+  test("edge whitespace from a wrapped paste is trimmed before storage", async () => {
+    const paths = tempPaths();
+    const minted = mintSecretRequest({
+      paths,
+      name: "OPENROUTER_API_KEY",
+      baseUrl: "https://secret.0xbeckett.me",
+      token: "e".repeat(43),
+    });
+    const handler = createSecretHandler({ paths });
+    const post = await handler(new Request(minted.url, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: urlencode({ OPENROUTER_API_KEY: "  dummy-secret\n" }),
+    }));
+    expect(post.status).toBe(200);
+    expect(readFileSync(paths.envFile, "utf8")).toBe("OPENROUTER_API_KEY=dummy-secret\n");
+  });
+
+  test("internal whitespace surviving the trim is rejected, not silently stripped or accepted", async () => {
+    const paths = tempPaths();
+    const minted = mintSecretRequest({
+      paths,
+      name: "OPENROUTER_API_KEY",
+      baseUrl: "https://secret.0xbeckett.me",
+      token: "f".repeat(43),
+    });
+    const handler = createSecretHandler({ paths });
+    const post = await handler(new Request(minted.url, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: urlencode({ OPENROUTER_API_KEY: "sk-ant oat01-broken" }),
+    }));
+    expect(post.status).toBe(400);
+    expect(await post.text()).toContain("whitespace");
+    expect(() => readFileSync(paths.envFile, "utf8")).toThrow();
+    // Link still live because nothing was written.
+    expect(secretRequestStatus(paths, minted.token).ok).toBe(true);
+  });
+
   test("keychain destination routes the batch to the injected sink, not env", async () => {
     const paths = tempPaths();
     const calls: unknown[] = [];

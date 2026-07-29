@@ -234,8 +234,14 @@ export async function redeemSecretRequest(
   // Collect + validate every declared field. Unknown submitted keys are ignored.
   const collected: { field: SecretFieldSpec; value: string }[] = [];
   for (const field of record.fields) {
-    const value = values[field.name];
-    if (typeof value !== "string" || value === "") return { ok: false, reason: "bad-value" };
+    const raw = values[field.name];
+    if (typeof raw !== "string" || raw === "") return { ok: false, reason: "bad-value" };
+    // Edge whitespace is almost always paste noise (wrapped terminal, trailing newline from
+    // clipboard); trim it silently. Internal whitespace could be a legitimate passphrase
+    // character, so it's neither stripped nor silently accepted — reject with a clear reason.
+    const value = raw.trim();
+    if (value === "") return { ok: false, reason: "bad-value" };
+    if (/\s/.test(value)) return { ok: false, reason: "whitespace" };
     if (!isSafeSecretValue(value)) return { ok: false, reason: "bad-value" };
     if (record.destination.kind === "env" && !canFormatEnvValue(value)) return { ok: false, reason: "bad-value" };
     collected.push({ field, value });
@@ -303,6 +309,9 @@ export function createSecretHandler(opts: SecretHandlerOptions): (req: Request) 
         storeInKeychain: opts.storeInKeychain,
       });
       if (redeemed.ok) return html(renderRedeemed(), 200);
+      if (redeemed.reason === "whitespace") {
+        return text("value contains whitespace — check for a wrapped paste, then try the link again", 400);
+      }
       if (redeemed.reason === "bad-value") return text("bad request", 400);
       if (redeemed.reason === "store-failed") return text("could not store — try the link again", 503);
       return unavailable();
