@@ -81,7 +81,7 @@ describe("worktree lifecycle (real git)", () => {
     const wtBase = (await run(["rev-parse", "HEAD"], ws)).stdout.trim();
     const originMain = (await run(["rev-parse", "origin/main"], repo)).stdout.trim();
     expect(wtBase).toBe(originMain);
-  });
+  }, 30_000); // real-git: fetch + worktree create shell-outs; needs headroom over the 5s default under full-suite parallel load
 
   test("the nested worktree is hidden from the parent repo's git add -A", async () => {
     await createWorktree({ repoRoot: repo, workspace: wtPath("t1"), branch: "beckett/t1", baseRef: "origin/main" });

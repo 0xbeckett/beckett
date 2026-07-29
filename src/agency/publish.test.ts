@@ -393,7 +393,7 @@ test("a dependent cut from pre-squash predecessor history squash-applies only it
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
+}, 30_000); // real-git: many shell-outs; needs headroom over the 5s default under full-suite parallel load
 
 test("case 1 — cloned third-party upstream: fork → push to fork → PR to upstream", async () => {
   const { gh, calls } = cli((j) => {
