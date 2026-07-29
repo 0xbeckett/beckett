@@ -388,3 +388,124 @@ test("a branch card requested inside a thread keeps attach controls in that curr
   expect(posts[0]?.channelId).toBe("thread-1");
   expect(posts[0]?.options?.buttons).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:42" });
 });
+
+/** The component action registry, reached the same way a button click or a reaction reaches it. */
+function componentRouterOf(concierge: Concierge) {
+  return (concierge as unknown as {
+    componentRouter: {
+      execute(
+        action: string,
+        target: string,
+        interaction: unknown,
+      ): Promise<{ authorized: boolean; message: string }>;
+    };
+  }).componentRouter;
+}
+
+function attachClick(overrides: Partial<{ channelId: string; isThread: boolean; messageId: string; userId: string }> = {}) {
+  return {
+    customId: "beckett:v1:attach:1",
+    userId: OWNER,
+    channelId: "channel-1",
+    isThread: false,
+    messageId: "card-msg-1",
+    editReply: async () => {},
+    ...overrides,
+  };
+}
+
+test("attach clicked in a plain channel creates a thread off the card's message, attaches the task, and posts a fresh card there (#112)", async () => {
+  const threadCreateCalls: Array<{ channelId: string; messageId: string; name: string }> = [];
+  const { concierge, tasks, posts } = harness({
+    createThreadFromMessage: async (channelId, messageId, name) => {
+      threadCreateCalls.push({ channelId, messageId, name });
+      return { threadId: "new-thread-1", parentChannelId: channelId, name };
+    },
+  });
+  await tasks.createTask({ title: "Ship export", originChannelId: "channel-1" });
+  const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
+
+  const result = await componentRouterOf(concierge).execute("attach", "1", attachClick());
+
+  expect(threadCreateCalls).toEqual([{ channelId: "channel-1", messageId: "card-msg-1", name: "#1 - Ship export" }]);
+  expect(result).toEqual({ authorized: true, message: expect.stringContaining("new-thread-1") });
+  expect(workspaces.channelForTask("1")).toBe("new-thread-1");
+  // A live card was posted INSIDE the new thread, not just a text reply.
+  const cardPost = posts.find((p) => p.channelId === "new-thread-1");
+  expect(cardPost?.options?.embeds?.length).toBe(1);
+  expect(tasks.getTask(1)?.card?.channelId).toBe("new-thread-1");
+});
+
+test("attach clicked inside an existing thread behaves exactly as before — no thread is created", async () => {
+  const threadCreateCalls: string[] = [];
+  const { concierge, tasks } = harness({
+    createThreadFromMessage: async (channelId) => {
+      threadCreateCalls.push(channelId);
+      return { threadId: "should-not-be-used", parentChannelId: channelId, name: "n/a" };
+    },
+  });
+  await tasks.createTask({ title: "Ship export", originChannelId: "channel-1" });
+  const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
+  workspaces.registerThread({ threadId: "thread-1", parentChannelId: "channel-1", name: "room", creatorId: OWNER });
+
+  const result = await componentRouterOf(concierge).execute(
+    "attach",
+    "1",
+    attachClick({ channelId: "thread-1", isThread: true }),
+  );
+
+  expect(threadCreateCalls).toEqual([]);
+  expect(result).toEqual({ authorized: true, message: expect.stringContaining("got it, #1 reports in here now.") });
+  expect(workspaces.channelForTask("1")).toBe("thread-1");
+});
+
+test("attach reuses a thread the card's message already has instead of erroring", async () => {
+  const { concierge, tasks } = harness({
+    createThreadFromMessage: async (channelId, _messageId, name) => ({
+      threadId: "already-existing-thread", parentChannelId: channelId, name,
+    }),
+  });
+  await tasks.createTask({ title: "Ship export", originChannelId: "channel-1" });
+  const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
+
+  const result = await componentRouterOf(concierge).execute("attach", "1", attachClick());
+
+  expect(result.authorized).toBe(true);
+  expect(result.message).toContain("already-existing-thread");
+  expect(workspaces.channelForTask("1")).toBe("already-existing-thread");
+});
+
+test("attach reports a thread-creation failure verbatim, never the old 'open a thread first' text", async () => {
+  const { concierge, tasks } = harness({
+    createThreadFromMessage: async () => { throw new Error("Missing Permissions"); },
+  });
+  await tasks.createTask({ title: "Ship export", originChannelId: "channel-1" });
+  const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
+
+  const result = await componentRouterOf(concierge).execute("attach", "1", attachClick());
+
+  expect(result.authorized).toBe(true);
+  expect(result.message).toContain("Missing Permissions");
+  expect(result.message).not.toContain("Open the target thread first");
+  expect(workspaces.channelForTask("1")).toBeNull();
+});
+
+test("attach from a plain channel still refuses an outsider without creating a thread", async () => {
+  const threadCreateCalls: string[] = [];
+  const { concierge, tasks } = harness({
+    createThreadFromMessage: async (channelId) => {
+      threadCreateCalls.push(channelId);
+      return { threadId: "new-thread-1", parentChannelId: channelId, name: "n/a" };
+    },
+  });
+  await tasks.createTask({ title: "Ship export", originChannelId: "channel-1" });
+
+  const result = await componentRouterOf(concierge).execute(
+    "attach",
+    "1",
+    attachClick({ userId: "stranger-1" }),
+  );
+
+  expect(threadCreateCalls).toEqual([]);
+  expect(result).toEqual({ authorized: false, message: "You are not authorized to use that control." });
+});
