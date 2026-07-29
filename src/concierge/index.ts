@@ -5052,14 +5052,6 @@ export class Concierge {
   }
 
   /**
-   * Capture one accepted inbound message into the shared channel record (OPS-80). Gated on the
-   * store existing (flag on) and the speaker being owner/member — the level is re-resolved by the
-   * CALLER at message time (both onMessage paths already compute it), so a revocation stops
-   * capture on the very next message. Attachments fold in as `[file: name]` placeholders; access
-   * level / owner flag / preferred address are deliberately NOT stored — they resolve at read
-   * time (§3.1). Best-effort by store contract: a capture failure can never break a turn.
-   */
-  /**
    * Same-author forward lookback (#111): a mention/DM turn with no forwardedSnapshots of its own
    * checks the last few captured entries in this channel for one FROM THIS SPEAKER, within a
    * short window — the observed real-world flow is "post a forward, then @mention seconds later
@@ -5082,6 +5074,14 @@ export class Concierge {
     return undefined;
   }
 
+  /**
+   * Capture one accepted inbound message into the shared channel record (OPS-80). Gated on the
+   * store existing (flag on) and the speaker being owner/member — the level is re-resolved by the
+   * CALLER at message time (both onMessage paths already compute it), so a revocation stops
+   * capture on the very next message. Attachments fold in as `[file: name]` placeholders; access
+   * level / owner flag / preferred address are deliberately NOT stored — they resolve at read
+   * time (§3.1). Best-effort by store contract: a capture failure can never break a turn.
+   */
   private captureInbound(m: IncomingMessage, level: AccessLevel): void {
     if (!this.channelStore || level === "outsider") return;
     const files = m.attachments.map((a) => `[file: ${a.name}]`).join(" ");
