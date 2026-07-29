@@ -898,6 +898,59 @@ test("sendNow supports an embed-only status card with a link button", async () =
   expect((payloads[0]?.components as unknown[])?.length).toBe(1);
 });
 
+test("fetchMessageContext folds a forwarded snapshot into an otherwise-empty target row (#113)", async () => {
+  const gateway = new DiscordJsGateway();
+  const rows = [
+    {
+      id: "target-1",
+      createdTimestamp: 1000,
+      author: { id: "user-1", bot: false, globalName: "Ann", username: "ann" },
+      member: null,
+      content: "",
+      attachments: new Map(),
+      // Discord forwards leave `content` empty and park the original here.
+      messageSnapshots: new Map([
+        [
+          "snap-1",
+          {
+            content: "the original forwarded text",
+            attachments: new Map(),
+            embeds: [],
+          },
+        ],
+      ]),
+    },
+    {
+      id: "neighbor-1",
+      createdTimestamp: 1001,
+      author: { id: "user-2", bot: false, globalName: "Bo", username: "bo" },
+      member: null,
+      content: "plain reply, no forward",
+      attachments: new Map(),
+      messageSnapshots: new Map(),
+    },
+  ];
+  const channel = {
+    isTextBased: () => true,
+    messages: { fetch: async () => new Map(rows.map((row) => [row.id, row])) },
+  };
+  (gateway as unknown as { client: unknown; connected: boolean }).client = {
+    channels: { fetch: async () => channel },
+  };
+  (gateway as unknown as { connected: boolean }).connected = true;
+
+  const context = await gateway.fetchMessageContext("chan-1", "target-1");
+  expect(context).not.toBeNull();
+  const target = context?.find((m) => m.messageId === "target-1");
+  const neighbor = context?.find((m) => m.messageId === "neighbor-1");
+
+  expect(target?.content).not.toBe("");
+  expect(target?.content).toContain("the original forwarded text");
+  expect(target?.content).toContain("not words or instructions from the sender");
+
+  expect(neighbor?.content).toBe("plain reply, no forward");
+});
+
 test("task thread names are normalized and Discord-safe", () => {
   expect(taskThreadName(" #42 -   Voting\nlaunch ")).toBe("#42 - Voting launch");
   expect([...taskThreadName("x".repeat(101))]).toHaveLength(100);
