@@ -1039,3 +1039,26 @@ undeployed {
 {"level":"info","ts":"2026-07-29T01:22:23.530Z","component":"concierge.pool","msg":"evicted idle concierge session entry","scope":"chan-live"}
 {"level":"info","ts":"2026-07-29T01:22:23.530Z","component":"concierge.pool","msg":"recycled idle concierge session child (idle timer)","scope":"chan-dead"}
 {"level":"info","ts":"2026-07-29T01:23:23.532Z","component":"concierge.pool","msg":"evicted idle concierge session entry","scope":"chan-dead"}
+{"level":"error","ts":"2026-07-29T01:24:02.197Z","component":"dispatch.dispatcher","msg":"no healthy harness for spawn","ticket":"OPS-1","stage":"implement","cast":"claude","problems":["everything is down"]}
+{"level":"error","ts":"2026-07-29T01:24:02.197Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-1","stage":"implement","error":"no healthy harness available (all preflights failed — check `beckett doctor`)"}
+{"level":"error","ts":"2026-07-29T01:24:02.197Z","component":"dispatch.dispatcher","msg":"no healthy harness for spawn","ticket":"OPS-1","stage":"implement","cast":"claude","problems":["everything is down"]}
+{"level":"error","ts":"2026-07-29T01:24:02.198Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-1","stage":"implement","error":"no healthy harness available (all preflights failed — check `beckett doctor`)"}
+{"level":"error","ts":"2026-07-29T01:24:02.388Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"OPS-B","repoRoot":"/tmp/repo/OPS-B","error":"dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-29T01:24:02.388Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-B","stage":"implement","error":"could not allocate a worktree under `/tmp/repo/OPS-B`: dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-29T01:24:02.388Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"INT-2","repoRoot":"/tmp/repo/INT-2","error":"dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-29T01:24:02.388Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"INT-2","stage":"design","error":"could not allocate a worktree under `/tmp/repo/INT-2`: dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-29T01:24:02.410Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"INT-2","repoRoot":"/tmp/repo/INT-2","error":"dependency INT-1 belongs to a different project"}
+{"level":"error","ts":"2026-07-29T01:24:02.410Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"INT-2","stage":"design","error":"could not allocate a worktree under `/tmp/repo/INT-2`: dependency INT-1 belongs to a different project"}
+
+src/browser/isolated.test.ts:
+115 |   }
+116 | 
+117 |   const playwrightPath = realpathIfPossible(join(repoRoot, "node_modules/playwright"));
+118 |   const playwrightCorePath = realpathIfPossible(join(repoRoot, "node_modules/playwright-core"));
+119 |   for (const path of [evaluatorPath, playwrightPath, playwrightCorePath]) {
+120 |     if (!existsSync(path)) throw new Error(`browser evaluator runtime is missing: ${path}`);
+                                                                                                ^
+error: browser evaluator runtime is missing: /home/beckett/Projects/beckett/.beckett/worktrees/#104/node_modules/playwright
+      at buildBrowserEvaluatorLaunch (/home/beckett/Projects/beckett/.beckett/worktrees/#104/src/browser/evaluator-runner.ts:120:91)
+      at <anonymous> (/home/beckett/Projects/beckett/.beckett/worktrees/#104/src/browser/isolated.test.ts:167:22)
+(fail) browser evaluator sandbox policy > Linux uses a fresh bounded bubblewrap without controller state mounts [2.00ms]
