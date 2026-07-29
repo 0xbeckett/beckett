@@ -368,10 +368,11 @@ export const configFragments = {
     .default({}),
   models: z
     .object({
-      // Default reviewer model (issue #27): Sonnet reads a diff against criteria extremely well
-      // at a fraction of Opus cost/latency. Opus reviews remain one explicit cast away
-      // (`review: {model: "claude-opus-5", effort: "xhigh"}`) for correctness-critical work.
-      reviewer: z.string().min(1).default("claude-sonnet-5"),
+      // Default reviewer model (issue #27, reseated in #121): Fable 5 reads a diff against
+      // criteria extremely well at a fraction of Opus cost/latency. It runs on the review stage's
+      // fixed pi + `anthropic` routing, so this key names a CLAUDE model id. Opus reviews remain
+      // one explicit cast away (`review: {model: "claude-opus-5", effort: "xhigh"}`).
+      reviewer: z.string().min(1).default("claude-fable-5"),
     })
     .default({}),
   harness: HarnessConfigSchema,

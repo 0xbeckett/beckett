@@ -1067,6 +1067,12 @@ export interface SpawnSpec {
   scope: FileScope;
   envelope: ResourceEnvelope;
   model: string;
+  /**
+   * The cast's harness BACKEND for this stage (#121) — pi's `--provider`. Empty/absent ⇒ the
+   * driver falls back to its configured default (`config.harness.pi.default_provider`).
+   * Single-backend harnesses (claude, codex) ignore it.
+   */
+  provider?: string;
   sessionId?: string; // optional caller-minted UUID (claude --session-id); else captured
   /**
    * Crash recovery (issue #20): when set, the driver LAUNCHES IN RESUME MODE against this

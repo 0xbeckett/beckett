@@ -78,6 +78,47 @@ export function retryCapsFor(config: Config): RetryCaps {
   };
 }
 
+// =======================================================================================
+// Stage casting defaults (#121) — pi is the harness, the provider picks the backend
+// =======================================================================================
+
+/**
+ * pi's provider for the Claude subscription: claude-* models (opus / fable / sonnet) on the
+ * Claude OAuth rather than the ChatGPT-account `openai-codex` backend. Named once here because
+ * BOTH default stage casts route through it.
+ */
+export const ANTHROPIC_PROVIDER = "anthropic";
+
+/**
+ * The default implement cast (#121): Opus 5 inside pi. pi is the single harness now — the Claude
+ * models reach it through the `anthropic` provider — so an un-cast ticket no longer spawns
+ * claude-the-CLI. Effort is deliberately absent: it resolves through {@link defaultEffortFor}
+ * (pi's configured `thinking`) exactly as an un-cast stage always has.
+ *
+ * pi keeps Opus's EYES on this route: it forwards image content to the model on both the
+ * `@file.png` attachment path and the agent's own `read` tool (verified against the live binary —
+ * `scripts/ops/pi-anthropic-probe.ts`, findings in `docs/pi-anthropic-probe.md`), so no visual
+ * carve-out back to the claude harness is needed. What the route still needs is a credential: the
+ * worker child gets no anthropic login yet (same doc, "the gap this probe exposes"), and until one
+ * exists these casts fail `auth` at spawn and the dispatcher substitutes a healthy harness.
+ */
+export const DEFAULT_IMPLEMENT_CAST: HarnessSpec = {
+  harness: "pi",
+  provider: ANTHROPIC_PROVIDER,
+  model: "claude-opus-5",
+};
+
+/**
+ * The default review cast (#121): Fable 5 inside pi, on the same `anthropic` provider. The model
+ * stays a config knob (`config.models.reviewer`, which now defaults to `claude-fable-5`) so the
+ * reviewer seat is tunable without a release; harness + provider are fixed here.
+ */
+export const DEFAULT_REVIEW_CAST: HarnessSpec = {
+  harness: "pi",
+  provider: ANTHROPIC_PROVIDER,
+  model: "claude-fable-5",
+};
+
 /**
  * The configured default reasoning effort for a harness — the ONE source of truth (this
  * switch was previously duplicated in `spawn.ts#defaultEffortFor` and
@@ -502,7 +543,11 @@ const implementStage: StageDefinition = {
   name: "implement",
   entryState: "in_progress",
   capturesBaseSha: true,
-  resolveCast: (explicit) => explicit ?? { harness: "claude" },
+  // #121: pi is the harness for everything now, and the Claude subscription reaches it through the
+  // `anthropic` provider — so an un-cast implement stage is Opus 5 INSIDE pi, not claude-the-CLI.
+  // A COPY, never the shared constant: a resolved cast travels into the dispatcher's substitution
+  // and telemetry paths, and one mutation there would rewrite the default for every later ticket.
+  resolveCast: (explicit) => explicit ?? { ...DEFAULT_IMPLEMENT_CAST },
   buildPrompt: genericTaskPrompt,
   buildSystemAppend: (args) => workerSystemAppend(args),
   parseDoneSignal,
@@ -560,7 +605,14 @@ const reviewStage: StageDefinition = {
     // An explicit review cast that names no effort still gets the SCALED default (issue #27) —
     // otherwise it silently falls through to the harness default (xhigh), the priciest tier.
     if (explicit) return explicit.effort ? explicit : { ...explicit, effort: reviewEffortFor(ticket) };
-    return { harness: "claude", model: config.models.reviewer, effort: reviewEffortFor(ticket) };
+    // #121: the reviewer seat is Fable 5 reached through pi's `anthropic` provider. The seat itself
+    // stays tunable via `config.models.reviewer` (whose default IS claude-fable-5); harness and
+    // provider are fixed — a claude model id is meaningless to the openai-codex backend.
+    return {
+      ...DEFAULT_REVIEW_CAST,
+      model: config.models?.reviewer || DEFAULT_REVIEW_CAST.model,
+      effort: reviewEffortFor(ticket),
+    };
   },
   buildPrompt({ ticket, baseRef, steering, reviewDiff }): string {
     const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";

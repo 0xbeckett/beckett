@@ -152,6 +152,57 @@ for (const model of ["gpt-5.6-terra", "gpt-5.6-luna"]) {
   });
 }
 
+// ── #121: cast-level provider routing. ──
+// pi is provider-agnostic, so the CAST picks the backend: `{"harness":"pi","provider":"anthropic",
+// "model":"claude-opus-5"}` must emit `--provider anthropic`, while an un-cast stage keeps the
+// configured `openai-codex` default. buildArgs is private; drive it the same way the session tests do.
+function argsForSpec(spec: unknown, isResume = false): string[] {
+  const driver = new PiDriver(config, quietLog) as unknown as {
+    sessionId: string | null;
+    spec: unknown;
+    buildArgs(prompt: string, isResume: boolean): string[];
+  };
+  driver.sessionId = "cafe1234-0000-0000-0000-000000000000";
+  driver.spec = spec;
+  return driver.buildArgs("do the thing", isResume);
+}
+
+function providerIn(args: string[]): string | undefined {
+  const i = args.indexOf("--provider");
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
+test("a cast provider is passed as --provider (fresh launch AND resume)", () => {
+  for (const isResume of [false, true]) {
+    const args = argsForSpec(
+      { provider: "anthropic", model: "claude-opus-5", envelope: { effort: "high" } },
+      isResume,
+    );
+    expect(providerIn(args)).toBe("anthropic");
+    const mi = args.indexOf("--model");
+    expect(args[mi + 1]).toBe("claude-opus-5");
+    // exactly one --provider — the cast REPLACES the config default, it doesn't stack on it.
+    expect(args.filter((a) => a === "--provider").length).toBe(1);
+  }
+});
+
+test("no cast provider falls back to config.harness.pi.default_provider", () => {
+  expect(providerIn(argsForSpec({ envelope: { effort: "high" } }))).toBe("openai-codex");
+  // a blank/whitespace provider is not a routing decision — fall back rather than emit ""
+  expect(providerIn(argsForSpec({ provider: "   ", envelope: {} }))).toBe("openai-codex");
+});
+
+test("launch logging reports the provider the run actually used", () => {
+  const driver = new PiDriver(config, quietLog) as unknown as {
+    spec: unknown;
+    launchLogFields(): Record<string, unknown>;
+  };
+  driver.spec = { provider: "anthropic", model: "claude-fable-5", envelope: { effort: "high" } };
+  expect(driver.launchLogFields()).toMatchObject({ provider: "anthropic", model: "claude-fable-5" });
+  driver.spec = { envelope: { effort: "high" } };
+  expect(driver.launchLogFields()).toMatchObject({ provider: "openai-codex" });
+});
+
 test("a failed tool is surfaced as an errored tool_result", () => {
   const { events, feed } = harness();
   feed({ type: "session", id: "s1" });

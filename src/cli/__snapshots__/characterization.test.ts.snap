@@ -1742,7 +1742,7 @@ max_review_infra_retries = 1
 max_harness_substitutions = 6
 
 [models]
-reviewer = "claude-sonnet-5"
+reviewer = "claude-fable-5"
 
 [harness]
 fallback_order = ["claude", "pi", "codex"]

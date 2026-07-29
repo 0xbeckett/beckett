@@ -20,10 +20,16 @@
  *   # resume — pin the captured id so pi reloads the persisted transcript in the same cwd:
  *   pi -p --mode json --provider <p> --model <m> --thinking <lvl> --session <id> "<prompt>"
  *
- * The `<m>` model runs through codex (0.144) on the ChatGPT-account OAuth (`openai-codex`
- * provider). The default is `gpt-5.6-terra` (config.harness.pi.default_model); a cast may pin an
- * explicit model — `gpt-5.6-luna` is the cheap/mechanical lane. SOL and bare `gpt-5.6` are NOT
- * usable on this tier ("not supported with a ChatGPT account"), so don't cast them.
+ * `<p>` is the pi PROVIDER — the backend the model actually runs on, and a per-stage cast field
+ * since #121 (`{"harness":"pi","provider":"anthropic","model":"claude-opus-5"}`). Absent from the
+ * cast it falls back to `config.harness.pi.default_provider`, so an un-cast stage behaves exactly
+ * as before. Two backends are in use:
+ *   - `openai-codex` (the config default) — gpt-5.6-* through codex (0.144) on the ChatGPT-account
+ *     OAuth. The default model is `gpt-5.6-terra` (config.harness.pi.default_model);
+ *     `gpt-5.6-luna` is the cheap/mechanical lane. SOL and bare `gpt-5.6` are NOT usable on this
+ *     tier ("not supported with a ChatGPT account"), so don't cast them.
+ *   - `anthropic` — claude-* (opus/fable/sonnet) on the Claude subscription OAuth. This is what
+ *     lets pi be the ONE harness without giving up the Claude models.
  *
  * - cwd = the project repo (pi is rooted to the process cwd — there is no `-C`), set on spawn.
  * - `--mode json` emits a JSON Lines stream. The events we normalize (Spec 02 §7):
@@ -290,7 +296,7 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
 
   protected override launchLogFields(): Record<string, unknown> {
     return {
-      provider: this.config.harness.pi.default_provider,
+      provider: this.resolvedProvider(),
       model: this.resolvedModel() || "(pi default)",
       thinking: this.resolvedThinking(),
     };
@@ -340,7 +346,6 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
   // ===========================================================================
 
   private buildArgs(prompt: string, isResume: boolean): string[] {
-    const pi = this.config.harness.pi;
     // Pin the worker environment: pi auto-discovers extensions/skills/themes from the ticket repo
     // AND the user dirs, so a stray install on the box would change worker behavior invisibly.
     // Context-file discovery (AGENTS.md/CLAUDE.md in the ticket repo) stays ON — that's desirable.
@@ -352,7 +357,7 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
       "--no-skills",
       "--no-themes",
       "--provider",
-      pi.default_provider,
+      this.resolvedProvider(),
     ];
     const model = this.resolvedModel();
     if (model) args.push("--model", model);
@@ -370,6 +375,18 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
 
   private resolvedModel(): string {
     return (this.spec?.model || this.config.harness.pi.default_model || "").trim();
+  }
+
+  /**
+   * The pi BACKEND this run talks to (#121). pi is provider-agnostic, so the cast owns the
+   * choice: `{"harness":"pi","provider":"anthropic","model":"claude-opus-5"}` routes the stage at
+   * the Claude subscription instead of the ChatGPT-account `openai-codex` default. An un-cast
+   * stage keeps the configured default exactly as before.
+   */
+  private resolvedProvider(): string {
+    // Trim BEFORE the fallback: a whitespace-only cast field is not a routing decision, and an
+    // empty `--provider ""` would send pi to its own built-in default (google), not ours.
+    return this.spec?.provider?.trim() || (this.config.harness.pi.default_provider ?? "").trim();
   }
 
   /** pi `--thinking` reuses the resource envelope's effort (same low|medium|high|xhigh vocabulary). */

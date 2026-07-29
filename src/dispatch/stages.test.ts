@@ -42,15 +42,17 @@ function makeTicket(over: Partial<Ticket> = {}): Ticket {
 // A REAL validated config (not a partial cast): Phase 4's workerSystemAppend builds the
 // capability modules to compose their prompt blocks, so the append path needs the full
 // config shape (paths defaults included), exactly like production.
-const config: Config = validateConfig({
-  models: { reviewer: "claude-sonnet-5" },
+// `models` is deliberately left out so the reviewer seat resolves from the SCHEMA default
+// (`claude-fable-5` since #121) — the seat a real un-tuned install gets.
+const RAW_CONFIG = {
   harness: {
     claude: { default_effort: "xhigh" },
     codex: { default_effort: "high" },
     pi: { thinking: "medium" },
   },
   identity: { github_user: "0xbeckett" },
-});
+};
+const config: Config = validateConfig(RAW_CONFIG);
 
 describe("StageRegistry", () => {
   test("built-ins are registered and map their entry states", () => {
@@ -87,9 +89,35 @@ describe("StageRegistry", () => {
 });
 
 describe("per-stage default casts", () => {
-  test("uncast stages get their historical defaults", () => {
+  // #121: pi is the harness for the two worker stages, reaching the Claude models through its
+  // `anthropic` provider. design/design_check keep their historical claude-harness defaults.
+  test("uncast implement/review default to pi on the anthropic provider", () => {
     const ticket = makeTicket();
-    expect(stageRegistry.resolveCast("implement", undefined, ticket, config)).toEqual({ harness: "claude" });
+    expect(stageRegistry.resolveCast("implement", undefined, ticket, config)).toEqual({
+      harness: "pi",
+      provider: "anthropic",
+      model: "claude-opus-5",
+    });
+    expect(stageRegistry.resolveCast("review", undefined, ticket, config)).toEqual({
+      harness: "pi",
+      provider: "anthropic",
+      model: "claude-fable-5", // config.models.reviewer, whose default is now Fable 5
+      effort: "high",
+    });
+  });
+
+  test("an explicit config.models.reviewer still seats the reviewer, on the same pi routing", () => {
+    const pinned = validateConfig({ ...RAW_CONFIG, models: { reviewer: "claude-opus-5" } });
+    expect(stageRegistry.resolveCast("review", undefined, makeTicket(), pinned)).toEqual({
+      harness: "pi",
+      provider: "anthropic",
+      model: "claude-opus-5",
+      effort: "high",
+    });
+  });
+
+  test("design stages keep their historical defaults", () => {
+    const ticket = makeTicket();
     expect(stageRegistry.resolveCast("design", undefined, ticket, config)).toEqual({
       harness: "claude",
       model: "claude-opus-5",
@@ -100,11 +128,21 @@ describe("per-stage default casts", () => {
       model: "claude-haiku-4-5",
       effort: "low",
     });
-    expect(stageRegistry.resolveCast("review", undefined, ticket, config)).toEqual({
-      harness: "claude",
-      model: "claude-sonnet-5", // config.models.reviewer
-      effort: "high",
-    });
+  });
+
+  test("an explicit cast still wins over the pi defaults, provider included", () => {
+    const ticket = makeTicket();
+    expect(
+      stageRegistry.resolveCast("implement", { harness: "pi", model: "gpt-5.6-terra" }, ticket, config),
+    ).toEqual({ harness: "pi", model: "gpt-5.6-terra" });
+    expect(
+      stageRegistry.resolveCast(
+        "review",
+        { harness: "claude", model: "claude-sonnet-5", effort: "high" },
+        ticket,
+        config,
+      ),
+    ).toEqual({ harness: "claude", model: "claude-sonnet-5", effort: "high" });
   });
 
   test("review effort scales from the implement cast (issue #27)", () => {
