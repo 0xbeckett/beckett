@@ -924,3 +924,99 @@ test("createTaskThread opens a named workspace from a text channel", async () =>
   expect(created).toEqual({ threadId: "thread-1", parentChannelId: "parent-1", name: "#9 - Ship export" });
   expect(requests[0]).toMatchObject({ name: "#9 - Ship export", reason: "Beckett task workspace" });
 });
+
+test("createThreadFromMessage starts a thread off the given message (#112)", async () => {
+  const startCalls: Array<Record<string, unknown>> = [];
+  const channel = {
+    id: "chan-1",
+    type: ChannelType.GuildText,
+    messages: {
+      fetch: async (id: string) => ({
+        id,
+        startThread: async (opts: Record<string, unknown>) => {
+          startCalls.push(opts);
+          return { id: "thread-9", name: opts.name as string };
+        },
+      }),
+    },
+  };
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: unknown }).client = {
+    // No channel exists yet at the message's id, so there is no thread there already.
+    channels: { fetch: async (id: string) => (id === "chan-1" ? channel : null) },
+  };
+
+  const created = await gateway.createThreadFromMessage("chan-1", "card-msg-1", "#12 - Ship export");
+  expect(created).toEqual({ threadId: "thread-9", parentChannelId: "chan-1", name: "#12 - Ship export" });
+  expect(startCalls[0]).toMatchObject({ name: "#12 - Ship export" });
+});
+
+test("createThreadFromMessage reuses a thread the message already has instead of erroring", async () => {
+  const existingThread = { id: "card-msg-1", isThread: () => true, name: "old name" };
+  const channel = {
+    id: "chan-1",
+    type: ChannelType.GuildText,
+    messages: { fetch: async () => { throw new Error("must not fetch the message once a thread is found"); } },
+  };
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: unknown }).client = {
+    // A thread started from a message reuses that message's id as its own channel id.
+    channels: { fetch: async (id: string) => (id === "chan-1" ? channel : id === "card-msg-1" ? existingThread : null) },
+  };
+
+  const created = await gateway.createThreadFromMessage("chan-1", "card-msg-1", "#12 - Ship export");
+  expect(created).toEqual({ threadId: "card-msg-1", parentChannelId: "chan-1", name: "old name" });
+});
+
+test("createThreadFromMessage recovers when another creator wins the race for the same message", async () => {
+  const racedThread = { id: "card-msg-1", isThread: () => true, name: "raced" };
+  let checkedForExisting = 0;
+  const channel = {
+    id: "chan-1",
+    type: ChannelType.GuildText,
+    messages: {
+      fetch: async (id: string) => ({
+        id,
+        startThread: async () => {
+          const err = new Error("Thread already exists on this message") as Error & { code: number };
+          err.code = 160_004;
+          throw err;
+        },
+      }),
+    },
+  };
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: unknown }).client = {
+    channels: {
+      fetch: async (id: string) => {
+        if (id === "chan-1") return channel;
+        checkedForExisting++;
+        return checkedForExisting === 1 ? null : racedThread; // not there yet, then there post-race
+      },
+    },
+  };
+
+  const created = await gateway.createThreadFromMessage("chan-1", "card-msg-1", "#12 - Ship export");
+  expect(created).toEqual({ threadId: "card-msg-1", parentChannelId: "chan-1", name: "raced" });
+});
+
+test("createThreadFromMessage surfaces a real Discord failure instead of masking it", async () => {
+  const channel = {
+    id: "chan-1",
+    type: ChannelType.GuildText,
+    messages: {
+      fetch: async (id: string) => ({
+        id,
+        startThread: async () => { throw new Error("Missing Permissions"); },
+      }),
+    },
+  };
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: unknown }).client = {
+    channels: { fetch: async (id: string) => (id === "chan-1" ? channel : null) },
+  };
+
+  await expect(
+    gateway.createThreadFromMessage("chan-1", "card-msg-1", "#12 - Ship export"),
+  ).rejects.toThrow("Missing Permissions");
+});

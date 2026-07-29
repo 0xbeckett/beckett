@@ -66,9 +66,14 @@ export class TaskCardService {
       await this.postAt(task, channelId);
     });
     this.inflight.set(taskNumber, next);
-    void next.finally(() => {
-      if (this.inflight.get(taskNumber) === next) this.inflight.delete(taskNumber);
-    });
+    // Unlike refresh's `next` (which never rejects), this one can — the cleanup chain needs its
+    // own catch so an unawaited rejection here doesn't surface as an unhandled promise rejection
+    // alongside the one the caller is (or isn't) awaiting on the returned `next`.
+    void next
+      .finally(() => {
+        if (this.inflight.get(taskNumber) === next) this.inflight.delete(taskNumber);
+      })
+      .catch(() => {});
     return next;
   }
 

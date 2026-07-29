@@ -38,6 +38,11 @@ function harness(
     branchStatus?: BranchStatusService;
     unavailableThreadIds?: string[];
     existingThreads?: Record<string, string>;
+    createThreadFromMessage?: (
+      channelId: string,
+      messageId: string,
+      name: string,
+    ) => Promise<{ threadId: string; parentChannelId: string; name: string }>;
   } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "beckett-command-"));
@@ -64,6 +69,7 @@ function harness(
       createdChannels.push(channelId);
       return { threadId: `thread-${createdNames.length}`, parentChannelId: channelId, name };
     },
+    ...(opts.createThreadFromMessage ? { createThreadFromMessage: opts.createThreadFromMessage } : {}),
     sendTyping: async () => {},
     post: async (channelId: string, content: string, options?: ReplyOptions) => {
       posts.push({ channelId, content, options });

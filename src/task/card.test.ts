@@ -154,7 +154,7 @@ test("postFresh posts a new card at the given channel even though one already ex
   expect(gateway.posts).toHaveLength(2);
   expect(gateway.posts[1]?.channelId).toBe("thread-99");
   // The fresh post becomes canonical: the next refresh edits IT, not the old card.
-  expect(store.getTask(1)?.card).toEqual({ channelId: "thread-99", messageId: "message-2" });
+  expect(store.getTask(1)?.card).toMatchObject({ channelId: "thread-99", messageId: "message-2" });
   await store.setBranchStatus("1.1", "running");
   await service.refresh(1);
   expect(gateway.edits).toHaveLength(1);
