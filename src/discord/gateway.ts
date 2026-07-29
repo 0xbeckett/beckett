@@ -73,6 +73,7 @@ import { isFederatedPeer, PeerBurstLimiter } from "./federation.ts";
 import { loadPeers } from "./peers.ts";
 import { buildPaths } from "../paths.ts";
 import { chunkReply, delaySchedule, TOTAL_DELAY_BUDGET_MS } from "./chunk.ts";
+import { contentWithForwardedSnapshots } from "../concierge/forwarded-message.ts";
 import {
   BROWSER_QUESTION_ATTACHMENT_NAME,
   isBrowserQuestionMessage,
@@ -426,20 +427,43 @@ export class DiscordJsGateway implements DiscordGateway {
       const rows = [...page.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
       if (!rows.some((row) => row.id === messageId)) return null;
       const botId = client.user?.id;
-      return rows.map((row) => ({
-        messageId: row.id,
-        ts: row.createdTimestamp,
-        authorId: row.author.id,
-        authorName:
-          row.member?.displayName || row.author.globalName || row.author.username || row.author.id,
+      return rows.map((row) => {
         // Attachments fold in as placeholders, same convention as the shared-context store —
         // a bare "look at this" with the image silently dropped would mislead the turn.
-        content: [row.content, ...row.attachments.values().map((a) => `[file: ${a.name}]`)]
+        const content = [row.content, ...row.attachments.values().map((a) => `[file: ${a.name}]`)]
           .filter(Boolean)
-          .join(" "),
-        isBeckett: botId !== undefined && row.author.id === botId,
-        isTarget: row.id === messageId,
-      }));
+          .join(" ");
+        // A native reply can target a forward-only message (empty `content`, the original
+        // parked in `messageSnapshots`). Without folding it in, the injected frame shows an
+        // empty line for the target — fold it the same way captureInbound does (#111/#113),
+        // behind the same quarantine framing.
+        const snapshots = [...(row.messageSnapshots?.values() ?? [])].map((snapshot) => ({
+          content: snapshot.content,
+          attachments: [...snapshot.attachments.values()].map((a) => ({
+            id: a.id,
+            name: a.name,
+            url: a.url,
+            contentType: a.contentType ?? null,
+            size: a.size,
+          })),
+          embeds: snapshot.embeds.map((embed) => ({
+            name: embed.title ?? embed.author?.name ?? embed.provider?.name ?? "embed",
+            urls: [...new Set([embed.url, embed.image?.url, embed.thumbnail?.url, embed.video?.url].filter(
+              (url): url is string => Boolean(url),
+            ))],
+          })),
+        }));
+        return {
+          messageId: row.id,
+          ts: row.createdTimestamp,
+          authorId: row.author.id,
+          authorName:
+            row.member?.displayName || row.author.globalName || row.author.username || row.author.id,
+          content: contentWithForwardedSnapshots(content, snapshots),
+          isBeckett: botId !== undefined && row.author.id === botId,
+          isTarget: row.id === messageId,
+        };
+      });
     } catch (err) {
       this.logger.warn("discord reply-context fetch failed", {
         channelId,
