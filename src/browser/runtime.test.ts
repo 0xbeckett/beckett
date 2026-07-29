@@ -630,6 +630,72 @@ test("a budget breach outranks the evaluator's transport error when the watchdog
   }
 }, 60_000);
 
+test("disposable cache growth is not charged to the per-lease budget, but real profile growth still trips it", async () => {
+  // The regression this guards: an x.com session grew Chromium's disposable caches by ~100MB
+  // in a single lease and tripped the growth cap, permanently failing every later call. The
+  // budget must discount that regenerable churn while still bounding real profile writes.
+  const dir = mkdtempSync(join(tmpdir(), "beckett-browser-cache-exclusion-test-"));
+  const config = validateConfig({ paths: { beckett_dir: dir }, quick: { browser_profile_dir: "browser/profile" } });
+  const settings = browserHostSettings(config);
+  const fakePage = {
+    setViewportSize: async () => {},
+    on: () => {},
+    isClosed: () => false,
+    url: () => "about:blank",
+    goto: async () => null,
+  };
+  const fakeContext = {
+    pages: () => [fakePage],
+    newPage: async () => fakePage,
+    on: () => {},
+    cookies: async () => [],
+    setDefaultTimeout: () => {},
+    setDefaultNavigationTimeout: () => {},
+    close: async () => {},
+  } as unknown as BrowserContext;
+  const runtime = createInjectedLocalBrowserRuntime({
+    settings,
+    logger: quietLog,
+    maxProfileGrowthBytes: 1024 * 1024,
+    launchPersistentContext: (async () => fakeContext) as unknown as typeof chromium.launchPersistentContext,
+  });
+  try {
+    await runtime.acquire({
+      runId: "cache-exclusion",
+      channelId: null,
+      artifactsDir: join(dir, "browser-agent", "cache-exclusion", "artifacts"),
+      controlToken: CONTROL_TOKEN,
+    });
+    const defaultDir = join(settings.profileDir, "Default");
+    // 16 MiB of disposable cache — far past the 1 MiB growth allowance. Chromium regenerates
+    // these trees, so they are not real profile state and must not trip the budget.
+    mkdirSync(join(defaultDir, "Cache"), { recursive: true });
+    writeFileSync(join(defaultDir, "Cache", "media.bin"), randomBytes(8 * 1024 * 1024));
+    mkdirSync(join(defaultDir, "Service Worker", "CacheStorage"), { recursive: true });
+    writeFileSync(join(defaultDir, "Service Worker", "CacheStorage", "sw.bin"), randomBytes(8 * 1024 * 1024));
+    // checkpoint() runs the budget scan then asserts health; with only cache growth it holds.
+    await expect(runtime.checkpoint("cache-exclusion")).resolves.toBeDefined();
+
+    // A runaway write into real (non-cache) profile state is still bounded and still errors.
+    // Poll so the assertion never races an in-flight pre-write watchdog scan.
+    writeFileSync(join(settings.profileDir, "runaway-state.bin"), randomBytes(4 * 1024 * 1024));
+    let tripped = false;
+    for (let attempt = 0; attempt < 50 && !tripped; attempt++) {
+      try {
+        await runtime.checkpoint("cache-exclusion");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      } catch (error) {
+        tripped = String(error).includes("profile storage budget exceeded");
+      }
+    }
+    expect(tripped).toBe(true);
+  } finally {
+    if (runtime.hasLease("cache-exclusion")) await runtime.release("cache-exclusion", false).catch(() => undefined);
+    await runtime.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("the controller closes excess tabs and force-disposes raw browser contexts", async () => {
   const dir = mkdtempSync(join(tmpdir(), "beckett-browser-tab-ceiling-test-"));
   const config = validateConfig({ paths: { beckett_dir: dir }, quick: { browser_profile_dir: "browser/profile" } });
