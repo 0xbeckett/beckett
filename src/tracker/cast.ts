@@ -7,8 +7,8 @@
  *   <human prose body…>
  *
  *   ```beckett-cast
- *   { "implement": {"harness":"codex"},
- *     "review": {"harness":"claude","model":"claude-opus-5"} }
+ *   { "implement": {"harness":"pi","effort":"medium"},
+ *     "review": {"harness":"pi","provider":"anthropic","model":"claude-fable-5"} }
  *   ```
  *
  *   ## Acceptance criteria

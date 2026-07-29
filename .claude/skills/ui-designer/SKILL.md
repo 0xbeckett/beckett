@@ -188,7 +188,7 @@ taste you did. A frontend ticket body should read like:
 > retheme to our tokens.** House aesthetic: confident minimalism, one accent, generous whitespace,
 > dark-mode-from-tokens. Tailwind + shadcn only. **Self-check against the ui-designer rubric before
 > done** (sourced/breathes/hierarchy/token-pure/alive/accessible/responsive). Cast:
-> `{"implement":{"harness":"claude","effort":"high","reviewTier":"self"}}`.
+> `{"implement":{"harness":"pi","provider":"anthropic","model":"claude-opus-5","effort":"high","reviewTier":"self"}}`.
 
 That one paragraph turns "make a pricing page" into a ticket with a design POV baked in — which is
 the whole point of having a house style. See the frontend seat and cast table in [[concierge]].

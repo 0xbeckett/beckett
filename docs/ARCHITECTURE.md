@@ -8,7 +8,8 @@
 > running system.
 
 Beckett is an agentic coworker you reach in Discord. You `@beckett` a task; it plans, spawns and
-steers worker harnesses (`claude -p` / `codex exec` / `pi`) in isolated git worktrees, reviews
+steers workers (`pi -p` — the harness every cast stage runs on; `claude -p` / `codex exec` remain
+registered as substitution fallbacks) in isolated git worktrees, reviews
 their work against acceptance criteria, and comes back like a colleague would. It has its own
 home, its own GitHub + Gmail identity, and a memory it grows.
 

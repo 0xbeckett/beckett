@@ -1,13 +1,12 @@
  (one pass) or 
-"harness":"claude"
 "model":"gpt-5.6-luna"
+"provider":"anthropic"
 "reviewTier":"self"
 #
 #42
 #42.1
 #42.2
 #42.3
-#N - Task title
 #N.1
 '#42'
 '#42.1'
@@ -20,7 +19,6 @@
 --context
 --creds
 --criteria
---effort
 --file
 --needs
 --notes "…"
@@ -57,6 +55,7 @@ SYSTEM (…)
 address
 address:
 address:"…"
+anthropic
 approve <code>
 auto
 backlog
@@ -88,7 +87,7 @@ beckett recall "<query>" --viewer <the live stamp's user id> --viewer-role <owne
 beckett reload
 beckett remember
 beckett task
-beckett task create --channel <id>
+beckett task create
 beckett task list
 beckett task show '#N.x'
 beckett ticket
@@ -111,13 +110,13 @@ gh
 git push
 gpt-5.6
 gpt-5.6-luna
+gpt-5.6-terra
 harness
 high
 implement
 in_progress
 jingle
 low
-xhigh
 main
 maintainers.txt
 medium
@@ -125,9 +124,11 @@ message
 model
 msg:
 msg:<id>
+openai-codex
 origin/main
 pass
 pi
+provider
 quick
 quick-code
 ready
@@ -146,13 +147,14 @@ task create
 task start
 task start '#N.x'
 todo
-type: feedback
+type: calibration
 updated
 user:
 user:<id>
 waiting
 xhigh
-{ "<stage>": { "harness": "...", "model": "...", "effort": "..." } }
+xhigh
+{ "<stage>": { "harness": "...", "provider": "...", "model": "...", "effort": "..." } }
 { "decision": "pass", "message": null }
 { "decision": "send", "message": "the human-facing Discord message" }
 {"harness":"pi"}

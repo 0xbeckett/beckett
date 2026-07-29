@@ -27,7 +27,8 @@ beckett plan <<'JSON'
       "cast": {"implement":{"harness":"pi","effort":"medium"}} },
     { "key": "ui", "title": "Voting widget + live results bar chart",
       "project": "polls", "needs": ["api"],
-      "cast": {"implement":{"harness":"claude","effort":"low"}} }
+      "cast": {"implement":{"harness":"pi","provider":"anthropic","model":"claude-opus-5",
+                            "effort":"high","reviewTier":"self"}} }
   ] }
 JSON
 ```
@@ -41,9 +42,11 @@ edges, no cycles) before filing anything, then files in dependency order: roots 
 ## Rules
 
 - Same craft per node as a single ticket: sharp title, checkable criteria, the right `cast`
-  (see doctrine — pi for backend/spec grind, claude for frontend/taste; always name an `effort`).
+  (see doctrine — `pi` is the harness for every node; the seat is the `provider`+`model` pair:
+  the terra seat for crisp backend/spec grind, the Opus seat on `anthropic` for frontend/taste;
+  always name an `effort`).
 - Nodes that share a `project` build in the same repo, in dependency order. Mixed
-  backend+frontend is the classic split (pi node → claude node).
+  backend+frontend is the classic split (terra-seat node → Opus-seat node; both on `pi`).
 - Pass `channel` at the top level so every node's updates route back to the conversation.
 - Announce the *shape* in one line, never the references: "three steps — schema, then API, then
   UI." The refs land on their own in the `-# filed …` subtext line (one line for the whole wave),

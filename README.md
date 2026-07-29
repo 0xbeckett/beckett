@@ -48,8 +48,11 @@ Beckett has two seats:
 
 Tracker tickets are internal execution records linked to task branches. The workers aren't all the
 same model. Each branch is **cast** per stage — implement with one
-model/effort, review with another — so cheap work stays cheap and hard work gets the firepower.
-Claude is the backbone; codex and pi can be enabled as alternates.
+seat/effort, review with another — so cheap work stays cheap and hard work gets the firepower.
+`pi` is the harness for every stage; a cast picks the *seat*
+inside it — a `provider` + `model` pair, so Opus/Fable/Sonnet run through pi's `anthropic` provider
+and the gpt-5.6 models through `openai-codex`. The `claude` and `codex` drivers stay registered as
+substitution fallbacks.
 
 ### INT intensive branches
 

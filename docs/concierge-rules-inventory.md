@@ -2,6 +2,14 @@
 
 *This file is the PR body for the #93 branch — paste it verbatim into `beckett gh pr create --body`.*
 
+> **Superseded in part (2026-07-29, #85.1/#85.4).** This is a historical record of the #93 *trim*,
+> not a live statement of casting policy. Every row below about the two-harness roster — `harness`
+> = `pi` or `claude`, Opus as "the claude implement default", Sonnet as the uncast reviewer, Fable
+> as a confirm-first review cast, "anything visual is `claude`, never `pi`" — was rewritten when pi
+> became the single harness and provider+model became the seat. Read the roster, quick table and
+> effort ladder in `src/concierge/concierge.md` for what is true now; the rule-by-rule *mapping*
+> below still documents where #93 moved each rule.
+
 `src/concierge/concierge.md` is prepended to every turn of every channel session. This pass cut the
 explanation and kept the rules: **11,453 → 6,633 words (‑42.1%)**.
 

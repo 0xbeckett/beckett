@@ -713,6 +713,10 @@ const designStage: StageDefinition = {
   // from accidentally spending a design worker.
   entryState: "design",
   entryGuard: isIntTicket,
+  // ⚠ Still the PRE-#85.1 shape: the doctrine roster says pi is the single harness and Opus is a
+  // seat on its `anthropic` provider, but the two INT stages kept the claude-harness defaults #121
+  // deliberately left out of its scope. Noted here rather than flipped — #124 was doctrine/docs
+  // only, and reseating these needs the same auth the implement/review defaults are waiting on.
   resolveCast: (explicit) => explicit ?? { harness: "claude", model: "claude-opus-5", effort: "high" },
   buildPrompt({ ticket, steering }): string {
     const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";
@@ -747,7 +751,8 @@ const designStage: StageDefinition = {
 
 const designCheckStage: StageDefinition = {
   name: "design_check",
-  // Separate, inexpensive model: it must not mark the design author's own homework.
+  // Separate, inexpensive model: it must not mark the design author's own homework. Same
+  // pre-#85.1 harness note as `design` above.
   resolveCast: (explicit) => explicit ?? { harness: "claude", model: "claude-haiku-4-5", effort: "low" },
   buildPrompt({ ticket, steering }): string {
     const path = designDocPath(ticket);

@@ -4,6 +4,11 @@
 **Author:** Beckett (worker)
 **Date:** 2026-07-09
 **Status:** **Shipped** in OPS-110. §§1–4 (the roster + the vocabulary of presets) still stand.
+**Roster superseded 2026-07-29 (#85.1/#85.4):** every cast JSON here names `"harness":"claude"` for
+Opus/Fable/Sonnet, which was the pre-swap world. pi is now the single harness and those models are
+seats on its `anthropic` provider — see the roster in `src/concierge/concierge.md`. The preset
+*mechanism* is unchanged, and `SEED_PRESETS` in `src/tracker/presets.ts` still carries the old
+shapes (they remain valid casts; the claude driver stays registered).
 The invocation actually built differs from the §5 proposal in a few deliberate ways — see the
 **Shipped** section at the very bottom for the authoritative usage. Where the two disagree, the
 Shipped section wins.
