@@ -69,7 +69,7 @@ export type SecretStatus =
 
 export type RedeemSecretResult =
   | { ok: true; fields: string[]; destination: SecretDestination["kind"]; redeemedAt: string }
-  | { ok: false; reason: "invalid" | "bad-value" | "store-failed" };
+  | { ok: false; reason: "invalid" | "bad-value" | "whitespace" | "store-failed" };
 
 export type SecretHandlerOptions = {
   paths: SecretPaths;
