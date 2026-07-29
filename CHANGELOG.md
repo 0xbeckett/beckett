@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.14.0 (2026-07-29)
+
 ### A quick agent for pi extensions (#126)
 
 pi's extension ecosystem is errand-shaped, not project-shaped — extensions are self-contained
