@@ -114,6 +114,7 @@ import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createTrackerClient } from "../tracker/client.ts";
 import { TaskStore, displayTaskName, type TaskBranch, type WorkTask } from "../task/store.ts";
 import type { BranchStatusService } from "../task/status.ts";
+import { TaskCardService } from "../task/card.ts";
 import { branchCardButtons, renderBranchEmbed } from "../discord/cards.ts";
 import type { MemoryStore } from "../memory/index.ts";
 import { renderOpenLoopsBlock } from "../memory/loops.ts";
@@ -1729,6 +1730,8 @@ export class Concierge {
   /** User-facing `#N` / `#N.x` organization; tracker ticket ids stay behind this boundary. */
   private readonly tasks: TaskStore;
   private branchStatus: BranchStatusService | null;
+  /** The one self-editing card per task (#104): posted on filing, edited in place thereafter. */
+  private readonly taskCards: TaskCardService;
   /** The one registry for Discord message-component verbs. */
   private readonly componentRouter: ComponentRouter;
   /** The ONE long-lived graph/Moss owner for `memory.recall` control-bus requests — the memory
@@ -1913,6 +1916,14 @@ export class Concierge {
     this.gateway = opts.gateway ?? createDiscordGateway({ config: this.config, logger: this.log });
     this.tasks = opts.tasks ?? new TaskStore(tasksStateFile(this.config, this.log));
     this.branchStatus = opts.branchStatus ?? null;
+    this.taskCards = new TaskCardService({
+      store: this.tasks,
+      gateway: this.gateway,
+      // The card lives where the task reports: the thread work was attached to, else the origin
+      // channel. Resolved once at first post; the stored channel is authoritative from then on.
+      resolveChannel: (task) => this.workspaces.channelForTask(String(task.number)) ?? task.originChannelId ?? null,
+      logger: this.log,
+    });
     this.componentRouter = new ComponentRouter((userId) => this.accessLevelFor(userId));
     this.registerComponentActions();
     this.memory = opts.memory ?? null;
@@ -3167,6 +3178,9 @@ export class Concierge {
                   this.workspaces.bindBranch(channelId, branch.ref, branch.ticket?.identifier);
                 }
               }
+              // The one card for this task (#104): posted here on filing, then edited in place for
+              // the rest of its life. Fire-and-forget — filing never depends on the card landing.
+              void this.taskCards.refresh(taskNumber);
               return { ok: true, data: { taskRef: `#${taskNumber}` } };
             },
           },
@@ -4218,6 +4232,15 @@ export class Concierge {
    */
   notify(events: PollEvent | PollEvent[]): void {
     const batch = Array.isArray(events) ? events : [events];
+    // Every lifecycle change refreshes the task's one card (#104), even the transitions that never
+    // surface as a voice ping (queued→running→review): the card is the always-current machine view.
+    // Deduped to one refresh per task so a DAG wave costs one edit per task, not one per branch.
+    const cardTasks = new Set<number>();
+    for (const event of batch) {
+      const taskRef = taskRefOfBranch(event.ticket.branchRef);
+      if (taskRef) cardTasks.add(Number(taskRef));
+    }
+    for (const taskNumber of cardTasks) void this.taskCards.refresh(taskNumber);
     // Frame every worth-surfacing event first (`done` frames async — it fetches the artifact
     // link, issue #21), then fold the poll batch into ONE system-session turn PER destination
     // channel (issue #25): a DAG wave costs one full-context turn per recipient, not one per
@@ -4362,6 +4385,13 @@ export class Concierge {
    * Milestones + errors only: the dispatcher posts a `<!-- beckett… -->`-tagged comment on every
    * outcome (advance / error / verdict / rework), so those comments ARE the milestone feed.
    */
+  /** True when the event's task owns a self-editing card (#104), so routine churn is card-only. */
+  private taskHasCard(branchRef?: string): boolean {
+    const taskRef = taskRefOfBranch(branchRef);
+    if (!taskRef) return false;
+    return Boolean(this.tasks.getTask(Number(taskRef))?.card);
+  }
+
   private frameUpdate(event: PollEvent): TicketUpdate | null {
     if (event.kind === "comment_added") {
       if (!isDispatcherComment(event.comment)) return null; // human/worker chatter — not ours to echo
@@ -4385,6 +4415,9 @@ export class Concierge {
       return this.updateTurn(event.ticket, body);
     }
     if (event.kind === "cancelled") {
+      // A cancellation is a machine state, not shipped/stuck/a question — the card shows it. Only
+      // the pre-card path still narrates it as a plain message.
+      if (this.taskHasCard(event.ticket.branchRef)) return null;
       return this.updateTurn(event.ticket, `Ticket was cancelled.`);
     }
     // Boot recovery (issue #21): the poller's prime emits `from: null` for tickets that were
@@ -4396,6 +4429,9 @@ export class Concierge {
       event.from === null &&
       (event.to === "in_progress" || event.to === "in_review")
     ) {
+      // Re-staffing after a restart is machine churn the card already reflects (running / review).
+      // Suppress the plain ping for a carded task; a card-less task still gets the recovery note.
+      if (this.taskHasCard(event.ticket.branchRef)) return null;
       const stage = event.to === "in_review" ? "review" : "implementation";
       return this.updateTurn(
         event.ticket,
@@ -5435,6 +5471,7 @@ export class Concierge {
     });
     await github.mergePR(pr.repo, pr.number, "squash");
     this.log.info("branch merged by component", { branch: found.branch.ref, byUserId: ctx.interaction.userId });
+    void this.taskCards.refresh(found.task.number);
     return `Merged branch #${found.branch.ref}.`;
   }
 
@@ -5456,6 +5493,7 @@ export class Concierge {
     }
     await this.tasks.setBranchStatus(found.branch.ref, "cancelled");
     this.log.info("branch cancelled by component", { branch: found.branch.ref, byUserId: ctx.interaction.userId });
+    void this.taskCards.refresh(found.task.number);
     return `Cancelled branch #${found.branch.ref}.`;
   }
 
