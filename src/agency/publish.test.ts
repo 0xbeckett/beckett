@@ -36,6 +36,12 @@ type FakeRun = (
 const ok = (stdout = ""): RunResult => ({ code: 0, stdout, stderr: "" });
 const fail = (stderr = "", code = 1): RunResult => ({ code, stdout: "", stderr });
 
+/** `gh repo view --json isFork,parent` response for a genuine fork of `upstream`. */
+const forkView = (upstream: string): RunResult => ok(JSON.stringify({ isFork: true, parent: { nameWithOwner: upstream } }));
+/** `gh repo view --json isFork,parent` response for a same-named repo that is NOT a fork of anything
+ *  we're forking from (a mirror, e.g. `0xbeckett/nothing` cloned for `--project nothing`). */
+const notAForkView = (): RunResult => ok(JSON.stringify({ isFork: false }));
+
 /** A real git runner for the squash-landing regression fixture below. */
 async function realRun(cmd: string[], opts?: { cwd?: string; env?: Record<string, string | undefined> }): Promise<RunResult> {
   const env = Object.fromEntries(Object.entries(opts?.env ?? process.env).filter(([, value]) => value !== undefined)) as Record<string, string>;
@@ -139,8 +145,8 @@ test("third-party forks and PR heads stay under the authenticated account, not t
       return ok("https://github.com/SSHdotCodes/probabilities.git");
     }
     if (j.startsWith("gh repo fork SSHdotCodes/probabilities")) return ok("forked");
-    if (j.startsWith("gh repo view publisher-bot/probabilities --json name")) {
-      return ok('{"name":"probabilities"}');
+    if (j.startsWith("gh repo view publisher-bot/probabilities --json isFork,parent")) {
+      return forkView("SSHdotCodes/probabilities");
     }
     if (j.startsWith("git push https://github.com/publisher-bot/probabilities.git")) return ok();
     if (j.includes("--json defaultBranchRef")) return ok("main");
@@ -393,7 +399,9 @@ test("case 1 — cloned third-party upstream: fork → push to fork → PR to up
   const { gh, calls } = cli((j) => {
     if (j.startsWith("git remote get-url origin")) return ok("https://github.com/SSHdotCodes/probabilities.git");
     if (j.startsWith("gh repo fork")) return ok("forked");
-    if (j.startsWith("gh repo view 0xbeckett/probabilities --json name")) return ok('{"name":"probabilities"}'); // fork ready
+    if (j.startsWith("gh repo view 0xbeckett/probabilities --json isFork,parent")) {
+      return forkView("SSHdotCodes/probabilities"); // fork ready, verified
+    }
     if (j.startsWith("git push")) return ok();
     if (j.includes("--json defaultBranchRef")) return ok("main");
     if (j.startsWith("gh pr list")) return ok("[]");
@@ -453,7 +461,9 @@ test("case 1b — third-party upstream we can only read: still forks and opens a
     if (j.startsWith("git remote get-url origin")) return ok("https://github.com/SSHdotCodes/probabilities.git");
     if (j.startsWith("gh repo view SSHdotCodes/probabilities --json viewerPermission")) return ok("READ\n");
     if (j.startsWith("gh repo fork")) return ok("forked");
-    if (j.startsWith("gh repo view 0xbeckett/probabilities --json name")) return ok('{"name":"probabilities"}');
+    if (j.startsWith("gh repo view 0xbeckett/probabilities --json isFork,parent")) {
+      return forkView("SSHdotCodes/probabilities");
+    }
     if (j.startsWith("git push")) return ok();
     if (j.includes("--json defaultBranchRef")) return ok("main");
     if (j.startsWith("gh pr list")) return ok("[]");
@@ -469,11 +479,98 @@ test("case 1b — third-party upstream we can only read: still forks and opens a
   expect(create).toContain("0xbeckett:beckett/ops-28");
 });
 
+test("ensureFork: verifies the candidate is a real fork, not just same-named — genuine fork is reused as-is", async () => {
+  // 0xbeckett/probabilities really IS a fork of SSHdotCodes/probabilities (parent matches) — no
+  // fallback name needed, and `gh repo fork` is never called with `--fork-name`.
+  const { gh, calls } = cli((j) => {
+    if (j.startsWith("git remote get-url origin")) return ok("https://github.com/SSHdotCodes/probabilities.git");
+    if (j.startsWith("gh repo view SSHdotCodes/probabilities --json viewerPermission")) return ok("READ\n");
+    if (j.startsWith("gh repo fork SSHdotCodes/probabilities --clone=false")) return ok("forked");
+    if (j.startsWith("gh repo view 0xbeckett/probabilities --json isFork,parent")) {
+      return forkView("SSHdotCodes/probabilities");
+    }
+    if (j.startsWith("git push")) return ok();
+    if (j.includes("--json defaultBranchRef")) return ok("main");
+    if (j.startsWith("gh pr list")) return ok("[]");
+    if (j.startsWith("gh pr create")) return ok("https://github.com/SSHdotCodes/probabilities/pull/7\n");
+    return undefined;
+  });
+  const r = await gh.ensurePublished({ slug: "probabilities", sourceDir: "/src", ticket: "OPS-28" });
+  expect(r.kind).toBe("pr");
+  const push = calls.find((c) => c.startsWith("git push"))!;
+  expect(push).toContain("0xbeckett/probabilities.git");
+  expect(calls.some((c) => c.includes("--fork-name"))).toBe(false);
+});
+
+test("ensureFork: same-named repo exists but is NOT a fork of upstream — forks under <name>-fork instead (#110)", async () => {
+  // frgmt0/nothing is the genuine upstream; 0xbeckett/nothing is an unrelated mirror we own, cloned
+  // so `--project nothing` gets real code (the name collision is deliberate and permanent — #110).
+  // ensureFork must never hand back the mirror: pushing there and opening a cross-fork PR against it
+  // fails outright, since GitHub has no fork relationship between the two repos.
+  let forkedUnderDistinctName = false; // flips once `--fork-name nothing-fork` actually runs
+  const { gh, calls } = cli((j) => {
+    if (j.startsWith("git remote get-url origin")) return ok("https://github.com/frgmt0/nothing.git");
+    if (j.startsWith("gh repo view frgmt0/nothing --json viewerPermission")) return ok("READ\n");
+    if (j.startsWith("gh repo fork frgmt0/nothing --clone=false --fork-name nothing-fork")) {
+      forkedUnderDistinctName = true;
+      return ok("forked");
+    }
+    if (j.startsWith("gh repo fork frgmt0/nothing --clone=false")) return ok("forked");
+    if (j.startsWith("gh repo view 0xbeckett/nothing --json isFork,parent")) return notAForkView(); // the mirror
+    if (j.startsWith("gh repo view 0xbeckett/nothing-fork --json isFork,parent")) {
+      // Only queryable AFTER the distinct-name fork actually ran — proves ensureFork doesn't just
+      // assume success, and that the earlier reuse-check (before forking) correctly saw "not found".
+      return forkedUnderDistinctName ? forkView("frgmt0/nothing") : fail("404");
+    }
+    if (j.startsWith("git push")) return ok();
+    if (j.includes("--json defaultBranchRef")) return ok("main");
+    if (j.startsWith("gh pr list")) return ok("[]");
+    if (j.startsWith("gh pr create")) return ok("https://github.com/frgmt0/nothing/pull/5\n");
+    return undefined;
+  });
+  const r = await gh.ensurePublished({ slug: "nothing", sourceDir: "/src", ticket: "task-72-2" });
+  expect(r.kind).toBe("pr");
+  expect(r.prUrl).toContain("/pull/5");
+  const push = calls.find((c) => c.startsWith("git push"))!;
+  expect(push).toContain("0xbeckett/nothing-fork.git"); // pushed to the FORK, never the mirror
+  const create = calls.find((c) => c.startsWith("gh pr create"))!;
+  expect(create).toContain("0xbeckett:beckett/task-72-2");
+  expect(
+    calls.some((c) => c.startsWith("gh repo fork frgmt0/nothing --clone=false --fork-name nothing-fork")),
+  ).toBe(true);
+});
+
+test("ensureFork: a pre-existing <name>-fork that IS a real fork of upstream is reused, never re-created", async () => {
+  // 0xbeckett/nothing-fork already exists from a prior run and is verified as a real fork. The
+  // fallback fork call (`gh repo fork ... --fork-name nothing-fork`) must NOT fire again.
+  const { gh, calls } = cli((j) => {
+    if (j.startsWith("git remote get-url origin")) return ok("https://github.com/frgmt0/nothing.git");
+    if (j.startsWith("gh repo view frgmt0/nothing --json viewerPermission")) return ok("READ\n");
+    if (j.startsWith("gh repo fork frgmt0/nothing --clone=false")) return ok("forked");
+    if (j.startsWith("gh repo view 0xbeckett/nothing --json isFork,parent")) return notAForkView(); // the mirror
+    if (j.startsWith("gh repo view 0xbeckett/nothing-fork --json isFork,parent")) return forkView("frgmt0/nothing");
+    if (j.startsWith("git push")) return ok();
+    if (j.includes("--json defaultBranchRef")) return ok("main");
+    if (j.startsWith("gh pr list")) return ok("[]");
+    if (j.startsWith("gh pr create")) return ok("https://github.com/frgmt0/nothing/pull/6\n");
+    return undefined;
+  });
+  const r = await gh.ensurePublished({ slug: "nothing", sourceDir: "/src", ticket: "task-72-3" });
+  expect(r.kind).toBe("pr");
+  expect(r.prUrl).toContain("/pull/6");
+  const push = calls.find((c) => c.startsWith("git push"))!;
+  expect(push).toContain("0xbeckett/nothing-fork.git");
+  // Reused the existing fork — no `--fork-name` fork call was ever made.
+  expect(calls.some((c) => c.includes("--fork-name"))).toBe(false);
+});
+
 test("idempotent (upstream PR) — an already-open PR is reused, gh pr create is NOT called again", async () => {
   const { gh, calls } = cli((j) => {
     if (j.startsWith("git remote get-url origin")) return ok("https://github.com/SSHdotCodes/probabilities.git");
     if (j.startsWith("gh repo fork")) return ok("forked");
-    if (j.startsWith("gh repo view 0xbeckett/probabilities --json name")) return ok('{"name":"probabilities"}');
+    if (j.startsWith("gh repo view 0xbeckett/probabilities --json isFork,parent")) {
+      return forkView("SSHdotCodes/probabilities");
+    }
     if (j.startsWith("git push")) return ok();
     if (j.includes("--json defaultBranchRef")) return ok("main");
     if (j.startsWith("gh pr list")) return ok('[{"number":99,"url":"https://github.com/SSHdotCodes/probabilities/pull/99"}]');
