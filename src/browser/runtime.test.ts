@@ -538,8 +538,20 @@ test("profile growth watchdog stops web-storage abuse while preserving persisten
         for (let offset = 0; offset < bytes.length; offset += 65536) {
           crypto.getRandomValues(bytes.subarray(offset, Math.min(bytes.length, offset + 65536)));
         }
-        const cache = await caches.open('budget-hog');
-        await cache.put('/budget-hog.bin', new Response(bytes));
+        // IndexedDB is real, persistent profile state — not a disposable cache the budget
+        // now discounts — so growth here is exactly what the watchdog must still bound.
+        await new Promise((resolve, reject) => {
+          const open = indexedDB.open('budget-hog', 1);
+          open.onupgradeneeded = () => open.result.createObjectStore('blobs');
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const db = open.result;
+            const tx = db.transaction('blobs', 'readwrite');
+            tx.objectStore('blobs').put(bytes, 'hog');
+            tx.oncomplete = () => { db.close(); resolve(undefined); };
+            tx.onerror = () => reject(tx.error);
+          };
+        });
       });
       await page.waitForTimeout(300);
     `)).rejects.toThrow(/profile storage budget exceeded/);

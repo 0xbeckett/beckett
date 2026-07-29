@@ -404,6 +404,40 @@ test("one lease tripping the profile budget does not blind or kill another", asy
   }
 });
 
+test("disposable cache growth does not trip the per-lease budget, but real profile growth still does", async () => {
+  const settings = settingsFor();
+  const defaultDir = join(settings.profileDir, "betterwright", "browser", "profile", "Default");
+  mkdirSync(defaultDir, { recursive: true });
+  writeFileSync(join(defaultDir, "Cookies"), "signed-in");
+  const fake = new FakeBetterWright();
+  const runtime = createBetterWrightRuntime(settings, quietLog, {
+    createBrowser: () => fake,
+    // Real measureDirectoryBytes (not injected) so cache exclusion actually runs.
+    maxProfileGrowthBytes: 512 * 1024,
+    maxProfileBytes: 64 * 1024 * 1024,
+  });
+  try {
+    await runtime.acquire(leaseFor("cache-churn"));
+
+    // A media-heavy page grows disposable Chromium caches well past the 512 KiB growth
+    // allowance. This is regenerable churn, not real profile state, so it must not trip.
+    mkdirSync(join(defaultDir, "Cache"), { recursive: true });
+    writeFileSync(join(defaultDir, "Cache", "media.bin"), Buffer.alloc(4 * 1024 * 1024));
+    mkdirSync(join(defaultDir, "Service Worker", "CacheStorage"), { recursive: true });
+    writeFileSync(join(defaultDir, "Service Worker", "CacheStorage", "sw.bin"), Buffer.alloc(4 * 1024 * 1024));
+    const survived = await runtime.evaluate("cache-churn", "return 1");
+    expect(survived.value).toBeNull();
+
+    // A runaway write into real (non-cache) profile state is still bounded and still errors.
+    writeFileSync(join(defaultDir, "runaway-state.bin"), Buffer.alloc(4 * 1024 * 1024));
+    await expect(runtime.evaluate("cache-churn", "return 2")).rejects.toThrow("profile storage budget exceeded");
+    // Authentication state is untouched by the exclusion accounting.
+    expect(readFileSync(join(defaultDir, "Cookies"), "utf8")).toBe("signed-in");
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("the global profile ceiling binds every lease regardless of its own baseline", async () => {
   let profileSize = 10;
   const fake = new FakeBetterWright();
