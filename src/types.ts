@@ -1038,7 +1038,10 @@ export interface HarnessDriver {
   readonly kind: DriverKind;
   /** Create worktree (if needed), launch, return once sessionId is known. spawning→running. */
   spawn(spec: SpawnSpec): Promise<SpawnResult>;
-  /** Soft steer. claude: stdin user line (next turn boundary). codex: queued for resume. */
+  /**
+   * Soft steer. claude: stdin user line (next turn boundary). pi: an rpc `steer` command on its
+   * live stdin channel, same next-turn-boundary bound (issue #122). codex: queued for resume.
+   */
   sendNudge(msg: string): Promise<NudgeReceipt>;
   /** Checkpoint (claude: quiesce; codex: stop auto-resume). */
   pause(): Promise<void>;

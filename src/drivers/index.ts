@@ -7,8 +7,8 @@
  * interface.
  *
  * v3 registers the three supported harnesses: Claude for live steering, Codex for one-shot
- * `codex exec`, and Pi for one-shot `pi -p`. Asking for anything else fails loudly rather than
- * silently degrading.
+ * `codex exec`, and Pi — which since issue #122 also steers LIVE, over `pi --mode rpc`'s stdin
+ * command channel. Asking for anything else fails loudly rather than silently degrading.
  */
 
 import type { Config, Harness, HarnessDriver, Logger } from "../types.ts";
@@ -47,7 +47,8 @@ export interface DriverRegistration {
 /**
  * The harness → registration table — the SINGLE SOURCE OF TRUTH for which harnesses exist.
  * `claude` (live-steerable stream), `codex` (one-shot `codex exec`, steer-via-resume), and `pi`
- * (one-shot `pi -p`, steer-via-resume — the malleable codex replacement) are all registered so the
+ * (live-steerable `--mode rpc` channel since #122 — the malleable codex replacement) are all
+ * registered so the
  * dispatcher can cast any of them per stage (Spec 02 §5; specs/_legacy-v3/V3.md §7). Both the factory and the
  * preflight live in the same row: no separate hand-synced switch to keep aligned.
  */

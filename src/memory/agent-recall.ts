@@ -374,8 +374,9 @@ function claudeResultText(stdout: string): string {
 
 /**
  * `pi` invoker for the luna seat — pi drives gpt-5.6-luna through the ChatGPT/Codex OAuth
- * (`openai-codex` provider); the child env strips API keys so it uses the pi login only. Mirrors
- * the PiDriver's argv (src/drivers/pi.ts): `--mode json` one-shot, extensions/skills/themes off.
+ * (`openai-codex` provider); the child env strips API keys so it uses the pi login only. This is a
+ * genuine one-shot ask-and-exit (`-p --mode json`), NOT a steerable worker — the PiDriver moved to
+ * the persistent `--mode rpc` channel in #122; only the env/flag pinning is shared with it.
  */
 export function piInvoker(model: string, timeoutMs = DEFAULT_TIMEOUT_MS, logger?: Logger): ModelInvoker {
   return async (system, user) => {

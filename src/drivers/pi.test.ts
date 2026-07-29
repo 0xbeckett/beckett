@@ -1,12 +1,13 @@
 /**
  * Coverage for the PiDriver's event normalizer (`src/drivers/pi.ts`). The parser is the risky
- * part — it maps pi's `--mode json` NDJSON into Beckett's {@link WorkerEvent} stream — so it's
+ * part — it maps pi's `--mode rpc` JSONL into Beckett's {@link WorkerEvent} stream — so it's
  * Also guards the OPS-56 / issue #12 regression: the modern session argv (`--session-id` for a
  * caller-minted first launch) and the preflight that catches stale CLI/version drift.
  *
- * pinned here against event lines copied from a real pi JSON run (session →
- * tool_execution → assistant message → agent_end), rather than trusting a live spawn. `handleLine`
- * is driven directly; spawn/process lifecycle is out of scope for a unit test.
+ * pinned here against event lines copied from a real pi run (handshake →
+ * tool_execution → assistant message → agent_settled), rather than trusting a live spawn.
+ * `handleLine` is driven directly; the live steering channel gets its own end-to-end coverage
+ * against a scripted fake pi in `pi.steering.test.ts` (issue #122).
  */
 
 import { expect, test } from "bun:test";
@@ -16,6 +17,11 @@ import { join } from "node:path";
 import { PiDriver, piPreflight } from "./pi.ts";
 import { probeCommand } from "./preflight-probe.ts";
 import type { Config, WorkerEvent } from "../types.ts";
+
+/** The handshake frame `--mode rpc` answers `get_state` with — the driver's session line. */
+function handshake(sessionId: string) {
+  return { id: "beckett-handshake", type: "response", command: "get_state", success: true, data: { sessionId } };
+}
 
 /** Minimal config exposing just what the parser reads. */
 const config = {
@@ -40,10 +46,10 @@ function harness() {
 
 const CALL = "call_abc|fc_def";
 
-test("normalizes a full pi run: session → tool → assistant → agent_end", () => {
+test("normalizes a full pi run: handshake → tool → assistant → agent_settled", () => {
   const { events, feed } = harness();
 
-  feed({ type: "session", version: 3, id: "019f1c8b-0f77-7a29-b896-6a00ec141c14", cwd: "/x" });
+  feed(handshake("019f1c8b-0f77-7a29-b896-6a00ec141c14"));
   feed({ type: "agent_start" });
   feed({ type: "turn_start" });
   feed({ type: "tool_execution_start", toolCallId: CALL, toolName: "bash", args: { command: "echo hi" } });
@@ -58,6 +64,7 @@ test("normalizes a full pi run: session → tool → assistant → agent_end", (
   });
   feed({ type: "turn_end", message: { role: "assistant", content: [], usage: { input: 2539, output: 22, cacheRead: 5, cacheWrite: 0 } }, toolResults: [] });
   feed({ type: "agent_end", messages: [] });
+  feed({ type: "agent_settled" });
 
   const kinds = events.map((e) => e.kind);
   expect(kinds).toContain("session_started");
@@ -83,7 +90,7 @@ test("normalizes a full pi run: session → tool → assistant → agent_end", (
   expect(usage.usage.input).toBe(2539);
   expect(usage.usage.cacheRead).toBe(5); // pi cacheRead → TokenUsage.cacheRead
 
-  // agent_end → success finish, with the done-signal parsed out of the final assistant message.
+  // agent_settled → success finish, with the done-signal parsed out of the final assistant message.
   const fin = events.find((e) => e.kind === "finished") as {
     status: string;
     structuredOutput: { status: string; summary: string } | null;
@@ -103,14 +110,14 @@ function castRun(model: string) {
   const priv = driver as unknown as {
     spec: unknown;
     sessionId: string | null;
-    buildArgs(prompt: string, isResume: boolean): string[];
+    buildArgs(isResume: boolean): string[];
   };
   // The cast supplies an explicit model; the envelope effort maps onto pi's --thinking.
   priv.spec = { model, envelope: { effort: "medium" } };
   priv.sessionId = "cafe1234-0000-0000-0000-000000000000";
-  const args = priv.buildArgs("do the thing", /*isResume*/ false);
+  const args = priv.buildArgs(/*isResume*/ false);
   const feed = (obj: unknown) => driver.handleLine(JSON.stringify(obj));
-  feed({ type: "session", id: "sess-1", cwd: "/x" });
+  feed(handshake("sess-1"));
   feed({ type: "turn_start" });
   feed({ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { command: "true" } });
   feed({ type: "tool_execution_end", toolCallId: "c1", toolName: "bash", result: {}, isError: false });
@@ -124,6 +131,7 @@ function castRun(model: string) {
   });
   feed({ type: "turn_end", message: { role: "assistant", content: [], usage: { input: 100, output: 10, cost: { total: 0.01 } } }, toolResults: [] });
   feed({ type: "agent_end", messages: [] });
+  feed({ type: "agent_settled" });
   return { args, events };
 }
 
@@ -160,11 +168,11 @@ function argsForSpec(spec: unknown, isResume = false): string[] {
   const driver = new PiDriver(config, quietLog) as unknown as {
     sessionId: string | null;
     spec: unknown;
-    buildArgs(prompt: string, isResume: boolean): string[];
+    buildArgs(isResume: boolean): string[];
   };
   driver.sessionId = "cafe1234-0000-0000-0000-000000000000";
   driver.spec = spec;
-  return driver.buildArgs("do the thing", isResume);
+  return driver.buildArgs(isResume);
 }
 
 function providerIn(args: string[]): string | undefined {
@@ -203,9 +211,66 @@ test("launch logging reports the provider the run actually used", () => {
   expect(driver.launchLogFields()).toMatchObject({ provider: "openai-codex" });
 });
 
+// ── #122: a nudge pi REFUSES must not evaporate. ──
+// pi rejects a command it cannot take (e.g. a `prompt` sent while it is actually still streaming —
+// the reverse of the driver's live/idle race). A rejected command was never queued inside pi, so
+// the human's words exist ONLY in the driver: they have to go back on the resume buffer, or the
+// receipt promises a delivery that never happens.
+test("a nudge pi rejects is re-buffered for the next resume, not silently lost", () => {
+  const { driver, feed } = harness();
+  const priv = driver as unknown as {
+    pendingSteers: { id: string; text: string; resolve: (r: unknown) => void; timer: Timer }[];
+    bufferedNudges: string[];
+  };
+  let receipt: { accepted: string } | null = null;
+  const timer = setTimeout(() => {}, 60_000);
+  priv.pendingSteers.push({
+    id: "beckett-steer-1",
+    text: "please also update the README",
+    resolve: (r) => {
+      receipt = r as { accepted: string };
+    },
+    timer,
+  });
+
+  feed({ id: "beckett-steer-1", type: "response", command: "prompt", success: false, error: "Agent is already processing." });
+
+  expect(receipt).toMatchObject({ accepted: "queued" });
+  expect(priv.bufferedNudges).toEqual(["please also update the README"]);
+  // and it is handed over exactly once
+  expect(driver.drainUnappliedNudges()).toEqual(["please also update the README"]);
+  expect(driver.drainUnappliedNudges()).toEqual([]);
+  clearTimeout(timer);
+});
+
+test("an ACCEPTED nudge is not also buffered (no double application)", () => {
+  const { driver, feed } = harness();
+  const priv = driver as unknown as {
+    pendingSteers: { id: string; text: string; resolve: (r: unknown) => void; timer: Timer }[];
+    bufferedNudges: string[];
+  };
+  let receipt: { accepted: string } | null = null;
+  const timer = setTimeout(() => {}, 60_000);
+  priv.pendingSteers.push({
+    id: "beckett-steer-1",
+    text: "focus on the parser",
+    resolve: (r) => {
+      receipt = r as { accepted: string };
+    },
+    timer,
+  });
+
+  feed({ id: "beckett-steer-1", type: "response", command: "steer", success: true });
+
+  expect(receipt).toMatchObject({ accepted: "delivered" });
+  expect(priv.bufferedNudges).toEqual([]);
+  expect(driver.drainUnappliedNudges()).toEqual([]);
+  clearTimeout(timer);
+});
+
 test("a failed tool is surfaced as an errored tool_result", () => {
   const { events, feed } = harness();
-  feed({ type: "session", id: "s1" });
+  feed(handshake("s1"));
   feed({ type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: { command: "false" } });
   feed({ type: "tool_execution_end", toolCallId: "t1", toolName: "bash", result: {}, isError: true });
   const result = events.find((e) => e.kind === "tool_result");
@@ -214,7 +279,7 @@ test("a failed tool is surfaced as an errored tool_result", () => {
 
 test("an edit/write tool synthesizes a file_change (pi has no native file event)", () => {
   const { events, feed } = harness();
-  feed({ type: "session", id: "s1" });
+  feed(handshake("s1"));
   feed({ type: "tool_execution_start", toolCallId: "w1", toolName: "write", args: { path: "src/new.ts" } });
   feed({ type: "tool_execution_end", toolCallId: "w1", toolName: "write", result: {}, isError: false });
   const fc = events.find((e) => e.kind === "file_change") as { paths: { path: string; kind: string }[] } | undefined;
@@ -224,7 +289,7 @@ test("an edit/write tool synthesizes a file_change (pi has no native file event)
 
 test("done-signal parses from a ```json fenced block (lenient)", () => {
   const { events, feed } = harness();
-  feed({ type: "session", id: "s1" });
+  feed(handshake("s1"));
   feed({
     type: "message_end",
     message: {
@@ -233,13 +298,14 @@ test("done-signal parses from a ```json fenced block (lenient)", () => {
     },
   });
   feed({ type: "agent_end", messages: [] });
+  feed({ type: "agent_settled" });
   const fin = events.find((e) => e.kind === "finished") as { structuredOutput: { status: string } | null };
   expect(fin.structuredOutput).toMatchObject({ status: "blocked" });
 });
 
 test("a run whose last turn died on a provider error finishes as ERROR, not empty success", () => {
   const { events, feed } = harness();
-  feed({ type: "session", id: "s1" });
+  feed(handshake("s1"));
   feed({ type: "turn_start" });
   // The exact shape pi emits when auth is missing/expired: an empty assistant message carrying
   // stopReason:"error", then a clean agent_end. Without the runError guard this finished as an
@@ -255,6 +321,7 @@ test("a run whose last turn died on a provider error finishes as ERROR, not empt
   });
   feed({ type: "turn_end", message: { role: "assistant", content: [], stopReason: "error" }, toolResults: [] });
   feed({ type: "agent_end", messages: [], willRetry: false });
+  feed({ type: "agent_settled" });
 
   const err = events.find((e) => e.kind === "error");
   expect(err).toMatchObject({ message: "No API key for provider: openai-codex" });
@@ -272,7 +339,7 @@ test("a run whose last turn died on a provider error finishes as ERROR, not empt
 
 test("a transient errored turn followed by a successful one still finishes as success", () => {
   const { events, feed } = harness();
-  feed({ type: "session", id: "s1" });
+  feed(handshake("s1"));
   feed({
     type: "message_end",
     message: { role: "assistant", content: [], stopReason: "error", errorMessage: "overloaded" },
@@ -282,6 +349,7 @@ test("a transient errored turn followed by a successful one still finishes as su
     message: { role: "assistant", content: [{ type: "text", text: "recovered and done" }] },
   });
   feed({ type: "agent_end", messages: [] });
+  feed({ type: "agent_settled" });
   const fin = events.find((e) => e.kind === "finished") as { status: string };
   expect(fin.status).toBe("success");
 });
@@ -303,11 +371,11 @@ function argsFor(isResume: boolean, sessionId: string | null): string[] {
   const driver = new PiDriver(config, quietLog) as unknown as {
     sessionId: string | null;
     spec: unknown;
-    buildArgs(prompt: string, isResume: boolean): string[];
+    buildArgs(isResume: boolean): string[];
   };
   driver.sessionId = sessionId;
   driver.spec = { envelope: { effort: "high" } };
-  return driver.buildArgs("do the thing", isResume);
+  return driver.buildArgs(isResume);
 }
 
 test("first launch pins Beckett's caller-minted id with --session-id", () => {
@@ -317,9 +385,36 @@ test("first launch pins Beckett's caller-minted id with --session-id", () => {
   expect(i).toBeGreaterThanOrEqual(0);
   expect(args[i + 1]).toBe(id);
   expect(args).not.toContain("--session");
-  expect(args).toContain("--mode");
-  expect(args).toContain("json");
-  expect(args[args.length - 1]).toBe("do the thing"); // prompt is the trailing positional
+});
+
+// ── #122: the argv IS the steering channel. ──
+// `--mode rpc` (not `-p --mode json`) is what makes pi's stdin a live command channel, and the
+// prompt must NOT be an argv positional any more — it rides that channel so later nudges can too.
+// A regression here silently returns pi to one-shot: steering would still "work", just late.
+test("the invocation is --mode rpc with NO -p and no trailing prompt positional", () => {
+  for (const isResume of [false, true]) {
+    const args = argsFor(isResume, "cafe1234-0000-0000-0000-000000000000");
+    const m = args.indexOf("--mode");
+    expect(m).toBeGreaterThanOrEqual(0);
+    expect(args[m + 1]).toBe("rpc");
+    expect(args).not.toContain("json");
+    expect(args).not.toContain("-p");
+    expect(args).not.toContain("--print");
+    // every remaining arg is a flag or a flag's value — nothing trailing that looks like a prompt
+    expect(args[args.length - 1]).toBe("cafe1234-0000-0000-0000-000000000000");
+  }
+});
+
+test("the systemAppend rides the FIRST launch only (a resume's session already carries it)", () => {
+  const driver = new PiDriver(config, quietLog) as unknown as {
+    sessionId: string | null;
+    spec: unknown;
+    buildArgs(isResume: boolean): string[];
+  };
+  driver.sessionId = "cafe1234-0000-0000-0000-000000000000";
+  driver.spec = { envelope: { effort: "high" }, systemAppend: "SCOPE AND CRITERIA" };
+  expect(driver.buildArgs(false)).toContain("--append-system-prompt");
+  expect(driver.buildArgs(true)).not.toContain("--append-system-prompt");
 });
 
 test("resume pins the existing id with --session <id>", () => {
@@ -371,7 +466,7 @@ test("preflight rejects stale pi without --session-id support", async () => {
     } as unknown as Config;
     const pf = await piPreflight(oldConfig);
     expect(pf.ok).toBe(false);
-    expect(pf.problems.join(" ")).toContain("need >=0.78.0");
+    expect(pf.problems.join(" ")).toContain("need >=0.80.4");
     expect(pf.problems.join(" ")).toContain("--session-id");
   } finally {
     if (oldHome === undefined) delete process.env.HOME;

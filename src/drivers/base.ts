@@ -18,7 +18,8 @@
  *
  * Subclasses provide ONLY the format-specific surface: argv construction, line parsing, and
  * how the harness handshakes its session id. {@link OneShotDriver} adds the buffered-nudge /
- * relaunch-to-steer machinery shared by the one-shot harnesses (codex `exec`, pi `-p`).
+ * relaunch-to-steer machinery the one-shot harnesses need — now codex `exec` only, since pi moved
+ * to its live `--mode rpc` steering channel (issue #122).
  * Adding harness #4 should be ~150 lines of parsing, not another ~900-line hand-copy.
  */
 
@@ -629,7 +630,7 @@ export abstract class BaseDriver {
 }
 
 // =======================================================================================
-// OneShotDriver — the buffered-nudge / relaunch-to-steer layer (codex exec, pi -p)
+// OneShotDriver — the buffered-nudge / relaunch-to-steer layer (codex exec)
 // =======================================================================================
 
 /**
