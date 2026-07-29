@@ -48,7 +48,7 @@ import {
   type BrowserEvaluatorSession,
 } from "./evaluator-runner.ts";
 import { createIsolatedBrowserRuntime } from "./isolated.ts";
-import { pruneChromeProfileCaches } from "./profile-cache.ts";
+import { isDisposableCacheDir, pruneChromeProfileCaches } from "./profile-cache.ts";
 import { sleep, spawnSubprocess, type SpawnedProcess, type SpawnProcess } from "./subprocess.ts";
 
 const MAX_CODE_CHARS = 100_000;
@@ -461,7 +461,12 @@ export function createLocalBrowserRuntime(deps: CreateLocalBrowserRuntimeDeps): 
     if (profileScanPromise) return profileScanPromise;
     const storageLimit = Math.min(maxProfileBytes, lease.profileBytesAtAcquire + maxProfileGrowthBytes);
     profileScanPromise = (async () => {
-      const profileBytes = await allocatedDirectoryBytes(profileDir, storageLimit + 1);
+      // Discount disposable Chromium caches: a media-heavy page grows them by ~100MB in a
+      // single lease, which is regenerable churn, not real profile state. Measuring non-cache
+      // bytes — against a non-cache acquire baseline — keeps the growth allowance and the
+      // ceiling tracking state that actually persists. Purely structural, so it is safe to run
+      // against the live browser (no touching the open profile, unlike a mid-lease prune).
+      const profileBytes = await allocatedDirectoryBytes(profileDir, storageLimit + 1, { excludeDisposableCache: true });
       profileBytesLastSeen = profileBytes;
       if (active !== lease || profileBudgetError || profileBytes <= storageLimit) return profileBytes;
       const growthBytes = Math.max(0, profileBytes - lease.profileBytesAtAcquire);
@@ -1247,7 +1252,9 @@ export function createLocalBrowserRuntime(deps: CreateLocalBrowserRuntimeDeps): 
         };
         await cleanPages(active);
         purgeDownloads();
-        active.profileBytesAtAcquire = await allocatedDirectoryBytes(profileDir, maxProfileBytes + 1);
+        // Growth baseline discounts disposable caches so enforceProfileBudget compares like
+        // against like; the ceiling/prune checks above stay cache-inclusive (real disk usage).
+        active.profileBytesAtAcquire = await allocatedDirectoryBytes(profileDir, maxProfileBytes + 1, { excludeDisposableCache: true });
         profileBytesLastSeen = active.profileBytesAtAcquire;
         profileBudgetError = null;
         startLeaseGuards(active);
@@ -1866,12 +1873,18 @@ function validateSessionCookieSnapshotEntry(value: unknown): Cookie {
   };
 }
 
-async function allocatedDirectoryBytes(root: string, stopAfter = Number.POSITIVE_INFINITY): Promise<number> {
+async function allocatedDirectoryBytes(
+  root: string,
+  stopAfter = Number.POSITIVE_INFINITY,
+  options?: { excludeDisposableCache?: boolean },
+): Promise<number> {
+  const excludeDisposableCache = options?.excludeDisposableCache ?? false;
   const pending = [root];
   let total = 0;
   while (pending.length > 0 && total <= stopAfter) {
     const batch = pending.splice(Math.max(0, pending.length - 64));
     const measured = await Promise.all(batch.map(async (current) => {
+      if (excludeDisposableCache && isDisposableCacheDir(current)) return { allocated: 0, children: [] as string[] };
       try {
         const stat = await lstat(current);
         if (stat.isSymbolicLink()) return { allocated: 0, children: [] as string[] };

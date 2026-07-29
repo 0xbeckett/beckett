@@ -102,7 +102,7 @@ export interface CreateBetterWrightRuntimeDeps {
   /** Kill switch override; pins the cap to a single lease when true. */
   singleLease?: boolean;
   /** Shared-profile size probe; defaults to scanning the betterwright home. */
-  measureProfileBytes?: () => Promise<number>;
+  measureProfileBytes?: (options?: { excludeDisposableCache?: boolean }) => Promise<number>;
   maxProfileBytes?: number;
   maxProfileGrowthBytes?: number;
   /** Environment source for the cap / kill-switch; defaults to process.env. */
@@ -157,7 +157,8 @@ export function createBetterWrightRuntime(
   const maxProfileBytes = boundedBudget(deps.maxProfileBytes, MAX_PROFILE_BYTES);
   const maxProfileGrowthBytes = boundedBudget(deps.maxProfileGrowthBytes, MAX_PROFILE_GROWTH_BYTES);
   const profileRoot = resolve(settings.profileDir);
-  const measureProfileBytes = deps.measureProfileBytes ?? (() => measureDirectoryBytes(profileRoot, maxProfileBytes + 1));
+  const measureProfileBytes = deps.measureProfileBytes
+    ?? ((options) => measureDirectoryBytes(profileRoot, maxProfileBytes + 1, options));
 
   const createBrowser = deps.createBrowser ?? ((options) => new BetterWright(options) as unknown as BetterWrightClient);
   const browser = createBrowser({
@@ -215,7 +216,11 @@ export function createBetterWrightRuntime(
     // A lease that already tripped stays tripped until it releases; re-scanning
     // cannot un-trip it and must never touch another lease's accounting.
     if (lease.profileBudgetError) return;
-    const profileBytes = await measureProfileBytes();
+    // Discount disposable Chromium caches: a media-heavy page (x.com) grows them by
+    // ~100MB in a single lease, which is regenerable churn, not real profile state.
+    // Measuring non-cache bytes here — against a non-cache acquire baseline — keeps the
+    // growth allowance and the ceiling tracking state that actually persists.
+    const profileBytes = await measureProfileBytes({ excludeDisposableCache: true });
     // Growth allowance is per-lease (its own acquire baseline); the ceiling is
     // global and shared. Whichever binds first wins.
     const storageLimit = Math.min(maxProfileBytes, lease.profileBytesAtAcquire + maxProfileGrowthBytes);
@@ -440,7 +445,10 @@ const attachFile = async (target, screenshotPath) => {
             : `cache prune reclaimed ${cachePruneReclaimed} bytes, still over`;
           throw new Error(`browser profile storage budget exceeded for run ${lease.runId} (${pruneDetail}; profile=${profileBytes}, lease growth=0 bytes)`);
         }
-        active.profileBytesAtAcquire = profileBytes;
+        // The growth baseline discounts disposable caches so enforceProfileBudget compares
+        // like against like; the ceiling/prune checks above deliberately stay cache-inclusive
+        // because they guard real on-disk usage.
+        active.profileBytesAtAcquire = await measureProfileBytes({ excludeDisposableCache: true });
         // Start the BetterWright worker now so unavailable browser setup fails
         // before the agent begins its turn.
         await runOnLease(active, () => execute(active, "return page.url()"));
