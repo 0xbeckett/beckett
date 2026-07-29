@@ -146,3 +146,34 @@ test("refresh of an unknown task is a silent no-op", async () => {
   await service.refresh(999);
   expect(gateway.posts).toHaveLength(0);
 });
+
+test("postFresh posts a new card at the given channel even though one already exists elsewhere", async () => {
+  const { store, gateway, service } = await seed();
+  await service.refresh(1); // existing card in chan-1
+  await service.postFresh(1, "thread-99");
+  expect(gateway.posts).toHaveLength(2);
+  expect(gateway.posts[1]?.channelId).toBe("thread-99");
+  // The fresh post becomes canonical: the next refresh edits IT, not the old card.
+  expect(store.getTask(1)?.card).toEqual({ channelId: "thread-99", messageId: "message-2" });
+  await store.setBranchStatus("1.1", "running");
+  await service.refresh(1);
+  expect(gateway.edits).toHaveLength(1);
+  expect(gateway.edits[0]?.channelId).toBe("thread-99");
+  expect(gateway.edits[0]?.messageId).toBe("message-2");
+});
+
+test("postFresh on an unknown task throws instead of silently doing nothing", async () => {
+  const { service } = await seed();
+  await expect(service.postFresh(999, "thread-99")).rejects.toThrow("no such task: #999");
+});
+
+test("postFresh propagates a post failure to the caller", async () => {
+  const { service } = await seed();
+  const failing = new TaskCardService({
+    store: (service as unknown as { opts: { store: TaskStore } }).opts.store,
+    gateway: { post: async () => { throw new Error("missing permission"); }, editMessage: async () => {} },
+    resolveChannel: () => "chan-1",
+    logger: silent,
+  });
+  await expect(failing.postFresh(1, "thread-99")).rejects.toThrow("missing permission");
+});

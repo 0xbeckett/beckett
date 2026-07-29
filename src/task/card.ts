@@ -109,13 +109,7 @@ export class TaskCardService {
       return;
     }
     try {
-      const messageId = await this.opts.gateway.post(channelId, "", {
-        embeds: [embed],
-        buttons,
-        singleMessage: true,
-        queueIfOffline: false,
-      });
-      await this.opts.store.setCard(taskNumber, { channelId, messageId });
+      await this.postAt(task, channelId);
     } catch (error) {
       this.logger.warn("task card post failed; will retry on next change", {
         task: taskNumber,
@@ -123,6 +117,18 @@ export class TaskCardService {
         error: String(error),
       });
     }
+  }
+
+  /** The one post+persist funnel behind both a fresh post ({@link render}) and {@link postFresh}. */
+  private async postAt(task: WorkTask, channelId: string): Promise<void> {
+    const snapshot = taskCardSnapshot(task);
+    const messageId = await this.opts.gateway.post(channelId, "", {
+      embeds: [renderTaskCardEmbed(snapshot)],
+      buttons: taskCardButtons(snapshot),
+      singleMessage: true,
+      queueIfOffline: false,
+    });
+    await this.opts.store.setCard(task.number, { channelId, messageId });
   }
 }
 

@@ -443,6 +443,7 @@ function reactionInteraction(r: IncomingReaction): DiscordComponentInteraction {
     userId: r.userId,
     channelId: r.channelId,
     isThread: false,
+    messageId: r.messageId,
     editReply: async () => undefined,
   };
 }
@@ -5488,7 +5489,12 @@ export class Concierge {
   /** Component equivalent of `&12`: interaction channel/thread is Discord-authenticated context. */
   private async attachFromComponent(ctx: ComponentActionContext): Promise<string> {
     const { interaction, target } = ctx;
-    if (!interaction.isThread) return "Open the target thread first, then use Attach there.";
+    const hit = this.tasks.resolveTaskRef(target);
+    if (!hit) return `No task #${target}. Check the reference and try again.`;
+    const task = hit.task;
+
+    if (!interaction.isThread) return this.attachByCreatingThread(interaction, task);
+
     if (!this.workspaces.contextFor(interaction.channelId)) {
       // ThreadCreate may have happened while the daemon was down. The same access resolver that
       // admitted this click guards this lazy registration; no component/message author is trusted.
@@ -5501,9 +5507,6 @@ export class Concierge {
       });
       this.joinThreadBestEffort(interaction.channelId);
     }
-    const hit = this.tasks.resolveTaskRef(target);
-    if (!hit) return `No task #${target}. Check the reference and try again.`;
-    const task = hit.task;
     this.workspaces.attachTasks(interaction.channelId, [String(task.number)]);
     for (const branch of task.branches) {
       this.workspaces.bindBranch(interaction.channelId, branch.ref, branch.ticket?.identifier);
@@ -5515,6 +5518,64 @@ export class Concierge {
       task: task.number,
     });
     return renderAttachRecap([task]);
+  }
+
+  /**
+   * Clicked from a plain channel (#112): one click should be enough, so create the thread
+   * ourselves off the card's own message instead of telling the person to open one first. Thread
+   * creation is a real Discord API call that can fail (missing permission, rate limit, a message
+   * that already owns a different thread mid-race) — every failure is reported back verbatim
+   * rather than falling back to the old "open a thread first" refusal, which would read as though
+   * nothing was even attempted. A message that already has a thread is reused, not an error.
+   */
+  private async attachByCreatingThread(interaction: DiscordComponentInteraction, task: WorkTask): Promise<string> {
+    const createThreadFromMessage = this.gateway.createThreadFromMessage?.bind(this.gateway);
+    if (!createThreadFromMessage) return "This Discord connection can't create threads from a message.";
+    let thread: TaskThreadCreated;
+    try {
+      thread = await createThreadFromMessage(interaction.channelId, interaction.messageId, displayTaskName(task));
+    } catch (err) {
+      this.log.warn("attach-by-thread: thread creation failed", {
+        channelId: interaction.channelId,
+        messageId: interaction.messageId,
+        task: task.number,
+        err: String(err),
+      });
+      return `Could not create a thread for #${task.number}: ${err instanceof Error ? err.message : String(err)}`;
+    }
+
+    this.workspaces.registerThread({
+      threadId: thread.threadId,
+      parentChannelId: thread.parentChannelId,
+      name: thread.name,
+      creatorId: interaction.userId,
+      newlyCreated: false,
+    });
+    this.joinThreadBestEffort(thread.threadId);
+    this.workspaces.attachTasks(thread.threadId, [String(task.number)]);
+    for (const branch of task.branches) {
+      this.workspaces.bindBranch(thread.threadId, branch.ref, branch.ticket?.identifier);
+    }
+    this.pendingWorkspaceSeeds.set(thread.threadId, this.buildAttachSeed([task]));
+
+    try {
+      await this.taskCards.postFresh(task.number, thread.threadId);
+    } catch (err) {
+      this.log.warn("attach-by-thread: fresh card post failed", {
+        threadId: thread.threadId,
+        task: task.number,
+        err: String(err),
+      });
+      return `Created <#${thread.threadId}> and attached #${task.number}, but posting its card there failed: ` +
+        `${err instanceof Error ? err.message : String(err)}`;
+    }
+
+    this.log.info("work attached to new thread by component", {
+      threadId: thread.threadId,
+      userId: interaction.userId,
+      task: task.number,
+    });
+    return `Created <#${thread.threadId}> and moved #${task.number} there.\n${renderAttachRecap([task])}`;
   }
 
   /** Merge is a maintainer operation; the explicit button click is the human confirmation. */
