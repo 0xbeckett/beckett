@@ -2489,6 +2489,14 @@ export class Concierge {
 
   notifyPrEvents(events: PrPollEvent | PrPollEvent[]): void {
     const batch = Array.isArray(events) ? events : [events];
+    for (const event of batch) {
+      // A merge/close fires exactly once (src/github/poll.ts): stamp the PR's terminal state onto
+      // the branch so the task card retires its now-stale Merge button (#104). Card-only side effect,
+      // kept off the relay path below so a registry hiccup never drops a person-facing ping.
+      if (event.kind === "merged" || event.kind === "closed") {
+        void this.stampPrState(event.pr, event.kind === "merged" ? "MERGED" : "CLOSED");
+      }
+    }
     const byChannel = new Map<string, { lines: string[]; refs: string[] }>();
     for (const event of batch) {
       const channel = this.channelForPr(event.pr);
@@ -2518,6 +2526,24 @@ export class Concierge {
         `routine green CI usually isn't. You OBSERVE and RELAY only — do NOT reply to the review on ` +
         `GitHub and do NOT merge the PR; a merge stays the person's call.`;
       void this.askUpdate(framed, `pr:${[...new Set(bucket.refs)].join(",")}`).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Record a PR's terminal state on its branch and re-render the task card (#104). Resolves the
+   * branch from the ticket the poller carries; a PR with no matching branch, or one we never
+   * linked, is a silent no-op. Registry failures are swallowed — a card refresh must never crash
+   * the poll relay.
+   */
+  private async stampPrState(pr: PrRef, state: "MERGED" | "CLOSED"): Promise<void> {
+    try {
+      const branchRef = pr.ticket ? this.tasks.findByTicket(pr.ticket)?.branch.ref : undefined;
+      if (!branchRef) return;
+      await this.tasks.setPullRequestState(branchRef, state);
+      const taskRef = taskRefOfBranch(branchRef);
+      if (taskRef) void this.taskCards.refresh(Number(taskRef));
+    } catch (err) {
+      this.log.debug("PR state stamp skipped", { repo: pr.repo, number: pr.number, error: String(err) });
     }
   }
 

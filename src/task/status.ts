@@ -37,8 +37,10 @@ export interface TaskCardBranchSnapshot {
   artifact?: { url: string; kind: "pull_request" | "published" };
   /** A live, externally-reachable preview surfaced while the branch is in review. */
   preview?: { url: string };
-  /** The open pull request's number, when one exists (its merge state lives on GitHub, not here). */
+  /** The open pull request's number, when one exists. */
   pullRequestNumber?: number;
+  /** The PR's live state, when known. Absent means still-open (pre-#104 rows carry no state). */
+  pullRequestState?: "OPEN" | "CLOSED" | "MERGED";
 }
 
 /** The whole task as its one self-editing card shows it: title, aggregate state, and every branch. */
@@ -74,6 +76,7 @@ function branchCardEntry(branch: TaskBranch): TaskCardBranchSnapshot {
     ...(artifact ? { artifact } : {}),
     ...(branch.preview ? { preview: { url: branch.preview.url } } : {}),
     ...(branch.pullRequest ? { pullRequestNumber: branch.pullRequest.number } : {}),
+    ...(branch.pullRequest?.state ? { pullRequestState: branch.pullRequest.state } : {}),
   };
 }
 

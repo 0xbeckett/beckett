@@ -139,7 +139,12 @@ export function taskCardButtons(snapshot: TaskCardSnapshot): DiscordButton[] {
         url: branch.artifact.url,
       });
     }
-    if (branch.status === "done" && branch.pullRequestNumber) {
+    if (
+      branch.status === "done" &&
+      branch.pullRequestNumber &&
+      branch.pullRequestState !== "MERGED" &&
+      branch.pullRequestState !== "CLOSED"
+    ) {
       buttons.push({ label: `Merge #${branch.ref}`, customId: componentId("merge", branch.ref) });
     }
     if (branch.status !== "cancelled" && branch.status !== "done") {

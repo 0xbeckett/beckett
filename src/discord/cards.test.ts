@@ -182,6 +182,22 @@ test("task card carries the 73.1 action buttons: link, merge, cancel, attach", (
   expect(done.some((b) => "customId" in b && b.customId.startsWith("beckett:v1:cancel"))).toBe(false);
 });
 
+test("the Merge button retires once the PR is merged or closed, but stays while open/undefined", () => {
+  const merge = (state?: "OPEN" | "CLOSED" | "MERGED") =>
+    taskCardButtons(taskCard({ status: "done" }, {
+      status: "done",
+      artifact: { url: "https://github.com/acme/repo/pull/9", kind: "pull_request" },
+      pullRequestNumber: 9,
+      ...(state ? { pullRequestState: state } : {}),
+    })).some((b) => "customId" in b && b.customId.startsWith("beckett:v1:merge"));
+  // Pre-#104 rows carry no state; an open PR still merges — button present.
+  expect(merge(undefined)).toBe(true);
+  expect(merge("OPEN")).toBe(true);
+  // Terminal states retire the now-stale button.
+  expect(merge("MERGED")).toBe(false);
+  expect(merge("CLOSED")).toBe(false);
+});
+
 test("an in-flight branch offers cancel but not merge", () => {
   const running = taskCardButtons(taskCard({}, { status: "running" }));
   expect(running).toContainEqual({ label: "Cancel #104.1", customId: "beckett:v1:cancel:104.1", danger: true });

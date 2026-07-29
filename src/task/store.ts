@@ -89,6 +89,8 @@ const PullRequestLinkSchema = z.object({
   repo: z.string().min(1),
   number: z.number().int().positive(),
   url: z.string().min(1),
+  /** Live PR state from GitHub. Absent on rows written before #104 — treated as still-open. */
+  state: z.enum(["OPEN", "CLOSED", "MERGED"]).optional(),
 });
 
 const PublicationLinkSchema = z.object({
@@ -457,6 +459,17 @@ export class TaskStore {
   async setPullRequest(branchRef: string, pullRequest: TaskPullRequestLink): Promise<TaskBranch> {
     return this.updateBranch(branchRef, (branch) => {
       branch.pullRequest = pullRequest;
+    });
+  }
+
+  /**
+   * Stamp the PR's live state onto the branch (#104). A no-op when the branch has no PR recorded,
+   * so a late merge/close event on a branch we never linked cannot invent one. The task card reads
+   * this to retire the Merge button once the PR is MERGED/CLOSED.
+   */
+  async setPullRequestState(branchRef: string, state: "OPEN" | "CLOSED" | "MERGED"): Promise<TaskBranch> {
+    return this.updateBranch(branchRef, (branch) => {
+      if (branch.pullRequest) branch.pullRequest.state = state;
     });
   }
 
