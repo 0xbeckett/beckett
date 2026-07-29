@@ -935,21 +935,62 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
   /**
    * Ensure a fork of `upstream` exists under our account and return its `owner/repo`. `gh repo fork`
    * is idempotent (a no-op when the fork already exists) but GitHub creates the fork ASYNC, so we
-   * poll `repoExists` until it's queryable before the caller pushes to it.
+   * poll until it's queryable — and, critically, verify the candidate actually IS a fork of
+   * `upstream` rather than just a same-named repo. A same-named repo we already own can be an
+   * unrelated mirror (e.g. cloned under `--project <name>` for a different upstream with the same
+   * name); pushing the ticket branch there and opening a cross-fork PR against it fails outright
+   * (`gh pr create`: "Head sha can't be blank" — no fork relationship exists). When the default-named
+   * candidate isn't a genuine fork, fork under `<name>-fork` instead, reusing one from a prior run.
    */
   private async ensureFork(upstream: string): Promise<string> {
-    const fork = `${this.opts.account}/${upstream.split("/")[1]}`;
-    const r = await this.runner(["gh", "repo", "fork", upstream, "--clone=false"], {
+    const name = upstream.split("/")[1]!;
+    const candidate = `${this.opts.account}/${name}`;
+    if (await this.forkUntilReady(candidate, upstream)) return candidate;
+
+    const distinct = `${this.opts.account}/${name}-fork`;
+    if ((await this.checkFork(distinct, upstream)) === "match") return distinct; // reuse, don't re-create
+    await this.forkUntilReady(distinct, upstream, `${name}-fork`);
+    return distinct; // let the subsequent push surface any genuine "fork not ready" error
+  }
+
+  /**
+   * Whether `candidate` is a verified fork of `upstream` — `"match"`, a confirmed non-fork (a
+   * same-named repo whose `parent` is absent or points elsewhere) — `"mismatch"`, or not yet
+   * queryable at all — `"pending"` (either it doesn't exist, or GitHub's async fork creation
+   * hasn't caught up). The distinction matters: `"mismatch"` is definitive and retrying it is
+   * pointless, whereas `"pending"` is worth polling.
+   */
+  private async checkFork(candidate: string, upstream: string): Promise<"match" | "mismatch" | "pending"> {
+    const r = await this.runner(["gh", "repo", "view", candidate, "--json", "isFork,parent"], {
       env: this.ghEnv(),
     });
+    if (r.code !== 0) return "pending";
+    try {
+      const data = JSON.parse(r.stdout) as { isFork?: boolean; parent?: { nameWithOwner?: string } };
+      return data.isFork && data.parent?.nameWithOwner === upstream ? "match" : "mismatch";
+    } catch {
+      return "pending";
+    }
+  }
+
+  /** Run `gh repo fork` (optionally under `forkName`) and poll until `candidate` is a verified fork
+   *  of `upstream`. Returns false (without throwing) if it definitively isn't one, or never becomes
+   *  queryable — the caller then falls back to a distinct fork name. */
+  private async forkUntilReady(candidate: string, upstream: string, forkName?: string): Promise<boolean> {
+    const r = await this.runner(
+      ["gh", "repo", "fork", upstream, "--clone=false", ...(forkName ? ["--fork-name", forkName] : [])],
+      { env: this.ghEnv() },
+    );
     if (r.code !== 0 && !/already exists|forked|exists/i.test(`${r.stderr}${r.stdout}`)) {
       throw new Error(`gh repo fork failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
     }
     for (let i = 0; i < FORK_READY_TRIES; i++) {
-      if (await this.repoExists(fork)) return fork;
+      const check = await this.checkFork(candidate, upstream);
+      if (check === "match") return true;
+      if (check === "mismatch") return false; // a same-named non-fork repo — retrying won't change that
       await delay(FORK_READY_DELAY_MS);
     }
-    return fork; // let the subsequent push surface any genuine "fork not ready" error
+    return false;
   }
 
   /** Open a PR, but return an already-open one instead of failing (idempotent publish re-runs). */
