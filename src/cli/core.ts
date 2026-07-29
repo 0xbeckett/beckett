@@ -71,7 +71,7 @@ function discordReplyAckTimeoutMs(): number {
 }
 
 /**
- * The one code-project slug that targets Beckett's OWN source repo (`0xbeckett/beckett`). Filing work
+ * The one code-project slug that targets Beckett's OWN source repo (`kowo-co/beckett`). Filing work
  * here is RESTRICTED: unrelated tickets have been mis-routed onto it (e.g. a "probabilities" model-list
  * ticket read as "improve Beckett" → edited Beckett's own code), polluting the codebase. Overridable
  * for a differently-named self-repo via env.
@@ -1016,7 +1016,7 @@ export async function runTicket(argv: string[]): Promise<void> {
       fail("INT tickets require --channel: Review (Design) needs a filing channel to ask the owner for approval");
     }
     // Restricted self-repo gate — bounce back to the Concierge to re-confirm with the user before
-    // any ticket can build against 0xbeckett/beckett (mis-routing polluted the codebase).
+    // any ticket can build against kowo-co/beckett (mis-routing polluted the codebase).
     guardRestrictedProject(flags.project ? String(flags.project) : undefined, !!flags["confirm-beckett"]);
     const ticket = await client.createIssue({
       title: String(flags.title),
