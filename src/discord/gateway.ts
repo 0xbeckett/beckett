@@ -38,6 +38,7 @@ import {
   Partials,
   Events,
   type Message,
+  type PartialMessage,
   type MessageReaction,
   type PartialMessageReaction,
   type User,
@@ -971,15 +972,34 @@ export class DiscordJsGateway implements DiscordGateway {
     reaction: MessageReaction | PartialMessageReaction,
     user: User | PartialUser,
   ): Promise<IncomingReaction | null> {
-    // A reaction on an uncached message arrives partial; fetch it (and the message) before we read
-    // the author or its components — the whole point of Partials.Reaction/Message.
-    if (reaction.partial) reaction = await reaction.fetch();
-    let message = reaction.message;
-    if (message.partial) message = await message.fetch();
-    // A partial user hid its bot flag; resolve it now and re-apply the self/bot guard fail-closed.
-    if (user.partial) user = await user.fetch();
-    if (user.bot) return null;
+    try {
+      // A reaction on an uncached message arrives partial; fetch it (and the message) before we read
+      // the author or its components — the whole point of Partials.Reaction/Message.
+      if (reaction.partial) reaction = await reaction.fetch();
+      let message = reaction.message;
+      if (message.partial) message = await message.fetch();
+      // A partial user hid its bot flag; resolve it now and re-apply the self/bot guard fail-closed.
+      if (user.partial) user = await user.fetch();
+      if (user.bot) return null;
+      return this.buildReaction(reaction, message, user);
+    } catch (err) {
+      // A deleted/inaccessible target (Unknown Message, Missing Access) is an ordinary event in a
+      // busy channel, not an error: resolve to null so the caller drops it silently, exactly like an
+      // unrelated emoji, rather than logging a per-event failure.
+      this.logger.debug("discord reaction could not be resolved; dropped", {
+        messageId: reaction.message.id,
+        error: String(err),
+      });
+      return null;
+    }
+  }
 
+  /** Assemble the normalized reaction once every partial has been resolved. */
+  private buildReaction(
+    reaction: MessageReaction | PartialMessageReaction,
+    message: Message | PartialMessage,
+    user: User | PartialUser,
+  ): IncomingReaction {
     // Action-component ids ride along so the Concierge can decode which task/branch this message is
     // for — they are transport data (a merge/cancel id encodes only a public ref), never authority.
     const messageComponentIds: string[] = [];
