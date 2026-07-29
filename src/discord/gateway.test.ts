@@ -122,6 +122,23 @@ test("editMessage PATCHes content and embeds while connected", async () => {
   expect(patches[0]?.allowedMentions).toEqual({ parse: [] });
 });
 
+test("editMessage replaces the card's buttons in place, and an empty array clears them", async () => {
+  const patches: Array<Record<string, unknown>> = [];
+  const gateway = fakeEditableGateway(async (payload) => { patches.push(payload); });
+
+  // Twelve buttons spill past Discord's five-per-row cap into three action rows.
+  const buttons = Array.from({ length: 12 }, (_, i) => ({ label: `B${i}`, customId: `beckett:v1:cancel:1.${i + 1}` }));
+  await gateway.editMessage("chan-1", "message-1", { embeds: [{ title: "Card" }], buttons });
+  expect((patches[0]?.components as unknown[])?.length).toBe(3);
+
+  await gateway.editMessage("chan-1", "message-1", { embeds: [{ title: "Card" }], buttons: [] });
+  expect(patches[1]?.components).toEqual([]);
+
+  // Omitting buttons leaves Discord's existing components untouched.
+  await gateway.editMessage("chan-1", "message-1", { content: "no button change" });
+  expect(Object.hasOwn(patches[2]!, "components")).toBe(false);
+});
+
 test("an offline edit is applied once after reconnect", async () => {
   const patches: Array<Record<string, unknown>> = [];
   const gateway = fakeEditableGateway(async (payload) => { patches.push(payload); });

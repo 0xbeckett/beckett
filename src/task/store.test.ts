@@ -280,3 +280,34 @@ test("resuming implementation clears the previous final diff snapshot", async ()
 
   expect(store.getBranch("1.1")?.branch.diff).toBeUndefined();
 });
+
+test("persists the task card id + channel and survives a reload", async () => {
+  const { path, store } = makeStore();
+  await store.createTask({ title: "Carded", originChannelId: "c1" });
+  await store.setCard(1, { channelId: "c1", messageId: "m-1" });
+
+  const reloaded = new TaskStore(path).getTask(1);
+  expect(reloaded?.card?.channelId).toBe("c1");
+  expect(reloaded?.card?.messageId).toBe("m-1");
+  expect(reloaded?.card?.updatedAt).toBeTruthy();
+
+  // Reposting a deleted card overwrites the id in place.
+  await store.setCard(1, { channelId: "c1", messageId: "m-2" });
+  expect(new TaskStore(path).getTask(1)?.card?.messageId).toBe("m-2");
+});
+
+test("a pre-card registry still parses (the card field is optional)", () => {
+  const { path, store } = makeStore();
+  writeFileSync(path, JSON.stringify({
+    version: 1,
+    nextTaskNumber: 2,
+    tasks: [{
+      id: "t1", number: 1, title: "Legacy", status: "active",
+      branches: [{ id: "b1", ref: "1.1", path: [1], title: "Main", status: "ready", needs: [], createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    }],
+    startClaims: {},
+  }));
+  expect(store.getTask(1)?.card).toBeUndefined();
+  expect(store.getTask(1)?.title).toBe("Legacy");
+});
