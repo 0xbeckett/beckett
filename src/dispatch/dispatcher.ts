@@ -76,7 +76,7 @@ import {
   type PublishOperation,
   type PublishPurpose,
 } from "./publish-outbox.ts";
-import { resolveGitHubOwner, resolveProjectOwner } from "../github/owner.ts";
+import { resolveProjectOwner } from "../github/owner.ts";
 import { gitBranchForTicket } from "../git/branch-name.ts";
 import { DispatchEventBus, type DispatchEventBusOptions, type DispatchOutcome } from "./events.ts";
 import {
@@ -479,7 +479,6 @@ export class Dispatcher {
   private readonly clientForProjectIdDep?: (projectId: string) => TrackerClientLike | undefined;
   private readonly projectIdByTicketId = new Map<string, string>();
   private readonly config: Config;
-  private readonly githubOwner: string;
   private readonly git: GitOps;
   private readonly resolveRepoRoot: (ticket: Ticket) => string;
   private readonly publishRepo?: (args: {
@@ -639,7 +638,6 @@ export class Dispatcher {
     this.clients = deps.clients && deps.clients.length > 0 ? deps.clients : [deps.client];
     this.clientForProjectIdDep = deps.clientForProjectId;
     this.config = deps.config;
-    this.githubOwner = resolveGitHubOwner(this.config);
     this.git = {
       commitWorktree,
       headSha,
