@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { Concierge, type ConciergeSession } from "./index.ts";
 import { createMemory } from "../memory/index.ts";
 import { openLoop, settleLoop } from "../memory/loops.ts";
+import { TaskStore } from "../task/store.ts";
 import type { AmbientClock } from "./ambient.ts";
 import type { Config } from "../types.ts";
 import type { TicketComment, PollEvent, Ticket } from "../tracker/types.ts";
@@ -35,7 +36,7 @@ class FakeClock implements AmbientClock {
 }
 
 /** A Concierge wired to a fake session that just records the turns notify() feeds it. */
-function harness(clock?: AmbientClock) {
+function harness(clock?: AmbientClock, tasks?: TaskStore) {
   const asks: string[] = [];
   const session = {
     ask: (m: string) => {
@@ -44,7 +45,7 @@ function harness(clock?: AmbientClock) {
     },
   } as unknown as ConciergeSession;
   const gateway = {} as never; // notify never touches the gateway
-  const concierge = new Concierge({ config, session, gateway, ...(clock ? { ambientClock: clock } : {}) });
+  const concierge = new Concierge({ config, session, gateway, ...(clock ? { ambientClock: clock } : {}), ...(tasks ? { tasks } : {}) });
   return { concierge, asks };
 }
 
@@ -261,6 +262,36 @@ test("does not double-surface non-terminal state changes (covered by the comment
   concierge.notify({ kind: "state_changed", ticket: ticket(), from: "in_progress", to: "in_review" });
   concierge.notify({ kind: "created", ticket: ticket() });
   expect(asks.length).toBe(0);
+});
+
+test("a carded task's cancellation is card-only churn (no plain ping), but its done milestone still fires (#104)", async () => {
+  // A task that owns a self-editing card shows cancelled/re-staff as machine state on the card, so
+  // those routine transitions no longer cost a separate message. A genuine milestone (done) still
+  // goes out in Beckett's voice — the card replaces churn, not the speaking-when-it-matters.
+  const dir = mkdtempSync(join(tmpdir(), "beckett-notify-card-"));
+  const store = new TaskStore(join(dir, "tasks.json"));
+  await store.createTask({ title: "Carded", originChannelId: CHAN });
+  await store.setCard(1, { channelId: CHAN, messageId: "card-1" });
+  const { concierge, asks } = harness(undefined, store);
+  const carded = ticket({ branchRef: "1.1" });
+
+  concierge.notify({ kind: "cancelled", ticket: carded });
+  concierge.notify({ kind: "state_changed", ticket: carded, from: null, to: "in_progress" });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(0); // both are card-only churn — no plain message
+
+  concierge.notify({ kind: "state_changed", ticket: ticket({ branchRef: "1.1", state: "done" }), from: "in_review", to: "done" });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(1); // the milestone still speaks
+  expect(asks[0]!.toLowerCase()).toContain("done");
+});
+
+test("a card-less task still gets the plain cancellation ping (pre-card path unchanged)", async () => {
+  const { concierge, asks } = harness();
+  concierge.notify({ kind: "cancelled", ticket: ticket() });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(1);
+  expect(asks[0]).toContain("cancelled");
 });
 
 test("drops (does not surface) an update for a ticket with no origin channel", () => {
