@@ -132,6 +132,17 @@ const TaskBranchSchema = z.object({
   updatedAt: z.string(),
 });
 
+/**
+ * The one self-editing Discord card for this task (#104): its message id and the channel it lives
+ * in, persisted so an edit survives a daemon restart. Optional — pre-card registries still parse,
+ * and a task filed with no channel to report into never gets one.
+ */
+const TaskCardSchema = z.object({
+  channelId: z.string().min(1),
+  messageId: z.string().min(1),
+  updatedAt: z.string(),
+});
+
 const TaskSchema = z.object({
   id: z.string().min(1),
   number: z.number().int().positive(),
@@ -142,6 +153,7 @@ const TaskSchema = z.object({
   project: z.string().optional(),
   // Optional so pre-wave registries still parse; stamped on every task created from here on.
   waveId: z.string().optional(),
+  card: TaskCardSchema.optional(),
   branches: z.array(TaskBranchSchema),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -154,6 +166,7 @@ const RegistrySchema = z.object({
   startClaims: z.record(z.string(), z.object({ token: z.string().min(1), createdAt: z.string() })).default({}),
 });
 
+export type TaskCard = z.infer<typeof TaskCardSchema>;
 export type TaskTicketLink = z.infer<typeof TicketLinkSchema>;
 export type TaskGitLink = z.infer<typeof GitLinkSchema>;
 export type TaskPullRequestLink = z.infer<typeof PullRequestLinkSchema>;

@@ -1168,7 +1168,7 @@ export class DiscordJsGateway implements DiscordGateway {
         ));
       }
       if (i === 0 && opts?.embeds?.length) payload.embeds = opts.embeds.map((embed) => new EmbedBuilder(embed));
-      if (i === 0 && opts?.buttons?.length) payload.components = [buildButtonRow(opts.buttons)];
+      if (i === 0 && opts?.buttons?.length) payload.components = buildButtonRows(opts.buttons);
 
       const sent = await channel.send(payload);
       this.ownMessageIds.add(sent.id);
@@ -1201,6 +1201,12 @@ export class DiscordJsGateway implements DiscordGateway {
     }
     if (payload.embeds !== undefined) {
       edit.embeds = this.redactEmbeds(channelId, payload.embeds).map((embed) => new EmbedBuilder(embed));
+    }
+    // Components are only touched when the caller supplies them: an empty array clears the card's
+    // controls, a populated one replaces them (so a Merge button can appear the moment a PR lands),
+    // and an absent field leaves Discord's existing components in place.
+    if (payload.buttons !== undefined) {
+      edit.components = payload.buttons.length ? buildButtonRows(payload.buttons) : [];
     }
     await message.edit(edit);
     this.lastEventTs = Date.now();
@@ -1538,7 +1544,7 @@ function hasEditFields(payload: unknown): payload is DiscordMessageEditPayload {
   return (
     payload !== null &&
     typeof payload === "object" &&
-    (Object.hasOwn(payload, "content") || Object.hasOwn(payload, "embeds"))
+    (Object.hasOwn(payload, "content") || Object.hasOwn(payload, "embeds") || Object.hasOwn(payload, "buttons"))
   );
 }
 
@@ -1577,6 +1583,20 @@ function buildButtonRow(buttons: NonNullable<ReplyOptions["buttons"]>): ActionRo
         .setCustomId(button.customId);
     }),
   );
+}
+
+/**
+ * Discord caps a message at five action rows of five buttons each. A single-branch card fits one
+ * row, but a task card carrying per-branch controls spills over, so split into rows of five and
+ * keep at most Discord's 25-button ceiling (the tail is dropped rather than rejected — a control
+ * that cannot be shown is better than a post that fails outright).
+ */
+function buildButtonRows(buttons: NonNullable<ReplyOptions["buttons"]>): ActionRowBuilder<ButtonBuilder>[] {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  for (let i = 0; i < buttons.length && rows.length < 5; i += 5) {
+    rows.push(buildButtonRow(buttons.slice(i, i + 5)));
+  }
+  return rows;
 }
 
 /** Factory: build a {@link DiscordGateway} from options (the daemon wires the impl). */

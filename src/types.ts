@@ -346,6 +346,13 @@ export interface DiscordMessageEditPayload {
   content?: string;
   /** Replacement embeds. An empty array deliberately clears embeds. */
   embeds?: DiscordEmbed[];
+  /**
+   * Replacement message components (link + interaction buttons). Provided so a self-editing card
+   * can keep its controls in step with state — a Merge button appears only once a PR exists. An
+   * empty array deliberately clears the buttons; omitting the field leaves Discord's existing
+   * components untouched.
+   */
+  buttons?: DiscordButton[];
 }
 
 export interface ReplyOptions {
