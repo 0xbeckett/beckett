@@ -39,3 +39,31 @@ export function resolveGitHubOwner(
 ): string {
   return resolveGitHubTarget(config, env).owner;
 }
+
+/** The one project slug that targets Beckett's OWN source repo — kept in sync with `src/cli/core.ts`. */
+function selfProjectSlug(env: GitHubEnv): string {
+  return (env.BECKETT_SELF_PROJECT?.trim() || "beckett").toLowerCase();
+}
+
+/**
+ * Owner of Beckett's OWN source repo. It was transferred from `0xbeckett` to `kowo-co` (#114); the
+ * GitHub REST API 301s the old path without following it, so every `gh` call must target the new
+ * owner. Overridable via `BECKETT_SELF_PROJECT_OWNER` for a differently-hosted self-repo.
+ */
+export function resolveSelfProjectOwner(env: GitHubEnv = process.env): string {
+  return env.BECKETT_SELF_PROJECT_OWNER?.trim() || "kowo-co";
+}
+
+/**
+ * Resolve the GitHub owner for a SPECIFIC project slug. Beckett's self-project moved to `kowo-co`
+ * (#114) while every other managed repo still lives under the default owner, so the beckett slug
+ * gets a per-project override and all others fall through to {@link resolveGitHubOwner}.
+ */
+export function resolveProjectOwner(
+  slug: string,
+  config: GitHubIdentityConfig,
+  env: GitHubEnv = process.env,
+): string {
+  if (slug.trim().toLowerCase() === selfProjectSlug(env)) return resolveSelfProjectOwner(env);
+  return resolveGitHubOwner(config, env);
+}

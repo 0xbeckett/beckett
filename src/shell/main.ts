@@ -55,6 +55,7 @@ import type { BrowserRuntime } from "../browser/runtime.ts";
 import type { BrowserAgent } from "../browser/agent.ts";
 import { defaultKeychainReader } from "../secret/keychain-read.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
+import { resolveProjectOwner } from "../github/owner.ts";
 import { LiveAgentRegistry } from "../agent/registry.ts";
 import { createAgentRunner } from "../agent/invoke.ts";
 import { TaskStore } from "../task/store.ts";
@@ -222,7 +223,9 @@ async function boot(): Promise<BootedSystem> {
         const gh = new GitHubCli({
           pat: identity.github.pat,
           account: identity.github.account,
-          owner: identity.github.owner,
+          // Per-project owner: Beckett's self-project repo moved to kowo-co (#114); all others stay
+          // under the configured owner.
+          owner: resolveProjectOwner(a.slug, config),
           apiBase: identity.github.apiBase,
           resolveRepoDir: () => a.repoRoot,
           logger: logger.child("gh"),

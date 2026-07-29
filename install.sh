@@ -5,7 +5,7 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 IFS=$'\n\t'
 
 readonly INSTALLER_VERSION="1"
-readonly DEFAULT_REPO_URL="https://github.com/0xbeckett/beckett.git"
+readonly DEFAULT_REPO_URL="https://github.com/kowo-co/beckett.git"
 readonly DEFAULT_REPO_REF="main"
 readonly BECKETT_USER="beckett"
 readonly BECKETT_HOME="/home/${BECKETT_USER}"

@@ -838,7 +838,7 @@ async function probeUrl(url: string): Promise<LinkProbe> {
       method,
       redirect: "manual",
       signal: AbortSignal.timeout(12_000),
-      headers: { "user-agent": "beckett-proactive-sweep (+https://github.com/0xbeckett/beckett)" },
+      headers: { "user-agent": "beckett-proactive-sweep (+https://github.com/kowo-co/beckett)" },
     });
     return { status: res.status, location: res.headers.get("location"), error: null };
   }

@@ -76,7 +76,7 @@ import {
   type PublishOperation,
   type PublishPurpose,
 } from "./publish-outbox.ts";
-import { resolveGitHubOwner } from "../github/owner.ts";
+import { resolveGitHubOwner, resolveProjectOwner } from "../github/owner.ts";
 import { gitBranchForTicket } from "../git/branch-name.ts";
 import { DispatchEventBus, type DispatchEventBusOptions, type DispatchOutcome } from "./events.ts";
 import {
@@ -2204,10 +2204,11 @@ export class Dispatcher {
     // source. A provisioning failure leaves the ticket for a human rather than spawning blind.
     this.trace(ticket, "repo", "started", "provisioning/cloning project repository");
     try {
+      const cloneSlug = projectSlug(ticket.project || ticket.identifier);
       await this.git.ensureProjectRepo(
         repoRoot,
-        projectSlug(ticket.project || ticket.identifier),
-        this.githubOwner,
+        cloneSlug,
+        this.projectOwner(cloneSlug),
       );
       this.trace(ticket, "repo", "passed", "repository ready (cloned or initialized)");
     } catch (err) {
@@ -3237,7 +3238,7 @@ export class Dispatcher {
     if (targetBranch && targetBranch.toLowerCase() !== "main") return;
     const repoRoot = this.repoByTicket.get(ticket.id) ?? this.resolveRepoRoot(ticket);
     const slug = projectSlug(ticket.project || ticket.identifier);
-    const remoteUrl = `https://github.com/${this.githubOwner}/${slug}.git`;
+    const remoteUrl = `https://github.com/${this.projectOwner(slug)}/${slug}.git`;
     try {
       const result = await this.git.fastForwardCheckout(repoRoot, remoteUrl, "main");
       if (result.status === "skipped") {
@@ -3392,7 +3393,16 @@ export class Dispatcher {
     const branch = gitBranchForTicket(op.ticket);
     // Compare against the ticket's own integration base so a non-main funnel's courier link is right.
     const base = op.ticket.targetBranch || "main";
-    return `https://github.com/${this.githubOwner}/${op.slug}/compare/${base}...${branch}`;
+    return `https://github.com/${this.projectOwner(op.slug)}/${op.slug}/compare/${base}...${branch}`;
+  }
+
+  /**
+   * GitHub owner for a specific project slug. Beckett's self-project moved to `kowo-co` (#114) while
+   * every other managed repo stays under the default owner, so the beckett slug gets a per-project
+   * override and all others fall through to the configured owner.
+   */
+  private projectOwner(slug: string): string {
+    return resolveProjectOwner(slug, this.config);
   }
 
   /**

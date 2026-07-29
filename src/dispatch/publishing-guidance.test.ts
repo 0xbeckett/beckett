@@ -12,8 +12,30 @@ describe("worker GitHub publishing guidance", () => {
     );
 
     expect(guidance).toContain("octocat/balloons");
-    expect(guidance).toContain("octocat/beckett");
+    // The contrast clause names Beckett's own repo, which lives under its self-project owner (#114).
+    expect(guidance).toContain("kowo-co/beckett");
     expect(guidance).not.toContain("0xbeckett/");
+  });
+
+  test("resolves the beckett self-project to its moved owner, not the default", () => {
+    const guidance = buildGitHubPublishingGuidance(
+      "beckett",
+      validateConfig({ identity: { github_user: "octocat" } }),
+      {},
+    );
+
+    expect(guidance).toContain("kowo-co/beckett");
+    expect(guidance).not.toContain("octocat/beckett");
+  });
+
+  test("honors BECKETT_SELF_PROJECT_OWNER for the self-project", () => {
+    const guidance = buildGitHubPublishingGuidance(
+      "beckett",
+      validateConfig({ identity: { github_user: "octocat" } }),
+      { BECKETT_SELF_PROJECT_OWNER: "some-org" },
+    );
+
+    expect(guidance).toContain("some-org/beckett");
   });
 
   test("honors BECKETT_GH_ORG ahead of the configured identity", () => {
