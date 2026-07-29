@@ -30,7 +30,7 @@ const PACKAGE_JSON = JSON.stringify({
 
 function request(over: Partial<DepsUpdateRequest> = {}): DepsUpdateRequest {
   return {
-    repo: "0xbeckett/beckett",
+    repo: "kowo-co/beckett",
     base: "main",
     sourceRepo: LIVE_CHECKOUT,
     workRoot: "/tmp/deps-work",
@@ -86,7 +86,7 @@ function harness(opts: {
     async beckett(args) {
       beckettCalls.push(args);
       if (args.includes("pr")) {
-        return { ...OK, stdout: JSON.stringify({ number: 91, url: "https://github.com/0xbeckett/beckett/pull/91" }) };
+        return { ...OK, stdout: JSON.stringify({ number: 91, url: "https://github.com/kowo-co/beckett/pull/91" }) };
       }
       return OK;
     },
@@ -411,7 +411,7 @@ describe("publishing goes through beckett gh — a PR, never main, never a deplo
     const h = harness();
     const result = await runDepsUpdate(request(), h.deps);
     expect(result.status).toBe("opened");
-    expect(result.prUrl).toBe("https://github.com/0xbeckett/beckett/pull/91");
+    expect(result.prUrl).toBe("https://github.com/kowo-co/beckett/pull/91");
 
     // Exactly two GitHub calls, both `beckett gh` — no raw gh, no `git push` in the exec log.
     expect(h.beckettCalls.length).toBe(2);
@@ -485,7 +485,7 @@ describe("the report is exactly one terse line, whatever happens", () => {
   test("the success line carries the PR link and names what was held back", async () => {
     const h = harness({ latest: { zod: "4.1.0", betterwright: "1.3.1" } });
     const result = await runDepsUpdate(request(), h.deps);
-    expect(result.summary).toContain("https://github.com/0xbeckett/beckett/pull/91");
+    expect(result.summary).toContain("https://github.com/kowo-co/beckett/pull/91");
     expect(result.summary).toContain("bun");
     expect(result.summary).toContain("Held back for a human");
     expect(result.summary).toContain("zod ^3.24.1→4.1.0");
