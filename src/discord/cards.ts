@@ -22,7 +22,7 @@ export function branchCardButtons(card: BranchCardSnapshot): DiscordButton[] {
     buttons.push({ label: "Cancel branch", customId: componentId("cancel", card.ref), danger: true });
   }
   // The interaction channel (not this card's author/location) is the workspace target.
-  buttons.push({ label: "Attach to this thread", customId: componentId("attach", String(card.taskNumber)) });
+  buttons.push({ label: "Attach to thread", customId: componentId("attach", String(card.taskNumber)) });
   return buttons;
 }
 
@@ -152,8 +152,9 @@ export function taskCardButtons(snapshot: TaskCardSnapshot): DiscordButton[] {
     }
   }
   // The interaction channel (not this card's location) is the workspace target, so attach carries
-  // the task number and the click resolves the destination from where it was pressed.
-  buttons.push({ label: "Attach to this thread", customId: componentId("attach", String(snapshot.number)) });
+  // the task number and the click resolves the destination from where it was pressed — from a
+  // plain channel, a fresh thread off this card's own message.
+  buttons.push({ label: "Attach to thread", customId: componentId("attach", String(snapshot.number)) });
   return buttons;
 }
 

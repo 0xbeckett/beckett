@@ -380,5 +380,5 @@ test("a branch card requested inside a thread keeps attach controls in that curr
   });
 
   expect(posts[0]?.channelId).toBe("thread-1");
-  expect(posts[0]?.options?.buttons).toContainEqual({ label: "Attach to this thread", customId: "beckett:v1:attach:42" });
+  expect(posts[0]?.options?.buttons).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:42" });
 });

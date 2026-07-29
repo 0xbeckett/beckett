@@ -415,6 +415,9 @@ export interface DiscordComponentInteraction {
   isThread: boolean;
   parentChannelId?: string;
   channelName?: string;
+  /** The message the clicked component is attached to — e.g. the task card, for creating a thread
+   *  off it (#112). Read-only transport data like the rest of this interface; never authority. */
+  messageId: string;
   /** The initial response was already deferred by the gateway inside Discord's three-second SLA. */
   editReply(content: string): Promise<void>;
 }
@@ -1179,6 +1182,12 @@ export interface DiscordGateway {
   joinThread?(threadId: string): Promise<void>;
   /** Create or rename the dedicated Discord workspace for a numbered task. */
   createTaskThread?(channelId: string, name: string): Promise<TaskThreadCreated>;
+  /**
+   * Start a thread off a specific message (#112) — the one-click "Attach to thread" path from a
+   * plain channel. Reuses the message's thread if it already has one instead of erroring. Optional
+   * so injected partial test gateways predate this surface.
+   */
+  createThreadFromMessage?(channelId: string, messageId: string, name: string): Promise<TaskThreadCreated>;
   isConnected(): boolean;
   lastEventAgeMs(): number | null;
 }

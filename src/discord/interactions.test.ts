@@ -9,6 +9,7 @@ function interaction(customId: string, userId = "member"): DiscordComponentInter
     userId,
     channelId: "thread-1",
     isThread: true,
+    messageId: "card-msg-1",
     replies,
     editReply: async (content) => { replies.push(content); },
   };

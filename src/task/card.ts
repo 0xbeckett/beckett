@@ -51,6 +51,27 @@ export class TaskCardService {
     return next;
   }
 
+  /**
+   * Post a brand-new card for a task at an explicit channel, taking over as the canonical card
+   * from now on — used when a task moves into a thread just created for it (#112), where editing
+   * the old card in place would leave the new room with no live state at all. Unlike {@link
+   * refresh}, this throws on failure: the caller is an ephemeral component reply that must report
+   * the failure to the person who clicked, not silently retry on the next lifecycle tick.
+   */
+  postFresh(taskNumber: number, channelId: string): Promise<void> {
+    const prior = this.inflight.get(taskNumber) ?? Promise.resolve();
+    const next = prior.catch(() => {}).then(async () => {
+      const task = this.opts.store.getTask(taskNumber);
+      if (!task) throw new Error(`no such task: #${taskNumber}`);
+      await this.postAt(task, channelId);
+    });
+    this.inflight.set(taskNumber, next);
+    void next.finally(() => {
+      if (this.inflight.get(taskNumber) === next) this.inflight.delete(taskNumber);
+    });
+    return next;
+  }
+
   private async render(taskNumber: number): Promise<void> {
     const task = this.opts.store.getTask(taskNumber);
     if (!task) return;

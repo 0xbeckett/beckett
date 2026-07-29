@@ -57,7 +57,7 @@ test("a finished branch card carries merge, cancel, and attach interaction butto
   });
   expect(buttons).toContainEqual({ label: "Merge branch", customId: "beckett:v1:merge:7.1" });
   expect(buttons).toContainEqual({ label: "Cancel branch", customId: "beckett:v1:cancel:7.1", danger: true });
-  expect(buttons).toContainEqual({ label: "Attach to this thread", customId: "beckett:v1:attach:7" });
+  expect(buttons).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:7" });
 });
 
 test("a done branch with an open PR and pending checks stays amber, not shipped green", () => {
@@ -177,7 +177,7 @@ test("task card carries the 73.1 action buttons: link, merge, cancel, attach", (
   }));
   expect(done).toContainEqual({ label: "Open PR #9", url: "https://github.com/acme/repo/pull/9" });
   expect(done).toContainEqual({ label: "Merge #104.1", customId: "beckett:v1:merge:104.1" });
-  expect(done).toContainEqual({ label: "Attach to this thread", customId: "beckett:v1:attach:104" });
+  expect(done).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:104" });
   // A finished branch is no longer cancellable.
   expect(done.some((b) => "customId" in b && b.customId.startsWith("beckett:v1:cancel"))).toBe(false);
 });
@@ -202,19 +202,19 @@ test("an in-flight branch offers cancel but not merge", () => {
   const running = taskCardButtons(taskCard({}, { status: "running" }));
   expect(running).toContainEqual({ label: "Cancel #104.1", customId: "beckett:v1:cancel:104.1", danger: true });
   expect(running.some((b) => "customId" in b && b.customId.startsWith("beckett:v1:merge"))).toBe(false);
-  expect(running).toContainEqual({ label: "Attach to this thread", customId: "beckett:v1:attach:104" });
+  expect(running).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:104" });
 });
 
 test("a cancelled branch offers neither merge nor cancel, still attach", () => {
   const buttons = taskCardButtons(taskCard({ status: "cancelled" }, { status: "cancelled" }));
   expect(buttons.some((b) => "customId" in b && b.customId.startsWith("beckett:v1:cancel"))).toBe(false);
   expect(buttons.some((b) => "customId" in b && b.customId.startsWith("beckett:v1:merge"))).toBe(false);
-  expect(buttons).toContainEqual({ label: "Attach to this thread", customId: "beckett:v1:attach:104" });
+  expect(buttons).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:104" });
 });
 
 test("a task with no branches still renders and offers attach", () => {
   const snapshot: TaskCardSnapshot = { number: 5, title: "Fresh", status: "active", updatedAt: "2026-07-28T00:00:00.000Z", branches: [] };
   const embed = renderTaskCardEmbed(snapshot);
   expect(JSON.stringify(embed.fields)).toContain("No branches yet");
-  expect(taskCardButtons(snapshot)).toContainEqual({ label: "Attach to this thread", customId: "beckett:v1:attach:5" });
+  expect(taskCardButtons(snapshot)).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:5" });
 });

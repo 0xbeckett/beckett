@@ -403,6 +403,7 @@ test("interactionCreate defers component clicks ephemerally before routing", asy
   const replies: unknown[] = [];
   gateway.onInteraction(async (interaction) => {
     expect(interaction.userId).toBe("owner-1");
+    expect(interaction.messageId).toBe("card-msg-1");
     await interaction.editReply("done");
   });
 
@@ -414,6 +415,7 @@ test("interactionCreate defers component clicks ephemerally before routing", asy
     user: { id: "owner-1" },
     channelId: "thread-1",
     channel: { isThread: () => true, parentId: "parent-1", name: "work" },
+    message: { id: "card-msg-1" },
     deferReply: async (payload: unknown) => { deferred.push(payload); },
     editReply: async (payload: unknown) => { replies.push(payload); },
   });

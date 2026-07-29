@@ -635,6 +635,39 @@ export class DiscordJsGateway implements DiscordGateway {
   }
 
   /**
+   * Start a thread off one specific message (#112) — the one-click "Attach to thread" path, where
+   * the button lives on a task card sitting in a plain channel and the click should stand up its
+   * own room rather than making the person open a thread first. A thread created from a message
+   * reuses that message's id as its own channel id, so a direct fetch is the cheapest way to find
+   * one that already exists — checked both up front and after a race loses to another creator,
+   * since Discord refuses (code 160004) a second thread on the same message.
+   */
+  async createThreadFromMessage(channelId: string, messageId: string, requestedName: string): Promise<TaskThreadCreated> {
+    const client = this.client;
+    if (!client) throw new Error("discord gateway not started");
+    const name = taskThreadName(requestedName);
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      throw new Error(`discord channel ${channelId} cannot start a thread from a message`);
+    }
+    const existing = await client.channels.fetch(messageId).catch(() => null);
+    if (existing?.isThread()) {
+      return { threadId: existing.id, parentChannelId: channel.id, name: existing.name };
+    }
+    const message = await channel.messages.fetch(messageId);
+    try {
+      const thread = await message.startThread({ name, autoArchiveDuration: ThreadAutoArchiveDuration.OneDay });
+      return { threadId: thread.id, parentChannelId: channel.id, name: thread.name };
+    } catch (error) {
+      if ((error as { code?: unknown }).code === 160_004) {
+        const raced = await client.channels.fetch(messageId).catch(() => null);
+        if (raced?.isThread()) return { threadId: raced.id, parentChannelId: channel.id, name: raced.name };
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Register the handler for threads people create. Numbered task threads are created through
    * {@link createTaskThread} and registered directly, while the worker firehose remains private.
    * A later call replaces the handler.
@@ -782,6 +815,7 @@ export class DiscordJsGateway implements DiscordGateway {
             isThread: channel?.isThread() === true,
             ...(channel?.isThread() && channel.parentId ? { parentChannelId: channel.parentId } : {}),
             ...(channel && "name" in channel && typeof channel.name === "string" ? { channelName: channel.name } : {}),
+            messageId: interaction.message.id,
             editReply: async (content) => { await interaction.editReply({ content }); },
           };
           const handler = this.interactionHandler;
