@@ -108,7 +108,7 @@ import {
   renderUnavailableReplyContext,
 } from "./reply-context.ts";
 import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
-import type { DiscordButton, DiscordEmbed, TaskThreadCreated } from "../types.ts";
+import type { DiscordButton, DiscordComponentInteraction, DiscordEmbed, TaskThreadCreated } from "../types.ts";
 import { ComponentRouter, decodeComponentId, type ComponentActionContext } from "../discord/interactions.ts";
 import { GitHubCli, loadIdentity } from "../agency/index.ts";
 import { createTrackerClient } from "../tracker/client.ts";
@@ -396,6 +396,46 @@ const CRASH_LOOP_THRESHOLD = 3;
  * take, so the structured-output safety boundary is preserved even mid-turn.
  */
 export const EARLY_ACK_MAX_CHARS = 240;
+
+/**
+ * Reaction → component action mapping (#103). A checkmark is "do it" (merge), a cross is "stop it"
+ * (cancel). Discord may send an emoji with or without the trailing variation selector, so it is
+ * stripped before the lookup. Any other emoji returns null — the reaction is dropped silently.
+ */
+const REACTION_MERGE_EMOJI = new Set(["✅", "✔"]);
+const REACTION_CANCEL_EMOJI = new Set(["❌", "✖"]);
+export function reactionActionFor(emoji: string | null): "merge" | "cancel" | null {
+  if (!emoji) return null;
+  const bare = emoji.replace(/\uFE0F/g, "");
+  if (REACTION_MERGE_EMOJI.has(bare)) return "merge";
+  if (REACTION_CANCEL_EMOJI.has(bare)) return "cancel";
+  return null;
+}
+
+/** The branch ref a reacted-to card is for: read from its own merge/cancel button custom_ids. */
+export function reactionBranchTarget(componentIds: readonly string[]): string | null {
+  for (const id of componentIds) {
+    const decoded = decodeComponentId(id);
+    if (decoded && (decoded.action === "merge" || decoded.action === "cancel")) return decoded.target;
+  }
+  return null;
+}
+
+/**
+ * A synthetic component interaction standing in for a reaction, so the reaction path can reuse the
+ * SAME {@link ComponentRouter.execute} core a click uses. Only the Discord-authenticated
+ * {@link IncomingReaction.userId} carries authority; a reaction has no ephemeral reply surface, so
+ * `editReply` is a no-op (the caller logs the returned text instead).
+ */
+function reactionInteraction(r: IncomingReaction): DiscordComponentInteraction {
+  return {
+    customId: "",
+    userId: r.userId,
+    channelId: r.channelId,
+    isThread: false,
+    editReply: async () => undefined,
+  };
+}
 
 /** Prompt that asks the dying session for a compact handoff before we drop its transcript. */
 const HANDOFF_PROMPT =
@@ -3911,6 +3951,30 @@ export class Concierge {
             },
           },
           {
+            name: "discord.react",
+            summary: "add ONE reaction to a message — the cheapest acknowledgement (#103)",
+            handle: async (req) => {
+              // #103: a thin bus surface over the gateway's addReaction. A react is the cheapest ack
+              // Discord offers, so this is what the model reaches for when a whole "on it" message
+              // would be too much (react-as-ack), and it doubles as the manual add-a-reaction verb.
+              const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
+              const messageId = typeof req.args.messageId === "string" ? req.args.messageId.trim() : "";
+              const emoji = typeof req.args.emoji === "string" ? req.args.emoji.trim() : "";
+              if (!channelId || !messageId || !emoji) {
+                return { ok: false, error: "discord.react needs channelId, messageId, and emoji" };
+              }
+              if (typeof this.gateway.addReaction !== "function") {
+                return { ok: false, error: "this gateway cannot add reactions" };
+              }
+              try {
+                await this.gateway.addReaction(channelId, messageId, emoji);
+                return { ok: true, data: { reacted: emoji, messageId } };
+              } catch (err) {
+                return { ok: false, error: (err as Error).message };
+              }
+            },
+          },
+          {
             name: "discord.reply",
             summary: "post to a channel as the concierge (deduped; may claim the live turn)",
             handle: async (req) => {
@@ -3982,8 +4046,12 @@ export class Concierge {
               // boundary, so no internal reasoning can leak and the person still gets the full reply.
               const channelId = typeof req.args.channelId === "string" ? req.args.channelId.trim() : "";
               const raw = typeof req.args.text === "string" ? req.args.text.trim() : "";
-              if (!channelId || !raw) {
-                return { ok: false, error: "discord.ack needs channelId and text" };
+              // React-as-ack (#103): the cheapest acknowledgement Discord offers. When an emoji is
+              // given, the ack is a reaction ON THE REQUESTER'S OWN message instead of a separate
+              // "on it" line in the channel — no chunker, no post, no shared-context entry.
+              const emoji = typeof req.args.emoji === "string" ? req.args.emoji.trim() : "";
+              if (!channelId || (!raw && !emoji)) {
+                return { ok: false, error: "discord.ack needs channelId and text or emoji" };
               }
               // Cap it to one short line: an ack is a "digging in" signal, never a delivery vehicle.
               // Truncating (rather than posting the whole blob) keeps the terminal `message` the ONLY
@@ -3999,6 +4067,28 @@ export class Concierge {
                 // A declined turn posts nothing — an "ack" must not sneak output out either (mirrors
                 // discord.reply's terminal-decline guard).
                 return { ok: false, error: "you declined this turn — it posts nothing; an ack is not allowed" };
+              }
+              // A react is only "sufficient" when there is a specific message to react TO: the mention
+              // this turn is answering. Without that correlation (a cross-channel/ambient ack), fall
+              // back to the text ack below so the person still hears something.
+              if (emoji && claimsActiveTurn && active && !active.ambient) {
+                if (typeof this.gateway.addReaction !== "function") {
+                  return { ok: false, error: "this gateway cannot add reactions" };
+                }
+                return this.dedupeDiscordReply(JSON.stringify(["ack-react", channelId, active.messageId, emoji]), async () => {
+                  try {
+                    await this.gateway.addReaction!(channelId, active.messageId, emoji);
+                    // Like a text ack: NOT recorded and NOT marked repliedViaCli, so the turn's real
+                    // answer still flows through the terminal structured-output boundary untouched.
+                    return { ok: true, data: { reacted: emoji, messageId: active.messageId } };
+                  } catch (err) {
+                    return { ok: false, error: (err as Error).message };
+                  }
+                });
+              }
+              if (!text) {
+                // An emoji-only ack with nothing to react to has no target and no text to post.
+                return { ok: false, error: "discord.ack with only an emoji needs a message this turn is answering" };
               }
               return this.dedupeDiscordReply(JSON.stringify(["ack", channelId, text]), async () => {
                 try {

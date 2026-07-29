@@ -1393,10 +1393,31 @@ export async function runDiscordReply(argv: string[]): Promise<void> {
 // `discord reply` this does NOT claim the turn — your real answer still posts terminally afterwards.
 export async function runDiscordAck(argv: string[]): Promise<void> {
   const { _, flags } = parse(argv);
+  // React-as-ack (#103): `--emoji ✅` acknowledges by reacting to the message this turn is answering
+  // instead of posting a separate "on it" line. Text and emoji are both optional here; the daemon
+  // rejects the empty case and falls back to a text ack when there is no message to react to.
   await discordReplyBus(
-    { channelId: flags.channel ? String(flags.channel) : undefined, text: _.join(" ") },
+    {
+      channelId: flags.channel ? String(flags.channel) : undefined,
+      text: _.join(" "),
+      ...(flags.emoji ? { emoji: String(flags.emoji) } : {}),
+    },
     "discord.ack",
   );
+}
+
+// Add ONE reaction to a message (#103) — the cheapest acknowledgement Discord offers. Routes over
+// the same control bus as `discord reply`/`ack` and lands on the running daemon's
+// `gateway.addReaction`. A vanished target is treated as already-done by the daemon, not an error.
+export async function runDiscordReact(argv: string[]): Promise<void> {
+  const { flags } = parse(argv);
+  const channelId = flags.channel ? String(flags.channel).trim() : "";
+  const messageId = flags.message ? String(flags.message).trim() : "";
+  const emoji = flags.emoji ? String(flags.emoji).trim() : "";
+  if (!channelId || !messageId || !emoji) {
+    fail("usage: beckett discord react --channel <id> --message <id> --emoji <emoji>");
+  }
+  await bus("discord.react", { channelId, messageId, emoji });
 }
 
 // Delete ONE Beckett-authored message by explicit id (issue #35): clean up your own debugging
