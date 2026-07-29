@@ -63,6 +63,7 @@ import { PROACTIVE_SWEEP_ID } from "../../routine/builtins.ts";
 import { formatWeeklyBill, readSpendLedger } from "../../spend.ts";
 import { defaultRepoRoot } from "../../version/index.ts";
 import { loadIdentity } from "../../agency/index.ts";
+import { resolveSelfProjectOwner } from "../../github/owner.ts";
 import type { AgentDefinition, AgentRunner } from "../../agent/index.ts";
 import type { BrowserAgent } from "../../browser/agent.ts";
 import { callBus } from "../../shell/control-bus.ts";
@@ -639,7 +640,9 @@ export const createRoutinesExtension =
       }
 
       const selfRepo = process.env.BECKETT_SELF_PROJECT?.trim() || "beckett";
-      const repo = flags.repo ? String(flags.repo) : `${identity.owner}/${selfRepo}`;
+      // The self-repo moved to kowo-co (#114); the REST API 301s the old owner, so target the
+      // self-project owner rather than the default managed-project owner (identity.owner).
+      const repo = flags.repo ? String(flags.repo) : `${resolveSelfProjectOwner()}/${selfRepo}`;
       const base = flags.base ? String(flags.base) : "main";
       const sourceRepo = flags.source ? String(flags.source) : defaultRepoRoot();
       const channelId = flags.channel

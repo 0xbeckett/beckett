@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveGitHubAccount, resolveGitHubOwner, resolveGitHubTarget } from "./owner.ts";
+import {
+  resolveGitHubAccount,
+  resolveGitHubOwner,
+  resolveGitHubTarget,
+  resolveProjectOwner,
+  resolveSelfProjectOwner,
+} from "./owner.ts";
 
 describe("resolveGitHubOwner", () => {
   test("prefers the explicit project-owner environment override", () => {
@@ -47,5 +53,38 @@ describe("resolveGitHubOwner", () => {
         { BECKETT_GH_ORG: "acme-labs", GITHUB_ACCOUNT: "publisher-bot" },
       ),
     ).toBe("publisher-bot");
+  });
+});
+
+describe("resolveProjectOwner", () => {
+  const config = { identity: { github_user: "octocat" } };
+
+  test("resolves the beckett self-project to kowo-co, not the default owner", () => {
+    expect(resolveProjectOwner("beckett", config, { GITHUB_ACCOUNT: "publisher-bot" })).toBe("kowo-co");
+    expect(resolveProjectOwner("  Beckett ", config, { GITHUB_ACCOUNT: "publisher-bot" })).toBe("kowo-co");
+  });
+
+  test("leaves every other project slug on the default owner", () => {
+    expect(resolveProjectOwner("balloons", config, { GITHUB_ACCOUNT: "publisher-bot" })).toBe("publisher-bot");
+    expect(resolveProjectOwner("balloons", config, { BECKETT_GH_ORG: "acme-labs" })).toBe("acme-labs");
+    expect(resolveProjectOwner("balloons", config, {})).toBe("octocat");
+  });
+
+  test("honors BECKETT_SELF_PROJECT_OWNER and BECKETT_SELF_PROJECT overrides", () => {
+    expect(
+      resolveProjectOwner("beckett", config, { BECKETT_SELF_PROJECT_OWNER: "some-org" }),
+    ).toBe("some-org");
+    // A renamed self-project takes the self-owner; the literal "beckett" then falls through.
+    expect(
+      resolveProjectOwner("myself", config, { BECKETT_SELF_PROJECT: "myself", GITHUB_ACCOUNT: "publisher-bot" }),
+    ).toBe("kowo-co");
+    expect(
+      resolveProjectOwner("beckett", config, { BECKETT_SELF_PROJECT: "myself", GITHUB_ACCOUNT: "publisher-bot" }),
+    ).toBe("publisher-bot");
+  });
+
+  test("resolveSelfProjectOwner defaults to kowo-co and honors the env override", () => {
+    expect(resolveSelfProjectOwner({})).toBe("kowo-co");
+    expect(resolveSelfProjectOwner({ BECKETT_SELF_PROJECT_OWNER: " some-org " })).toBe("some-org");
   });
 });
