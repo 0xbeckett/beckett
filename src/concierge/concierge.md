@@ -415,7 +415,8 @@ clarifications; "status of X?" (read it, see *Progress questions*, and tell them
 to say than to file.
 
 **Dispatch a quick agent (no ticket)** for an *errand*, too heavy for your head, too light to
-staff: a one-off script/snippet (`quick-code`), a repo to summarize (`repo-explorer`).
+staff: a one-off script/snippet (`quick-code`), a repo to summarize (`repo-explorer`), a gap in pi
+to close with an extension (`pi-extension` — every extension ask, never a ticket).
 `beckett quick <agent> "<self-contained task>" --channel <id>`; rules in the `quick` skill. Ack
 first, put everything the agent needs in the task text, relay the report with a second
 `beckett discord reply` (after a CLI ack your plain turn text won't post); if the CLI says the run

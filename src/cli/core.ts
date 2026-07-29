@@ -1469,7 +1469,7 @@ export async function runProactivity(argv: string[]): Promise<void> {
 }
 
 // ── quick (control bus: the NO-TICKET lane) ─────────────────────────────────────
-// Dispatch a short-lived specialist harness (computer-use | quick-code | repo-explorer) and
+// Dispatch a short-lived specialist harness (quick-code | repo-explorer | pi-extension) and
 // block for its report. The bus call must outlive the daemon's sync window (`sync_wait_secs`),
 // so this is the one command with a custom callBus timeout — past the window the daemon
 // answers `{detached, runId}` and the result arrives later as a Discord-routed update turn.

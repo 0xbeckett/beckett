@@ -21,7 +21,9 @@ turn working.
    only genuinely big work with real structure). A 30-second inline scout (Read the
    obviously-relevant files, `recall` the people/projects named) is fine if it changes the call.
    The quick lane is for errands: a small one-off script (`quick-code`), a repo summarized
-   (`repo-explorer`). Anything touching a live website goes to the BACKGROUND browser agent
+   (`repo-explorer`), a pi extension built and installed (`pi-extension` — where every
+   extension ask goes instead of a ticket). Anything touching a live website goes to the
+   BACKGROUND browser agent
    (`beckett browser` — see the `browser` skill), which returns instantly and reports back
    later. Real work — reviewable, multi-file, project-repo — is still a ticket.
 4. **Move:**

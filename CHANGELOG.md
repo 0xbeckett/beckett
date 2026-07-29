@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### A quick agent for pi extensions (#126)
+
+pi's extension ecosystem is errand-shaped, not project-shaped — extensions are self-contained
+TypeScript modules that hook the session lifecycle and register tools, and they package over npm.
+Filing a full ticket every time a gap in the harness turned up was the wrong instrument, so the
+no-ticket lane grows a third agent alongside `quick-code` and `repo-explorer`:
+
+- **`pi-extension`** (`src/quick/agents/pi-extension.md`) — reads pi's *live* extension docs from
+  the installed package before writing a line (the API is moving; a remembered shape is a guess),
+  scaffolds and typechecks in its scratch dir, installs into `~/.pi/agent/extensions/`, then
+  verifies the extension actually loads in a real `pi -p` session — both explicitly via `-e` and
+  through auto-discovery — and reports the extension name plus what it registers.
+- **A build or load failure is a failed run**, never a quiet success; a provider error mid-verify
+  (no key, usage limit) is reported as an unverified load rather than rounded up. If the requested
+  capability isn't reachable through the extension API at all, the report says so in one line
+  instead of shipping a stub.
+- Its write scope is the scratch dir **plus pi's own extension/config directory** — the one quick
+  agent that legitimately installs something. `~/beckett` and `~/Projects/*` stay ticket territory,
+  same hard bar as the other two.
+
 ## v6.11.1 (2026-07-28)
 
 ### The documented install actually works on a clean machine (#72)

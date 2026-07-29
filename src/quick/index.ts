@@ -38,6 +38,12 @@ export const QUICK_AGENTS: readonly QuickAgentDef[] = [
       "shallow-clones a repo and returns a tight brief answering your question - so you never read a whole codebase yourself",
     promptFile: "repo-explorer.md",
   },
+  {
+    name: "pi-extension",
+    description:
+      "builds a pi extension for a gap in the harness: reads pi's live extension docs, scaffolds TypeScript, installs into ~/.pi/agent/extensions, verifies it loads in a real pi session",
+    promptFile: "pi-extension.md",
+  },
 ] as const;
 
 export function findAgent(name: string): QuickAgentDef | undefined {

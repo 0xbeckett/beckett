@@ -79,10 +79,17 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
 
 describe("registry", () => {
   test("ships the fire-and-report roster; browser work lives in the dedicated agent", () => {
-    expect(QUICK_AGENTS.map((agent) => agent.name)).toEqual(["quick-code", "repo-explorer"]);
+    expect(QUICK_AGENTS.map((agent) => agent.name)).toEqual(["quick-code", "repo-explorer", "pi-extension"]);
     expect(findAgent("quick-code")?.name).toBe("quick-code");
     expect(findAgent("computer-use")).toBeUndefined();
-    expect(setup().runner.agents()).toHaveLength(2);
+    expect(setup().runner.agents()).toHaveLength(3);
+  });
+
+  test("every registered agent has a readable prompt file", () => {
+    for (const agent of QUICK_AGENTS) {
+      const prompt = readFileSync(join(import.meta.dir, "agents", agent.promptFile), "utf8");
+      expect(prompt.trim().length).toBeGreaterThan(200);
+    }
   });
 });
 

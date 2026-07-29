@@ -1981,7 +1981,7 @@ exports[`cli: quick: no agent/task prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list
+"error: usage: beckett quick <quick-code|repo-explorer|pi-extension> "<task>" [--channel <id>]  |  beckett quick list
 "
 ,
   "stdout": "",
@@ -1992,7 +1992,7 @@ exports[`cli: quick: agent without a task prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list
+"error: usage: beckett quick <quick-code|repo-explorer|pi-extension> "<task>" [--channel <id>]  |  beckett quick list
 "
 ,
   "stdout": "",

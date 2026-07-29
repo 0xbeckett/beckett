@@ -949,8 +949,8 @@ export interface Config {
     idle_recycle_minutes: number;
   };
   /**
-   * Quick agents — the NO-TICKET lane: short-lived specialist `claude -p` harnesses
-   * (`computer-use`, `quick-code`, `repo-explorer`) the Concierge dispatches via
+   * Quick agents — the NO-TICKET lane: short-lived specialist one-shot harnesses
+   * (`quick-code`, `repo-explorer`, `pi-extension`) the Concierge dispatches via
    * `beckett quick` for errands between "answer inline" and "file a ticket".
    */
   quick: {

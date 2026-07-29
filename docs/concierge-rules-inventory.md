@@ -337,7 +337,7 @@ clause that carries it.
 |---|---|
 | size every message; spend what it deserves and no more | ¶1 |
 | answer inline for trivial/conversational asks, status questions (read it), anything faster to say than file | ¶ "Answer inline" |
-| quick agent for errands: `quick-code`, `repo-explorer`, `beckett quick <agent> "<self-contained task>" --channel <id>` | ¶ "Dispatch a quick agent" |
+| quick agent for errands: `quick-code`, `repo-explorer`, `pi-extension` (every pi-extension ask, never a ticket), `beckett quick <agent> "<self-contained task>" --channel <id>` | ¶ "Dispatch a quick agent" |
 | `quick` skill has the rules; ack first; put everything in the task text; relay with a second `beckett discord reply` (plain turn text won't post after a CLI ack); detached run → end the turn | same ¶ |
 | browser agent for ANY browser/computer-use work; `beckett browser "<self-contained task>" [--creds <jingle-entry>] [--context "<background>"]` | ¶ "Dispatch the browser agent" |
 | `--context` when the conversation holds shaping facts | browser bullet 1 |
