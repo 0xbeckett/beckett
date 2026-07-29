@@ -43,7 +43,7 @@ import {
   type MossDocument,
 } from "./channel-moss.ts";
 import { STOP_WORDS } from "../moss-local/index.ts";
-import type { Logger } from "../types.ts";
+import type { IncomingMessageSnapshot, Logger } from "../types.ts";
 
 /** One captured message in a channel's shared window. */
 export interface ChannelEntry {
@@ -60,6 +60,12 @@ export interface ChannelEntry {
   /** Discord's native reply target, when present. Optional for backward-compatible stored rows. */
   repliedToId?: string | null;
   kind: "user" | "beckett";
+  /**
+   * Quoted originals from a Discord forward, when this entry captured one (#111). Kept on the
+   * entry so a later mention/DM turn from the SAME author can fold the forwarded material into
+   * its own turn even though the forward itself never mentioned the bot.
+   */
+  forwardedSnapshots?: IncomingMessageSnapshot[];
 }
 
 /**

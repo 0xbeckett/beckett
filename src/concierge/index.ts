@@ -206,6 +206,15 @@ const DISCORD_REPLY_DEDUPE_MS = 2 * 60_000;
 const MILESTONE_NOTIFY_DEDUPE_MS = 5 * 60_000;
 
 /**
+ * Same-author forward lookback window (#111): the observed real gap between a forward and the
+ * mention asking about it was 0.27s; a couple of minutes comfortably covers "forward, then type
+ * a question" without reaching into an unrelated older conversation.
+ */
+const FORWARD_LOOKBACK_WINDOW_MS = 2 * 60_000;
+/** Only the tail of the channel record is checked — a burst of chatter shouldn't bury the forward. */
+const FORWARD_LOOKBACK_MESSAGES = 5;
+
+/**
  * How long freshly-filed refs are held before the single `-# filed …` subtext line posts.
  *
  * The line is ONE PER WAVE, not one per ticket, and a wave arrives as a burst of independent
@@ -4564,7 +4573,12 @@ export class Concierge {
     // A Discord forward stores its original in message snapshots, not `content`. Keep the
     // forwarder's comment for code-level commands, but fold the quoted original into the model
     // turn below. An image-only message (a screenshot with no caption) is likewise a real turn.
-    const turnContent = contentWithForwardedSnapshots(content, m.forwardedSnapshots);
+    // A forward and its "what does this say" mention routinely arrive as TWO separate Discord
+    // messages seconds apart (#111) — the forward carries no mention and the mention carries no
+    // snapshots of its own. When this turn has none, look back for one the same author just
+    // forwarded into this channel rather than answering blind.
+    const forwardedSnapshots = m.forwardedSnapshots?.length ? m.forwardedSnapshots : this.recentForwardedSnapshots(m);
+    const turnContent = contentWithForwardedSnapshots(content, forwardedSnapshots);
     if (!turnContent && m.attachments.length === 0) return;
 
     const access = this.accessLevelFor(m.userId);
@@ -5045,10 +5059,37 @@ export class Concierge {
    * level / owner flag / preferred address are deliberately NOT stored — they resolve at read
    * time (§3.1). Best-effort by store contract: a capture failure can never break a turn.
    */
+  /**
+   * Same-author forward lookback (#111): a mention/DM turn with no forwardedSnapshots of its own
+   * checks the last few captured entries in this channel for one FROM THIS SPEAKER, within a
+   * short window — the observed real-world flow is "post a forward, then @mention seconds later
+   * asking about it" as two independent Discord messages. Scoped tight on purpose: same author
+   * (a stranger's forward is never silently attributed to this turn), the last
+   * {@link FORWARD_LOOKBACK_MESSAGES} entries only (not an unbounded channel-history scan), and
+   * inside {@link FORWARD_LOOKBACK_WINDOW_MS} of this message's own timestamp — old forwards from
+   * an earlier, unrelated conversation must not resurface here.
+   */
+  private recentForwardedSnapshots(m: IncomingMessage): IncomingMessage["forwardedSnapshots"] {
+    if (!this.channelStore) return undefined;
+    const window = this.channelStore.recent(m.channelId).slice(-FORWARD_LOOKBACK_MESSAGES);
+    for (let i = window.length - 1; i >= 0; i--) {
+      const entry = window[i]!;
+      if (entry.authorId !== m.userId || !entry.forwardedSnapshots?.length) continue;
+      const age = m.createdAt - entry.ts;
+      if (age < 0 || age > FORWARD_LOOKBACK_WINDOW_MS) continue;
+      return entry.forwardedSnapshots;
+    }
+    return undefined;
+  }
+
   private captureInbound(m: IncomingMessage, level: AccessLevel): void {
     if (!this.channelStore || level === "outsider") return;
     const files = m.attachments.map((a) => `[file: ${a.name}]`).join(" ");
-    const content = [m.content.trim(), files].filter(Boolean).join(" ");
+    // A Discord forward stores its original in message snapshots, not `content` — fold it in
+    // BEFORE the empty-content guard below, or a forward-only message (the common case: forward
+    // first, comment or @mention seconds later) is dropped from the record entirely and never
+    // reaches channel context, server memory, or the same-author lookback in onMessage (#111).
+    const content = contentWithForwardedSnapshots([m.content.trim(), files].filter(Boolean).join(" "), m.forwardedSnapshots);
     if (!content) return;
     // Server memory (v4.1): learn the channel's name + guild BEFORE the append so the profiler's
     // guild gate (and later awareness/search scoping) sees it. A null guildId marks a DM.
@@ -5065,6 +5106,7 @@ export class Concierge {
       content,
       repliedToId: m.repliedToId,
       kind: "user",
+      forwardedSnapshots: m.forwardedSnapshots,
     });
     this.profiler?.notifyAppend(m.channelId);
   }
