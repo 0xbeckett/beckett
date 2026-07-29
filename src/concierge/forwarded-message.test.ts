@@ -4,8 +4,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Concierge, type ConciergeSession, type TurnMessage } from "./index.ts";
 import { validateConfig } from "../config.ts";
+import type { AmbientClock } from "./ambient.ts";
 import type { Config, IncomingMessage, IncomingMessageSnapshot } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
+
+/** A settable clock so `createdAt`/TTL both read the same "now" the tests control. */
+class FakeClock implements AmbientClock {
+  t = 0;
+  next = 1;
+  timers = new Map<number, { at: number; cb: () => void }>();
+  now(): number {
+    return this.t;
+  }
+  setTimeout(cb: () => void, ms: number): unknown {
+    const id = this.next++;
+    this.timers.set(id, { at: this.t + ms, cb });
+    return id;
+  }
+  clearTimeout(handle: unknown): void {
+    this.timers.delete(handle as number);
+  }
+}
 
 const CHANNEL = "forward-channel";
 const USER = "111111111111111111";
@@ -86,6 +105,18 @@ function text(turn: TurnMessage): string {
 }
 
 /**
+ * Split a mention turn into the shared-history prefix and the live user frame (prefix ends
+ * "\n\n"). The lookback fix only folds forwarded material into the LIVE frame — the same
+ * message legitimately showing up in the shared-history prefix (as ordinary prior channel
+ * content, once captureInbound stops dropping it) is expected and is a different mechanism.
+ */
+function splitTurn(turn: string): { window: string; live: string } {
+  const idx = turn.lastIndexOf("\n\n");
+  if (idx === -1) return { window: "", live: turn };
+  return { window: turn.slice(0, idx), live: turn.slice(idx + 2) };
+}
+
+/**
  * A shared-context-backed Concierge (real `channelStore`, via `validateConfig` defaults) for
  * the #111 capture + lookback cases below — `concierge()` above builds a raw un-validated
  * config with no `shared_context` block, so its `channelStore` is always null and can't
@@ -106,7 +137,7 @@ function sharedContextConcierge(asks: TurnMessage[]): Concierge {
     isConnected: () => true,
     lastEventAgeMs: () => 0,
   } as unknown as DiscordGateway;
-  return new Concierge({ config: validateConfig({}), session, gateway });
+  return new Concierge({ config: validateConfig({}), session, gateway, ambientClock: new FakeClock() });
 }
 
 test("forward-message fixtures keep quoted originals distinct from the sender's comment", async () => {
@@ -147,7 +178,7 @@ test("captureInbound folds a forward-only message's snapshot into the stored cha
   const asks: TurnMessage[] = [];
   const c = sharedContextConcierge(asks);
   // Ambient (no mention) forward: empty content, one snapshot — the real-world flow from #111.
-  await c.onMessage(fixture({ messageId: "amb-forward", content: "", mentionsBot: false, forwardedSnapshots: snapshots }));
+  await c.onMessage(fixture({ guildId: "guild-1", messageId: "amb-forward", content: "", mentionsBot: false, forwardedSnapshots: snapshots }));
   expect(asks).toHaveLength(0); // ambient, not a directed turn
 
   const recall = await c.onBusRequest({ cmd: "channels.recall", args: { channel: CHANNEL, last: 10 } });
@@ -162,9 +193,9 @@ test("a same-author mention with no snapshots of its own picks up a recent forwa
   testRuntime();
   const asks: TurnMessage[] = [];
   const c = sharedContextConcierge(asks);
-  await c.onMessage(fixture({ messageId: "amb-forward", content: "", mentionsBot: false, forwardedSnapshots: snapshots, createdAt: 0 }));
+  await c.onMessage(fixture({ guildId: "guild-1", messageId: "amb-forward", content: "", mentionsBot: false, forwardedSnapshots: snapshots, createdAt: 0 }));
   await c.onMessage(
-    fixture({ messageId: "mention", content: "what does this message say", mentionsBot: true, createdAt: 270 }),
+    fixture({ guildId: "guild-1", messageId: "mention", content: "what does this message say", mentionsBot: true, createdAt: 270 }),
   );
   expect(asks).toHaveLength(1);
   const turn = text(asks[0]!);
@@ -178,30 +209,30 @@ test("a forward from a DIFFERENT author is not attached to another speaker's men
   const asks: TurnMessage[] = [];
   const c = sharedContextConcierge(asks);
   await c.onMessage(
-    fixture({ messageId: "amb-forward", userId: OTHER_USER, content: "", mentionsBot: false, forwardedSnapshots: snapshots, createdAt: 0 }),
+    fixture({ guildId: "guild-1", messageId: "amb-forward", userId: OTHER_USER, content: "", mentionsBot: false, forwardedSnapshots: snapshots, createdAt: 0 }),
   );
   await c.onMessage(
-    fixture({ messageId: "mention", userId: USER, content: "what does this message say", mentionsBot: true, createdAt: 1_000 }),
+    fixture({ guildId: "guild-1", messageId: "mention", userId: USER, content: "what does this message say", mentionsBot: true, createdAt: 1_000 }),
   );
   expect(asks).toHaveLength(1);
-  const turn = text(asks[0]!);
-  expect(turn).toContain("what does this message say");
-  expect(turn).not.toContain("Original author's release notes");
-  expect(turn).not.toContain("Forwarded material");
+  const { live } = splitTurn(text(asks[0]!));
+  expect(live).toContain("what does this message say");
+  expect(live).not.toContain("Original author's release notes");
+  expect(live).not.toContain("Forwarded material");
 });
 
 test("a forward outside the lookback window is not attached", async () => {
   testRuntime();
   const asks: TurnMessage[] = [];
   const c = sharedContextConcierge(asks);
-  await c.onMessage(fixture({ messageId: "amb-forward", content: "", mentionsBot: false, forwardedSnapshots: snapshots, createdAt: 0 }));
+  await c.onMessage(fixture({ guildId: "guild-1", messageId: "amb-forward", content: "", mentionsBot: false, forwardedSnapshots: snapshots, createdAt: 0 }));
   // Well past the ~2 minute lookback window (#111).
   await c.onMessage(
-    fixture({ messageId: "mention", content: "what does this message say", mentionsBot: true, createdAt: 5 * 60_000 }),
+    fixture({ guildId: "guild-1", messageId: "mention", content: "what does this message say", mentionsBot: true, createdAt: 5 * 60_000 }),
   );
   expect(asks).toHaveLength(1);
-  const turn = text(asks[0]!);
-  expect(turn).toContain("what does this message say");
-  expect(turn).not.toContain("Original author's release notes");
-  expect(turn).not.toContain("Forwarded material");
+  const { live } = splitTurn(text(asks[0]!));
+  expect(live).toContain("what does this message say");
+  expect(live).not.toContain("Original author's release notes");
+  expect(live).not.toContain("Forwarded material");
 });
