@@ -513,6 +513,111 @@ test("a non-thread channel is never joined", async () => {
   expect(joins).toBe(0);
 });
 
+// ── reactions (#103) ─────────────────────────────────────────────────────────────────────────
+
+/** Wire the real listeners onto a fake client and hand back the captured event callbacks. */
+function reactionHarness(botId = "bot-1") {
+  const gateway = new DiscordJsGateway();
+  const listeners = new Map<string, (...args: any[]) => void>();
+  const client = {
+    user: { id: botId },
+    on: (event: string, cb: (...args: any[]) => void) => listeners.set(String(event), cb),
+    rest: { on: () => undefined },
+  };
+  (gateway as unknown as { client: unknown }).client = client;
+  (gateway as unknown as { wireListeners: (c: unknown) => void }).wireListeners(client);
+  return { gateway, emit: (r: unknown, u: unknown) => listeners.get(Events.MessageReactionAdd)!(r, u) };
+}
+
+test("a reaction from a bot (including self) is dropped before any fetch or handler", async () => {
+  const { gateway, emit } = reactionHarness();
+  const seen: unknown[] = [];
+  gateway.onReaction((r) => { seen.push(r); });
+  let fetched = false;
+  const reaction = {
+    partial: true,
+    fetch: async () => { fetched = true; return reaction; },
+    message: { partial: false, id: "m", channelId: "c", guildId: "g", author: { id: "bot-1" }, components: [] },
+    emoji: { name: "✅" },
+  };
+
+  emit(reaction, { id: "bot-1", bot: true, partial: false });
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(seen).toEqual([]);
+  expect(fetched).toBe(false); // never even fetched — a busy channel's bot emoji stays cheap
+});
+
+test("a partial reaction on an uncached message is fetched, then normalized with author + component ids", async () => {
+  const { gateway, emit } = reactionHarness();
+  const seen: any[] = [];
+  gateway.onReaction((r) => { seen.push(r); });
+
+  const fullMessage = {
+    partial: false,
+    id: "msg-1",
+    channelId: "chan-1",
+    guildId: "guild-1",
+    author: { id: "bot-1" },
+    components: [{ components: [{ customId: "beckett:v1:merge:12.1" }, { customId: "beckett:v1:cancel:12.1" }] }],
+  };
+  const partialMessage = { partial: true, id: "msg-1", fetch: async () => fullMessage };
+  const fullReaction = { partial: false, message: partialMessage, emoji: { name: "✅" } };
+  const partialReaction = { partial: true, message: partialMessage, emoji: { name: "✅" }, fetch: async () => fullReaction };
+
+  emit(partialReaction, { id: "user-9", bot: false, partial: false });
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(seen).toEqual([
+    {
+      messageId: "msg-1",
+      channelId: "chan-1",
+      guildId: "guild-1",
+      userId: "user-9",
+      emoji: "✅",
+      messageAuthorId: "bot-1",
+      messageComponentIds: ["beckett:v1:merge:12.1", "beckett:v1:cancel:12.1"],
+    },
+  ]);
+});
+
+test("a partial reacting user is fetched and re-checked, dropping a bot that arrived partial", async () => {
+  const { gateway, emit } = reactionHarness();
+  const seen: unknown[] = [];
+  gateway.onReaction((r) => { seen.push(r); });
+  const message = { partial: false, id: "m", channelId: "c", guildId: "g", author: { id: "bot-1" }, components: [] };
+  const reaction = { partial: false, message, emoji: { name: "✅" } };
+  // bot flag is hidden until the partial user is fetched; the fetched user turns out to be a bot.
+  const user = { id: "peer-bot", bot: false, partial: true, fetch: async () => ({ id: "peer-bot", bot: true, partial: false }) };
+
+  emit(reaction, user);
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(seen).toEqual([]);
+});
+
+test("addReaction reacts to the target message and no-ops a deleted one", async () => {
+  const reacted: string[] = [];
+  const gateway = new DiscordJsGateway();
+  const message = { react: async (emoji: string) => { reacted.push(emoji); } };
+  (gateway as unknown as { client: unknown }).client = {
+    channels: { fetch: async () => ({ isTextBased: () => true, messages: { fetch: async () => message } }) },
+  };
+  await gateway.addReaction("chan-1", "msg-1", "✅");
+  expect(reacted).toEqual(["✅"]);
+
+  const gone = new DiscordJsGateway();
+  (gone as unknown as { client: unknown }).client = {
+    channels: {
+      fetch: async () => ({
+        isTextBased: () => true,
+        messages: { fetch: async () => { throw Object.assign(new Error("Unknown Message"), { code: 10_008 }); } },
+      }),
+    },
+  };
+  await expect(gone.addReaction("chan-1", "ghost", "✅")).resolves.toBeUndefined();
+});
+
 test("a message inside a thread is normalized with its thread flag and parent channel", async () => {
   const gateway = new DiscordJsGateway();
   (gateway as unknown as { client: { user: { id: string } } }).client = { user: { id: "bot-1" } };

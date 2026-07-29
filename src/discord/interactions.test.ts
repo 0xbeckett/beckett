@@ -63,3 +63,23 @@ test("router dispatches each registered verb through the registry", async () => 
 
   expect(click.replies).toEqual(["attached #44"]);
 });
+
+test("execute() is the shared core a reaction reuses: outsiders refused, members run the same handler", async () => {
+  // A reaction (#103) has no editReply surface, so it calls execute() directly instead of dispatch.
+  // Same registry, same fresh reclassification — the exact behavior a button click gets.
+  const runs: string[] = [];
+  const router = new ComponentRouter((id) => (id === "owner" ? "owner" : "outsider"))
+    .register("merge", (ctx) => { runs.push(`merge ${ctx.target} by ${ctx.access}`); return "merged"; });
+
+  const refused = await router.execute("merge", "12.1", interaction("", "stranger"));
+  expect(refused).toEqual({ authorized: false, message: "You are not authorized to use that control." });
+  expect(runs).toEqual([]); // unauthorized reaction performs NO side effect
+
+  const ran = await router.execute("merge", "12.1", interaction("", "owner"));
+  expect(ran).toEqual({ authorized: true, message: "merged" });
+  expect(runs).toEqual(["merge 12.1 by owner"]);
+
+  // An action with no registered handler is reported unauthorized (nothing ran), never thrown.
+  const missing = await router.execute("cancel", "12.1", interaction("", "owner"));
+  expect(missing).toEqual({ authorized: false, message: "That control is not available here." });
+});
