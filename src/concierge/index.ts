@@ -6221,7 +6221,15 @@ export function renderDoctrine(
   config: { identity?: { github_user?: string } },
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return doctrine.replaceAll("{{github_owner}}", resolveGitHubOwner(config, env));
+  return doctrine
+    .replaceAll("{{github_owner}}", resolveGitHubOwner(config, env))
+    // The playbook index cites ABSOLUTE paths, and it must. The doctrine is composed once here but
+    // read from several cwds: the concierge runs at the repo root, while a worker runs in
+    // `~/Projects/<slug>` and a lane runs wherever its caller left it. A relative
+    // `src/concierge/playbooks/…` resolves for exactly one of those and silently fails for the
+    // rest — the model would report the file missing and then act from memory, which is the one
+    // outcome the index exists to prevent.
+    .replaceAll("{{beckett_root}}", defaultRepoRoot());
 }
 
 /** Read and render the sibling `concierge.md`, the stable operating doctrine system prompt. */
