@@ -29,6 +29,8 @@ import { asCapability } from "../../ext/compat.ts";
 import type { Capability, CapabilityDeps } from "../index.ts";
 import { CfDns, DEFAULT_APEX_DOMAIN, apexDomain } from "../../agency/cloudflare.ts";
 import { TunnelDeployer } from "../../shell/deploy.ts";
+import { withDeployMarker } from "../../shell/deploy-activity.ts";
+import { resolveBeckettDir } from "../../paths.ts";
 import { fail, out, parse } from "../../cli/io.ts";
 import type { Logger } from "../../types.ts";
 
@@ -238,7 +240,8 @@ export const createDeployExtension: ExtensionFactory = ({ logger }): Extension =
           ? `http://localhost:${Number(flags.port)}`
           : "";
       if (!service) fail("usage: beckett deploy <name> --port <p> | --service http://localhost:<p>");
-      out(await deployer.deploy({ name, service }));
+      // Mark the deploy in-flight for the daemon's presence tick (#132), cleared when it settles.
+      out(await withDeployMarker(resolveBeckettDir(), () => deployer.deploy({ name, service })));
     }
     fail("usage: beckett deploy <name> --port <p> | deploy ls | deploy rm <name>");
   }
@@ -293,7 +296,8 @@ export const createDeployExtension: ExtensionFactory = ({ logger }): Extension =
             if (!call.origin?.userId) return { ok: false, error: "deploy: standing up a public URL needs an authenticated authorized request" };
             const a = call.args as z.infer<typeof DeployCreateArgs>;
             const service = a.service?.trim() ? a.service.trim() : `http://localhost:${a.port}`;
-            const data = await buildDeployer(logger).deploy({ name: a.name, service });
+            // Mark the deploy in-flight for the daemon's presence tick (#132), cleared when it settles.
+            const data = await withDeployMarker(resolveBeckettDir(), () => buildDeployer(logger).deploy({ name: a.name, service }));
             return { ok: true, data };
           }
           case "deploy.remove": {

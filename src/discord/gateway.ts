@@ -78,6 +78,7 @@ import {
   BROWSER_QUESTION_ATTACHMENT_NAME,
   isBrowserQuestionMessage,
 } from "../browser/question-message.ts";
+import { initialPresenceData } from "./presence.ts";
 
 /** Discord's hard per-message ceiling (Spec 05 §9.1). */
 const DISCORD_MAX_CHARS = 2000;
@@ -284,6 +285,10 @@ export class DiscordJsGateway implements DiscordGateway {
       // Uncached surfaces arrive as partials so we still get the event: DM channels/messages, and a
       // reaction (plus its message and user) on a message posted before the daemon cached it (#103).
       partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
+      // The presence Discord shows the instant we connect, before the first status-snapshot tick
+      // drives a live one (#132). Equal to the "nothing running" state, so connect → first tick is
+      // seamless; the PresenceController takes over from here via `client.user.setPresence`.
+      presence: initialPresenceData(),
     });
     this.client = client;
 

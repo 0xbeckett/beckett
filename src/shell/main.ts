@@ -24,8 +24,9 @@
  * Import style (whole repo, bun-native): explicit `.ts` extensions, ESM.
  */
 
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
 import { recordBoot, recordCleanShutdown, uptimeLedgerPath } from "../uptime.ts";
@@ -44,6 +45,8 @@ import { parsePrUrl } from "../github/types.ts";
 import { preflightFor } from "../drivers/index.ts";
 import { CARDS_CHANNEL_ID, createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
 import { createDiscordGateway, DiscordJsGateway } from "../discord/gateway.ts";
+import { PresenceController, type PresenceInputs } from "../discord/presence.ts";
+import { isDeployActive } from "./deploy-activity.ts";
 import { VoiceGateway, type VoiceBackendFactory } from "../discord/voice/gateway.ts";
 import { classify, loadAccess, type AccessLevel } from "../discord/access.ts";
 import { loadMaintainers } from "../discord/maintainers.ts";
