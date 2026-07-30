@@ -161,11 +161,12 @@ async function discordReplyBus(args: Record<string, unknown>, cmd = "discord.rep
   } catch (err) {
     if (err instanceof ControlBusTimeoutError) {
       out({
-        status: "unknown",
+        status: "indeterminate",
         mayHaveSent: true,
         message:
-          `Discord reply acknowledgement timed out after ${err.timeoutMs}ms; do not retry automatically ` +
-          "because the daemon may already have posted it.",
+          `INDETERMINATE: the control bus stopped waiting after ${err.timeoutMs}ms — this is NOT a send ` +
+          `failure. The daemon may already have posted it, so do NOT retry automatically; read the ` +
+          `channel to confirm before re-sending.`,
       });
     }
     fail((err as Error).message);

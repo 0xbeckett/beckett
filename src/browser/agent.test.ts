@@ -230,6 +230,35 @@ describe("dispatch", () => {
     expect(outcomes[0]!.proofFiles).toHaveLength(1);
   });
 
+  test("acks with a runId BEFORE a slow lease acquire finishes (issue #137: ack on accept, not on start)", async () => {
+    // The browser-lease acquire + cold Chromium boot can outlast the control-bus deadline. The
+    // dispatch must return the instant the daemon accepts the task — blocking on the acquire is the
+    // accept-vs-complete confusion that made a started run read as a CLI timeout/failure.
+    const browser = fakeBrowser();
+    const originalAcquire = browser.acquire.bind(browser);
+    let released: (() => void) | null = null;
+    const acquiring = new Promise<void>((resolve) => (released = resolve));
+    browser.acquire = async (lease) => {
+      await acquiring; // hold the lane open, as a real cold boot would
+      await originalAcquire(lease);
+    };
+    const { agent, outcomes } = setup({}, { browser });
+
+    // If run() awaited the acquire this would hang until the timeout; it resolves right away instead.
+    const dispatch = await Promise.race([
+      agent.run("BROWSER_slow_start", { channelId: "chan", requesterId: "owner" }),
+      Bun.sleep(1_000).then(() => "still-blocked" as const),
+    ]);
+    expect(dispatch).not.toBe("still-blocked");
+    expect((dispatch as { runId: string }).runId).toMatch(/^[0-9a-f-]{36}$/);
+    // The run has not finished — the acquire is still parked, so no outcome has been delivered yet.
+    expect(outcomes).toHaveLength(0);
+
+    released!();
+    await waitUntil(() => outcomes.length === 1, 8_000);
+    expect(outcomes[0]!.runId).toBe((dispatch as { runId: string }).runId);
+  });
+
   test("queues a second run at the legacy single-lease cap and rejects a dispatch without channel/requester", async () => {
     const { agent, questions } = setup();
     await agent.run("ASK_COLOR", { channelId: "chan", requesterId: "owner" });
