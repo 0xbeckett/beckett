@@ -200,6 +200,11 @@ const TrackerConfigSchema = z
     normalizeTrackerConfig,
     z
       .object({
+        // Master switch for the ticket board. Default ON (prod). A second, board-less instance
+        // (the #141 staging daemon) sets `enabled = false` so it never polls or dispatches a
+        // board — the board is a shared HTTP service (BECKETT_BORED_URL), NOT under BECKETT_DIR,
+        // so there is otherwise no way to run a Beckett that doesn't reach for the prod queue.
+        enabled: z.boolean().default(true),
         // Perf: pickup/review/relay latency is bounded by this poll. The poller avoids
         // unchanged-ticket comment reads, so a 5s default cuts average wait cheaply (bored is
         // a loopback service — polls never leave the box).

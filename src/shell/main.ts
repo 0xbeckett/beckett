@@ -359,28 +359,36 @@ async function boot(): Promise<BootedSystem> {
   // client's 429 Retry-After/exponential-backoff wrapper. Failures remain non-fatal so a temporary
   // tracker outage does not take Discord down; the poller retries through its normal client
   // bootstrap on later ticks.
-  await Promise.all(
-    [...clients].map(async ([board, boardClient]) => {
-      try {
-        await boardClient.ensureProvisioned();
-        const info = await boardClient.projectInfo();
-        clientByProjectId.set(info.projectId, boardClient);
-        const boardPoller = pollers.get(board);
-        if (boardPoller) pollerByProjectId.set(info.projectId, boardPoller);
-        // Poller priming intentionally emits recovery events only for active work. Reconcile the
-        // complete board here as well so terminal/parked changes made while offline cannot leave
-        // the public task registry stale or a dependent permanently held.
-        await reconcileTaskTickets(tasks, await boardClient.listIssues(), board, (ticket, err) => {
-          logger.warn("task branch boot reconciliation failed", {
-            branch: ticket.branchRef,
-            error: String(err),
+  // A board-less instance (#141 staging) skips the board entirely: no health-check, no reconcile,
+  // no poll/dispatch below. The board is a shared HTTP service (BECKETT_BORED_URL), so this is the
+  // one switch that keeps a second daemon off the production queue — and off the boot-time retry
+  // storm an unreachable board would otherwise cost before Discord even connects.
+  if (config.tracker.enabled) {
+    await Promise.all(
+      [...clients].map(async ([board, boardClient]) => {
+        try {
+          await boardClient.ensureProvisioned();
+          const info = await boardClient.projectInfo();
+          clientByProjectId.set(info.projectId, boardClient);
+          const boardPoller = pollers.get(board);
+          if (boardPoller) pollerByProjectId.set(info.projectId, boardPoller);
+          // Poller priming intentionally emits recovery events only for active work. Reconcile the
+          // complete board here as well so terminal/parked changes made while offline cannot leave
+          // the public task registry stale or a dependent permanently held.
+          await reconcileTaskTickets(tasks, await boardClient.listIssues(), board, (ticket, err) => {
+            logger.warn("task branch boot reconciliation failed", {
+              branch: ticket.branchRef,
+              error: String(err),
+            });
           });
-        });
-      } catch (err) {
-        logger.warn("tracker board health-check/pre-resolution failed", { board, error: (err as Error).message });
-      }
-    }),
-  );
+        } catch (err) {
+          logger.warn("tracker board health-check/pre-resolution failed", { board, error: (err as Error).message });
+        }
+      }),
+    );
+  } else {
+    logger.warn("tracker disabled (config.tracker.enabled=false) — no board poll or dispatch");
+  }
   const rememberRouting = (events: Ticket | Ticket[], board: string) => {
     const boardClient = clients.get(board);
     const boardPoller = pollers.get(board);
@@ -891,8 +899,9 @@ async function boot(): Promise<BootedSystem> {
   await extensions.startAll(extCtx, "early");
 
   // Fan each board's poll batch to BOTH the dispatcher (acts on the work) and the Concierge
-  // (surfaces milestones/errors back to the Discord conversation that filed the ticket).
-  await Promise.all(
+  // (surfaces milestones/errors back to the Discord conversation that filed the ticket). A
+  // board-less instance (#141) never arms the pollers — nothing to poll, nothing to dispatch.
+  if (config.tracker.enabled) await Promise.all(
     [...pollers].map(([board, p]) =>
       p.start((events) => {
         rememberRouting(events.map((event) => event.ticket), board);

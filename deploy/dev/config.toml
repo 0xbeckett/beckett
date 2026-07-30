@@ -3,10 +3,13 @@
 # the keys that make DEV inert and isolated; everything else uses the validated schema defaults.
 # Validation is strict (src/config.ts): only override keys you mean to change.
 
-# DEV points BECKETT_BORED_URL (in the unit) at a loopback port with no listener, so it has NO live
-# board. Poll it rarely so the deliberately-unreachable tracker barely logs (prod default is 5s).
+# No live ticket board. The board is a shared HTTP service (BECKETT_BORED_URL = prod's bored by
+# default), NOT under BECKETT_DIR, so this switch is what keeps DEV off the production queue: with
+# it false the daemon never polls or dispatches a board (and never pays the boot-time retry storm an
+# unreachable board would cost). The unit ALSO points BECKETT_BORED_URL at a dead loopback port, so
+# even a stray tracker write (e.g. a concierge ticket-create) can never reach prod's board.
 [tracker]
-poll_secs = 300
+enabled = false
 
 # Dispatcher fleet capped at 1 so a staging worker cannot starve or collide with a production
 # worker on this box (2014 Haswell, 4 cores, already loaded). Prod default is 2.

@@ -839,6 +839,8 @@ export interface Config {
    * load time (the Plane backend itself was removed in OPS-191).
    */
   tracker: {
+    /** Master switch for the board poller + dispatch. Default true; a board-less instance (#141) sets false. */
+    enabled: boolean;
     poll_secs: number;
     /** Known board names (`--board` values). bored serves one managed board per instance. */
     boards: string[];
