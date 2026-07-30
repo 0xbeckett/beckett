@@ -4964,6 +4964,17 @@ export class Concierge {
         // bus path — this covers the auto-post half, so exactly one entry either way).
         this.recordBeckettPost(m.channelId, text, ackId);
         mention.ackMessageId = ackId;
+      } else if (mention.superseded && !mention.repliedViaCli) {
+        // This turn was killed mid-answer by a superseding message (issue #138): cancelLiveTurn
+        // resolved it as a silent pass so no stale half-answer posts. But a cancel that says
+        // NOTHING is exactly how the room read fifteen minutes of muteness — post one short line so
+        // the drop is visible. The superseding message runs its own turn and answers separately; a
+        // deliberate model pass (superseded unset) still stays silent as before.
+        const notice = SUPERSEDED_TURN_NOTICE;
+        const ackId = await this.gateway
+          .post(m.channelId, notice, { replyToMessageId: m.messageId, replyToUserId: m.userId })
+          .catch(() => null);
+        if (ackId) this.recordBeckettPost(m.channelId, notice, ackId);
       }
     } catch (err) {
       keepTyping = false;

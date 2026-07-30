@@ -245,13 +245,13 @@ function conciergeHarness(session: Partial<ConciergeSession> & Record<string, un
   return { concierge, posts };
 }
 
-function msg(channelId: string, messageId: string): IncomingMessage {
+function msg(channelId: string, messageId: string, content = "wait, actually — do it the other way"): IncomingMessage {
   return {
     channelId,
     messageId,
     userId: "111111111111111111",
     displayName: "jason",
-    content: "wait, actually — do it the other way",
+    content,
     mentionsBot: true,
     guildId: null,
     attachments: [],
