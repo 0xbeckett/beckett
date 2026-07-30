@@ -288,6 +288,61 @@ test("reasoning before a pass decision is never promoted to Discord output", () 
   expect(s.pending).toBeNull();
 });
 
+test("a malformed delivery object on a live turn surfaces (warn + notice) instead of silent suppression (issue #138)", () => {
+  // init WAS seen (a live turn), and the terminal result carries a structured_output that fails
+  // the schema — a bug, not a deliberate model pass. A DIRECTED turn's author must get a word, not
+  // dead air; an ambient/system turn stays silent.
+  const s = makeSession() as unknown as {
+    child: unknown;
+    initSeen: boolean;
+    currentMeta: unknown;
+    pending: {
+      parts: string[];
+      timer: ReturnType<typeof setTimeout>;
+      resolve: (output: unknown) => void;
+      reject: (error: Error) => void;
+    } | null;
+    handleLine(line: string, from: unknown): void;
+  };
+  const child = {};
+  const malformed = JSON.stringify({
+    type: "result",
+    structured_output: { decision: "wat", message: "half a thought" }, // bad enum → parses to null
+  });
+
+  // Directed turn: the person is owed a word.
+  let delivered: unknown;
+  s.child = child;
+  s.initSeen = true;
+  s.currentMeta = { channelId: "chan-1", messageId: "m-1", userId: "u-1" };
+  s.pending = {
+    parts: ["scratch reasoning that must never be promoted"],
+    timer: setTimeout(() => undefined, 60_000),
+    resolve: (output) => { delivered = output; },
+    reject: () => {},
+  };
+  s.handleLine(malformed, child);
+  expect((delivered as { decision: string }).decision).toBe("send");
+  expect(typeof (delivered as { message: string }).message).toBe("string");
+  expect((delivered as { message: string }).message.length).toBeGreaterThan(0);
+  expect((delivered as { message: string }).message).not.toContain("half a thought"); // never the raw/assistant text
+  expect(s.pending).toBeNull();
+
+  // Ambient/system turn (no directed author): stays a silent pass — nobody asked.
+  let ambientDelivered: unknown;
+  s.child = child;
+  s.initSeen = true;
+  s.currentMeta = { channelId: "chan-1", messageId: "m-2", userId: "u-1", ambient: true };
+  s.pending = {
+    parts: [],
+    timer: setTimeout(() => undefined, 60_000),
+    resolve: (output) => { ambientDelivered = output; },
+    reject: () => {},
+  };
+  s.handleLine(malformed, child);
+  expect(ambientDelivered).toEqual({ decision: "pass", message: null });
+});
+
 test("a superseded child's exit does not tear down the current child or fail the turn", async () => {
   tempBeckettDir();
   const s = makeSession();

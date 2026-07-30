@@ -12,7 +12,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Concierge, ConciergeSession } from "./index.ts";
+import { Concierge, ConciergeSession, messagePlausiblyAmends } from "./index.ts";
 import { SessionPool, type PoolSession } from "./session-pool.ts";
 import { validateConfig } from "../config.ts";
 import { grantAccess } from "../discord/access.ts";
@@ -307,6 +307,118 @@ test("a lone mention on an idle channel is answered normally (no interruption pa
   await concierge.onMessage(msg("chan-1", "m-1"));
   expect(posts.map((p) => p.text)).toEqual(["the answer"]);
   expect(posts[0]!.replyTo).toBe("m-1");
+});
+
+// ── 5. issue #138 — only an AMENDING message supersedes a live answer ──────────────────────
+//
+// The #117 interrupt cancelled on same-user-same-channel alone. Under a burst of banter that
+// killed three real answers with nothing said. The gate is now: the follow-up must plausibly
+// AMEND the ask (messagePlausiblyAmends). Banter falls through and the live answer survives; a
+// real correction still cancels, and a cancelled turn now posts one short line instead of muteness.
+
+test("messagePlausiblyAmends: banter is not an amendment; a correction or a question is", () => {
+  // The room's banter from the incident — short and flat — must read as "not an amendment".
+  for (const banter of ["wat da fuk", "lmaooooo", "fish", "lol", "same", "brb"]) {
+    expect(messagePlausiblyAmends(banter)).toBe(false);
+  }
+  // A genuine redirect (long enough) or anything question-shaped is an amendment.
+  for (const amend of ["do it the other way", "actually make it python", "wait — which repo?", "no?"]) {
+    expect(messagePlausiblyAmends(amend)).toBe(true);
+  }
+});
+
+test("same-author BANTER mid-turn does not cancel the live answer (issue #138)", async () => {
+  // The live turn hangs as "still generating"; a short banter follow-up arrives from the same
+  // author. It must NOT reach the session's cancelLiveTurn, and the real answer must still land.
+  let live: { resolve: (o: DiscordTurnOutput) => void; meta: unknown } | null = null;
+  let asks = 0;
+  let cancelCalls = 0;
+  const session = {
+    async start() {},
+    async stop() {},
+    queueDepth: () => (asks > 1 ? 1 : 0),
+    getCurrentMeta: () => live?.meta ?? null,
+    liveTurnToolUse: () => false, // still composing — the case #117 used to kill
+    cancelLiveTurn(_reason: string) {
+      cancelCalls += 1; // the pool's amend gate should short-circuit before ever calling this
+      if (!live) return false;
+      const l = live;
+      live = null;
+      l.resolve({ decision: "pass", message: null });
+      return true;
+    },
+    ask(_message: unknown, meta?: unknown): Promise<DiscordTurnOutput> {
+      asks += 1;
+      if (asks === 1) return new Promise<DiscordTurnOutput>((resolve) => { live = { resolve, meta }; });
+      // The banter's own turn: the model chooses to stay quiet (a pass), so no banter reply posts.
+      return Promise.resolve({ decision: "pass", message: null });
+    },
+  };
+  const { concierge, posts } = conciergeHarness(session);
+
+  const first = concierge.onMessage(msg("chan-1", "m-1", "how do I wire the deploy tunnel?"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(live).not.toBeNull();
+
+  await concierge.onMessage(msg("chan-1", "m-2", "lmaooooo")); // pure banter — restates nothing
+
+  expect(cancelCalls).toBe(0); // the amend gate refused before the session was ever asked to cancel
+  expect(live).not.toBeNull(); // the real answer's turn is still in flight, unharmed
+
+  live!.resolve({ decision: "send", message: "the real answer" });
+  await first;
+
+  // The live answer survived; the banter posted nothing of its own.
+  expect(posts.map((p) => p.text)).toEqual(["the real answer"]);
+  expect(posts[0]!.replyTo).toBe("m-1");
+});
+
+test("a cancelled turn posts one short line instead of resolving to silent muteness (issue #138)", async () => {
+  // A real amendment cancels the live turn. cancelLiveTurn resolves it as a silent pass but tags
+  // the meta as superseded (as the real session does) — the daemon then posts one short line for
+  // the drop, and the amending message answers separately.
+  let live: { resolve: (o: DiscordTurnOutput) => void; meta: { superseded?: boolean } } | null = null;
+  let asks = 0;
+  const session = {
+    async start() {},
+    async stop() {},
+    queueDepth: () => (asks > 1 ? 1 : 0),
+    getCurrentMeta: () => live?.meta ?? null,
+    liveTurnToolUse: () => false,
+    cancelLiveTurn(_reason: string) {
+      if (!live) return false;
+      const l = live;
+      l.meta.superseded = true; // the real ConciergeSession tags the killed turn's meta
+      live = null;
+      l.resolve({ decision: "pass", message: null }); // silent on the OUTPUT, no stale half-answer
+      return true;
+    },
+    ask(_message: unknown, meta?: unknown): Promise<DiscordTurnOutput> {
+      asks += 1;
+      if (asks === 1) {
+        return new Promise<DiscordTurnOutput>((resolve) => {
+          live = { resolve, meta: meta as { superseded?: boolean } };
+        });
+      }
+      return Promise.resolve({ decision: "send", message: "amended answer" });
+    },
+  };
+  const { concierge, posts } = conciergeHarness(session);
+
+  const first = concierge.onMessage(msg("chan-1", "m-1", "how do I wire the deploy tunnel?"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(live).not.toBeNull();
+
+  await concierge.onMessage(msg("chan-1", "m-2")); // the amending correction supersedes
+  await first;
+
+  const texts = posts.map((p) => p.text);
+  // Exactly one short "dropped that" line (replying to the killed question) plus the amended answer.
+  expect(texts).toContain("amended answer");
+  expect(texts).toHaveLength(2);
+  const notice = posts.find((p) => p.text !== "amended answer")!;
+  expect(notice.replyTo).toBe("m-1"); // the drop is announced against the question it dropped
+  expect(notice.text.length).toBeLessThan(120); // one SHORT line, not a stale paragraph
 });
 
 // ── 4. mid-flow injection — the third path beside cancel and queue ────────────────────────
