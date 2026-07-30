@@ -261,6 +261,166 @@ test("a soft timeout keeps the child alive and delivers its late real result", (
   expect(s.pending).toBeNull();
 });
 
+// ── issue #139: the hard-deadline reaper + visible failure for dead turns ───────────────────
+
+/** The private surface the issue-#139 tests reach into. */
+interface ReaperGuts {
+  child: unknown;
+  initSeen: boolean;
+  currentMeta: unknown;
+  pending: {
+    parts: string[];
+    timer: ReturnType<typeof setTimeout>;
+    hardTimer?: ReturnType<typeof setTimeout>;
+    timedOut: boolean;
+    resolve: (output: unknown) => void;
+    reject: (error: Error) => void;
+  } | null;
+  onTurnTimeout(timer: ReturnType<typeof setTimeout>): void;
+  onHardTimeout(hardTimer: ReturnType<typeof setTimeout>): void;
+  handleLine(line: string, from: unknown): void;
+}
+
+function makeReaperSession(): ReaperGuts {
+  return new ConciergeSession({ config, logger: quietLog }) as unknown as ReaperGuts;
+}
+
+const directMention = () => ({
+  channelId: "c",
+  messageId: "m",
+  userId: "u",
+  isOwner: false,
+  repliedViaCli: false,
+  ackMessageId: null as string | null,
+  turnSucceeded: false,
+});
+
+test("issue #139: the hard deadline reaps a resultless turn — child killed, pending settled, mention surfaced", () => {
+  const s = makeReaperSession();
+  let killed = false;
+  const child = { kill() { killed = true; } };
+  let delivered: unknown;
+  const timer = setTimeout(() => undefined, 60_000);
+  s.child = child;
+  s.currentMeta = directMention();
+  s.pending = { parts: [], timer, timedOut: false, resolve: (o) => { delivered = o; }, reject: () => {} };
+
+  s.onTurnTimeout(timer); // soft fires: arms the hard deadline, but does NOT kill on its own
+  expect(killed).toBeFalse();
+  const hardTimer = s.pending!.hardTimer!;
+  expect(hardTimer).toBeDefined();
+
+  s.onHardTimeout(hardTimer); // the hard deadline fires — the turn is declared dead
+
+  expect(killed).toBeTrue(); // child reaped, no leaked process
+  expect(s.child).toBeNull(); // slot freed → the next ask() relaunches (fresh session)
+  expect(s.pending).toBeNull(); // pending settled
+  expect(delivered).toEqual({ decision: "send", message: "that turn died on me, ask again." });
+});
+
+test("issue #139: the hard deadline does NOT reap when a late real result arrives in time", () => {
+  const s = makeReaperSession();
+  let killed = false;
+  const child = { kill() { killed = true; } };
+  let deliveries = 0;
+  let delivered: unknown;
+  const timer = setTimeout(() => undefined, 60_000);
+  s.child = child;
+  s.pending = { parts: [], timer, timedOut: false, resolve: (o) => { delivered = o; deliveries += 1; }, reject: () => {} };
+
+  s.onTurnTimeout(timer);
+  const hardTimer = s.pending!.hardTimer!;
+
+  // The completed-but-late REAL answer lands inside the late window — the whole point of the soft
+  // deadline. onResult clears the hard timer, so the reaper must never fire.
+  s.handleLine(JSON.stringify({ type: "result", structured_output: { decision: "send", message: "the real answer" } }), child);
+  expect(delivered).toEqual({ decision: "send", message: "Sorry, that took a while —\n\nthe real answer" });
+  expect(s.pending).toBeNull();
+
+  // A stale hard-timeout callback firing after the fact is an inert no-op: no second settle, no kill.
+  s.onHardTimeout(hardTimer);
+  expect(killed).toBeFalse();
+  expect(deliveries).toBe(1);
+  expect(s.child).toBe(child);
+});
+
+test("issue #139: a reaped direct-mention turn leaves turnSucceeded false so the origin question is re-askable", () => {
+  const s = makeReaperSession();
+  const child = { kill() {} };
+  const meta = directMention();
+  s.child = child;
+  s.currentMeta = meta;
+  const timer = setTimeout(() => undefined, 60_000);
+  s.pending = { parts: [], timer, timedOut: false, resolve: () => {}, reject: () => {} };
+
+  s.onTurnTimeout(timer);
+  s.onHardTimeout(s.pending!.hardTimer!);
+
+  expect(meta.turnSucceeded).toBe(false);
+});
+
+test("issue #139: a suppressed-schema result on a direct mention posts one honest line, never a silent pass or assistant text", () => {
+  const s = makeReaperSession();
+  const child = {};
+  let delivered: unknown;
+  const meta = directMention();
+  s.child = child;
+  s.initSeen = true; // a LIVE session (init WAS seen) — not the uninitialized lost-turn path
+  s.currentMeta = meta;
+  s.pending = {
+    parts: ["scratch reasoning that must never reach Discord"],
+    timer: setTimeout(() => undefined, 60_000),
+    timedOut: false,
+    resolve: (o) => { delivered = o; },
+    reject: () => {},
+  };
+
+  // A result with no valid delivery output — e.g. upstream retries (529 storm) exhausted into an
+  // error subtype. Previously a silent pass; now an audible failure line for the person who asked.
+  s.handleLine(JSON.stringify({ type: "result", subtype: "error", structured_output: null }), child);
+
+  expect(delivered).toEqual({ decision: "send", message: "that turn died on me, ask again." });
+  expect(meta.turnSucceeded).toBe(false); // never marked succeeded → re-ask runs clean
+  expect(s.pending).toBeNull();
+});
+
+test("issue #139: a suppressed-schema result on an ambient turn still passes silently (no new noise)", () => {
+  const s = makeReaperSession();
+  const child = {};
+  let delivered: unknown;
+  s.child = child;
+  s.initSeen = true;
+  s.currentMeta = { ...directMention(), ambient: true };
+  s.pending = {
+    parts: [],
+    timer: setTimeout(() => undefined, 60_000),
+    timedOut: false,
+    resolve: (o) => { delivered = o; },
+    reject: () => {},
+  };
+
+  s.handleLine(JSON.stringify({ type: "result", structured_output: null }), child);
+
+  expect(delivered).toEqual({ decision: "pass", message: null });
+  expect(s.pending).toBeNull();
+});
+
+test("issue #139: the hard deadline reaps an ambient turn silently (pass, not a failure line)", () => {
+  const s = makeReaperSession();
+  const child = { kill() {} };
+  let delivered: unknown;
+  const timer = setTimeout(() => undefined, 60_000);
+  s.child = child;
+  s.currentMeta = { ...directMention(), ambient: true };
+  s.pending = { parts: [], timer, timedOut: false, resolve: (o) => { delivered = o; }, reject: () => {} };
+
+  s.onTurnTimeout(timer);
+  s.onHardTimeout(s.pending!.hardTimer!);
+
+  expect(delivered).toEqual({ decision: "pass", message: null });
+  expect(s.child).toBeNull();
+});
+
 test("reasoning before a pass decision is never promoted to Discord output", () => {
   const s = makeSession() as unknown as {
     child: unknown;
