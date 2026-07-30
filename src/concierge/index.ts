@@ -456,14 +456,10 @@ const AMEND_MIN_CHARS = 16;
 const SUPERSEDED_TURN_NOTICE = "Scrapping my half-written reply to that — going with your latest.";
 
 /**
- * Posted to a waiting person when a directed turn comes back with no valid delivery object (issue
- * #138). A malformed terminal output is a BUG, not a deliberate pass; swallowing it silently is
- * how a real @mention got answered by nothing. The raw output is logged (truncated) for the fix;
- * the person gets this rather than dead air.
+ * Render whatever the CLI put in `structured_output` as a loggable string (object → JSON). A
+ * directed turn with no valid delivery object is a BUG, not a deliberate pass (issue #138), so the
+ * raw output is logged truncated for the fix; the person gets {@link TURN_DIED_LINE}, not dead air.
  */
-const MALFORMED_OUTPUT_NOTICE = "Something came back garbled on my end — ask me that again in a sec.";
-
-/** Render whatever the CLI put in `structured_output` as a loggable string (object → JSON). */
 function rawStructuredOutput(value: unknown): string {
   if (value === undefined) return "<absent>";
   if (typeof value === "string") return value;
@@ -486,6 +482,28 @@ function truncateForLog(text: string, max: number): string {
 
 /** Prepended only to a real model answer that arrives after {@link TURN_TIMEOUT_MS}. */
 const LATE_TURN_FRAME = "Sorry, that took a while —";
+
+/**
+ * The SECOND, HARD deadline — measured from the moment the soft one ({@link TURN_TIMEOUT_MS}) fires.
+ * The soft deadline is deliberately patient: stream-json cannot cancel one turn while retaining the
+ * child, so a completed-but-late REAL answer is worth waiting for (that is {@link LATE_TURN_FRAME}).
+ * But patience cannot be unbounded. A child that has produced no `result` at all — a wedged
+ * generation, an upstream 529 storm that never clears — would otherwise hold its gate slot and leak
+ * its process forever (session 90bc26a2 logged the soft warning at 06:37:44 and was still running
+ * 30+ minutes later). Past this deadline the turn is declared DEAD, not merely late: kill the child,
+ * settle the pending turn, let the relaunch path recover. Chosen deliberately small — a couple of
+ * minutes past soft, not thirty — so a genuinely stuck turn is reaped promptly while a real answer
+ * that lands within the ordinary late window is still delivered.
+ */
+const HARD_TURN_TIMEOUT_MS = 120_000;
+
+/**
+ * The single honest line a turn that claimed a DIRECT @mention/DM posts when it dies instead of
+ * vanishing (issue #139) — reaped by the hard deadline, suppressed for a bad schema, or upstream
+ * retries exhausted. Plain and in voice: lowercase, no em-dash, no apology paragraph. It says the
+ * turn FAILED; it never manufactures a substitute answer or guesses what the turn would have said.
+ */
+const TURN_DIED_LINE = "that turn died on me, ask again.";
 
 /** After a FAILED rotation, wait this long before re-paying the (expensive) handoff turn. */
 const ROTATE_RETRY_COOLDOWN_MS = 10 * 60_000;
@@ -630,6 +648,11 @@ interface PendingTurn {
   timer: ReturnType<typeof setTimeout>;
   /** The soft deadline passed; retain the turn and visibly frame its eventual real result. */
   timedOut: boolean;
+  /**
+   * The HARD deadline, armed only once the soft one fires (see {@link ConciergeSession.onTurnTimeout}).
+   * Undefined until then; cleared alongside {@link timer} whenever the turn settles.
+   */
+  hardTimer?: ReturnType<typeof setTimeout>;
 }
 
 /** A turn admitted by {@link ConciergeSession.ask} and awaiting its slot in the pump. */
@@ -915,7 +938,7 @@ export class ConciergeSession {
   cancelLiveTurn(reason: string): boolean {
     const p = this.pending;
     if (!p) return false;
-    clearTimeout(p.timer);
+    this.clearPendingTimers(p);
     this.pending = null;
     // Kill the child so generation stops NOW; the session id survives, so the next ask()
     // `--resume`s the same conversation. recycleChild nulls this.child first, so the ensuing
@@ -1043,7 +1066,7 @@ export class ConciergeSession {
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.pending) {
-      clearTimeout(this.pending.timer);
+      this.clearPendingTimers(this.pending);
       this.pending.reject(new Error("concierge session stopped"));
       this.pending = null;
     }
@@ -1344,7 +1367,7 @@ export class ConciergeSession {
     // resume-before-init case, whose typed error tells runTurn to re-drive the turn ONCE on the
     // fresh session it just seeded (issue #98), so the person's message is answered, not lost.
     if (this.pending) {
-      clearTimeout(this.pending.timer);
+      this.clearPendingTimers(this.pending);
       this.pending.reject(
         resumeUnrecoverable
           ? new ResumeBeforeInitError(
@@ -1470,6 +1493,10 @@ export class ConciergeSession {
    * The normal deadline is deliberately soft: stream-json has no safe way to cancel one turn
    * while retaining the same child for the next one. Keep its pending boundary and stdout reader
    * alive so the model's completed answer, rather than filler, is what reaches the person.
+   *
+   * The softness is not a licence to wait forever, though — so this arms a SECOND, HARD deadline
+   * ({@link HARD_TURN_TIMEOUT_MS}) on top of it. If the child still produces no `result` past that,
+   * {@link onHardTimeout} reaps the turn instead of leaking it.
    */
   private onTurnTimeout(timer: ReturnType<typeof setTimeout>): void {
     if (!this.pending || this.pending.timer !== timer) return;
@@ -1477,6 +1504,51 @@ export class ConciergeSession {
     this.log.warn("concierge turn exceeded soft timeout; awaiting late result", {
       sessionId: this.sessionId,
     });
+    const hardTimer = setTimeout(() => this.onHardTimeout(hardTimer), HARD_TURN_TIMEOUT_MS);
+    this.pending.hardTimer = hardTimer;
+  }
+
+  /**
+   * The HARD deadline fired: the soft window already elapsed and STILL no `result` arrived, so this
+   * turn is dead, not merely late. Reap it — kill the child (its slot is otherwise held forever),
+   * settle the pending turn, and let the next ask() relaunch (`--resume`, or a fresh seeded session
+   * if the transcript is gone). A mention/DM that dies here posts one honest line rather than
+   * vanishing; an ambient/un-addressed turn stays silent (see {@link failureReply}).
+   */
+  private onHardTimeout(hardTimer: ReturnType<typeof setTimeout>): void {
+    if (!this.pending || this.pending.hardTimer !== hardTimer) return;
+    const p = this.pending;
+    this.log.warn("concierge turn exceeded hard deadline; reaping dead turn", {
+      sessionId: this.sessionId,
+      softTimeoutMs: TURN_TIMEOUT_MS,
+      hardTimeoutMs: HARD_TURN_TIMEOUT_MS,
+    });
+    this.clearPendingTimers(p);
+    this.pending = null;
+    const reply = this.failureReply();
+    // Free the slot: null this.child then SIGTERM, so the ensuing onExit is a superseded-child exit
+    // (no relaunch, no crash count) and the NEXT ask() relaunches cleanly. Mirrors cancelLiveTurn.
+    this.recycleChild("hard deadline reaper");
+    p.resolve(reply);
+  }
+
+  /** Clear a settling turn's soft timer and (if the soft deadline had armed it) its hard timer. */
+  private clearPendingTimers(p: PendingTurn): void {
+    clearTimeout(p.timer);
+    if (p.hardTimer) clearTimeout(p.hardTimer);
+  }
+
+  /**
+   * How a FAILED turn settles (issue #139). A turn that claimed a direct @mention or DM must never
+   * end in silence — it posts one honest {@link TURN_DIED_LINE}. `turnSucceeded` is deliberately
+   * left false, so the origin question stays unseen and a re-ask runs clean. Ambient/un-addressed
+   * turns (same {@link MentionClaim} shape, but `ambient: true`) keep passing silently: a failed
+   * ambient interjection is correctly invisible, and must not become new channel noise.
+   */
+  private failureReply(): DiscordTurnOutput {
+    return isDirectMentionClaim(this.currentMeta)
+      ? { decision: "send", message: TURN_DIED_LINE }
+      : { decision: "pass", message: null };
   }
 
   private onResult(result: Record<string, unknown>): void {
@@ -1497,7 +1569,7 @@ export class ConciergeSession {
     }
     this.consecutiveCrashes = 0; // a completed turn = the child is healthy again
     if (!p) return;
-    clearTimeout(p.timer);
+    this.clearPendingTimers(p);
     if (this.liveTurnFilingShaped && filingTurnBudgetExceeded(Date.now() - this.turnStartedAt)) {
       this.log.warn("filing-shaped turn exceeded its shape budget", {
         sessionId: this.sessionId,
@@ -1507,21 +1579,23 @@ export class ConciergeSession {
     }
     this.pending = null;
     if (!output) {
-      // Never fall back to assistant text here — it is allowed to contain deliberation, and a bad
-      // schema result must never become an accidental Discord post. Reaching here means init WAS
-      // seen: a live turn that finished with a malformed/absent delivery object. That is a BUG, not
-      // a deliberate "model chose silence" pass (a real pass arrives as {decision:"pass"} and parses
-      // fine above), so log the RAW output truncated for the fix instead of swallowing it (#138).
-      this.log.warn("concierge result missing valid Discord delivery output", {
+      // Never fall back to assistant text here. It is allowed to contain deliberation, and a bad
+      // schema result must mean silence rather than an accidental Discord post — the reasoning-leak
+      // guard is absolute (issue #139 does not touch it). Reaching here means init WAS seen: a live
+      // session that emitted no valid delivery decision. That is a BUG, not a deliberate "model
+      // chose silence" pass (a real pass arrives as {decision:"pass"} and parses fine above), so log
+      // the RAW output truncated for the fix instead of swallowing it (#138).
+      this.log.warn("concierge result missing valid Discord delivery output; suppressing", {
         assistantTextBlocks: p.parts.length,
+        directMention: isDirectMentionClaim(this.currentMeta),
         rawOutput: truncateForLog(rawStructuredOutput(result.structured_output), 500),
       });
-      // A waiting person is owed a word, not dead air. Tell a DIRECTED (non-ambient) turn's author
-      // the turn dropped; an ambient interjection or a system turn stays silent (nobody asked, and
-      // an unprompted "that broke" would be noise). Still never the assistant text — the notice is
-      // a fixed string.
-      const directed = isMentionClaim(this.currentMeta) && this.currentMeta.ambient !== true;
-      p.resolve(directed ? { decision: "send", message: MALFORMED_OUTPUT_NOTICE } : { decision: "pass", message: null });
+      // A waiting person is owed a word, not dead air. For an AMBIENT/un-addressed turn the silence
+      // is correct and stays. But a turn that claimed a direct @mention/DM — including one whose
+      // upstream retries were exhausted into an error `result` — reads as a crash to the person who
+      // asked, so {@link failureReply} posts one honest fixed line instead of manufacturing an
+      // answer.
+      p.resolve(this.failureReply());
       return;
     }
     if (isMentionClaim(this.currentMeta)) this.currentMeta.turnSucceeded = true;
@@ -1893,6 +1967,15 @@ function isMentionClaim(meta: unknown): meta is MentionClaim {
     typeof (meta as MentionClaim).channelId === "string" &&
     typeof (meta as MentionClaim).messageId === "string"
   );
+}
+
+/**
+ * A DIRECT @mention or DM — a person addressed Beckett and is owed an answer, so a dead turn must
+ * surface (issue #139). Ambient/un-addressed turns share the {@link MentionClaim} shape but carry
+ * `ambient: true`; a failed ambient interjection is correctly invisible, so it is excluded here.
+ */
+function isDirectMentionClaim(meta: unknown): meta is MentionClaim {
+  return isMentionClaim(meta) && meta.ambient !== true;
 }
 
 /**
