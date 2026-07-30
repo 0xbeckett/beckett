@@ -15,6 +15,7 @@ import type { Config, Harness, HarnessDriver, Logger } from "../types.ts";
 import { ClaudeDriver, claudePreflight } from "./claude.ts";
 import { CodexDriver, codexPreflight } from "./codex.ts";
 import { PiDriver, piPreflight } from "./pi.ts";
+import { activeCooldown, clearCooldown } from "./cooldown.ts";
 
 export { ClaudeDriver } from "./claude.ts";
 export { CodexDriver } from "./codex.ts";
