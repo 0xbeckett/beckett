@@ -41,3 +41,6 @@ proposal.md
 .claude/worktrees/
 .shots/
 screenshots/
+
+# task-141 verification scratch (never a deliverable)
+.scratch/
