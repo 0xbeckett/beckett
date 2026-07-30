@@ -12,6 +12,7 @@ import type { Config } from "../types.ts";
 import type { Ticket, TicketState, PollEvent, HarnessSpec, TicketComment } from "../tracker/types.ts";
 import type { GitOps } from "./dispatcher.ts";
 import { appendSpendRecord, type SpendRecord } from "../spend.ts";
+import { activeCooldown, recordCooldown } from "../drivers/cooldown.ts";
 
 // ── controllable fake worker handle + spawn mock ────────────────────────────────────────────
 let spawnCalls: {
@@ -2444,6 +2445,101 @@ describe("preflight + failure taxonomy", () => {
     const implementSpawns = spawnCalls.filter((c) => c.stage === "implement");
     expect(implementSpawns.at(-1)!.harness.harness).toBe("claude"); // substitute, not pi
     expect(probed).not.toContain("pi"); // the known-failing original is never re-probed
+  });
+});
+
+// #133: a quota-capped harness records a persisted cooldown so the NEXT cast routes straight to the
+// substitute (via preflight reporting it unusable) WITHOUT spawning it and WITHOUT charging the
+// ticket's substitution budget for a failure we already predicted. BECKETT_DIR/BECKETT_HOME relocate
+// the whole state layout into a scratch dir so the real cooldown store is exercised, off the box.
+describe("rate-limit cooldown routing (#133)", () => {
+  const storeConfig = cfg();
+  let dir: string;
+  let prevDir: string | undefined;
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "beckett-cooldown-route-"));
+    prevDir = process.env.BECKETT_DIR;
+    prevHome = process.env.BECKETT_HOME;
+    process.env.BECKETT_DIR = dir;
+    process.env.BECKETT_HOME = dir;
+  });
+
+  afterEach(() => {
+    if (prevDir === undefined) delete process.env.BECKETT_DIR;
+    else process.env.BECKETT_DIR = prevDir;
+    if (prevHome === undefined) delete process.env.BECKETT_HOME;
+    else process.env.BECKETT_HOME = prevHome;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A preflight that mirrors production: a live cooldown reports the harness unusable. */
+  const cooldownAwarePreflight = (nowRef: { now: number }) => async (h: string) => {
+    const cd = activeCooldown(h as any, storeConfig, nowRef.now);
+    return cd
+      ? { ok: false, problems: [`${h} is on a rate-limit cooldown`], cooledUntil: cd.until }
+      : { ok: true, problems: [] };
+  };
+
+  test("a pi rate-limit death persists a harness-level cooldown with an expiry", async () => {
+    const { d, client } = newDispatcher(2, { preflight: async () => ({ ok: true, problems: [] }) });
+    const ticket = makeTicket({ casting: { implement: { harness: "pi", effort: "medium" } } });
+    client.board.push(ticket);
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+    expect(spawnCalls[0]!.harness.harness).toBe("pi");
+
+    created[0]!.finish("error", "The usage limit has been reached", null, false, "rate_limit");
+    await tick();
+
+    const cd = activeCooldown("pi", storeConfig);
+    expect(cd).not.toBeNull();
+    expect(cd!.reason).toBe("rate_limit");
+    expect(cd!.until).toBeGreaterThan(Date.now());
+  });
+
+  test("while cooled, a pi cast routes to the substitute without charging the substitution budget", async () => {
+    const runtimeStatePath = join(dir, "runtime.json");
+    recordCooldown("pi", storeConfig); // pi is quota-capped before this branch is even staffed
+    const nowRef = { now: Date.now() };
+    const { d, client } = newDispatcher(2, {
+      preflight: cooldownAwarePreflight(nowRef),
+      runtimeStatePath,
+    });
+    const ticket = makeTicket({ casting: { implement: { harness: "pi", effort: "low" } } });
+    client.board.push(ticket);
+
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    // pi was never spawned; the substitute (claude) started directly.
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]!.harness.harness).toBe("claude");
+    const note = client.comments.find((c) => c.body.includes("unavailable"));
+    expect(note?.body).toContain("cooldown");
+    expect(note?.body).toContain("**claude**");
+
+    // The skipped-because-cooled path spent NO substitution slot (that budget is for genuine
+    // mid-run failures, not predicted ones).
+    const state = JSON.parse(readFileSync(runtimeStatePath, "utf8"));
+    expect(state.substituteRetries[ticket.id]).toBeUndefined();
+  });
+
+  test("once the cooldown expires, pi is cast again automatically", async () => {
+    const rec = recordCooldown("pi", storeConfig, { now: 1_000, durationMs: 1000 });
+    const nowRef = { now: rec.until + 1 }; // clock advanced past the quota window
+    const { d, client } = newDispatcher(2, { preflight: cooldownAwarePreflight(nowRef) });
+    const ticket = makeTicket({ casting: { implement: { harness: "pi", effort: "low" } } });
+    client.board.push(ticket);
+
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    // No substitution — pi is healthy again now that the window has passed.
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]!.harness.harness).toBe("pi");
+    expect(client.comments.some((c) => c.body.includes("unavailable"))).toBe(false);
   });
 });
 
