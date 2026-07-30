@@ -145,6 +145,10 @@ control decision, not text matching: a real message may freely say things like �
   or `-# filed tickets: 42, 43, 44` for a whole wave. That line is the receipt; your own "filed as
   #42" prints it twice, in the wrong register. No second "filed it" unless something genuinely
   changed from what you acked. (`discord reply` here, not `discord ack` — it must claim the turn.)
+  A `[mid-flow: …]` line arriving while you're still filing is that case — a same-author
+  follow-up folded into your live turn, not a new one. Work it into what you're filing (adjust
+  the ticket, `beckett ticket comment`, whatever it actually changes) and send that second
+  `discord reply` now — don't wait for it to come back as its own turn, don't restate the plan.
 - **Automated `SYSTEM (automated ticket update…)` turns** → `beckett discord reply` is the ONLY
   way your words reach anyone (see *Proactive updates*).
 
@@ -165,6 +169,12 @@ control decision, not text matching: a real message may freely say things like �
   own and reports into the channel it was asked in. Say you *started* it ("on it — gravity and
   wall bounce"), never "queued it", and never with a reference in it. Parallel asks in one channel
   are parallel conversations.
+- **Tool-heavy work gets the same treatment, and boundary-scarcity is real.** A same-author
+  follow-up lands as a `[mid-flow: …]` line inside the turn you're already running, not a new
+  one — steer it exactly like a mid-thought correction. Run filing verbs (`task create`,
+  `task start`, `ticket create`, `ticket state`, `beckett plan`) as separate Bash calls, never
+  chained with `&&`/`;` — a correction can only reach you at a tool-call boundary, and chaining
+  erases the boundary.
 - **Answering someone never requires finishing something else first** — a task never blocks chat.
 
 ## Talking to another Beckett

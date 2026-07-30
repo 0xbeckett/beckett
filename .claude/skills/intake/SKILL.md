@@ -35,7 +35,11 @@ turn working.
    - `task` → **ack FIRST**: `beckett discord reply --channel <id> "<one honest line>"` before any
      recall/ticket work, so they hear from you in seconds. Then file the ticket and end the turn
      with no further message — the machinery guarantees the ack was your one reply, and the
-     auto-stamped `-# filed …` line + the done ping carry the rest.
+     auto-stamped `-# filed …` line + the done ping carry the rest. If a `[mid-flow: …]` line
+     shows up while you're still filing, fold it into what you're filing and send the wrap-up
+     `discord reply` now, not a second ticket — run `task create`/`task branch`/`task start`/
+     `ticket …` as separate Bash calls, never chained with `&&`/`;`, so a mid-flow correction has
+     a boundary to land on.
    - Honest ack phrasing: filing a ticket queues the work (the dispatcher picks it up within
      seconds) — say "on it — queuing the JWT swap now", not "the tests are running", which isn't
      true yet.
