@@ -32,7 +32,7 @@ PLAYBOOKS=src/concierge/playbooks
 IDS=scripts/ops/doctrine-identifiers.txt
 # Ceiling on the ALWAYS-LOADED index only (chars; ~4 chars/token). The playbooks are read on
 # demand and are deliberately unbounded — they cost nothing until a trigger fires.
-INDEX_CEILING_CHARS=8000
+INDEX_CEILING_CHARS=16000
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 ORIG="$TMP/orig.md"
