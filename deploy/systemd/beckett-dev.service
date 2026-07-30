@@ -1,0 +1,39 @@
+[Unit]
+Description=Beckett [DEV] — staging/testing instance (own checkout + BECKETT_DIR=%h/.beckett-dev, started on demand)
+After=network-online.target
+Wants=network-online.target
+# Same crash-loop backstop as prod. NOTE: unlike beckett-v4, DEV wires NO OnFailure alert — a
+# staging instance must never narrate into the channels/webhook production uses.
+StartLimitIntervalSec=600
+StartLimitBurst=30
+
+[Service]
+Type=simple
+# A SEPARATE checkout from prod's %h/beckett — DEV never runs out of, or writes into, prod's tree.
+WorkingDirectory=%h/beckett-dev
+ExecStart=/usr/bin/env bun src/shell/main.ts
+Restart=always
+RestartSec=3
+# Pair with the dispatcher's graceful shutdown drain (20s budget): give SIGTERM time to persist.
+TimeoutStopSec=30
+# DEV secrets live in ~/.beckett-dev/.env (a SEPARATE file from prod's ~/.beckett/.env). `-` = optional.
+EnvironmentFile=-%h/.beckett-dev/.env
+# Isolation, authoritative over anything the EnvironmentFile might carry (listed AFTER it so the
+# unit always wins):
+#   BECKETT_DIR           relocates ALL daemon state (db/events/logs/memory/socket/config/.env/…)
+#                         under ~/.beckett-dev — never ~/.beckett (resolveBeckettDir, src/paths.ts).
+#   BECKETT_HOME          relocates paths.home so paths.projects derives under ~/.beckett-dev too.
+#   BECKETT_PROJECTS_ROOT the worker/dispatcher ticket-repo root (src/shell/main.ts) — the ONE root
+#                         that does NOT follow BECKETT_DIR; pointed away from prod's ~/Projects so a
+#                         staging worker can never collide with a production worktree.
+Environment=BECKETT_DIR=%h/.beckett-dev
+Environment=BECKETT_HOME=%h/.beckett-dev
+Environment=BECKETT_PROJECTS_ROOT=%h/.beckett-dev/projects
+# Same PATH handling as prod (a systemd unit does not inherit the interactive PATH). MUST stay in
+# sync with `daemonPath()` in src/ops/doctor.ts.
+Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+# Installed so `systemctl --user start beckett-dev` works, but DEPLOYERS MUST NOT `enable` it:
+# staging is started on demand, never at boot. `systemctl --user is-enabled beckett-dev` → disabled.
+WantedBy=default.target

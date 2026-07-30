@@ -1,0 +1,45 @@
+# Beckett [DEV] — staging/testing instance config (seeds to ~/.beckett-dev/config.toml).
+# This is a DELIBERATE staging config, NOT a copy of prod's ~/.beckett/config.toml. It only sets
+# the keys that make DEV inert and isolated; everything else uses the validated schema defaults.
+# Validation is strict (src/config.ts): only override keys you mean to change.
+
+# Dispatcher fleet capped at 1 so a staging worker cannot starve or collide with a production
+# worker on this box (2014 Haswell, 4 cores, already loaded). Prod default is 2.
+[concurrency]
+max_workers = 1
+
+# One concierge turn / one quick lane at a time — staging does not need prod's parallelism.
+[concierge]
+max_concurrent_turns = 1
+
+[quick]
+max_concurrent = 1
+
+# Every autonomous/proactive behaviour OFF (these are the schema defaults too — pinned here so the
+# staging posture is explicit and cannot silently drift on a default change).
+[proactivity]
+enabled = false
+default_mode = "off"
+
+# No announce ("what's new on restart") channel — DEV must not narrate into prod's channels.
+[announce]
+changes_channel_id = ""
+
+# No external GitHub-activity relay.
+[github.activity]
+enabled = false
+channel_id = ""
+
+# Federation peers are seeded via ~/.beckett-dev/peers.txt (the production bot id), not here.
+[federation]
+peers = []
+
+# Staging runs a single harness (claude). Pi/codex are off so DEV needs no extra logins and spawns
+# no extra worker classes.
+[harness.pi]
+enabled = false
+
+# A non-prod placeholder identity. DEV is given NO real GITHUB_PAT (see env.example), so it never
+# pushes; this only satisfies the identity resolver. github_user must be non-empty or boot refuses.
+[identity]
+github_user = "beckett-dev-staging"

@@ -1,0 +1,5 @@
+# Beckett [DEV] federation peers — trusted peer Beckett bot ids (one per line).
+# Seeds to ~/.beckett-dev/peers.txt. This is the DEV side of mutual federation: it names the
+# PRODUCTION bot id so DEV trusts prod's Beckett. (Prod already trusts DEV — the DEV bot id is in
+# prod's ~/.beckett/peers.txt.) Owner-managed live from Discord (@beckett add/remove); no restart.
+1520212392733048873
