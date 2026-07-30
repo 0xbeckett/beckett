@@ -872,7 +872,8 @@ async function boot(): Promise<BootedSystem> {
   }
   await dispatcher.replayAdvances();
   await dispatcher.replayPublishes();
-  await dispatcher.reconcileDependents();
+  // Reconciling dependents reads the board; a board-less instance (#141) has none to reconcile.
+  if (config.tracker.enabled) await dispatcher.reconcileDependents();
 
   // Crash recovery (issue #20): BEFORE the poller re-staffs anything, sweep worker processes a
   // crashed daemon orphaned, commit their ghost WIP, and arm session-resume hints so re-staffed
