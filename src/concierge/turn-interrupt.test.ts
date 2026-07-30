@@ -14,6 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Concierge, ConciergeSession } from "./index.ts";
 import { SessionPool, type PoolSession } from "./session-pool.ts";
+import { validateConfig } from "../config.ts";
+import { grantAccess } from "../discord/access.ts";
+import { createChannelContextStore } from "./channel-context.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
 import type { DiscordTurnOutput } from "./output.ts";
@@ -304,4 +307,192 @@ test("a lone mention on an idle channel is answered normally (no interruption pa
   await concierge.onMessage(msg("chan-1", "m-1"));
   expect(posts.map((p) => p.text)).toEqual(["the answer"]);
   expect(posts[0]!.replyTo).toBe("m-1");
+});
+
+// ── 4. mid-flow injection — the third path beside cancel and queue ────────────────────────
+//
+// Once a live turn has invoked a tool (liveTurnToolUse() true), cancelLiveTurn's own gate
+// refuses to kill it (session-pool.ts's tool-use branch) — that part is pinned above (line 183).
+// What happens to the same-author follow-up NEXT is new: it used to just queue silently for the
+// whole rest of the tool-heavy arc (the owner's complaint). It should now fold into the live
+// turn via injectLiveTurn instead, and post nothing of its own.
+
+test("a same-author message after tool-use folds into the live turn via injectLiveTurn — no second ask, no queue", async () => {
+  let live: { resolve: (o: DiscordTurnOutput) => void; meta: unknown } | null = null;
+  let asks = 0;
+  const injections: string[] = [];
+  const session = {
+    async start() {},
+    async stop() {},
+    // Mirrors the real session's turnQueue.length: only a SECOND ask() would ever populate it.
+    queueDepth: () => (asks > 1 ? 1 : 0),
+    getCurrentMeta: () => live?.meta ?? null,
+    liveTurnToolUse: () => live !== null, // already doing work — the tool-use branch, not composing
+    injectIntoLiveTurn: (text: string) => {
+      injections.push(text);
+      return "injected" as const;
+    },
+    ask(_message: unknown, meta?: unknown): Promise<DiscordTurnOutput> {
+      asks += 1;
+      if (asks === 1) {
+        return new Promise<DiscordTurnOutput>((resolve) => {
+          live = { resolve, meta };
+        });
+      }
+      return Promise.resolve({ decision: "send", message: "should never post — no second ask expected" });
+    },
+    // Deliberately no cancelLiveTurn: liveTurnToolUse()===true makes the pool's own gate return
+    // false before it would ever be reached, so a fake that threw on it would still pass — this
+    // omission asserts that by construction instead.
+  };
+  const { concierge, posts } = conciergeHarness(session);
+
+  const first = concierge.onMessage(msg("chan-1", "m-1"));
+  await new Promise((r) => setTimeout(r, 20)); // let the first turn reach ask() and go live
+  expect(live).not.toBeNull();
+
+  await concierge.onMessage(msg("chan-1", "m-2")); // same author, same channel, mid-flow follow-up
+
+  expect(asks).toBe(1); // no second turn started
+  expect(session.queueDepth()).toBe(0); // and nothing queued behind the live one either
+  expect(injections).toHaveLength(1);
+  expect(injections[0]).toContain("[mid-flow:");
+  expect(injections[0]).toContain("msg:m-2");
+  expect(posts).toEqual([]); // the injected message itself posts nothing of its own
+
+  live!.resolve({ decision: "send", message: "folded-in answer" });
+  await first;
+  expect(posts.map((p) => p.text)).toEqual(["folded-in answer"]); // one coherent reply, not two
+});
+
+test("a different author's message, or one on a different channel, after tool-use still queues exactly as today", async () => {
+  let live: { resolve: (o: DiscordTurnOutput) => void; meta: unknown } | null = null;
+  let asks = 0;
+  const injections: string[] = [];
+  const session = {
+    async start() {},
+    async stop() {},
+    queueDepth: () => (asks > 1 ? 1 : 0),
+    getCurrentMeta: () => live?.meta ?? null,
+    liveTurnToolUse: () => live !== null,
+    injectIntoLiveTurn: (text: string) => {
+      injections.push(text);
+      return "injected" as const;
+    },
+    ask(_message: unknown, meta?: unknown): Promise<DiscordTurnOutput> {
+      asks += 1;
+      if (asks === 1) {
+        return new Promise<DiscordTurnOutput>((resolve) => {
+          live = { resolve, meta };
+        });
+      }
+      return Promise.resolve({ decision: "send", message: `queued answer ${asks}` });
+    },
+  };
+  const { concierge, posts } = conciergeHarness(session);
+  // Bob needs real access (member), or he's denied as an outsider before ever reaching the
+  // interrupt/inject logic this test exercises — that would prove nothing about the gate.
+  grantAccess(join(process.env.BECKETT_DIR!, "access.txt"), "222222222222222222", "111111111111111111");
+
+  const first = concierge.onMessage(msg("chan-1", "m-1"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(live).not.toBeNull();
+
+  // A different author in the SAME channel: cross-author hazard closed by scope, not injection.
+  const bobMsg = { ...msg("chan-1", "m-2"), userId: "222222222222222222" } as unknown as IncomingMessage;
+  await concierge.onMessage(bobMsg);
+
+  live!.resolve({ decision: "send", message: "original answer" });
+  await first;
+
+  expect(asks).toBe(2); // the second author's message ran its own turn, exactly as today
+  expect(injections).toEqual([]); // injectLiveTurn's eligibility gate refused — never reached the session
+  expect(posts.map((p) => p.text).sort()).toEqual(["original answer", "queued answer 2"]);
+});
+
+// ── 4b. injectLiveTurn commits the watermark to the INJECTED message's own id ─────────────
+//
+// channel-context.ts's markSeen was made monotonic per (channelId, sessionId) specifically so
+// this commit — made immediately, during injection — survives the live turn's OWN eventual
+// watermark commit (computed from state before the injected message existed, landing later on
+// the try path below). Real ChannelContextStore, real dir: this is the one behavior a fake
+// channelStore can't stand in for without re-implementing the bug it's proving fixed.
+
+function sharedContextHarness(session: Partial<ConciergeSession> & Record<string, unknown>) {
+  tempBeckettDir();
+  process.env.DISCORD_OWNER_ID = "111111111111111111";
+  const config = validateConfig({});
+  const posts: Post[] = [];
+  const gateway = {
+    onMessage() {},
+    async start() {},
+    async stop() {},
+    sendTyping() {},
+    async post(channelId: string, text: string, o?: { replyToMessageId?: string }) {
+      posts.push({ channelId, text, replyTo: o?.replyToMessageId });
+      return `mid-${posts.length}`;
+    },
+  } as unknown as DiscordGateway;
+  const concierge = new Concierge({ config, gateway, session: session as unknown as ConciergeSession });
+  return { concierge, posts };
+}
+
+function shMsg(channelId: string, messageId: string, userId = "111111111111111111"): IncomingMessage {
+  return {
+    channelId,
+    messageId,
+    userId,
+    authorDisplayName: "jason",
+    content: `content of ${messageId}`,
+    mentionsBot: true,
+    authorIsBot: false,
+    guildId: null,
+    createdAt: Date.now(),
+    attachments: [],
+    repliedToId: null,
+  } as unknown as IncomingMessage;
+}
+
+test("a successful injection commits the watermark to the injected message's own id", async () => {
+  let live: { resolve: (o: DiscordTurnOutput) => void; meta: unknown } | null = null;
+  let asks = 0;
+  const session = {
+    async start() {},
+    async stop() {},
+    queueDepth: () => (asks > 1 ? 1 : 0),
+    getCurrentMeta: () => live?.meta ?? null,
+    liveTurnToolUse: () => live !== null,
+    currentSessionId: () => "sid-1",
+    injectIntoLiveTurn: (_text: string) => "injected" as const,
+    ask(_message: unknown, meta?: unknown): Promise<DiscordTurnOutput> {
+      asks += 1;
+      if (asks === 1) {
+        return new Promise<DiscordTurnOutput>((resolve) => {
+          live = { resolve, meta };
+        });
+      }
+      return Promise.resolve({ decision: "send", message: "n/a — a second ask means the test is wrong" });
+    },
+  };
+  const { concierge } = sharedContextHarness(session);
+
+  const first = concierge.onMessage(shMsg("chan-1", "m-1"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(live).not.toBeNull();
+
+  await concierge.onMessage(shMsg("chan-1", "m-2")); // folds in via injectLiveTurn
+
+  // A fresh store over the SAME channelsDir (restart-survival pattern, channel-context.test.ts):
+  // the injected message's own id must already be the watermark for this session.
+  const store = createChannelContextStore({
+    channelsDir: join(process.env.BECKETT_DIR!, "channels"),
+    maxEntriesPerChannel: 500,
+    maxAgeHours: 999_999,
+    logger: quietLog,
+  });
+  expect(store.takeUnseen("chan-1", "sid-1")).toEqual([]); // m-2 already marked seen
+
+  live!.resolve({ decision: "send", message: "done" });
+  await first;
+  expect(asks).toBe(1); // the live turn's own eventual watermark commit never started a second ask
 });

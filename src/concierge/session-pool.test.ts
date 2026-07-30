@@ -19,6 +19,7 @@ interface FakeSession extends PoolSession {
   live: boolean;
   depth: number;
   resolveAsk: (reply: string) => void;
+  injections: string[];
 }
 
 function fakeSession(scope: string, opts: { deferAsks?: boolean } = {}): FakeSession {
@@ -32,6 +33,7 @@ function fakeSession(scope: string, opts: { deferAsks?: boolean } = {}): FakeSes
     meta: null,
     live: true,
     depth: 0,
+    injections: [],
     resolveAsk: (reply: string) => pendingResolve?.(reply),
     start: async () => {
       s.startCalls += 1;
@@ -56,6 +58,10 @@ function fakeSession(scope: string, opts: { deferAsks?: boolean } = {}): FakeSes
     },
     hasLiveChild: () => s.live,
     busToken: () => `tok-${scope}`,
+    injectIntoLiveTurn: (text: string) => {
+      s.injections.push(text);
+      return "injected";
+    },
   };
   return s;
 }
@@ -181,6 +187,34 @@ test("metaForToken resolves an issuer token to ITS session's executing turn, nev
   // Unknown/stale token: deny, never guess.
   expect(p.metaForToken("tok-forged")).toBeNull();
   expect(p.metaForToken("")).toBeNull();
+});
+
+test("injectLiveTurn: matching channel + author folds in; wrong author or channel refuses without calling the session", async () => {
+  const made: FakeSession[] = [];
+  const p = pool({ made });
+  await p.ask("chan-a", "x");
+  const s = made.find((x) => x.scope === "chan-a")!;
+  s.meta = { channelId: "chan-a", userId: "u1", ambient: false };
+
+  expect(p.injectLiveTurn("chan-a", "follow-up", { byUserId: "u1" })).toBe("injected");
+  expect(s.injections).toEqual(["follow-up"]);
+
+  expect(p.injectLiveTurn("chan-a", "not mine", { byUserId: "u2" })).toBe("not-eligible");
+  expect(s.injections).toEqual(["follow-up"]); // unchanged — never reached the session
+
+  expect(p.injectLiveTurn("chan-b", "wrong channel", { byUserId: "u1" })).toBe("no-live-turn");
+  expect(s.injections).toEqual(["follow-up"]);
+});
+
+test("injectLiveTurn: an ambient live turn is not eligible — no directed author to fold into", async () => {
+  const made: FakeSession[] = [];
+  const p = pool({ made });
+  await p.ask("chan-a", "x");
+  const s = made.find((x) => x.scope === "chan-a")!;
+  s.meta = { channelId: "chan-a", userId: "u1", ambient: true };
+
+  expect(p.injectLiveTurn("chan-a", "follow-up", { byUserId: "u1" })).toBe("not-eligible");
+  expect(s.injections).toEqual([]);
 });
 
 test("live-child cap counts the just-created session before its child spawns", async () => {

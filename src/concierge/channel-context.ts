@@ -632,7 +632,23 @@ export function createChannelContextStore(opts: ChannelContextStoreOptions): Cha
 
     markSeen(channelId: string, sessionId: string, lastMessageId: string): void {
       if (!validChannelId(channelId)) return;
-      getWatermarks()[channelId] = { lastMessageId, sessionId };
+      const marks = getWatermarks();
+      const existing = marks[channelId];
+      // Monotonic per (channelId, sessionId): a turn that started EARLIER can still resolve
+      // and call markSeen LATER than a turn for the same session that started after it (the
+      // mid-flow injection wiring commits the injected message's watermark immediately, then
+      // the original turn's own stale, pre-injection watermark commits after). Without this
+      // guard that later, smaller commit would silently regress the cursor backward and
+      // takeUnseen would re-surface a message the session already absorbed. A mark for a
+      // DIFFERENT sessionId, or an id that aged out of the window, has no ordering to compare
+      // against — treat it as "no prior mark" and accept, matching takeUnseen's own fallback.
+      if (existing && existing.sessionId === sessionId) {
+        const window = bounded(ensureLoaded(channelId));
+        const existingIdx = window.findIndex((e) => e.messageId === existing.lastMessageId);
+        const incomingIdx = window.findIndex((e) => e.messageId === lastMessageId);
+        if (existingIdx !== -1 && incomingIdx !== -1 && incomingIdx < existingIdx) return;
+      }
+      marks[channelId] = { lastMessageId, sessionId };
       persistWatermarks();
     },
 

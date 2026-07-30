@@ -378,6 +378,38 @@ const HANDOFF_TIMEOUT_MS = 45_000;
 
 /** A turn gets this long to finish before its eventual result is visibly marked as late. */
 const TURN_TIMEOUT_MS = 240_000;
+/**
+ * Cap on mid-flow messages handed to ONE live turn (see
+ * {@link ConciergeSession.injectIntoLiveTurn}). A bound, not a policy: past it the caller queues
+ * normally, which is exactly the pre-existing behavior. Chosen so an ordinary burst of
+ * corrections all land, while a pathological flood cannot grow one turn's context without limit.
+ */
+const MAX_LIVE_TURN_INJECTIONS = 8;
+/**
+ * Soft, log-only budget for a turn shaped like a filing/staffing arc (see
+ * {@link isFilingShapedToolUse}). This is observability, NOT a gate: the owner's complaint is
+ * that a tool-heavy turn runs long and silent, and this line is how a future pass would learn
+ * whether that's actually happening (and how badly) before reaching for something heavier than
+ * mid-turn injection. No abort, no behavior change — a text heuristic is too blunt to kill a
+ * legitimately long turn on.
+ */
+const FILING_TURN_BUDGET_MS = 20_000;
+
+/**
+ * Marker list for a Bash tool call that looks like it's filing/staffing work rather than, say,
+ * reading a file or running a build. Deliberately a flat substring list, not a parser: this feeds
+ * a LOG line (see {@link FILING_TURN_BUDGET_MS}), not a decision, so false positives/negatives on
+ * an odd quoting style cost nothing.
+ */
+export function isFilingShapedToolUse(command: string): boolean {
+  const markers = ["task create", "task start", "ticket create", "ticket state", "beckett plan"];
+  return markers.some((marker) => command.includes(marker));
+}
+
+/** Pure so the boundary is testable without a live turn. */
+export function filingTurnBudgetExceeded(durationMs: number, budgetMs: number = FILING_TURN_BUDGET_MS): boolean {
+  return durationMs > budgetMs;
+}
 
 // There is deliberately NO timed "still working" ack either (it lived here until v5.10.x):
 // a canned progress bubble is exactly the schedule-narration the doctrine bans the model from
@@ -658,6 +690,12 @@ export class ConciergeSession {
   private currentMeta: unknown = null;
   /** True once the LIVE turn has invoked any tool — it's doing work, not just composing. */
   private liveTurnToolUsed = false;
+  /** Mid-flow messages handed to the CURRENT live turn; reset with {@link liveTurnToolUsed}. */
+  private liveTurnInjections = 0;
+  /** True once the LIVE turn has invoked a filing/staffing-shaped tool call (see onAssistant). */
+  private liveTurnFilingShaped = false;
+  /** `Date.now()` when the LIVE turn started — the clock {@link FILING_TURN_BUDGET_MS} measures against. */
+  private turnStartedAt = 0;
 
   // launch plumbing. NOTE: `claude -p --input-format stream-json` emits `system/init` only AFTER
   // the first stdin line arrives, so start() must NOT block waiting for init (that deadlocks —
@@ -832,6 +870,72 @@ export class ConciergeSession {
   }
 
   /**
+   * Hand a message to the turn running RIGHT NOW, without cancelling it — the third path beside
+   * {@link cancelLiveTurn} and plain queueing.
+   *
+   * ── WHY THIS EXISTS ────────────────────────────────────────────────────────────────────
+   * Issue #117 gave a mid-turn message two possible fates: cancel-and-amend (the person was
+   * still composing) or QUEUE until the live turn finishes. Queueing is right for a turn that
+   * is merely thinking, and wrong for the case that actually hurts: a long tool-heavy flow —
+   * filing a task, staffing workers, running a deploy — is nothing BUT tool calls, so every
+   * message that arrives during it was invisible for the whole flow. From the other side of
+   * Discord that reads as Beckett having left the room.
+   *
+   * #117 considered injection and rejected it, correctly, FOR ITS OWN CASE: an extra user line
+   * lands at the next turn boundary and cannot pre-empt a generation, so it could not suppress
+   * the stale answer an amendment needs gone. But this case does not want pre-emption. It wants
+   * exactly what a boundary-delivered line gives — finish the current step, then absorb the new
+   * input — and inside a 30-tool-call flow the next boundary is SECONDS away, not minutes.
+   *
+   * ── WHAT IS DELIBERATELY NOT DECIDED HERE ──────────────────────────────────────────────
+   * Whether the message is urgent, whether it changes the plan, whether it can wait: none of
+   * that is judged in code. The model is the only thing in this system that knows what it is
+   * halfway through, so it is the classifier, and the injected line carries its options as
+   * text (see {@link formatInjectedMessage}). A keyword/urgency heuristic here would be the
+   * same mistake as encoding the model roster in prose — judgment in a place that cannot
+   * exercise it.
+   *
+   * Bounded so a flood cannot grow the turn's context without limit: past
+   * {@link MAX_LIVE_TURN_INJECTIONS} this returns "capped" and the caller queues normally,
+   * which is simply the pre-existing behavior for the overflow.
+   *
+   * Does NOT touch the pending turn's resolve/reject: the injected message gets no promise and
+   * no separate turn. Its answer rides the live turn's single output, which is the point — one
+   * coherent reply, not two. The caller must therefore post nothing of its own.
+   *
+   * Wired: {@link formatInjectedMessage} is implemented, and the call site is the `else` branch
+   * next to the `cancelLiveTurn` check in `onMessage` (search `injectLiveTurn` in this file) —
+   * routed through `SessionPool.injectLiveTurn`, which applies the same channel/author
+   * eligibility gate as `cancelLiveTurn` before ever reaching this method.
+   */
+  injectIntoLiveTurn(text: string): "injected" | "no-live-turn" | "capped" {
+    const p = this.pending;
+    if (!p || !this.child) return "no-live-turn";
+    if (this.liveTurnInjections >= MAX_LIVE_TURN_INJECTIONS) return "capped";
+    try {
+      this.writeUserLine(text);
+    } catch (err) {
+      // A dead/unwritable pipe is not this path's problem to solve — say so and let the caller
+      // fall back to queueing, exactly as if there had been no live turn.
+      this.log.warn("could not inject into the live turn — falling back to a queued turn", {
+        err: String(err),
+      });
+      return "no-live-turn";
+    }
+    this.liveTurnInjections += 1;
+    // Push the SOFT deadline out. The turn is now doing work the person added mid-flight; letting
+    // their own interjection trigger the "this took a while" framing would be backwards.
+    clearTimeout(p.timer);
+    p.timer = setTimeout(() => this.onTurnTimeout(p.timer), TURN_TIMEOUT_MS);
+    this.log.info("injected a mid-flow message into the live turn", {
+      sessionId: this.sessionId,
+      injections: this.liveTurnInjections,
+      len: text.length,
+    });
+    return "injected";
+  }
+
+  /**
    * Drop QUEUED (not yet started) turns the caller considers superseded — the queue-free
    * converse of {@link cancelLiveTurn}. A rapid-fire follow-up from the same author shouldn't
    * produce two answers in a row: the earlier message's turn resolves as a silent pass and the
@@ -912,6 +1016,9 @@ export class ConciergeSession {
     if (!child) throw new Error("concierge session has no live process");
     this.currentMeta = meta ?? null;
     this.liveTurnToolUsed = false;
+    this.liveTurnInjections = 0;
+    this.liveTurnFilingShaped = false;
+    this.turnStartedAt = Date.now();
     // A timeout, write failure, or malformed result must leave the shared-context cursor where
     // it was. Fakes predate this signal and leave it undefined, which remains successful parity.
     if (isMentionClaim(meta)) meta.turnSucceeded = false;
@@ -1277,7 +1384,12 @@ export class ConciergeSession {
       // The multitasking signal: once a turn invokes any tool, it has moved from composing to
       // DOING (a dispatch, a recall, an edit). The pool reads this to decide whether a newer
       // same-channel message may cancel-and-amend this turn or must queue behind it.
-      if (block.type === "tool_use") this.liveTurnToolUsed = true;
+      if (block.type === "tool_use") {
+        this.liveTurnToolUsed = true;
+        const input = block.input as Record<string, unknown> | undefined;
+        const command = typeof input?.command === "string" ? input.command : undefined;
+        if (command && isFilingShapedToolUse(command)) this.liveTurnFilingShaped = true;
+      }
     }
   }
 
@@ -1313,6 +1425,13 @@ export class ConciergeSession {
     this.consecutiveCrashes = 0; // a completed turn = the child is healthy again
     if (!p) return;
     clearTimeout(p.timer);
+    if (this.liveTurnFilingShaped && filingTurnBudgetExceeded(Date.now() - this.turnStartedAt)) {
+      this.log.warn("filing-shaped turn exceeded its shape budget", {
+        sessionId: this.sessionId,
+        durationMs: Date.now() - this.turnStartedAt,
+        budgetMs: FILING_TURN_BUDGET_MS,
+      });
+    }
     this.pending = null;
     if (!output) {
       // Never fall back to assistant text here. It is allowed to contain deliberation, and a bad
@@ -4665,6 +4784,40 @@ export class Concierge {
         channelId: m.channelId,
         messageId: m.messageId,
       });
+    } else {
+      // The live turn survived cancelLiveTurn's gate (it's tool-heavy — already doing work, not
+      // composing) but is still the SAME author/channel cancelLiveTurn would have amended. That
+      // is exactly injectLiveTurn's case: fold this message into the turn instead of forcing it
+      // to sit invisible in the queue for the whole filing/staffing/deploy arc (the owner's
+      // complaint). A different author or a different channel never reaches "injected" —
+      // injectLiveTurn's own eligibility gate matches cancelLiveTurn's, so those still fall
+      // through unchanged to the priority-queue path below, exactly as before this branch existed.
+      const speaker = this.resolveSpeaker(m);
+      const injected = this.pool.injectLiveTurn(
+        m.channelId,
+        formatInjectedMessage(m.channelId, speaker, m.messageId, turnContent),
+        { byUserId: m.userId },
+      );
+      if (injected === "injected") {
+        this.log.info("folded a mid-flow message into the live turn", {
+          channelId: m.channelId,
+          messageId: m.messageId,
+        });
+        // Commit the watermark to THIS message now — the live turn's own eventual watermark
+        // commit (below, on the try path) was computed from state before this message existed
+        // and would otherwise regress the cursor backward. markSeen is monotonic per
+        // (channelId, sessionId) precisely to make that later, stale commit a no-op instead of a
+        // silent re-surfacing of a message the session already absorbed (channel-context.ts).
+        this.channelStore?.markSeen(m.channelId, this.pool.sessionIdFor(m.channelId), m.messageId);
+        // This message rides the live turn's own single output — no second promise, no second
+        // reply started here. Clear the claim we just set so a stale entry doesn't linger, and
+        // stop before typing/the ask path start for a message that isn't running its own turn.
+        if (this.activeMentions.get(m.channelId) === mention) this.activeMentions.delete(m.channelId);
+        return;
+      }
+      // "no-live-turn" | "not-eligible" | "capped": no code path here claims the message was
+      // handled, so it falls through to the priority-queue path exactly as if this branch never
+      // ran.
     }
     // The queue-free converse of the interrupt above: this same speaker's earlier message may be
     // sitting QUEUED behind another turn (a burst fires faster than turns drain). Answering it
@@ -6284,6 +6437,30 @@ function frameUserTurn(
   // not just the channel (Jason's steer, OPS-42). The native reply already uses it; surfacing it
   // in the stamp lets the Concierge quote/`--reply-to` the precise message when it matters.
   return `[channel:${channelId}] [${parts.join(" ")} msg:${messageId}]\n${content}`;
+}
+
+/**
+ * Frame a mid-flow message for {@link ConciergeSession.injectIntoLiveTurn} — same author, same
+ * channel, arriving while the live turn is still doing tool-heavy work (see that method's
+ * docstring for why this path exists at all).
+ *
+ * The preamble is deliberately blunt and imperative, not descriptive: this line lands between
+ * two tool-call round-trips, competing for attention with a transcript full of tool output, so it
+ * has to read as an instruction the model acts on THIS turn, not a passive note that "some new
+ * context arrived." `concierge.md`'s work-request section quotes this exact wording as the signal
+ * a wrap-up reply is warranted — change it there too if it ever changes here.
+ */
+function formatInjectedMessage(
+  channelId: string,
+  speaker: SpeakerContext,
+  messageId: string,
+  content: string,
+): string {
+  return (
+    "[mid-flow: same person, arrived while you're still working the request above — fold it in, " +
+    "don't restart, don't file it twice]\n" +
+    frameUserTurn(channelId, speaker, messageId, content)
+  );
 }
 
 /** `HH:MM` (UTC) for an ambient transcript stamp — matches the triage classifier's time format. */

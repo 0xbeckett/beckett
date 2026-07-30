@@ -184,6 +184,30 @@ test("a watermark id that aged out of the window yields the whole window", () =>
   expect(store.takeUnseen("chan", "s1").map((e) => e.messageId)).toEqual(["m2"]);
 });
 
+test("markSeen is monotonic per (channelId, sessionId): a stale post-hoc commit doesn't regress it", () => {
+  const { store } = makeStore({ now: () => 50_000 });
+  store.append("chan", entry("m1", 1_000));
+  store.append("chan", entry("m2", 2_000));
+  store.append("chan", entry("m3", 3_000));
+  // A later-landing turn commits the newer position first (e.g. an injected mid-flow message
+  // whose watermark commit races ahead of the original turn's own stale commit).
+  store.markSeen("chan", "s1", "m3");
+  // The original turn's own commit, computed from state before the injection, lands after —
+  // and must not regress the cursor back to m1.
+  store.markSeen("chan", "s1", "m1");
+  expect(store.takeUnseen("chan", "s1")).toEqual([]);
+});
+
+test("markSeen still advances normally when commits arrive in forward order", () => {
+  const { store } = makeStore({ now: () => 50_000 });
+  store.append("chan", entry("m1", 1_000));
+  store.append("chan", entry("m2", 2_000));
+  store.append("chan", entry("m3", 3_000));
+  store.markSeen("chan", "s1", "m1");
+  store.markSeen("chan", "s1", "m3");
+  expect(store.takeUnseen("chan", "s1")).toEqual([]);
+});
+
 test("empty window: takeUnseen returns [] and leaves the watermark untouched", () => {
   const { store, channelsDir } = makeStore({ now: () => 50_000 });
   expect(store.takeUnseen("chan", "s1")).toEqual([]);

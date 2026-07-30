@@ -47,6 +47,8 @@ export interface PoolSession {
   cancelLiveTurn?(reason: string): boolean;
   /** Whether the live turn has already invoked a tool (it's doing work, not composing). */
   liveTurnToolUse?(): boolean;
+  /** Hand a message to the turn generating right now, without cancelling it (see injectLiveTurn). */
+  injectIntoLiveTurn?(text: string): "injected" | "no-live-turn" | "capped";
   /** Drop queued (not-yet-started) turns the predicate matches; count dropped (queue-free UX). */
   supersedeQueuedTurns?(match: (meta: unknown) => boolean): number;
   /** Start a recycled child's relaunch without a turn (issue #153); no-op when live/stopped. */
@@ -279,6 +281,36 @@ export class SessionPool {
       if (entry.session.liveTurnToolUse?.() === true) return false;
     }
     return entry.session.cancelLiveTurn?.(reason) ?? false;
+  }
+
+  /**
+   * Fold a message into the turn generating on a channel's session right now, instead of
+   * cancelling it or queueing it (the third path beside {@link cancelLiveTurn} and plain
+   * queueing — see ConciergeSession.injectIntoLiveTurn for why this exists at all).
+   *
+   * Deliberately the SAME eligibility gate as {@link cancelLiveTurn}'s `byUserId` branch, not a
+   * new one: `"no-live-turn"` when nothing is live for this channel (or, in collapsed
+   * global/fixed-session mode, the live turn belongs to a different channel); `"not-eligible"`
+   * when the live turn is ambient (no directed author to fold into) or belongs to a DIFFERENT
+   * author than `opts.byUserId` — someone else's in-flight turn is not this person's to steer,
+   * the same cross-author hazard #117's guard exists to prevent. Unlike cancelLiveTurn there is
+   * no tool-use branch to check: injection is the tool-use case (that's the whole point), so
+   * eligibility never depends on whether a tool has already run.
+   */
+  injectLiveTurn(
+    channelId: string,
+    text: string,
+    opts: { byUserId: string },
+  ): "injected" | "no-live-turn" | "not-eligible" | "capped" {
+    const entry = this.entries.get(this.scopeKey(channelId));
+    if (!entry) return "no-live-turn";
+    const meta = entry.session.getCurrentMeta?.() as
+      | { channelId?: string; userId?: string; ambient?: boolean }
+      | null
+      | undefined;
+    if (!meta || meta.channelId !== channelId) return "no-live-turn";
+    if (meta.ambient || meta.userId !== opts.byUserId) return "not-eligible";
+    return entry.session.injectIntoLiveTurn?.(text) ?? "no-live-turn";
   }
 
   /**
