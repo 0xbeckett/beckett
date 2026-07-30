@@ -22,7 +22,7 @@ max_review_infra_retries = 1
 max_harness_substitutions = 6
 
 [models]
-reviewer = "claude-fable-5"
+reviewer = "claude-sonnet-5"
 
 [harness]
 fallback_order = ["claude", "pi", "codex"]
@@ -49,31 +49,6 @@ bin = "pi"
 default_provider = "openai-codex"
 default_model = "gpt-5.6-terra"
 thinking = "high"
-
-[harness.lanes.quick]
-harness = "pi"
-provider = ""
-model = ""
-
-[harness.lanes.agent]
-harness = "pi"
-provider = ""
-model = ""
-
-[harness.lanes.browser]
-harness = "claude"
-provider = ""
-model = ""
-
-[harness.lanes.dream]
-harness = "pi"
-provider = ""
-model = ""
-
-[harness.lanes.dream_spike]
-harness = "pi"
-provider = ""
-model = ""
 
 [paths]
 home = "/home/beckett"

@@ -3,43 +3,21 @@
  *
  * Browser / computer-use work never runs inline in an intake turn: the concierge dispatches a
  * self-contained task here and returns immediately. The agent drives the persistent BetterWright
- * browser through multi-leg one-shot harness sessions; when only a human can unblock it (a
+ * browser through multi-leg `claude -p` sessions; when only a human can unblock it (a
  * verification code, a missing credential, a genuine disambiguation) it parks the session,
  * surfaces ONE question to the originating channel, and later resumes the same session with the
  * answer. Every terminal state — completion, failure, timeout, daemon death — reports back to
  * the concierge as an update turn, backed by a durable run ledger so a crash can never strand
  * the person in silence. Credentials come from the jingle keychain and are injected below the
  * model's transcript as a `secrets` object (see {@link BrowserAgent.evalSecrets}).
- *
- * ── TEMPORARY: this is the one lane #125 did NOT move to pi ────────────────────────────
- *
- * The missing capability is specific and total: **pi has no MCP client**. This lane reaches
- * BetterWright as an MCP stdio server (`--mcp-config` + `--strict-mcp-config` +
- * `--tools mcp__browser__betterwright_browser`, see {@link ./mcp.ts}); pi 0.82.1 advertises no
- * `--mcp-config` flag, carries no `mcpServers` settings key, and ships no `@modelcontextprotocol`
- * dependency. Its own `docs/usage.md` states the omission is deliberate: "It intentionally does
- * not include built-in MCP … You can build or install those workflows as extensions or packages."
- * Under pi this agent would launch with no browser tool at all and fail at the attach check below.
- *
- * NOT an image problem — #85.1 (#121) probed that directly and pi DOES forward image content
- * through to the model on both the attachment and read-tool paths (`docs/pi-anthropic-probe.md`),
- * so screenshots survive the move. Only the tool transport is missing.
- *
- * The named fix, and it is in pi's own idiom: a pi EXTENSION that registers
- * `betterwright_browser` directly via `pi.registerTool()` (pi's `docs/extensions.md` — custom
- * tools may return image content blocks, which is what the screenshot path needs). That is its
- * own branch by #125's scope ceiling. Until it lands, `[harness.lanes.browser]` defaults to
- * claude, and pinning it to pi is a supported (loudly warned) config move — the lane builds the pi
- * argv, reports the missing MCP transport through {@link warnLaneGaps}, and the existing
- * attach-marker retry turns the consequence into a clear diagnostic instead of a silent no-op.
  */
 
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { buildPaths } from "../paths.ts";
-import { buildLaneCommand, laneChildEnv, parseLaneOutput, resolveLaneSeat, warnLaneGaps } from "../drivers/lane.ts";
-import type { Config, LaneHarness, Logger } from "../types.ts";
+import { childEnv } from "../env.ts";
+import type { Config, Logger } from "../types.ts";
 import type { BrowserRuntime } from "./runtime.ts";
 import type { KeychainEntrySecrets, KeychainReader } from "../secret/keychain-read.ts";
 
@@ -230,15 +208,11 @@ const ATTACH_FAILURE_DIAGNOSTIC =
   "The browser control tool (mcp__browser__betterwright_browser) failed to attach to the agent " +
   `session across ${LEG_MAX_ATTEMPTS} attempts, so no browser actions were possible. This is an ` +
   "infrastructure fault — the browser MCP server did not register its tool in time — not a task " +
-  "failure or a genuine question. Dispatch the task again. If this lane is pinned to pi " +
-  '([harness.lanes.browser] harness = "pi"), that is the expected outcome and not a race: pi has ' +
-  "no MCP client, so the tool can never attach until the pi browser extension exists. Pin the lane " +
-  "back to claude.";
+  "failure or a genuine question. Dispatch the task again.";
 
-/** One completed run of the leg subprocess, before the attach check decides how to read it. */
+/** One completed run of the claude leg subprocess, before the attach check decides how to read it. */
 type LegOutcome =
-  /** `harness` travels with the stdout because the two speak different result formats. */
-  | { kind: "result"; stdout: string; harness: LaneHarness }
+  | { kind: "result"; stdout: string }
   | { kind: "exit-nonzero"; code: number | null; stderr: string }
   | { kind: "spawn-error"; message: string }
   /** The child was killed or replaced (hard timeout, stop, shutdown) — already finalized elsewhere. */
@@ -654,7 +628,10 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
   }
 
   function baseEnv(): Record<string, string | undefined> {
-    const env = laneChildEnv();
+    const env = childEnv();
+    const home = process.env.HOME ?? "";
+    const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");
+    env.PATH = env.PATH ? `${extra}:${env.PATH}` : extra;
     // Give claude time to boot the stdio browser MCP server before the model turn, so the tool
     // isn't dropped under `--strict-mcp-config` when a busy host slows the cold bun import.
     if (!env.MCP_TIMEOUT) env.MCP_TIMEOUT = String(MCP_STARTUP_TIMEOUT_MS);
@@ -670,89 +647,59 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
   }
 
   /**
-   * Build the harness command for one leg. Claude is this lane's default seat — see the MCP gap
-   * at the top of this file — but the command is built through the shared lane seam so
-   * `[harness.lanes.browser] harness = "pi"` is a real, exercisable move rather than a config key
-   * that silently does nothing. Under pi the seam reports the missing MCP transport (and the
-   * missing `--json-schema`) on `unsupported`, which {@link warnLaneGaps} logs by name at spawn.
-   */
-  function buildLegCommand(entry: LiveRun, input: string, resume: boolean) {
-    const { run, runDir, systemPrompt } = entry;
-    const seat = resolveLaneSeat(config, "browser", {
-      claudeModel: config.quick.model,
-      effort: config.quick.effort,
-    });
-    // claude reads the task off stdin (it can be long, and argv is not the place for a credential-
-    // adjacent instruction block). pi takes its prompt positionally and does not consume stdin as
-    // a turn, so under pi the task IS the prompt.
-    const viaStdin = seat.harness === "claude";
-    const prompt = viaStdin
-      ? resume
-        ? "Continue the browser task using the user's answer supplied on stdin."
-        : "Complete the browser task supplied on stdin."
-      : input;
-    const command = buildLaneCommand(config, seat, {
-      prompt,
-      // pi cannot ENFORCE the result schema (no --json-schema), so under pi the contract is stated
-      // in the system prompt and parsed leniently — the same fallback PiDriver uses for the
-      // worker done-signal.
-      systemPrompt: viaStdin ? systemPrompt : `${systemPrompt}\n\n${piResultContract()}`,
-      output: "json",
-      unattended: true,
-      jsonSchema: viaStdin ? BROWSER_RESULT_SCHEMA : undefined,
-      mcpConfigPath: join(runDir, "mcp.json"),
-      strictMcp: true,
-      // `toolSet`, not `allowedTools`: this REPLACES the built-in set, so the browser agent can
-      // reach the browser and nothing else — no bash, no filesystem, no web. A permission
-      // allowlist would leave all of those in its hands.
-      toolSet: ["mcp__browser__betterwright_browser"],
-      sessionId: resume ? undefined : run.sessionId,
-      resumeSessionId: resume ? run.sessionId : undefined,
-      extraFlags: viaStdin ? ["--no-chrome"] : [],
-    });
-    return { seat, command, viaStdin };
-  }
-
-  /**
-   * Run one leg to completion and hand back its raw outcome. Never interprets the result or
+   * Run one claude leg to completion and hand back its raw outcome. Never interprets the result or
    * finalizes the run except for the hard-timeout path (which kills the child and finalizes itself,
    * reported here as "superseded"). The attach marker is reset up front so its post-run presence
    * reflects only this attempt.
    */
   async function executeLeg(entry: LiveRun, input: string, resume: boolean): Promise<LegOutcome> {
-    const { run, runDir } = entry;
+    const { run, runDir, systemPrompt } = entry;
     try {
       unlinkSync(join(runDir, ATTACH_MARKER_NAME));
     } catch {
       // Absent before the first attempt; only a prior attempt leaves one to clear.
     }
-    const { seat, command, viaStdin } = buildLegCommand(entry, input, resume);
-    warnLaneGaps(logger, command, { runId: run.runId });
+    const args = [
+      "-p",
+      resume
+        ? "Continue the browser task using the user's answer supplied on stdin."
+        : "Complete the browser task supplied on stdin.",
+      "--output-format",
+      "json",
+      "--permission-mode",
+      config.harness.claude.permission_mode,
+      "--model",
+      config.quick.model,
+      "--system-prompt",
+      systemPrompt,
+      "--json-schema",
+      JSON.stringify(BROWSER_RESULT_SCHEMA),
+      "--mcp-config",
+      join(runDir, "mcp.json"),
+      "--strict-mcp-config",
+      "--no-chrome",
+      "--tools",
+      "mcp__browser__betterwright_browser",
+    ];
+    if (config.quick.effort) args.push("--effort", config.quick.effort);
+    args.push(resume ? "--resume" : "--session-id", run.sessionId);
 
-    logger.info("browser agent leg starting", {
-      runId: run.runId,
-      resume,
-      cwd: runDir,
-      harness: seat.harness,
-      model: seat.model,
-    });
+    logger.info("browser agent leg starting", { runId: run.runId, resume, cwd: runDir });
     let child: ReturnType<typeof Bun.spawn>;
     try {
       child = spawn({
-        cmd: [command.bin, ...command.args],
+        cmd: [config.harness.claude.bin, ...args],
         cwd: runDir,
-        stdin: viaStdin ? "pipe" : "ignore",
+        stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
         env: baseEnv(),
       });
       entry.child = child;
-      if (viaStdin) {
-        const inputSink = child.stdin;
-        if (!inputSink || typeof inputSink === "number") throw new Error("browser agent stdin pipe was not created");
-        inputSink.write(input);
-        inputSink.end();
-      }
+      const inputSink = child.stdin;
+      if (!inputSink || typeof inputSink === "number") throw new Error("browser agent stdin pipe was not created");
+      inputSink.write(input);
+      inputSink.end();
     } catch (error) {
       return { kind: "spawn-error", message: `browser agent spawn failed: ${(error as Error).message}` };
     }
@@ -782,7 +729,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     entry.hardTimer = null;
     entry.child = null;
     if (code !== 0) return { kind: "exit-nonzero", code, stderr };
-    return { kind: "result", stdout, harness: seat.harness };
+    return { kind: "result", stdout };
   }
 
   /** Interpret a leg outcome whose browser tool was confirmed attached, and finalize/park the run. */
@@ -798,7 +745,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
     if (outcome.kind !== "result") return; // spawn-error/superseded handled by the caller
     let parsed: BrowserLegResult;
     try {
-      parsed = parseBrowserResult(outcome.stdout, outcome.harness);
+      parsed = parseBrowserResult(outcome.stdout);
     } catch (error) {
       await finalize(entry, "error", `The browser agent returned invalid structured output: ${(error as Error).message}`);
       return;
@@ -1110,59 +1057,13 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
   };
 }
 
-/**
- * The result contract, restated as prose for pi. claude ENFORCES {@link BROWSER_RESULT_SCHEMA}
- * via `--json-schema`; pi has no equivalent, so under pi the shape has to be asked for and then
- * parsed leniently ({@link extractLenientJson}) — the same fallback `PiDriver` uses for a worker's
- * done-signal. Generated from the schema so the two cannot drift.
- */
-export function piResultContract(): string {
-  return [
-    "OUTPUT CONTRACT — your FINAL message must be exactly one JSON object and nothing else:",
-    JSON.stringify(BROWSER_RESULT_SCHEMA, null, 2),
-    "",
-    'Example: {"status":"completed","summary":"Posted the tweet.","question":null,"proofApplicable":true}',
-    "No prose before or after it. No code fence is required, but a ```json fence is tolerated.",
-  ].join("\n");
-}
-
-/** Pull the first parseable JSON object out of a model's final message (raw, fenced, or trailing). */
-function extractLenientJson(text: string): unknown {
-  const trimmed = text.trim();
-  if (!trimmed) throw new Error("empty final message");
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    /* fall through */
-  }
-  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence?.[1]) {
-    try {
-      return JSON.parse(fence[1].trim());
-    } catch {
-      /* fall through */
-    }
-  }
-  const open = trimmed.lastIndexOf("{");
-  const close = trimmed.lastIndexOf("}");
-  if (open >= 0 && close > open) return JSON.parse(trimmed.slice(open, close + 1));
-  throw new Error("no JSON object in the final message");
-}
-
-function parseBrowserResult(stdout: string, harness: LaneHarness = "claude"): BrowserLegResult {
-  let value: unknown;
-  if (harness === "pi") {
-    const output = parseLaneOutput("pi", "json", stdout);
-    if (output.error) throw new Error(output.error);
-    value = extractLenientJson(output.text);
-  } else {
-    const envelope = JSON.parse(stdout.trim()) as {
-      structured_output?: unknown;
-      result?: string;
-    };
-    value = envelope.structured_output;
-    if (value === undefined && envelope.result) value = JSON.parse(envelope.result);
-  }
+function parseBrowserResult(stdout: string): BrowserLegResult {
+  const envelope = JSON.parse(stdout.trim()) as {
+    structured_output?: unknown;
+    result?: string;
+  };
+  let value = envelope.structured_output;
+  if (value === undefined && envelope.result) value = JSON.parse(envelope.result);
   if (!value || typeof value !== "object") throw new Error("missing structured_output");
   const result = value as Partial<BrowserLegResult>;
   if (!(["completed", "needs_input", "failed"] as unknown[]).includes(result.status)) {

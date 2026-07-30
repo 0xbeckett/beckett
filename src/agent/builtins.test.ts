@@ -16,11 +16,7 @@ test("ships a social-media builtin defined entirely as data (prompt + seat, no c
   const def = builtinAgentDefs().find((a) => a.id === SOCIAL_MEDIA_AGENT_ID);
   expect(def).toBeTruthy();
   expect(def!.builtin).toBe(true);
-  // No harness pin: the agent rides `[harness.lanes.agent]` (pi since #125) rather than carrying
-  // a claude default nobody chose. Its model is a LIVE id — `claude-sonnet-4-5` has not existed
-  // since the Claude 5 family shipped.
-  expect(def!.model.harness).toBeUndefined();
-  expect(def!.model.model).toBe("claude-sonnet-5");
+  expect(def!.model.harness).toBe("claude");
   // The behavior — voice, target handle, how to post — is all in the prompt string.
   expect(def!.systemPrompt).toContain("@beckposting");
   expect(def!.systemPrompt.toLowerCase()).toContain("browser");

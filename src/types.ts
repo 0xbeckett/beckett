@@ -36,27 +36,6 @@
  */
 export type Harness = "claude" | "codex" | "pi" | (string & {});
 
-/**
- * The non-worker agent lanes (#125): the short-lived, prompt-in/text-out agents Beckett runs
- * OUTSIDE the ticket pipeline. Each owns a `[harness.lanes.<name>]` config block and spawns
- * through the shared seam in `src/drivers/lane.ts`.
- */
-export type LaneName = "quick" | "agent" | "browser" | "dream" | "dream_spike";
-
-/**
- * Harnesses a one-shot lane can spawn. `codex` is absent on purpose: `codex exec` has no
- * `--append-system-prompt` and no tool allow/denylist, so it cannot honor a lane seat.
- */
-export type LaneHarness = "claude" | "pi";
-
-/** One lane's harness pin. See `src/drivers/lane.ts#resolveLaneSeat` for the precedence rules. */
-export interface HarnessLaneConfig {
-  harness: LaneHarness;
-  /** pi `--provider` for this lane. "" ⇒ `harness.pi.default_provider`. Ignored by claude. */
-  provider: string;
-  /** Model id for this lane. "" ⇒ the resolved harness's own default (see resolveLaneSeat). */
-  model: string;
-}
 
 /** Which concrete driver runs a harness process (Spec 02 §2). */
 export type DriverKind = "claude-cli-stream" | "codex-exec-oneshot" | "pi-cli-stream";
@@ -829,13 +808,6 @@ export interface Config {
       /** Reasoning depth (pi `--thinking`). */
       thinking: Effort;
     };
-    /**
-     * Per-lane harness pins for the NON-worker agent lanes (#125). Every lane in
-     * `src/drivers/lane.ts` reads its block here, so any one of them can be moved between
-     * `claude` and `pi` from config alone — these lanes fail in different ways, so the lever is
-     * per-lane rather than one fleet-wide rollback.
-     */
-    lanes: Record<LaneName, HarnessLaneConfig>;
   };
   paths: {
     home: string;
@@ -949,8 +921,8 @@ export interface Config {
     idle_recycle_minutes: number;
   };
   /**
-   * Quick agents — the NO-TICKET lane: short-lived specialist one-shot harnesses
-   * (`quick-code`, `repo-explorer`, `pi-extension`) the Concierge dispatches via
+   * Quick agents — the NO-TICKET lane: short-lived specialist `claude -p` harnesses
+   * (`computer-use`, `quick-code`, `repo-explorer`) the Concierge dispatches via
    * `beckett quick` for errands between "answer inline" and "file a ticket".
    */
   quick: {
@@ -1066,10 +1038,7 @@ export interface HarnessDriver {
   readonly kind: DriverKind;
   /** Create worktree (if needed), launch, return once sessionId is known. spawning→running. */
   spawn(spec: SpawnSpec): Promise<SpawnResult>;
-  /**
-   * Soft steer. claude: stdin user line (next turn boundary). pi: an rpc `steer` command on its
-   * live stdin channel, same next-turn-boundary bound (issue #122). codex: queued for resume.
-   */
+  /** Soft steer. claude: stdin user line (next turn boundary). codex: queued for resume. */
   sendNudge(msg: string): Promise<NudgeReceipt>;
   /** Checkpoint (claude: quiesce; codex: stop auto-resume). */
   pause(): Promise<void>;
@@ -1098,12 +1067,6 @@ export interface SpawnSpec {
   scope: FileScope;
   envelope: ResourceEnvelope;
   model: string;
-  /**
-   * The cast's harness BACKEND for this stage (#121) — pi's `--provider`. Empty/absent ⇒ the
-   * driver falls back to its configured default (`config.harness.pi.default_provider`).
-   * Single-backend harnesses (claude, codex) ignore it.
-   */
-  provider?: string;
   sessionId?: string; // optional caller-minted UUID (claude --session-id); else captured
   /**
    * Crash recovery (issue #20): when set, the driver LAUNCHES IN RESUME MODE against this

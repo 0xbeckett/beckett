@@ -34,16 +34,9 @@ export const AGENT_EFFORTS = ["", "low", "medium", "high", "xhigh"] as const;
 export const AgentEffortSchema = z.enum(AGENT_EFFORTS);
 export type AgentEffort = z.infer<typeof AgentEffortSchema>;
 
-/**
- * The harness seat: which CLI + model + reasoning depth the agent spawns with.
- *
- * `harness` is OPTIONAL (#125): an agent that names one is making a choice the invoke-lane honors
- * verbatim, and an agent that names none follows the lane default (`[harness.lanes.agent]`, pi
- * today). Before #125 this defaulted to `"claude"`, which made "what harness do my agents run on?"
- * unanswerable from config — every definition carried a claude pin nobody had actually chosen.
- */
+/** The harness seat: which CLI + model + reasoning depth the agent spawns with. */
 export const AgentModelSchema = z.object({
-  harness: AgentHarnessSchema.optional(),
+  harness: AgentHarnessSchema.default("claude"),
   model: z.string().min(1),
   effort: AgentEffortSchema.default("medium"),
 });

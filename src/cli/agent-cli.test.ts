@@ -85,23 +85,12 @@ test("agent defaults harness/effort/persistent and ephemeral is the default", as
   ])) as any;
   expect(added).toMatchObject({
     id: "quick-helper",
-    // No --harness ⇒ no pin: the agent follows `[harness.lanes.agent]` (#125), so moving the lane
-    // moves every agent that never asked for a specific harness.
-    harness: "(lane default)",
+    harness: "claude",
     effort: "medium",
     persistent: false, // ephemeral by default
     skills: [],
     tools: [],
   });
-
-  const pinned = (await cli(dir, [
-    "agent", "add", "pinned-helper",
-    "--description", "a helper",
-    "--prompt", "help",
-    "--model", "claude-sonnet-5",
-    "--harness", "pi",
-  ])) as any;
-  expect(pinned).toMatchObject({ id: "pinned-helper", harness: "pi" });
 });
 
 test("agent rm removes it; a subsequent show fails", async () => {
@@ -125,7 +114,7 @@ test("agent new derives a kebab id from --name and defaults the description to t
   expect(created).toMatchObject({
     id: "foo-bar",
     description: "Foo Bar", // name used as the description when --description is omitted
-    harness: "(lane default)",
+    harness: "claude",
     effort: "medium",
     persistent: false,
   });

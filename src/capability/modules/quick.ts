@@ -102,9 +102,7 @@ export const createQuickExtension =
       const agent = sub?.trim();
       const task = _.join(" ").trim();
       if (!agent || !task) {
-        fail(
-          'usage: beckett quick <quick-code|repo-explorer|pi-extension> "<task>" [--channel <id>]  |  beckett quick list',
-        );
+        fail('usage: beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list');
       }
       try {
         // The one custom bus timeout: the run may block the whole sync window for its report.
@@ -143,9 +141,7 @@ export const createQuickExtension =
             "Dispatch a short-lived specialist for an errand BETWEEN an inline answer and a " +
             "ticket: quick-code takes a small coding errand in a scratch dir (one-off scripts, " +
             "file transforms, conversions — never project repos); repo-explorer shallow-clones " +
-            "a repo and returns a tight brief answering your question; pi-extension builds and " +
-            "installs a pi extension for a gap in the harness (extension asks go here, not to a " +
-            "ticket). Blocks up to the sync " +
+            "a repo and returns a tight brief answering your question. Blocks up to the sync " +
             "window for the report, then detaches — a detached run's result arrives later as a " +
             "quick-agent update turn in the origin channel. No ticket, no worker, no worktree; " +
             "browser/computer-use work goes to the browser lane instead.",
@@ -153,7 +149,6 @@ export const createQuickExtension =
           examples: [
             "write a script that dedupes the attached wordlist; input at /path/x.txt",
             "clone anthropics/claude-code and tell me how its hook system works",
-            "build a pi extension that blocks writes to .env and install it globally",
           ],
         },
       ],
@@ -219,9 +214,8 @@ export const createQuickExtension =
       cliVerbs: [
         {
           name: "quick",
-          summary: "run quick-code | repo-explorer | pi-extension and block for its report",
-          usage:
-            'beckett quick <quick-code|repo-explorer|pi-extension> "<task>" [--channel <id>]  |  beckett quick list',
+          summary: "run quick-code | repo-explorer and block for its report",
+          usage: 'beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list',
           run: runQuick,
         },
       ],

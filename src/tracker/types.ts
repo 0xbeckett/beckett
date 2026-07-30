@@ -57,13 +57,6 @@ export type HarnessName = "claude" | "codex" | "pi" | (string & {});
 export interface HarnessSpec {
   harness: HarnessName;
   model?: string;
-  /**
-   * The harness's BACKEND for this stage — pi's `--provider` (#121). pi is provider-agnostic:
-   * `openai-codex` reaches gpt-5.6-* on the ChatGPT OAuth, `anthropic` reaches claude-* on the
-   * Claude subscription OAuth. Absent ⇒ the driver's configured default
-   * (`config.harness.pi.default_provider`). Harnesses with a single fixed backend (claude) ignore it.
-   */
-  provider?: string;
   effort?: "low" | "medium" | "high" | "xhigh";
   /**
    * v3.1 review gate (set on the `implement` cast). `self` = the implement worker self-verifies

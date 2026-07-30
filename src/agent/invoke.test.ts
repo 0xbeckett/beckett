@@ -5,8 +5,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config, Logger } from "../types.ts";
-import { laneConfig } from "../test/lane-stubs.ts";
-import { buildAgentCommand, createAgentRunner } from "./invoke.ts";
+import { createAgentRunner } from "./invoke.ts";
 import { builtinAgentDefs, SOCIAL_MEDIA_AGENT_ID } from "./builtins.ts";
 import type { AgentDefinition } from "./types.ts";
 
@@ -21,8 +20,8 @@ const quietLog = (() => {
 })();
 
 /** A stub harness that echoes its argv to stdout (so tests can assert the seat), or fails on FAILNOW. */
-function writeStubBin(dir: string, name: string): string {
-  const bin = join(dir, name);
+function writeStubBin(dir: string): string {
+  const bin = join(dir, "claude-stub.sh");
   writeFileSync(
     bin,
     `#!/bin/bash
@@ -34,7 +33,7 @@ printf '%s\\n' "$@"
   return bin;
 }
 
-function makeConfig(dir: string, lanePin?: "claude" | "pi"): Config {
+function makeConfig(dir: string): Config {
   return {
     paths: {
       beckett_dir: dir,
@@ -47,14 +46,7 @@ function makeConfig(dir: string, lanePin?: "claude" | "pi"): Config {
       projects: "projects",
     },
     harness: {
-      claude: { bin: writeStubBin(dir, "claude-stub.sh"), default_model: "fallback-model", permission_mode: "bypassPermissions", extra_flags: [] },
-      pi: {
-        bin: writeStubBin(dir, "pi-stub.sh"),
-        default_provider: "anthropic",
-        default_model: "pi-fallback-model",
-        thinking: "high",
-      },
-      lanes: laneConfig(lanePin ? { agent: { harness: lanePin } } : {}),
+      claude: { bin: writeStubBin(dir), default_model: "fallback-model", permission_mode: "bypassPermissions", extra_flags: [] },
     },
   } as unknown as Config;
 }
@@ -75,10 +67,10 @@ function makeDef(over: Partial<AgentDefinition> = {}): AgentDefinition {
   };
 }
 
-function setup(lanePin?: "claude" | "pi") {
+function setup() {
   const dir = mkdtempSync(join(tmpdir(), "agent-invoke-"));
   dirs.push(dir);
-  return createAgentRunner({ config: makeConfig(dir, lanePin), logger: quietLog });
+  return createAgentRunner({ config: makeConfig(dir), logger: quietLog });
 }
 
 test("runs the agent's seat: prompt, model, effort, and permission mode all reach the harness", async () => {
@@ -130,58 +122,11 @@ test("a non-zero harness exit is a clean error outcome, never a throw", async ()
   expect(out.error).toContain("code 5");
 });
 
-test("codex — the one seat this lane genuinely cannot honor — fails cleanly with the reason", async () => {
+test("an unsupported harness fails cleanly with a clear seam message", async () => {
   const runner = setup();
   const out = await runner.run(makeDef({ model: { harness: "codex", model: "m", effort: "" } }), "x");
   expect(out.state).toBe("error");
-  expect(out.error).toMatch(/--append-system-prompt/);
-  expect(out.error).toMatch(/Use claude or pi/);
-});
-
-// ── #125: the lane spawns whatever the seat names ─────────────────────────────────────────
-
-test("a pi seat spawns under pi and returns a completion through the same lane", async () => {
-  const runner = setup();
-  const out = await runner.run(
-    makeDef({ model: { harness: "pi", model: "claude-opus-5", effort: "high" }, tools: ["Read", "Bash"] }),
-    "author today's post",
-  );
-  // The refusal is gone: a pi seat is a real spawn, and the same lane hands back its output.
-  expect(out.state).toBe("done");
-  expect(out.output).toContain("--mode");
-  expect(out.output).toContain("--provider");
-  expect(out.output).toContain("anthropic");
-  expect(out.output).toContain("claude-opus-5");
-  expect(out.output).toContain("--thinking");
-  expect(out.output).toContain("SYSTEM-PROMPT-MARKER");
-  // pi names its built-ins in snake_case; the allowlist is translated, not passed through raw.
-  expect(out.output).toContain("--tools");
-  expect(out.output).toContain("read,bash");
-  // claude-only flags never reach pi.
-  expect(out.output).not.toContain("--permission-mode");
-  expect(out.output).not.toContain("--allowedTools");
-});
-
-test("an agent with no harness pin follows [harness.lanes.agent], which defaults to pi", () => {
-  const dir = mkdtempSync(join(tmpdir(), "agent-invoke-"));
-  dirs.push(dir);
-  const unpinned = makeDef({ model: { model: "seat-model", effort: "" } });
-
-  const onPi = buildAgentCommand(makeConfig(dir), unpinned, "x");
-  expect(onPi.seat.harness).toBe("pi");
-  expect(onPi.seat.model).toBe("seat-model"); // the seat's model still wins over the lane's
-
-  // …and the whole lane pins back to claude from config alone, no definition edit.
-  const onClaude = buildAgentCommand(makeConfig(dir, "claude"), unpinned, "x");
-  expect(onClaude.seat.harness).toBe("claude");
-  expect(onClaude.args).toContain("--permission-mode");
-});
-
-test("an explicit seat outranks the lane pin — an agent that names a harness gets it", () => {
-  const dir = mkdtempSync(join(tmpdir(), "agent-invoke-"));
-  dirs.push(dir);
-  const pinnedToPi = makeDef({ model: { harness: "pi", model: "m", effort: "" } });
-  expect(buildAgentCommand(makeConfig(dir, "claude"), pinnedToPi, "x").seat.harness).toBe("pi");
+  expect(out.error).toMatch(/not spawnable/);
 });
 
 test("empty input is rejected before any spawn", async () => {
@@ -201,8 +146,4 @@ test("the built-in social-media agent is pure data and runs through the same gen
   // reach the harness, no bespoke code path.
   expect(out.output).toContain("@beckposting");
   expect(out.output).toContain("--append-system-prompt");
-  // It carries no harness pin, so it rides the lane: pi, on a live Claude model id.
-  expect(out.output).toContain("--mode");
-  expect(out.output).toContain("claude-sonnet-5");
-  expect(out.output).not.toContain("claude-sonnet-4-5");
 });

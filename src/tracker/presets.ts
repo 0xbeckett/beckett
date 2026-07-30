@@ -35,14 +35,6 @@ export type PresetMap = Record<string, Casting>;
  * (`docs/design/cast-presets.md`). This is a SEED, not a compiled-in table: once the file exists,
  * it is the source of truth and these defaults are never consulted again. Users edit / add / delete
  * freely; deleting the file and re-running re-seeds it.
- *
- * ⚠ STALE AGAINST THE DOCTRINE ROSTER (#85.1/#85.4), deliberately left alone here. Every
- * `harness: "claude"` row below is the PRE-swap shape: pi is the single harness now and Opus /
- * Fable / Sonnet are seats on its `anthropic` provider (`{"harness":"pi","provider":"anthropic",
- * "model":"claude-opus-5"}` — see `src/concierge/concierge.md` → *The roster*). These casts are
- * still VALID and still run (the claude driver stays registered), so this is a routing-doctrine
- * mismatch, not a bug; #124 was doctrine/docs-only and did not change behaviour. Reseating them
- * needs its own ticket, and note the file already on disk wins over any edit here.
  */
 export const SEED_PRESETS: PresetMap = {
   // INT's full three-stage chain: independent design, cheap implementation, fresh review.

@@ -11,9 +11,6 @@ import {
   parseCastJson,
   projectSlug,
   targetBranch,
-  validateCasting,
-  BLOCKED_MODELS,
-  OPENAI_CODEX_PROVIDER,
   CAST_FENCE,
   CRITERIA_HEADING,
   TARGET_BRANCH_FENCE,
@@ -156,53 +153,6 @@ describe("cast degradation (never throws on bad input)", () => {
     const out = serializeCast({}, ["only criteria"], "body");
     expect(out).not.toContain(CAST_FENCE);
     expect(out).toContain(CRITERIA_HEADING);
-  });
-});
-
-// #121: a stage may name pi's BACKEND, so a claude model can run inside pi. The field has to
-// survive the description round-trip (the tracker is the only store) and the tier blocklist has to
-// stop being global — SOL/bare gpt-5.6 are a ChatGPT-account fact, not an anthropic one.
-describe("per-stage provider (#121)", () => {
-  test("provider round-trips through serialize → parse", () => {
-    const casting: Casting = {
-      implement: { harness: "pi", provider: "anthropic", model: "claude-opus-5", effort: "high" },
-      review: { harness: "pi", provider: "anthropic", model: "claude-fable-5" },
-    };
-    expect(parseCast(serializeCast(casting, [], "body")).casting).toEqual(casting);
-  });
-
-  test("parseCastJson accepts a provider and rejects an empty one", () => {
-    expect(parseCastJson('{"implement":{"harness":"pi","provider":"anthropic"}}')).toEqual({
-      implement: { harness: "pi", provider: "anthropic" },
-    });
-    // an empty provider is a malformed block, not a routing decision — degrade to {}
-    expect(parseCastJson('{"implement":{"harness":"pi","provider":""}}')).toEqual({});
-    expect(parseCastJson('{"implement":{"harness":"pi","provider":7}}')).toEqual({});
-  });
-
-  test("validateCasting accepts the anthropic pi cast the new defaults use", () => {
-    expect(
-      validateCasting({
-        implement: { harness: "pi", provider: "anthropic", model: "claude-opus-5" },
-        review: { harness: "pi", provider: "anthropic", model: "claude-fable-5", effort: "high" },
-      }),
-    ).toEqual([]);
-  });
-
-  test("the tier blocklist still fires on the openai-codex account", () => {
-    for (const model of [...BLOCKED_MODELS, "SOL", "GPT-5.6"]) {
-      // no provider ⇒ judged against the default backend, exactly as before #121
-      expect(validateCasting({ implement: { harness: "pi", model } })).toHaveLength(1);
-      expect(
-        validateCasting({ implement: { harness: "pi", provider: OPENAI_CODEX_PROVIDER, model } }),
-      ).toHaveLength(1);
-    }
-  });
-
-  test("the tier blocklist does not reach another provider's catalog", () => {
-    for (const model of [...BLOCKED_MODELS]) {
-      expect(validateCasting({ implement: { harness: "pi", provider: "anthropic", model } })).toEqual([]);
-    }
   });
 });
 

@@ -29,7 +29,7 @@ person honestly what's going on, and using your levers when a different path is 
 |---|---|---|
 | do nothing | the automation is mid-ladder (nudge/retry already posted) and the approach is sound | — |
 | steer | the worker is working on the wrong thing, or you know something it doesn't | `beckett ticket comment <id> "<guidance>"` — a comment on a staffed ticket is delivered to the live worker as a nudge |
-| restaff | the worker is wedged/looping and a fresh start (or a different harness) will do better | `beckett ticket restaff <id> [--harness claude\|codex\|pi]` — aborts (WIP committed), spawns fresh. `pi` is the fleet's harness; naming `claude` here is the same escape hatch the dispatcher's own substitution uses, not a routing choice |
+| restaff | the worker is wedged/looping and a fresh start (or a different harness) will do better | `beckett ticket restaff <id> [--harness claude\|codex\|pi]` — aborts (WIP committed), spawns fresh |
 | park | the ticket needs a human decision before more tokens are spent | `beckett ticket state <id> todo` + a comment saying why |
 | cancel | the work is genuinely not wanted | `beckett ticket state <id> cancelled` |
 

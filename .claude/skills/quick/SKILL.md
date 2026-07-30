@@ -17,16 +17,6 @@ dispatch a quick agent and relay its report.
 |---|---|---|
 | `quick-code` | a small coding errand ("script that converts this CSV to JSON", "why does this snippet throw") | the answer + absolute paths of any files it made (in a scratch dir) |
 | `repo-explorer` | a repo + a question ("what does owner/name do, how do I run it") | a ~250-word brief answering the question, with file paths |
-| `pi-extension` | a gap in pi ("pi can't X — build an extension that does") | the extension's name, its installed path, what it registers, and proof it loaded |
-
-**Every pi-extension ask goes here, not to a ticket.** pi's extension ecosystem is errand-shaped:
-extensions are self-contained TypeScript modules that hook the session lifecycle and register
-tools, and they package over npm — so when a gap in the harness turns up (a tool pi lacks, a hook
-you want, a permission gate), dispatch this agent instead of filing. It reads pi's live extension
-docs first, scaffolds and typechecks in its scratch dir, installs into `~/.pi/agent/extensions/`,
-and verifies the thing actually loads in a real pi session — a failed build or load comes back as a
-failure, and a capability the extension API can't reach comes back as a one-line no. Only a change
-to pi's own source, or extension work entangled with a project repo, is still a ticket.
 
 `beckett quick list` prints this menu. **Browser / computer-use work is NOT in this lane** — it
 runs in the dedicated background browser agent (`beckett browser "<task>"`, see the `browser`
@@ -37,7 +27,6 @@ skill), which can pause for a human answer mid-run and resume; quick agents cann
 ```
 beckett quick quick-code "write a script that dedupes the attached wordlist; input at /path/x.txt" --channel <id>
 beckett quick repo-explorer "clone anthropics/claude-code and tell me how its hook system works" --channel <id>
-beckett quick pi-extension "build a pi extension that blocks writes to .env and install it globally" --channel <id>
 ```
 
 - **Always pass `--channel <id>`** (from the turn stamp). If the run outlives the sync

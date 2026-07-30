@@ -112,11 +112,7 @@ export function builtinAgentDefs(): Array<Omit<AgentDefinition, "createdAt" | "u
       id: SOCIAL_MEDIA_AGENT_ID,
       description: "Runs X (@beckposting): composes in-voice posts and drives the background browser to publish them.",
       systemPrompt: SOCIAL_MEDIA_SYSTEM_PROMPT,
-      // No `harness` pin: this agent follows the lane default (`[harness.lanes.agent]`, pi since
-      // #125). The model is a Claude id, which under pi means the lane's `provider = "anthropic"`
-      // routing — the same seat the ticket fleet uses. (It read `claude-sonnet-4-5` until #125:
-      // a model id that has not existed since the Claude 5 family shipped.)
-      model: { model: "claude-sonnet-5", effort: "medium" },
+      model: { harness: "claude", model: "claude-sonnet-4-5", effort: "medium" },
       // `browser` marks the seam: this agent's output feeds the background browser lane, and future
       // behaviors (replies, follows, other platforms) are prompt/skill edits, not new code.
       skills: ["browser"],

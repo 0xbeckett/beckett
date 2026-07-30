@@ -415,25 +415,21 @@ describe("spawn on state change", () => {
     expect(spawnCalls[0]).toMatchObject({ harness: { harness: "claude", effort: "low" } });
   });
 
-  test("implement defaults to pi + Opus 5 on the anthropic provider when uncast (#121)", async () => {
+  test("implement defaults to claude when uncast", async () => {
     const { d } = newDispatcher();
     await d.handle(stateChanged(makeTicket(), "in_progress"));
     await tick();
-    expect(spawnCalls[0]).toMatchObject({
-      stage: "implement",
-      harness: { harness: "pi", provider: "anthropic", model: "claude-opus-5" },
-    });
+    expect(spawnCalls[0]!.harness.harness).toBe("claude");
   });
 
   test("in_review spawns a reviewer with the configured model at scaled effort (issue #27)", async () => {
     const { d } = newDispatcher();
     await d.handle(stateChanged(makeTicket({ state: "in_review" }), "in_review"));
     await tick();
-    // Model from config.models.reviewer, routed through pi's anthropic provider (#121); effort
-    // defaults to "high" (never the xhigh fall-through).
+    // Model from config.models.reviewer; effort defaults to "high" (never the xhigh fall-through).
     expect(spawnCalls[0]).toMatchObject({
       stage: "review",
-      harness: { harness: "pi", provider: "anthropic", model: "claude-opus-5", effort: "high" },
+      harness: { harness: "claude", model: "claude-opus-5", effort: "high" },
     });
   });
 
@@ -1921,8 +1917,7 @@ describe("crash recovery", () => {
       });
       await after.recoverFromCrash();
 
-      // The un-cast implement worker runs on pi since #121, so the orphan swept by binary is pi's.
-      expect(swept).toEqual([{ pid: 1001, bin: "pi" }]);
+      expect(swept).toEqual([{ pid: 1001, bin: "claude" }]);
       // Ghost WIP committed in the recorded repo root with the restart marker.
       expect(commitCalls.some((c) => c.message.includes("restart WIP"))).toBe(true);
       // The on-disk ledger is cleared once recovery consumed it.
@@ -2330,14 +2325,13 @@ describe("preflight + failure taxonomy", () => {
     await d.handle(stateChanged(ticket, "in_progress"));
     await tick();
 
-    created[0].finish("error", "pi said: not logged in", null, false, "auth");
+    created[0].finish("error", "claude said: not logged in", null, false, "auth");
     await tick();
 
     expect(client.setStateCalls.at(-1)).toMatchObject({ state: "todo" });
     const park = client.comments.at(-1)!;
     expect(park.body).toContain("login looks expired");
-    // The un-cast implement worker is pi since #121, so the re-login instruction names pi.
-    expect(park.body).toContain("run `pi` once as the beckett user to sign in");
+    expect(park.body).toContain("sign in by running `claude`");
     expect(spawnCalls).toHaveLength(1); // no doomed respawn
   });
 
@@ -2352,10 +2346,8 @@ describe("preflight + failure taxonomy", () => {
     await tick();
 
     expect(spawnCalls).toHaveLength(2);
-    // The dead worker is the #121 default (pi); the fallback order is ["claude", "pi", "codex"],
-    // so the first healthy candidate that isn't the failed cast is claude.
-    expect(spawnCalls[1]!.harness.harness).toBe("claude");
-    const note = client.comments.find((c) => c.body.includes("continuing this ticket on **claude**"));
+    expect(spawnCalls[1]!.harness.harness).toBe("pi"); // next in the default fallback order
+    const note = client.comments.find((c) => c.body.includes("continuing this ticket on **pi**"));
     expect(note).toBeDefined();
   });
 

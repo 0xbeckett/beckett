@@ -5,9 +5,6 @@
 **Date:** 2026-07-09
 **Status:** Proposal. No code in this ticket. This doc dogfoods the very flow it describes — it is
 the "Design" artifact for an intensive task; Jason is the human gate.
-**Casts superseded 2026-07-29 (#85.1/#85.4):** the `"harness":"claude"` casts below predate pi
-becoming the single harness; the equivalent seats today are `"harness":"pi"` +
-`"provider":"anthropic"` + the same model id. See the roster in `src/concierge/concierge.md`.
 
 ---
 

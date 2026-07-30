@@ -7,8 +7,8 @@
  *   <human prose body…>
  *
  *   ```beckett-cast
- *   { "implement": {"harness":"pi","effort":"medium"},
- *     "review": {"harness":"pi","provider":"anthropic","model":"claude-fable-5"} }
+ *   { "implement": {"harness":"codex"},
+ *     "review": {"harness":"claude","model":"claude-opus-5"} }
  *   ```
  *
  *   ## Acceptance criteria
@@ -68,11 +68,6 @@ const HarnessSpecSchema: z.ZodType<HarnessSpec> = z.object({
     message: `unknown harness — must be one of: ${availableHarnesses().join(", ")}`,
   }),
   model: z.string().min(1).optional(),
-  // The harness BACKEND for this stage (#121) — pi's `--provider`. Kept an open string for the
-  // same reason `harness` is registry-validated rather than an enum: pi's provider catalog is
-  // pi's to grow (`anthropic`, `openai-codex`, …), and pinning an enum here would mean a Beckett
-  // release every time it does. Absent ⇒ `config.harness.pi.default_provider`.
-  provider: z.string().min(1).optional(),
   effort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
   reviewTier: z.enum(["self", "fresh"]).optional(),
 });
@@ -104,22 +99,11 @@ export function parseCastJson(raw: string): Casting {
 export const BLOCKED_MODELS: ReadonlySet<string> = new Set(["sol", "gpt-5.6"]);
 
 /**
- * The pi provider the {@link BLOCKED_MODELS} tier rule is ABOUT: the ChatGPT-account OAuth
- * backend. It is also `config.harness.pi.default_provider`, so a stage that names no provider is
- * judged against it (#121) — the rule keeps its full pre-provider reach. A stage routed at any
- * OTHER provider (`anthropic`) is a different account with a different catalog, so the ChatGPT
- * tier blocklist simply does not apply there.
- */
-export const OPENAI_CODEX_PROVIDER = "openai-codex";
-
-/**
  * Validate a {@link Casting} against the roster rules, returning a list of human-readable errors
  * (`[]` ⇒ valid, fileable). The SINGLE SOURCE OF TRUTH for "is this cast fileable": it reuses the
  * same {@link CastingSchema} the reader trusts for SHAPE (harness ∈ the driver registry, effort ∈
- * low|medium|high|xhigh, `model`/`provider` non-empty strings) and layers on the doctrine BLOCKLIST
- * (SOL / bare `gpt-5.6` are not on our ChatGPT tier — so the check is scoped to the
- * {@link OPENAI_CODEX_PROVIDER} stages that actually run on that account). Callers that must not
- * silently file a broken cast (the
+ * low|medium|high|xhigh, `model` a non-empty string) and layers on the doctrine BLOCKLIST (SOL /
+ * bare `gpt-5.6` are not on our tier). Callers that must not silently file a broken cast (the
  * preset loader, the CLI create/plan paths) run this and refuse when it returns errors — unlike
  * {@link parseCastJson}, which is deliberately tolerant and degrades a bad block to `{}`.
  */
@@ -135,10 +119,7 @@ export function validateCasting(casting: unknown): string[] {
   for (const [stage, spec] of Object.entries(parsed.data)) {
     if (!spec) continue;
     const model = spec.model?.trim().toLowerCase();
-    // The tier blocklist is an openai-codex-ACCOUNT fact, not a global one (#121): judge a stage
-    // against the provider it will actually run on, defaulting to openai-codex when it names none.
-    const provider = spec.provider?.trim().toLowerCase() || OPENAI_CODEX_PROVIDER;
-    if (provider === OPENAI_CODEX_PROVIDER && model && BLOCKED_MODELS.has(model)) {
+    if (model && BLOCKED_MODELS.has(model)) {
       errors.push(
         `${stage}: model "${spec.model}" is hard-blocked on our tier (not supported with a ` +
           `ChatGPT account) — cast gpt-5.6-terra or gpt-5.6-luna instead`,

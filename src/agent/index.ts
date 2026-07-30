@@ -11,7 +11,7 @@ export { AgentStore, type AgentStoreOptions } from "./store.ts";
 export { LiveAgentRegistry, type LiveAgentRegistryOptions } from "./registry.ts";
 export {
   createAgentRunner,
-  buildAgentCommand,
+  buildAgentArgs,
   AGENT_RUN_TIMEOUT_SECS,
   type AgentRunner,
   type AgentRunOutcome,

@@ -2,14 +2,6 @@
 
 *This file is the PR body for the #93 branch — paste it verbatim into `beckett gh pr create --body`.*
 
-> **Superseded in part (2026-07-29, #85.1/#85.4).** This is a historical record of the #93 *trim*,
-> not a live statement of casting policy. Every row below about the two-harness roster — `harness`
-> = `pi` or `claude`, Opus as "the claude implement default", Sonnet as the uncast reviewer, Fable
-> as a confirm-first review cast, "anything visual is `claude`, never `pi`" — was rewritten when pi
-> became the single harness and provider+model became the seat. Read the roster, quick table and
-> effort ladder in `src/concierge/concierge.md` for what is true now; the rule-by-rule *mapping*
-> below still documents where #93 moved each rule.
-
 `src/concierge/concierge.md` is prepended to every turn of every channel session. This pass cut the
 explanation and kept the rules: **11,453 → 6,633 words (‑42.1%)**.
 
@@ -337,7 +329,7 @@ clause that carries it.
 |---|---|
 | size every message; spend what it deserves and no more | ¶1 |
 | answer inline for trivial/conversational asks, status questions (read it), anything faster to say than file | ¶ "Answer inline" |
-| quick agent for errands: `quick-code`, `repo-explorer`, `pi-extension` (every pi-extension ask, never a ticket), `beckett quick <agent> "<self-contained task>" --channel <id>` | ¶ "Dispatch a quick agent" |
+| quick agent for errands: `quick-code`, `repo-explorer`, `beckett quick <agent> "<self-contained task>" --channel <id>` | ¶ "Dispatch a quick agent" |
 | `quick` skill has the rules; ack first; put everything in the task text; relay with a second `beckett discord reply` (plain turn text won't post after a CLI ack); detached run → end the turn | same ¶ |
 | browser agent for ANY browser/computer-use work; `beckett browser "<self-contained task>" [--creds <jingle-entry>] [--context "<background>"]` | ¶ "Dispatch the browser agent" |
 | `--context` when the conversation holds shaping facts | browser bullet 1 |

@@ -1,28 +1,16 @@
 #!/usr/bin/env bash
-# Verify the concierge doctrine against a baseline: word budget, headings and their order,
+# Verify the compressed concierge doctrine against its pre-trim baseline (#93).
+#
+# Checks the invariants the trim had to hold: word budget, headings and their order,
 # fenced code blocks, the model roster table, and every tracked named identifier.
 #
 #   bash scripts/ops/verify-doctrine-trim.sh [baseline-ref]
 #
-# Written for the #93 trim (compress the prose, lose zero rules) against the pre-trim commit
-# 83b138f. REBASELINED at #124 onto f9a0cd3, the commit that rewrote the roster for a pi-default
-# fleet: that rewrite deliberately changed the roster table, both `--cast` code blocks, and the
-# cast-shape line, so byte-identity with the pre-trim file is no longer the invariant to hold.
-# Everything the script checks still is — it now guards FORWARD drift from the post-swap doctrine.
-#
-# `doctrine-identifiers.txt` moved with it (it is the "zero rules lost" half of the gate, so it is
-# updated, never truncated). Retargeted at #124: `"harness":"claude"` → `"provider":"anthropic"`
-# plus the gpt-5.6/openai-codex seat names; `--effort` (the claude CLI flag) dropped, since effort
-# now reaches the worker as pi's `--thinking` (already tracked, and still is); and the old
-# three-key cast shape → the four-key one carrying `provider`. Two entries were already
-# stale before #124 because later tickets edited those sections: `#N - Task title` (the retired
-# *Task workspaces* section) is gone, and `beckett task create --channel <id>` narrowed to
-# `beckett task create`; `type: feedback` became `type: calibration` when the calibration memories
-# landed.
+# baseline-ref defaults to the pre-trim commit; any git ref works.
 set -u
 cd "$(git rev-parse --show-toplevel)"
 
-BASE_REF="${1:-f9a0cd3}"
+BASE_REF="${1:-83b138f}"
 NEW=src/concierge/concierge.md
 IDS=scripts/ops/doctrine-identifiers.txt
 TMP="$(mktemp -d)"

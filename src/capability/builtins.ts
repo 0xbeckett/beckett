@@ -23,8 +23,7 @@
 
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
-import type { Config, LaneName } from "../types.ts";
-import { LANE_DEFAULT_HARNESS, LANE_NAMES } from "../drivers/lane.ts";
+import type { Config } from "../types.ts";
 import { ActionClass, CapabilityRegistry, type Capability } from "./index.ts";
 
 // =======================================================================================
@@ -71,49 +70,6 @@ const CLAUDE_DRIVER_OWNED_FLAGS = new Set([
   "--json-schema",
   "--max-turns",
 ]);
-
-/**
- * One non-worker agent lane's harness pin (#125). The quick, live-agent, browser and dream lanes
- * all spawn through `src/drivers/lane.ts`, so moving any ONE of them between harnesses is a config
- * edit rather than a code change. Per-lane rather than fleet-wide on purpose: these lanes fail in
- * different ways (a browser run without its tool is useless; a dream run just costs tokens), so
- * the operator wants a lever, not a rollback.
- *
- * - `harness` — "pi" or "claude". `codex` is not offered: `codex exec` has neither
- *   `--append-system-prompt` nor a tool allow/denylist, so it cannot honor a lane seat.
- * - `provider` — pi's `--provider` for this lane. "" ⇒ `harness.pi.default_provider`. This is how
- *   a lane reaches the Claude models THROUGH pi (`provider = "anthropic"`, #121).
- * - `model` — "" ⇒ the resolved harness's own default: `harness.pi.default_model` under pi, or
- *   the lane's historical model key (`quick.model`, `dream.model`, the agent's seat) under claude,
- *   so pinning a lane back to claude restores exactly its pre-#125 behavior.
- */
-function laneSchema(harness: "claude" | "pi") {
-  return z
-    .object({
-      harness: z.enum(["claude", "pi"]).default(harness),
-      provider: z.string().default(""),
-      model: z.string().default(""),
-    })
-    .strict()
-    .default({});
-}
-
-/**
- * The lane table. Per-lane defaults come from {@link LANE_DEFAULT_HARNESS} so the schema and the
- * resolver read the SAME table: everything is pi — the fleet harness since #121 — except the
- * browser lane, which is pinned to claude because pi has no MCP client of any kind and betterwright
- * reaches the model as an MCP tool. That pin is a labelled, temporary gap with a named fix (a pi
- * extension registering the tool via `pi.registerTool()`), not a permanent carve-out: see
- * `LANE_GAPS` in `src/drivers/lane.ts` and the header of `src/browser/agent.ts`.
- */
-const HarnessLanesSchema = z
-  .object(
-    Object.fromEntries(LANE_NAMES.map((lane) => [lane, laneSchema(LANE_DEFAULT_HARNESS[lane])])) as {
-      [K in LaneName]: ReturnType<typeof laneSchema>;
-    },
-  )
-  .strict()
-  .default({});
 
 const HarnessConfigSchema = z
   .object({
@@ -197,7 +153,6 @@ const HarnessConfigSchema = z
         thinking: z.enum(["low", "medium", "high", "xhigh"]).default("high"),
       })
       .default({}),
-    lanes: HarnessLanesSchema,
   })
   .default({});
 
@@ -413,11 +368,10 @@ export const configFragments = {
     .default({}),
   models: z
     .object({
-      // Default reviewer model (issue #27, reseated in #121): Fable 5 reads a diff against
-      // criteria extremely well at a fraction of Opus cost/latency. It runs on the review stage's
-      // fixed pi + `anthropic` routing, so this key names a CLAUDE model id. Opus reviews remain
-      // one explicit cast away (`review: {model: "claude-opus-5", effort: "xhigh"}`).
-      reviewer: z.string().min(1).default("claude-fable-5"),
+      // Default reviewer model (issue #27): Sonnet reads a diff against criteria extremely well
+      // at a fraction of Opus cost/latency. Opus reviews remain one explicit cast away
+      // (`review: {model: "claude-opus-5", effort: "xhigh"}`) for correctness-critical work.
+      reviewer: z.string().min(1).default("claude-sonnet-5"),
     })
     .default({}),
   harness: HarnessConfigSchema,

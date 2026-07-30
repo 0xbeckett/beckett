@@ -1742,7 +1742,7 @@ max_review_infra_retries = 1
 max_harness_substitutions = 6
 
 [models]
-reviewer = "claude-fable-5"
+reviewer = "claude-sonnet-5"
 
 [harness]
 fallback_order = ["claude", "pi", "codex"]
@@ -1769,31 +1769,6 @@ bin = "pi"
 default_provider = "openai-codex"
 default_model = "gpt-5.6-terra"
 thinking = "high"
-
-[harness.lanes.quick]
-harness = "pi"
-provider = ""
-model = ""
-
-[harness.lanes.agent]
-harness = "pi"
-provider = ""
-model = ""
-
-[harness.lanes.browser]
-harness = "claude"
-provider = ""
-model = ""
-
-[harness.lanes.dream]
-harness = "pi"
-provider = ""
-model = ""
-
-[harness.lanes.dream_spike]
-harness = "pi"
-provider = ""
-model = ""
 
 [paths]
 home = "/home/beckett"
@@ -1981,7 +1956,7 @@ exports[`cli: quick: no agent/task prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett quick <quick-code|repo-explorer|pi-extension> "<task>" [--channel <id>]  |  beckett quick list
+"error: usage: beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list
 "
 ,
   "stdout": "",
@@ -1992,7 +1967,7 @@ exports[`cli: quick: agent without a task prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett quick <quick-code|repo-explorer|pi-extension> "<task>" [--channel <id>]  |  beckett quick list
+"error: usage: beckett quick <quick-code|repo-explorer> "<task>" [--channel <id>]  |  beckett quick list
 "
 ,
   "stdout": "",
