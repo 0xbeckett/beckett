@@ -4,7 +4,7 @@
  * so the full state machine — spawn-on-state, advance-on-finish, steering, cancel, review
  * pass/fail, and the concurrency cap — is exercised deterministically with no real workers.
  */
-import { describe, expect, test, beforeEach, mock } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

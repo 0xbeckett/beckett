@@ -198,6 +198,24 @@ describe("doctor — the issue-#30 regression checklist", () => {
     expect(report.ok).toBeFalse();
   });
 
+  test("an active pi rate-limit cooldown surfaces as a WARN with its expiry, not a bare FAIL (#133)", async () => {
+    const until = Date.parse("2026-07-29T18:00:00.000Z");
+    const report = await runDoctor(
+      healthyDeps({
+        preflight: async (h) =>
+          h === "pi"
+            ? { ok: false, cooledUntil: until, problems: ["pi is on a rate-limit cooldown"] }
+            : { ok: true, problems: [] },
+      }),
+    );
+    const pi = byName(report.checks, "preflight: pi");
+    expect(pi.level).toBe("warn");
+    expect(pi.detail).toContain("rate-limit cooldown until");
+    expect(pi.detail).toContain(new Date(until).toISOString());
+    // A self-healing cooldown is not a broken box — it must NOT flip the report red.
+    expect(report.ok).toBeTrue();
+  });
+
   test("a leaked worker process (orphaned in ~/Projects) is a FAIL", async () => {
     const report = await runDoctor(
       healthyDeps({
