@@ -411,6 +411,74 @@ export function filingTurnBudgetExceeded(durationMs: number, budgetMs: number = 
   return durationMs > budgetMs;
 }
 
+/**
+ * A same-user same-channel message can supersede an in-flight turn ONLY when it plausibly AMENDS
+ * the ask (issue #138). The in-flight interrupt (issue #117) originally cancelled on "same user,
+ * same channel" alone, on the assumption that the follow-up corrects the question. That assumption
+ * breaks under banter: "wat da fuk", "lmaooooo", "fish" restate nothing, yet each one still killed
+ * a turn mid-answer — three real questions went unanswered for fifteen minutes while the room
+ * fired short chatter into the channel (the incident this predicate exists to close).
+ *
+ * SIGNAL — length-or-question-shape, and nothing heavier. The ticket lists three candidate signals
+ * (mentions the bot / long-or-question-shaped / arrives in the turn's first seconds); this picks
+ * the second because it is the only one that discriminates in EVERY directed context. "Mentions
+ * the bot" is useless in a workspace thread (where every message is directed without an @mention)
+ * and always-true in a normal channel (an un-mentioned message is ambient and never reaches this
+ * path at all), so it cannot tell banter from a correction. Arrival timing cannot either — the
+ * incident's banter arrived in exactly the first-seconds window a correction would. What actually
+ * separates them is shape: a genuine correction restates or redirects the ask, so it is either
+ * question-shaped or long enough to carry content; throwaway interjections are short and flat.
+ *
+ * Deliberately dumb and deterministic — NO model call on this hot path. A short real correction
+ * ("no, python") is the accepted miss: it fails the gate, so it does not cancel, and simply runs
+ * as its own turn right after (answered a beat later, never dropped). Erring toward "let the live
+ * answer finish" is the whole point — a stray extra turn is cheap; a killed answer is the bug.
+ */
+export function messagePlausiblyAmends(text: string): boolean {
+  const t = text.trim();
+  return t.includes("?") || t.length >= AMEND_MIN_CHARS;
+}
+
+/**
+ * Length floor for {@link messagePlausiblyAmends}. Sized just above the room's banter ("wat da
+ * fuk" = 10, "lmaooooo" = 8, "fish" = 4) and below a real redirect ("do it the other way" = 20).
+ * A blunt boundary by design; see the predicate's comment for why the misses are acceptable.
+ */
+const AMEND_MIN_CHARS = 16;
+
+/**
+ * Posted when an in-flight turn is cancelled mid-answer and the person who was waiting is owed a
+ * word (issue #138). The #117 cancel resolved as a SILENT pass so a correction wouldn't produce
+ * two answers — but a silent drop with no follow-up is exactly how the room read fifteen minutes
+ * of muteness. One short line, in voice, is the floor: the earlier take is gone, the latest is
+ * what I'm on.
+ */
+const SUPERSEDED_TURN_NOTICE = "Scrapping my half-written reply to that — going with your latest.";
+
+/**
+ * Posted to a waiting person when a directed turn comes back with no valid delivery object (issue
+ * #138). A malformed terminal output is a BUG, not a deliberate pass; swallowing it silently is
+ * how a real @mention got answered by nothing. The raw output is logged (truncated) for the fix;
+ * the person gets this rather than dead air.
+ */
+const MALFORMED_OUTPUT_NOTICE = "Something came back garbled on my end — ask me that again in a sec.";
+
+/** Render whatever the CLI put in `structured_output` as a loggable string (object → JSON). */
+function rawStructuredOutput(value: unknown): string {
+  if (value === undefined) return "<absent>";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** Cap a diagnostic string so a malformed blob can't flood the log (marks the elision). */
+function truncateForLog(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}…[+${text.length - max} chars]`;
+}
+
 // There is deliberately NO timed "still working" ack either (it lived here until v5.10.x):
 // a canned progress bubble is exactly the schedule-narration the doctrine bans the model from
 // writing, so the daemon doesn't get to write it instead. The typing indicator is the whole
@@ -853,7 +921,12 @@ export class ConciergeSession {
     // `--resume`s the same conversation. recycleChild nulls this.child first, so the ensuing
     // onExit is treated as a superseded-child exit — it neither relaunches nor counts a crash.
     this.recycleChild(reason);
-    // Silent pass, NOT reject: the superseded mention's handler must post nothing. turnSucceeded
+    // Tag the killed turn's meta so its owning onMessage knows the drop was a supersede (not a
+    // deliberate model pass) and can post one short "dropped that" line — issue #138, the fix for
+    // a cancel that left the room silent. currentMeta IS the same MentionClaim object onMessage
+    // still holds, so the flag reaches it after the ask() promise below resolves.
+    if (isMentionClaim(this.currentMeta)) this.currentMeta.superseded = true;
+    // Silent pass on the OUTPUT, NOT reject: no stale half-answer, no error bubble. turnSucceeded
     // stays false (set false at runTurn head, only flipped true in onResult), so the interrupted
     // turn's context watermark is left uncommitted for the amending turn to advance.
     p.resolve({ decision: "pass", message: null });
@@ -1434,14 +1507,21 @@ export class ConciergeSession {
     }
     this.pending = null;
     if (!output) {
-      // Never fall back to assistant text here. It is allowed to contain deliberation, and a bad
-      // schema result must mean silence rather than an accidental Discord post. Reaching here means
-      // init WAS seen — a live session whose model declined to emit a delivery decision, so a
-      // deliberate pass (silence) is the correct, safe behaviour.
-      this.log.warn("concierge result missing valid Discord delivery output; suppressing", {
+      // Never fall back to assistant text here — it is allowed to contain deliberation, and a bad
+      // schema result must never become an accidental Discord post. Reaching here means init WAS
+      // seen: a live turn that finished with a malformed/absent delivery object. That is a BUG, not
+      // a deliberate "model chose silence" pass (a real pass arrives as {decision:"pass"} and parses
+      // fine above), so log the RAW output truncated for the fix instead of swallowing it (#138).
+      this.log.warn("concierge result missing valid Discord delivery output", {
         assistantTextBlocks: p.parts.length,
+        rawOutput: truncateForLog(rawStructuredOutput(result.structured_output), 500),
       });
-      p.resolve({ decision: "pass", message: null });
+      // A waiting person is owed a word, not dead air. Tell a DIRECTED (non-ambient) turn's author
+      // the turn dropped; an ambient interjection or a system turn stays silent (nobody asked, and
+      // an unprompted "that broke" would be noise). Still never the assistant text — the notice is
+      // a fixed string.
+      const directed = isMentionClaim(this.currentMeta) && this.currentMeta.ambient !== true;
+      p.resolve(directed ? { decision: "send", message: MALFORMED_OUTPUT_NOTICE } : { decision: "pass", message: null });
       return;
     }
     if (isMentionClaim(this.currentMeta)) this.currentMeta.turnSucceeded = true;
@@ -1790,6 +1870,13 @@ interface MentionClaim {
   turnSucceeded?: boolean;
   /** True for an ambient (un-addressed) turn: a CLI reply posts plainly, never as a native reply. */
   ambient?: boolean;
+  /**
+   * Set by {@link ConciergeSession.cancelLiveTurn} when THIS turn was killed mid-answer by a
+   * superseding message (issue #138). The turn still resolves as a silent pass (no stale reply),
+   * but the flag lets its owning `onMessage` post one short "dropped that" line instead of leaving
+   * the room with nothing — the fix for the silent-mute incident.
+   */
+  superseded?: boolean;
   /**
    * OPS-101 hold-and-cancel backstop (OPS-99 §5.3): set when the concierge runs
    * `beckett discord decline` on an AMBIENT turn — "on reflection this wasn't for me." The turn
@@ -4779,7 +4866,17 @@ export class Concierge {
     // is how a coworker multitasks: finish the sentence, then answer. No-op when the channel has
     // no live turn. (activeMentions was overwritten above; production reply-correlation is
     // token-exact per session, so a surviving live turn still claims its own replies.)
-    if (this.pool.cancelLiveTurn(m.channelId, "superseded by same-channel message", { byUserId: m.userId })) {
+    // The amend gate (issue #138): only a message that plausibly amends the ask kills the live
+    // answer. Banter from the same author ("lmao", "fish") no longer cancels — it falls through to
+    // the inject/queue path below, so the real answer in flight survives. An ambient turn is
+    // exempt (cancelLiveTurn always yields it to a person); the predicate only guards the directed
+    // same-author case where killing a genuine answer-in-progress was the incident.
+    if (
+      this.pool.cancelLiveTurn(m.channelId, "superseded by same-channel message", {
+        byUserId: m.userId,
+        amends: messagePlausiblyAmends(turnContent),
+      })
+    ) {
       this.log.info("cancelled stale in-flight turn superseded by same-channel message", {
         channelId: m.channelId,
         messageId: m.messageId,

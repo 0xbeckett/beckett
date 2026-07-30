@@ -257,18 +257,21 @@ export class SessionPool {
    * channel-scoped session (production) always matches. A system/update turn (no channel meta) is
    * never cancelled: only a directed turn for THIS channel is superseded by an amending message.
    *
-   * `opts.byUserId` narrows WHO may supersede a directed turn (the multitasking fix): a person
-   * amending their OWN ask mid-composition is the cancel case; anything else is an independent
-   * ask that must not destroy in-flight work. With `byUserId` set, a directed (non-ambient) turn
-   * is cancelled only when BOTH hold:
+   * `opts.byUserId` narrows WHO may supersede a directed turn (the multitasking fix); `opts.amends`
+   * narrows WHICH messages may (issue #138). With `byUserId` set, a directed (non-ambient) turn is
+   * cancelled only when ALL hold:
    *   - the live turn belongs to the same author (someone else's turn is never their amendment);
    *   - the live turn has not yet invoked a tool — once it's dispatching/recalling/editing,
    *     killing it loses real work, so the new message queues as a priority turn instead and is
-   *     answered right after, with the finished work in context.
-   * An AMBIENT turn is always cancellable by a directed message (a person outranks an
-   * interjection the model was still composing). Without `opts`, legacy unconditional behavior.
+   *     answered right after, with the finished work in context;
+   *   - the new message plausibly AMENDS the ask (`amends` not explicitly false). A same-author
+   *     interjection that restates nothing — banter, a reaction-in-words — must not kill a live
+   *     answer; it falls through to the caller's inject/queue path instead. The caller supplies
+   *     the deterministic amend signal (see messagePlausiblyAmends); the pool only honours it.
+   * An AMBIENT turn is always cancellable by a directed message, banter or not (a person outranks
+   * an interjection the model was still composing). Without `opts`, legacy unconditional behavior.
    */
-  cancelLiveTurn(channelId: string, reason: string, opts?: { byUserId?: string }): boolean {
+  cancelLiveTurn(channelId: string, reason: string, opts?: { byUserId?: string; amends?: boolean }): boolean {
     const entry = this.entries.get(this.scopeKey(channelId));
     if (!entry) return false;
     const meta = entry.session.getCurrentMeta?.() as
@@ -279,6 +282,7 @@ export class SessionPool {
     if (opts?.byUserId !== undefined && !meta.ambient) {
       if (meta.userId !== opts.byUserId) return false;
       if (entry.session.liveTurnToolUse?.() === true) return false;
+      if (opts.amends === false) return false;
     }
     return entry.session.cancelLiveTurn?.(reason) ?? false;
   }
