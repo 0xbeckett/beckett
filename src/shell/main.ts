@@ -789,11 +789,45 @@ async function boot(): Promise<BootedSystem> {
     lifecycleLedgerPath,
     spendPath: paths.spend,
   });
+  // Bot presence + desktop RPC, both driven off the SAME status-snapshot tick (#132). One deriver,
+  // two sinks: the gateway bot user (discord.js setPresence) and ~/.beckett/rpc-status.json (the
+  // {details,state} shape the untouched RPC daemon in src/rpc/daemon.ts already reads). The
+  // controller only emits on a real change and rate-floors sends; both sinks catch their own errors.
+  const rpcStatusPath = join(beckettDir, "rpc-status.json");
+  const presenceController = new PresenceController({
+    logger: logger.child("discord.presence"),
+    sinks: {
+      setPresence: (data) => {
+        const client = gateway instanceof DiscordJsGateway ? gateway.discordClient() : undefined;
+        client?.user?.setPresence(data);
+      },
+      writeStatus: (payload) => {
+        mkdirSync(dirname(rpcStatusPath), { recursive: true });
+        const tmp = `${rpcStatusPath}.tmp`;
+        writeFileSync(tmp, `${JSON.stringify(payload)}\n`, "utf8");
+        renameSync(tmp, rpcStatusPath);
+      },
+    },
+  });
   const statusDashboard = createStatusDashboardService({
     gateway,
     channelId: CARDS_CHANNEL_ID,
     statePath: statusDashboardMessagePath(beckettDir),
-    collectSnapshot: () => statusCollector.collect(),
+    collectSnapshot: async () => {
+      const snapshot = await statusCollector.collect();
+      // Assemble the board off in-memory stats already gathered this tick — no extra poll of the
+      // tracker. `update` is fire-and-forget (it never rejects) so a presence hiccup cannot stall
+      // or fail the dashboard cycle.
+      const browser = browserAgent.stats();
+      const inputs: PresenceInputs = {
+        degraded: snapshot.health.some((h) => h.reachable === false),
+        deployInFlight: isDeployActive(beckettDir),
+        browserRunLive: browser.running > 0 || browser.waiting > 0,
+        branchesInFlight: dispatcher.statusWorkers().filter((w) => w.state === "live").length,
+      };
+      void presenceController.update(inputs);
+      return snapshot;
+    },
     logger: logger.child("status.dashboard"),
   });
   await statusDashboard.start();
