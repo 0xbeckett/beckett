@@ -357,6 +357,11 @@ export const configFragments = {
       max_rework_cycles: posInt.default(3),
       // Total design-completeness passes before the design escalates to its owner anyway.
       max_design_cycles: posInt.default(2),
+      // Total plan-completeness passes before a Plan-stage brief escalates to its owner (issue
+      // #128). Deliberately separate from max_design_cycles even though the shape mirrors it — a
+      // plan cap change must not silently move design's too. Wires stages.ts's RetryCaps.planCycles
+      // via retryCapsFor(); see that field's own doc comment for why it shipped hardcoded first.
+      max_plan_cycles: posInt.default(2),
       // Max auto-respawns of an implement worker that ended without a clean finish (OPS-50).
       max_implement_retries: posInt.default(3),
       // Max review infra/schema retries before the ticket is left in_review for a human.

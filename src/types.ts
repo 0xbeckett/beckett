@@ -761,6 +761,10 @@ export interface Config {
     /** Total design-completeness passes before the design is escalated to its owner anyway.
      *  Default 2 (was MAX_DESIGN_CYCLES; OPS-180). */
     max_design_cycles: number;
+    /** Total plan-completeness passes before a Plan-stage brief is escalated to its owner
+     *  (issue #128) — deliberately separate from max_design_cycles even though the shape
+     *  mirrors it. Wires stages.ts's RetryCaps.planCycles via retryCapsFor(). Default 2. */
+    max_plan_cycles: number;
     /** Max auto-respawns of an implement worker that ended without a clean finish (OPS-50)
      *  before the ticket is parked in todo. Default 3 (was MAX_IMPLEMENT_RETRIES; OPS-180). */
     max_implement_retries: number;
