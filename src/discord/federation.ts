@@ -74,3 +74,42 @@ export class PeerBurstLimiter {
     return true;
   }
 }
+
+/**
+ * The loop terminator. The burst limiter bounds *rate* (peer messages per minute); it does not stop
+ * a loop — two Becketts that each reply to the other's @mention would tick along at the cap forever.
+ * This caps the number of CONSECUTIVE peer-to-peer turns Beckett will take in one channel: each
+ * reply Beckett is about to give a peer counts one, and the count resets the moment a non-peer (a
+ * human) speaks in that channel. Once the cap is reached Beckett falls silent to the peer, so the
+ * exchange provably terminates — the peer's own identical cap makes the silence mutual. A human
+ * saying anything re-opens the budget, exactly as re-engaging a stalled conversation should.
+ *
+ * Pure and clock-free: the count is the only state, so it unit-tests without a live gateway.
+ */
+export class PeerTurnLimiter {
+  private readonly counts = new Map<string, number>();
+
+  /** @param maxConsecutive Max peer replies Beckett gives in one channel before a human must speak. */
+  constructor(private readonly maxConsecutive: number) {}
+
+  /**
+   * A non-peer (human) message arrived in `channelId` — the exchange is no longer bot-to-bot, so
+   * clear the consecutive-turn budget. Idempotent; safe to call on every human message.
+   */
+  reset(channelId: string): void {
+    this.counts.delete(channelId);
+  }
+
+  /**
+   * Record + test one peer reply Beckett is about to give in `channelId`. Returns true while the
+   * channel is within its consecutive-turn budget (respond) and false once the cap is reached
+   * (drop — stay silent so the two-bot exchange ends). A non-positive cap disables peer replies
+   * entirely (fail-safe: never let a misconfig open an unbounded loop).
+   */
+  allow(channelId: string): boolean {
+    if (this.maxConsecutive <= 0) return false;
+    const next = (this.counts.get(channelId) ?? 0) + 1;
+    this.counts.set(channelId, next);
+    return next <= this.maxConsecutive;
+  }
+}

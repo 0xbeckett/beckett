@@ -565,6 +565,11 @@ export const configFragments = {
       // Runaway backstop: max peer-bot messages processed per channel per rolling minute, so two
       // auto-replying Becketts can't melt a channel before the protocol adds real loop control.
       peer_burst_per_min: posInt.default(5),
+      // Loop terminator: max consecutive peer-to-peer replies Beckett gives in one channel before a
+      // human speaks again. This is what makes a two-bot exchange END, not just slow down — the
+      // count resets on any human message. Kept modest so a real peer chat can happen without a
+      // ping-pong running away.
+      peer_max_consecutive_turns: posInt.default(6),
     })
     .default({}),
   // The nightly dream pass (issue #36): a budgeted, read-mostly replay of Beckett's own day on

@@ -282,6 +282,14 @@ export interface IncomingMessage {
   repliedToBotUnverified?: boolean;
   mentionsBot: boolean;
   authorIsBot: boolean;
+  /**
+   * Present ONLY when the author is an allow-listed trusted peer Beckett (federation). Its presence
+   * is the sole in-turn signal that this author is a peer — a human leaves it undefined, and an
+   * unlisted bot never reaches the Concierge at all (the gateway drops it). Carries the peer's bot
+   * id and live display name so the turn can be stamped `role:peer` and addressed by name. When set,
+   * `authorIsBot` is also true; the two are read together, never in isolation.
+   */
+  peer?: { botId: string; displayName: string };
   createdAt: number;
   attachments: IncomingAttachment[]; // files dragged into the message (empty when none)
   /** Quoted originals attached to a Discord forward (empty/absent for ordinary messages). */
@@ -980,6 +988,10 @@ export interface Config {
     /** Runaway backstop: max peer-bot messages the gateway will process per channel per
      *  rolling minute, so two auto-replying Becketts can never melt a channel. Default 5. */
     peer_burst_per_min: number;
+    /** Loop terminator: max CONSECUTIVE peer-to-peer replies Beckett gives in one channel before a
+     *  human must speak. Unlike the per-minute burst cap this is what makes a two-bot exchange
+     *  provably END rather than merely slow down; the count resets on any human message. Default 6. */
+    peer_max_consecutive_turns: number;
   };
   /**
    * The nightly dream pass (issue #36): a budgeted, read-mostly replay of Beckett's own day on
