@@ -16,6 +16,11 @@ enabled = false
 [concurrency]
 max_workers = 1
 
+# With no board (tracker disabled), the staffing watchdog has nothing to re-staff and would only
+# probe the (dead) board endpoint on a timer. 0 turns it off entirely (the dispatcher supports it).
+[supervise]
+staffing_watchdog_s = 0
+
 # One concierge turn / one quick lane at a time — staging does not need prod's parallelism.
 [concierge]
 max_concurrent_turns = 1
