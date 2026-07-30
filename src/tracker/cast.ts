@@ -99,13 +99,35 @@ export function parseCastJson(raw: string): Casting {
 export const BLOCKED_MODELS: ReadonlySet<string> = new Set(["sol", "gpt-5.6"]);
 
 /**
+ * The ONLY harness/model pairs the `plan` stage may cast (issue #128). The plan stage exists to
+ * put a STRONG seat between the (now-cheap) concierge and every implement worker's brief — a cast
+ * naming anything else would let the very actor this gate constrains pick a weak author for its
+ * own gate and call it satisfied. One editable list, not two, when the roster of "strong enough"
+ * seats changes — see {@link designStage}-equivalent's default in `dispatch/plan-stage.ts`, which
+ * reads this same allowlist rather than hardcoding its own copy.
+ */
+export const PLAN_STAGE_ALLOWLIST: ReadonlySet<string> = new Set([
+  "claude/claude-opus-5",
+  "claude/claude-fable-5",
+]);
+
+/** `true` iff `spec` names a harness/model on {@link PLAN_STAGE_ALLOWLIST} (case-insensitive model). */
+export function isPlanStageEligible(spec: HarnessSpec): boolean {
+  const model = spec.model?.trim().toLowerCase();
+  return model !== undefined && PLAN_STAGE_ALLOWLIST.has(`${spec.harness}/${model}`);
+}
+
+/**
  * Validate a {@link Casting} against the roster rules, returning a list of human-readable errors
  * (`[]` ⇒ valid, fileable). The SINGLE SOURCE OF TRUTH for "is this cast fileable": it reuses the
  * same {@link CastingSchema} the reader trusts for SHAPE (harness ∈ the driver registry, effort ∈
  * low|medium|high|xhigh, `model` a non-empty string) and layers on the doctrine BLOCKLIST (SOL /
- * bare `gpt-5.6` are not on our tier). Callers that must not silently file a broken cast (the
- * preset loader, the CLI create/plan paths) run this and refuse when it returns errors — unlike
- * {@link parseCastJson}, which is deliberately tolerant and degrades a bad block to `{}`.
+ * bare `gpt-5.6` are not on our tier) and the `plan` stage's strong-seat-only allowlist (issue
+ * #128 — the plan stage's whole job is a strong-model-authored brief; a cast naming anything
+ * outside {@link PLAN_STAGE_ALLOWLIST} is refused HERE, at file-time, not merely defaulted around
+ * later at spawn-time). Callers that must not silently file a broken cast (the preset loader, the
+ * CLI create/plan paths) run this and refuse when it returns errors — unlike {@link parseCastJson},
+ * which is deliberately tolerant and degrades a bad block to `{}`.
  */
 export function validateCasting(casting: unknown): string[] {
   const parsed = CastingSchema.safeParse(casting);
@@ -123,6 +145,13 @@ export function validateCasting(casting: unknown): string[] {
       errors.push(
         `${stage}: model "${spec.model}" is hard-blocked on our tier (not supported with a ` +
           `ChatGPT account) — cast gpt-5.6-terra or gpt-5.6-luna instead`,
+      );
+    }
+    if (stage === "plan" && !isPlanStageEligible(spec)) {
+      errors.push(
+        `plan: harness/model "${spec.harness}/${spec.model ?? "(default)"}" is not a strong-seat ` +
+          `pair — the plan stage may only be cast to ${[...PLAN_STAGE_ALLOWLIST].join(" or ")} ` +
+          `(issue #128: the brief it writes must come from a strong seat, not a cheap one)`,
       );
     }
   }
@@ -187,7 +216,7 @@ export function targetBranch(raw: string): string | undefined {
 }
 
 const TICKET_STATES = new Set<TicketState>([
-  "backlog", "todo", "design", "design_review", "in_progress", "in_review", "done", "cancelled",
+  "backlog", "todo", "plan", "design", "design_review", "in_progress", "in_review", "done", "cancelled",
 ]);
 
 function startState(raw: string): TicketState | undefined {

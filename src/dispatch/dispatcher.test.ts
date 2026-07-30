@@ -282,6 +282,7 @@ function newDispatcher(
 ) {
   const client = new FakeClient();
   const d = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
     client,
     config: cfg(max_workers),
@@ -403,6 +404,7 @@ describe("spawn on state change", () => {
     const config = cfg();
     (config.harness as unknown as { codex: { enabled: boolean } }).codex.enabled = false;
     const d = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
       client,
       config,
@@ -707,7 +709,10 @@ describe("advance on finish", () => {
     await tick();
 
     expect(client.setStateCalls).toContainEqual({ id: "a", state: "done" });
-    expect(client.setStateCalls).toContainEqual({ id: "b", state: "in_progress" });
+    // Issue #128: a promoted dependent's default start state is now `plan`, not `in_progress` —
+    // `dependentStartState` (dispatch/dispatcher.ts) always routes a fresh dependent through the
+    // mandatory Plan stage first.
+    expect(client.setStateCalls).toContainEqual({ id: "b", state: "plan" });
     expect(client.comments.some((c) => c.ticketId === "b" && c.body.includes("All blockers done"))).toBe(true);
   });
 
@@ -716,6 +721,7 @@ describe("advance on finish", () => {
     const calls: { slug: string; repoRoot: string; description: string; ticket?: string; baseSha?: string; commitMessage?: string }[] = [];
     const published: Array<{ url: string; kind: string; ticket: string }> = [];
     const d = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
       client,
       config: cfg(),
@@ -765,6 +771,7 @@ describe("advance on finish", () => {
     const client = new FakeClient();
     const calls: Array<{ slug: string; targetBranch?: string }> = [];
     const d = new Dispatcher({
+      planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
       gitOps: gitFakes,
       client,
       config: cfg(),
@@ -795,6 +802,7 @@ describe("advance on finish", () => {
     let durableSnapshot = -1;
     let additionsAtDone = -1;
     const d = new Dispatcher({
+      planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
       gitOps: gitFakes,
       client,
       config: cfg(),
@@ -829,6 +837,7 @@ describe("advance on finish", () => {
   test("v3.1: a `pr` publish words the done comment as needing a human merge (not 'shipped')", async () => {
     const client = new FakeClient();
     const d = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
       client,
       config: cfg(),
@@ -853,6 +862,7 @@ describe("advance on finish", () => {
   test("v3.1: a GitHub publish FAILURE parks the ticket for courier work", async () => {
     const client = new FakeClient();
     const d = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
       client,
       config: cfg(),
@@ -880,6 +890,7 @@ describe("advance on finish", () => {
       const client = new FakeClient();
       let calls = 0;
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config: cfg(),
@@ -929,6 +940,7 @@ describe("advance on finish", () => {
       const watchedPrs: string[] = [];
       let calls = 0;
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config: cfg(),
@@ -980,6 +992,7 @@ describe("advance on finish", () => {
       const client = new FakeClient();
       let publishCalls = 0;
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config: cfg(),
@@ -1019,6 +1032,7 @@ describe("advance on finish", () => {
       const client = new FakeClient();
       let publishCalls = 0;
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config: cfg(),
@@ -1063,6 +1077,7 @@ describe("advance on finish", () => {
       const client = new FakeClient();
       let publishCalls = 0;
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config: cfg(),
@@ -1105,6 +1120,7 @@ describe("advance on finish", () => {
       const outbox = join(dir, "publish.jsonl");
       const client = new FakeClient();
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config: cfg(),
@@ -1155,6 +1171,7 @@ describe("advance on finish", () => {
         identity: { github_user: "octocat", gmail_address: "" },
       } as Config;
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config,
@@ -1216,6 +1233,7 @@ describe("advance on finish", () => {
     const ticket = makeTicket({ id: "vid-tkt-1", identifier: "VID-1", state: "in_review", projectId: "vid-project" });
     vid.board = [ticket];
     const d = new Dispatcher({
+      planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
       gitOps: gitFakes,
       client: ops,
       clients: [ops, vid],
@@ -1324,6 +1342,7 @@ describe("v3.1 project-repo provisioning", () => {
         identity: { github_user: "octocat", gmail_address: "" },
       } as Config;
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config,
@@ -1721,6 +1740,7 @@ describe("rework cap", () => {
       client.park = async () => {};
       const config = { ...cfg(2), supervise: { max_rework_cycles: 1 } } as unknown as Config;
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config,
@@ -1738,6 +1758,7 @@ describe("rework cap", () => {
 
       // Reload with Bored still projecting the same in_review state. The persisted hold must win.
       const after = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config,
@@ -1758,6 +1779,7 @@ describe("rework cap", () => {
     client.park = async () => {}; // Bored remains in its projected active column.
     const config = { ...cfg(2), supervise: { max_implement_retries: 0 } } as unknown as Config;
     const d = new Dispatcher({
+      planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
       gitOps: gitFakes,
       client,
       config,
@@ -1781,6 +1803,7 @@ describe("rework cap", () => {
     const client = new FakeClient();
     const config = { ...cfg(5), supervise: { max_rework_cycles: 1 } } as unknown as Config;
     const d = new Dispatcher({
+      planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
       gitOps: gitFakes,
       client,
       config,
@@ -1816,6 +1839,7 @@ describe("rework cap", () => {
       }
 
       const after = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
         client,
         config: cfg(5),
@@ -1905,6 +1929,7 @@ describe("crash recovery", () => {
       const swept: { pid: number; bin: string }[] = [];
       const { client } = { client: new FakeClient() };
       const after = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
         client,
         config: cfg(2),
@@ -1953,6 +1978,7 @@ describe("crash recovery", () => {
       const client = new FakeClient();
       client.board = [{ ...ticket, state: "cancelled" }];
       const after = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config: cfg(2),
@@ -1982,6 +2008,7 @@ describe("crash recovery", () => {
 
       const client = new FakeClient();
       const after = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
         client,
         config: cfg(2),
@@ -2018,6 +2045,7 @@ describe("crash recovery", () => {
       await tick();
 
       const after = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
         client: new FakeClient(),
         config: cfg(2),
@@ -2050,6 +2078,7 @@ describe("crash recovery", () => {
       // No finish — the daemon dies mid-review.
 
       const after = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client: new FakeClient(),
         config: cfg(2),
@@ -2098,6 +2127,7 @@ describe("deploy drain then resume-or-park (#68)", () => {
 
       const client = new FakeClient();
       const after = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config: cfg(2),
@@ -2130,6 +2160,7 @@ describe("deploy drain then resume-or-park (#68)", () => {
 
       const client = new FakeClient();
       const after = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config: cfg(2),
@@ -2220,6 +2251,7 @@ describe("periodic checkpoint (OPS-125)", () => {
         },
       };
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: failingGit,
         client: new FakeClient(),
         config: cfg(2),
@@ -2447,6 +2479,65 @@ describe("preflight + failure taxonomy", () => {
   });
 });
 
+// ── issue #128: the Plan stage's structural guarantee ──────────────────────────────────────
+// These deliberately construct a Dispatcher WITHOUT `planVerifiedSeed: "all"` (unlike every other
+// describe block in this file, which seeds it because it's testing something else) — the real
+// gate must be live for these three assertions to mean anything.
+describe("plan-stage enforcement (issue #128)", () => {
+  test("no harness substitution is permitted for the plan stage — an unhealthy strong seat fails loud, never falls back", async () => {
+    const client = new FakeClient();
+    const ticket = makeTicket({ state: "plan" });
+    client.board = [ticket];
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/tmp/repo",
+      preflight: async () => ({ ok: false, problems: ["claude login expired"] }),
+    });
+
+    await d.handle(stateChanged(ticket, "plan"));
+    await tick();
+
+    // No spawn on ANY substitute harness — codex/pi reporting healthy must not matter for `plan`.
+    expect(spawnCalls).toHaveLength(0);
+    const note = client.comments.at(-1);
+    expect(note?.body).toContain("no substitute is permitted");
+  });
+
+  test("doSpawn refuses to launch an implement worker with no verified plan even if entryGuard is bypassed", async () => {
+    // Simulates a hypothetical future call site that forgets to consult `entryGuard` — the
+    // defense-in-depth backstop this test pins lives in `doSpawn` itself, not at any staffing
+    // call site, so it must hold even when nothing upstream checked first.
+    const client = new FakeClient();
+    const ticket = makeTicket({ state: "in_progress" });
+    client.board = [ticket];
+    const d = new Dispatcher({ gitOps: gitFakes, client, config: cfg(), resolveRepoRoot: () => "/tmp/repo" });
+
+    // @ts-expect-error — reaching past the public surface deliberately, to prove the backstop
+    // holds even when the normal entryGuard-checking call sites are skipped entirely.
+    await d.doSpawn(ticket, "implement", "/tmp/repo", Symbol("test-reservation"));
+    await tick();
+
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  test("the staffing watchdog redirects an in_progress ticket with no verified plan to plan, instead of leaving it silently stuck", async () => {
+    const client = new FakeClient();
+    const ticket = makeTicket({ id: "w", identifier: "OPS-W", state: "in_progress" });
+    client.board = [ticket]; // in_progress on the board, no plan ever verified, no live worker
+    const d = new Dispatcher({ gitOps: gitFakes, client, config: cfg(), resolveRepoRoot: () => "/tmp/repo" });
+
+    const result = await d.reconcileStaffing();
+
+    expect(result.restaffed).toEqual(["w"]);
+    expect(client.setStateCalls).toContainEqual({ id: "w", state: "plan" });
+    expect(client.comments.some((c) => c.ticketId === "w" && c.body.includes("Plan"))).toBe(true);
+    // Genuinely re-routed, not staffed as implement — no implement worker for a ticket with no plan.
+    expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(0);
+  });
+});
+
 describe("concurrency cap", () => {
   test("over-cap spawns queue and pump when a slot frees", async () => {
     const { d } = newDispatcher(1);
@@ -2620,7 +2711,12 @@ describe("mid-spawn staffing race (issue #9)", () => {
     const { d, client } = newDispatcher();
     const blocker = makeTicket({ id: "a", identifier: "OPS-A", state: "done", branchRef: "1.1", project: "project" });
     const dependent = makeTicket({
+      // Issue #128: `dependentStartState` defaults a fresh dependent to `plan`, not `in_progress` —
+      // an explicit `startState` override is the documented escape hatch for a ticket that should
+      // skip straight to implement (e.g. one that already has a plan), which is exactly what this
+      // test needs to keep exercising the mid-spawn implement→review race it's actually about.
       id: "b", identifier: "OPS-B", state: "backlog", branchRef: "1.2", project: "project", blockedBy: ["OPS-A"],
+      startState: "in_progress",
     });
     client.board = [blocker, dependent];
 
@@ -2721,6 +2817,7 @@ describe("staffing watchdog (issue #9)", () => {
       const client = new FakeClient() as FakeClient & { park(id: string): Promise<void> };
       client.park = async () => {}; // Bored remains in its projected active column.
       const d = new Dispatcher({
+        planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
         gitOps: gitFakes,
         client,
         config: cfg(),
@@ -2929,6 +3026,7 @@ describe("worktrees (v3.2)", () => {
   test("a publish-failed park-to-todo KEEPS the worktree (a human/courier needs the work)", async () => {
     const client = new FakeClient();
     const d = new Dispatcher({
+      planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
       gitOps: gitFakes,
       client,
       config: cfg(),
@@ -2986,15 +3084,17 @@ describe("dependency promotion (beckett plan DAG)", () => {
 
     await expect(d.reconcileDependents()).resolves.toBe(2);
 
+    // Issue #128: a promoted dependent with no explicit `startState` now resolves to `plan`, not
+    // `in_progress` — see `dependentStartState` (dispatch/dispatcher.ts).
     expect(client.setStateCalls).toEqual([
-      { id: "b", state: "in_progress" },
+      { id: "b", state: "plan" },
       { id: "c", state: "design" },
     ]);
     expect(client.setStateCalls.some((call) => call.id === "d" || call.id === "e")).toBe(false);
     expect(client.comments.filter((comment) => comment.body.includes("All blockers done"))).toHaveLength(2);
   });
 
-  test("a held dependent is promoted to in_progress when its only blocker finishes", async () => {
+  test("a held dependent is promoted to plan when its only blocker finishes", async () => {
     const { d, client } = newDispatcher();
     const blocker = makeTicket({ id: "a", identifier: "OPS-A", state: "done" });
     const dependent = makeTicket({ id: "b", identifier: "OPS-B", state: "backlog", blockedBy: ["OPS-A"] });
@@ -3003,7 +3103,9 @@ describe("dependency promotion (beckett plan DAG)", () => {
     await d.handle(stateChanged(blocker, "done", "in_review"));
     await tick();
 
-    expect(client.setStateCalls).toContainEqual({ id: "b", state: "in_progress" });
+    // Issue #128: no explicit `startState` on the dependent → `plan`, not `in_progress` (see
+    // `dependentStartState`, dispatch/dispatcher.ts).
+    expect(client.setStateCalls).toContainEqual({ id: "b", state: "plan" });
     expect(client.comments.some((c) => c.ticketId === "b" && c.body.includes("All blockers done"))).toBe(true);
   });
 
@@ -3055,6 +3157,7 @@ describe("dependency promotion (beckett plan DAG)", () => {
     let publishedTicket: string | undefined;
     const publishGate = new Promise<void>((resolve) => { releasePublish = resolve; });
     const d = new Dispatcher({
+      planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
       gitOps: gitFakes,
       client,
       config: cfg(),
@@ -3117,6 +3220,7 @@ describe("pipeline latency (issue #33)", () => {
     const dependent = makeTicket({ id: "b", identifier: "OPS-B", state: "backlog", blockedBy: ["OPS-A"] });
     client.board = [blocker, dependent];
     const d = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
       client,
       config: cfg(),
@@ -3131,9 +3235,11 @@ describe("pipeline latency (issue #33)", () => {
     await tick();
 
     // The dependent builds from the LOCAL checkout, so it starts even though the blocker's
-    // publish failed and parked it for a courier — and the promotion write lands FIRST.
+    // publish failed and parked it for a courier — and the promotion write lands FIRST. Issue
+    // #128: no explicit `startState` on the dependent → `plan`, not `in_progress` (see
+    // `dependentStartState`, dispatch/dispatcher.ts).
     expect(client.setStateCalls).toEqual([
-      { id: "b", state: "in_progress" },
+      { id: "b", state: "plan" },
       { id: "a", state: "todo" },
     ]);
     expect(client.setStateCalls.some((c) => c.id === "a" && c.state === "done")).toBe(false);
@@ -3145,6 +3251,7 @@ describe("pipeline latency (issue #33)", () => {
     const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
     client.board = [ticket];
     const d = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
       client,
       config: cfg(),
@@ -3167,6 +3274,7 @@ describe("pipeline latency (issue #33)", () => {
     const ticket = makeTicket({ casting: { implement: { harness: "claude", effort: "low" } } });
     client.board = [ticket];
     const d = new Dispatcher({
+    planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
     gitOps: gitFakes,
       client,
       config: cfg(),
@@ -3240,6 +3348,7 @@ describe("branch preview lifecycle (#76)", () => {
       },
     };
     const d = new Dispatcher({
+      planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
       gitOps: gitFakes,
       client,
       config: cfg(2),
@@ -3293,6 +3402,7 @@ describe("per-task budget ceiling (#77)", () => {
     const client = new FakeClient();
     const config = { ...cfg(2), budget: { per_task_usd_cap: capUsd } } as unknown as Config;
     const d = new Dispatcher({
+      planVerifiedSeed: "all", // issue #128 — these pre-existing tests exercise other behavior, not the plan gate itself
       gitOps: gitFakes,
       client,
       config,

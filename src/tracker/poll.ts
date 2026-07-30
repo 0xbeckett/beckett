@@ -58,7 +58,7 @@ interface PersistedSnapshotEntry {
 
 /** States a restart must re-staff (their in-memory worker died with the daemon). Kept in sync with
  *  the poll/prime first-sight branches so "active" means one thing in both places. */
-const RECOVERABLE_ACTIVE = new Set<TicketState>(["design", "in_progress", "in_review"]);
+const RECOVERABLE_ACTIVE = new Set<TicketState>(["plan", "design", "in_progress", "in_review"]);
 
 /**
  * Sweep interval for comment reads on unchanged active tickets. bored does NOT bump a ticket's

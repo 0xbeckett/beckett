@@ -11,6 +11,9 @@ import {
   parseCastJson,
   projectSlug,
   targetBranch,
+  validateCasting,
+  isPlanStageEligible,
+  PLAN_STAGE_ALLOWLIST,
   CAST_FENCE,
   CRITERIA_HEADING,
   TARGET_BRANCH_FENCE,
@@ -168,5 +171,45 @@ describe("project slug safety", () => {
 
   test("ordinary dots in project names remain intact", () => {
     expect(projectSlug("Beckett.Web v2")).toBe("beckett.web-v2");
+  });
+});
+
+describe("plan-stage cast allowlist (issue #128)", () => {
+  test("isPlanStageEligible accepts exactly the allowlisted strong-seat pairs", () => {
+    expect(isPlanStageEligible({ harness: "claude", model: "claude-opus-5" })).toBe(true);
+    expect(isPlanStageEligible({ harness: "claude", model: "claude-fable-5" })).toBe(true);
+    // case-insensitive model match, same discipline as BLOCKED_MODELS
+    expect(isPlanStageEligible({ harness: "claude", model: "CLAUDE-OPUS-5" })).toBe(true);
+    expect(isPlanStageEligible({ harness: "claude", model: "claude-sonnet-5" })).toBe(false);
+    expect(isPlanStageEligible({ harness: "claude", model: "claude-haiku-4-5" })).toBe(false);
+    expect(isPlanStageEligible({ harness: "pi", model: "gpt-5.6-terra" })).toBe(false);
+    expect(isPlanStageEligible({ harness: "claude" })).toBe(false); // no model named
+  });
+
+  test("validateCasting refuses a plan cast naming a non-strong-seat model", () => {
+    const errors = validateCasting({ plan: { harness: "claude", model: "claude-sonnet-5" } });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("plan:");
+    expect(errors[0]).toContain("strong-seat");
+  });
+
+  test("validateCasting refuses a plan cast on a non-claude harness even if the model name matches", () => {
+    const errors = validateCasting({ plan: { harness: "pi", model: "gpt-5.6-terra", effort: "high" } });
+    expect(errors).toHaveLength(1);
+  });
+
+  test("validateCasting accepts a plan cast on either allowlisted seat", () => {
+    expect(validateCasting({ plan: { harness: "claude", model: "claude-opus-5", effort: "high" } })).toEqual([]);
+    expect(validateCasting({ plan: { harness: "claude", model: "claude-fable-5", effort: "high" } })).toEqual([]);
+  });
+
+  test("validateCasting leaves every other stage's rules untouched", () => {
+    expect(
+      validateCasting({ implement: { harness: "claude", model: "claude-sonnet-5" }, review: { harness: "pi" } }),
+    ).toEqual([]);
+  });
+
+  test("the allowlist names exactly two seats today", () => {
+    expect([...PLAN_STAGE_ALLOWLIST].sort()).toEqual(["claude/claude-fable-5", "claude/claude-opus-5"]);
   });
 });

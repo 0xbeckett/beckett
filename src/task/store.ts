@@ -211,6 +211,13 @@ export function branchStatusForTicket(state: TicketState): TaskBranchStatus {
   switch (state) {
     case "backlog": return "waiting";
     case "todo": return "ready";
+    // Reuses "designing" (issue #128): both `plan` and `design` are pre-implementation authoring
+    // stages from a Discord-status point of view. Adding a distinct "planning" status would
+    // ripple into `discord/cards.ts`'s `Record<TaskBranchStatus, ...>` label/color maps — UI
+    // surface outside this change's file set — so this reuses the closest existing label instead
+    // of widening that Record. Revisit with a real "planning" status if the two ever need to
+    // read differently to a human.
+    case "plan": return "designing";
     case "design": return "designing";
     case "design_review": return "approval";
     case "in_progress": return "running";

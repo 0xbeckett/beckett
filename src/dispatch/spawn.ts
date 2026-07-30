@@ -189,6 +189,15 @@ export interface SpawnWorkerArgs {
    */
   reviewDiff?: string;
   /**
+   * The ticket's verified plan-stage brief content, pre-read by the dispatcher (issue #128) when
+   * `ops.hasVerifiedPlan(ticket.id)` — inlined into implement's prompt and pointed to (not
+   * inlined) from review's. Absent → every stage's prompt/append is byte-identical to before this
+   * stage existed (the load-bearing degrade `plan-artifact.ts`'s `planContextBlock` guarantees).
+   */
+  planDoc?: string;
+  /** Commit the plan doc was verified at, for the freshness marker in the inlined block. */
+  planDocSha?: string;
+  /**
    * Stage lookup the prompt/system-append resolve through (v6 Phase 5): the dispatcher threads
    * its ExtensionRegistry-backed {@link StageView} here so staffing and prompting can never read
    * diverging stage tables. Absent (tests / embedders) → the shared default view.
@@ -331,7 +340,7 @@ function summaryFrom(structured: unknown | null, lastAssistantText: string): str
  * Exported under both names: `spawnWorker` (task spec) and `spawnTicketWorker` (specs/_legacy-v3/V3.md §6).
  */
 export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHandle> {
-  const { ticket, stage, harness, config, repoRoot, workspace, branch, baseRef, resumeSessionId, onProgress, steering, reviewDiff } =
+  const { ticket, stage, harness, config, repoRoot, workspace, branch, baseRef, resumeSessionId, onProgress, steering, reviewDiff, planDoc, planDocSha } =
     args;
   // v6 Phase 5: stage resolution rides the SAME registry view that staffed this ticket.
   const stages = args.stages ?? stageRegistry;
@@ -447,8 +456,8 @@ export async function spawnWorker(args: SpawnWorkerArgs): Promise<TicketWorkerHa
       workerId: id,
       prompt: resumeSessionId
         ? buildResumeBrief(ticket, stage, baseRef, steering)
-        : stages.prompt(stage, { ticket, baseRef, steering, reviewDiff }),
-      systemAppend: stages.systemAppend(stage, { ticket, config, baseRef }),
+        : stages.prompt(stage, { ticket, baseRef, steering, reviewDiff, planDoc, planDocSha }),
+      systemAppend: stages.systemAppend(stage, { ticket, config, baseRef, planDoc }),
       workspace,
       scope,
       envelope,

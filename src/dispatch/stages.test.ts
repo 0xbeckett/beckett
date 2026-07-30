@@ -18,8 +18,17 @@ import {
   isIntTicket,
   createStagesExtension,
   stageViewOf,
+  type StageOps,
 } from "./stages.ts";
 import { ActionClass, ExtensionRegistry, type ExtensionContext } from "../ext/index.ts";
+
+/** A minimal fake {@link StageOps} for entryGuard tests — only `hasVerifiedPlan` is consulted. */
+function fakeOps(planVerifiedIds: string[] = []): StageOps {
+  const verified = new Set(planVerifiedIds);
+  return {
+    hasVerifiedPlan: (ticketId: string) => verified.has(ticketId),
+  } as unknown as StageOps;
+}
 
 function makeTicket(over: Partial<Ticket> = {}): Ticket {
   return {
@@ -54,11 +63,15 @@ const config: Config = validateConfig({
 
 describe("StageRegistry", () => {
   test("built-ins are registered and map their entry states", () => {
-    expect(stageRegistry.names().sort()).toEqual(["design", "design_check", "implement", "review"]);
+    expect(stageRegistry.names().sort()).toEqual([
+      "design", "design_check", "implement", "plan", "plan_check", "review",
+    ]);
+    expect(stageRegistry.forState("plan")?.name).toBe("plan");
     expect(stageRegistry.forState("in_progress")?.name).toBe("implement");
     expect(stageRegistry.forState("in_review")?.name).toBe("review");
     expect(stageRegistry.forState("design")?.name).toBe("design");
-    // Held/terminal states staff nothing; design_check is spawned by design's finish, not a state.
+    // Held/terminal states staff nothing; design_check/plan_check are spawned by their author
+    // stage's finish handler, never by a ticket state.
     for (const state of ["backlog", "todo", "design_review", "done", "cancelled"] as const) {
       expect(stageRegistry.forState(state)).toBeUndefined();
     }
@@ -73,9 +86,19 @@ describe("StageRegistry", () => {
 
   test("design staffing is gated to INT tickets", () => {
     const guard = stageRegistry.get("design")!.entryGuard!;
-    expect(guard(makeTicket({ identifier: "INT-3", projectId: "INT" }))).toBe(true);
-    expect(guard(makeTicket({ identifier: "OPS-3" }))).toBe(false);
+    const ops = fakeOps();
+    expect(guard(makeTicket({ identifier: "INT-3", projectId: "INT" }), ops)).toBe(true);
+    expect(guard(makeTicket({ identifier: "OPS-3" }), ops)).toBe(false);
     expect(isIntTicket(makeTicket({ identifier: "OPS-3", projectId: "INT" }))).toBe(true);
+  });
+
+  test("implement staffing is gated to tickets with a verified plan on record (issue #128)", () => {
+    const guard = stageRegistry.get("implement")!.entryGuard!;
+    const ticket = makeTicket({ id: "tkt-9", identifier: "OPS-9" });
+    expect(guard(ticket, fakeOps())).toBe(false);
+    expect(guard(ticket, fakeOps(["tkt-9"]))).toBe(true);
+    // A DIFFERENT ticket's verified plan must not satisfy this one's guard.
+    expect(guard(ticket, fakeOps(["some-other-ticket"]))).toBe(false);
   });
 
   test("stage spawn flags: implement captures the base sha, review preloads the diff", () => {
@@ -199,13 +222,14 @@ describe("config-driven retry caps (OPS-180)", () => {
     expect(retryCapsFor({} as Config)).toEqual({
       reworkCycles: 3,
       designCycles: 2,
+      planCycles: 2,
       implementRetries: 3,
       reviewInfraRetries: 1,
       harnessSubstitutions: 6,
     });
   });
 
-  test("[supervise] max_* keys drive the caps", () => {
+  test("[supervise] max_* keys drive the caps (planCycles has no config key yet — see RetryCaps.planCycles)", () => {
     const caps = retryCapsFor({
       supervise: {
         max_rework_cycles: 5,
@@ -218,6 +242,7 @@ describe("config-driven retry caps (OPS-180)", () => {
     expect(caps).toEqual({
       reworkCycles: 5,
       designCycles: 1,
+      planCycles: 2,
       implementRetries: 7,
       reviewInfraRetries: 2,
       harnessSubstitutions: 9,
@@ -237,7 +262,7 @@ describe("the stages extension (v6 Phase 5)", () => {
   // The factory is context-free (stages resolve config per call); a bare ctx suffices.
   const extCtx = { config, paths: {}, logger: {} } as unknown as ExtensionContext;
 
-  test("createStagesExtension carries the four built-ins as a core-kind extension", () => {
+  test("createStagesExtension carries the six built-ins as a core-kind extension", () => {
     const extension = createStagesExtension(extCtx);
     expect(extension.manifest.id).toBe("stages");
     expect(extension.manifest.kind).toBe("core");
@@ -247,6 +272,8 @@ describe("the stages extension (v6 Phase 5)", () => {
     expect(extension.invoke).toBeUndefined();
     expect(extension.lifecycle).toBeUndefined();
     expect((extension.stages ?? []).map((s) => s.name)).toEqual([
+      "plan",
+      "plan_check",
       "implement",
       "review",
       "design",
@@ -260,12 +287,13 @@ describe("the stages extension (v6 Phase 5)", () => {
     registry.register(createStagesExtension(extCtx));
     const view = stageViewOf(registry);
 
-    expect(view.names().sort()).toEqual(["design", "design_check", "implement", "review"]);
+    expect(view.names().sort()).toEqual(["design", "design_check", "implement", "plan", "plan_check", "review"]);
     // Identity, not equality: the facet carries the ONE set of built-in stage objects, so the
     // boot view and the module default can never diverge on a definition.
-    for (const name of ["implement", "review", "design", "design_check"]) {
+    for (const name of ["implement", "review", "design", "design_check", "plan", "plan_check"]) {
       expect(view.get(name)).toBe(stageRegistry.get(name)!);
     }
+    expect(view.forState("plan")?.name).toBe("plan");
     expect(view.forState("in_progress")?.name).toBe("implement");
     expect(view.forState("in_review")?.name).toBe("review");
     expect(view.forState("design")?.name).toBe("design");

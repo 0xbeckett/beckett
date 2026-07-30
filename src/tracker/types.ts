@@ -26,6 +26,16 @@
 export type TicketState =
   | "backlog"
   | "todo"
+  /**
+   * MANDATORY, universal shared-context authoring stage (issue #128): every ticket that will
+   * reach `implement` passes through here first, so a strong seat (Fable/Opus, never the cheap
+   * concierge chat seat) writes the worker's brief before any implement worker is staffed. This
+   * is what makes going cheap on the concierge (`concierge.model` default, `src/capability/
+   * builtins.ts`) safe — see `implementStage.entryGuard` (`hasQualifyingPlan`, stages.ts) for
+   * the enforcement. Distinct from `design`/`design_review`: those are INT-only, human-approved
+   * DESIGN CHOICE gates; `plan` is universal, model-checked WORKER-BRIEF authoring.
+   */
+  | "plan"
   /** INT only: live design-document authoring stage. */
   | "design"
   /** INT only: parked human approval gate for the design document. */

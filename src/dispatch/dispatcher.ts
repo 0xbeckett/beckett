@@ -81,14 +81,15 @@ import { gitBranchForTicket } from "../git/branch-name.ts";
 import { DispatchEventBus, type DispatchEventBusOptions, type DispatchOutcome } from "./events.ts";
 import {
   defaultEffortFor,
-  isIntTicket,
   parseDoneSignal,
   retryCapsFor,
   stageRegistry,
   type RetryCaps,
   type StageOps,
   type StageView,
+  type PlanVerification,
 } from "./stages.ts";
+import { planDocPath } from "./plan-stage.ts";
 
 // =======================================================================================
 // Collaborators
@@ -246,6 +247,16 @@ export interface DispatcherDeps {
    */
   screenshot?: ScreenshotHook;
   logger?: Logger;
+  /**
+   * TEST-ONLY seam (issue #128) for the pre-existing behavioral suite: `"all"` makes
+   * `hasVerifiedPlan` return `true` for every ticket, so tests written before the plan gate
+   * existed (implement/review/budget/wedge/etc. — none of them are testing the GATE itself) keep
+   * exercising exactly what they always tested without each one hand-seeding a fake plan record.
+   * An explicit array seeds just those ticket ids. Never set by production boot (`shell/main.ts`
+   * never references this field) — nothing reachable from a live ticket's cast, description, or
+   * the concierge can set it; it only exists as a constructor argument test code passes directly.
+   */
+  planVerifiedSeed?: "all" | string[];
 }
 
 /** The finish-path screenshot capturer the dispatcher fires and forgets (#75). Never throws. */
@@ -358,6 +369,15 @@ interface DispatcherRuntimeState {
   stallFingerprints?: Record<string, StallFingerprintRecord>;
   /** Incomplete design-check passes; bounded so an owner is always eventually paged. */
   designCycles?: Record<string, number>;
+  /** Incomplete/oversized plan-check passes (issue #128); absent in pre-#128 state files. */
+  planCycles?: Record<string, number>;
+  /**
+   * THE ENFORCEMENT RECORD (issue #128), persisted so a daemon restart doesn't forget which
+   * tickets already cleared the plan gate and force them through it again. Absent in pre-#128
+   * state files (every ticket then has no record — the same "no plan yet" state a truly new
+   * ticket has, never a false pass).
+   */
+  planVerified?: Record<string, PlanVerification>;
   /** Crash-recovery worker ledger, keyed by ticket id (absent in pre-ledger state files). */
   liveWorkers?: Record<string, LedgeredWorker>;
   /** Steering comments awaiting the next worker, keyed by ticket id (issue #22 — restart-proof). */
@@ -447,6 +467,29 @@ function parseLedger(value: unknown): Record<string, LedgeredWorker> {
   return out;
 }
 
+/**
+ * Lenient parse of the plan-verification enforcement record (issue #128): a malformed entry is
+ * DROPPED, never fatal — the same restart-safety discipline as every other parser here. Dropping
+ * an entry degrades to "no plan on record", which re-routes the ticket through `plan` again
+ * (safe, if wasteful) rather than trusting a corrupt/partial record as a pass.
+ */
+function parsePlanVerified(value: unknown): Record<string, PlanVerification> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, PlanVerification> = {};
+  for (const [ticketId, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    if (typeof r.harness !== "string" || typeof r.verifiedAt !== "string") continue;
+    out[ticketId] = {
+      sha: typeof r.sha === "string" ? r.sha : null,
+      harness: r.harness,
+      verifiedAt: r.verifiedAt,
+      ...(typeof r.model === "string" ? { model: r.model } : {}),
+    };
+  }
+  return out;
+}
+
 function parseRuntimeState(value: unknown): DispatcherRuntimeState {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("runtime state must be an object");
@@ -463,6 +506,8 @@ function parseRuntimeState(value: unknown): DispatcherRuntimeState {
     reviewInfraRetries: parseNumberRecord(raw.reviewInfraRetries, "reviewInfraRetries"),
     stallFingerprints: parseStallFingerprints(raw.stallFingerprints),
     designCycles: raw.designCycles === undefined ? {} : parseNumberRecord(raw.designCycles, "designCycles"),
+    planCycles: raw.planCycles === undefined ? {} : parseNumberRecord(raw.planCycles, "planCycles"),
+    planVerified: parsePlanVerified(raw.planVerified),
     liveWorkers: parseLedger(raw.liveWorkers),
     pendingSteers: parseSteers(raw.pendingSteers),
     humanHolds: raw.humanHolds === undefined ? {} : parseStringRecord(raw.humanHolds, "humanHolds"),
@@ -575,6 +620,19 @@ export class Dispatcher {
   private readonly repeatedStallGiveUps = new Map<string, RepeatedStallGiveUp>();
   /** Per-ticket incomplete design-check count, bounded by the configured design-cycle cap. */
   private readonly designCycles = new Map<string, number>();
+  /** Per-ticket incomplete/oversized plan-check count, bounded by {@link RetryCaps.planCycles} (issue #128). */
+  private readonly planCycles = new Map<string, number>();
+  /**
+   * THE ENFORCEMENT RECORD (issue #128): ticket id → the plan-stage brief `plan_check` verified,
+   * naming the cast that ACTUALLY authored it. Written in exactly one place
+   * (`onRecordPlanVerified`, called only by `plan_check`'s finish handler on a genuine pass) and
+   * consulted in exactly one place that matters (`implementStage.entryGuard` /
+   * `hasQualifyingPlan`, `stages.ts`) plus one defense-in-depth backstop (`doSpawn`, below). Never
+   * a ticket field — nothing a filer/cast can write reaches this map directly.
+   */
+  private readonly planVerified = new Map<string, PlanVerification>();
+  /** See {@link DispatcherDeps.planVerifiedSeed} — test-only, always `false` in production. */
+  private readonly planGateAlwaysSatisfiedForTests: boolean;
   /** Crash-recovery ledger for CURRENTLY live workers (persisted; see {@link LedgeredWorker}). */
   private readonly liveLedger = new Map<string, LedgeredWorker>();
   /** Epoch ms of each live worker's last driver event — the "is it moving?" status signal (#30). */
@@ -682,6 +740,16 @@ export class Dispatcher {
     });
     this.stages = deps.stages ?? stageRegistry;
     this.caps = retryCapsFor(this.config);
+    // Issue #128 test seam — see {@link DispatcherDeps.planVerifiedSeed}'s doc. Production boot
+    // never sets this (`shell/main.ts` passes no such field), so `hasVerifiedPlan` degrades to its
+    // real check (`this.planVerified.has(...)`) outside tests, same as if this seam didn't exist.
+    this.planGateAlwaysSatisfiedForTests = deps.planVerifiedSeed === "all";
+    if (Array.isArray(deps.planVerifiedSeed)) {
+      const seededAt = new Date(0).toISOString();
+      for (const ticketId of deps.planVerifiedSeed) {
+        this.planVerified.set(ticketId, { sha: null, harness: "test-seed", verifiedAt: seededAt });
+      }
+    }
     this.stageOps = {
       config: this.config,
       logger: this.logger,
@@ -699,10 +767,14 @@ export class Dispatcher {
       implementIncomplete: (ticket, handle, summary) => this.onImplementIncomplete(ticket, handle, summary),
       reviewInfraFailure: (ticket, reason, summary) => this.onReviewInfraFailure(ticket, reason, summary),
       persistRuntimeState: () => this.persistRuntimeState(),
+      hasVerifiedPlan: (ticketId) => this.planGateAlwaysSatisfiedForTests || this.planVerified.has(ticketId),
+      recordPlanVerified: (ticketId, record) => this.planVerified.set(ticketId, record),
+      readTicketFile: (ticket, relPath) => this.readTicketFile(ticket, relPath),
       counters: {
         rework: this.reworkCount,
         reviewInfra: this.reviewInfraRetries,
         designCycles: this.designCycles,
+        planCycles: this.planCycles,
       },
     };
     this.loadRuntimeState();
@@ -901,8 +973,37 @@ export class Dispatcher {
           this.forgetWedgeClock(ticket.id);
           continue;
         }
-        // Not a staffable state, or a design ticket the guard won't staff → not a wedge; forget it.
-        if (!staffs || (staffs.entryGuard && !staffs.entryGuard(ticket))) {
+        // Not a staffable state → not a wedge; forget it.
+        if (!staffs) {
+          this.forgetWedgeClock(ticket.id);
+          continue;
+        }
+        if (staffs.entryGuard && !staffs.entryGuard(ticket, this.stageOps)) {
+          // The `implement` guard failing specifically for "no verified plan" (issue #128) is a
+          // GENUINE anomaly — some path put this ticket in `in_progress` without ever visiting
+          // `plan` — and the old "not a wedge; forget it" behavior would strand it silently
+          // forever (exactly the failure mode a mandatory gate must not create). Redirect it to
+          // `plan` instead. Every OTHER guard failure (design's INT-only gate) keeps the
+          // pre-existing inert behavior — this branch is scoped to THIS guard, not "any guard".
+          if (staffs.name === "implement" && !this.stageOps.hasVerifiedPlan(ticket.id)) {
+            this.forgetWedgeClock(ticket.id);
+            try {
+              const moved = await this.advanceTicket(
+                ticket,
+                "plan",
+                "Found this ticket in **in_progress** with no verified plan brief on record — issue " +
+                  "#128 requires one before an implement worker is staffed. Sending it to **Plan** " +
+                  "instead of leaving it stuck with no path forward.",
+              );
+              if (moved) restaffed.push(ticket.id);
+            } catch (err) {
+              this.logger.warn("staffing watchdog: could not redirect an unplanned in_progress ticket to plan", {
+                ticket: ticket.identifier,
+                error: (err as Error).message,
+              });
+            }
+            continue;
+          }
           this.forgetWedgeClock(ticket.id);
           continue;
         }
@@ -1206,6 +1307,8 @@ export class Dispatcher {
     this.reviewInfraRetries.delete(ticketId);
     this.stallFingerprints.delete(ticketId);
     this.designCycles.delete(ticketId);
+    this.planCycles.delete(ticketId);
+    this.planVerified.delete(ticketId);
     this.liveTickets.delete(ticketId);
     this.liveLedger.delete(ticketId);
     this.resumables.delete(ticketId);
@@ -1531,7 +1634,7 @@ export class Dispatcher {
     if (staffs) {
       // Stage admission gate (design is INT-only: the guard keeps a malformed non-INT board
       // state from accidentally spending a design worker).
-      if (staffs.entryGuard && !staffs.entryGuard(ticket)) return;
+      if (staffs.entryGuard && !staffs.entryGuard(ticket, this.stageOps)) return;
       // Publish retries deliberately hold completed work in_review; it is not an unstaffed
       // review gate and must not burn a new reviewer on every poll/restart.
       if (to === "in_review" && this.publishOutbox?.has(ticket.id)) return;
@@ -2157,6 +2260,22 @@ export class Dispatcher {
 
   /** The real spawn path (cap already checked). Registers the finish handler. */
   private async doSpawn(ticket: Ticket, stage: string, repoRoot: string, reservation: symbol): Promise<void> {
+    // Defense-in-depth (issue #128, bypass #5): every KNOWN call site that can reach here first
+    // consults `implementStage.entryGuard` (`stages.forState(...).entryGuard`) at the four
+    // staffing points in this file. This is a SECOND, independent check of the exact same fact,
+    // placed at the one chokepoint every spawn — known or future — must pass through, so a call
+    // site that forgets to consult the guard still cannot launch an unbriefed implement worker.
+    if (stage === "implement" && !this.planGateAlwaysSatisfiedForTests && !this.planVerified.has(ticket.id)) {
+      this.logger.error("structural guard bypass blocked: refusing an implement spawn with no verified plan", {
+        ticket: ticket.identifier,
+      });
+      await this.onSpawnFailure(
+        ticket,
+        stage,
+        new Error("no verified plan-stage brief on record — refusing to launch an implement worker (issue #128)"),
+      );
+      return; // launchSpawn's finally releases the reservation + pumps
+    }
     const stageStartedAt = Date.now();
     const stageDef = this.stages.get(stage);
     let spec = this.castFor(ticket, stage);
@@ -2334,6 +2453,25 @@ export class Dispatcher {
         });
       }
     }
+    // Issue #128: hand implement/review the ticket's verified plan brief, read from the SAME
+    // worktree checkout every stage of this ticket shares (v3.1) — the plan stage committed it
+    // there. Best-effort: a read failure degrades to no plan (today's exact prompt), never blocks
+    // the spawn — the `plan_check` gate already ran BEFORE the ticket ever reached `in_progress`,
+    // so a missing file here is a filesystem hiccup, not a policy question.
+    let planDoc: string | undefined;
+    let planDocSha: string | undefined;
+    if ((stage === "implement" || stage === "review") && this.planVerified.has(ticket.id)) {
+      try {
+        planDoc = await this.readTicketFile(ticket, planDocPath(ticket));
+        planDocSha = this.planVerified.get(ticket.id)?.sha ?? undefined;
+      } catch (err) {
+        this.logger.warn("could not read the verified plan doc for the prompt — degrading to no plan", {
+          ticket: ticket.identifier,
+          stage,
+          error: (err as Error).message,
+        });
+      }
+    }
     const spawnArgs = {
       ticket,
       stage,
@@ -2346,6 +2484,8 @@ export class Dispatcher {
       onProgress,
       steering,
       reviewDiff,
+      planDoc,
+      planDocSha,
       // v6 Phase 5: spawn resolves the prompt/system-append through the SAME stage view that
       // staffed this ticket — one registry, no staffing/prompting divergence.
       stages: this.stages,
@@ -2419,7 +2559,7 @@ export class Dispatcher {
         if (reservationWasDropped && fresh) {
           const staffs = this.stages.forState(fresh);
           const restaffTicket = { ...ticket, state: fresh };
-          if (staffs && (!staffs.entryGuard || staffs.entryGuard(restaffTicket))) {
+          if (staffs && (!staffs.entryGuard || staffs.entryGuard(restaffTicket, this.stageOps))) {
             this.logger.info("re-staffing discarded mid-spawn worker for the ticket's current stage", {
               ticket: ticket.identifier,
               from: stage,
@@ -2777,6 +2917,19 @@ export class Dispatcher {
 
     const cast = await this.preflight(spec.harness);
     if (cast.ok) return spec;
+
+    // The plan stage's own cast must not silently degrade (issue #128, bypass #4): its whole job
+    // is a strong-seat-authored brief, and substituting here would hand that job to whatever's
+    // merely healthy — defeating the guarantee the gate exists to provide. Fail loud instead of
+    // walking fallback_order; `planStage.spawnFailure` holds the ticket in `plan` for a human.
+    if (stage === "plan") {
+      this.logger.error("plan-stage harness unhealthy — no substitution permitted", {
+        ticket: ticket.identifier,
+        cast: spec.harness,
+        problems: cast.problems,
+      });
+      return null;
+    }
 
     const order = this.config.harness?.fallback_order ?? ["claude", "pi", "codex"];
     for (const candidate of order) {
@@ -3205,6 +3358,19 @@ export class Dispatcher {
       });
       return null;
     }
+  }
+
+  /**
+   * Read a file from the ticket's own allocated worktree checkout (issue #128 — `plan_check`'s
+   * mechanical size gate over the committed plan doc). Every stage of a ticket runs in the SAME
+   * checkout ({@link workspaceByTicket}, v3.1), so this reads whatever the most recent stage
+   * committed there. Throws (never swallows) so a missing workspace/file reads as a genuine gap
+   * to the caller, not a silent pass.
+   */
+  private async readTicketFile(ticket: Ticket, relPath: string): Promise<string> {
+    const workspace = this.workspaceByTicket.get(ticket.id);
+    if (!workspace) throw new Error(`no allocated workspace for ticket ${ticket.identifier}`);
+    return readFileSync(join(workspace, relPath), "utf8");
   }
 
   /**
@@ -3744,9 +3910,20 @@ export class Dispatcher {
     }
   }
 
+  /**
+   * Issue #128, bypass #2's DAG-promotion half: a promoted dependent's default start state is now
+   * ALWAYS `plan`, never a direct drop into `in_progress` — closing two sub-bypasses the pre-#128
+   * version had. (1) `if (!ticket.branchRef) return "in_progress"` skipped straight to implement
+   * for any promoted dependent with no task-branch ref at all, unconditionally. (2) the
+   * `isIntTicket(ticket) ? "design" : "in_progress"` fallback sent every NON-INT branch-ref'd
+   * dependent straight to implement too — INT tickets got a design gate, nobody else got any
+   * gate. `implementStage.entryGuard` is the real bar either way, but a ticket that never visits
+   * `plan` never gets a chance to pass it cleanly — it would just sit blocked. An explicit
+   * `ticket.startState` (an operator's deliberate override, e.g. resuming a ticket that already
+   * has a plan) still wins outright.
+   */
   private dependentStartState(ticket: Ticket): TicketState {
-    if (!ticket.branchRef) return "in_progress";
-    return ticket.startState ?? (isIntTicket(ticket) ? "design" : "in_progress");
+    return ticket.startState ?? "plan";
   }
 
   private async promoteHeldDependent(ticket: Ticket, after: string): Promise<boolean> {
@@ -3853,7 +4030,7 @@ export class Dispatcher {
       const staffs = this.stages.forState(state);
       if (
         staffs &&
-        (!staffs.entryGuard || staffs.entryGuard(ticket)) &&
+        (!staffs.entryGuard || staffs.entryGuard(ticket, this.stageOps)) &&
         !(state === "in_review" && this.publishOutbox?.has(ticket.id))
       ) {
         this.spawnGuarded(ticket, staffs.name);
@@ -3923,6 +4100,8 @@ export class Dispatcher {
     this.reviewInfraRetries.delete(ticketId);
     this.stallFingerprints.delete(ticketId);
     this.designCycles.delete(ticketId);
+    this.planCycles.delete(ticketId);
+    this.planVerified.delete(ticketId);
     this.liveTickets.delete(ticketId);
     this.liveLedger.delete(ticketId);
     this.resumables.delete(ticketId);
@@ -4017,6 +4196,8 @@ export class Dispatcher {
       this.replaceMap(this.reviewInfraRetries, parsed.reviewInfraRetries);
       this.replaceMap(this.stallFingerprints, parsed.stallFingerprints ?? {});
       this.replaceMap(this.designCycles, parsed.designCycles ?? {});
+      this.replaceMap(this.planCycles, parsed.planCycles ?? {});
+      this.replaceMap(this.planVerified, parsed.planVerified ?? {});
       this.replaceMap(this.humanHolds, parsed.humanHolds ?? {});
       // Workers the previous daemon left behind — consumed by recoverFromCrash() at boot.
       if (parsed.liveWorkers && Object.keys(parsed.liveWorkers).length > 0) {
@@ -4059,6 +4240,8 @@ export class Dispatcher {
       reviewInfraRetries: Object.fromEntries(this.reviewInfraRetries),
       stallFingerprints: Object.fromEntries(this.stallFingerprints),
       designCycles: Object.fromEntries(this.designCycles),
+      planCycles: Object.fromEntries(this.planCycles),
+      planVerified: Object.fromEntries(this.planVerified),
       liveWorkers: Object.fromEntries(this.liveLedger),
       pendingSteers: Object.fromEntries(this.pendingSteers),
       humanHolds: Object.fromEntries(this.humanHolds),

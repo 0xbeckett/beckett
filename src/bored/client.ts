@@ -40,7 +40,7 @@ export function boredBaseUrl(env: Record<string, string | undefined> = process.e
 }
 
 const TicketStateSchema = z.enum([
-  "backlog", "todo", "design", "design_review", "in_progress", "in_review", "done", "cancelled",
+  "backlog", "todo", "plan", "design", "design_review", "in_progress", "in_review", "done", "cancelled",
 ]);
 const BoredTicketSchema = z.object({
   ref: z.string(),
@@ -62,15 +62,29 @@ const EventSchema = z.object({
 }).passthrough();
 
 /**
- * A two-gate Bored flow used only as a state bridge. Bored keeps the durable source of truth and
- * its documented `staff`/`gate` verbs advance the same states the legacy dispatcher requests;
+ * A THREE-gate Bored flow used only as a state bridge. Bored keeps the durable source of truth
+ * and its documented `staff`/`gate` verbs advance the same states the legacy dispatcher requests;
  * human gates deliberately spawn no Bored worker, so there is never a duplicate harness process.
+ *
+ * `beckett_plan` is now the ENTRY node (issue #128): every ticket's flow run starts at Plan, not
+ * Implement — the state-machine half of the guarantee that no ticket reaches an implement worker
+ * without a strong-seat-authored brief first (the other half is `implementStage.entryGuard` in
+ * `dispatch/stages.ts`, which is the actual enforcement point; this flow shape just keeps Bored's
+ * own projection honest about the order work happens in). `onFail` parks rather than looping —
+ * the dispatcher's own `planCycles` cap (not this static Bored node cap) decides whether a failed
+ * plan check gets another authoring pass; see `dispatch/plan-stage.ts`'s `planCheckStage`, which
+ * retries by re-spawning `plan` directly (no `beckett_plan` gate verdict) rather than by feeding
+ * this node a `fail`, so a same-state retry never needs a state Bored's HTTP API can't set (unlike
+ * INT's `design`/`design_review`, which is not wired here and would 501 if you tried).
  */
 function dispatcherBridgeFlow(): Record<string, unknown> {
   return {
     version: 1,
-    entry: "beckett_implement",
+    entry: "beckett_plan",
     nodes: {
+      beckett_plan: {
+        kind: "gate", by: "human", onPass: "beckett_implement", onFail: "park", maxFails: 3, maxVisits: 4,
+      },
       beckett_implement: {
         kind: "gate", by: "human", onPass: "beckett_review", onFail: "park", maxFails: 1, maxVisits: 1,
       },
@@ -142,7 +156,7 @@ export class BoredClient {
       // The bridge flow makes bored's projected state follow the existing dispatcher without
       // launching a second worker. Each human gate is advanced by setState below.
       flow: dispatcherBridgeFlow(),
-      stateMap: { beckett_implement: "in_progress", beckett_review: "in_review" },
+      stateMap: { beckett_plan: "plan", beckett_implement: "in_progress", beckett_review: "in_review" },
       autoStaff: false,
     }) as { ticket?: unknown };
     const ticket = this.hydrate(BoredTicketSchema.parse(response.ticket));
@@ -166,12 +180,31 @@ export class BoredClient {
     // Bored's state is a workflow projection, not a mutable column. The bridge flow above
     // translates the dispatcher's lifecycle writes into Bored's documented workflow verbs.
     switch (state) {
+      case "plan": {
+        // The flow's ENTRY node (issue #128) — an unstaffed backlog/todo ticket starts its run
+        // here, never at beckett_implement. A same-state "please re-author" request (the plan
+        // checker found gaps and there's cycle budget left) does NOT come through here: it never
+        // changes ticket.state, so `planCheckStage`'s finish handler re-spawns the `plan` stage
+        // directly (`ops.spawnStage`) instead of asking Bored to re-set a state it's already in —
+        // unlike INT's `design`, which tries exactly that and 501s (no case below handles it).
+        await this.req("POST", `${this.ticketPath(id)}/staff`, {});
+        break;
+      }
       case "in_progress": {
-        // A reviewer sending work back for rework is Bored's `fail` edge, while an unstaffed
-        // todo ticket starts at the entry gate. Read once to choose the documented verb.
+        // Three distinct callers ask for `in_progress`, and only the read tells them apart:
+        //   - a reviewer sending work back for rework → Bored's `beckett_review` fail edge.
+        //   - the plan-completeness checker passing its own gate → `beckett_plan` pass edge,
+        //     advancing the flow onto `beckett_implement` (the plan → implement handoff).
+        //   - anything else (legacy/direct request with no active Plan run for this ticket) →
+        //     fall back to staffing fresh. On a real Bored flow that starts a run at the entry
+        //     node (`beckett_plan`), so a caller that tries to skip straight to `in_progress`
+        //     lands the ticket in `plan` instead of the state it asked for — the tracker itself
+        //     refuses to originate work at Implement, on top of `implementStage.entryGuard`.
         const current = await this.getIssue(id);
         if (current?.state === "in_review") {
           await this.req("POST", `${this.ticketPath(id)}/gate`, { node: "beckett_review", verdict: "fail" });
+        } else if (current?.state === "plan") {
+          await this.req("POST", `${this.ticketPath(id)}/gate`, { node: "beckett_plan", verdict: "pass" });
         } else {
           await this.req("POST", `${this.ticketPath(id)}/staff`, {});
         }
@@ -264,7 +297,7 @@ export class BoredClient {
   }
 
   async listStates(): Promise<WorkflowState[]> {
-    return ["backlog", "todo", "design", "design_review", "in_progress", "in_review", "done", "cancelled"]
+    return ["backlog", "todo", "plan", "design", "design_review", "in_progress", "in_review", "done", "cancelled"]
       .map((name) => ({ id: name, name }));
   }
 

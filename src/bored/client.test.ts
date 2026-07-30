@@ -100,3 +100,63 @@ test("list, create, state, journal comments, and cancellation use bored HTTP end
   expect(requests.find((request) => request.method === "POST" && request.path === "/tickets/%231/gate")?.body).toEqual({ node: "beckett_implement", verdict: "pass" });
   expect(requests.map((request) => `${request.method} ${request.path}`)).toContain("POST /tickets/%231/staff");
 });
+
+test("the plan stage is the flow's entry node and its own state-bridge case (issue #128)", async () => {
+  const requests: Array<{ method: string; path: string; body?: Record<string, unknown> }> = [];
+  let current = ticket("todo");
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(String(url));
+    const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+    requests.push({ method, path: u.pathname, body });
+    if (method === "POST" && u.pathname === "/tickets") return Response.json({ ticket: current });
+    if (method === "GET" && u.pathname === "/tickets/%231") return Response.json({ ticket: current });
+    if (method === "POST" && u.pathname === "/tickets/%231/staff") {
+      current = ticket("plan"); return Response.json({ ticket: current });
+    }
+    if (method === "POST" && u.pathname === "/tickets/%231/gate" && body?.node === "beckett_plan") {
+      current = ticket("in_progress"); return Response.json({ ticket: current });
+    }
+    throw new Error(`unexpected bored route: ${method} ${u.pathname}`);
+  }) as unknown as typeof fetch;
+  const client = new BoredClient({ config, logger: quiet, fetch: fetchImpl });
+
+  // A fresh (unstaffed) ticket entering `plan` starts the flow — POST /staff, the same verb
+  // `in_progress` used to own before Plan became the entry node.
+  await client.setState("#1", "plan");
+  expect(requests.at(-1)).toMatchObject({ method: "POST", path: "/tickets/%231/staff" });
+
+  // The plan checker passing its own gate is the `plan → in_progress` handoff — the current
+  // ticket state (`plan`) is read once to choose the `beckett_plan` pass verdict, not `/staff`.
+  await client.setState("#1", "in_progress");
+  expect(requests.at(-1)).toMatchObject({
+    method: "POST",
+    path: "/tickets/%231/gate",
+    body: { node: "beckett_plan", verdict: "pass" },
+  });
+});
+
+test("createIssue's bridge flow wires beckett_plan as the entry node ahead of implement/review", async () => {
+  const current = ticket("todo");
+  const requests: Array<{ method: string; path: string; body?: Record<string, unknown> }> = [];
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(String(url));
+    const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+    requests.push({ method, path: u.pathname, body });
+    if (method === "POST" && u.pathname === "/tickets") return Response.json({ ticket: current });
+    if (method === "GET" && u.pathname === "/tickets/%231") return Response.json({ ticket: current });
+    throw new Error(`unexpected bored route: ${method} ${u.pathname}`);
+  }) as unknown as typeof fetch;
+  const client = new BoredClient({ config, logger: quiet, fetch: fetchImpl });
+
+  await client.createIssue({ title: "Ticket", body: "work", criteria: ["works"] });
+  const createBody = requests.find((r) => r.method === "POST" && r.path === "/tickets")?.body;
+  expect(createBody?.flow).toMatchObject({
+    entry: "beckett_plan",
+    nodes: { beckett_plan: { onPass: "beckett_implement" } },
+  });
+  expect(createBody?.stateMap).toEqual({
+    beckett_plan: "plan", beckett_implement: "in_progress", beckett_review: "in_review",
+  });
+});

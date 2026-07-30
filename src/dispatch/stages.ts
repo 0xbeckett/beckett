@@ -23,12 +23,18 @@
  * dispatcher constants. {@link defaultEffortFor} also lives here as the single source of
  * truth (it was duplicated verbatim in `spawn.ts` and `dispatcher.ts`).
  *
- * Behavior contract: the four built-in stages (implement / review / design / design_check)
+ * Behavior contract: the four v5 built-in stages (implement / review / design / design_check)
  * are the pre-registry dispatcher/spawn logic moved VERBATIM — every ticket comment, state
  * transition, and cap default is byte-identical. The dispatcher's shared failure machinery
  * (bounded implement retries, publish gating, classed auth/rate-limit handling) deliberately
  * stays in the dispatcher and is reached through {@link StageOps} — it is fleet policy, not
  * a stage's own shape.
+ *
+ * issue #128 adds a FIFTH+SIXTH pair, `plan`/`plan_check` (`dispatch/plan-stage.ts`), ahead of
+ * implement: every ticket now authors a strong-seat brief before an implement worker is ever
+ * staffed, structurally — `implementStage.entryGuard` refuses to staff without a `plan_check`
+ * verified record, and that record lives in dispatcher runtime state, never a ticket field a
+ * filer could spoof. See `plan-stage.ts`'s header for the full enforcement writeup.
  */
 
 import type { Config, DoneSignal, Effort, Logger } from "../types.ts";
@@ -43,6 +49,16 @@ import { CapabilityRegistry, type CapabilityDeps, type PromptBlock } from "../ca
 import { availableCapabilityModules, createCapability } from "../capability/modules/index.ts";
 import { buildPaths } from "../paths.ts";
 import { warmApexDomain } from "../agency/cloudflare.ts";
+import { planContextBlock, planNoRederiveNote, planReviewPointer } from "./plan-artifact.ts";
+// `plan-stage.ts` imports several of THIS module's exports (taskHeader, taskCriteria,
+// workerSystemAppend, parseDoneSignal, doneSignalSummary — all hoisted function declarations,
+// plus type-only `StageDefinition`/`StageOps`/`PlanVerification`), so this is a deliberate
+// two-way import. It resolves safely because every binding `plan-stage.ts` reads from here is
+// either a hoisted `function` (live before either module's top-level body runs) or a type (erased
+// at runtime) — never a `const` value — so by the time `buildStagesExtension()` below actually
+// runs (module bottom), `plan-stage.ts` has always finished evaluating. See `plan-stage.ts`'s own
+// header comment for the other half of this contract.
+import { planStage, planCheckStage, planDocPath } from "./plan-stage.ts";
 
 // =======================================================================================
 // Shared vocabulary: caps, effort, done-signal parsing
@@ -58,6 +74,16 @@ export interface RetryCaps {
   reworkCycles: number;
   /** The completeness checker may send an incomplete design back this many times total. */
   designCycles: number;
+  /**
+   * The plan checker may send an incomplete/oversized plan back this many times before a human
+   * takes over (issue #128) — deliberately separate from {@link designCycles} even though the
+   * shape mirrors it: a plan cap change must not silently move design's too. NOT YET wired to a
+   * `[supervise] max_plan_cycles` config key: that schema lives in `src/capability/builtins.ts`,
+   * which another implementer was concurrently editing for this same issue when this file was
+   * written, and touching it risked a collision this stage does not need to take — the hardcoded
+   * default below is a real, load-bearing cap either way. Wiring a config knob is a follow-up.
+   */
+  planCycles: number;
   /** Max auto-respawns of an implement worker that ended without a clean finish (OPS-50). */
   implementRetries: number;
   /** Max review infra/schema retries before the dispatcher waits for a human verdict. */
@@ -72,6 +98,8 @@ export function retryCapsFor(config: Config): RetryCaps {
   return {
     reworkCycles: config.supervise?.max_rework_cycles ?? 3,
     designCycles: config.supervise?.max_design_cycles ?? 2,
+    // See {@link RetryCaps.planCycles}'s doc: no config key yet, hardcoded default only.
+    planCycles: 2,
     implementRetries: config.supervise?.max_implement_retries ?? 3,
     reviewInfraRetries: config.supervise?.max_review_infra_retries ?? 1,
     harnessSubstitutions: config.supervise?.max_harness_substitutions ?? 6,
@@ -166,6 +194,15 @@ export interface StagePromptArgs {
   steering?: string[];
   /** The pre-read contribution diff for review prompts (issue #27). */
   reviewDiff?: string;
+  /**
+   * The ticket's verified plan-stage brief (issue #128), pre-read by the dispatcher when
+   * `ops.hasVerifiedPlan(ticket.id)`. Absent for every ticket without one — including every
+   * ticket that predates this stage — so `genericTaskPrompt`'s output stays byte-identical to
+   * before (`plan-artifact.ts#planContextBlock` returns `""` for `undefined`).
+   */
+  planDoc?: string;
+  /** Commit the plan doc was verified at (freshness marker in the inlined block). */
+  planDocSha?: string;
 }
 
 /** Inputs to a stage's system-append builder (the worker persona + scope). */
@@ -175,6 +212,8 @@ export interface StageAppendArgs {
   baseRef?: string;
   /** Env source for the publishing guidance (tests inject; defaults to process.env). */
   env?: Record<string, string | undefined>;
+  /** Same plan-doc presence signal as {@link StagePromptArgs.planDoc} — gates `planNoRederiveNote()`. */
+  planDoc?: string;
 }
 
 /** A finished worker, as the dispatcher hands it to the stage's finish handler. */
@@ -184,6 +223,25 @@ export interface StageFinishArgs {
   status: "success" | "error";
   /** Human summary (done-signal summary or last assistant text, spend line appended). */
   summary: string;
+}
+
+/**
+ * A dispatcher-owned record of a ticket's plan-stage brief, written ONLY by `plan_check`'s finish
+ * handler once it verifies a plan doc is complete, within the size ceiling, AND was actually
+ * authored by an allowlisted strong seat (issue #128). Deliberately captures the cast that
+ * ACTUALLY RAN — `pickHealthyHarness`'s resolved harness/model, not the ticket's requested cast —
+ * so a harness substitution can never silently satisfy the gate with a weaker seat than the one
+ * that was supposed to run (see `implementStage.entryGuard` / `hasQualifyingPlan`, the consumer).
+ */
+export interface PlanVerification {
+  /** Commit the plan doc was verified at (`docs/plan/<id>.md`'s content, at this sha). */
+  sha: string | null;
+  /** The harness that actually produced the verified plan (post-substitution, if any). */
+  harness: string;
+  /** The model that actually produced the verified plan, when the harness names one. */
+  model?: string;
+  /** ISO-8601 timestamp `plan_check` recorded this verification. */
+  verifiedAt: string;
 }
 
 /**
@@ -227,6 +285,23 @@ export interface StageOps {
   reviewInfraFailure(ticket: Ticket, reason: string, summary: string): Promise<void>;
   /** Persist the dispatcher's restart-surviving ticket memory (counters included). */
   persistRuntimeState(): void;
+  /**
+   * `true` iff this ticket has a dispatcher-recorded, `plan_check`-verified plan brief on file
+   * (issue #128) — the ONE fact `implementStage.entryGuard` consults to decide whether an
+   * implement worker may be staffed. This is the enforcement point: it is dispatcher runtime
+   * state (never a ticket field a filer/cast can spoof) and it is set in exactly one place
+   * ({@link recordPlanVerified}, called only by `plan_check`'s finish handler on a verified pass).
+   */
+  hasVerifiedPlan(ticketId: string): boolean;
+  /** Record a verified plan brief (issue #128). See {@link PlanVerification} for what "verified" captures. */
+  recordPlanVerified(ticketId: string, record: PlanVerification): void;
+  /**
+   * Read a file at `relPath` from the ticket's own worktree checkout (issue #128 —
+   * `plan_check`'s mechanical size gate reads the committed plan doc directly rather than
+   * trusting the cheap checker model's own sense of "is this too long"). Throws if the ticket has
+   * no allocated workspace yet or the file doesn't exist; callers treat that as a gap, not a pass.
+   */
+  readTicketFile(ticket: Ticket, relPath: string): Promise<string>;
   /** Restart-surviving per-ticket counters (persisted by {@link persistRuntimeState}). */
   readonly counters: {
     /** Implement↔review round-trips, bounded by {@link RetryCaps.reworkCycles}. */
@@ -235,6 +310,8 @@ export interface StageOps {
     reviewInfra: Map<string, number>;
     /** Incomplete design-check passes, bounded by {@link RetryCaps.designCycles}. */
     designCycles: Map<string, number>;
+    /** Incomplete/oversized/wrong-seat plan-check passes, bounded by {@link RetryCaps.planCycles}. */
+    planCycles: Map<string, number>;
   };
 }
 
@@ -247,8 +324,16 @@ export interface StageDefinition {
   readonly name: string;
   /** Ticket state whose entry staffs this stage; absent for follow-on stages a finish handler spawns (design_check). */
   readonly entryState?: TicketState;
-  /** Extra admission gate on {@link entryState} staffing (design is INT-board-only). */
-  entryGuard?(ticket: Ticket): boolean;
+  /**
+   * Extra admission gate on {@link entryState} staffing (design is INT-board-only; implement
+   * requires a verified plan brief — issue #128, see `hasQualifyingPlan`). Takes {@link StageOps}
+   * (widened from ticket-only, issue #128) because a guard may need to consult DISPATCHER RUNTIME
+   * STATE, not just the ticket's own fields — `hasQualifyingPlan` reads `ops.hasVerifiedPlan`,
+   * which no ticket field could carry without also being spoofable by whatever files the ticket.
+   * Backward compatible: a guard declared with just `(ticket) => boolean` (like `isIntTicket`)
+   * still satisfies this type — TS allows ignoring trailing parameters.
+   */
+  entryGuard?(ticket: Ticket, ops: StageOps): boolean;
   /** Capture the repo HEAD before new work as the ticket's review-diff base (implement). */
   readonly capturesBaseSha?: boolean;
   /** Pre-read the ticket's contribution diff into the prompt (review, issue #27). */
@@ -375,13 +460,18 @@ function reviewDiffBlock(diff: string | undefined, baseRef?: string): string {
   );
 }
 
-/** `[OPS-42] title`, the header every stage brief opens with. */
-function taskHeader(ticket: Ticket): string {
+/**
+ * `[OPS-42] title`, the header every stage brief opens with. Exported (issue #128) so a stage
+ * defined outside this file (`dispatch/plan-stage.ts`) can build a brief in the house shape
+ * without re-deriving it — the plan stage's own task header must read identically to every
+ * other stage's, since it is read by a HUMAN as well as the next worker.
+ */
+export function taskHeader(ticket: Ticket): string {
   return `[${ticket.identifier}] ${ticket.title}`;
 }
 
-/** The `<criteria>` block shared by every stage brief. */
-function taskCriteria(ticket: Ticket): string {
+/** The `<criteria>` block shared by every stage brief. Exported for the same reason as {@link taskHeader}. */
+export function taskCriteria(ticket: Ticket): string {
   return `\n\n<criteria>\nAcceptance criteria:\n${criteriaBlock(ticket.criteria)}\n</criteria>`;
 }
 
@@ -391,9 +481,12 @@ function designDocPath(ticket: Ticket): string {
 }
 
 /** The generic task brief — the implement stage's prompt AND the unknown-stage fallback. */
-function genericTaskPrompt({ ticket, steering }: StagePromptArgs): string {
+function genericTaskPrompt({ ticket, steering, planDoc, planDocSha }: StagePromptArgs): string {
   const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";
-  return `<task>\n${taskHeader(ticket)}${body}\n</task>${taskCriteria(ticket)}${steeringBlock(steering)}`;
+  // Issue #128: the ticket's verified plan brief, inlined ahead of <task> when one exists.
+  // `planContextBlock` returns "" for an absent doc — every ticket without a plan (including
+  // every ticket filed before this stage existed) gets a byte-identical prompt to before.
+  return `${planContextBlock(planDoc, planDocSha)}<task>\n${taskHeader(ticket)}${body}\n</task>${taskCriteria(ticket)}${steeringBlock(steering)}`;
 }
 
 /**
@@ -425,19 +518,24 @@ const designStageBlock: PromptBlock = {
 };
 
 /**
- * The businesslike worker persona + scope system append shared by the implement and design
- * stages (design adds a design-only line) — and the unknown-stage fallback. The acceptance
- * criteria live ONCE, in the task brief (the prompt) — duplicating them here doubled every
- * worker's criteria tokens for nothing (issue #25).
+ * The businesslike worker persona + scope system append shared by every registered worker stage
+ * (each may add its OWN extra persona line via `opts.stageBlock`) — and the unknown-stage
+ * fallback. The acceptance criteria live ONCE, in the task brief (the prompt) — duplicating them
+ * here doubled every worker's criteria tokens for nothing (issue #25).
  *
  * Phase 4 (#N.7): the capability-owned content between the persona opener and the done-signal
  * closer — the GitHub publishing contract, the deploy-durability recipe — is COMPOSED from
  * the modules' registered {@link PromptBlock}s ({@link CapabilityRegistry.composePrompt}),
  * not concatenated here. The composed output is byte-identical to the pre-V5 append.
+ *
+ * Exported (issue #128) so `dispatch/plan-stage.ts` composes the SAME persona + capability
+ * blocks the design stage does, with its own stage-owned line, instead of hand-rolling a second
+ * copy of the composition call that could silently drift from this one (a stage-persona line
+ * doubling as a compliance surface — "write the plan only, do not implement" — must never rot).
  */
-function workerSystemAppend(
-  { ticket, config, env = process.env }: StageAppendArgs,
-  opts: { designOnly?: boolean } = {},
+export function workerSystemAppend(
+  { ticket, config, env = process.env, planDoc }: StageAppendArgs,
+  opts: { stageBlock?: PromptBlock } = {},
 ): string {
   const slug = projectSlug(ticket.project || ticket.identifier);
   // Kick off (once per process) resolving the Cloudflare zone's apex so the deploy-durability
@@ -447,8 +545,11 @@ function workerSystemAppend(
   void warmApexDomain({ token: env.CLOUDFLARE_API_TOKEN, zoneId: env.CLOUDFLARE_ZONE_ID, logger: quiet });
   const contributions = workerPromptCapabilities(config).composePrompt(
     { config, ticket, slug, env },
-    opts.designOnly ? [designStageBlock] : [],
+    opts.stageBlock ? [opts.stageBlock] : [],
   );
+  // Issue #128: tell the worker to treat the inlined plan as given rather than re-deriving it —
+  // absent (no plan on record) this is exactly the pre-#128 append, unchanged.
+  const planNote = planDoc ? `${planNoRederiveNote()}\n` : "";
   return (
     `<persona>\n` +
     `You are an autonomous worker implementing a ticket. Your cwd is THIS PROJECT'S OWN git repo ` +
@@ -457,6 +558,7 @@ function workerSystemAppend(
     `You are done when ALL the acceptance criteria in your task brief hold.\n` +
     `SELF-REVIEW before you finish: re-read your own diff and CHECK each acceptance criterion ` +
     `holds — there may be no separate reviewer after you. Run the check commands; fix what fails.\n` +
+    `${planNote}` +
     `${contributions ? `${contributions}\n` : ""}` +
     `When finished, emit the structured done-signal matching the provided schema (status ` +
     `"complete" when all criteria hold AND your self-review passed, "blocked"/"partial" ` +
@@ -498,9 +600,26 @@ async function implementReportedIncomplete(
   await ops.implementIncomplete(ticket, handle, reason);
 }
 
+/**
+ * THE enforcement point for issue #128's structural guarantee: an implement worker is never
+ * staffed for a ticket that lacks a `plan_check`-verified, strong-seat-authored brief.
+ * `ops.hasVerifiedPlan` reads dispatcher RUNTIME STATE (`Dispatcher.planVerified`, written only
+ * by `plan_check`'s finish handler on a genuine pass) — never a ticket field, so nothing a filer
+ * (including the concierge, now running on the cheap chat-seat default) can write into a ticket's
+ * cast or description can satisfy this gate. This is consulted at EVERY staffing call site that
+ * asks `stages.forState(state).entryGuard` before spawning (`dispatcher.ts`: the poll-driven
+ * transition handler, `advanceTicket`'s own-transition spawn, the mid-spawn re-staff path, and
+ * the staffing watchdog) — see `doSpawn`'s own independent assertion for the defense-in-depth
+ * backstop covering any FUTURE call site that forgets to consult it.
+ */
+function hasQualifyingPlan(ticket: Ticket, ops: StageOps): boolean {
+  return ops.hasVerifiedPlan(ticket.id);
+}
+
 const implementStage: StageDefinition = {
   name: "implement",
   entryState: "in_progress",
+  entryGuard: hasQualifyingPlan,
   capturesBaseSha: true,
   resolveCast: (explicit) => explicit ?? { harness: "claude" },
   buildPrompt: genericTaskPrompt,
@@ -562,15 +681,21 @@ const reviewStage: StageDefinition = {
     if (explicit) return explicit.effort ? explicit : { ...explicit, effort: reviewEffortFor(ticket) };
     return { harness: "claude", model: config.models.reviewer, effort: reviewEffortFor(ticket) };
   },
-  buildPrompt({ ticket, baseRef, steering, reviewDiff }): string {
+  buildPrompt({ ticket, baseRef, steering, reviewDiff, planDoc }): string {
     const body = ticket.body.trim() ? `\n\n${ticket.body.trim()}` : "";
     const diffBlock = reviewDiffBlock(reviewDiff, baseRef);
     const inspect = diffBlock
       ? "" // the diff (or its file list) is already in hand
       : `The implementation is committed in the repo you're in (your cwd). Inspect it with ` +
         `${diffHint(baseRef)}, then `;
+    // Issue #128: a POINTER only, not a second inlined copy — review already has the diff as
+    // ground truth (preloadsDiff); doubling an ~800-token plan block into every review turn would
+    // cost more than it saves. `planDoc`'s mere presence is the dispatcher's own signal that a
+    // verified plan exists (it only ever reads one onto the spawn args when `hasVerifiedPlan` is
+    // true) — the pointer names the doc's PATH, not its content, so this stays a one-line append.
+    const planLine = planDoc ? `\n\n${planReviewPointer(planDocPath(ticket))}` : "";
     return (
-      `<task>\nReview the implementation for ticket ${taskHeader(ticket)}.${body}\n</task>${taskCriteria(ticket)}${steeringBlock(steering)}${diffBlock}\n\n` +
+      `<task>\nReview the implementation for ticket ${taskHeader(ticket)}.${body}\n</task>${taskCriteria(ticket)}${steeringBlock(steering)}${diffBlock}${planLine}\n\n` +
       `${inspect}verify it against EVERY acceptance criterion above. Do not ` +
       `modify the implementation — your job is to judge it.`
     );
@@ -674,7 +799,7 @@ const designStage: StageDefinition = {
       `finishing; an independent model and then the owner will review it.`
     );
   },
-  buildSystemAppend: (args) => workerSystemAppend(args, { designOnly: true }),
+  buildSystemAppend: (args) => workerSystemAppend(args, { stageBlock: designStageBlock }),
   parseDoneSignal,
   /**
    * Design is a real worker stage, followed by an independent cheap completeness pass. The
@@ -818,23 +943,25 @@ export function stageViewOf(registry: ExtensionRegistry): StageView {
 
 /**
  * The built-in worker stages as ONE core-kind extension (v6 Phase 5, docs/v6-architecture.md
- * §6): implement / review / design / design_check registered through the contract's stages
- * facet — the SAME four objects the pre-Phase-5 singleton held, byte-identical (the accuracy
- * floor, docs §8: every prompt string, transition, comment, effort default, and cap; the
- * review tiers stay dispatcher data via `reviewTierFor`). No capabilities/invoke (stages are
- * staffed by the dispatcher's state machine, never @mention-routed) and no lifecycle
- * (stateless data), so registration order never constrains the stateful organs' boot.
+ * §6): implement / review / design / design_check / plan / plan_check registered through the
+ * contract's stages facet. implement/review/design/design_check are the SAME four objects the
+ * pre-Phase-5 singleton held, byte-identical (the accuracy floor, docs §8: every prompt string,
+ * transition, comment, effort default, and cap; the review tiers stay dispatcher data via
+ * `reviewTierFor`). plan/plan_check are new (issue #128) but registered the SAME way — no
+ * capabilities/invoke (stages are staffed by the dispatcher's state machine, never
+ * @mention-routed) and no lifecycle (stateless data), so registration order never constrains the
+ * stateful organs' boot.
  */
 function buildStagesExtension(): Extension {
   return {
     manifest: {
       id: "stages",
       version: "1.0.0",
-      summary: "The dispatcher's built-in worker stages (implement / review / design / design_check).",
+      summary: "The dispatcher's built-in worker stages (plan / plan_check / implement / review / design / design_check).",
       actionClass: ActionClass.FREE,
       kind: "core",
     },
-    stages: [implementStage, reviewStage, designStage, designCheckStage],
+    stages: [planStage, planCheckStage, implementStage, reviewStage, designStage, designCheckStage],
   };
 }
 

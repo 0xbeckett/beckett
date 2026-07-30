@@ -184,6 +184,16 @@ describe("TrackerPoller comment hot path", () => {
     ]);
   });
 
+  test("prime re-staffs live Plan-stage tickets (issue #128)", async () => {
+    const client = new FakeTrackerClient();
+    const planning = ticket({ id: "planning-1", identifier: "OPS-1", state: "plan" });
+    client.tickets = [planning];
+    const poller = new TrackerPoller({ client: client as unknown as TrackerClient, logger: quiet, now: () => 0 });
+
+    const events = await poller.prime();
+    expect(events).toEqual([{ kind: "state_changed", ticket: planning, from: null, to: "plan" }]);
+  });
+
   test("prime re-staffs tickets already in review", async () => {
     const client = new FakeTrackerClient();
     const reviewing = ticket({ state: "in_review" });

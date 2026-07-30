@@ -870,11 +870,14 @@ export async function runTask(argv: string[]): Promise<void> {
     // Re-confirm only a start-time override; one user confirmation covers the task's branches.
     if (flags.project) guardRestrictedProject(project, Boolean(flags["confirm-beckett"]));
     const casting = await castingFromFlags(flags);
+    // Issue #128: a task branch's default start is now the mandatory Plan stage, not a direct
+    // drop into `in_progress` — see `cli/core.ts`'s `ticket create` guard and `dispatch/plan-
+    // stage.ts`'s header for the full bypass inventory this closes one more entry of.
     const state = flags.state
       ? (String(flags.state) as TicketState)
       : isIntBoard
         ? "design"
-        : "in_progress";
+        : "plan";
     const { createTrackerClient } = await import("../tracker/client.ts");
     const client = createTrackerClient({ config, board, logger: quietLogger });
     const started = await startTaskBranch(store, client, {
@@ -1015,6 +1018,18 @@ export async function runTicket(argv: string[]): Promise<void> {
     if (isIntBoard && !flags.channel) {
       fail("INT tickets require --channel: Review (Design) needs a filing channel to ask the owner for approval");
     }
+    // Issue #128, defense-in-depth (the load-bearing gate is `implementStage.entryGuard`,
+    // `dispatch/stages.ts` — this is just a clearer, earlier error than letting the dispatcher
+    // silently refuse to staff it): filing straight into `in_progress`/`in_review`/`design_review`
+    // skips the mandatory Plan stage (design_review and in_review are further downstream than
+    // plan even reaches by itself, so filing directly into them would skip it just as surely).
+    // No size/triviality exemption in v1 — see `dispatch/plan-stage.ts`'s header for why.
+    if (flags.state && ["in_progress", "in_review", "design_review"].includes(String(flags.state))) {
+      fail(
+        `beckett ticket create: --state ${String(flags.state)} skips the mandatory Plan stage ` +
+          '(issue #128) — omit --state (or pass --state plan) and let the ticket flow through Plan first',
+      );
+    }
     // Restricted self-repo gate — bounce back to the Concierge to re-confirm with the user before
     // any ticket can build against kowo-co/beckett (mis-routing polluted the codebase).
     guardRestrictedProject(flags.project ? String(flags.project) : undefined, !!flags["confirm-beckett"]);
@@ -1026,8 +1041,14 @@ export async function runTicket(argv: string[]): Promise<void> {
       // The code project this ticket builds → its own repo at ~/Projects/<slug>, pushed to
       // 0xbeckett/<slug>. Decoupled from Beckett's own source repo.
       project: flags.project ? String(flags.project) : undefined,
-      // INT starts in its live Design stage by default; OPS keeps the tracker's ready default.
-      state: flags.state ? (String(flags.state) as TicketState) : isIntBoard ? "design" : undefined,
+      // Issue #128: every non-INT board's default (no explicit --state) is now the mandatory Plan
+      // stage — it used to fall through to the tracker's own "ready" default (`todo`, unstaffed),
+      // which left a silent path to manual promotion straight into `in_progress` with no plan ever
+      // authored. INT keeps its existing "design" default unchanged (that pipeline's own
+      // `design`/`design_review` state transitions are pre-existing and untouched by this change;
+      // see `dispatch/plan-stage.ts`'s header for why `plan`, not `design`, is the one gate this
+      // change makes load-bearing).
+      state: flags.state ? (String(flags.state) as TicketState) : isIntBoard ? "design" : "plan",
       // Stamp the originating Discord channel so updates route back to the conversation (closed loop).
       originChannel: flags.channel ? String(flags.channel) : undefined,
     });
@@ -1251,9 +1272,13 @@ export async function runPlan(argv: string[]): Promise<void> {
         const t = byKey.get(key)!;
         const needs: string[] = t.needs ?? [];
         const blockedBy = needs.map((n) => identForKey.get(n)!).filter(Boolean);
-        // INT roots start at Design; OPS roots start at In Progress. Blocked nodes stay parked.
+        // INT roots start at Design; every other root starts at the mandatory Plan stage (issue
+        // #128) — filing straight into `in_progress` here would skip it (a root DAG node has no
+        // dependent-promotion path to catch it the way `dependentStartState` does for blocked
+        // nodes). Blocked nodes stay parked; `promoteHeldDependent`/`dependentStartState`
+        // (dispatch/dispatcher.ts) resolve THEIR start state to `plan` too once unblocked.
         const state = blockedBy.length === 0
-          ? boardForKey.get(key)!.toLowerCase() === "int" ? "design" : "in_progress"
+          ? boardForKey.get(key)!.toLowerCase() === "int" ? "design" : "plan"
           : "backlog";
         const created = await clientForBoard(boardForKey.get(key)!).createIssue({
           title: String(t.title),

@@ -37,8 +37,11 @@ export type PresetMap = Record<string, Casting>;
  * freely; deleting the file and re-running re-seeds it.
  */
 export const SEED_PRESETS: PresetMap = {
-  // INT's full three-stage chain: independent design, cheap implementation, fresh review.
+  // INT's full four-stage chain: shared-context plan, independent design, cheap
+  // implementation, fresh review. `plan` uses the same strong-seat default as `design` — both
+  // are the only two Beckett stages a cheap-model author must never write (issue #128).
   intensive: {
+    plan: { harness: "claude", model: "claude-opus-5", effort: "high" },
     design: { harness: "claude", model: "claude-opus-5", effort: "high" },
     implement: { harness: "pi", effort: "medium" },
     review: { harness: "claude", model: "claude-sonnet-5", effort: "high" },
