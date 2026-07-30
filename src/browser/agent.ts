@@ -851,8 +851,28 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
         logger.info("browser agent queued a dispatch", { runId, position });
         return { runId, queued: position };
       }
-      // Immediate path: a start failure (lease, mcp config) still rejects the dispatch, as before.
-      await startDispatch(dispatch);
+      // Immediate path: a lane is free. Start the run in the BACKGROUND and ack with its runId the
+      // instant the daemon accepts the task — never block the dispatch on the browser-lease acquire
+      // + cold Chromium boot, which can outlast the control-bus deadline and made an already-started
+      // run read to the caller as a hard CLI failure (the accept-vs-complete bug, issue #137). A
+      // start failure now becomes the run's OWN terminal outcome (delivered as an update turn),
+      // exactly like the queued auto-start path — never a dispatch rejection the caller already has a
+      // runId for. This is the whole contract `beckett browser` documents: "returns immediately with
+      // a runId".
+      void startDispatch(dispatch).catch((error) => {
+        const message = (error as Error).message ?? String(error);
+        if (/computer-use is busy|lease cap .* reached/.test(message)) {
+          // Lost the lease to a racing client between the free-lane check and the acquire: fall back
+          // to the FIFO queue + retry, never a terminal error — the same recovery maybeStartNext
+          // gives a queued start (the dispatcher already told the person "never re-dispatch").
+          dispatch.secrets = null;
+          queue.push(dispatch);
+          persistLedger();
+          scheduleQueueRetry();
+          return;
+        }
+        settleQueued(run, "error", `The browser run could not start: ${message}. Dispatch it again to retry.`);
+      });
       return { runId };
     },
 

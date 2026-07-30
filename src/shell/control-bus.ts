@@ -47,6 +47,22 @@ export class ControlBusTimeoutError extends Error {
   }
 }
 
+/**
+ * Render a control-bus timeout as an INDETERMINATE outcome for a human/model reader (issue #137). A
+ * timeout means the CLI STOPPED WAITING, never that the work failed: the daemon may have accepted the
+ * request and may already have carried it out (posted the reply, started the run). So the message says
+ * the outcome is unknown, forbids an automatic retry of a side-effecting dispatch, and names the exact
+ * command that settles the true state. Callers print this instead of the bare `control bus timeout`
+ * error string — nonzero exit is fine, but the wording must never read as "it did not happen".
+ */
+export function indeterminateBusTimeout(err: ControlBusTimeoutError, checkWith: string): string {
+  return (
+    `INDETERMINATE: the control bus stopped waiting after ${err.timeoutMs}ms — this is NOT a failure. ` +
+    `The daemon may have accepted this and may already have finished it, so do NOT retry automatically. ` +
+    `Confirm the real outcome with: ${checkWith}`
+  );
+}
+
 function frame(value: unknown): Uint8Array {
   const body = enc.encode(JSON.stringify(value));
   const out = new Uint8Array(HEADER + body.length);

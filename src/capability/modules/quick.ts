@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { ActionClass, type Extension, type ExtensionContext } from "../../ext/contract.ts";
 import { createQuickRunner, type QuickRun, type QuickRunner } from "../../quick/index.ts";
-import { callBus } from "../../shell/control-bus.ts";
+import { callBus, ControlBusTimeoutError, indeterminateBusTimeout } from "../../shell/control-bus.ts";
 import { fail, out, parse } from "../../cli/io.ts";
 import { quickDetachedMessage } from "../../cli/quick-output.ts";
 
@@ -119,6 +119,12 @@ export const createQuickExtension =
         }
         out(`[quick:${data.runId} state:${data.state}]\n${data.result ?? ""}`);
       } catch (err) {
+        if (err instanceof ControlBusTimeoutError) {
+          // The runner acks within the sync window (done, or detached with a runId) and this timeout
+          // sits 30s past it, so a trip here means a stuck daemon, not a failed run — the run may be
+          // dispatching and its result will still arrive as a quick-agent update turn (#137).
+          fail(indeterminateBusTimeout(err, "`beckett status` (the quick lane) — a detached run reports back as a quick-agent update turn"));
+        }
         fail((err as Error).message);
       }
     }

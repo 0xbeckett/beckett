@@ -17,7 +17,7 @@
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { resolveBoardName } from "../config.ts";
-import { callBus, ControlBusTimeoutError } from "../shell/control-bus.ts";
+import { callBus, ControlBusTimeoutError, indeterminateBusTimeout } from "../shell/control-bus.ts";
 import { fail, out, parse, quietLogger } from "./io.ts";
 import { config, paths, SOCK } from "./context.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
@@ -138,6 +138,11 @@ async function bus(cmd: string, args: Record<string, unknown>): Promise<never> {
     if (!res.ok) fail(res.error ?? "command failed");
     out(res.data ?? { ok: true });
   } catch (err) {
+    if (err instanceof ControlBusTimeoutError) {
+      // A bus timeout on a lever/mutation is genuinely indeterminate — the daemon may have applied
+      // it — so never print a bare `control bus timeout` that reads as "it did not happen" (#137).
+      fail(indeterminateBusTimeout(err, `a read for this feature (its \`status\`/\`ls\`) before retrying \`beckett ${cmd.split(".")[0]} …\``));
+    }
     fail((err as Error).message);
   }
 }
@@ -1560,6 +1565,9 @@ export async function runBrowser(argv: string[]): Promise<void> {
       if (!res.ok) fail(res.error ?? "browser watch failed");
       out(res.data ?? { ok: true });
     } catch (err) {
+      if (err instanceof ControlBusTimeoutError) {
+        fail(indeterminateBusTimeout(err, `\`beckett browser watch ${runId}\` again (a read — the run itself is unaffected)`));
+      }
       fail((err as Error).message);
     }
   }
@@ -1585,6 +1593,11 @@ export async function runBrowser(argv: string[]): Promise<void> {
       if (!res.ok) fail(res.error ?? "inline browser script failed");
       out(res.data ?? { ok: true });
     } catch (err) {
+      if (err instanceof ControlBusTimeoutError) {
+        // The script may have run to completion inside the browser even though the ack was lost, so
+        // the outcome is unknown — never a bare timeout that reads as a clean failure (#137).
+        fail(indeterminateBusTimeout(err, "`beckett browser status` — the script may already have run against the live browser"));
+      }
       fail((err as Error).message);
     }
   }
@@ -1634,6 +1647,12 @@ export async function runBrowser(argv: string[]): Promise<void> {
           `and end this turn.`,
     );
   } catch (err) {
+    if (err instanceof ControlBusTimeoutError) {
+      // The dispatch acks with a runId the instant the daemon accepts it, so a timeout here means the
+      // ack was lost, NOT that the run failed — it very likely started. Point at the status read that
+      // finds its runId so the caller checks instead of re-dispatching a duplicate (#137).
+      fail(indeterminateBusTimeout(err, "`beckett browser status` — the run most likely started; find its runId there before re-dispatching"));
+    }
     fail((err as Error).message);
   }
 }
