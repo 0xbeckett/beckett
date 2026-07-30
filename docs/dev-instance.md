@@ -91,11 +91,15 @@ DEV is structurally incapable of reaching into production:
   follow `BECKETT_DIR`, `src/shell/main.ts`) points staging workers away from prod's `~/Projects`,
   so a DEV worktree can never collide with a production one. `BECKETT_HOME=~/.beckett-dev` relocates
   `paths.projects` too.
-- **Board / tracker** — the board is NOT under `BECKETT_DIR`; it is an HTTP endpoint
-  (`BECKETT_BORED_URL`, default `127.0.0.1:7770` = prod's shared bored). The unit points DEV at a
-  loopback port with **no listener** (`127.0.0.1:7788`), so DEV never reads or dispatches the prod
-  board — the poller primes nothing and the dispatcher stays a no-op, which is also why "concurrency
-  1 + separate projects dir" is enough to guarantee no collision with a production worker.
+- **Board / tracker** — the board is NOT under `BECKETT_DIR`; it is a shared HTTP endpoint
+  (`BECKETT_BORED_URL`, default `127.0.0.1:7770` = prod's bored). DEV is board-less two ways:
+  `[tracker] enabled = false` skips the poller, the boot health-check, and dependent reconciliation
+  (the #141 code seam — otherwise there is no way to run a Beckett that doesn't reach for the prod
+  queue), and `[supervise] staffing_watchdog_s = 0` turns off the last periodic board probe. As
+  belt-and-suspenders the unit also points `BECKETT_BORED_URL` at a dead loopback port
+  (`127.0.0.1:7788`) so even a stray tracker write (e.g. a concierge ticket-create) can never reach
+  prod's board. This — plus concurrency 1 and a separate projects dir — is why a staging worker can
+  never collide with a production worker.
 - **Scheduled routines are all OFF** — `~/.beckett-dev/routines.json` lists every built-in in
   `removedBuiltins`, so none seed and none fire. In particular the X posting / model-news routines
   never run in DEV, so they cannot double-post to the real public account.
