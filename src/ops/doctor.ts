@@ -309,7 +309,16 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       checks.push(
         r.ok
           ? { name: `preflight: ${h}`, level: "ok", detail: "usable" }
-          : { name: `preflight: ${h}`, level: "fail", detail: r.problems.join("; ") },
+          : r.cooledUntil
+            ? {
+                // A rate-limit cooldown (#133) is expected + self-healing, not a broken box: warn,
+                // not fail, so it never flips the report red, and name the expiry so the state is
+                // visible instead of pi reading as merely "unusable".
+                name: `preflight: ${h}`,
+                level: "warn",
+                detail: `rate-limit cooldown until ${new Date(r.cooledUntil).toISOString()} — casts route to the substitute; auto-clears when quota resets`,
+              }
+            : { name: `preflight: ${h}`, level: "fail", detail: r.problems.join("; ") },
       );
     } catch (err) {
       checks.push({ name: `preflight: ${h}`, level: "fail", detail: `preflight crashed: ${(err as Error).message}` });

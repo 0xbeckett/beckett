@@ -28,6 +28,13 @@ export type DriverFactory = (config: Config, logger?: Logger) => HarnessDriver;
 export interface PreflightResult {
   ok: boolean;
   problems: string[];
+  /**
+   * Set (with the cooldown's expiry epoch ms) when `ok` is false BECAUSE the harness is inside a
+   * persisted rate-limit cooldown (#133), not because its binary/auth/version failed. The
+   * dispatcher still substitutes on `ok:false` either way; `beckett doctor` reads this to report a
+   * self-healing cooldown-with-expiry instead of a hard "unusable".
+   */
+  cooledUntil?: number;
 }
 
 /** A driver's static "is this harness usable RIGHT NOW?" probe (issue #17). */
@@ -122,20 +129,42 @@ export async function preflightFor(
   config: Config,
   opts: { force?: boolean } = {},
 ): Promise<PreflightResult> {
-  const cached = preflightCache.get(harness);
-  if (!opts.force && cached && Date.now() - cached.at < PREFLIGHT_TTL_MS) return cached.result;
-
-  const registration = isRegisteredHarness(harness) ? REGISTRY[harness] : undefined;
-  let result: PreflightResult;
-  if (!registration) {
-    result = { ok: false, problems: [`no driver registered for harness "${harness}"`] };
-  } else {
-    try {
-      result = await registration.preflight(config);
-    } catch (err) {
-      result = { ok: false, problems: [`preflight crashed: ${(err as Error).message}`] };
-    }
+  // Quota cooldown (#133) gates BEFORE the binary/auth cache: a rate-limited harness passes every
+  // static check yet dies on turn one, so while a cooldown is live report it unusable straight away
+  // (with its expiry) and let the caller route to the substitute. Checked ahead of the cache so a
+  // cooldown recorded after an earlier clean preflight still takes effect immediately.
+  const cooldown = activeCooldown(harness, config);
+  if (cooldown) {
+    return {
+      ok: false,
+      cooledUntil: cooldown.until,
+      problems: [
+        `${harness} is on a rate-limit cooldown until ${new Date(cooldown.until).toISOString()} ` +
+          `(auto-clears when quota resets)`,
+      ],
+    };
   }
-  preflightCache.set(harness, { at: Date.now(), result });
+
+  const cached = preflightCache.get(harness);
+  let result: PreflightResult;
+  if (!opts.force && cached && Date.now() - cached.at < PREFLIGHT_TTL_MS) {
+    result = cached.result;
+  } else {
+    const registration = isRegisteredHarness(harness) ? REGISTRY[harness] : undefined;
+    if (!registration) {
+      result = { ok: false, problems: [`no driver registered for harness "${harness}"`] };
+    } else {
+      try {
+        result = await registration.preflight(config);
+      } catch (err) {
+        result = { ok: false, problems: [`preflight crashed: ${(err as Error).message}`] };
+      }
+    }
+    preflightCache.set(harness, { at: Date.now(), result });
+  }
+
+  // Self-heal: a clean preflight (the cooldown having expired above) drops any lingering record so
+  // the harness is used again automatically once quota resets — no manual intervention (#133).
+  if (result.ok) clearCooldown(harness, config);
   return result;
 }

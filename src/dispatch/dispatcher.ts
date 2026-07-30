@@ -65,6 +65,7 @@ import {
 } from "../worker/worktree.ts";
 import { projectSlug } from "../tracker/cast.ts";
 import { hardCapSeconds, sweepLedgeredWorker } from "../drivers/proc.ts";
+import { recordCooldown } from "../drivers/cooldown.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
 import { AdvanceOutbox, type AdvanceOperation } from "./advance-outbox.ts";
 import { appendSpendRecord, readSpendLedger, spendForTicket, type SpendOutcome } from "../spend.ts";
@@ -2659,6 +2660,27 @@ export class Dispatcher {
       errorClass === "auth"
         ? `**${failed}**'s login looks expired/invalid`
         : `**${failed}** is rate-limited`;
+
+    // Cross-cast memory (#133): a rate-limit/usage-limit death means the harness is quota-capped
+    // right now. Persist a harness-level cooldown so the NEXT branch's staffing routes straight to
+    // the substitute (preflightFor reports it unusable while the cooldown is live) instead of
+    // re-paying this same doomed spawn + substitution. Auth deaths are NOT cooled — they don't
+    // self-heal on a timer, and the login-park path below already handles them.
+    if (errorClass === "rate_limit") {
+      try {
+        const cd = recordCooldown(failed, this.config, { reason: "rate_limit" });
+        this.logger.warn("recorded harness rate-limit cooldown", {
+          harness: failed,
+          until: new Date(cd.until).toISOString(),
+        });
+      } catch (err) {
+        // A cooldown-write failure must never derail recovery — the substitution below still runs.
+        this.logger.warn("failed to persist harness cooldown", {
+          harness: failed,
+          error: (err as Error).message,
+        });
+      }
+    }
 
     // First choice: move the work to a healthy harness. A clean substitution is NOT a spawn
     // failure — claude started fine — so it must NOT spend an implementRetries slot (#84). It gets
