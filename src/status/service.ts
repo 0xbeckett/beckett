@@ -70,7 +70,10 @@ export class StatusDashboardService {
     }
     this.running = true;
     try {
+      // Always collect (its side effect updates presence + rpc-status.json), then render. With no
+      // channel configured (staging), stop here — the snapshot ran, but nothing is posted/edited.
       const embed = renderStatusDashboardEmbed(await this.opts.collectSnapshot());
+      if (!this.opts.channelId) return;
       if (this.messageId) {
         try {
           await this.opts.gateway.editMessage(this.opts.channelId, this.messageId, { embeds: [embed] });

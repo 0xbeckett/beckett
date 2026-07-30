@@ -91,12 +91,20 @@ DEV is structurally incapable of reaching into production:
   follow `BECKETT_DIR`, `src/shell/main.ts`) points staging workers away from prod's `~/Projects`,
   so a DEV worktree can never collide with a production one. `BECKETT_HOME=~/.beckett-dev` relocates
   `paths.projects` too.
+- **Board / tracker** — the board is NOT under `BECKETT_DIR`; it is an HTTP endpoint
+  (`BECKETT_BORED_URL`, default `127.0.0.1:7770` = prod's shared bored). The unit points DEV at a
+  loopback port with **no listener** (`127.0.0.1:7788`), so DEV never reads or dispatches the prod
+  board — the poller primes nothing and the dispatcher stays a no-op, which is also why "concurrency
+  1 + separate projects dir" is enough to guarantee no collision with a production worker.
 - **Scheduled routines are all OFF** — `~/.beckett-dev/routines.json` lists every built-in in
   `removedBuiltins`, so none seed and none fire. In particular the X posting / model-news routines
   never run in DEV, so they cannot double-post to the real public account.
-- **No narration into prod's channels** — no announce channel, no log-mirror channel
-  (`DISCORD_LOG_CHANNEL_ID` unset), and no alert webhook (`DISCORD_ALERT_WEBHOOK_URL` unset; the
-  unit wires no `OnFailure`/`ExecStopPost` alert).
+- **No narration into prod's channels** — no announce channel (`announce.changes_channel_id = ""`),
+  no log-mirror channel (`DISCORD_LOG_CHANNEL_ID` unset), and no alert webhook
+  (`DISCORD_ALERT_WEBHOOK_URL` unset; the unit wires no `OnFailure`/`ExecStopPost` alert). The boot
+  banner and the status/cards dashboard are suppressed with `BECKETT_STARTUP_CHANNEL_ID=disabled`
+  and `BECKETT_CARDS_CHANNEL_ID=disabled` — the cards channel was a raw hardcoded prod snowflake, so
+  #141 added the `BECKETT_CARDS_CHANNEL_ID` env seam (with a `disabled` sentinel) it now honors.
 - **Concurrency capped at 1** — `[concurrency] max_workers = 1` so a staging worker cannot starve a
   production worker on this shared 4-core box.
 - **Deploy & self-restart disabled** — no `CLOUDFLARE_*` in the DEV env, so `beckett deploy`/`dns`

@@ -43,7 +43,7 @@ import { createGitHubPrPoller, type GitHubPrPoller } from "../github/poll.ts";
 import { createGitHubActivityPoller, type GitHubActivityPoller } from "../github/activity.ts";
 import { parsePrUrl } from "../github/types.ts";
 import { preflightFor } from "../drivers/index.ts";
-import { CARDS_CHANNEL_ID, createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
+import { cardsChannelId, createConcierge, currentGitCommit, type Concierge } from "../concierge/index.ts";
 import { createDiscordGateway, DiscordJsGateway } from "../discord/gateway.ts";
 import { PresenceController, type PresenceInputs } from "../discord/presence.ts";
 import { isDeployActive } from "./deploy-activity.ts";
@@ -811,7 +811,9 @@ async function boot(): Promise<BootedSystem> {
   });
   const statusDashboard = createStatusDashboardService({
     gateway,
-    channelId: CARDS_CHANNEL_ID,
+    // The env-overridable cards channel (`disabled` → null): the staging daemon (#141) runs the
+    // dashboard for its presence/rpc side effects but posts nothing into prod's cards channel.
+    channelId: cardsChannelId(),
     statePath: statusDashboardMessagePath(beckettDir),
     collectSnapshot: async () => {
       const snapshot = await statusCollector.collect();
