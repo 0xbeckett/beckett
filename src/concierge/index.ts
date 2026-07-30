@@ -71,6 +71,7 @@ import { setChannelModeOverride, setEnabledOverride } from "./proactivity-store.
 import { readPersistedOffers } from "./ambient.ts";
 import { DISCORD_TURN_OUTPUT_SCHEMA, parseDiscordTurnOutput, type DiscordTurnOutput } from "./output.ts";
 import { classify, loadAccess, resolvePending, ACCESS_CAP, type AccessLevel } from "../discord/access.ts";
+import { PeerTurnLimiter } from "../discord/federation.ts";
 import { loadMaintainers, resolveMaintainerPending } from "../discord/maintainers.ts";
 import { childEnv as strippedChildEnv } from "../env.ts";
 import type { QuickRun, QuickRunner } from "../quick/index.ts";
@@ -2209,9 +2210,17 @@ export class Concierge {
   private readonly crossChannelSeen = new Map<string, { sessionId: string; hits: Set<string> }>();
   /** Clock for shared-record timestamps: the injected ambient clock (tests) or Date.now. */
   private readonly nowMs: () => number;
+  /**
+   * Federation loop terminator: caps consecutive peer-to-peer replies per channel so a two-bot
+   * exchange provably ends (the count resets whenever a human speaks). Distinct from the gateway's
+   * per-minute burst cap — that bounds rate, this bounds a runaway conversation's length.
+   */
+  private readonly peerTurns: PeerTurnLimiter;
 
   constructor(opts: ConciergeOptions = {}) {
     this.config = opts.config ?? loadConfig();
+    // `federation` is optional in hand-built test configs; default the cap the same as the schema.
+    this.peerTurns = new PeerTurnLimiter(this.config.federation?.peer_max_consecutive_turns ?? 6);
     this.log = (opts.logger ?? rootLog).child("concierge");
     this.gateway = opts.gateway ?? createDiscordGateway({ config: this.config, logger: this.log });
     this.tasks = opts.tasks ?? new TaskStore(tasksStateFile(this.config, this.log));
@@ -4841,6 +4850,17 @@ export class Concierge {
     this.inboundMessageIds.add(m.messageId);
     if (this.inboundMessageIds.size > 10_000) this.inboundMessageIds.delete(this.inboundMessageIds.values().next().value!);
 
+    // Federation loop control (federation.ts). A human message ends any bot-to-bot exchange, so
+    // clear the channel's consecutive-peer-turn budget; a peer message never resets it. This is
+    // the ONLY peer-specific handling on the human path — human traffic is otherwise untouched.
+    if (!m.peer) {
+      this.peerTurns.reset(m.channelId);
+    } else if (!(await this.handlePeerMessage(m))) {
+      // A peer that isn't addressing me, or one past the consecutive-turn cap: recorded for context
+      // and dropped here, so it never reaches the ambient path or a directed reply.
+      return;
+    }
+
     // A native reply to a screenshot-backed browser question resumes that exact Claude session.
     // Consume it before ambient/shared-context capture so passwords or other answers never leak
     // into the Concierge transcript. Unrelated messages continue through normal routing.
@@ -4872,7 +4892,10 @@ export class Concierge {
     const turnContent = contentWithForwardedSnapshots(content, forwardedSnapshots);
     if (!turnContent && m.attachments.length === 0) return;
 
-    const access = this.accessLevelFor(m.userId);
+    // Message-aware so a trusted peer resolves as "peer" (below a member, above an outsider) rather
+    // than being misread as an unknown bot id and turned away. A peer clears this gate — it may
+    // converse — but the `role:peer` stamp and the code gates below keep it from queuing work.
+    const access = this.accessLevelForMessage(m);
     if (access === "outsider") {
       await this.denyOutsider(m);
       return;
@@ -6014,6 +6037,18 @@ export class Concierge {
       this.log.warn("access classification failed; denying by default", { userId, err: String(err) });
       return "outsider";
     }
+  }
+
+  /**
+   * The access level for a whole message, which is the only place peer trust can be resolved: a
+   * trusted peer carries its marker on the message (`m.peer`), not in any file `classify` reads, so
+   * a bot id can never be classified as a member. Peer sits strictly below a non-owner human — it
+   * clears the outsider gate (may converse) but the `role:peer` stamp and doctrine keep it from
+   * queuing work. Every other author falls through to the ordinary id-based classification unchanged.
+   */
+  private accessLevelForMessage(m: IncomingMessage): AccessLevel {
+    if (m.peer) return "peer";
+    return this.accessLevelFor(m.userId);
   }
 
   private async denyOutsider(m: IncomingMessage): Promise<void> {

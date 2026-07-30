@@ -194,6 +194,11 @@ class Coordinator implements AmbientCoordinator {
   observe(message: IncomingMessage, accessLevel: AccessLevel): void {
     try {
       if (accessLevel === "outsider") return;
+      // The ambient interjection path never fires on peer-bot traffic: Beckett speaks to a peer only
+      // when it is actually addressed (handled on the directed path), never on a hunch. Firing here
+      // is exactly how two idle Becketts would start talking at each other. Belt-and-suspenders — the
+      // Concierge already returns before calling observe for a peer, so this should never be reached.
+      if (message.peer || accessLevel === "peer") return;
       const tm = asTranscriptMessage(message);
       // OPS-80: with a shared store injected, capture happens in Concierge.onMessage — appending
       // here too would double-record. The legacy ring buffer fills only when no store exists.

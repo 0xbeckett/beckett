@@ -971,6 +971,14 @@ export class DiscordJsGateway implements DiscordGateway {
     // each turn knows WHO is talking, not just which channel (OPS-42).
     const displayName =
       msg.member?.displayName || msg.author.globalName || msg.author.username || undefined;
+    // A bot message only ever reaches here once the loop-guard let it through as a *trusted peer*
+    // (the two call sites both pre-check isFederatedPeer). Re-derive it defensively and, when true,
+    // stamp the message as a peer so the Concierge sees "TRUSTED PEER named X" rather than an
+    // unstamped stranger. The display name falls back to the raw username so a peer is never nameless.
+    const peer =
+      msg.author.bot && isFederatedPeer(msg.author.id, botId, this.effectivePeers())
+        ? { botId: msg.author.id, displayName: displayName ?? msg.author.username }
+        : undefined;
     return {
       messageId: msg.id,
       userId: msg.author.id,
@@ -992,6 +1000,7 @@ export class DiscordJsGateway implements DiscordGateway {
       ...(reference.unverified ? { repliedToBotUnverified: true } : {}),
       mentionsBot: isDM || directMention || reference.toBot,
       authorIsBot: msg.author.bot,
+      ...(peer ? { peer } : {}),
       createdAt: msg.createdTimestamp,
       // Every file dragged into the message (images, txt, pdf, md, anything). The shell
       // downloads these locally so the parent can Read them; the gateway just captures the

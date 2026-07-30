@@ -23,7 +23,16 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, renameSync, chmodSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 
-export type AccessLevel = "owner" | "maintainer" | "member" | "outsider";
+/**
+ * Authorization tiers, highest to lowest: owner > maintainer > member > peer > outsider.
+ *
+ * `peer` (federation) sits strictly BELOW a non-owner human: a trusted peer Beckett may converse
+ * (unlike an outsider, who is turned away at the door) but may never queue work — no ticket, deploy,
+ * restart, spend, access grant, or memory write on its say-so. It is never produced by
+ * {@link classify} (which keys off files by userId); it is stamped from the message's `peer` marker
+ * in the Concierge, so a bot id can never be mistaken for a member even if it were somehow listed.
+ */
+export type AccessLevel = "owner" | "maintainer" | "member" | "peer" | "outsider";
 
 /** Hard cap on the access list. */
 export const ACCESS_CAP = 10;
