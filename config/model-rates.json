@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "effective_date": "2026-07-16",
+  "effective_date": "2026-07-29",
   "currency": "USD",
   "unit": "USD per million tokens",
   "models": {
@@ -77,6 +77,30 @@
       "cache_creation_multiplier": 1.25,
       "estimate": true,
       "source": "Estimate: the 4.5 label has no published price sheet; based on the current Haiku $1/$5 tier. Anthropic cache read is 0.1× input and 5m cache creation is 1.25× input."
+    },
+    "moonshotai/kimi-k3": {
+      "input": 3,
+      "output": 15,
+      "cache_read": 0.3,
+      "cache_write": 3,
+      "estimate": false,
+      "source": "Live OpenRouter /api/v1/models pricing, read 2026-07-29. OpenRouter publishes no cache-write rate for this model (writes bill at the input rate), so cache_write mirrors input."
+    },
+    "x-ai/grok-4.5": {
+      "input": 2,
+      "output": 6,
+      "cache_read": 0.3,
+      "cache_write": 2,
+      "estimate": false,
+      "source": "Live OpenRouter /api/v1/models pricing, read 2026-07-29. OpenRouter publishes no cache-write rate for this model (writes bill at the input rate), so cache_write mirrors input."
+    },
+    "z-ai/glm-5.2": {
+      "input": 0.6776,
+      "output": 2.1296,
+      "cache_read": 0.12584,
+      "cache_write": 0.6776,
+      "estimate": false,
+      "source": "Live OpenRouter /api/v1/models pricing, read 2026-07-29. OpenRouter publishes no cache-write rate for this model (writes bill at the input rate), so cache_write mirrors input."
     }
   }
 }

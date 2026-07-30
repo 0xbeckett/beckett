@@ -78,9 +78,17 @@
  * - Done-signal: pi has no `--output-schema`, so the structured done-signal is parsed leniently
  *   from the final assistant message (raw JSON, a ```json fence, or a trailing object).
  *
- * Auth (Spec 00 §4): subscription/OAuth only — the child env strips API keys (src/env.ts) so pi
- * uses the `~/.pi/agent/auth.json` login (the ChatGPT/Codex OAuth via the `openai-codex`
- * provider). The child PATH is prefixed with `~/.local/bin` + `~/.bun/bin` so `pi` resolves AND
+ * Auth: pi resolves a credential in one of TWO ways, and which one applies is per-PROVIDER —
+ * see {@link PI_CREDENTIAL_SOURCES}, which the preflight now checks against the provider this
+ * spawn actually uses:
+ *   - `~/.pi/agent/auth.json` OAuth grant — the ChatGPT/Codex login (`openai-codex`).
+ *   - the child environment — `anthropic` off `ANTHROPIC_OAUTH_TOKEN` (the subscription token
+ *     explicitly allowlisted in src/env.ts), `openrouter` off `OPENROUTER_API_KEY`, and so on for
+ *     pi's ~35 env-keyed providers.
+ * The child env still strips `ANTHROPIC_`/`OPENAI_`/`CLAUDE_CODE_` API-billing and endpoint-override
+ * vars (src/env.ts), so the subscription seats cannot silently fall onto API billing; a third-party
+ * provider's own API key is a deliberate, separate auth path rather than a hole in that rule.
+ * The child PATH is prefixed with `~/.local/bin` + `~/.bun/bin` so `pi` resolves AND
  * runs under the modern node there (the current Pi package needs node >=22.19.0).
  */
 
@@ -175,12 +183,81 @@ function piChildPath(base = process.env.PATH): string {
   return base ? `${extra}:${base}` : extra;
 }
 
+/**
+ * Where a pi PROVIDER's credential actually lives. pi resolves auth three different ways and the
+ * preflight must know which one applies, because the check is otherwise guaranteed to be wrong for
+ * two of them:
+ *
+ *  - `authjson` — an OAuth grant persisted in `~/.pi/agent/auth.json` under the provider's key.
+ *    This is the ChatGPT/Codex login (`openai-codex`), and it is the ONLY mechanism the original
+ *    check understood.
+ *  - `env` — an API key / OAuth token read from the daemon environment. pi's own provider→env map
+ *    (`pi-ai/dist/env-api-keys.js`) covers ~35 providers this way, and `anthropic` is one of them:
+ *    it authenticates off `ANTHROPIC_OAUTH_TOKEN` (the subscription token allowlisted in
+ *    `src/env.ts`), NOT off auth.json. Requiring an auth.json entry for those providers turned the
+ *    guard inside out — pointing `default_provider` at `anthropic` or `openrouter` failed every
+ *    spawn with a false "no login" and made the dispatcher substitute away from a healthy harness.
+ *
+ * Providers absent from this table are reported as UNKNOWN rather than silently passed: a typo'd
+ * `provider` in a cast should be caught here, not after a worker spawn.
+ */
+type PiCredentialSource =
+  | { kind: "authjson" }
+  /** Any ONE of `keys` being set in the child env is sufficient (pi tries them in order). */
+  | { kind: "env"; keys: readonly string[] };
+
+/**
+ * pi provider → credential source. Mirrors pi 0.82.1's own resolution
+ * (`pi-ai/dist/env-api-keys.js:60-108`); it is deliberately a SUBSET — the providers Beckett
+ * actually casts, plus the ones a human is likely to try. Add a row rather than loosening the
+ * unknown-provider check, so the failure stays "Beckett doesn't know this provider" instead of
+ * "Beckett assumed this provider was fine".
+ */
+export const PI_CREDENTIAL_SOURCES: Record<string, PiCredentialSource> = {
+  "openai-codex": { kind: "authjson" },
+  "github-copilot": { kind: "authjson" },
+  // pi tries ANTHROPIC_AUTH_TOKEN, then ANTHROPIC_OAUTH_TOKEN, then ANTHROPIC_API_KEY. Only the
+  // OAuth one survives `childEnv()` by design (src/env.ts) — the other two are stripped as API
+  // billing / endpoint redirects — so that is the one a child can actually use.
+  anthropic: { kind: "env", keys: ["ANTHROPIC_OAUTH_TOKEN"] },
+  openrouter: { kind: "env", keys: ["OPENROUTER_API_KEY"] },
+  xai: { kind: "env", keys: ["XAI_API_KEY"] },
+  zai: { kind: "env", keys: ["ZAI_API_KEY"] },
+  moonshotai: { kind: "env", keys: ["MOONSHOT_API_KEY"] },
+  groq: { kind: "env", keys: ["GROQ_API_KEY"] },
+  cerebras: { kind: "env", keys: ["CEREBRAS_API_KEY"] },
+  deepseek: { kind: "env", keys: ["DEEPSEEK_API_KEY"] },
+  google: { kind: "env", keys: ["GEMINI_API_KEY"] },
+  together: { kind: "env", keys: ["TOGETHER_API_KEY"] },
+  fireworks: { kind: "env", keys: ["FIREWORKS_API_KEY"] },
+  mistral: { kind: "env", keys: ["MISTRAL_API_KEY"] },
+};
+
+/**
+ * Resolve the credential source for a provider id. A `models.json`-defined provider that WRAPS a
+ * known backend by prefix (`openrouter-modal`, `openrouter-moonshot` — the pinned-endpoint SKUs)
+ * inherits its base provider's source, so adding a pinned variant needs no edit here.
+ */
+export function piCredentialSource(provider: string): PiCredentialSource | null {
+  const id = provider.trim().toLowerCase();
+  if (!id) return null;
+  const exact = PI_CREDENTIAL_SOURCES[id];
+  if (exact) return exact;
+  // Longest prefix wins so `openrouter-modal` matches `openrouter`, not some shorter accident.
+  const base = Object.keys(PI_CREDENTIAL_SOURCES)
+    .filter((known) => id.startsWith(`${known}-`))
+    .sort((a, b) => b.length - a.length)[0];
+  return base ? PI_CREDENTIAL_SOURCES[base]! : null;
+}
+
 /** The verdict of a {@link piPreflight} run: is the pi harness usable, and if not, why. */
 export interface PiPreflight {
   ok: boolean;
   bin: string;
   nodeVersion: string | null;
   version: string | null;
+  /** The provider the credential check was actually run against. */
+  provider: string;
   problems: string[];
 }
 
@@ -191,12 +268,20 @@ export interface PiPreflight {
  *   1. the binary resolves and runs (`pi --version`);
  *   2. the CLI still advertises the flags the driver invokes (`--mode`, `--session`, `--print`) —
  *      catches the exact version/protocol drift that took pi down (the `--session-id` removal);
- *   3. a pi login exists (`~/.pi/agent/auth.json`, non-empty) — subscription/OAuth auth is present.
+ *   3. a credential exists for the provider THIS RUN will use — via `~/.pi/agent/auth.json` or the
+ *      daemon env, whichever that provider actually authenticates with ({@link PI_CREDENTIAL_SOURCES}).
+ *
+ * `provider` is the resolved provider for the spawn being preflighted (`spec.provider` ?? the
+ * config default). Omitted — as the `beckett doctor` / registry path does — it falls back to
+ * `config.harness.pi.default_provider`, which is what the check used to inspect unconditionally.
+ * Checking the DEFAULT while the run used a cast provider was the other half of the bug: a stage
+ * cast at a provider with no credential sailed through a preflight that never looked at it.
  */
-export async function piPreflight(config: Config): Promise<PiPreflight> {
+export async function piPreflight(config: Config, provider?: string): Promise<PiPreflight> {
   const bin = config.harness.pi.bin;
   const problems: string[] = [];
   const env = childEnv({ PATH: piChildPath() });
+  const resolvedProvider = (provider ?? config.harness.pi.default_provider ?? "").trim();
 
   let nodeVersion: string | null = null;
   try {
@@ -267,24 +352,73 @@ export async function piPreflight(config: Config): Promise<PiPreflight> {
     }
   }
 
-  // 3 — pi login present (subscription/OAuth; the child strips API keys and relies on this).
+  // 3 — a credential exists for the provider THIS run uses, checked against the mechanism that
+  // provider actually authenticates with. See PI_CREDENTIAL_SOURCES for why one substring test
+  // against auth.json could not be right for more than one provider.
+  problems.push(...(await piCredentialProblems(resolvedProvider, env)));
+
+  return { ok: problems.length === 0, bin, nodeVersion, version, provider: resolvedProvider, problems };
+}
+
+/**
+ * Credential check for one pi provider. Returns the problems (empty ⇒ the credential is present).
+ * Separated out so `beckett doctor` and the tests can exercise it without the three subprocess
+ * probes.
+ */
+export async function piCredentialProblems(
+  provider: string,
+  env: Record<string, string | undefined>,
+): Promise<string[]> {
+  if (!provider) {
+    return ["no pi provider resolved — set harness.pi.default_provider or cast one per stage."];
+  }
+  const source = piCredentialSource(provider);
+  if (!source) {
+    // Deliberately a problem, not a pass: an unrecognized provider is usually a typo in a cast,
+    // and catching it here costs nothing while catching it after spawn costs a worker.
+    return [
+      `pi provider "${provider}" is not in Beckett's credential table — likely a typo. Known: ` +
+        `${Object.keys(PI_CREDENTIAL_SOURCES).sort().join(", ")}. Add a row to PI_CREDENTIAL_SOURCES ` +
+        `if the provider is real.`,
+    ];
+  }
+
+  if (source.kind === "env") {
+    const present = source.keys.filter((key) => (env[key] ?? "").trim().length > 0);
+    if (present.length === 0) {
+      return [
+        `pi provider "${provider}" authenticates from the environment, but none of ` +
+          `${source.keys.join(", ")} is set in the harness child env. Add it to ~/.beckett/.env ` +
+          `(and check src/env.ts is not stripping it).`,
+      ];
+    }
+    return [];
+  }
+
   const authPath = join(process.env.HOME ?? "", ".pi/agent/auth.json");
   try {
     const f = Bun.file(authPath);
     if (!(await f.exists()) || f.size === 0) {
-      problems.push(`no pi login at ${authPath} — run \`pi\` once to sign in (subscription/OAuth).`);
-    } else {
-      const auth = await f.text();
-      const provider = config.harness.pi.default_provider;
-      if (provider && !auth.includes(provider)) {
-        problems.push(`pi login at ${authPath} does not include provider ${provider}.`);
-      }
+      return [`no pi login at ${authPath} — run \`pi\` once to sign in (subscription/OAuth).`];
     }
+    // Parse rather than substring-match: a provider id appearing anywhere in the blob (inside a
+    // token, or as another provider's substring) is not evidence of a grant for THIS provider.
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(await f.text()) as Record<string, unknown>;
+    } catch {
+      return [`pi login at ${authPath} is not valid JSON — re-run \`pi\` to sign in.`];
+    }
+    if (!Object.prototype.hasOwnProperty.call(parsed, provider)) {
+      return [
+        `pi login at ${authPath} has no grant for provider "${provider}" ` +
+          `(it holds: ${Object.keys(parsed).join(", ") || "nothing"}). Run \`pi\` and sign in to it.`,
+      ];
+    }
+    return [];
   } catch (err) {
-    problems.push(`could not read pi login at ${authPath} (${(err as Error).message}).`);
+    return [`could not read pi login at ${authPath} (${(err as Error).message}).`];
   }
-
-  return { ok: problems.length === 0, bin, nodeVersion, version, problems };
 }
 
 function semverGte(raw: string | null, min: string): boolean {
@@ -461,17 +595,25 @@ export class PiDriver extends BaseDriver implements HarnessDriver {
     // Preflight FIRST: a dead pi harness (missing binary, CLI drift, no login) must surface loudly
     // here — before we launch a child that would otherwise exit 1 before its session line and take
     // the ticket down silently (OPS-56).
-    const pf = await piPreflight(this.config);
+    // Preflight the provider THIS spawn will use, not the config default: `spec.provider` routes the
+    // stage (#121), so checking the default would clear a cast whose own credential is missing.
+    const pf = await piPreflight(this.config, this.resolvedProvider());
     if (!pf.ok) {
       this.log.error("pi preflight FAILED — harness unusable", {
         bin: pf.bin,
         nodeVersion: pf.nodeVersion,
         version: pf.version,
+        provider: pf.provider,
         problems: pf.problems,
       });
       throw new Error(`PiDriver preflight failed (pi harness unusable): ${pf.problems.join("; ")}`);
     }
-    this.log.info("pi preflight ok", { bin: pf.bin, nodeVersion: pf.nodeVersion, version: pf.version });
+    this.log.info("pi preflight ok", {
+      bin: pf.bin,
+      nodeVersion: pf.nodeVersion,
+      version: pf.version,
+      provider: pf.provider,
+    });
     // Crash recovery (issue #20): a caller-persisted session id relaunches `--session <id>` so pi
     // reuses the persisted transcript instead of re-paying the whole ticket's exploration cost.
     const resume = spec.resumeSessionId?.trim();

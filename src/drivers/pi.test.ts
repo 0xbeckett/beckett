@@ -14,7 +14,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PiDriver, piPreflight } from "./pi.ts";
+import { PiDriver, piCredentialProblems, piCredentialSource, piPreflight } from "./pi.ts";
 import { probeCommand } from "./preflight-probe.ts";
 import type { Config, WorkerEvent } from "../types.ts";
 
@@ -631,4 +631,121 @@ test("process-exit diagnostics include the stderr tail", () => {
   expect(exit).toContain("unknown option: --session-id");
   const startup = driver.spawnFailureError("code 1");
   expect(startup.message).toContain("unknown option: --session-id");
+});
+
+// ── Provider-aware credential preflight. ──────────────────────────────────────────────
+// The check used to be one substring test against ~/.pi/agent/auth.json for the CONFIG DEFAULT
+// provider. That is wrong twice over: it never inspected the provider a cast actually routes to,
+// and auth.json is only ONE of the two mechanisms pi authenticates with — `anthropic` and
+// `openrouter` read the daemon env, so requiring an auth.json entry for them inverted the guard
+// into a false "no login" that made the dispatcher substitute away from a healthy harness.
+
+test("credential source is per-provider, and a pinned variant inherits its base", () => {
+  expect(piCredentialSource("openai-codex")).toEqual({ kind: "authjson" });
+  expect(piCredentialSource("anthropic")).toEqual({ kind: "env", keys: ["ANTHROPIC_OAUTH_TOKEN"] });
+  expect(piCredentialSource("openrouter")).toEqual({ kind: "env", keys: ["OPENROUTER_API_KEY"] });
+  // The pinned-endpoint SKUs (`openrouter-modal`, `openrouter-moonshot`) are separate provider ids
+  // sharing OpenRouter's key — they must resolve without a table edit per pin.
+  expect(piCredentialSource("openrouter-modal")).toEqual({ kind: "env", keys: ["OPENROUTER_API_KEY"] });
+  expect(piCredentialSource("  Anthropic  ")).toEqual({ kind: "env", keys: ["ANTHROPIC_OAUTH_TOKEN"] });
+  expect(piCredentialSource("totally-made-up")).toBeNull();
+});
+
+test("an env-keyed provider passes on its env var alone — no auth.json entry required", async () => {
+  // The regression: `anthropic` has no auth.json grant and never will.
+  expect(await piCredentialProblems("anthropic", { ANTHROPIC_OAUTH_TOKEN: "sk-ant-oat0-xyz" })).toEqual([]);
+  expect(await piCredentialProblems("openrouter", { OPENROUTER_API_KEY: "sk-or-xyz" })).toEqual([]);
+  expect(await piCredentialProblems("openrouter-modal", { OPENROUTER_API_KEY: "sk-or-xyz" })).toEqual([]);
+});
+
+test("an env-keyed provider with no key names the missing var, not a phantom login", async () => {
+  const problems = await piCredentialProblems("openrouter", {});
+  expect(problems.length).toBe(1);
+  expect(problems[0]).toContain("OPENROUTER_API_KEY");
+  expect(problems[0]).not.toContain("auth.json");
+  // Whitespace is not a credential.
+  expect((await piCredentialProblems("anthropic", { ANTHROPIC_OAUTH_TOKEN: "   " })).length).toBe(1);
+});
+
+test("an unknown provider is a LOUD problem, not a silent pass (catches a typo'd cast)", async () => {
+  const problems = await piCredentialProblems("opnerouter", { OPENROUTER_API_KEY: "sk-or-xyz" });
+  expect(problems.length).toBe(1);
+  expect(problems[0]).toContain("not in Beckett's credential table");
+  expect(await piCredentialProblems("", {})).toHaveLength(1);
+});
+
+test("an authjson provider is checked by KEY, not by substring", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-pi-auth-"));
+  const oldHome = process.env.HOME;
+  try {
+    const authDir = join(dir, ".pi/agent");
+    mkdirSync(authDir, { recursive: true });
+    process.env.HOME = dir;
+
+    writeFileSync(join(authDir, "auth.json"), '{"openai-codex":{"access":"x"}}\n', "utf8");
+    expect(await piCredentialProblems("openai-codex", {})).toEqual([]);
+
+    // A different provider's grant must NOT satisfy this one just by appearing in the blob.
+    writeFileSync(join(authDir, "auth.json"), '{"github-copilot":{"access":"openai-codex"}}\n', "utf8");
+    const problems = await piCredentialProblems("openai-codex", {});
+    expect(problems.length).toBe(1);
+    expect(problems[0]).toContain("no grant for provider");
+
+    writeFileSync(join(authDir, "auth.json"), "not json at all\n", "utf8");
+    expect((await piCredentialProblems("openai-codex", {}))[0]).toContain("not valid JSON");
+  } finally {
+    process.env.HOME = oldHome;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("preflight checks the CAST provider, not config.harness.pi.default_provider", async () => {
+  // A pi that answers the probes fine, so the only possible verdict comes from the credential check.
+  const dir = mkdtempSync(join(tmpdir(), "beckett-pi-pf-"));
+  const oldHome = process.env.HOME;
+  const oldKey = process.env.OPENROUTER_API_KEY;
+  try {
+    const bin = join(dir, "pi-fake");
+    writeFileSync(
+      bin,
+      [
+        "#!/bin/sh",
+        'case "$1" in',
+        "  --version) echo 0.82.1 ;;",
+        "  --help) echo '--mode --session --session-id --no-extensions --no-skills --no-themes' ;;",
+        "  *) exit 0 ;;",
+        "esac",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    chmodSync(bin, 0o755);
+    const authDir = join(dir, ".pi/agent");
+    mkdirSync(authDir, { recursive: true });
+    // auth.json holds ONLY the codex grant — exactly the real box.
+    writeFileSync(join(authDir, "auth.json"), '{"openai-codex":{"access":"x"}}\n', "utf8");
+    process.env.HOME = dir;
+    delete process.env.OPENROUTER_API_KEY;
+
+    const cfg = {
+      harness: { pi: { ...(config.harness as { pi: object }).pi, bin } },
+    } as unknown as Config;
+
+    // Default provider: fine.
+    const base = await piPreflight(cfg);
+    expect(base.provider).toBe("openai-codex");
+    expect(base.problems.filter((p) => p.includes("credential") || p.includes("grant"))).toEqual([]);
+
+    // Cast at openrouter with no key: the preflight must now SEE it. Before this change the same
+    // call passed, and the worker died after spawn instead.
+    const cast = await piPreflight(cfg, "openrouter");
+    expect(cast.provider).toBe("openrouter");
+    expect(cast.ok).toBe(false);
+    expect(cast.problems.join(" ")).toContain("OPENROUTER_API_KEY");
+  } finally {
+    process.env.HOME = oldHome;
+    if (oldKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = oldKey;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

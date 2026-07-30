@@ -44,6 +44,16 @@ export type AgentEffort = z.infer<typeof AgentEffortSchema>;
  */
 export const AgentModelSchema = z.object({
   harness: AgentHarnessSchema.optional(),
+  /**
+   * The pi BACKEND this agent's model runs on (pi `--provider`). Optional and ignored by claude.
+   *
+   * A pi seat is a (provider, model) PAIR, and until this field existed an agent could name only
+   * half of it: the `social-media` builtin asked for `claude-sonnet-5`, inherited the agent lane's
+   * `openai-codex` default, and pi refused every run ("not supported when using Codex with a
+   * ChatGPT account"). `resolveLaneSeat` now also infers `anthropic` for a `claude-*` model as a
+   * safety net, but an agent that cares about its backend should say so here.
+   */
+  provider: z.string().min(1).optional(),
   model: z.string().min(1),
   effort: AgentEffortSchema.default("medium"),
 });

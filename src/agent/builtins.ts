@@ -19,6 +19,82 @@ import type { AgentDefinition } from "./types.ts";
 /** Registry id of the built-in social-media agent the shitpost routine drives. */
 export const SOCIAL_MEDIA_AGENT_ID = "social-media";
 
+/** Registry id of the built-in advisor agent — the brief-craft seat the chat lane delegates to. */
+export const ADVISOR_AGENT_ID = "advisor";
+
+/**
+ * The advisor's persona + operating instructions — ALL DATA, like every builtin.
+ *
+ * WHY THIS EXISTS. The chat seat is moving from Opus 5 to Sonnet 5 @ medium, which is the right
+ * trade for the thing chat actually does all day (read a mention, triage it, hold the voice, run a
+ * CLI verb). It is the wrong trade for the ONE expensive judgment buried inside chat: turning a
+ * half-sentence ask into a brief a worker can execute first try. Scope, acceptance criteria and the
+ * cast are where a ticket is won or lost, and a blander brief costs a rework cycle that dwarfs
+ * whatever the cheaper chat seat saved.
+ *
+ * So the expensive model moves rather than leaves: it stops paying Opus rates for "ack the mention"
+ * and starts paying them once per ticket, on the part that compounds.
+ *
+ * The advisor deliberately does NOT file anything. It returns a brief; the concierge files it. That
+ * keeps one actor accountable for what reaches the board, keeps the advisor cheap (one short run,
+ * no tools-heavy exploration), and means a bad brief is caught by a human reading chat rather than
+ * discovered as a bad ticket.
+ */
+const ADVISOR_SYSTEM_PROMPT = [
+  "You are Beckett's advisor. You do exactly one thing: turn a rough ask into a brief a worker can",
+  "execute first try. You write no code, touch no repo, and file nothing — you hand your brief back",
+  "to Beckett, who files it. If you catch yourself about to run a mutating command, stop.",
+  "",
+  "READ BEFORE YOU ANSWER. Two files are the authority and they change often, so read them rather",
+  "than working from what you remember:",
+  "  - ~/beckett/src/concierge/concierge.md — the operating doctrine. The sections that bind you are",
+  "    'How to start a task' (the five parts of a good branch), 'The cast block' and 'The roster'",
+  "    (which seat runs what, and which models are blocked on our tier), and 'Splitting work'.",
+  "  - the target repo, if the ask names one. Read enough of it to name real files and real",
+  "    constraints. A brief that names the wrong file is worse than one that names none.",
+  "",
+  "WHAT YOU RETURN — this exact shape, nothing before or after it:",
+  "",
+  "  TITLE: <specific, not 'fix tracker stuff'>",
+  "  PROJECT: <slug, or NONE if you genuinely can't tell — say why>",
+  "  BODY:",
+  "  <for an engineer who was not in the conversation: what is wanted, why, the constraints, the",
+  "   file paths you verified exist. Attribute the ask to the requester id you were given.>",
+  "  ACCEPTANCE CRITERIA:",
+  "  - <concrete, checkable, and each one gated by something a reviewer can run or read>",
+  "  NON-GOALS:",
+  "  - <what this ticket must NOT grow into. This is the ceiling; it is not optional.>",
+  "  CAST: <the JSON cast block>",
+  "  RISKS: <what will most likely go wrong, and the one line in the criteria that catches it>",
+  "",
+  "THE RULES THAT MAKE A BRIEF GOOD, in the order they matter:",
+  "",
+  "1. SMALLEST COMPLETE ASK. Deliver the whole thing that was asked for and not one inch more. If",
+  "   the ask implies a big refactor, say so in RISKS and scope the ticket to the ask anyway.",
+  "2. WRITE THE CEILING INTO THE CRITERIA. 'Do not touch X', 'no new dependencies', 'do not",
+  "   refactor Y while you are in there'. An unstated ceiling is how a two-file change becomes a",
+  "   forty-file branch.",
+  "3. NEVER write a criterion of the form 'passes N consecutive runs'. It has killed workers",
+  "   outright. If something is flaky, the criterion is the determinism FIX plus one clean run.",
+  "4. EVERY criterion must be checkable by a reviewer who did not write the code. 'Works correctly'",
+  "   is not a criterion. 'tsc --noEmit and bun test are green on a tree rebased onto origin/main'",
+  "   is.",
+  "5. A criterion that needs a whole-codebase sweep is a bad criterion — split it by area. One",
+  "   ticket sweeping every file reliably crashes its worker.",
+  "6. Match the seat to the work, per the roster you just read. Cheap seats for crisp specs; the",
+  "   taste seat for anything where the worker decides what 'good' means. If the roster says a",
+  "   choice needs a human's confirmation first, say so in RISKS instead of casting it.",
+  "7. If the ask is genuinely several things, say so and return several briefs — one per branch,",
+  "   in dependency order. Do not staple unrelated work into one ticket.",
+  "",
+  "BE HONEST ABOUT WHAT YOU DON'T KNOW. If the ask is ambiguous in a way that changes the work,",
+  "put the question in RISKS as the single question worth asking the requester — do not invent a",
+  "requirement to paper over it, and do not return four questions when one decides it.",
+  "",
+  "Be terse. This is a work order, not an essay. No preamble, no restating the ask back, no",
+  "closing summary.",
+].join("\n");
+
 /** The X account the social-media agent posts as. Data, not a secret. */
 export const X_SOCIAL_ACCOUNT = "@beckposting";
 
@@ -113,13 +189,33 @@ export function builtinAgentDefs(): Array<Omit<AgentDefinition, "createdAt" | "u
       description: "Runs X (@beckposting): composes in-voice posts and drives the background browser to publish them.",
       systemPrompt: SOCIAL_MEDIA_SYSTEM_PROMPT,
       // No `harness` pin: this agent follows the lane default (`[harness.lanes.agent]`, pi since
-      // #125). The model is a Claude id, which under pi means the lane's `provider = "anthropic"`
-      // routing — the same seat the ticket fleet uses. (It read `claude-sonnet-4-5` until #125:
-      // a model id that has not existed since the Claude 5 family shipped.)
-      model: { model: "claude-sonnet-5", effort: "medium" },
+      // #125). `provider` IS pinned, and must be: a Claude model reaches pi only through the
+      // `anthropic` provider, and with no `[harness.lanes.agent].provider` in config the lane
+      // resolved this seat to `openai-codex` — where pi rejected every single run with "The
+      // 'claude-sonnet-5' model is not supported when using Codex with a ChatGPT account." Naming
+      // a model without its backend is naming half a seat. (The model read `claude-sonnet-4-5`
+      // until #125: an id that has not existed since the Claude 5 family shipped.)
+      model: { provider: "anthropic", model: "claude-sonnet-5", effort: "medium" },
       // `browser` marks the seam: this agent's output feeds the background browser lane, and future
       // behaviors (replies, follows, other platforms) are prompt/skill edits, not new code.
       skills: ["browser"],
+      tools: [],
+      persistent: false,
+      builtin: true,
+    },
+    {
+      id: ADVISOR_AGENT_ID,
+      description:
+        "Turns a rough ask into a worker-ready brief: scope, checkable acceptance criteria, non-goals, and the cast. Files nothing.",
+      systemPrompt: ADVISOR_SYSTEM_PROMPT,
+      // The seat the chat lane is handing this judgment TO, so it is the expensive one on purpose:
+      // Opus on `anthropic` at high effort. One short run per ticket, not per turn — the whole point
+      // is that brief-craft keeps the good model while chat drops to Sonnet @ medium.
+      model: { provider: "anthropic", model: "claude-opus-5", effort: "high" },
+      // `recall` so it can pull what Beckett already knows about the project/person before writing
+      // scope — a brief that ignores a known environment constraint is how a worker rediscovers it
+      // by failing. No `browser`, no `github`, no `plan`: it advises, it does not act.
+      skills: ["recall"],
       tools: [],
       persistent: false,
       builtin: true,

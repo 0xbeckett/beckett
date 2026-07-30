@@ -163,6 +163,17 @@ export interface LaneSeatRequest {
   /** Per-run model that wins over `[harness.lanes.<lane>].model` (e.g. an agent's own seat). */
   model?: string;
   /**
+   * Per-run pi `--provider` that wins over `[harness.lanes.<lane>].provider`. Ignored for claude.
+   *
+   * This exists because its absence was a live bug. A seat is a (provider, model) PAIR on pi, and
+   * before this field a caller could name the model but not the backend it runs on — so the
+   * `social-media` builtin agent, seated at `claude-sonnet-5`, resolved to
+   * `pi --provider openai-codex --model claude-sonnet-5` and pi rejected every run with "The
+   * 'claude-sonnet-5' model is not supported when using Codex with a ChatGPT account." Naming half
+   * a seat is not naming a seat.
+   */
+  provider?: string;
+  /**
    * The model this lane used BEFORE #125 — its historical claude model key
    * (`config.quick.model`, `config.dream.model`, …). Used only when the lane resolves to claude
    * and nothing more specific named a model, so pinning a lane back to claude restores its exact
@@ -174,11 +185,33 @@ export interface LaneSeatRequest {
 }
 
 /**
+ * The pi provider a model id can only sensibly mean, for model families where the mapping is
+ * unambiguous. This is the SAFETY NET under an omitted `provider`, not a routing feature: it exists
+ * because "model named, provider defaulted" silently produced an impossible seat and failed every
+ * run (see {@link LaneSeatRequest.provider}).
+ *
+ * `claude-*` is the only entry, and it earns its place: on pi the Claude models live exclusively on
+ * the `anthropic` provider, so `claude-sonnet-5` on any other provider is never what the caller
+ * meant. Deliberately NOT inferred: an OpenRouter `vendor/model` slug, because `moonshotai/kimi-k3`
+ * is reachable through `openrouter` AND through a pinned `openrouter-*` variant AND (for some
+ * vendors) through the vendor's own provider — inference there would silently pick one.
+ */
+function inferPiProvider(model: string): string | null {
+  return /^claude-/i.test(model.trim()) ? "anthropic" : null;
+}
+
+/**
  * Resolve which harness/provider/model one lane run uses. Precedence, highest first:
- *   1. the caller's per-run seat (`req.harness` / `req.model`),
+ *   1. the caller's per-run seat (`req.harness` / `req.provider` / `req.model`),
  *   2. `[harness.lanes.<lane>]` in config — the per-lane lever,
- *   3. the harness's own configured default (`harness.pi.default_model`, or for claude the
- *      lane's historical model key, else `harness.claude.default_model`).
+ *   3. for the provider only, {@link inferPiProvider} when the model id can mean just one backend,
+ *   4. the harness's own configured default (`harness.pi.default_provider` /
+ *      `harness.pi.default_model`, or for claude the lane's historical model key, else
+ *      `harness.claude.default_model`).
+ *
+ * Note the provider's step 3: the configured default is the LAST resort, below inference, because
+ * `harness.pi.default_provider` is a statement about un-seated runs and an explicitly-named model
+ * from an incompatible family is not one of those.
  */
 export function resolveLaneSeat(config: Config, lane: LaneName, req: LaneSeatRequest = {}): LaneSeat {
   // The schema always fills `harness.lanes`; the `??` keeps hand-built Config objects (tests,
@@ -195,13 +228,14 @@ export function resolveLaneSeat(config: Config, lane: LaneName, req: LaneSeatReq
     (harness === "pi"
       ? config.harness.pi.default_model
       : (req.claudeModel ?? "").trim() || config.harness.claude.default_model);
-  return {
-    lane,
-    harness,
-    provider: harness === "pi" ? laneConfig.provider.trim() || config.harness.pi.default_provider : "",
-    model,
-    effort: (req.effort ?? "").trim(),
-  };
+  const provider =
+    harness === "pi"
+      ? (req.provider ?? "").trim() ||
+        laneConfig.provider.trim() ||
+        inferPiProvider(model) ||
+        config.harness.pi.default_provider
+      : "";
+  return { lane, harness, provider, model, effort: (req.effort ?? "").trim() };
 }
 
 // =======================================================================================

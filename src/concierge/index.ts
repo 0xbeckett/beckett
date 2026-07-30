@@ -568,6 +568,22 @@ export interface ConciergeSessionOptions {
    * to the pre-catalog shape.
    */
   catalogBlock?: () => string;
+  /**
+   * The GENERATED inventory of what this build can actually do — every registered control-bus
+   * command with its summary, rendered from the live registry at prompt-compose time.
+   *
+   * This exists to kill a specific, repeated failure: confidently asserting a capability it HAS.
+   * ("I can't react to Discord messages" — `discord.react` has been a registered bus command since
+   * #103.) The chat seat's picture of itself came only from hand-written prose (`concierge.md`,
+   * the persona) and from memory entries that were snapshots of a past build; neither is regenerated
+   * when code lands, so both drift, and a confident wrong denial is the result. This block is
+   * derived from the same registry that DISPATCHES, so it cannot go stale — the worst it can be
+   * is one process-restart behind.
+   *
+   * Absent or returning "" → no block, so a session constructed without it (every test) composes a
+   * byte-identical prompt.
+   */
+  verbInventoryBlock?: () => string;
   /** Freshly-read, visibility-gated open-loop ledger. Empty preserves the historic prompt exactly. */
   openLoopsBlock?: () => string;
   /** Freshly-read, per-channel calibration bar for THIS session's channel. Empty → no block. */
@@ -599,6 +615,8 @@ export class ConciergeSession {
   private readonly handoffWindow: () => string;
   /** The lazily-read extension-catalog block; "" (the default) composes no block at all. */
   private readonly catalogBlock: () => string;
+  /** The lazily-rendered generated verb inventory; "" (the default) composes no block at all. */
+  private readonly verbInventoryBlock: () => string;
   /** The lazily-read open-loop block; empty means no prompt change for stores without loops. */
   private readonly openLoopsBlock: () => string;
   /** The lazily-read per-channel calibration block; empty means no prompt change for this channel. */
@@ -676,6 +694,7 @@ export class ConciergeSession {
     this.gate = opts.gate ?? null;
     this.handoffWindow = opts.handoffWindow ?? (() => "");
     this.catalogBlock = opts.catalogBlock ?? (() => "");
+    this.verbInventoryBlock = opts.verbInventoryBlock ?? (() => "");
     this.openLoopsBlock = opts.openLoopsBlock ?? (() => "");
     this.calibrationBlock = opts.calibrationBlock ?? (() => "");
     this.proposalsBlock = opts.proposalsBlock ?? (() => "");
@@ -1575,6 +1594,12 @@ export class ConciergeSession {
     const doctrine = readDoctrine(this.config);
     const persona = readOrSeedPersona(this.personaFilePath());
     const blocks = [`<doctrine>\n${doctrine}\n</doctrine>`];
+    // The generated verb inventory sits IMMEDIATELY after doctrine, ahead of every other block:
+    // it is the answer to "can I do X?", and that question comes up before any of the situational
+    // blocks matter. Generated from the live bus registry, so unlike the doctrine's prose and
+    // unlike a memory entry it cannot describe a build that no longer exists.
+    const verbs = this.verbInventoryBlock().trim();
+    if (verbs) blocks.push(verbs);
     // The v6 discovery catalog sits AFTER doctrine, BEFORE persona (persona stays last): the
     // doctrine explains how to work, the catalog what is dispatchable, the persona how to
     // sound. Empty (no registry wired) → no block, so the composed prompt is byte-identical.
@@ -1949,6 +1974,9 @@ export class Concierge {
           gate: this.turnGate,
           // Rotation's small handoff gets the persisted channel window, not the dying transcript.
           handoffWindow: () => this.handoffWindowForScope(scope),
+          // What this build can actually do, generated from the dispatch registry rather than
+          // described in prose — the fix for confidently denying a capability it has.
+          verbInventoryBlock: () => this.verbInventoryBlock(),
           // v6 discovery: read lazily so the registry (wired post-construction) is seen at launch.
           catalogBlock: () => this.extensionCatalogBlock(),
           // Loops live in the same warm store and are re-read for every child launch.
@@ -2191,6 +2219,46 @@ export class Concierge {
    */
   extensionCatalogBlock(): string {
     return this.extensions ? renderCatalogBlock(this.extensions.registry.catalog()) : "";
+  }
+
+  /**
+   * The GENERATED inventory of this build's control-bus surface, composed into every session's
+   * system prompt. Rendered from {@link busRegistry} — the same registry `onBusRequest` dispatches
+   * through — so the list is what the running code can actually do, not what a document says it
+   * could do when the document was last edited.
+   *
+   * Why this exists: the chat seat kept denying capabilities it has. The canonical case is
+   * "I can't react to Discord messages", where `discord.react` has been registered since #103 —
+   * the denial came from a stale memory entry and prose that never mentioned reacting, and both
+   * outrank a guess in the model's eyes. Nothing regenerated either one when the code landed.
+   * A hand-maintained list would inherit exactly that failure, so this one is derived.
+   *
+   * Deliberately NOT included: CLI verbs. The `beckett` command list is a separate surface
+   * ({@link CapabilityRegistry.composeCliHelp}) reached with the Bash tool, and duplicating it here
+   * would double the block for one marginal gain. The instruction below covers it instead: check,
+   * don't assert.
+   */
+  verbInventoryBlock(): string {
+    const commands = this.busRegistry.busCommands();
+    if (commands.length === 0) return "";
+    const lines = commands
+      .map(({ command }) => `- ${command.name} — ${command.summary}`)
+      .sort((a, b) => a.localeCompare(b));
+    return [
+      "<capabilities>",
+      "GENERATED from this running build's command registry at launch — authoritative, and newer",
+      "than any document or memory. These are things you CAN do:",
+      ...lines,
+      "",
+      "Two rules follow from this list existing:",
+      "1. Never tell anyone you cannot do something that appears above. If it is here, you can.",
+      "2. For anything NOT above, do not assert a limit from memory or from doctrine prose — those",
+      "   describe past builds. Check first (`beckett` with no args lists every CLI verb; a skill or",
+      "   `--help` covers the rest), then answer. A wrong \"I can't\" costs more than a moment spent",
+      "   checking, because the person then has to argue with you to get work you were always able",
+      "   to do.",
+      "</capabilities>",
+    ].join("\n");
   }
 
   /** Fresh, bounded loop ledger. SELF scope includes public/owner, never DM loops. */
