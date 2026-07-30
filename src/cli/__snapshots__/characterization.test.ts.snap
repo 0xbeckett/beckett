@@ -1786,6 +1786,7 @@ github_user = ""
 gmail_address = ""
 
 [tracker]
+enabled = true
 poll_secs = 5
 default_board = "ops"
 boards = ["ops", "int", "vid", "vidpip"]
