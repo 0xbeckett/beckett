@@ -1,0 +1,18 @@
+bun test v1.3.13 (bf2e2cec)
+deployed {
+  hostname: "demo.0xbeckett.me",
+  service: "http://localhost:5173",
+}
+deployed {
+  hostname: "demo.0xbeckett.me",
+  service: "http://localhost:1",
+}
+deployed {
+  hostname: "demo.0xbeckett.me",
+  service: "http://localhost:2",
+}
+undeployed {
+  hostname: "a.0xbeckett.me",
+  removedRule: true,
+  deletedRecords: 0,
+}
