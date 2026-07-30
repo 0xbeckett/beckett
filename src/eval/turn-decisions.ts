@@ -19,8 +19,8 @@
  * way it would in production. The `action` taxonomy below is an eval overlay that surfaces the
  * behavior the doctrine already prescribes; it is not part of the production contract.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { validateConfig } from "../config.ts";
 import { DEFAULT_PERSONA, renderDoctrine } from "../concierge/index.ts";
@@ -94,6 +94,37 @@ const DOCTRINE_PATH = join(import.meta.dir, "..", "concierge", "concierge.md");
  * persona — followed by the eval's decision protocol (the output contract + action vocabulary). The
  * doctrine and persona are the REAL artifacts; only the protocol block is eval-owned.
  */
+/**
+ * The governing text, INLINED — the index plus every playbook it points at.
+ *
+ * In production the doctrine is a small index of triggers and file paths, and the model READS a
+ * playbook when its trigger fires (#128). This eval cannot reproduce that: it scores a single-shot
+ * OpenRouter completion with no tools, so a model here can never open a path. Handing it the bare
+ * index would present 19 files it cannot read and score the resulting judgment collapse as a
+ * doctrine regression — an artifact of the harness, reported as evidence about the design. That is
+ * a worse failure than not measuring at all, because it would look like proof.
+ *
+ * So the eval inlines the corpus, and is explicit about which of the two risks it therefore covers:
+ *
+ *   - CONTENT preservation — "are the rules still the right rules?" — IS measured here. The text is
+ *     the real text, so a rule that got mangled in the split flips a decision exactly as it would
+ *     in production. This is what the eval was built for (#78) and it still does it.
+ *   - READ DISCIPLINE — "does the model actually fetch the playbook when the trigger fires?" — is
+ *     NOT measured here, and cannot be without a tool-using harness. It is the genuine new risk the
+ *     pointer design introduces, and it needs its own agentic fixture. Do not read a green run of
+ *     this eval as clearance for that half.
+ */
+function readDoctrineCorpus(): string {
+  const index = readFileSync(DOCTRINE_PATH, "utf8");
+  const dir = join(dirname(DOCTRINE_PATH), "playbooks");
+  if (!existsSync(dir)) return index;
+  const playbooks = readdirSync(dir)
+    .filter((f) => f.endsWith(".md"))
+    .sort()
+    .map((f) => readFileSync(join(dir, f), "utf8"));
+  return [index, ...playbooks].join("\n\n");
+}
+
 export function buildSystemPrompt(
   opts: { doctrine?: string; persona?: string; env?: Record<string, string | undefined> } = {},
 ): string {
@@ -102,7 +133,7 @@ export function buildSystemPrompt(
   // never throws when GITHUB_ACCOUNT isn't set (e.g. a bare CI checkout).
   const owner = env.GITHUB_ACCOUNT?.trim() || "0xbeckett";
   const doctrine = renderDoctrine(
-    opts.doctrine ?? readFileSync(DOCTRINE_PATH, "utf8"),
+    opts.doctrine ?? readDoctrineCorpus(),
     validateConfig({ identity: { github_user: owner } }),
     env,
   );
