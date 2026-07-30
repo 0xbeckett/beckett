@@ -77,7 +77,7 @@ import {
   type PublishPurpose,
 } from "./publish-outbox.ts";
 import { resolveProjectOwner } from "../github/owner.ts";
-import { gitBranchForTicket } from "../git/branch-name.ts";
+import { gitBranchForTicket, worktreeDirForTicket } from "../git/branch-name.ts";
 import { DispatchEventBus, type DispatchEventBusOptions, type DispatchOutcome } from "./events.ts";
 import {
   defaultEffortFor,
@@ -2073,7 +2073,13 @@ export class Dispatcher {
 
   private async allocateTicketWorktree(ticket: Ticket, repoRoot: string): Promise<string> {
     const firstTouch = !this.workspaceByTicket.has(ticket.id);
-    const workspace = this.workspaceByTicket.get(ticket.id) ?? join(repoRoot, SCAFFOLDING_DIR, "worktrees", ticket.id);
+    // Sanitized directory segment (#134): a raw `#` in the worker's cwd breaks npm/Vite builds.
+    const worktreesRoot = join(repoRoot, SCAFFOLDING_DIR, "worktrees");
+    const workspace = this.workspaceByTicket.get(ticket.id) ?? join(worktreesRoot, worktreeDirForTicket(ticket));
+    // Pre-#134 daemons cut the tree at the raw ticket id. `workspaceByTicket` is in-memory, so after
+    // a deploy re-staffs an in-flight ticket it is empty (firstTouch) and the legacy `#`-named tree
+    // may still be on disk holding that branch — hand it to createWorktree to migrate it forward.
+    const legacyWorkspace = join(worktreesRoot, ticket.id);
     this.trace(ticket, "worktree", "started", firstTouch ? "creating isolated worktree" : "reusing isolated worktree");
     // Fresh base only when first cutting the tree; a reused tree keeps its in-progress commits.
     if (firstTouch) await this.git.fetchRemote(repoRoot);
@@ -2090,6 +2096,7 @@ export class Dispatcher {
       branch,
       baseRef: dependencyRefs[0] ?? "origin/main",
       reuseIfExists: true,
+      ...(firstTouch && legacyWorkspace !== workspace ? { legacyWorkspace } : {}),
     });
     if (dependencyRefs.length > 1) {
       await this.git.mergeBranchesIntoWorktree(workspace, dependencyRefs.slice(1));

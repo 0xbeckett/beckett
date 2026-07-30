@@ -121,6 +121,36 @@ describe("worktree lifecycle (real git)", () => {
     expect(existsSync(join(ws, "wip.txt"))).toBe(true);
   });
 
+  test("migrates a legacy '#'-named worktree to the sanitized path, keeping uncommitted work (#134)", async () => {
+    // A pre-#134 daemon cut the tree at the raw ticket id, so the dir literally contains '#'.
+    const legacy = wtPath("#131");
+    await createWorktree({ repoRoot: repo, workspace: legacy, branch: "beckett/131", baseRef: "origin/main" });
+    writeFileSync(join(legacy, "wip.txt"), "in progress, not yet committed\n");
+
+    // A deploy re-staffs the ticket: workspaceByTicket is empty, so the dispatcher asks to (re)create
+    // the tree at the SANITIZED path and hands over the legacy path to migrate forward.
+    const sanitized = wtPath("131");
+    const handle = await createWorktree({
+      repoRoot: repo,
+      workspace: sanitized,
+      branch: "beckett/131",
+      baseRef: "origin/main",
+      reuseIfExists: true,
+      legacyWorkspace: legacy,
+    });
+
+    expect(handle.workspace).toBe(sanitized);
+    expect(existsSync(sanitized)).toBe(true);
+    expect(existsSync(legacy)).toBe(false); // no orphaned '#'-named tree left behind
+    expect(existsSync(join(sanitized, "wip.txt"))).toBe(true); // uncommitted work followed the move
+    // git's registration points at the new path, not the old one.
+    const list = (await run(["worktree", "list"], repo)).stdout;
+    expect(list).toContain(sanitized);
+    expect(list).not.toContain(legacy);
+    // The branch is checked out exactly once — a fresh add here would have failed otherwise.
+    expect((await run(["rev-parse", "--abbrev-ref", "HEAD"], sanitized)).stdout.trim()).toBe("beckett/131");
+  });
+
   test("removeWorktree tears the tree down and deregisters it", async () => {
     const ws = wtPath("t1");
     await createWorktree({ repoRoot: repo, workspace: ws, branch: "beckett/t1", baseRef: "origin/main" });

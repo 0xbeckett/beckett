@@ -2914,6 +2914,31 @@ describe("worktrees (v3.2)", () => {
     expect(worktreeRemoves).toContain(ws); // still torn down despite the throw
   });
 
+  test("the worktree path is scrubbed of '#' for a public ticket id (#134)", async () => {
+    const { d } = newDispatcher();
+    // A real tracker ticket id is a public ref like `#131` — a raw `#` in the worker's cwd breaks
+    // npm/Vite, so the dispatcher must cut the tree at a sanitized segment.
+    const ticket = makeTicket({ id: "#131", identifier: "OPS-131" });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    expect(worktreeAdds).toHaveLength(1);
+    const ws = worktreeAdds[0]!.workspace;
+    expect(ws).not.toContain("#");
+    expect(ws).toContain("/.beckett/worktrees/131");
+  });
+
+  test("a task-branch ticket id keeps a '#'-free, distinct worktree path (#134)", async () => {
+    const { d } = newDispatcher();
+    const ticket = makeTicket({ id: "#131.1", identifier: "OPS-131", branchRef: "131.1" });
+    await d.handle(stateChanged(ticket, "in_progress"));
+    await tick();
+
+    const ws = worktreeAdds[0]!.workspace;
+    expect(ws).not.toContain("#");
+    expect(ws).toContain("/.beckett/worktrees/131.1");
+  });
+
   test("a cancelled ticket's worktree is torn down", async () => {
     const { d } = newDispatcher();
     const ticket = makeTicket();
