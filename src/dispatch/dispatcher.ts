@@ -63,7 +63,7 @@ import {
   fastForwardCheckout,
   SCAFFOLDING_DIR,
 } from "../worker/worktree.ts";
-import { projectSlug } from "../tracker/cast.ts";
+import { isPlanExempt, isPlanStageEligible, projectSlug, taskKeyOf } from "../tracker/cast.ts";
 import { hardCapSeconds, sweepLedgeredWorker } from "../drivers/proc.ts";
 import { spawnWorker, type TicketWorkerHandle } from "./spawn.ts";
 import { AdvanceOutbox, type AdvanceOperation } from "./advance-outbox.ts";
@@ -89,7 +89,6 @@ import {
   type StageView,
   type PlanVerification,
 } from "./stages.ts";
-import { planDocPath } from "./plan-stage.ts";
 
 // =======================================================================================
 // Collaborators
@@ -476,14 +475,19 @@ function parseLedger(value: unknown): Record<string, LedgeredWorker> {
 function parsePlanVerified(value: unknown): Record<string, PlanVerification> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: Record<string, PlanVerification> = {};
-  for (const [ticketId, raw] of Object.entries(value as Record<string, unknown>)) {
+  for (const [taskKey, raw] of Object.entries(value as Record<string, unknown>)) {
     if (!raw || typeof raw !== "object") continue;
     const r = raw as Record<string, unknown>;
     if (typeof r.harness !== "string" || typeof r.verifiedAt !== "string") continue;
-    out[ticketId] = {
+    out[taskKey] = {
       sha: typeof r.sha === "string" ? r.sha : null,
       harness: r.harness,
       verifiedAt: r.verifiedAt,
+      // A pre-#128-correction-pass state file (or a hand-edited one) has no `doc` field at all —
+      // degrade to "" (an empty inlined plan, i.e. no worse than no plan) rather than dropping the
+      // whole record: everything else about the verification (the enforcement gate itself) is
+      // still trustworthy even if the cached artifact text didn't survive the upgrade.
+      doc: typeof r.doc === "string" ? r.doc : "",
       ...(typeof r.model === "string" ? { model: r.model } : {}),
     };
   }
@@ -623,14 +627,60 @@ export class Dispatcher {
   /** Per-ticket incomplete/oversized plan-check count, bounded by {@link RetryCaps.planCycles} (issue #128). */
   private readonly planCycles = new Map<string, number>();
   /**
-   * THE ENFORCEMENT RECORD (issue #128): ticket id → the plan-stage brief `plan_check` verified,
-   * naming the cast that ACTUALLY authored it. Written in exactly one place
-   * (`onRecordPlanVerified`, called only by `plan_check`'s finish handler on a genuine pass) and
-   * consulted in exactly one place that matters (`implementStage.entryGuard` /
-   * `hasQualifyingPlan`, `stages.ts`) plus one defense-in-depth backstop (`doSpawn`, below). Never
-   * a ticket field — nothing a filer/cast can write reaches this map directly.
+   * THE ENFORCEMENT RECORD (issue #128): TASK key ({@link taskKeyOf} — correction pass's "amortize
+   * per task, not per ticket") → the plan-stage brief `plan_check` verified, naming the cast that
+   * ACTUALLY authored it and the doc's own text (so a sibling branch reusing this record gets the
+   * real inlined brief with no git dependency on which worktree/branch produced it). Written in
+   * exactly one place (`planCheckStage.finish`, `dispatch/plan-stage.ts`, on a genuine pass) and
+   * consulted in exactly one place that matters (`implementStage.entryGuard` / `hasQualifyingPlan`,
+   * `stages.ts`) plus one defense-in-depth backstop (`doSpawn`, below). Never a ticket field —
+   * nothing a filer/cast can write reaches this map directly. For a single-ticket task (no
+   * `branchRef`) `taskKeyOf` degrades to `ticket.identifier`, which in production (bored)
+   * `=== ticket.id` — so `clearTicketMemory`'s `planVerified.delete(ticketId)` below still cleans
+   * up the common single-ticket case correctly; for a real multi-branch task it harmlessly misses
+   * (the key it deletes was never used), leaving the record for the task's other branches to keep
+   * reusing — a small, bounded, intentional memory trade-off, not an oversight.
    */
   private readonly planVerified = new Map<string, PlanVerification>();
+  /**
+   * The harness/model spec that actually LAUNCHED a ticket's plan-authoring worker (issue #128),
+   * keyed by ticket id (the spawning ticket, not its task) — set in `doSpawn` right after cast
+   * resolution/health-substitution/override-rejection are all final, consumed (read-and-cleared)
+   * by `plan_check`'s finish handler via `StageOps.planAuthorCastFor`. Closes the doc/code
+   * contradiction the correction pass flagged: `PlanVerification` always claimed to record the
+   * cast that actually ran, but the pre-fix code read `ticket.casting.plan` (the merely REQUESTED
+   * cast) instead.
+   */
+  private readonly planAuthorCast = new Map<string, HarnessSpec>();
+  /**
+   * Task key → the id of the ticket CURRENTLY claiming its plan-authoring slot (issue #128
+   * correction pass, "amortize per task"), so two sibling branches entering `plan`
+   * near-simultaneously don't both spawn competing authors for the one plan their task shares —
+   * a DIFFERENT ticket seeing its task's key already claimed does NOT spawn, and instead retries
+   * shortly (`doSpawn`'s `stage === "plan"` branch, below). Storing the CLAIMING ticket id (not
+   * just a boolean) lets the claiming ticket's own retries (`plan_check` bouncing back to `plan`,
+   * or a human `restaff` after a park) recognize the claim as their own and proceed — no separate
+   * "clear on retry" plumbing needed, since re-claiming your own claim is a no-op.
+   *
+   * Deliberately left claimed forever once SET, rather than explicitly cleared on
+   * success/park/failure: a taskKey that reached `planVerified` is never consulted here again
+   * (that check runs first and short-circuits), and a taskKey whose claiming ticket was parked is
+   * correctly re-enterable by THAT SAME ticket's later restaff. The one gap this leaves: if the
+   * claiming ticket is abandoned (parked forever, never restaffed) or cancelled outright and a
+   * genuinely DIFFERENT sibling later needs the same task's plan, that sibling would see a stale
+   * claim and retry indefinitely rather than proceeding — narrow (requires the original ticket to
+   * be truly dead, not just slow) and not something the existing in-flight design (also not
+   * restart-safe, see below) fully closes either; flagged for a human rather than silently accepted.
+   *
+   * Deliberately NOT persisted (unlike {@link planVerified}): a daemon restart mid-authoring drops
+   * every claim, so in the narrow worst case (two siblings racing exactly across a restart) a
+   * second author could spawn after all — wasted duplicate work, never an enforcement failure (the
+   * LAST verified plan still wins, and both possible authors are still strong-seat). Adding a fully
+   * restart-safe version would mean another persisted-map (de)serialization path for a window this
+   * narrow; flagged here as the one part of this design I'd want a human to weigh in on rather than
+   * silently accept.
+   */
+  private readonly planAuthoringInFlight = new Map<string, string>();
   /** See {@link DispatcherDeps.planVerifiedSeed} — test-only, always `false` in production. */
   private readonly planGateAlwaysSatisfiedForTests: boolean;
   /** Crash-recovery ledger for CURRENTLY live workers (persisted; see {@link LedgeredWorker}). */
@@ -747,7 +797,7 @@ export class Dispatcher {
     if (Array.isArray(deps.planVerifiedSeed)) {
       const seededAt = new Date(0).toISOString();
       for (const ticketId of deps.planVerifiedSeed) {
-        this.planVerified.set(ticketId, { sha: null, harness: "test-seed", verifiedAt: seededAt });
+        this.planVerified.set(ticketId, { sha: null, harness: "test-seed", doc: "", verifiedAt: seededAt });
       }
     }
     this.stageOps = {
@@ -767,8 +817,14 @@ export class Dispatcher {
       implementIncomplete: (ticket, handle, summary) => this.onImplementIncomplete(ticket, handle, summary),
       reviewInfraFailure: (ticket, reason, summary) => this.onReviewInfraFailure(ticket, reason, summary),
       persistRuntimeState: () => this.persistRuntimeState(),
-      hasVerifiedPlan: (ticketId) => this.planGateAlwaysSatisfiedForTests || this.planVerified.has(ticketId),
-      recordPlanVerified: (ticketId, record) => this.planVerified.set(ticketId, record),
+      hasVerifiedPlan: (taskKey) => this.planGateAlwaysSatisfiedForTests || this.planVerified.has(taskKey),
+      recordPlanVerified: (taskKey, record) => this.planVerified.set(taskKey, record),
+      planAuthorCastFor: (ticketId) => {
+        const spec = this.planAuthorCast.get(ticketId);
+        this.planAuthorCast.delete(ticketId);
+        return spec;
+      },
+      headSha: (ticket) => this.currentHeadSha(ticket),
       readTicketFile: (ticket, relPath) => this.readTicketFile(ticket, relPath),
       counters: {
         rework: this.reworkCount,
@@ -985,17 +1041,26 @@ export class Dispatcher {
           // forever (exactly the failure mode a mandatory gate must not create). Redirect it to
           // `plan` instead. Every OTHER guard failure (design's INT-only gate) keeps the
           // pre-existing inert behavior — this branch is scoped to THIS guard, not "any guard".
-          if (staffs.name === "implement" && !this.stageOps.hasVerifiedPlan(ticket.id)) {
+          if (staffs.name === "implement" && !this.stageOps.hasVerifiedPlan(taskKeyOf(ticket))) {
             this.forgetWedgeClock(ticket.id);
             try {
-              const moved = await this.advanceTicket(
-                ticket,
-                "plan",
+              // Confirmed live bug fix (issue #128 correction pass): this used to call
+              // `advanceTicket(ticket, "plan", ...)`, which asks bored's `case "plan"` handler to
+              // unconditionally POST `/staff` — the flow's ENTRY-node endpoint, documented only for
+              // "an unstaffed backlog/todo ticket," never for redirecting a flow run already active
+              // at a LATER node (`beckett_implement`, exactly where a ticket wedged at
+              // `in_progress` already is) — a real 501/error risk against live bored, not just an
+              // aesthetic mismatch. Spawn the `plan` stage worker directly instead — no tracker
+              // state transition — the SAME pattern `plan_check`'s own same-node retry already uses
+              // (`plan-stage.ts`'s `planCheckStage.finish`) for the analogous case.
+              await this.postComment(
+                ticket.id,
                 "Found this ticket in **in_progress** with no verified plan brief on record — issue " +
-                  "#128 requires one before an implement worker is staffed. Sending it to **Plan** " +
-                  "instead of leaving it stuck with no path forward.",
+                  "#128 requires one before an implement worker is staffed. Running the **Plan** stage " +
+                  "directly (no tracker state change) instead of leaving it stuck with no path forward.",
               );
-              if (moved) restaffed.push(ticket.id);
+              this.stageOps.spawnStage(ticket, "plan");
+              restaffed.push(ticket.id);
             } catch (err) {
               this.logger.warn("staffing watchdog: could not redirect an unplanned in_progress ticket to plan", {
                 ticket: ticket.identifier,
@@ -1308,7 +1373,11 @@ export class Dispatcher {
     this.stallFingerprints.delete(ticketId);
     this.designCycles.delete(ticketId);
     this.planCycles.delete(ticketId);
+    // `planVerified` is now TASK-keyed (issue #128 correction pass) — see that field's own doc
+    // comment for why deleting by `ticketId` here is still correct (a no-op miss for a real
+    // multi-branch task, a real cleanup for the common single-ticket-task case).
     this.planVerified.delete(ticketId);
+    this.planAuthorCast.delete(ticketId);
     this.liveTickets.delete(ticketId);
     this.liveLedger.delete(ticketId);
     this.resumables.delete(ticketId);
@@ -1952,6 +2021,12 @@ export class Dispatcher {
    * spawn a fresh one for the ticket's current stage — optionally pinned to a different harness.
    * Exposed to the Concierge as `beckett ticket restaff <id> [--harness h]` via the control bus.
    * Accepts a ticket id OR a human identifier ("OPS-42").
+   *
+   * Issue #128 correction pass, bypass #6 (the correction pass's HIGHEST-priority finding: this
+   * verb is documented as exposed to the now-cheap concierge, and it walked straight past the
+   * plan stage's cast gate with zero eligibility check): `--harness` is refused outright for a
+   * ticket at the `plan` stage. A bare `restaff` (no `--harness`) still works — it retries plan
+   * authorship on the same allowlisted default, which is exactly what a stuck strong-seat needs.
    */
   async restaff(
     idOrIdentifier: string,
@@ -1964,6 +2039,15 @@ export class Dispatcher {
       throw new Error(
         `ticket ${ticket.identifier} is in "${ticket.state}" — move it to in_progress/in_review ` +
           `(or INT Design) to (re)staff it`,
+      );
+    }
+    // Checked BEFORE the live-worker abort below, so a bad request never kills a healthy live plan
+    // worker for nothing.
+    if (harness && stage === "plan") {
+      throw new Error(
+        `ticket ${ticket.identifier} is at the plan stage — its cast is fixed to the strong-seat ` +
+          `allowlist (issue #128) and cannot be restaffed to a different harness; restaff with no ` +
+          `--harness to retry on the same allowlisted default`,
       );
     }
 
@@ -2260,12 +2344,74 @@ export class Dispatcher {
 
   /** The real spawn path (cap already checked). Registers the finish handler. */
   private async doSpawn(ticket: Ticket, stage: string, repoRoot: string, reservation: symbol): Promise<void> {
+    // Issue #128 correction pass, tiering + per-task amortization for the plan stage ITSELF —
+    // placed at this one chokepoint (not scattered across every staffing call site) so exemption,
+    // task-level reuse, and in-flight de-duplication are each decided in exactly one place. This
+    // runs BEFORE any cast/worktree work below: an exempt or reused ticket must never pay for
+    // provisioning it doesn't need.
+    if (stage === "plan") {
+      const taskKey = taskKeyOf(ticket);
+      if (isPlanExempt(ticket, this.config)) {
+        this.trace(ticket, "plan:staff", "held", "tier-exempt — skipping the mandatory plan stage");
+        await this.advanceTicket(
+          ticket,
+          "in_progress",
+          "This ticket's implement cast is tiered exempt from the mandatory Plan stage (issue #128 " +
+            "correction pass: a strong-seat brief is required for hard work, not for everything — " +
+            "\"if its super easy then theres no point, its a waste of tokens\") — skipping straight " +
+            "to implementation.",
+        );
+        return; // launchSpawn's finally releases the reservation + pumps
+      }
+      if (!this.planGateAlwaysSatisfiedForTests && this.planVerified.has(taskKey)) {
+        this.trace(ticket, "plan:staff", "held", `reusing task ${taskKey}'s already-verified plan`);
+        await this.advanceTicket(
+          ticket,
+          "in_progress",
+          `Reusing this task's already-verified plan (\`${taskKey}\`, issue #128 "amortize per task, ` +
+            `not per ticket") — no second plan worker needed.`,
+        );
+        return; // launchSpawn's finally releases the reservation + pumps
+      }
+      const claimant = this.planAuthoringInFlight.get(taskKey);
+      if (claimant !== undefined && claimant !== ticket.id) {
+        // A DIFFERENT sibling branch under the same task already claimed this task's one plan —
+        // this ticket would otherwise spawn a duplicate author. Do NOT push straight back onto
+        // `this.pending` here: `doSpawn` runs synchronously up to its first `await`, and `pump()`'s
+        // own while-loop would immediately try to re-launch the very entry this branch just
+        // re-queued — a synchronous self-recursion with no escape until the concurrency cap fills.
+        // A short, deferred retry (the same backoff timer `onSpawnFailure` uses, so the staffing
+        // watchdog's `spawnRetryTimers.has()` check correctly treats this ticket as "handled, not
+        // wedged" while it waits) breaks that loop and re-validates the ticket is still active
+        // before trying again (`respawnIfActive`, #65).
+        this.trace(ticket, "plan:staff", "held", `plan authoring already claimed by ${claimant} for task ${taskKey}`);
+        const timer = setTimeout(() => {
+          this.spawnRetryTimers.delete(ticket.id);
+          void this.respawnIfActive(ticket, "plan");
+        }, 2_000);
+        this.spawnRetryTimers.set(ticket.id, timer);
+        return; // launchSpawn's finally releases the reservation + pumps
+      }
+      // Either unclaimed, or already claimed by THIS ticket (a `plan_check` bounce re-authoring,
+      // or a human `restaff` after a park) — claiming your own claim is a no-op, so no separate
+      // "is this my own retry" branch is needed.
+      this.planAuthoringInFlight.set(taskKey, ticket.id);
+    }
+
     // Defense-in-depth (issue #128, bypass #5): every KNOWN call site that can reach here first
     // consults `implementStage.entryGuard` (`stages.forState(...).entryGuard`) at the four
     // staffing points in this file. This is a SECOND, independent check of the exact same fact,
     // placed at the one chokepoint every spawn — known or future — must pass through, so a call
     // site that forgets to consult the guard still cannot launch an unbriefed implement worker.
-    if (stage === "implement" && !this.planGateAlwaysSatisfiedForTests && !this.planVerified.has(ticket.id)) {
+    // Widened alongside the tiering exemption above: an exempt ticket never reaches here in the
+    // first place (`implementStage.entryGuard` already passed it via `hasQualifyingPlan`), so this
+    // stays a pure backstop for the non-exempt case, keyed by the SAME task key `plan_check` writes.
+    if (
+      stage === "implement" &&
+      !this.planGateAlwaysSatisfiedForTests &&
+      !isPlanExempt(ticket, this.config) &&
+      !this.planVerified.has(taskKeyOf(ticket))
+    ) {
       this.logger.error("structural guard bypass blocked: refusing an implement spawn with no verified plan", {
         ticket: ticket.identifier,
       });
@@ -2287,7 +2433,28 @@ export class Dispatcher {
     // is cleared only when the job is released on done/cancel (#84).
     const override = this.castOverrides.get(ticket.id);
     if (override && override.stage === stage) {
-      spec = { ...override.spec, effort: override.spec.effort ?? spec.effort };
+      const merged = { ...override.spec, effort: override.spec.effort ?? spec.effort };
+      // Issue #128 correction pass, bypass #6's defense-in-depth half: `restaff()` already refuses
+      // a `--harness` override for `stage === "plan"` outright, but a cast override can ALSO reach
+      // `castOverrides` from classed-failure recovery (`onClassedImplementFailure`) — that path is
+      // scoped to implement failures today, but this check holds even if that ever changes, or a
+      // future writer into this map forgets the plan-stage carve-out `restaff` remembers. A
+      // non-allowlisted override for `plan` is dropped, never silently applied — the strong-seat
+      // default below still runs, so this stage never quietly launches on the cheap seat the
+      // override named.
+      if (stage === "plan" && !isPlanStageEligible(merged)) {
+        this.logger.warn("rejected a non-allowlisted plan-stage cast override — running the strong-seat default", {
+          ticket: ticket.identifier,
+          rejected: `${merged.harness}/${merged.model ?? "(default)"}`,
+        });
+        void this.postComment(
+          ticket.id,
+          `Rejected a plan-stage cast override to \`${merged.harness}/${merged.model ?? "(default)"}\` — not a ` +
+            `strong-seat pair (issue #128). Running on the strong-seat default instead.`,
+        );
+      } else {
+        spec = merged;
+      }
     }
 
     // Crash recovery (issue #20): a restart-interrupted same-stage worker left a persisted
@@ -2379,6 +2546,12 @@ export class Dispatcher {
       resumeSessionId = undefined; // the persisted session belongs to the unhealthy harness
       spec = healthy;
     }
+    // Issue #128: `spec` is final for this spawn as of here (cast resolution, override-rejection,
+    // and health-substitution have all had their say — no `stage === "plan"` spec ever reaches
+    // `spawnWorker` after this point without a chance to have been recorded here first). Capture it
+    // so `plan_check`'s finish handler can record the cast that ACTUALLY launched, not the ticket's
+    // merely requested one (`StageOps.planAuthorCastFor`, consumed/cleared on read).
+    if (stage === "plan") this.planAuthorCast.set(ticket.id, spec);
 
     // #68: a worker interrupted mid-run by a deploy/restart must RESUME its session or be PARKED —
     // never silently restarted from scratch. `resumeSessionId` is now final: recovery armed it iff a
@@ -2453,23 +2626,22 @@ export class Dispatcher {
         });
       }
     }
-    // Issue #128: hand implement/review the ticket's verified plan brief, read from the SAME
-    // worktree checkout every stage of this ticket shares (v3.1) — the plan stage committed it
-    // there. Best-effort: a read failure degrades to no plan (today's exact prompt), never blocks
-    // the spawn — the `plan_check` gate already ran BEFORE the ticket ever reached `in_progress`,
-    // so a missing file here is a filesystem hiccup, not a policy question.
+    // Issue #128 correction pass: hand implement/review the ticket's TASK's verified plan brief,
+    // sourced from the dispatcher's OWN in-memory verification record (`PlanVerification.doc`),
+    // never a git read of this ticket's own worktree. A task-level-REUSED sibling ticket (the
+    // "amortize per task" ask) never ran a plan worker of its own, so its own checkout never has
+    // the doc committed in it — a git read would silently degrade every reused ticket's prompt to
+    // no plan at all, defeating the very guarantee amortization must not weaken. The record's
+    // `doc` field is the plan's full committed text, captured once by `plan_check`
+    // (`dispatch/plan-stage.ts`) — reading it here is O(map lookup), no I/O, no failure mode to
+    // degrade from.
     let planDoc: string | undefined;
     let planDocSha: string | undefined;
-    if ((stage === "implement" || stage === "review") && this.planVerified.has(ticket.id)) {
-      try {
-        planDoc = await this.readTicketFile(ticket, planDocPath(ticket));
-        planDocSha = this.planVerified.get(ticket.id)?.sha ?? undefined;
-      } catch (err) {
-        this.logger.warn("could not read the verified plan doc for the prompt — degrading to no plan", {
-          ticket: ticket.identifier,
-          stage,
-          error: (err as Error).message,
-        });
+    if (stage === "implement" || stage === "review") {
+      const verified = this.planVerified.get(taskKeyOf(ticket));
+      if (verified) {
+        planDoc = verified.doc;
+        planDocSha = verified.sha ?? undefined;
       }
     }
     const spawnArgs = {
@@ -3374,6 +3546,27 @@ export class Dispatcher {
   }
 
   /**
+   * Current HEAD sha of the ticket's own worktree checkout, or `null` when there's no allocated
+   * workspace or the read fails (issue #128 — gives `PlanVerification.sha` a real freshness
+   * marker instead of the hardcoded `null` it shipped with). Never throws, unlike
+   * {@link readTicketFile}: a missing sha degrades `planContextBlock`'s freshness note to its
+   * "unspecified revision" wording, never blocks the verification it's decorating.
+   */
+  private async currentHeadSha(ticket: Ticket): Promise<string | null> {
+    const workspace = this.workspaceByTicket.get(ticket.id);
+    if (!workspace) return null;
+    try {
+      return await this.git.headSha(workspace);
+    } catch (err) {
+      this.logger.warn("head-sha read failed (plan verification records no sha)", {
+        ticket: ticket.identifier,
+        error: (err as Error).message,
+      });
+      return null;
+    }
+  }
+
+  /**
    * The review gate for a ticket (v3.1). An explicit `reviewTier` on the implement cast wins;
    * otherwise it derives from the CAST effort: low/medium → `self` (one-pass, the worker
    * self-verifies inline), everything else (high/xhigh, or no cast) → `fresh` (separate
@@ -4101,7 +4294,11 @@ export class Dispatcher {
     this.stallFingerprints.delete(ticketId);
     this.designCycles.delete(ticketId);
     this.planCycles.delete(ticketId);
+    // `planVerified` is now TASK-keyed (issue #128 correction pass) — see that field's own doc
+    // comment for why deleting by `ticketId` here is still correct (a no-op miss for a real
+    // multi-branch task, a real cleanup for the common single-ticket-task case).
     this.planVerified.delete(ticketId);
+    this.planAuthorCast.delete(ticketId);
     this.liveTickets.delete(ticketId);
     this.liveLedger.delete(ticketId);
     this.resumables.delete(ticketId);

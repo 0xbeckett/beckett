@@ -22,11 +22,16 @@ import {
 } from "./stages.ts";
 import { ActionClass, ExtensionRegistry, type ExtensionContext } from "../ext/index.ts";
 
-/** A minimal fake {@link StageOps} for entryGuard tests — only `hasVerifiedPlan` is consulted. */
-function fakeOps(planVerifiedIds: string[] = []): StageOps {
-  const verified = new Set(planVerifiedIds);
+/**
+ * A minimal fake {@link StageOps} for entryGuard tests. `hasVerifiedPlan` and `config` (issue
+ * #128: `hasQualifyingPlan` now also consults `isPlanExempt`, which reads `config`) are both
+ * live; every other member is absent on purpose — `entryGuard`s consult only these two.
+ */
+function fakeOps(planVerifiedTaskKeys: string[] = [], cfg: Config = config): StageOps {
+  const verified = new Set(planVerifiedTaskKeys);
   return {
-    hasVerifiedPlan: (ticketId: string) => verified.has(ticketId),
+    config: cfg,
+    hasVerifiedPlan: (taskKey: string) => verified.has(taskKey),
   } as unknown as StageOps;
 }
 
@@ -94,11 +99,39 @@ describe("StageRegistry", () => {
 
   test("implement staffing is gated to tickets with a verified plan on record (issue #128)", () => {
     const guard = stageRegistry.get("implement")!.entryGuard!;
+    // No implement cast → defaults to claude/xhigh (the test file's `config`) → NOT tiered exempt,
+    // so this ticket genuinely needs `hasVerifiedPlan` to pass.
     const ticket = makeTicket({ id: "tkt-9", identifier: "OPS-9" });
     expect(guard(ticket, fakeOps())).toBe(false);
-    expect(guard(ticket, fakeOps(["tkt-9"]))).toBe(true);
-    // A DIFFERENT ticket's verified plan must not satisfy this one's guard.
-    expect(guard(ticket, fakeOps(["some-other-ticket"]))).toBe(false);
+    // Seeded by TASK key (`taskKeyOf`), not the ticket's own id (issue #128 correction pass,
+    // "amortize per task") — this ticket has no `branchRef`, so its task key is its identifier.
+    expect(guard(ticket, fakeOps(["OPS-9"]))).toBe(true);
+    // A DIFFERENT task's verified plan must not satisfy this one's guard.
+    expect(guard(ticket, fakeOps(["OPS-other"]))).toBe(false);
+  });
+
+  test("implement staffing is tiered EXEMPT for low/medium-effort non-claude work, even with no verified plan (issue #128 correction pass)", () => {
+    const guard = stageRegistry.get("implement")!.entryGuard!;
+    const cheapTicket = makeTicket({
+      id: "tkt-cheap",
+      identifier: "OPS-CHEAP",
+      casting: { implement: { harness: "codex", effort: "high" } },
+    });
+    expect(guard(cheapTicket, fakeOps())).toBe(true); // exempt: not claude, so effort doesn't matter
+
+    const hardTicket = makeTicket({
+      id: "tkt-hard",
+      identifier: "OPS-HARD",
+      casting: { implement: { harness: "claude", effort: "high" } },
+    });
+    expect(guard(hardTicket, fakeOps())).toBe(false); // claude + high → required, no plan on record
+
+    const fableReviewTicket = makeTicket({
+      id: "tkt-fable",
+      identifier: "OPS-FABLE",
+      casting: { implement: { harness: "codex", effort: "low" }, review: { harness: "claude", model: "claude-fable-5" } },
+    });
+    expect(guard(fableReviewTicket, fakeOps())).toBe(false); // fable review → required regardless of implement
   });
 
   test("stage spawn flags: implement captures the base sha, review preloads the diff", () => {
@@ -159,6 +192,21 @@ describe("prompt + system-append fallbacks", () => {
     expect(prompt).toContain("Acceptance criteria:\n- it works");
     const append = stageRegistry.systemAppend("mystery", { ticket, config, env: {} });
     expect(append).toContain("You are an autonomous worker implementing a ticket");
+  });
+
+  // Issue #128 correction pass: `doSpawn` now sources `planDoc` from the dispatcher's in-memory
+  // `PlanVerification.doc` (a task-keyed record) instead of a per-ticket git file read, so a
+  // sibling ticket reusing another branch's verified plan gets the SAME string a directly-authored
+  // ticket would. `genericTaskPrompt`/`planContextBlock` never see where the string came from —
+  // this pins that the prompt is byte-identical either way, since the formatter is pure.
+  test("the inlined <plan> block is byte-identical whether planDoc came from this ticket's own run or a reused task record", () => {
+    const ticket = makeTicket();
+    const doc = "## Scope & files\n\nx.ts:1\n\n## Approach\n\ndo the thing";
+    const ownRun = stageRegistry.prompt("implement", { ticket, planDoc: doc, planDocSha: "abc1234" });
+    const reused = stageRegistry.prompt("implement", { ticket, planDoc: doc, planDocSha: "abc1234" });
+    expect(ownRun).toBe(reused);
+    expect(ownRun).toContain("<plan>");
+    expect(ownRun).toContain("Scope & files");
   });
 
   test("stage-specific briefs and personas resolve through the registry", () => {
@@ -229,11 +277,12 @@ describe("config-driven retry caps (OPS-180)", () => {
     });
   });
 
-  test("[supervise] max_* keys drive the caps (planCycles has no config key yet — see RetryCaps.planCycles)", () => {
+  test("[supervise] max_* keys drive the caps, including max_plan_cycles (issue #128, now wired)", () => {
     const caps = retryCapsFor({
       supervise: {
         max_rework_cycles: 5,
         max_design_cycles: 1,
+        max_plan_cycles: 4,
         max_implement_retries: 7,
         max_review_infra_retries: 2,
         max_harness_substitutions: 9,
@@ -242,11 +291,17 @@ describe("config-driven retry caps (OPS-180)", () => {
     expect(caps).toEqual({
       reworkCycles: 5,
       designCycles: 1,
-      planCycles: 2,
+      planCycles: 4,
       implementRetries: 7,
       reviewInfraRetries: 2,
       harnessSubstitutions: 9,
     });
+  });
+
+  test("max_plan_cycles defaults to 2 (the old hardcoded value) when omitted, independently of max_design_cycles", () => {
+    const caps = retryCapsFor({ supervise: { max_design_cycles: 9 } } as unknown as Config);
+    expect(caps.planCycles).toBe(2); // a design cap change must not silently move plan's too
+    expect(caps.designCycles).toBe(9);
   });
 });
 

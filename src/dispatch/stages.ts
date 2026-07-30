@@ -37,13 +37,13 @@
  * filer could spoof. See `plan-stage.ts`'s header for the full enforcement writeup.
  */
 
-import type { Config, DoneSignal, Effort, Logger } from "../types.ts";
+import type { Config, DoneSignal, Logger } from "../types.ts";
 import { ActionClass } from "../types.ts";
 import type { HarnessSpec, Ticket, TicketState } from "../tracker/types.ts";
 import { ExtensionRegistry, type Extension, type ExtensionFactory } from "../ext/index.ts";
 import type { DispatchOutcome } from "./events.ts";
 import type { TicketWorkerHandle } from "./spawn.ts";
-import { projectSlug } from "../tracker/cast.ts";
+import { defaultEffortFor, isPlanExempt, projectSlug, taskKeyOf } from "../tracker/cast.ts";
 import { steeringBlock } from "./resume-brief.ts";
 import { CapabilityRegistry, type CapabilityDeps, type PromptBlock } from "../capability/index.ts";
 import { availableCapabilityModules, createCapability } from "../capability/modules/index.ts";
@@ -77,11 +77,9 @@ export interface RetryCaps {
   /**
    * The plan checker may send an incomplete/oversized plan back this many times before a human
    * takes over (issue #128) — deliberately separate from {@link designCycles} even though the
-   * shape mirrors it: a plan cap change must not silently move design's too. NOT YET wired to a
-   * `[supervise] max_plan_cycles` config key: that schema lives in `src/capability/builtins.ts`,
-   * which another implementer was concurrently editing for this same issue when this file was
-   * written, and touching it risked a collision this stage does not need to take — the hardcoded
-   * default below is a real, load-bearing cap either way. Wiring a config knob is a follow-up.
+   * shape mirrors it: a plan cap change must not silently move design's too. Wired to
+   * `[supervise] max_plan_cycles` (`src/capability/builtins.ts`), defaulting to the same 2 this
+   * shipped hardcoded with before that config key existed.
    */
   planCycles: number;
   /** Max auto-respawns of an implement worker that ended without a clean finish (OPS-50). */
@@ -98,8 +96,7 @@ export function retryCapsFor(config: Config): RetryCaps {
   return {
     reworkCycles: config.supervise?.max_rework_cycles ?? 3,
     designCycles: config.supervise?.max_design_cycles ?? 2,
-    // See {@link RetryCaps.planCycles}'s doc: no config key yet, hardcoded default only.
-    planCycles: 2,
+    planCycles: config.supervise?.max_plan_cycles ?? 2,
     implementRetries: config.supervise?.max_implement_retries ?? 3,
     reviewInfraRetries: config.supervise?.max_review_infra_retries ?? 1,
     harnessSubstitutions: config.supervise?.max_harness_substitutions ?? 6,
@@ -107,24 +104,15 @@ export function retryCapsFor(config: Config): RetryCaps {
 }
 
 /**
- * The configured default reasoning effort for a harness — the ONE source of truth (this
- * switch was previously duplicated in `spawn.ts#defaultEffortFor` and
- * `dispatcher.ts#defaultEffortFor`, one drift away from casting and telemetry disagreeing).
+ * The configured default reasoning effort for a harness — the ONE source of truth (this switch
+ * was previously duplicated in `spawn.ts#defaultEffortFor` and `dispatcher.ts#defaultEffortFor`,
+ * one drift away from casting and telemetry disagreeing). Issue #128: the implementation moved to
+ * `tracker/cast.ts` so `isPlanExempt` there can resolve a ticket's real implement effort without
+ * `cast.ts` importing this module (a cycle — this module already imports `cast.ts`); re-exported
+ * here VERBATIM so every existing call site (`dispatch/spawn.ts`, `dispatch/dispatcher.ts`) keeps
+ * importing it from `./stages.ts` with no change.
  */
-export function defaultEffortFor(harness: HarnessSpec["harness"], config: Config): Effort {
-  switch (harness) {
-    case "claude":
-      return config.harness.claude.default_effort;
-    case "codex":
-      return config.harness.codex.default_effort;
-    case "pi":
-      return config.harness.pi.thinking;
-    // An out-of-tree registered harness carries no bespoke `[harness.<name>]` config block; fall
-    // back to claude's default effort (the backbone harness) rather than failing the cast.
-    default:
-      return config.harness.claude.default_effort;
-  }
-}
+export { defaultEffortFor };
 
 /** Strict structured done-signal parse (Spec 02 §6): anything off-schema is null, never a guess. */
 export function parseDoneSignal(structured: unknown): DoneSignal | null {
@@ -234,12 +222,22 @@ export interface StageFinishArgs {
  * that was supposed to run (see `implementStage.entryGuard` / `hasQualifyingPlan`, the consumer).
  */
 export interface PlanVerification {
-  /** Commit the plan doc was verified at (`docs/plan/<id>.md`'s content, at this sha). */
+  /** Commit the plan doc was verified at (`docs/plan/<id>.md`'s content, at this sha), or null
+   *  when the checker's worktree read couldn't resolve one (never silently wrong — see `ops.headSha`). */
   sha: string | null;
   /** The harness that actually produced the verified plan (post-substitution, if any). */
   harness: string;
   /** The model that actually produced the verified plan, when the harness names one. */
   model?: string;
+  /**
+   * The plan doc's full committed text, captured ONCE by `plan_check`'s finish handler (issue
+   * #128 correction pass, "amortize per task"). This record is keyed by TASK, not ticket
+   * (`taskKeyOf`) — a sibling branch reusing this record never ran a plan worker of its own, so
+   * its own git worktree never has the doc committed in it. Storing the text here (not just a
+   * path) means the reused ticket's implement/review prompt still gets the real inlined brief
+   * regardless of git branch topology — the guarantee amortization must not quietly weaken.
+   */
+  doc: string;
   /** ISO-8601 timestamp `plan_check` recorded this verification. */
   verifiedAt: string;
 }
@@ -286,15 +284,32 @@ export interface StageOps {
   /** Persist the dispatcher's restart-surviving ticket memory (counters included). */
   persistRuntimeState(): void;
   /**
-   * `true` iff this ticket has a dispatcher-recorded, `plan_check`-verified plan brief on file
-   * (issue #128) — the ONE fact `implementStage.entryGuard` consults to decide whether an
-   * implement worker may be staffed. This is the enforcement point: it is dispatcher runtime
-   * state (never a ticket field a filer/cast can spoof) and it is set in exactly one place
-   * ({@link recordPlanVerified}, called only by `plan_check`'s finish handler on a verified pass).
+   * `true` iff `taskKey` (see {@link taskKeyOf} — the ticket's TASK, not its own id, issue #128
+   * correction pass's "amortize per task" ask) has a dispatcher-recorded, `plan_check`-verified
+   * plan brief on file — the ONE fact `implementStage.entryGuard` consults (via `hasQualifyingPlan`,
+   * which also applies the tiering exemption) to decide whether an implement worker may be
+   * staffed. This is the enforcement point: it is dispatcher runtime state (never a ticket field a
+   * filer/cast can spoof) and it is set in exactly one place ({@link recordPlanVerified}, called
+   * only by `plan_check`'s finish handler on a verified pass).
    */
-  hasVerifiedPlan(ticketId: string): boolean;
-  /** Record a verified plan brief (issue #128). See {@link PlanVerification} for what "verified" captures. */
-  recordPlanVerified(ticketId: string, record: PlanVerification): void;
+  hasVerifiedPlan(taskKey: string): boolean;
+  /** Record a task's verified plan brief (issue #128), keyed by {@link taskKeyOf}. See {@link PlanVerification}. */
+  recordPlanVerified(taskKey: string, record: PlanVerification): void;
+  /**
+   * The harness/model that actually launched THIS ticket's plan-authoring worker (issue #128) —
+   * set by `doSpawn` once cast resolution/health-substitution/override-rejection are all final,
+   * consumed (read-and-cleared) by `plan_check`'s finish handler so it records the cast that
+   * ACTUALLY ran, never the ticket's merely-requested cast (closes a doc/code contradiction:
+   * `PlanVerification`'s own doc promised this and the pre-fix code didn't deliver it). `undefined`
+   * when nothing was recorded (falls back to the strong-seat default — see `plan-stage.ts`).
+   */
+  planAuthorCastFor(ticketId: string): HarnessSpec | undefined;
+  /**
+   * Current HEAD sha of the ticket's own worktree checkout, or `null` when it can't be resolved
+   * (no allocated workspace, a git read failure). Used by `plan_check`'s finish handler to give
+   * {@link PlanVerification.sha} a real freshness marker instead of a hardcoded `null`. Never throws.
+   */
+  headSha(ticket: Ticket): Promise<string | null>;
   /**
    * Read a file at `relPath` from the ticket's own worktree checkout (issue #128 —
    * `plan_check`'s mechanical size gate reads the committed plan doc directly rather than
@@ -602,18 +617,25 @@ async function implementReportedIncomplete(
 
 /**
  * THE enforcement point for issue #128's structural guarantee: an implement worker is never
- * staffed for a ticket that lacks a `plan_check`-verified, strong-seat-authored brief.
- * `ops.hasVerifiedPlan` reads dispatcher RUNTIME STATE (`Dispatcher.planVerified`, written only
- * by `plan_check`'s finish handler on a genuine pass) — never a ticket field, so nothing a filer
- * (including the concierge, now running on the cheap chat-seat default) can write into a ticket's
- * cast or description can satisfy this gate. This is consulted at EVERY staffing call site that
- * asks `stages.forState(state).entryGuard` before spawning (`dispatcher.ts`: the poll-driven
- * transition handler, `advanceTicket`'s own-transition spawn, the mid-spawn re-staff path, and
- * the staffing watchdog) — see `doSpawn`'s own independent assertion for the defense-in-depth
- * backstop covering any FUTURE call site that forgets to consult it.
+ * staffed for a ticket that lacks a `plan_check`-verified, strong-seat-authored brief — UNLESS
+ * the ticket is tiered exempt ({@link isPlanExempt}, the correction pass's "for hard tasks it
+ * should get thrown to a Plan phase. but if its super easy then theres no point" rule). Recomputed
+ * fresh on every call, never cached: a ticket recast harder (e.g. effort bumped medium→high)
+ * AFTER it already reached `in_progress` fails this guard on its very next spawn attempt with no
+ * extra plumbing — the tiering check and the verified-plan check are re-run together, always.
+ *
+ * `ops.hasVerifiedPlan` reads dispatcher RUNTIME STATE (`Dispatcher.planVerified`, written only by
+ * `plan_check`'s finish handler on a genuine pass), keyed by TASK not ticket ({@link taskKeyOf} —
+ * "amortize per task, not per ticket") — never a ticket field, so nothing a filer (including the
+ * concierge, now running on the cheap chat-seat default) can write into a ticket's cast or
+ * description can satisfy this gate. This is consulted at EVERY staffing call site that asks
+ * `stages.forState(state).entryGuard` before spawning (`dispatcher.ts`: the poll-driven transition
+ * handler, `advanceTicket`'s own-transition spawn, the mid-spawn re-staff path, and the staffing
+ * watchdog) — see `doSpawn`'s own independent assertion for the defense-in-depth backstop covering
+ * any FUTURE call site that forgets to consult it.
  */
 function hasQualifyingPlan(ticket: Ticket, ops: StageOps): boolean {
-  return ops.hasVerifiedPlan(ticket.id);
+  return isPlanExempt(ticket, ops.config) || ops.hasVerifiedPlan(taskKeyOf(ticket));
 }
 
 const implementStage: StageDefinition = {

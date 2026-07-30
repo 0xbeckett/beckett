@@ -13,12 +13,16 @@ import {
   targetBranch,
   validateCasting,
   isPlanStageEligible,
+  isPlanExempt,
+  taskKeyOf,
+  defaultEffortFor,
   PLAN_STAGE_ALLOWLIST,
   CAST_FENCE,
   CRITERIA_HEADING,
   TARGET_BRANCH_FENCE,
 } from "./cast.ts";
-import type { Casting } from "./types.ts";
+import type { Casting, Ticket } from "./types.ts";
+import { validateConfig } from "../config.ts";
 
 describe("cast round-trip", () => {
   test("serialize → parse recovers casting, criteria, and body", () => {
@@ -211,5 +215,95 @@ describe("plan-stage cast allowlist (issue #128)", () => {
 
   test("the allowlist names exactly two seats today", () => {
     expect([...PLAN_STAGE_ALLOWLIST].sort()).toEqual(["claude/claude-fable-5", "claude/claude-opus-5"]);
+  });
+});
+
+// A REAL validated config (not a partial `as unknown as Config` cast) so `defaultEffortFor`'s
+// production-matching defaults (claude xhigh, codex/pi high — `capability/builtins.ts`) are
+// exercised exactly as they'd resolve for a live ticket.
+const realConfig = validateConfig({ identity: { github_user: "0xbeckett" } });
+
+function baseTicket(over: Partial<Pick<Ticket, "casting" | "branchRef" | "identifier">> = {}): Pick<
+  Ticket,
+  "casting" | "branchRef" | "identifier"
+> {
+  return { casting: over.casting ?? {}, identifier: over.identifier ?? "OPS-1", branchRef: over.branchRef };
+}
+
+describe("taskKeyOf — amortize per task, not per ticket (issue #128 correction pass)", () => {
+  test("a branchRef'd ticket's task key is the leading number, not the branch suffix", () => {
+    expect(taskKeyOf(baseTicket({ branchRef: "42.2" }))).toBe("42");
+    expect(taskKeyOf(baseTicket({ branchRef: "42.1" }))).toBe("42"); // sibling branch → SAME task key
+    expect(taskKeyOf(baseTicket({ branchRef: "7.3.1" }))).toBe("7");
+  });
+
+  test("no branchRef (single-ticket task) degrades to the ticket's own identifier", () => {
+    expect(taskKeyOf(baseTicket({ identifier: "OPS-9" }))).toBe("OPS-9");
+  });
+});
+
+describe("isPlanExempt — tiering (issue #128 correction pass)", () => {
+  test("claude + high|xhigh implement effort REQUIRES a plan (not exempt)", () => {
+    expect(isPlanExempt(baseTicket({ casting: { implement: { harness: "claude", effort: "high" } } }), realConfig)).toBe(false);
+    expect(isPlanExempt(baseTicket({ casting: { implement: { harness: "claude", effort: "xhigh" } } }), realConfig)).toBe(false);
+  });
+
+  test("claude + low|medium implement effort is exempt (unless a fable review overrides it)", () => {
+    expect(isPlanExempt(baseTicket({ casting: { implement: { harness: "claude", effort: "low" } } }), realConfig)).toBe(true);
+    expect(isPlanExempt(baseTicket({ casting: { implement: { harness: "claude", effort: "medium" } } }), realConfig)).toBe(true);
+  });
+
+  test("no implement cast at all resolves through the harness default effort (claude defaults to xhigh → required)", () => {
+    expect(isPlanExempt(baseTicket(), realConfig)).toBe(false);
+  });
+
+  // Regression pin for the correction pass's own measured finding: a literal "effort high|xhigh"
+  // rule (its first-draft tiering, rejected) would force a plan onto the ENTIRE terra/luna cheap
+  // lane — n=154 gpt-5.6-terra@high runs in the 14-day ledger window averaging $0.95/run — because
+  // codex/pi's OWN harness defaults happen to be "high" too. Scoping the effort clause to
+  // `harness === "claude"` is what dodges this; this test is the regression pin for that scoping.
+  test("codex/pi at high|xhigh effort are STILL exempt — the terra/luna cheap lane is never gated on effort alone", () => {
+    expect(isPlanExempt(baseTicket({ casting: { implement: { harness: "codex", effort: "high" } } }), realConfig)).toBe(true);
+    expect(isPlanExempt(baseTicket({ casting: { implement: { harness: "pi", effort: "high" } } }), realConfig)).toBe(true);
+    // Even with no explicit effort — codex/pi's own harness defaults (both "high" in production)
+    // must not accidentally make an un-cast codex/pi ticket required.
+    expect(isPlanExempt(baseTicket({ casting: { implement: { harness: "codex" } } }), realConfig)).toBe(true);
+  });
+
+  test("a claude-fable-5 review REQUIRES a plan regardless of implement's harness/effort", () => {
+    const ticket = baseTicket({
+      casting: {
+        implement: { harness: "codex", effort: "low" },
+        review: { harness: "claude", model: "claude-fable-5" },
+      },
+    });
+    expect(isPlanExempt(ticket, realConfig)).toBe(false);
+  });
+
+  test("the self-punishing-bypass property: downgrading effort to dodge the plan also downgrades the worker", () => {
+    // Same ticket, only the cast effort differs — exemption flips with it, so there is no way to
+    // read the requested effort AND still exempt the ticket at the higher effort.
+    const hard = baseTicket({ casting: { implement: { harness: "claude", effort: "high" } } });
+    const easy = { ...hard, casting: { implement: { harness: "claude" as const, effort: "low" as const } } };
+    expect(isPlanExempt(hard, realConfig)).toBe(false);
+    expect(isPlanExempt(easy, realConfig)).toBe(true);
+  });
+
+  test("a partial/malformed config never throws — degrades toward REQUIRING a plan, the safe direction", () => {
+    expect(() => isPlanExempt(baseTicket(), undefined as unknown as import("../types.ts").Config)).not.toThrow();
+    expect(isPlanExempt(baseTicket(), undefined as unknown as import("../types.ts").Config)).toBe(false);
+  });
+});
+
+describe("defaultEffortFor — production defaults survive a partial config (issue #128 hardening)", () => {
+  test("matches builtins.ts's zod defaults for a fully-resolved config", () => {
+    expect(defaultEffortFor("claude", realConfig)).toBe("xhigh");
+    expect(defaultEffortFor("codex", realConfig)).toBe("high");
+    expect(defaultEffortFor("pi", realConfig)).toBe("high");
+  });
+
+  test("a missing/partial config falls back to the same defaults rather than throwing", () => {
+    expect(defaultEffortFor("claude", {} as import("../types.ts").Config)).toBe("xhigh");
+    expect(defaultEffortFor("claude", undefined as unknown as import("../types.ts").Config)).toBe("xhigh");
   });
 });

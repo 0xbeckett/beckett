@@ -2529,12 +2529,139 @@ describe("plan-stage enforcement (issue #128)", () => {
     const d = new Dispatcher({ gitOps: gitFakes, client, config: cfg(), resolveRepoRoot: () => "/tmp/repo" });
 
     const result = await d.reconcileStaffing();
+    await tick();
 
     expect(result.restaffed).toEqual(["w"]);
-    expect(client.setStateCalls).toContainEqual({ id: "w", state: "plan" });
+    // Confirmed live-bug fix (issue #128 correction pass): this used to ask bored to `setState`
+    // to "plan" — bored's `case "plan"` unconditionally POSTs `/staff`, the flow's ENTRY-node
+    // endpoint, never valid for redirecting a run already active at `beckett_implement`. The fix
+    // spawns the `plan` stage worker directly, with NO tracker state transition at all — the same
+    // pattern `plan_check`'s own same-node retry already uses.
+    expect(client.setStateCalls).not.toContainEqual({ id: "w", state: "plan" });
     expect(client.comments.some((c) => c.ticketId === "w" && c.body.includes("Plan"))).toBe(true);
-    // Genuinely re-routed, not staffed as implement — no implement worker for a ticket with no plan.
+    // Genuinely re-routed to a plan worker, not staffed as implement.
     expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(0);
+    expect(spawnCalls.filter((c) => c.stage === "plan" && c.ticketId === "w")).toHaveLength(1);
+  });
+});
+
+// ── issue #128 correction pass: tiering, per-task amortization, and the restaff/override bypasses ──
+describe("plan-stage tiering + amortization (issue #128 correction pass)", () => {
+  test("a tier-exempt ticket skips the plan stage entirely — no plan worker, straight to in_progress", async () => {
+    const client = new FakeClient();
+    const ticket = makeTicket({
+      state: "plan",
+      casting: { implement: { harness: "codex", effort: "high" } }, // not claude → exempt regardless of effort
+    });
+    client.board = [ticket];
+    const d = new Dispatcher({ gitOps: gitFakes, client, config: cfg(), resolveRepoRoot: () => "/tmp/repo" });
+
+    await d.handle(stateChanged(ticket, "plan"));
+    await tick();
+
+    expect(spawnCalls.filter((c) => c.stage === "plan")).toHaveLength(0);
+    expect(client.setStateCalls).toContainEqual({ id: "tkt-1", state: "in_progress" });
+    expect(client.comments.some((c) => c.body.includes("tiered exempt"))).toBe(true);
+  });
+
+  test("a hard (claude/high) ticket is NOT exempt — the plan stage still runs", async () => {
+    const client = new FakeClient();
+    const ticket = makeTicket({ state: "plan", casting: { implement: { harness: "claude", effort: "high" } } });
+    client.board = [ticket];
+    const d = new Dispatcher({ gitOps: gitFakes, client, config: cfg(), resolveRepoRoot: () => "/tmp/repo" });
+
+    await d.handle(stateChanged(ticket, "plan"));
+    await tick();
+
+    expect(spawnCalls.filter((c) => c.stage === "plan")).toHaveLength(1);
+    expect(client.setStateCalls).not.toContainEqual({ id: "tkt-1", state: "in_progress" });
+  });
+
+  test("a sibling branch under an ALREADY-VERIFIED task reuses it — no second plan worker, straight to in_progress", async () => {
+    const client = new FakeClient();
+    // Two sibling branches of task "9" — same task key, distinct tickets/identifiers.
+    const ticket = makeTicket({
+      id: "sib-2", identifier: "OPS-9.2", branchRef: "9.2", state: "plan",
+      casting: { implement: { harness: "claude", effort: "high" } }, // NOT exempt — must go through reuse, not exemption
+    });
+    client.board = [ticket];
+    const d = new Dispatcher({
+      gitOps: gitFakes,
+      client,
+      config: cfg(),
+      resolveRepoRoot: () => "/tmp/repo",
+      // Seed the TASK key "9" as already verified — sibling "9.1" is presumed to have authored it.
+      // (The seam's array entries are used as literal `planVerified` map keys — see
+      // `DispatcherDeps.planVerifiedSeed`'s doc.)
+      planVerifiedSeed: ["9"],
+    });
+
+    await d.handle(stateChanged(ticket, "plan"));
+    await tick();
+
+    expect(spawnCalls.filter((c) => c.stage === "plan")).toHaveLength(0);
+    expect(client.setStateCalls).toContainEqual({ id: "sib-2", state: "in_progress" });
+    expect(client.comments.some((c) => c.body.includes("Reusing this task's already-verified plan"))).toBe(true);
+    expect(client.comments.some((c) => c.body.includes("`9`"))).toBe(true);
+  });
+
+  test("two sibling branches entering plan near-simultaneously spawn exactly ONE plan author, not two", async () => {
+    const client = new FakeClient();
+    const a = makeTicket({ id: "sib-a", identifier: "OPS-3.1", branchRef: "3.1", state: "plan" });
+    const b = makeTicket({ id: "sib-b", identifier: "OPS-3.2", branchRef: "3.2", state: "plan" });
+    client.board = [a, b];
+    const d = new Dispatcher({ gitOps: gitFakes, client, config: cfg(), resolveRepoRoot: () => "/tmp/repo" });
+
+    // No await between the two — both land before either's doSpawn has resolved past the
+    // synchronous in-flight-claim check (mirrors this file's existing spawn-gap races).
+    await Promise.all([d.handle(stateChanged(a, "plan")), d.handle(stateChanged(b, "plan"))]);
+    await tick();
+
+    expect(spawnCalls.filter((c) => c.stage === "plan")).toHaveLength(1); // only ONE author for task "3"
+    // The loser's deferred retry is a real `setTimeout` (2s) — drain it so it can't fire mid-suite
+    // against a later test's fresh `spawnCalls`/`created` arrays.
+    await d.drainForShutdown("test cleanup", 100);
+  });
+
+  test("restaff refuses --harness for a ticket at the plan stage — a bare restaff still works", async () => {
+    const client = new FakeClient();
+    const ticket = makeTicket({ state: "plan" });
+    client.board = [ticket];
+    const d = new Dispatcher({ gitOps: gitFakes, client, config: cfg(), resolveRepoRoot: () => "/tmp/repo" });
+
+    await d.handle(stateChanged(ticket, "plan"));
+    await tick();
+    expect(spawnCalls.filter((c) => c.stage === "plan")).toHaveLength(1); // healthy first spawn
+
+    await expect(d.restaff(ticket.identifier, "codex")).rejects.toThrow(/plan stage/);
+    // The rejected restaff must not have aborted the live worker or spawned anything new.
+    expect(spawnCalls.filter((c) => c.stage === "plan")).toHaveLength(1);
+    expect(created[0]!.aborted).toBe(false);
+
+    await d.restaff(ticket.identifier); // no --harness → allowed
+    await tick();
+    expect(spawnCalls.filter((c) => c.stage === "plan")).toHaveLength(2);
+    expect(spawnCalls[1]!.harness.harness).toBe("claude"); // still the strong-seat allowlisted default
+  });
+
+  test("a non-allowlisted castOverrides entry for the plan stage is dropped, defense-in-depth, even if set outside restaff", async () => {
+    const client = new FakeClient();
+    const ticket = makeTicket({ state: "plan" });
+    client.board = [ticket];
+    const d = new Dispatcher({ gitOps: gitFakes, client, config: cfg(), resolveRepoRoot: () => "/tmp/repo" });
+
+    // Simulate a future/other write path into `castOverrides` that skips `restaff`'s own check —
+    // reaching past the public surface deliberately, the same pattern this file already uses to
+    // pin the doSpawn defense-in-depth backstop above.
+    // @ts-expect-error — private field, poked directly to prove doSpawn's OWN independent check.
+    d.castOverrides.set(ticket.id, { stage: "plan", spec: { harness: "codex" } });
+
+    await d.handle(stateChanged(ticket, "plan"));
+    await tick();
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]!.harness.harness).toBe("claude"); // override dropped, strong-seat default ran
+    expect(client.comments.some((c) => c.body.includes("Rejected a plan-stage cast override"))).toBe(true);
   });
 });
 

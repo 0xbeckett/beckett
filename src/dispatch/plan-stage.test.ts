@@ -7,7 +7,8 @@
  * auto-advancing an unverified plan into implement.
  */
 import { describe, expect, test } from "bun:test";
-import type { Ticket } from "../tracker/types.ts";
+import type { HarnessSpec, Ticket } from "../tracker/types.ts";
+import { taskKeyOf } from "../tracker/cast.ts";
 // `stages.ts` MUST finish evaluating before `plan-stage.ts` does — the two modules import each
 // other (see plan-stage.ts's header), and stages.ts's `buildStagesExtension()` reads
 // `planStage`/`planCheckStage` at ITS OWN module bottom. Every real entry point (dispatcher.ts)
@@ -67,18 +68,23 @@ function makeHandle(structured: unknown = null): any {
 function fakeOps(opts: {
   readTicketFile?: (ticket: Ticket, relPath: string) => Promise<string>;
   planCyclesCap?: number;
+  /** What `doSpawn` "actually launched" the plan worker with — decoupled from `ticket.casting.plan`
+   *  on purpose, so tests can prove `planCheckStage.finish` records THIS, not the ticket's request. */
+  planAuthorCast?: HarnessSpec;
+  headSha?: string | null;
+  commitSha?: string | null;
 } = {}): StageOps & {
   comments: string[];
   advanced: Array<{ state: string; comment: string }>;
   parked: string[];
   spawned: string[];
-  recorded: Array<{ ticketId: string; record: PlanVerification }>;
+  recorded: Array<{ key: string; record: PlanVerification }>;
 } {
   const comments: string[] = [];
   const advanced: Array<{ state: string; comment: string }> = [];
   const parked: string[] = [];
   const spawned: string[] = [];
-  const recorded: Array<{ ticketId: string; record: PlanVerification }> = [];
+  const recorded: Array<{ key: string; record: PlanVerification }> = [];
   const planCycles = new Map<string, number>();
   const verified = new Map<string, PlanVerification>();
 
@@ -106,7 +112,7 @@ function fakeOps(opts: {
       return true;
     },
     async commitWip() {
-      return "deadbeef123";
+      return opts.commitSha === undefined ? "deadbeef123" : opts.commitSha;
     },
     async commitContribution() {
       return true;
@@ -126,12 +132,18 @@ function fakeOps(opts: {
     async implementIncomplete() {},
     async reviewInfraFailure() {},
     persistRuntimeState() {},
-    hasVerifiedPlan(ticketId: string) {
-      return verified.has(ticketId);
+    hasVerifiedPlan(taskKey: string) {
+      return verified.has(taskKey);
     },
-    recordPlanVerified(ticketId: string, record: PlanVerification) {
-      verified.set(ticketId, record);
-      recorded.push({ ticketId, record });
+    recordPlanVerified(taskKey: string, record: PlanVerification) {
+      verified.set(taskKey, record);
+      recorded.push({ key: taskKey, record });
+    },
+    planAuthorCastFor() {
+      return opts.planAuthorCast;
+    },
+    async headSha() {
+      return opts.headSha === undefined ? "deadbeef123456789" : opts.headSha;
     },
     readTicketFile: opts.readTicketFile ?? (async () => "## Scope & files\n\nx"),
     counters: {
@@ -199,6 +211,39 @@ describe("planStage.finish — bypass #1's after-the-fact half", () => {
     await planStage.finish!(ops, { ticket, handle: makeHandle(), status: "success", summary: "done" });
     expect(ops.spawned).toEqual([`${ticket.id}:plan_check`]);
   });
+
+  test("status !== success with nothing committed re-authors instead of paying for a checker over emptiness", async () => {
+    // Correction-pass fix: pre-fix this fell through to `plan_check` anyway, which paid a SECOND
+    // worker only to report "no document found" — the confirmed "double the tax ... yield zero
+    // implement output, pure loss" blocker.
+    const ticket = makeTicket();
+    const ops = fakeOps({ commitSha: null });
+    await planStage.finish!(ops, { ticket, handle: makeHandle(), status: "error", summary: "crashed" });
+
+    expect(ops.spawned).toEqual([`${ticket.id}:plan`]); // re-authors directly, never plan_check
+    expect(ops.comments.some((c) => c.includes("nothing committed"))).toBe(true);
+    expect(ops.parked).toHaveLength(0);
+  });
+
+  test("status !== success with nothing committed, cap exhausted, PARKS instead of looping forever", async () => {
+    const ticket = makeTicket();
+    const ops = fakeOps({ commitSha: null, planCyclesCap: 1 });
+    ops.counters.planCycles.set(ticket.id, 1); // already at the cap
+    await planStage.finish!(ops, { ticket, handle: makeHandle(), status: "error", summary: "crashed" });
+
+    expect(ops.spawned).toHaveLength(0);
+    expect(ops.parked).toHaveLength(1);
+    expect(ops.parked[0]).toContain("mandatory");
+  });
+
+  test("status !== success but SOMETHING was committed still runs the completeness check (may still be usable)", async () => {
+    const ticket = makeTicket();
+    const ops = fakeOps({ commitSha: "abc123deadbeef" });
+    await planStage.finish!(ops, { ticket, handle: makeHandle(), status: "error", summary: "partial draft" });
+
+    expect(ops.spawned).toEqual([`${ticket.id}:plan_check`]);
+    expect(ops.comments.some((c) => c.includes("ended early"))).toBe(true);
+  });
 });
 
 describe("planStage.spawnFailure — bypass #4", () => {
@@ -221,17 +266,38 @@ describe("planCheckStage.finish — THE enforcement record", () => {
     blockedReason: null,
   };
 
-  test("complete + within ceiling ⇒ records the ACTUALLY-run cast and advances to in_progress", async () => {
+  test("complete + within ceiling ⇒ records the ACTUALLY-run cast (not the ticket's requested cast), keyed by TASK, and advances to in_progress", async () => {
+    // The ticket REQUESTS claude-fable-5, but `doSpawn` actually launched claude-opus-5 (e.g. a
+    // health-substitution, or simply the strong-seat default winning over an ineligible request) —
+    // `planAuthorCastFor` is the source of truth `plan_check` must record from, never
+    // `ticket.casting.plan`. This is the regression pin for the confirmed doc/code contradiction
+    // the correction pass flagged (`PlanVerification`'s doc always claimed to record the cast that
+    // actually ran; the pre-fix code read `ticket.casting.plan` instead).
     const ticket = makeTicket({ casting: { plan: { harness: "claude", model: "claude-fable-5" } } });
-    const ops = fakeOps();
+    const ops = fakeOps({ planAuthorCast: { harness: "claude", model: "claude-opus-5", effort: "high" } });
     await planCheckStage.finish!(ops, { ticket, handle: makeHandle(okSignal), status: "success", summary: "ok" });
 
     expect(ops.recorded).toHaveLength(1);
-    expect(ops.recorded[0]!.ticketId).toBe(ticket.id);
+    // Keyed by TASK, not the ticket's own id (issue #128 correction pass, "amortize per task") —
+    // this ticket has no `branchRef`, so its task key degrades to `ticket.identifier`, distinct
+    // from `ticket.id` in this test fixture (they're deliberately different strings here, unlike
+    // production bored where they're equal — see `makeTicket`).
+    expect(ops.recorded[0]!.key).toBe(taskKeyOf(ticket));
+    expect(ops.recorded[0]!.key).not.toBe(ticket.id);
     expect(ops.recorded[0]!.record.harness).toBe("claude");
-    expect(ops.recorded[0]!.record.model).toBe("claude-fable-5");
+    expect(ops.recorded[0]!.record.model).toBe("claude-opus-5");
+    expect(ops.recorded[0]!.record.doc).toContain("Scope & files");
+    expect(ops.recorded[0]!.record.sha).toBe("deadbeef123456789");
     expect(ops.advanced).toEqual([{ state: "in_progress", comment: expect.stringContaining("Starting implementation") }]);
     expect(ops.parked).toHaveLength(0);
+  });
+
+  test("no planAuthorCastFor on record (e.g. a restart-lost claim) falls back to the strong-seat default, never to the ticket's requested cast", async () => {
+    const ticket = makeTicket({ casting: { plan: { harness: "claude", model: "claude-fable-5" } } });
+    const ops = fakeOps(); // no planAuthorCast option set
+    await planCheckStage.finish!(ops, { ticket, handle: makeHandle(okSignal), status: "success", summary: "ok" });
+
+    expect(ops.recorded[0]!.record.model).toBe("claude-opus-5"); // PLAN_STAGE_DEFAULT, not claude-fable-5
   });
 
   test("a doc over the mechanical size ceiling forces a bounce EVEN IF the model said complete", async () => {

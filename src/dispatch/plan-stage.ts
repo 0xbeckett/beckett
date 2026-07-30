@@ -18,9 +18,13 @@
  *
  * THE ENFORCEMENT POINT (not here — named so a reader doesn't have to hunt for it):
  * `implementStage.entryGuard` (`dispatch/stages.ts`, `hasQualifyingPlan`) refuses to staff an
- * implement worker unless `ops.hasVerifiedPlan(ticket.id)` is true. That flag is DISPATCHER
- * RUNTIME STATE (`Dispatcher.planVerified`, `dispatch/dispatcher.ts`), written in exactly ONE
- * place: `planCheckStage.finish`, below, on a genuine pass. No ticket field, cast block, or
+ * implement worker unless the ticket is tiered EXEMPT (`isPlanExempt`, `tracker/cast.ts` — the
+ * correction pass's "for hard tasks it should get thrown to a Plan phase, but if its super easy
+ * then theres no point" tiering) OR `ops.hasVerifiedPlan(taskKeyOf(ticket))` is true. That flag is
+ * DISPATCHER RUNTIME STATE (`Dispatcher.planVerified`, `dispatch/dispatcher.ts`), keyed by TASK
+ * not ticket (`taskKeyOf`, correction pass's "amortize per task" ask — a task's later branches
+ * reuse its first branch's verified plan instead of each paying for their own), written in exactly
+ * ONE place: `planCheckStage.finish`, below, on a genuine pass. No ticket field, cast block, or
  * filer-supplied description can set it — the concierge (or anything else that files a ticket)
  * cannot write itself past this gate, cast the plan stage away, or file straight into
  * `in_progress`: `dependentStartState` (dispatcher.ts) always resolves a fresh/promoted ticket's
@@ -37,21 +41,29 @@
  *      `hasQualifyingPlan` in `dispatch/stages.ts`.
  *   3. Author your own "plan" and claim it counts → `planCheckStage`'s cast is a SEPARATE cheap
  *      model/session from whatever authored the doc (same discipline as `design_check`), and it
- *      records the plan verified ONLY against the cast that ACTUALLY RAN (`PlanVerification`),
- *      never the ticket's requested cast — a substitution can't silently satisfy the gate with a
+ *      records the plan verified ONLY against the cast that ACTUALLY RAN (`ops.planAuthorCastFor`,
+ *      set by `doSpawn` from the cast that actually launched — never `ticket.casting.plan`, the
+ *      ticket's merely REQUESTED cast) — a substitution can't silently satisfy the gate with a
  *      weaker seat.
  *   4. Let a harness-health substitution quietly downgrade the plan author → `pickHealthyHarness`
  *      (`dispatch/dispatcher.ts`) refuses to walk `fallback_order` for `stage === "plan"`; an
  *      unhealthy strong seat FAILS LOUD (`planStage.spawnFailure`, below) instead of finishing the
  *      brief on whatever's healthy.
  *   5. A future call site forgets to consult `entryGuard` → `doSpawn`'s own independent assertion
- *      (`dispatch/dispatcher.ts`) refuses to launch ANY `implement` spawn with no `planVerified`
- *      record, regardless of how it was reached.
+ *      (`dispatch/dispatcher.ts`) refuses to launch ANY `implement` spawn with no task-keyed
+ *      `planVerified` record, regardless of how it was reached.
+ *   6. `beckett ticket restaff <id> --harness X` on a ticket at the plan stage → `Dispatcher
+ *      .restaff` refuses the `--harness` override outright for `stage === "plan"`, and `doSpawn`'s
+ *      cast-override merge independently drops (with a posted comment) any `castOverrides` entry
+ *      for `stage === "plan"` naming a harness/model outside `PLAN_STAGE_ALLOWLIST`, so even a
+ *      future write path into `castOverrides` that skips `restaff`'s own check still can't route
+ *      the cheap seat around this stage — the concierge's documented `restaff` exposure was the
+ *      correction pass's highest-priority finding.
  */
 
 import type { Config, DoneSignal } from "../types.ts";
 import type { HarnessSpec, Ticket } from "../tracker/types.ts";
-import { isPlanStageEligible, PLAN_STAGE_ALLOWLIST } from "../tracker/cast.ts";
+import { isPlanStageEligible, PLAN_STAGE_ALLOWLIST, taskKeyOf } from "../tracker/cast.ts";
 import type { PromptBlock } from "../capability/index.ts";
 import { steeringBlock } from "./resume-brief.ts";
 import { PLAN_SECTIONS, PLAN_TOKEN_CEILING, planWithinCeiling } from "./plan-artifact.ts";
@@ -151,7 +163,7 @@ export const planStage: StageDefinition = {
    * `design`'s finish (`dispatch/stages.ts`). The checker gets its own model/session so the
    * author cannot approve its own document (bypass #3).
    */
-  async finish(ops, { ticket, handle, status }): Promise<void> {
+  async finish(ops, { ticket, handle, status, summary }): Promise<void> {
     // Bypass #1's after-the-fact half: name a rejected override so it's never silent, even
     // though `resolveCast` already fell back to the strong-seat default for the actual run.
     const requested = ticket.casting.plan;
@@ -165,6 +177,40 @@ export const planStage: StageDefinition = {
       );
     }
     const sha = await ops.commitWip(ticket, handle);
+
+    // Correction-pass fix: a plan worker that neither succeeded NOR left anything committed
+    // produced nothing a checker could judge. Pre-fix this fell through to `plan_check` anyway,
+    // which paid a SECOND worker only to report "no document found" — the exact "double the tax
+    // ... yield zero implement output, pure loss" the correction pass flags. Bounce it here
+    // instead, on the SAME `planCycles` budget `plan_check`'s own retry spends from (one shared
+    // cap on "how many author+check pairs may fail before a human takes over", not two separate
+    // budgets) — mirrors `implementStage.finish`'s `status !== "success"` branch, which
+    // `designStage.finish` (the pattern this stage otherwise mirrors) notably lacks.
+    if (status !== "success" && !sha) {
+      const cycle = (ops.counters.planCycles.get(ticket.id) ?? 0) + 1;
+      ops.counters.planCycles.set(ticket.id, cycle);
+      ops.persistRuntimeState();
+      if (cycle < ops.caps.planCycles) {
+        await ops.postComment(
+          ticket.id,
+          `Plan worker ended (${status}) with nothing committed — re-authoring (pass ` +
+            `${cycle}/${ops.caps.planCycles}) rather than running the completeness check over ` +
+            `nothing.\n\n${summary}`,
+        );
+        ops.spawnStage(ticket, "plan");
+        return;
+      }
+      ops.counters.planCycles.delete(ticket.id);
+      ops.persistRuntimeState();
+      await ops.parkForHuman(
+        ticket,
+        `⚠ Plan worker ended (${status}) with nothing committed, ${ops.caps.planCycles} times running — ` +
+          `parked for a human. This gate is mandatory (issue #128); I will not run the completeness ` +
+          `checker over an empty draft, or start implementation on an unverified plan.\n\n${summary}`,
+      );
+      return;
+    }
+
     const at = sha ? ` (committed as \`${sha.slice(0, 9)}\`)` : "";
     await ops.postComment(
       ticket.id,
@@ -179,12 +225,6 @@ export const planStage: StageDefinition = {
 // =======================================================================================
 // planCheckStage — the cheap, independent gate that WRITES the enforcement record
 // =======================================================================================
-
-/** The harness/model this stage's finish handler records as having actually authored the plan. */
-function actualPlanCast(ticket: Ticket): HarnessSpec {
-  const requested = ticket.casting.plan;
-  return requested && isPlanStageEligible(requested) ? requested : PLAN_STAGE_DEFAULT;
-}
 
 export const planCheckStage: StageDefinition = {
   name: "plan_check",
@@ -239,17 +279,30 @@ export const planCheckStage: StageDefinition = {
     const complete = signal?.status === "complete" && withinCeiling && docText.length > 0;
     if (complete) {
       // THE WRITE, THE ENFORCEMENT POINT'S OTHER HALF: record the cast that ACTUALLY authored
-      // this plan (never the ticket's requested cast — bypass #3) so `implementStage.entryGuard`
-      // can staff an implement worker.
-      const cast = actualPlanCast(ticket);
+      // this plan (never the ticket's requested cast — bypass #3, and a real fix over the
+      // pre-correction-pass version, which read `ticket.casting.plan` here — the ticket's merely
+      // REQUESTED cast — despite this doc comment already claiming otherwise; `planAuthorCastFor`
+      // is set by `doSpawn` from the cast that actually launched, post health-substitution).
+      const cast = ops.planAuthorCastFor(ticket.id) ?? PLAN_STAGE_DEFAULT;
+      const sha = await ops.headSha(ticket);
+      // Correction pass, "amortize per task": record against the TASK key, not this ticket's own
+      // id, so a sibling branch under the same task (`taskKeyOf`) reuses this verification instead
+      // of paying for its own plan worker — see `doSpawn`'s `stage === "plan"` branch, the consumer.
+      const taskKey = taskKeyOf(ticket);
       ops.counters.planCycles.delete(ticket.id);
-      ops.persistRuntimeState();
-      ops.recordPlanVerified(ticket.id, {
-        sha: null,
+      // Record BEFORE persisting (not after, as this shipped originally): a restart landing
+      // between the old persist-then-record order would resume this ticket at `in_progress` with
+      // no persisted plan record on disk, and `doSpawn`'s backstop would then falsely refuse to
+      // staff implement on a ticket that legitimately passed. Recording first means the persisted
+      // snapshot always includes whatever this call is about to advance the ticket past.
+      ops.recordPlanVerified(taskKey, {
+        sha,
         harness: cast.harness,
         ...(cast.model ? { model: cast.model } : {}),
+        doc: docText,
         verifiedAt: new Date().toISOString(),
       });
+      ops.persistRuntimeState();
       await ops.advanceTicket(
         ticket,
         "in_progress",

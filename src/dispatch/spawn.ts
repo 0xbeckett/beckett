@@ -189,10 +189,12 @@ export interface SpawnWorkerArgs {
    */
   reviewDiff?: string;
   /**
-   * The ticket's verified plan-stage brief content, pre-read by the dispatcher (issue #128) when
-   * `ops.hasVerifiedPlan(ticket.id)` — inlined into implement's prompt and pointed to (not
-   * inlined) from review's. Absent → every stage's prompt/append is byte-identical to before this
-   * stage existed (the load-bearing degrade `plan-artifact.ts`'s `planContextBlock` guarantees).
+   * The ticket's TASK's verified plan-stage brief content (issue #128 correction pass: task-keyed,
+   * `taskKeyOf`, not per-ticket — see `Dispatcher.planVerified`'s doc), sourced from the
+   * dispatcher's own in-memory verification record — inlined into implement's prompt and pointed
+   * to (not inlined) from review's. Absent → every stage's prompt/append is byte-identical to
+   * before this stage existed (the load-bearing degrade `plan-artifact.ts`'s `planContextBlock`
+   * guarantees).
    */
   planDoc?: string;
   /** Commit the plan doc was verified at, for the freshness marker in the inlined block. */

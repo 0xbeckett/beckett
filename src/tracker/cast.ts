@@ -25,7 +25,8 @@
 
 import { z } from "zod";
 import { availableHarnesses, isRegisteredHarness } from "../drivers/index.ts";
-import type { Casting, HarnessSpec, ParsedCast, TicketState } from "./types.ts";
+import type { Casting, HarnessSpec, ParsedCast, Ticket, TicketState } from "./types.ts";
+import type { Config, Effort } from "../types.ts";
 
 /** The fenced-block language tag that carries the casting JSON. */
 export const CAST_FENCE = "beckett-cast";
@@ -115,6 +116,91 @@ export const PLAN_STAGE_ALLOWLIST: ReadonlySet<string> = new Set([
 export function isPlanStageEligible(spec: HarnessSpec): boolean {
   const model = spec.model?.trim().toLowerCase();
   return model !== undefined && PLAN_STAGE_ALLOWLIST.has(`${spec.harness}/${model}`);
+}
+
+/**
+ * The configured default reasoning effort for a harness — the ONE source of truth. Lives here
+ * (not `dispatch/stages.ts`, where it used to) so {@link isPlanExempt} can resolve a ticket's
+ * REAL implement effort (cast effort, falling back to the harness default) without `tracker/cast.ts`
+ * importing `dispatch/stages.ts` — that would be a cycle, since `stages.ts` already imports this
+ * module. `stages.ts` re-exports this binding verbatim so every existing call site
+ * (`dispatch/spawn.ts`, `dispatch/dispatcher.ts`) keeps importing it from `./stages.ts` unchanged.
+ */
+export function defaultEffortFor(harness: HarnessSpec["harness"], config: Config): Effort {
+  // Optional-chained + falls back to the SAME defaults `builtins.ts`'s zod schema ships (claude
+  // xhigh, codex/pi high) even though `config`'s type says these are always present: several
+  // pre-#128 test fixtures across this repo build a deliberately partial `Config` (`as unknown as
+  // Config`) for tests that were never exercising cast/effort resolution before — `isPlanExempt`
+  // (issue #128) is a NEW caller that reaches this function from places those fixtures never had
+  // to survive. Defaulting rather than throwing also fails toward the SAFE direction for the
+  // guarantee this feeds: an unresolvable config reads as "treat this as needing a plan," never as
+  // a crash that could take staffing down with it.
+  switch (harness) {
+    case "claude":
+      return config?.harness?.claude?.default_effort ?? "xhigh";
+    case "codex":
+      return config?.harness?.codex?.default_effort ?? "high";
+    case "pi":
+      return config?.harness?.pi?.thinking ?? "high";
+    // An out-of-tree registered harness carries no bespoke `[harness.<name>]` config block; fall
+    // back to claude's default effort (the backbone harness) rather than failing the cast.
+    default:
+      return config?.harness?.claude?.default_effort ?? "xhigh";
+  }
+}
+
+/**
+ * The task-level amortization key (issue #128 correction pass: "amortize per task, not per
+ * ticket" — a task with four branches should pay for ONE plan, shared by all four, not four).
+ * `branchRef` ("42.2") is minted by `beckett plan` for every branch under a multi-branch task —
+ * the leading number IS the task; the fractional suffix is just which branch. A ticket with no
+ * `branchRef` (a single-ticket task) degrades to `ticket.identifier` — in production (bored)
+ * `ticket.id === ticket.identifier` always (`bored/client.ts#hydrate`), so for the common
+ * single-ticket case this is byte-identical to the pre-#128 per-ticket keying: zero behavior
+ * change unless a ticket genuinely has task siblings.
+ */
+export function taskKeyOf(ticket: Pick<Ticket, "branchRef" | "identifier">): string {
+  const branch = ticket.branchRef?.trim();
+  if (branch) {
+    const dot = branch.indexOf(".");
+    if (dot > 0) return branch.slice(0, dot);
+  }
+  return ticket.identifier;
+}
+
+/**
+ * Tiering predicate (issue #128 correction pass, the owner's verbatim words: "for hard tasks it
+ * should get thrown to a Plan phase. but if its super easy then theres no point. its a waste of
+ * tokens"). `true` ⇒ this ticket may SKIP the mandatory plan stage entirely.
+ *
+ * Reuses the EXISTING difficulty signal — the implement cast's resolved harness/effort, and the
+ * review cast's resolved model — rather than inventing a new classifier (explicit correction-pass
+ * instruction). Measured against the live spend ledger (14-day window, implement stage,
+ * `~/.beckett/spend.jsonl`, see this issue's synthesis doc):
+ *   - `gpt-5.6-terra @ effort=high`: n=154, avg $0.95/run, 45% failure rate. A literal
+ *     "effort high|xhigh" rule (the correction pass's own first draft) would force a $10-31
+ *     Fable/Opus plan onto this ENTIRE cheap lane — reproducing the exact tax the correction pass
+ *     was written to kill, one label deeper. Scoping the effort clause to `harness === "claude"`
+ *     excludes it correctly: claude is the harness this install reserves for harder work (see
+ *     this branch's own IMPORTANT CONSTRAINT — pi/codex are the terra/luna cheap lane).
+ *   - Scoped to `harness === "claude"`: 250 of 282 claude-harness implement runs in the same
+ *     window are high/xhigh — a real majority-of-hard-claude-work gate.
+ *
+ * Self-punishing bypass property (preserved, not re-derived): to dodge the plan a filer must
+ * downgrade `implement`'s effort (or move off `claude`), which also downgrades the worker that
+ * would have run without a plan — so this predicate needs no separate policing.
+ */
+export function isPlanExempt(ticket: Pick<Ticket, "casting">, config: Config): boolean {
+  const implementSpec = ticket.casting.implement;
+  const implementHarness = implementSpec?.harness ?? "claude";
+  const implementEffort = implementSpec?.effort ?? defaultEffortFor(implementHarness, config);
+  const hardClaudeWork =
+    implementHarness === "claude" && (implementEffort === "high" || implementEffort === "xhigh");
+
+  const reviewModel = ticket.casting.review?.model ?? config?.models?.reviewer;
+  const fableReview = reviewModel === "claude-fable-5";
+
+  return !(hardClaudeWork || fableReview);
 }
 
 /**
