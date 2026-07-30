@@ -1,0 +1,6 @@
+81031dd9303559604d2ab41c5a555482ae23318a9ec456697d20d124d524776c  /home/beckett/.beckett/peers.txt
+0e32393c5b86d2e8006b95ff9b44d4e531999328561dc55c97cde94c46a41df1  /home/beckett/.beckett/config.toml
+fdcaac547db48f863d1bc57a651dc413a82620674db6e3eb2b26a474c1ef8c45  /home/beckett/.beckett/routines.json
+048e86fe1640ed2eb71890c08e96f44d58338a9e35d9853c02a9de9596c7f867  /home/beckett/.beckett/tasks.json
+a7d8898a604108d68f6c6e9d72fe2c10092d5a9971208329c1df4ff0d82a57e3  /home/beckett/.beckett/access.txt
+absent: ~/.beckett/maintainers.txt
