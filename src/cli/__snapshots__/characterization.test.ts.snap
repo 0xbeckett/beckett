@@ -1864,6 +1864,7 @@ max_commits = 20
 [federation]
 peers = []
 peer_burst_per_min = 5
+peer_max_consecutive_turns = 6
 
 [dream]
 output_token_budget = 150000

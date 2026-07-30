@@ -1103,3 +1103,60 @@ error: browser evaluator runtime is missing: /home/beckett/Projects/beckett/.bec
       at buildBrowserEvaluatorLaunch (/home/beckett/Projects/beckett/.beckett/worktrees/140/src/browser/evaluator-runner.ts:127:91)
       at <anonymous> (/home/beckett/Projects/beckett/.beckett/worktrees/140/src/browser/isolated.test.ts:167:22)
 (fail) browser evaluator sandbox policy > Linux uses a fresh bounded bubblewrap without controller state mounts [1.00ms]
+{"level":"error","ts":"2026-07-30T08:29:11.749Z","component":"dispatch.dispatcher","msg":"no healthy harness for spawn","ticket":"OPS-1","stage":"implement","cast":"claude","problems":["everything is down"]}
+{"level":"error","ts":"2026-07-30T08:29:11.749Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-1","stage":"implement","error":"no healthy harness available (all preflights failed — check `beckett doctor`)"}
+{"level":"error","ts":"2026-07-30T08:29:11.751Z","component":"dispatch.dispatcher","msg":"no healthy harness for spawn","ticket":"OPS-1","stage":"implement","cast":"claude","problems":["everything is down"]}
+{"level":"error","ts":"2026-07-30T08:29:11.752Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-1","stage":"implement","error":"no healthy harness available (all preflights failed — check `beckett doctor`)"}
+{"level":"error","ts":"2026-07-30T08:29:11.981Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"OPS-B","repoRoot":"/tmp/repo/OPS-B","error":"dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-30T08:29:11.981Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"OPS-B","stage":"implement","error":"could not allocate a worktree under `/tmp/repo/OPS-B`: dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-30T08:29:11.982Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"INT-2","repoRoot":"/tmp/repo/INT-2","error":"dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-30T08:29:11.982Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"INT-2","stage":"design","error":"could not allocate a worktree under `/tmp/repo/INT-2`: dependency OPS-A is not a numbered task branch"}
+{"level":"error","ts":"2026-07-30T08:29:11.983Z","component":"dispatch.dispatcher","msg":"worktree allocation failed","ticket":"INT-2","repoRoot":"/tmp/repo/INT-2","error":"dependency INT-1 belongs to a different project"}
+{"level":"error","ts":"2026-07-30T08:29:11.983Z","component":"dispatch.dispatcher","msg":"spawn failed","ticket":"INT-2","stage":"design","error":"could not allocate a worktree under `/tmp/repo/INT-2`: dependency INT-1 belongs to a different project"}
+
+src/cli/characterization.test.ts:
+317 |   { name: "persona: daemon down fails on the bus", argv: ["persona"] },
+318 | ];
+319 | 
+320 | for (const c of CASES) {
+321 |   test(`cli: ${c.name}`, async () => {
+322 |     expect(await beckett(c.argv, { env: c.env, stdin: c.stdin })).toMatchSnapshot();
+                                                                        ^
+error: expect(received).toMatchSnapshot(expected)
+
+@@ -151,3 +151,3 @@
+  peer_burst_per_min = 5
++ peer_max_consecutive_turns = 6
+  
+
+- Expected  - 0
++ Received  + 1
+
+      at <anonymous> (/home/beckett/Projects/beckett/.beckett/worktrees/140/src/cli/characterization.test.ts:322:67)
+(fail) cli: config: print-default emits the full default TOML [83.00ms]
+{"level":"owner","ts":"2026-07-30T08:29:54.029Z","component":"voice","msg":"voice joined","guildId":"g1","channelId":"voice-1","requestedBy":"boss"}
+{"level":"info","ts":"2026-07-30T08:29:54.034Z","component":"voice","msg":"voice session left","guildId":"g1","channelId":"voice-1"}
+{"level":"owner","ts":"2026-07-30T08:29:54.034Z","component":"voice","msg":"voice joined","guildId":"g","channelId":"v","requestedBy":"boss"}
+{"level":"info","ts":"2026-07-30T08:29:54.036Z","component":"voice","msg":"voice session left","guildId":"g","channelId":"v"}
+{"level":"owner","ts":"2026-07-30T08:29:54.095Z","component":"voice","msg":"voice joined","guildId":"g1","channelId":"c1","requestedBy":"boss"}
+{"level":"info","ts":"2026-07-30T08:29:54.095Z","component":"voice","msg":"voice session left","guildId":"g1","channelId":"c1"}
+{"level":"maintainer","ts":"2026-07-30T08:29:54.095Z","component":"voice","msg":"voice joined","guildId":"g1","channelId":"c1","requestedBy":"mnt"}
+{"level":"member","ts":"2026-07-30T08:29:54.096Z","component":"voice","msg":"voice join refused — not owner/maintainer","userId":"mem","channelId":"c1"}
+{"level":"outsider","ts":"2026-07-30T08:29:54.096Z","component":"voice","msg":"voice join refused — not owner/maintainer","userId":"nobody","channelId":"c1"}
+{"level":"owner","ts":"2026-07-30T08:29:54.096Z","component":"voice","msg":"voice joined","guildId":"g1","channelId":"c1","requestedBy":"boss"}
+{"level":"member","ts":"2026-07-30T08:29:54.096Z","component":"voice","msg":"voice leave refused — not owner/maintainer","userId":"mem"}
+{"level":"owner","ts":"2026-07-30T08:29:54.096Z","component":"voice","msg":"voice joined","guildId":"g1","channelId":"c1","requestedBy":"boss"}
+{"level":"info","ts":"2026-07-30T08:29:54.096Z","component":"voice","msg":"voice session left","guildId":"g1","channelId":"c1"}
+{"level":"owner","ts":"2026-07-30T08:29:54.096Z","component":"voice","msg":"voice joined","guildId":"g1","channelId":"c2","requestedBy":"boss"}
+{"level":"owner","ts":"2026-07-30T08:29:54.097Z","component":"voice","msg":"voice joined","guildId":"g1","channelId":"c1","requestedBy":"boss"}
+{"level":"owner","ts":"2026-07-30T08:29:54.097Z","component":"voice","msg":"voice joined","guildId":"g1","channelId":"c1","requestedBy":"boss"}
+{"level":"owner","ts":"2026-07-30T08:29:54.097Z","component":"voice","msg":"voice joined","guildId":"g2","channelId":"c2","requestedBy":"boss"}
+{"level":"info","ts":"2026-07-30T08:29:54.097Z","component":"voice","msg":"voice session left","guildId":"g1","channelId":"c1"}
+{"level":"info","ts":"2026-07-30T08:29:54.097Z","component":"voice","msg":"voice session left","guildId":"g2","channelId":"c2"}
+
+ 2346 pass
+ 1 skip
+ 3 fail
+snapshots: 192 passed, 1 failed
+ 10664 expect() calls
+Ran 2350 tests across 199 files. [206.49s]
