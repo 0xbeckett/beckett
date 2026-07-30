@@ -489,13 +489,19 @@ export const configFragments = {
   // v3 — the Concierge (long-lived `claude -p` Opus agent that owns Discord, files tickets).
   concierge: z
     .object({
-      model: z.string().min(1).default("claude-opus-5"),
+      // Sonnet-5 @ medium (was Opus-5, issue #128): safe to go cheap here ONLY because the
+      // Plan stage (src/dispatch/plan-stage.ts) now stands between the concierge and every
+      // implement worker, authoring the brief at a strong seat (Fable/Opus) regardless of what
+      // model files the ticket. The two halves are one decision — do not drop this default
+      // without the plan-stage `entryGuard` gate still landed and enforcing on `implementStage`.
+      model: z.string().min(1).default("claude-sonnet-5"),
       // Proactive idle-rotation watermark (summed input tokens). This sits below Claude's 200k
       // hard edge so compaction normally happens with nobody waiting; configurable for tests.
       rotate_at_tokens: z.number().int().positive().default(160_000),
       // Reasoning effort for the chat seat (issue #25): acks/triage rarely need max reasoning.
+      // "medium" (issue #128) — never xhigh on Sonnet (user doctrine: claude-model-casting).
       // Empty = the claude CLI's own default. A knob, not a hardcode — the voice is the product.
-      effort: z.enum(["", "low", "medium", "high", "xhigh"]).default(""),
+      effort: z.enum(["", "low", "medium", "high", "xhigh"]).default("medium"),
       // Multi-session concierge (OPS-80 §9.3): "channel" runs one session per Discord channel
       // (DMs included — a DM is its own channel), so conversations in different channels no
       // longer queue behind one global turn. "global" restores the single-session v4.0 behavior.
