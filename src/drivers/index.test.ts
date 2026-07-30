@@ -82,12 +82,16 @@ describe("preflight — rate-limit cooldown gate (#133)", () => {
     expect(pf.problems.join(" ")).toMatch(/rate-limit cooldown until/);
   });
 
-  test("an expired cooldown no longer gates preflight — pi is usable again", async () => {
+  test("an expired cooldown no longer gates preflight (self-heals on quota reset)", async () => {
     // Record a cooldown already in the past: the gate must NOT fire, so the result carries no
-    // cooldown marker and the store no longer reports it live (self-heal on quota reset).
-    recordCooldown("pi", config, { now: 1_000, durationMs: 1 });
-    const pf = await preflightFor("pi", config, { force: true });
+    // cooldown marker and the store no longer reports it live. We assert against an UNREGISTERED
+    // harness so the fall-through is the instant "no driver" path — proving the gate is purely
+    // time-based without spawning a real (slow, environment-dependent) harness CLI probe. The
+    // dispatcher suite covers a real pi cast resuming once its window passes.
+    recordCooldown("gpt", config, { now: 1_000, durationMs: 1 });
+    const pf = await preflightFor("gpt", config, { force: true });
     expect(pf.cooledUntil).toBeUndefined();
-    expect(activeCooldown("pi", config)).toBeNull();
+    expect(pf.problems.join(" ")).toMatch(/no driver registered/);
+    expect(activeCooldown("gpt", config)).toBeNull();
   });
 });
