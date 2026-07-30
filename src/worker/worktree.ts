@@ -86,6 +86,14 @@ export interface CreateWorktreeOpts {
   baseRef: string;
   /** When resuming, reuse an existing worktree/branch instead of recreating (Spec 02 §4.5). */
   reuseIfExists?: boolean;
+  /**
+   * A now-unsafe path this ticket's worktree may still occupy on disk from a previous daemon (#134)
+   * — e.g. one whose directory segment contained a raw `#`. When it exists on disk (and `workspace`
+   * does not), the tree is migrated to `workspace` via `git worktree move` BEFORE any fresh cut, so
+   * both committed and uncommitted work follow and git's registration is rewritten in one step (a
+   * fresh `worktree add` on the same branch would otherwise fail with "branch already checked out").
+   */
+  legacyWorkspace?: string;
 }
 
 /** A handle to an allocated worktree. */
@@ -141,6 +149,31 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<Worktree
   if (opts.reuseIfExists && existsSync(workspace)) {
     logger.info("reusing existing worktree", { workspace, branch });
     return handle;
+  }
+
+  // Legacy-path migration (#134): an in-flight ticket left over from a deploy may still have its
+  // worktree at a now-unsafe path (e.g. a `#`-named dir). Move it to the sanitized `workspace` so
+  // both committed and uncommitted work survive AND the branch is freed from its old checkout — a
+  // fresh `worktree add` on the same branch would otherwise fail. On a move failure, drop the legacy
+  // tree so its branch can be checked out fresh below (committed work lives on the branch).
+  if (
+    opts.legacyWorkspace &&
+    opts.legacyWorkspace !== workspace &&
+    existsSync(opts.legacyWorkspace) &&
+    !existsSync(workspace)
+  ) {
+    mkdirSync(dirname(workspace), { recursive: true });
+    const moved = await runGit(["worktree", "move", opts.legacyWorkspace, workspace], repoRoot);
+    if (moved.code === 0) {
+      logger.info("migrated legacy worktree to sanitized path", { from: opts.legacyWorkspace, to: workspace, branch });
+      return handle;
+    }
+    logger.warn("legacy worktree move failed; removing it and cutting fresh (committed work is on the branch)", {
+      from: opts.legacyWorkspace,
+      to: workspace,
+      stderr: moved.stderr.trim(),
+    });
+    await removeWorktree(repoRoot, opts.legacyWorkspace);
   }
 
   mkdirSync(dirname(workspace), { recursive: true });
