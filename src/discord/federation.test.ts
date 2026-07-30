@@ -5,7 +5,7 @@
  */
 
 import { test, expect } from "bun:test";
-import { isFederatedPeer, PeerBurstLimiter } from "./federation.ts";
+import { isFederatedPeer, PeerBurstLimiter, PeerTurnLimiter } from "./federation.ts";
 
 const OWN = "100000000000000001";
 const PEER = "200000000000000002";

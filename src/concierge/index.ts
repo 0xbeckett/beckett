@@ -5097,6 +5097,34 @@ export class Concierge {
     }
   }
 
+  /**
+   * The federation gate for a trusted peer's message (issue #140). Returns true to let the message
+   * continue to the normal directed path, false once it has been handled here (recorded, no reply).
+   *
+   * A peer is answered ONLY when it actually addresses me — an @mention or a native reply to one of
+   * my own messages, both of which fold into `mentionsBot`. A workspace thread does NOT make a peer
+   * message directed (that is a human affordance), and the ambient interjection path never fires on
+   * a bot, so anything a peer says without addressing me is kept in the shared record for context
+   * and dropped. When it does address me, the consecutive-turn cap decides: past the cap Beckett
+   * falls silent so the two-bot exchange provably terminates (federation.ts `PeerTurnLimiter`). A
+   * peer never queues work — it clears the outsider gate to converse and nothing more.
+   */
+  private async handlePeerMessage(m: IncomingMessage): Promise<boolean> {
+    if (!m.mentionsBot) {
+      this.captureInbound(m, "peer");
+      return false;
+    }
+    if (!this.peerTurns.allow(m.channelId)) {
+      this.log.warn("peer turn dropped — consecutive peer-turn cap reached (loop terminator)", {
+        channelId: m.channelId,
+        peerId: m.peer?.botId,
+      });
+      this.captureInbound(m, "peer");
+      return false;
+    }
+    return true;
+  }
+
   private async resumeBrowserQuestion(m: IncomingMessage): Promise<boolean> {
     if (m.authorIsBot || !m.repliedToId) return false;
     const pending = this.pendingBrowserQuestions.get(m.repliedToId);
@@ -5799,6 +5827,13 @@ export class Concierge {
    * a store read/write failure degrades to "just the live display name", never drops the turn.
    */
   private resolveSpeaker(m: IncomingMessage): SpeakerContext {
+    // A trusted peer Beckett is stamped explicitly as a peer and kept OUT of the human identity
+    // store — it has no identities.json entry by design (writing one would blend a bot into the
+    // people map). Its display name rides straight off the peer marker so the turn reads
+    // "TRUSTED PEER named X"; it can never carry role:owner/maintainer.
+    if (m.peer) {
+      return { userId: m.peer.botId, displayName: m.peer.displayName, isOwner: false, isPeer: true };
+    }
     const isOwner = this.ownerId() !== undefined && m.userId === this.ownerId();
     // Maintainer standing comes from maintainers.txt at stamp time (code-checked, like
     // role:owner) — the doctrine trusts the stamp, so it must never come from chat content.
@@ -6207,6 +6242,9 @@ export class Concierge {
    */
   private async handleThreadAttach(m: IncomingMessage, content: string): Promise<boolean> {
     if (m.isThread !== true) return false;
+    // Routing state is work state: a trusted peer must never move it (`&12` / `&recent` / `&clear`).
+    // A peer's `&…` is just conversation content the model may read, not a command it can run.
+    if (m.peer) return false;
     const command = parseAttachCommand(content);
     if (!command) return false;
 
@@ -6524,6 +6562,9 @@ export interface SpeakerContext {
   isOwner: boolean;
   /** True when this id is in maintainers.txt (bundled ∪ runtime) — OPS-144. Owner excluded (role:owner subsumes it). */
   isMaintainer?: boolean;
+  /** True when the speaker is a trusted peer Beckett (federation, #140): stamped `role:peer`,
+   *  strictly below a member — may converse, never queue work. Mutually exclusive with owner/maintainer. */
+  isPeer?: boolean;
 }
 
 /**
@@ -6667,6 +6708,10 @@ function frameUserTurn(
   // structured and cheap — it is built from identities.json on every single turn.
   if (speaker.isOwner) parts.push("role:owner");
   else if (speaker.isMaintainer) parts.push("role:maintainer");
+  // A trusted peer Beckett (#140): sits BELOW a member — talk, don't queue work. The stamp is the
+  // signal the doctrine trusts, exactly like role:owner/role:maintainer; it is code-set from the
+  // message's peer marker, never inferred from chat content.
+  else if (speaker.isPeer) parts.push("role:peer");
   // `msg:` is the exact message being answered — carried through so a reply targets THAT message,
   // not just the channel (Jason's steer, OPS-42). The native reply already uses it; surfacing it
   // in the stamp lets the Concierge quote/`--reply-to` the precise message when it matters.
