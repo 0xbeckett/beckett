@@ -391,6 +391,62 @@ test("a live browser-question id stays classified during the post-to-ledger hand
   expect(normalized.repliedToBotUnverified).toBeUndefined();
 });
 
+test("a trusted peer bot message is normalized with an explicit peer stamp", async () => {
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: { user: { id: string } } }).client = { user: { id: "bot-1" } };
+  // The federation allowlist (config baseline; no live peers.txt needed for the test).
+  (gateway as unknown as { baselinePeers: Set<string> }).baselinePeers = new Set(["peer-bot-2"]);
+
+  const normalized = await (
+    gateway as unknown as {
+      normalize: (msg: Record<string, unknown>) => Promise<{
+        peer?: { botId: string; displayName: string };
+        authorIsBot: boolean;
+      }>;
+    }
+  ).normalize({
+    id: "peer-msg-1",
+    guildId: "guild-1",
+    channelId: "chan-1",
+    channel: { name: "ops" },
+    content: "@beckett staging is green",
+    createdTimestamp: 0,
+    author: { id: "peer-bot-2", bot: true, username: "beckett-dev", globalName: "Beckett [DEV]" },
+    member: { displayName: "Beckett [DEV]", roles: { cache: new Map() } },
+    mentions: { has: () => true },
+    attachments: new Map(),
+  });
+
+  // Explicitly stamped as a peer, carrying its bot id + display name — distinguishable from a human.
+  expect(normalized.authorIsBot).toBe(true);
+  expect(normalized.peer).toEqual({ botId: "peer-bot-2", displayName: "Beckett [DEV]" });
+});
+
+test("a human message carries no peer stamp (empty allowlist is today's behavior)", async () => {
+  const gateway = new DiscordJsGateway();
+  (gateway as unknown as { client: { user: { id: string } } }).client = { user: { id: "bot-1" } };
+
+  const normalized = await (
+    gateway as unknown as {
+      normalize: (msg: Record<string, unknown>) => Promise<{ peer?: unknown; authorIsBot: boolean }>;
+    }
+  ).normalize({
+    id: "human-msg-1",
+    guildId: "guild-1",
+    channelId: "chan-1",
+    channel: { name: "ops" },
+    content: "hello",
+    createdTimestamp: 0,
+    author: { id: "user-1", bot: false, username: "u", globalName: null },
+    member: { displayName: "u", roles: { cache: new Map() } },
+    mentions: { has: () => false },
+    attachments: new Map(),
+  });
+
+  expect(normalized.authorIsBot).toBe(false);
+  expect(normalized.peer).toBeUndefined();
+});
+
 test("interactionCreate defers component clicks ephemerally before routing", async () => {
   const gateway = new DiscordJsGateway();
   const listeners = new Map<string, (...args: any[]) => void>();
