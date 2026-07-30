@@ -126,6 +126,42 @@ describe("AmbientCoordinator", () => {
     expect(coordinator.getTranscript("c1")).toEqual([]);
   });
 
+  test("the ambient interjection path never fires on peer-bot traffic (#140)", async () => {
+    const clock = new FakeClock();
+    let triageCalls = 0;
+    const turns: AmbientTurn[] = [];
+    const coordinator = createAmbientCoordinator({
+      config: validateConfig({ proactivity: { enabled: true, default_mode: "auto" } }),
+      logger: quietLogger,
+      clock,
+      triage: (async () => {
+        triageCalls++;
+        return yes;
+      }) as TriageFn,
+      engage: async (turn) => {
+        turns.push(turn);
+        return { decision: "send", message: "should never run for a peer" };
+      },
+    });
+
+    // A trusted peer's message carries the `peer` marker. Even in an auto-mode channel it must never
+    // arm a debounce, triage, or produce an ambient turn — a peer is answered only when it addresses
+    // Beckett, on the directed path, never on a hunch.
+    coordinator.observe(
+      msg("p1", "c1", "hey other beckett, how's it going", 0, {
+        authorIsBot: true,
+        peer: { botId: "200000000000000002", displayName: "Beckett [DEV]" },
+      }),
+      "peer",
+    );
+    clock.advance(60_000);
+    await tick();
+
+    expect(coordinator.getTranscript("c1")).toEqual([]); // not even ring-buffered
+    expect(triageCalls).toBe(0);
+    expect(turns).toEqual([]);
+  });
+
   test("the default cold debounce is 8s while the engaged lane remains 4s", async () => {
     const clock = new FakeClock();
     let triageCalls = 0;

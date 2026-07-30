@@ -67,3 +67,42 @@ test("a dropped (over-cap) message does not extend the window", () => {
   now += 30_001; // now 60_001 past the ONLY real hit
   expect(lim.allow("c")).toBe(true); // budget freed because the drop wasn't counted
 });
+
+// ── PeerTurnLimiter: the loop terminator ─────────────────────────────────────────────────────
+
+test("consecutive peer turns are allowed up to the cap, then a two-bot exchange terminates", () => {
+  const lim = new PeerTurnLimiter(3);
+  // A ping-pong with NO human between: each reply Beckett is about to give counts one.
+  expect(lim.allow("c")).toBe(true);
+  expect(lim.allow("c")).toBe(true);
+  expect(lim.allow("c")).toBe(true);
+  // The exchange provably ends here — every further peer turn is refused, so Beckett falls silent.
+  expect(lim.allow("c")).toBe(false);
+  expect(lim.allow("c")).toBe(false);
+});
+
+test("a human message resets the budget, re-opening the peer conversation", () => {
+  const lim = new PeerTurnLimiter(2);
+  expect(lim.allow("c")).toBe(true);
+  expect(lim.allow("c")).toBe(true);
+  expect(lim.allow("c")).toBe(false); // capped
+  lim.reset("c"); // a human speaks in the channel
+  expect(lim.allow("c")).toBe(true); // budget refilled
+  expect(lim.allow("c")).toBe(true);
+  expect(lim.allow("c")).toBe(false); // and it caps again
+});
+
+test("the consecutive-turn budget is per-channel", () => {
+  const lim = new PeerTurnLimiter(1);
+  expect(lim.allow("a")).toBe(true);
+  expect(lim.allow("b")).toBe(true); // a different channel has its own budget
+  expect(lim.allow("a")).toBe(false);
+  lim.reset("a");
+  expect(lim.allow("a")).toBe(true);
+  expect(lim.allow("b")).toBe(false); // channel b was untouched by a's reset
+});
+
+test("a non-positive cap disables peer replies entirely (fail-safe, no unbounded loop)", () => {
+  expect(new PeerTurnLimiter(0).allow("c")).toBe(false);
+  expect(new PeerTurnLimiter(-1).allow("c")).toBe(false);
+});
