@@ -16,7 +16,12 @@ export function statusDashboardMessagePath(stateDir: string): string {
 
 export interface StatusDashboardServiceOptions {
   gateway: Pick<DiscordGateway, "post" | "editMessage">;
-  channelId: string;
+  /**
+   * Where the single dashboard message lives. `null` (the staging daemon, #141, whose cards channel
+   * is `disabled`) keeps the cycle running — presence + rpc-status still update — but posts nothing
+   * to Discord, so DEV never narrates into a prod channel.
+   */
+  channelId: string | null;
   statePath: string;
   collectSnapshot: () => Promise<StatusDashboardSnapshot>;
   logger?: Logger;

@@ -178,9 +178,16 @@ function scopeStateFile(beckettDir: string, scope: string): string {
 /** Dedicated home for task, branch, and subscription-status cards. */
 export const CARDS_CHANNEL_ID = "1525690195234521179";
 
-/** Cards channel, overridable via `BECKETT_CARDS_CHANNEL_ID` (unset/empty → the constant). */
-function cardsChannelId(): string {
-  return process.env.BECKETT_CARDS_CHANNEL_ID?.trim() || CARDS_CHANNEL_ID;
+/**
+ * Cards channel, overridable via `BECKETT_CARDS_CHANNEL_ID` (unset/empty → the constant). The
+ * literal `disabled` returns null so an instance can run with NO cards channel at all — the
+ * staging daemon (issue #141) sets it so it never narrates task/branch cards into prod's channel.
+ * `CARDS_CHANNEL_ID` is otherwise a raw hardcoded prod snowflake with no env seam; this is that seam.
+ */
+export function cardsChannelId(): string | null {
+  const configured = process.env.BECKETT_CARDS_CHANNEL_ID?.trim();
+  if (configured?.toLowerCase() === "disabled") return null;
+  return configured || CARDS_CHANNEL_ID;
 }
 
 /** Discord shows "typing…" for ~10s; re-trigger inside this window while a turn runs. */
@@ -3035,11 +3042,13 @@ export class Concierge {
     buttons?: DiscordButton[],
     replyToMessageId?: string,
     replyToUserId?: string,
-    targetChannelId?: string,
-  ): Promise<string> {
+    targetChannelId?: string | null,
+  ): Promise<string | null> {
     // A thread-local card is the one place "attach to this thread" has an unambiguous target.
     // All other cards retain the dedicated dashboard channel.
     const channelId = targetChannelId ?? cardsChannelId();
+    // No cards channel configured (e.g. the staging daemon, #141) — narrate nothing.
+    if (!channelId) return null;
     const messageId = await this.gateway.post(channelId, "", {
       ...(replyToMessageId ? { replyToMessageId } : {}),
       ...(replyToUserId ? { replyToUserId } : {}),
