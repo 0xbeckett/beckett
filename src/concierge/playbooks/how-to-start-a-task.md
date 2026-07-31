@@ -238,8 +238,8 @@ harness default *and* silently selects the expensive fresh-review gate. The righ
 - **`claude-opus-5`** — `high` for most tasks (the Opus default), `xhigh` for the genuinely harder
   ones. Never below `high`: work that feels like `medium` belongs on pi or Sonnet.
 - **`claude-sonnet-5`** — `medium` or `high` only. Never `xhigh`.
-- **`claude-fable-5`** — `high` as the standard (review or implement); `xhigh` only for the most
-  crucial work, and every Fable cast was already confirmed with the human.
+- **`claude-fable-5`** — `high` as the standard (it implements; Opus reviews it); `xhigh` only for
+  the most crucial work, and every Fable cast was already confirmed with the human.
 
 `xhigh` is rare fleet-wide — crucial, hard-to-reverse work only.
 
