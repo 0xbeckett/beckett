@@ -54,6 +54,7 @@ import {
 import { asCapability } from "../../ext/compat.ts";
 import type { Capability, CapabilityDeps } from "../index.ts";
 import { createMemory, RELATION_TYPES, type MemoryStore } from "../../memory/index.ts";
+import { isBridgedNode, resolveBridgeDirs } from "../../memory/bridge.ts";
 import {
   type Audience,
   canView,
@@ -200,11 +201,14 @@ function slugName(s: string): string {
  */
 function existingTarget(store: MemoryStore, name: string): MemoryNode | null {
   const g = store.buildGraph();
+  // Bridged (harness-origin) nodes are skipped, mirroring the engine's `findExisting`
+  // (issue #160): a remember can never merge into a read-only harness file, so an identity
+  // hit on one is a CREATE of a native node — the create-path gates apply, not these.
   const byName = g.nodes.get(name);
-  if (byName && !byName.phantom) return byName;
+  if (byName && !byName.phantom && !isBridgedNode(byName)) return byName;
   const target = slugName(name);
   for (const n of g.nodes.values()) {
-    if (n.phantom) continue;
+    if (n.phantom || isBridgedNode(n)) continue;
     const aliases = n.metadata.aliases;
     const list = aliases == null ? [] : Array.isArray(aliases) ? aliases : [aliases];
     if (list.map((x) => slugName(String(x))).includes(target)) return n;
@@ -228,6 +232,12 @@ export interface MemoryExtensionDeps {
   /** Test seams for the maintain loop cadence (see {@link startRoutineMaintenance}). */
   maintenanceIntervalMs?: number;
   maintenanceInitialDelayMs?: number;
+  /**
+   * Harness auto-memory dirs for the cross-store bridge (issue #160). Absent ⇒ resolved via
+   * `resolveBridgeDirs` (env `BECKETT_HARNESS_MEMORY_DIRS`, else the harness project dir
+   * derived from the daemon's cwd). Tests pass `[]` (or a tmpdir) to pin behavior.
+   */
+  bridgeDirs?: string[];
 }
 
 /** The built extension plus the accessors `shell/main.ts` and tests read. */
@@ -304,7 +314,12 @@ export const createMemoryExtension =
           fail(`daemon reachable but not answering (${(err as Error).message}) — retry, or stop the daemon and re-run`);
         }
         // No daemon is the one safe fallback: a fresh CLI process keeps the legacy cold behavior.
-        const memory = createMemory({ memoryDir: paths.memoryDir, logger: undefined, git: false });
+        const memory = createMemory({
+          memoryDir: paths.memoryDir,
+          logger: undefined,
+          git: false,
+          bridgeDirs: deps.bridgeDirs ?? resolveBridgeDirs(),
+        });
         out(await recallCliOutput(memory, request));
       }
     }
@@ -315,6 +330,7 @@ export const createMemoryExtension =
         memoryDir: paths.memoryDir,
         logger: undefined,
         git: sub === "remember" || sub === "maintain",
+        bridgeDirs: deps.bridgeDirs ?? resolveBridgeDirs(),
       });
       if (sub === "recall") await runRecall(rest);
       if (sub === "maintain") {
@@ -547,6 +563,9 @@ export const createMemoryExtension =
               logger: ctx.logger.child("memory"),
               git: true,
               warm: true,
+              // Cross-store bridge (issue #160): the daemon's warm store reads the harness
+              // auto-memory alongside the graph and publishes the public index back into it.
+              bridgeDirs: deps.bridgeDirs ?? resolveBridgeDirs(),
             });
         },
         // Memory self-healing (OPS-121): one maintenance pass shortly after boot, then daily —

@@ -938,6 +938,40 @@ export class MemoryStore implements Memory {
   }
 }
 
+/**
+ * Strip maintenance actions aimed at bridged (harness-origin, read-only) nodes (issue #160):
+ * the harness store owns its own facts' lifecycle. Pure over the plan + graph:
+ *   - archives naming a bridged node are dropped (a ttl-expired harness note is the harness
+ *     seat's business);
+ *   - merges touching one demote to a `flagged` pair — the report still says "these two look
+ *     like the same fact across stores", but no merge ever rewrites a harness file;
+ *   - aged-observation entries for bridged nodes drop (re-observation is per-store too).
+ * Phantoms pass through untouched: with the bridge in the graph, a cross-store link is no
+ * longer a phantom at all, so what remains is genuinely dangling in one store or the other.
+ */
+function excludeBridgedFromPlan(
+  plan: ReturnType<typeof planMaintenance>,
+  g: MemoryGraph,
+): ReturnType<typeof planMaintenance> {
+  const bridged = (name: string): boolean => {
+    const n = g.nodes.get(name);
+    return n ? isBridgedNode(n) : false;
+  };
+  const flagged = [...plan.flagged];
+  for (const m of plan.merges) {
+    if (bridged(m.canonical) || bridged(m.duplicate)) {
+      flagged.push({ a: m.canonical, b: m.duplicate, similarity: m.similarity });
+    }
+  }
+  return {
+    ...plan,
+    archives: plan.archives.filter((a) => !bridged(a.name)),
+    merges: plan.merges.filter((m) => !bridged(m.canonical) && !bridged(m.duplicate)),
+    flagged,
+    agedObservations: plan.agedObservations.filter((o) => !bridged(o.name)),
+  };
+}
+
 // =======================================================================================
 // Recall (pure over the graph — Spec 08 §3.2)
 // =======================================================================================
