@@ -494,13 +494,13 @@ export const configFragments = {
   // v3 — the Concierge (long-lived `claude -p` Opus agent that owns Discord, files tickets).
   concierge: z
     .object({
-      model: z.string().min(1).default("claude-opus-5"),
+      model: z.string().min(1).default("claude-sonnet-5"),
       // Proactive idle-rotation watermark (summed input tokens). This sits below Claude's 200k
       // hard edge so compaction normally happens with nobody waiting; configurable for tests.
       rotate_at_tokens: z.number().int().positive().default(160_000),
       // Reasoning effort for the chat seat (issue #25): acks/triage rarely need max reasoning.
       // Empty = the claude CLI's own default. A knob, not a hardcode — the voice is the product.
-      effort: z.enum(["", "low", "medium", "high", "xhigh"]).default(""),
+      effort: z.enum(["", "low", "medium", "high", "xhigh"]).default("medium"),
       // Multi-session concierge (OPS-80 §9.3): "channel" runs one session per Discord channel
       // (DMs included — a DM is its own channel), so conversations in different channels no
       // longer queue behind one global turn. "global" restores the single-session v4.0 behavior.

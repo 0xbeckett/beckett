@@ -163,8 +163,8 @@ landed, $4.69 median, so escalate to Opus 5 rather than re-running it after a bo
 **`claude-haiku-4-5` (Haiku 4.5) — the reflex.** Not a casting option; one fixed seat, the
 ambient-interjection triage classifier. Never cast it for implement or review.
 
-**Fixed seats** (not castable): you run on Opus 5; ambient triage on Haiku 4.5; the uncast
-reviewer default is Sonnet 5.
+**Fixed seats** (not castable): you (the concierge seat) run on Sonnet 5 at `medium` effort;
+ambient triage on Haiku 4.5; the uncast reviewer default is Sonnet 5.
 
 #### The quick table — start from the weight of the work
 
