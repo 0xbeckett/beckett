@@ -384,8 +384,27 @@ const HANDOFF_MODEL = "claude-haiku-4-5";
 const HANDOFF_EFFORT = "low";
 const HANDOFF_TIMEOUT_MS = 45_000;
 
-/** A turn gets this long to finish before its eventual result is visibly marked as late. */
-const TURN_TIMEOUT_MS = 240_000;
+/**
+ * The SILENCE window (issue #150): a turn may go this long WITHOUT any evidence of life before its
+ * eventual result is visibly marked as late. Every streamed assistant / tool_use / tool_result event
+ * restarts this clock (see {@link ConciergeSession.noteTurnLiveness}), so it measures how long the
+ * child has been quiet — never how long the turn has been running.
+ *
+ * ── WHY SILENCE, NOT ELAPSED ───────────────────────────────────────────────────────────────
+ * v6.16.1 (issue #139) measured both deadlines from turn start, so total duration alone decided
+ * whether a turn was dead. That killed HEALTHY turns: four concierge turns on 2026-07-31 were
+ * reaped mid-flight while running a typecheck, a test suite, git fetches and journal reads — work
+ * that legitimately exceeds six minutes and is indistinguishable, under a wall clock, from a
+ * wedged generation. A deploy turn could effectively never finish inline. What actually separates
+ * a slow turn from a hung one is whether the child is still DOING anything, and the stream already
+ * says so on every tool call. So the clock resets on evidence of life, and only real silence — no
+ * event at all for this long, then {@link HARD_TURN_TIMEOUT_MS} more — reaps.
+ *
+ * Kept at the historic 240s so a genuinely wedged child (the #139 case: no events whatsoever) is
+ * still declared dead on exactly the old schedule. {@link TURN_ABSOLUTE_CEILING_MS} is the backstop
+ * for the one case silence cannot catch: a runaway that keeps emitting events forever.
+ */
+const TURN_SILENCE_MS = 240_000;
 /**
  * Cap on mid-flow messages handed to ONE live turn (see
  * {@link ConciergeSession.injectIntoLiveTurn}). A bound, not a policy: past it the caller queues
@@ -488,11 +507,11 @@ function truncateForLog(text: string, max: number): string {
 // writing, so the daemon doesn't get to write it instead. The typing indicator is the whole
 // waiting signal; a genuinely slow dig gets the model's own one-line `discord ack`, in voice.
 
-/** Prepended only to a real model answer that arrives after {@link TURN_TIMEOUT_MS}. */
+/** Prepended only to a real model answer that arrives after {@link TURN_SILENCE_MS} of silence. */
 const LATE_TURN_FRAME = "Sorry, that took a while —";
 
 /**
- * The SECOND, HARD deadline — measured from the moment the soft one ({@link TURN_TIMEOUT_MS}) fires.
+ * The SECOND, HARD deadline — measured from the moment the soft one ({@link TURN_SILENCE_MS}) fires.
  * The soft deadline is deliberately patient: stream-json cannot cancel one turn while retaining the
  * child, so a completed-but-late REAL answer is worth waiting for (that is {@link LATE_TURN_FRAME}).
  * But patience cannot be unbounded. A child that has produced no `result` at all — a wedged
@@ -506,12 +525,75 @@ const LATE_TURN_FRAME = "Sorry, that took a while —";
 const HARD_TURN_TIMEOUT_MS = 120_000;
 
 /**
+ * The ABSOLUTE ceiling (issue #150), measured from turn start and NEVER reset by liveness. The
+ * silence clock alone cannot catch one failure mode: a runaway that keeps emitting events forever
+ * (a tool loop re-reading the same file, a retry storm that never converges). This is the backstop
+ * for exactly that, and nothing else.
+ *
+ * Deliberately far above the old six-minute wall clock — the whole complaint is that six minutes
+ * sits BELOW the floor for the honest slow work this system does (a typecheck plus a test suite
+ * plus a guarded deploy). Half an hour is comfortably past any legitimate inline turn while still
+ * bounding a leak to one recycle cycle, and a turn that trips it was pathological, not merely slow.
+ * A ceiling reap posts the same honest {@link TURN_TIMED_OUT_LINE} as a silence reap.
+ */
+const TURN_ABSOLUTE_CEILING_MS = 30 * 60_000;
+
+/**
  * The single honest line a turn that claimed a DIRECT @mention/DM posts when it dies instead of
- * vanishing (issue #139) — reaped by the hard deadline, suppressed for a bad schema, or upstream
- * retries exhausted. Plain and in voice: lowercase, no em-dash, no apology paragraph. It says the
- * turn FAILED; it never manufactures a substitute answer or guesses what the turn would have said.
+ * vanishing (issue #139) — suppressed for a bad schema, or upstream retries exhausted. Plain and in
+ * voice: lowercase, no em-dash, no apology paragraph. It says the turn FAILED; it never manufactures
+ * a substitute answer or guesses what the turn would have said. A turn reaped by a DEADLINE gets
+ * {@link TURN_TIMED_OUT_LINE} instead — "ask again" is wrong advice for a timeout.
  */
 const TURN_DIED_LINE = "that turn died on me, ask again.";
+
+/**
+ * What a DEADLINE-reaped turn says (issue #150). "ask again" is actively bad advice here: re-asking
+ * replays the same slow work straight into the same deadline. So this names the actual failure —
+ * it ran out of clock — and, when the stream cheaply told us, what it was still doing when the
+ * clock ran out, which is the one detail that lets the person narrow the ask instead of retrying it.
+ */
+const TURN_TIMED_OUT_LINE = "that turn timed out before it finished.";
+
+/**
+ * Compose the deadline-reap line, appending the last thing the child was seen doing when that is
+ * known. Pure so the wording is testable without a live turn.
+ */
+export function timedOutTurnLine(lastActivity?: string): string {
+  const doing = lastActivity?.trim();
+  return doing ? `${TURN_TIMED_OUT_LINE} last thing it was doing: ${doing}.` : TURN_TIMED_OUT_LINE;
+}
+
+/**
+ * Render a `tool_use` block as the short "what it was doing" crumb for {@link timedOutTurnLine}.
+ * One line, hard-capped: this reaches Discord, so a pasted heredoc or a 4k-char patch must not.
+ */
+export function describeToolUse(name: unknown, input: unknown): string | undefined {
+  const tool = typeof name === "string" && name.trim() ? name.trim() : undefined;
+  if (!tool) return undefined;
+  const raw = (input as Record<string, unknown> | undefined)?.command;
+  const command = typeof raw === "string" ? raw.trim().split("\n")[0]?.trim() : undefined;
+  if (!command) return tool;
+  return `${tool} (${truncateForLog(command, 60)})`;
+}
+
+/**
+ * Does this streamed NDJSON line prove the child is still ALIVE (issue #150)? Assistant messages
+ * (text blocks and `tool_use` alike) and the `user` echoes that carry `tool_result` blocks are the
+ * events a working turn emits continuously; each one restarts the silence clock.
+ *
+ * `system`/`init` is deliberately NOT liveness — it fires once at launch and would hand a wedged
+ * child a free window. `result` ends the turn, so it settles rather than extends. Anything else
+ * (stream deltas, unknown shapes) counts for nothing: a turn must show WORK, not just chatter on
+ * the pipe, and #139's wedged child must still die on schedule.
+ */
+export function isLivenessEvent(obj: Record<string, unknown>): boolean {
+  if (obj.type === "assistant") return true;
+  if (obj.type !== "user") return false;
+  const content = (obj.message as Record<string, unknown> | undefined)?.content;
+  if (!Array.isArray(content)) return false;
+  return content.some((raw) => (raw as Record<string, unknown> | null)?.type === "tool_result");
+}
 
 /** After a FAILED rotation, wait this long before re-paying the (expensive) handoff turn. */
 const ROTATE_RETRY_COOLDOWN_MS = 10 * 60_000;
@@ -653,14 +735,28 @@ interface PendingTurn {
   parts: string[];
   resolve: (reply: DiscordTurnOutput) => void;
   reject: (err: Error) => void;
+  /**
+   * The SILENCE timer ({@link TURN_SILENCE_MS}) — re-armed from scratch on every liveness event, so
+   * it fires only after the child has been quiet that long (issue #150).
+   */
   timer: ReturnType<typeof setTimeout>;
-  /** The soft deadline passed; retain the turn and visibly frame its eventual real result. */
+  /**
+   * The silence window passed at least once; retain the turn and visibly frame its eventual real
+   * result. Sticky: a turn that goes quiet, then wakes up and finishes, still kept the person
+   * waiting, so it still earns {@link LATE_TURN_FRAME}.
+   */
   timedOut: boolean;
   /**
-   * The HARD deadline, armed only once the soft one fires (see {@link ConciergeSession.onTurnTimeout}).
-   * Undefined until then; cleared alongside {@link timer} whenever the turn settles.
+   * The HARD deadline, armed only once the silence window fires (see
+   * {@link ConciergeSession.onTurnTimeout}). Undefined until then, and DISARMED again if the child
+   * proves it is alive before it fires; cleared alongside {@link timer} whenever the turn settles.
    */
   hardTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * The absolute ceiling ({@link TURN_ABSOLUTE_CEILING_MS}), armed once at turn start and never
+   * reset by liveness — the backstop for a runaway that keeps emitting events forever.
+   */
+  ceilingTimer?: ReturnType<typeof setTimeout>;
 }
 
 /** A turn admitted by {@link ConciergeSession.ask} and awaiting its slot in the pump. */
@@ -795,6 +891,12 @@ export class ConciergeSession {
   private liveTurnFilingShaped = false;
   /** `Date.now()` when the LIVE turn started — the clock {@link FILING_TURN_BUDGET_MS} measures against. */
   private turnStartedAt = 0;
+  /**
+   * The last tool the LIVE turn was seen invoking, already shortened for display
+   * ({@link describeToolUse}). Free — it rides the `tool_use` block onAssistant already reads — and
+   * it is the "what was it doing" crumb a deadline-reaped turn reports (issue #150).
+   */
+  private liveTurnLastActivity: string | undefined;
 
   // launch plumbing. NOTE: `claude -p --input-format stream-json` emits `system/init` only AFTER
   // the first stdin line arrives, so start() must NOT block waiting for init (that deadlocks —
@@ -1027,10 +1129,10 @@ export class ConciergeSession {
       return "no-live-turn";
     }
     this.liveTurnInjections += 1;
-    // Push the SOFT deadline out. The turn is now doing work the person added mid-flight; letting
-    // their own interjection trigger the "this took a while" framing would be backwards.
-    clearTimeout(p.timer);
-    p.timer = setTimeout(() => this.onTurnTimeout(p.timer), TURN_TIMEOUT_MS);
+    // Push the silence window out. The turn is now doing work the person added mid-flight; letting
+    // their own interjection trigger the "this took a while" framing would be backwards. Same reset
+    // a streamed event gets — including disarming an already-armed reaper (issue #150).
+    this.noteTurnLiveness();
     this.log.info("injected a mid-flow message into the live turn", {
       sessionId: this.sessionId,
       injections: this.liveTurnInjections,
@@ -1122,6 +1224,7 @@ export class ConciergeSession {
     this.liveTurnToolUsed = false;
     this.liveTurnInjections = 0;
     this.liveTurnFilingShaped = false;
+    this.liveTurnLastActivity = undefined;
     this.turnStartedAt = Date.now();
     // A timeout, write failure, or malformed result must leave the shared-context cursor where
     // it was. Fakes predate this signal and leave it undefined, which remains successful parity.
@@ -1129,12 +1232,15 @@ export class ConciergeSession {
     const outbound = this.consumeSeed(message);
 
     const turn = new Promise<DiscordTurnOutput>((resolve, reject) => {
-      const timer = setTimeout(() => this.onTurnTimeout(timer), TURN_TIMEOUT_MS);
-      this.pending = { parts: [], resolve, reject, timer, timedOut: false };
+      const timer = setTimeout(() => this.onTurnTimeout(timer), TURN_SILENCE_MS);
+      // Armed once, here, and never reset: this one IS a wall clock, deliberately (issue #150).
+      const ceilingTimer = setTimeout(() => this.onCeilingTimeout(ceilingTimer), TURN_ABSOLUTE_CEILING_MS);
+      this.pending = { parts: [], resolve, reject, timer, ceilingTimer, timedOut: false };
       try {
         this.writeUserLine(outbound);
       } catch (err) {
         clearTimeout(timer);
+        clearTimeout(ceilingTimer);
         this.pending = null;
         reject(err instanceof Error ? err : new Error(String(err)));
       }
@@ -1449,6 +1555,9 @@ export class ConciergeSession {
       return; // non-JSON noise — ignore
     }
     try {
+      // Evidence of life restarts the silence clock BEFORE the line is interpreted (issue #150) —
+      // a turn is judged on whether the child is still working, never on how long it has run.
+      if (this.pending && isLivenessEvent(obj)) this.noteTurnLiveness();
       switch (obj.type) {
         case "system":
           if (obj.subtype === "init") this.onInit();
@@ -1493,6 +1602,7 @@ export class ConciergeSession {
         const input = block.input as Record<string, unknown> | undefined;
         const command = typeof input?.command === "string" ? input.command : undefined;
         if (command && isFilingShapedToolUse(command)) this.liveTurnFilingShaped = true;
+        this.liveTurnLastActivity = describeToolUse(block.name, input) ?? this.liveTurnLastActivity;
       }
     }
   }
