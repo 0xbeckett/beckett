@@ -61,22 +61,52 @@ Per-stage: who *implements*, who *reviews*, passed as JSON to `--cast`. Shape
 
 #### The roster — every model, and when to cast it
 
+**Every price and rate below comes from `docs/model-economics.md`** in my own repo — 773 worker
+runs across 207 tickets (2026-07-11 → 07-31) plus published price sheets current to 2026-07-30.
+When a price moves, that doc is the thing to update, and this section follows it.
+
 **`pi` (gpt-5.6-terra) — backend & systems workhorse, and the pi implement default.** Runs its
-model through codex (0.144) on the ChatGPT-account path; default **gpt-5.6-terra** (`~$2.50/$15`
-per Mtok in/out), so bare `{"harness":"pi"}` runs terra, no `model` needed.
+model through codex (0.144) on the ChatGPT-account path; default **gpt-5.6-terra** (`~$2/$12`
+per Mtok in/out since the 30 Jul cut), so bare `{"harness":"pi"}` runs terra, no `model` needed.
 **Use for:** `implement` on any backend/systems ticket with a crisp spec — this is the default
 implementer, most tickets should land here: APIs, data layers, parsers, business logic, scripts,
 infra, migrations, test suites, porting modules. Also `review` on **long tickets**: it checks every acceptance criterion against
 reality — prefer it over claude when the ticket ran long and the risk is silently-missing work,
 not subtle wrongness.
-**Cheap lane — `gpt-5.6-luna`** (`~$1/$6` per Mtok): cheap/mechanical low-effort grind (rote
-renames, obvious mechanical edits, bulk boilerplate) where terra is overkill. Opt-in, never
-auto-routed by effort:
-`{"implement":{"harness":"pi","model":"gpt-5.6-luna","effort":"low"}}`.
+**Cast it at `high`, not `medium`.** Terra-high fails 14% of its substantive runs against
+terra-medium's 24%, for a $1.12 median run vs $0.37 — $0.75 to nearly halve the bounce rate is the
+cheapest insurance we buy, because a bounce costs a whole rerun. Reserve `medium`/`low` for work
+whose correctness is visible in the diff.
+**Terra is not fragile, its launcher is.** 40–53% of pi runs no-op — zero tool calls, ~$0 billed,
+nothing done — against 2 in 315 (0.6%) on the whole claude harness. Excluding those, terra-high
+fails *less* than the old heavy claude default did (14% vs 18%) at a quarter the cost. So don't
+read a pi bounce as "terra is dumb" — but do cast claude when **wall-clock** matters more than
+money, because a no-op is nearly free in dollars and expensive in time.
 **Not on our tier:** SOL and bare `gpt-5.6` are hard-blocked ("not supported with a ChatGPT
 account") — never cast them; terra/luna are the only pi models.
 **Never for:** visual work (no eyes), or specs that are really a vibe (no taste). Pi replaced the
 old `codex` harness — never cast `codex`; read old `codex` casts as `pi`.
+
+**`gpt-5.6-luna` (via `pi`) — the cheap lane, on trial.** `$0.20/$1.20` per Mtok: **10× cheaper
+than terra** since the 30 Jul cut, and within 2.7 points of it on Terminal-Bench (84.7 vs 87.4).
+Artificial Analysis puts terra *off* the efficiency frontier outright — on published numbers luna
+should take terra's place wherever the task fits inside luna's context budget.
+**Use for:** `implement` on **trivial/mechanical** tickets — copy tweaks, version bumps, config
+edits, renames, doc typos, an obvious single-file diff — at `low`, one-pass:
+`{"implement":{"harness":"pi","model":"gpt-5.6-luna","effort":"low","reviewTier":"self"}}`.
+**The hard boundary is context.** Luna's long-context recall collapses past 512K (MRCR 72.5% →
+**41.3%**), and our median pi implement run reads **1.46M input tokens**. **Anything you expect to
+read past ~400K goes to terra instead.** That cliff — not price, not quality — is why luna is not
+the new default.
+**False economy when:** the spec is fuzzy (a cheap seat builds the wrong thing confidently, and an
+escalated terra ticket costs **$8.02** against **$3.68** finishing clean — two bounces erase the
+entire saving); the work is visual (no eyes, and a reviewer can't catch what nobody looked at);
+the work is correctness-critical; or the ticket makes the worker read a big repo. Saving $0.30 to
+buy an $8 rerun is not saving.
+**Say the evidence status out loud:** luna has **never been cast here** — zero rows in our ledger.
+Every claim above is vendor or third-party. Treat a luna cast as a deliberate trial (the research
+proposes ~20 trivial tickets), read the telemetry footer when it lands, and `remember` what you
+learn.
 
 **`claude-fable-5` (Fable 5) — the heavy seat**, a tier above Opus, slowest and most expensive.
 **Ask before you cast it:** before starting a branch with a Fable review cast, say so on channel
