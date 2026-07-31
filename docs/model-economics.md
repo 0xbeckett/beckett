@@ -312,9 +312,11 @@ Four classes. Each names a concrete harness + model + effort and a verdict on th
 ### Class 1 — Trivial / mechanical
 *Copy tweaks, version bumps, config edits, renames, doc typos, obvious single-file diffs.*
 
-- **Cast:** `pi` / `gpt-5.6-terra` / **low**
-- **Fresh review: No** — `reviewTier: "self"`. A ~$1.44 review on a ~$0.37 run is 4× overhead to
-  check a diff whose correctness is visible in the diff.
+- **Cast:** `pi` / `gpt-5.6-terra` / **low** — note the ledger contains **no terra-low runs at all**
+  (only medium and high), so this tier is an extrapolation from terra-medium's $0.37 median, not
+  an observed result.
+- **Fresh review: No** — `reviewTier: "self"`. A ~$1.44 review on a sub-$0.50 run is 3–4× overhead
+  to check a diff whose correctness is visible in the diff.
 - **Why not luna:** should be luna on price ($0.20/$1.20, Terminal-Bench 84.7); blocked only by
   zero operational evidence — see the trial below.
 
