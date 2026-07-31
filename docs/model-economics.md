@@ -1,12 +1,9 @@
 # Model economics: capability per dollar on luna, terra and sonnet 5
 
 **Ticket:** #156 (research) · **Author:** Beckett (worker) · **Date:** 2026-07-30
-**Status:** Research only. No code, config or playbook changes — the casting playbook edit is #108.2's job.
-
+**Status:** Research only — no code, config or playbook changes; the playbook edit is #108.2's job.
 **Premise under test (ro's, not assumed):** a smaller/cheaper model paired with a strong
 advisor/reviewer may do work as good as a big implement seat for meaningfully less money.
-
----
 
 ## 0. TL;DR
 
@@ -23,8 +20,9 @@ Five findings, in order of how much they should change what we do.
    Terra and opus both land 98%. 31% of terra tickets get rescued by a heavy model, lifting
    terra's *expected* cost to ~$5.03 — still ~1.9× cheaper.
 4. **The real terra tax isn't quality, it's the harness.** **40% of pi/terra implement runs never
-   start** — zero tool calls, ~$0, no work done. Claude: 0%. Terra's headline 48% not-done rate
-   collapses to **14%** once those are excluded. We've been blaming the model for a launcher bug.
+   start** — zero tool calls, ~$0, no work done. Claude: **2 of 315 (0.6%)**. Terra's headline 48%
+   not-done rate collapses to **14%** once those are excluded. We've been blaming the model for a
+   launcher bug.
 5. **The concierge seat is the biggest standing cost in the system — bigger than any worker.**
    From 30 days of transcripts: **~$70/day median, ~$2,090/mo** on Opus 5 — *more than 20 days of
    all worker spend combined* ($2,574). Sonnet 5 would cut it to **~$1,254/mo list, ~$836/mo
@@ -34,8 +32,6 @@ Five findings, in order of how much they should change what we do.
 *mechanical and well-specified* work (~60% saving, real), and loses on *fuzzy, visual, or
 long-context* work — where luna's context cliff (MRCR 72.5% → **41.3%**) and pi's lack of eyes
 are not reviewable defects, because a reviewer cannot see what the implementer never looked at.
-
----
 
 ## 1. Price per Mtok — current as of 2026-07-30
 
@@ -65,13 +61,10 @@ reported 20% reduction in OpenAI's serving cost [1][3]. Sol was not cut.
 The consequence is not marginal: at launch luna was half of terra; today it is **one tenth**.
 Any "is the cheap seat worth it" analysis done before today understates luna's advantage by 5×.
 
-> **Caveat on our actual rates.** We drive `pi` through a ChatGPT-account tier, not the public
-> API, so list price is an upper bound. Our ledger's implied blended all-in rate for terra is
-> **$0.67/Mtok**, well under the list-implied blend — consistent with heavy cache hits and
-> possibly account-tier pricing. Treat the list table as the *relative* ranking and §3 as our
-> *absolute* cost.
-
----
+> **Caveat on our actual rates.** We drive `pi` through a ChatGPT-account tier, not the public API,
+> so list price is an upper bound. Our ledger's implied blended all-in terra rate is **$0.67/Mtok**,
+> well under the list-implied blend — consistent with heavy cache hits and possibly account-tier
+> pricing. Treat the table as the *relative* ranking and §3 as our *absolute* cost.
 
 ## 2. Published capability benchmarks
 
@@ -107,8 +100,6 @@ Luna or Sol effort level that is more intelligent at no extra cost, or equally i
 lower cost"* [4]. Terra sits **off** the efficiency frontier. Since Sol is hard-blocked on our
 ChatGPT-account tier, the actionable half of that sentence is: **where the task fits in luna's
 context budget, luna should be preferred to terra.**
-
----
 
 ## 3. Our data: real observed cost per ticket
 
@@ -149,12 +140,12 @@ Restricted to tickets where **one** model did all the implement work (no escalat
 | claude-opus-4-8 | 75 | $9.38 |
 | claude-fable-5 | 20 | $18.52 |
 
-**Terra lands 98% of its tickets at 39% of opus-4.8's median cost.** Fable's 100% landing rate
-and 1.19 attempts are real, and so is its 5× price.
+**Terra lands 98% of its tickets at 39% of opus-4.8's median cost.** Fable's 100% landing rate and
+1.19 attempts are real — and so is its 5× price.
 
 ### 3.2 The escalation tax
 
-55 of 207 tickets used more than one implement model. The paths that matter:
+**55 of 207 tickets** used more than one implement model. The paths that matter:
 
 | Path | Tickets |
 |---|---:|
@@ -163,17 +154,13 @@ and 1.19 attempts are real, and so is its 5× price.
 | gpt-5.6-terra → claude-opus-5 | 5 |
 | gpt-5.6-terra → claude-fable-5 | 1 |
 
-**17 of 55 terra-started tickets escalated to a heavy seat** — 31% of terra-started tickets,
-at a median all-in of **$8.02** vs **$3.68** when terra finishes alone. Expected cost of a
-terra start:
+Separately — and confusingly, the same number — **55 tickets *started* on terra**: 38 finished on
+terra alone, **17 escalated to a heavy seat (31%)** at a median all-in of **$8.02** vs **$3.68**
+when terra finishes alone. So the expected cost of a terra start is
+0.69 × $3.68 + 0.31 × $8.02 ≈ **$5.03**, against pure opus-4.8 at **$9.38**.
 
-```
-0.69 × $3.68  +  0.31 × $8.02  ≈  $5.03    vs  pure opus-4.8 $9.38
-```
-
-**Even paying the full bounce tax, starting on terra is ~1.9× cheaper than starting on opus.**
-The 22 opus→terra tickets are the reverse flow (heavy scopes, cheap finishes) and shouldn't be
-read as failures.
+**Even paying the full bounce tax, starting on terra is ~1.9× cheaper.** The 22 opus→terra tickets
+are the reverse flow (heavy scopes, cheap finishes), not failures.
 
 ### 3.3 The harness tax — the finding that reframes everything
 
@@ -187,8 +174,8 @@ read as failures.
 | claude-fable-5 high | 26 | **0 (0%)** |
 
 **40–53% of pi/terra runs never start** — zero tool calls, ~$0 billed, no work done; 28 of terra
-medium's 34 "failures" are these. Claude: **zero** no-ops in 276 runs. Excluding them, the
-quality picture inverts:
+medium's 34 "failures" are these. The whole `claude` harness has **2 no-ops in 315 implement runs
+(0.6%)**, both opus-5. Excluding no-ops, the quality picture inverts:
 
 | Implement cast | Substantive runs | Failed/rework | Median cost |
 |---|---:|---:|---:|
@@ -228,8 +215,6 @@ on a terra ticket.**
 **Verdict: the fresh gate is cheap and earns its keep.** ~$1.44 to catch a defect 28% of the time
 against a $3.68–$9.38 median ticket is not a close call. The gate is not where our money goes —
 the implement seat is.
-
----
 
 ## 4. Is claude-sonnet-5 at medium a sound concierge seat?
 
@@ -274,12 +259,10 @@ are not the binding constraint on a seat that reads a board, classifies a reques
 5. **Intro price expires 2026-08-31.** A decision justified on $836/mo is a $1,254/mo decision
    from September.
 
-**Verdict: sound, and worth trialling — but not as a silent swap.** Run it for a week with the
-casting decisions logged and diffed against what Opus 5 would have chosen. The seat is worth
-~$836/mo; a single bad routing habit costs more than that. Gate the change on routing quality,
-not on the cost saving, because the cost saving is not in question and the routing quality is.
-
----
+**Verdict: sound, and worth trialling — but not as a silent swap.** Run a week with casting
+decisions logged and diffed against what Opus 5 would have chosen. Gate the change on **routing
+quality, not cost saving** — the saving is not in question, the routing quality is, and one bad
+routing habit costs more than the ~$836/mo it saves.
 
 ## 5. Where small-implement + heavy-review beats heavy-implement
 
@@ -321,8 +304,6 @@ and hope; the pattern says hand it a plan.
 5. **The harness tax makes cheap seats slow.** A 40% no-op rate means a terra ticket often needs
    two launches — nearly free in dollars, expensive in wall-clock. When latency matters more than
    money, the cheap seat is the wrong trade until §3.3 is fixed.
-
----
 
 ## 6. Weight-of-task → cast
 
@@ -385,8 +366,6 @@ that anything reading >400K tokens goes to terra instead (the MRCR cliff). Compa
 substantive failure rate and cost per ticket against §3's terra baselines. A ~$10 experiment
 against a five-figure annual line item.
 
----
-
 ## 7. What this doc does not know
 
 - **Nothing about luna operationally** — zero rows; every luna claim is vendor or third-party.
@@ -398,8 +377,6 @@ against a five-figure annual line item.
   Exam is OpenAI's own reporting).
 - **Concierge cost is a reconstruction** from transcript tokens at list prices, not a billed
   figure — the ledger covers workers only. Daily variance is large ($25.70–$253.21).
-
----
 
 ## Sources
 
