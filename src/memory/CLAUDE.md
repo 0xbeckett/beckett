@@ -136,6 +136,31 @@ point — do not widen it, and do not route dream writes through `remember()`:
   never read back as something that was observed to happen. Keep new read surfaces on that
   helper. Containment tests live in `dreams.test.ts`; they try to violate this and must fail.
 
+## The cross-store bridge (`bridge.ts`, issue #160)
+
+Beckett has a SECOND memory store the graph doesn't own: the Claude Code harness auto-memory
+(`~/.claude/projects/<project-slug>/memory/` — flat files, hand-maintained `MEMORY.md` injected
+into every harness session). The authority split: the **graph** is authoritative for durable
+cross-task facts (people/projects/prefs/env/decisions — everything `remember()` writes); the
+**harness store** is authoritative for seat-operational lessons the harness seat teaches itself.
+A store built with `bridgeDirs` cross-links them:
+
+- **harness → graph**: `buildGraph` folds harness files in as READ-ONLY nodes (marker:
+  `metadata.origin_store: "harness"`, check with `isBridgedNode`). They rank in recall, resolve
+  cross-store `[[wikilinks]]` (formerly phantom noise), default to `visibility: owner`
+  (fail-closed), and lose every name collision to a native node. EVERY write path skips them —
+  remember's dedup arms, maintenance archive/merge (cross-store dups demote to flags), backlink
+  refresh, merge link-rewrites. The graph must never change a byte under a harness root; the
+  byte-guarantee is pinned in `bridge.test.ts`.
+- **graph → harness**: every write regenerates `beckett-graph-index.md` (the PUBLIC index, same
+  leak rule as `MEMORY.md`) in each harness dir plus a one-line `MEMORY.md` pointer — the only
+  two files the graph ever writes there, both derived and idempotent. Best-effort: a bridge
+  failure never fails the write.
+
+Dirs come from `resolveBridgeDirs` (env `BECKETT_HARNESS_MEMORY_DIRS`, else the harness project
+dir derived from the daemon's cwd); no `bridgeDirs` ⇒ byte-identical unbridged behavior, which
+is why tests and embedded stores stay unbridged unless they opt in.
+
 ## Gotchas that have bitten before
 
 - The warm daemon caches the parsed graph keyed by an mtime/size stamp taken **before** the
