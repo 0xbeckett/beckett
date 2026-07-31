@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### The turn deadline measures silence, not elapsed time (#150)
+
+The v6.16.1 reaper (#139) timed a turn from its start, so a concierge turn running a typecheck, a
+test suite and a few git fetches hit six minutes and was killed mid-flight — four times in one hour
+— while it was demonstrably working. Six minutes also sits below the floor for a deploy turn, so
+deploys could never finish inline. The clock now restarts on every streamed assistant / tool_use /
+tool_result event, so it measures how long the child has been SILENT (4 min quiet, then 2 more
+before the reap — the old schedule, applied to silence). A wedged child emitting nothing at all
+still dies on exactly that schedule, and a new 30-minute absolute ceiling, never reset by liveness,
+backstops a runaway that keeps emitting events forever. A deadline-reaped turn now says it timed
+out, plus the last thing it was seen doing, instead of "ask again" — which only replayed the same
+slow work into the same deadline.
+
 ## v6.11.1 (2026-07-28)
 
 ### The documented install actually works on a clean machine (#72)
