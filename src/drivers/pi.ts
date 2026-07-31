@@ -185,24 +185,73 @@ export async function piPreflight(config: Config): Promise<PiPreflight> {
     }
   }
 
-  // 3 — pi login present (subscription/OAuth; the child strips API keys and relies on this).
+  // 3 — pi login present AND structurally usable (subscription/OAuth; the child strips API keys
+  // and relies on this). The old check was a substring test for the provider name over the whole
+  // file, which passes for a provider entry that exists but carries no usable credential — the
+  // exact state behind the `No API key for provider: openai-codex` no-op runs (#159): preflight
+  // said healthy, the child launched, and turn one died with 0 tokens and 0 tool calls.
   const authPath = join(process.env.HOME ?? "", ".pi/agent/auth.json");
   try {
     const f = Bun.file(authPath);
     if (!(await f.exists()) || f.size === 0) {
       problems.push(`no pi login at ${authPath} — run \`pi\` once to sign in (subscription/OAuth).`);
     } else {
-      const auth = await f.text();
-      const provider = config.harness.pi.default_provider;
-      if (provider && !auth.includes(provider)) {
-        problems.push(`pi login at ${authPath} does not include provider ${provider}.`);
-      }
+      problems.push(...authProblems(await f.text(), config.harness.pi.default_provider, authPath));
     }
   } catch (err) {
     problems.push(`could not read pi login at ${authPath} (${(err as Error).message}).`);
   }
 
   return { ok: problems.length === 0, bin, nodeVersion, version, problems };
+}
+
+/**
+ * Inspect `~/.pi/agent/auth.json` for the provider the driver will actually use and report what is
+ * structurally wrong with it — the checks that would have caught a dead login BEFORE spawning a
+ * child that dies on turn one (#159).
+ *
+ * Deliberately narrow, because a false positive benches the whole harness:
+ *  - the provider entry must exist and carry a non-empty credential (`access` / `key` / `token`);
+ *  - an entry whose `expires` has PASSED is only fatal when it has no `refresh` token — pi renews
+ *    an expired access token from the refresh token on its own, so expiry alone proves nothing.
+ * Anything we can't parse falls back to the historical substring test rather than inventing a
+ * problem: an auth.json in a shape we don't recognize is pi's business, not a reason to bench it.
+ */
+function authProblems(raw: string, provider: string | undefined, authPath: string): string[] {
+  if (!provider) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Unparseable (or a future format): keep the old, weaker signal rather than guessing.
+    return raw.includes(provider) ? [] : [`pi login at ${authPath} does not include provider ${provider}.`];
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return [`pi login at ${authPath} is not a credential object — run \`pi\` once to sign in.`];
+  }
+  const entry = (parsed as Record<string, unknown>)[provider];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return [
+      `pi login at ${authPath} has no credential for provider ${provider} — run \`pi\` once to ` +
+        `sign in. (A pi run against a missing provider dies on its first turn with ` +
+        `"No API key for provider: ${provider}" and no tool calls.)`,
+    ];
+  }
+  const rec = entry as Record<string, unknown>;
+  const nonEmpty = (v: unknown): boolean => typeof v === "string" && v.trim().length > 0;
+  if (!nonEmpty(rec.access) && !nonEmpty(rec.key) && !nonEmpty(rec.token)) {
+    return [
+      `pi login at ${authPath} has an EMPTY credential for provider ${provider} — run \`pi\` once ` +
+        `to sign in.`,
+    ];
+  }
+  if (typeof rec.expires === "number" && Number.isFinite(rec.expires) && rec.expires <= Date.now() && !nonEmpty(rec.refresh)) {
+    return [
+      `pi's ${provider} token expired at ${new Date(rec.expires).toISOString()} and there is no ` +
+        `refresh token to renew it — run \`pi\` once to sign in again.`,
+    ];
+  }
+  return [];
 }
 
 function semverGte(raw: string | null, min: string): boolean {
@@ -546,6 +595,46 @@ export class PiDriver extends OneShotDriver implements HarnessDriver {
         structuredOutput: this.exitFinishStructuredOutput(this.runError),
         usage: { ...this.tokens },
         errorClass: classifyHarnessFailure(this.runError) ?? "crash",
+        ts,
+      });
+      this.finished = true;
+      this.stopWatchdog();
+      if (!this.isTerminal()) this.setState("failed");
+      void this.killChild();
+      return;
+    }
+
+    // The no-op backstop (#159). pi exits 0 and emits a clean `agent_end` even when its provider
+    // refused every turn, so "the harness never got to work" is otherwise indistinguishable from
+    // "the worker finished". The `runError` guard above catches the shapes that name their error on
+    // an assistant `message_end`; this catches the rest by OUTCOME rather than by error shape — a
+    // run that reached the end having spent no tokens, called no tool, and said nothing did not
+    // work, whatever it did or didn't report. Failing it here is what makes the dispatcher commit
+    // WIP, class the failure, and substitute/retry instead of advancing the ticket on nothing.
+    // The three conditions are ANDed on purpose: a legitimately terse run still spends tokens and
+    // still produces assistant text, so it cannot trip this.
+    const spent = this.tokens.input + this.tokens.output + this.tokens.cacheRead + this.tokens.cacheCreate;
+    if (this.toolCalls === 0 && spent === 0 && !this.lastAgentMessage.trim()) {
+      const tail = this.stderrRing.tail();
+      const message =
+        `pi finished without doing anything: ${this.turns} turn(s), 0 tool calls, 0 tokens, no ` +
+        `assistant output. The harness launched but never worked — this is a LAUNCH FAILURE, not a ` +
+        `completed run.${tail ? ` pi stderr: ${JSON.stringify(tail)}.` : " pi printed nothing to stderr."} ` +
+        `Usual cause: the provider rejected turn one (quota/usage limit, expired login, model not ` +
+        `available on this account).`;
+      this.log.error("pi run did no work — failing it as a launch failure", {
+        turns: this.turns,
+        toolCalls: this.toolCalls,
+        stderr: tail || null,
+      });
+      this.emit({ kind: "error", message, ts });
+      this.emit({
+        kind: "finished",
+        status: "error",
+        subtype: "error_noop",
+        structuredOutput: this.exitFinishStructuredOutput(message),
+        usage: { ...this.tokens },
+        errorClass: classifyHarnessFailure(tail) ?? "crash",
         ts,
       });
       this.finished = true;

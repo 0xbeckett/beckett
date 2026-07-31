@@ -59,6 +59,9 @@ function makeHandle(ticket: Ticket, stage: string, harness = "claude") {
     set result(v: any) {
       result = v;
     },
+    // NOTE: no `telemetry` by default — its presence is what switches the spend ledger on, and a
+    // dispatcher built without an injected `spendLedgerPath` writes to the REAL ~/.beckett ledger.
+    // Tests that want telemetry attach it to their own handle (see the #159 no-op tests).
     nudges: [] as string[],
     aborted: false,
     reaped: false,
@@ -278,6 +281,7 @@ function newDispatcher(
     publishOutboxPath?: string;
     runtimeStatePath?: string;
     dispatchEventsPath?: string;
+    spendLedgerPath?: string;
     preflight?: (harness: string) => Promise<{ ok: boolean; problems: string[] }>;
   } = {},
 ) {
@@ -552,6 +556,83 @@ describe("advance on finish", () => {
     expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(2);
     expect(client.setStateCalls).toHaveLength(0);
     expect(client.comments.at(-1)!.body).toContain("retrying (attempt 1/3)");
+  });
+
+  // ── #159: the zero-tool-call no-op run. ──
+  /** Attach driver telemetry to a fake handle (absent by default so the ledger stays off). */
+  const withTelemetry = (h: any, toolCalls: number, tokensIn: number) => {
+    h.telemetry = () => ({
+      turns: 1,
+      toolCalls,
+      tokens: { input: tokensIn, output: 0, cacheRead: 0, cacheCreate: 0 },
+      diffLines: 0,
+      usdEstimate: 0,
+    });
+    return h;
+  };
+
+  const ledgerRows = (path: string) =>
+    readFileSync(path, "utf8").split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l));
+
+  test("#159: a zero-work implement run is ledgered as launch_failed, not as a run of the cast", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-noop-"));
+    try {
+      const ledger = join(dir, "spend.jsonl");
+      const { d, client } = newDispatcher(2, { spendLedgerPath: ledger });
+      await d.handle(stateChanged(makeTicket(), "in_progress"));
+      await tick();
+      // The exact shape of a refused pi launch: 0 tool calls, 0 tokens, a rate_limit class.
+      withTelemetry(created[0]!, 0, 0).finish("error", "usage limit reached", null, false, "rate_limit");
+      await settle();
+
+      const row = ledgerRows(ledger).find((r) => r.stage === "implement");
+      expect(row.outcome).toBe("launch_failed"); // NOT "failed" — the cast never got a turn
+      expect(row.errorClass).toBe("rate_limit"); // classed without transcript archaeology
+      expect(row.sessionId).toBe("sess-1"); // traceable back to the harness transcript
+      // And it escalates: the rate-limit class backs off / substitutes rather than advancing.
+      expect(client.comments.at(-1)!.body).toContain("rate-limited");
+      expect(client.setStateCalls).toHaveLength(0); // never advanced on nothing
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#159: an UNCLASSED zero-work run is named a launch failure in the ticket, then retried", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-noop-"));
+    try {
+      const ledger = join(dir, "spend.jsonl");
+      const { d, client } = newDispatcher(2, { spendLedgerPath: ledger });
+      await d.handle(stateChanged(makeTicket(), "in_progress"));
+      await tick();
+      withTelemetry(created[0]!, 0, 0).finish("error", "pi finished without doing anything");
+      await settle();
+
+      const body = client.comments.at(-1)!.body;
+      expect(body).toContain("LAUNCH FAILURE"); // not "the worker crashed" — it never ran
+      expect(body).toContain("0 tool calls");
+      expect(ledgerRows(ledger).find((r) => r.stage === "implement").outcome).toBe("launch_failed");
+      expect(spawnCalls.filter((c) => c.stage === "implement")).toHaveLength(2); // retried
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#159: a run that DID work still ledgers as a plain failure of the cast", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-noop-"));
+    try {
+      const ledger = join(dir, "spend.jsonl");
+      const { d, client } = newDispatcher(2, { spendLedgerPath: ledger });
+      await d.handle(stateChanged(makeTicket(), "in_progress"));
+      await tick();
+      withTelemetry(created[0]!, 12, 40_000).finish("error", "crashed halfway");
+      await settle();
+
+      const row = ledgerRows(ledger).find((r) => r.stage === "implement");
+      expect(row.outcome).toBe("failed"); // the model really did attempt it
+      expect(client.comments.at(-1)!.body).not.toContain("LAUNCH FAILURE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("implement timeout (backstop cap) → status comment names the cap and retries", async () => {

@@ -2,7 +2,25 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type SpendOutcome = "done" | "rework" | "failed" | "cancelled";
+/**
+ * How a stage ended.
+ *
+ * `launch_failed` is deliberately NOT a flavour of `failed` (#159): it means the harness never got
+ * to work at all — zero tool calls, zero tokens — so the run says nothing about the cast that ran
+ * it. Folding those into `failed` is what made pi/terra read as a bad implementer in the #156
+ * model-economics pass: 92 of its "runs" were provider refusals on turn one, billed ~$0. Anything
+ * scoring a cast must exclude this outcome; see {@link isAttempt}.
+ */
+export type SpendOutcome = "done" | "rework" | "failed" | "cancelled" | "launch_failed";
+
+/**
+ * True when a row represents the harness actually ATTEMPTING the work — the denominator any
+ * per-cast quality rate should use. A `launch_failed` row is a launcher/provider event, not an
+ * attempt by the model.
+ */
+export function isAttempt(row: Pick<SpendRecord, "outcome">): boolean {
+  return row.outcome !== "launch_failed";
+}
 
 export interface SpendRecord {
   ticketId: string;
@@ -21,6 +39,14 @@ export interface SpendRecord {
   outcome: SpendOutcome;
   reviewTier: "self" | "fresh";
   ts: string;
+  /**
+   * The harness failure class when the run died with one (#159). Present mainly on `failed` /
+   * `launch_failed` rows; it is what lets `auth`, `rate_limit` and `crash` no-ops be told apart
+   * after the fact without correlating timestamps against harness transcripts.
+   */
+  errorClass?: string;
+  /** The harness session id, so a ledger row can be traced back to its transcript (#159). */
+  sessionId?: string;
 }
 
 /**

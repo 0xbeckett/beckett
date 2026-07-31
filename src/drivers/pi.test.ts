@@ -235,6 +235,74 @@ test("a transient errored turn followed by a successful one still finishes as su
   expect(fin.status).toBe("success");
 });
 
+// ── #159: the zero-tool-call no-op run. ──
+// Captured from a live `pi -p --mode json --provider openai-codex` run whose provider refused
+// turn one (reproduce with `--model gpt-5-codex`, which a ChatGPT-account tier rejects): pi exits
+// 0 and emits a clean agent_end, so nothing about the PROCESS says the run failed. 93 implement
+// runs in ~/.beckett/spend.jsonl look exactly like this.
+test("#159: a run that reaches agent_end having done NOTHING fails as a launch failure", () => {
+  const { events, feed } = harness();
+  feed({ type: "session", id: "s1" });
+  feed({ type: "turn_start" });
+  // No message_end at all — the shape the runError guard cannot see. Only the OUTCOME (no tokens,
+  // no tools, no text) betrays that the harness never worked.
+  feed({ type: "agent_end", messages: [] });
+
+  const fin = events.find((e) => e.kind === "finished") as {
+    status: string;
+    subtype: string;
+    errorClass?: string;
+    structuredOutput: { status: string } | null;
+  };
+  expect(fin.status).toBe("error"); // NOT a silent ~$0 success
+  expect(fin.subtype).toBe("error_noop");
+  expect(fin.errorClass).toBe("crash"); // unclassified → the dispatcher's bounded retry
+  expect(fin.structuredOutput).toMatchObject({ status: "blocked" });
+  const err = events.find((e) => e.kind === "error") as { message: string };
+  expect(err.message).toContain("LAUNCH FAILURE");
+});
+
+test("#159: the quota refusal — 1 turn, 0 tools, 0 tokens — is classed rate_limit, not success", () => {
+  const { events, feed } = harness();
+  feed({ type: "session", id: "s1" });
+  feed({ type: "turn_start" });
+  feed({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      stopReason: "error",
+      errorMessage: "Codex error: The usage limit has been reached",
+    },
+  });
+  feed({ type: "agent_end", messages: [] });
+
+  const fin = events.find((e) => e.kind === "finished") as { status: string; errorClass?: string };
+  expect(fin.status).toBe("error");
+  // rate_limit is what arms the #133 harness cooldown and the substitute-to-claude path.
+  expect(fin.errorClass).toBe("rate_limit");
+});
+
+test("#159: a short but REAL run (tokens spent, text produced) still succeeds", () => {
+  const { events, feed } = harness();
+  feed({ type: "session", id: "s1" });
+  feed({ type: "turn_start" });
+  feed({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: '{"status":"complete","summary":"nothing to change"}' }],
+      usage: { input: 900, output: 12, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+  feed({ type: "turn_end", message: { role: "assistant", content: [], usage: { input: 900, output: 12 } } });
+  feed({ type: "agent_end", messages: [] });
+
+  const fin = events.find((e) => e.kind === "finished") as { status: string };
+  expect(fin.status).toBe("success");
+});
+
 test("a malformed line becomes kind:unknown, never throws", () => {
   const { events, feed, driver } = harness();
   expect(() => driver.handleLine("not json at all {{{")).not.toThrow();
@@ -424,6 +492,79 @@ test("preflight reports a real non-zero `pi --version` exit as an EXIT, not a ti
     else process.env.HOME = oldHome;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── #159: preflight must not bless a login that dies on turn one. ──
+/** Run piPreflight against a stub pi + a caller-supplied auth.json body. */
+async function preflightWithAuth(authBody: string): Promise<{ ok: boolean; problems: string[] }> {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-pi-auth-"));
+  const oldHome = process.env.HOME;
+  try {
+    const localBin = join(dir, ".local/bin");
+    mkdirSync(localBin, { recursive: true });
+    const node = join(localBin, "node");
+    writeFileSync(node, "#!/bin/sh\necho v22.19.0\n", "utf8");
+    chmodSync(node, 0o755);
+    const pi = join(localBin, "pi");
+    writeFileSync(
+      pi,
+      [
+        "#!/bin/sh",
+        'case "$1" in',
+        "  --version) echo 0.82.1 ;;",
+        "  --help) echo '--mode --session --session-id --print --no-extensions --no-skills --no-themes' ;;",
+        "esac",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    chmodSync(pi, 0o755);
+    const authDir = join(dir, ".pi/agent");
+    mkdirSync(authDir, { recursive: true });
+    writeFileSync(join(authDir, "auth.json"), authBody, "utf8");
+    process.env.HOME = dir;
+    const pf = await piPreflight({
+      harness: { pi: { ...(config.harness as { pi: object }).pi, bin: "pi" } },
+    } as unknown as Config);
+    return { ok: pf.ok, problems: pf.problems };
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("#159: preflight rejects an auth.json with no credential for the provider", async () => {
+  // The old check was `auth.includes(provider)` over the raw file, so this PASSED — and the run
+  // then died on turn one with "No API key for provider: openai-codex", 0 tools, 0 tokens.
+  const pf = await preflightWithAuth('{"openrouter":{"key":"sk-x"},"note":"openai-codex removed"}\n');
+  expect(pf.ok).toBe(false);
+  expect(pf.problems.join(" ")).toContain("no credential for provider openai-codex");
+});
+
+test("#159: preflight rejects an empty credential for the provider", async () => {
+  const pf = await preflightWithAuth('{"openai-codex":{"type":"oauth","access":"   "}}\n');
+  expect(pf.ok).toBe(false);
+  expect(pf.problems.join(" ")).toContain("EMPTY credential");
+});
+
+test("#159: an expired token WITH a refresh token is not a preflight failure (pi renews it)", async () => {
+  const pf = await preflightWithAuth(
+    `{"openai-codex":{"type":"oauth","access":"a","refresh":"r","expires":1}}\n`,
+  );
+  expect(pf.problems.join(" ")).not.toContain("expired");
+  expect(pf.ok).toBe(true);
+});
+
+test("#159: an expired token with NO refresh token fails loudly", async () => {
+  const pf = await preflightWithAuth(`{"openai-codex":{"type":"oauth","access":"a","expires":1}}\n`);
+  expect(pf.ok).toBe(false);
+  expect(pf.problems.join(" ")).toContain("expired");
+});
+
+test("#159: an auth.json in an unrecognized shape falls back to the old substring check", async () => {
+  const pf = await preflightWithAuth("openai-codex = { access = 'a' }\n"); // not JSON
+  expect(pf.ok).toBe(true);
 });
 
 // ── issue #31: config & telemetry truthfulness. ──

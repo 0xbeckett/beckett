@@ -2874,6 +2874,24 @@ export class Dispatcher {
     }
   }
 
+  /**
+   * True when a finished worker did NO work — zero tool calls and zero tokens (#159). That is the
+   * signature of a harness that launched and was refused by its provider before turn one, and it
+   * is the one thing a real run (however short) never looks like. Best-effort: a driver whose
+   * telemetry throws is reported as having worked, so a telemetry fault can never manufacture a
+   * launch failure out of a genuine run.
+   */
+  private didNoWork(handle: TicketWorkerHandle): boolean {
+    if (typeof handle.telemetry !== "function") return false;
+    try {
+      const t = handle.telemetry();
+      const tokens = t.tokens.input + t.tokens.output + t.tokens.cacheRead + t.tokens.cacheCreate;
+      return t.toolCalls === 0 && tokens === 0;
+    } catch {
+      return false;
+    }
+  }
+
   /** Persist a stage's telemetry without allowing observability to affect dispatch. */
   private recordSpend(
     ticket: Ticket,
@@ -2887,8 +2905,14 @@ export class Dispatcher {
     try {
       const t = handle.telemetry();
       const signal = status === "success" ? parseDoneSignal(handle.result?.structured) : null;
+      // A run that spent no tokens and called no tool never worked — the harness launched and the
+      // provider (or the launch itself) refused it. Ledger it as `launch_failed`, NOT as a run of
+      // this cast: scoring a model on a turn it never got is how terra came to look like a bad
+      // implementer in #156 (#159). Only reachable on the error path — a "successful" run with
+      // zero tokens is already failed upstream by the driver's no-op backstop.
+      const tokens = t.tokens.input + t.tokens.cacheRead + t.tokens.cacheCreate + t.tokens.output;
       const outcome: SpendOutcome = forcedOutcome ?? (status !== "success"
-        ? "failed"
+        ? (t.toolCalls === 0 && tokens === 0 ? "launch_failed" : "failed")
         : stage === "review" && signal?.status !== "complete" ? "rework"
         : stage === "implement" && (signal?.status === "blocked" || signal?.status === "partial") ? "rework"
         : "done");
@@ -2908,6 +2932,8 @@ export class Dispatcher {
         outcome,
         reviewTier: this.reviewTierFor(ticket),
         ts: new Date().toISOString(),
+        ...(handle.result?.errorClass ? { errorClass: handle.result.errorClass } : {}),
+        ...(handle.sessionId ? { sessionId: handle.sessionId } : {}),
       });
     } catch (err) {
       // The ledger is telemetry only: permission/disk/driver issues never alter casting or routing.
@@ -3130,10 +3156,25 @@ export class Dispatcher {
     }
 
     const timedOut = handle.result?.timedOut === true;
+    // Name a no-op for what it is (#159). A run that spent no tokens and called no tool never
+    // attempted the ticket — the provider refused it at launch. Saying "crash or harness error"
+    // for that reads like the worker tried and broke, which is how these stayed invisible.
+    const noWork = timedOut ? false : this.didNoWork(handle);
     const reason = timedOut
       ? `hit the ${Math.round(hardCapSeconds(this.config) / 60)}-minute safety cap`
-      : `stopped without finishing (crash or harness error)`;
+      : noWork
+        ? `never started work — it made 0 tool calls and spent 0 tokens, so this is a LAUNCH ` +
+          `FAILURE on ${handle.harness}, not an attempt at the ticket`
+        : `stopped without finishing (crash or harness error)`;
     if (timedOut) this.trace(ticket, "implement:timeout", "failed", reason, "worker hard-cap timeout");
+    if (noWork) {
+      this.trace(ticket, "implement:launch", "failed", reason, "zero-work harness run");
+      this.logger.warn("implement run did no work — treating as a launch failure", {
+        ticket: ticket.identifier,
+        harness: handle.harness,
+        errorClass: handle.result?.errorClass ?? null,
+      });
+    }
 
     // 1. Safety-net commit so the WIP survives for the retry AND the human (the worker may have
     //    already committed; this captures anything still in the working tree).
@@ -3157,7 +3198,7 @@ export class Dispatcher {
     if (attempts <= this.caps.implementRetries) {
       await this.postComment(
         ticket.id,
-        `The worker ${reason} before finishing. I committed its work-in-progress${at} and am ` +
+        `The worker ${reason}${noWork ? "" : " before finishing"}. I committed its work-in-progress${at} and am ` +
           `retrying (attempt ${attempts}/${this.caps.implementRetries}), continuing from the committed ` +
           `work.\n\nWhere it stopped:\n${summary}`,
       );
@@ -3197,7 +3238,7 @@ export class Dispatcher {
     try {
       await this.parkForHuman(
         ticket,
-        `The worker ${reason} again — that's ${this.caps.implementRetries} retries with no clean finish, ` +
+        `The worker ${reason}${noWork ? " — again" : " again"}. That's ${this.caps.implementRetries} retries with no clean finish, ` +
           `so I'm stopping automatic retries and moving this back to **todo** for a human. Its WIP is committed${at}.` +
           `${link}\n\nWhere it stopped:\n${summary}`, 
       );
