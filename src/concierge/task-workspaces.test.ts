@@ -430,9 +430,10 @@ test("attach clicked in a plain channel creates a thread off the card's message,
   expect(threadCreateCalls).toEqual([{ channelId: "channel-1", messageId: "card-msg-1", name: "#1 - Ship export" }]);
   expect(result).toEqual({ authorized: true, message: expect.stringContaining("new-thread-1") });
   expect(workspaces.channelForTask("1")).toBe("new-thread-1");
-  // A live card was posted INSIDE the new thread, not just a text reply.
+  // A live card was posted INSIDE the new thread, not just a text reply. Task cards render as a
+  // Components V2 container now (`card`), not an embed — this assertion trailed that change.
   const cardPost = posts.find((p) => p.channelId === "new-thread-1");
-  expect(cardPost?.options?.embeds?.length).toBe(1);
+  expect(cardPost?.options?.card).toBeDefined();
   expect(tasks.getTask(1)?.card?.channelId).toBe("new-thread-1");
 });
 
