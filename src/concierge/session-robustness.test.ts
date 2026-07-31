@@ -10,7 +10,16 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Concierge, ConciergeSession } from "./index.ts";
+import {
+  Concierge,
+  ConciergeSession,
+  describeToolUse,
+  isLivenessEvent,
+  timedOutTurnLine,
+  HARD_TURN_TIMEOUT_MS,
+  TURN_ABSOLUTE_CEILING_MS,
+  TURN_SILENCE_MS,
+} from "./index.ts";
 import type { Config, IncomingMessage } from "../types.ts";
 import type { DiscordGateway } from "../discord/gateway.ts";
 
@@ -263,7 +272,7 @@ test("a soft timeout keeps the child alive and delivers its late real result", (
 
 // ── issue #139: the hard-deadline reaper + visible failure for dead turns ───────────────────
 
-/** The private surface the issue-#139 tests reach into. */
+/** The private surface the issue-#139 / #150 tests reach into. */
 interface ReaperGuts {
   child: unknown;
   initSeen: boolean;
@@ -272,12 +281,14 @@ interface ReaperGuts {
     parts: string[];
     timer: ReturnType<typeof setTimeout>;
     hardTimer?: ReturnType<typeof setTimeout>;
+    ceilingTimer?: ReturnType<typeof setTimeout>;
     timedOut: boolean;
     resolve: (output: unknown) => void;
     reject: (error: Error) => void;
   } | null;
   onTurnTimeout(timer: ReturnType<typeof setTimeout>): void;
   onHardTimeout(hardTimer: ReturnType<typeof setTimeout>): void;
+  onCeilingTimeout(ceilingTimer: ReturnType<typeof setTimeout>): void;
   handleLine(line: string, from: unknown): void;
 }
 
@@ -421,6 +432,160 @@ test("issue #139: the hard deadline reaps an ambient turn silently (pass, not a 
 
   expect(delivered).toEqual({ decision: "pass", message: null });
   expect(s.child).toBeNull();
+});
+
+// ── issue #150: the deadline measures SILENCE, not elapsed duration ─────────────────────────
+
+const assistantText = (text: string) =>
+  JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text }] } });
+const toolUse = (name: string, command?: string) =>
+  JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", name, input: command ? { command } : {} }] },
+  });
+const toolResult = () =>
+  JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } });
+
+/** A live turn wired the way driveTurn wires one (silence timer + absolute ceiling). */
+function armReaperTurn(s: ReaperGuts, onDeliver: (output: unknown) => void): { child: { kill(): void }; killed: () => boolean } {
+  let killed = false;
+  const child = { kill() { killed = true; } };
+  s.child = child;
+  s.currentMeta = directMention();
+  s.pending = {
+    parts: [],
+    timer: setTimeout(() => undefined, 600_000),
+    ceilingTimer: setTimeout(() => undefined, 600_000),
+    timedOut: false,
+    resolve: onDeliver,
+    reject: () => {},
+  };
+  return { child, killed: () => killed };
+}
+
+test("issue #150: a turn still emitting events past the old 6-minute wall clock survives — each event restarts the clock", () => {
+  const s = makeReaperSession();
+  let delivered: unknown;
+  const { child, killed } = armReaperTurn(s, (o) => { delivered = o; });
+
+  // Ten minutes of honest slow work (a typecheck, a test suite, a git fetch) is nothing but a
+  // stream of tool calls and their results. Under the old pure-wall-clock rule this turn was
+  // declared dead at six minutes while it was demonstrably working — the #150 incident.
+  let previous = s.pending!.timer;
+  for (const line of [
+    toolUse("Bash", "bunx tsc --noEmit"),
+    toolResult(),
+    toolUse("Bash", "bun test"),
+    toolResult(),
+    assistantText("still digging"),
+  ]) {
+    s.handleLine(line, child);
+    expect(s.pending!.timer).not.toBe(previous); // the silence clock was restarted, not accumulated
+    previous = s.pending!.timer;
+    expect(s.pending!.hardTimer).toBeUndefined(); // no reaper armed while the child is talking
+  }
+  expect(killed()).toBeFalse();
+  expect(s.pending).not.toBeNull();
+
+  // ...and the turn's real answer lands, unframed: it was never late, only long.
+  s.handleLine(JSON.stringify({ type: "result", structured_output: { decision: "send", message: "the real answer" } }), child);
+  expect(delivered).toEqual({ decision: "send", message: "the real answer" });
+  expect(s.pending).toBeNull();
+});
+
+test("issue #150: an event during the reap window disarms the reaper — the stale hard timer is inert", () => {
+  const s = makeReaperSession();
+  let delivered: unknown;
+  const { child, killed } = armReaperTurn(s, (o) => { delivered = o; });
+
+  s.onTurnTimeout(s.pending!.timer); // the child went quiet: soft fires, reaper armed
+  const staleHardTimer = s.pending!.hardTimer!;
+  expect(staleHardTimer).toBeDefined();
+
+  s.handleLine(toolResult(), child); // ...then the long `bun test` finishes and speaks up
+  expect(s.pending!.hardTimer).toBeUndefined();
+
+  s.onHardTimeout(staleHardTimer); // the disarmed reaper firing late must do nothing
+  expect(killed()).toBeFalse();
+  expect(s.child).toBe(child);
+  expect(s.pending).not.toBeNull();
+  expect(delivered).toBeUndefined();
+
+  // `timedOut` stays sticky: the person really did wait through that quiet stretch.
+  s.handleLine(JSON.stringify({ type: "result", structured_output: { decision: "send", message: "the real answer" } }), child);
+  expect(delivered).toEqual({ decision: "send", message: "Sorry, that took a while —\n\nthe real answer" });
+});
+
+test("issue #150 guards #139: a turn emitting NO events is still reaped and still posts an honest line", () => {
+  const s = makeReaperSession();
+  let delivered: unknown;
+  const { child, killed } = armReaperTurn(s, (o) => { delivered = o; });
+  const meta = s.currentMeta as { turnSucceeded: boolean };
+
+  // Nothing here is evidence of LIFE: init fires once at launch, and stream noise is not work.
+  // A wedged child would emit exactly this much and must still die on the old schedule.
+  const before = s.pending!.timer;
+  s.handleLine(JSON.stringify({ type: "system", subtype: "init" }), child);
+  s.handleLine(JSON.stringify({ type: "stream_event", event: { type: "ping" } }), child);
+  expect(s.pending!.timer).toBe(before); // clock never restarted
+
+  s.onTurnTimeout(before);
+  s.onHardTimeout(s.pending!.hardTimer!);
+
+  expect(killed()).toBeTrue(); // still reaped — no leaked process, no held gate slot
+  expect(s.child).toBeNull();
+  expect(s.pending).toBeNull();
+  expect(delivered).toEqual({ decision: "send", message: "that turn timed out before it finished." });
+  expect(meta.turnSucceeded).toBe(false); // re-ask still runs clean
+});
+
+test("issue #150: the absolute ceiling still reaps a runaway that never stops emitting events", () => {
+  const s = makeReaperSession();
+  let delivered: unknown;
+  const { child, killed } = armReaperTurn(s, (o) => { delivered = o; });
+
+  // A tool loop: liveness forever, so the silence clock alone would never fire.
+  for (let i = 0; i < 20; i++) {
+    s.handleLine(toolUse("Read", "cat same-file.ts"), child);
+    s.handleLine(toolResult(), child);
+  }
+  expect(s.pending!.hardTimer).toBeUndefined();
+
+  s.onCeilingTimeout(s.pending!.ceilingTimer!); // the backstop fires
+
+  expect(killed()).toBeTrue();
+  expect(s.child).toBeNull();
+  expect(s.pending).toBeNull();
+  expect(delivered).toEqual({
+    decision: "send",
+    message: "that turn timed out before it finished. last thing it was doing: Read (cat same-file.ts).",
+  });
+});
+
+test("issue #150: the ceiling sits well above the old 6-minute deadline, and silence still reaps on the old schedule", () => {
+  expect(TURN_SILENCE_MS + HARD_TURN_TIMEOUT_MS).toBe(360_000); // #139's wedged child: unchanged
+  expect(TURN_ABSOLUTE_CEILING_MS).toBeGreaterThan(4 * 360_000); // the runaway backstop: far above it
+});
+
+test("issue #150: only real work counts as evidence of life", () => {
+  expect(isLivenessEvent(JSON.parse(assistantText("thinking out loud")))).toBeTrue();
+  expect(isLivenessEvent(JSON.parse(toolUse("Bash", "bun test")))).toBeTrue();
+  expect(isLivenessEvent(JSON.parse(toolResult()))).toBeTrue();
+  expect(isLivenessEvent({ type: "system", subtype: "init" })).toBeFalse();
+  expect(isLivenessEvent({ type: "result" })).toBeFalse(); // settles the turn, never extends it
+  expect(isLivenessEvent({ type: "user", message: { content: "plain echo" } })).toBeFalse();
+  expect(isLivenessEvent({ type: "user", message: { content: [null, { type: "text", text: "hi" }] } })).toBeFalse();
+});
+
+test("issue #150: the timed-out line names the timeout, and the crumb never floods Discord", () => {
+  expect(timedOutTurnLine()).toBe("that turn timed out before it finished.");
+  expect(timedOutTurnLine("Bash (bun test)")).toContain("timed out");
+  expect(timedOutTurnLine("  ")).toBe("that turn timed out before it finished.");
+  expect(describeToolUse("Bash", { command: "bun test\nrm -rf /tmp/x" })).toBe("Bash (bun test)");
+  expect(describeToolUse("Read", { file_path: "/x" })).toBe("Read");
+  expect(describeToolUse(undefined, { command: "x" })).toBeUndefined();
+  const long = describeToolUse("Bash", { command: "x".repeat(500) })!;
+  expect(long.length).toBeLessThan(120);
 });
 
 test("reasoning before a pass decision is never promoted to Discord output", () => {
