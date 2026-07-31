@@ -190,11 +190,13 @@ export function renderTaskCard(snapshot: TaskCardSnapshot): DiscordCard {
   } else {
     for (const branch of shown) {
       const accessory = branchAccessory(branch);
-      blocks.push({
-        kind: "section",
-        text: `**${truncate(`#${branch.ref} · ${branch.title}`, 80)}**\n${branchLine(branch)}`,
-        ...(accessory ? { accessory } : {}),
-      });
+      const text = `**${truncate(`#${branch.ref} · ${branch.title}`, 80)}**\n${branchLine(branch)}`;
+      // A Components V2 section MUST carry an accessory — Discord rejects an accessory-less one
+      // outright (400 Invalid Form Body), failing the whole message. Most branches have no button
+      // to pin for most of their life (no artifact yet, nothing mergeable), so those render as a
+      // plain text block instead of an empty section. This keeps a section-without-accessory
+      // structurally unrepresentable through this path (#154).
+      blocks.push(accessory ? { kind: "section", text, accessory } : { kind: "text", text });
     }
   }
 

@@ -13,7 +13,7 @@
  * lifecycle change, so a bad gateway can never spin.
  */
 import { renderTaskCard } from "../discord/cards.ts";
-import { DiscordUnknownMessageError, type DiscordGateway } from "../discord/gateway.ts";
+import { DiscordMessageEditError, DiscordUnknownMessageError, type DiscordGateway } from "../discord/gateway.ts";
 import { log as rootLog } from "../log.ts";
 import type { Logger } from "../types.ts";
 import { taskCardSnapshot } from "./status.ts";
@@ -113,10 +113,23 @@ export class TaskCardService {
         // Deleted target is the ONE repost path; everything else (offline, rate limit, permission)
         // is skipped this tick and picked up on the next change, so retries never loop.
         if (!(error instanceof DiscordUnknownMessageError)) {
-          this.logger.warn("task card edit failed; will retry on next change", {
-            task: taskNumber,
-            error: String(error),
-          });
+          if (isPermanentFailure(error)) {
+            // A 4xx on the payload shape (e.g. 400 Invalid Form Body) never clears on retry: every
+            // subsequent render sends the same rejected card and fails identically, forever. Log it
+            // loud, with Discord's response body, so the next one takes minutes to find, not months.
+            this.logger.error("task card edit rejected by Discord; this payload will keep failing", {
+              task: taskNumber,
+              channelId: task.card.channelId,
+              messageId: task.card.messageId,
+              error: String(error),
+              response: discordResponseBody(error),
+            });
+          } else {
+            this.logger.warn("task card edit failed; will retry on next change", {
+              task: taskNumber,
+              error: String(error),
+            });
+          }
           return;
         }
         this.logger.warn("task card was deleted; posting replacement", {
@@ -142,11 +155,22 @@ export class TaskCardService {
     try {
       await this.postAt(task, channelId);
     } catch (error) {
-      this.logger.warn("task card post failed; will retry on next change", {
-        task: task.number,
-        channelId,
-        error: String(error),
-      });
+      if (isPermanentFailure(error)) {
+        // A permanent 4xx (bad payload, missing channel) fails identically on every future render;
+        // surface it loud with the response body rather than the misleading "will retry" warning.
+        this.logger.error("task card post rejected by Discord; this payload will keep failing", {
+          task: task.number,
+          channelId,
+          error: String(error),
+          response: discordResponseBody(error),
+        });
+      } else {
+        this.logger.warn("task card post failed; will retry on next change", {
+          task: task.number,
+          channelId,
+          error: String(error),
+        });
+      }
     }
   }
 
@@ -164,4 +188,36 @@ export class TaskCardService {
 
 export function createTaskCardService(opts: TaskCardServiceOptions): TaskCardService {
   return new TaskCardService(opts);
+}
+
+/**
+ * A rejection the identical render will hit forever — a payload-shape or authorization 4xx —
+ * rather than offline / 429 rate limit / 403 permission, which a later tick may clear. The edit
+ * path arrives already typed (a generic {@link DiscordMessageEditError} kind `failed` is the
+ * permanent bucket; permission/transient are their own kinds); the post path throws the raw REST
+ * error, so its HTTP status is read directly.
+ */
+function isPermanentFailure(error: unknown): boolean {
+  if (error instanceof DiscordMessageEditError) return error.kind === "failed";
+  const status = (error as { status?: unknown } | null | undefined)?.status;
+  const code = typeof status === "number" ? status : typeof status === "string" ? Number(status) : NaN;
+  return Number.isFinite(code) && code >= 400 && code < 500 && code !== 429 && code !== 403;
+}
+
+/**
+ * Discord's parsed JSON response behind a failure, for the error log. discord.js exposes it as
+ * `.rawError` (the body that names the rejection, e.g. `{ code: 50035, errors: {…} }`); the typed
+ * edit errors wrap that original REST error as `.cause`, so reach through both.
+ */
+function discordResponseBody(error: unknown): string {
+  const source = error instanceof DiscordMessageEditError ? error.cause : error;
+  const raw = (source as { rawError?: unknown } | null | undefined)?.rawError;
+  if (raw !== undefined) {
+    try {
+      return JSON.stringify(raw);
+    } catch {
+      return String(raw);
+    }
+  }
+  return String(source ?? error);
 }
