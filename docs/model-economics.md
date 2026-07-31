@@ -14,25 +14,21 @@ Five findings, in order of how much they should change what we do.
 
 1. **The pricing in the ticket went stale the day it was filed.** OpenAI cut Terra and Luna on
    **30 July 2026** — Terra $2.50/$15 → **$2/$12**, Luna $1/$6 → **$0.20/$1.20**. Luna is now
-   **5× cheaper on input than the ticket assumed** and **25× cheaper than Terra**. Any cost
-   model built on the old numbers understates the case for luna badly. [1][2][3]
+   **5× cheaper than the ticket assumed** and **10× cheaper than Terra** [1][2][3].
 2. **Terra — today's implement default — is provably off the efficient frontier.** Artificial
    Analysis: *"For any Terra effort level, there is a Luna or Sol effort level that is more
-   intelligent at no extra cost, or equally intelligent at lower cost."* Our default cast is the
-   one tier you can always beat on both axes. [4]
-3. **Our own ledger says the cheap seat already works** — where it runs at all. Median
-   **all-in cost per ticket**: pure-terra **$3.68**, pure-opus-4.8 **$9.38**, pure-fable **$18.52**
-   (n=38/75/20). Both terra and opus land 98% of tickets. But 31% of terra-started tickets get
-   rescued by a heavy model, which lifts terra's *expected* cost to ~$5.03 — still ~1.9× cheaper.
+   intelligent at no extra cost, or equally intelligent at lower cost"* [4].
+3. **Our ledger says the cheap seat already works** — where it runs at all. Median all-in per
+   ticket: pure-terra **$3.68**, pure-opus-4.8 **$9.38**, pure-fable **$18.52** (n=38/75/20).
+   Terra and opus both land 98%. 31% of terra tickets get rescued by a heavy model, lifting
+   terra's *expected* cost to ~$5.03 — still ~1.9× cheaper.
 4. **The real terra tax isn't quality, it's the harness.** **40% of pi/terra implement runs never
-   start** — zero tool calls, ~$0, no work done. Claude runs: 0%. Terra's headline 48% not-done
-   rate collapses to **14%** once you exclude those. We have been blaming the model for a
-   launcher problem.
-5. **The concierge seat is the single biggest standing cost in the system — bigger than any
-   worker.** Measured from 30 days of real transcripts: **~$70/day median, ~$2,090/month** on
-   Opus 5. That is *more than 20 days of all worker spend combined* ($2,574). Sonnet 5 at medium
-   would cut it to **~$1,254/mo list, ~$836/mo at intro pricing** — a 40–60% saving on the
-   largest line item we have.
+   start** — zero tool calls, ~$0, no work done. Claude: 0%. Terra's headline 48% not-done rate
+   collapses to **14%** once those are excluded. We've been blaming the model for a launcher bug.
+5. **The concierge seat is the biggest standing cost in the system — bigger than any worker.**
+   From 30 days of transcripts: **~$70/day median, ~$2,090/mo** on Opus 5 — *more than 20 days of
+   all worker spend combined* ($2,574). Sonnet 5 would cut it to **~$1,254/mo list, ~$836/mo
+   intro**.
 
 **The one-line answer to ro's question:** small-implement + heavy-review wins decisively on
 *mechanical and well-specified* work (~60% saving, real), and loses on *fuzzy, visual, or
@@ -64,17 +60,16 @@ more than the sticker price for us: **cache reads are 78% of concierge token vol
 
 The ticket quotes luna at ~$1/$6 and terra at ~$2.50/$15. Those were correct **at launch on
 9 July 2026** [2] and were cut on **30 July** — Terra by 20%, Luna by 80%, on the back of a
-reported 20% reduction in OpenAI's end-to-end serving cost [1][3]. Sol was not cut.
+reported 20% reduction in OpenAI's serving cost [1][3]. Sol was not cut.
 
-The consequence is not marginal. At launch, luna was half of terra. Today it is **one tenth on
-input and one tenth on output**. Any "is the cheap seat worth it" analysis done before today
-was working from numbers that understate luna's advantage by 5×.
+The consequence is not marginal: at launch luna was half of terra; today it is **one tenth**.
+Any "is the cheap seat worth it" analysis done before today understates luna's advantage by 5×.
 
 > **Caveat on our actual rates.** We drive `pi` through a ChatGPT-account tier, not the public
-> API, so list price is an upper bound on what we pay. Our ledger's implied blended all-in rate
-> for terra is **$0.67/Mtok** against a list-implied blend well above that — consistent with
-> heavy prompt-cache hits, and possibly with account-tier pricing. Treat the list table as the
-> *relative* ranking, and §3's ledger as our *absolute* cost.
+> API, so list price is an upper bound. Our ledger's implied blended all-in rate for terra is
+> **$0.67/Mtok**, well under the list-implied blend — consistent with heavy cache hits and
+> possibly account-tier pricing. Treat the list table as the *relative* ranking and §3 as our
+> *absolute* cost.
 
 ---
 
@@ -117,10 +112,10 @@ context budget, luna should be preferred to terra.**
 
 ## 3. Our data: real observed cost per ticket
 
-**Source.** `~/.beckett/spend.jsonl`, written by `Dispatcher.recordSpend`. It is the structured
-twin of the `_N turns · M tool calls · X tokens · ~$Y_` footer on worker comments — both read
-the same `handle.telemetry()` (`src/dispatch/dispatcher.ts:2890`), so the ledger *is* the footers,
-with the fields kept separate instead of formatted into prose.
+**Source.** `~/.beckett/spend.jsonl`, written by `Dispatcher.recordSpend` — the structured twin of
+the `_N turns · M tool calls · X tokens · ~$Y_` footer on worker comments. Both read the same
+`handle.telemetry()` (`src/dispatch/dispatcher.ts:2890`), so the ledger *is* the footers, with
+fields kept separate instead of formatted into prose.
 
 **Sample size, stated honestly:**
 
@@ -191,10 +186,9 @@ read as failures.
 | claude-sonnet-5 (all) | 18 | **0 (0%)** |
 | claude-fable-5 high | 26 | **0 (0%)** |
 
-**40–53% of pi/terra runs never start.** Zero tool calls, ~$0 billed, no work done — 28 of terra
-medium's 34 "failures" are these. Claude harness runs: **zero** no-ops in 276 runs.
-
-Excluding no-ops, the quality picture inverts:
+**40–53% of pi/terra runs never start** — zero tool calls, ~$0 billed, no work done; 28 of terra
+medium's 34 "failures" are these. Claude: **zero** no-ops in 276 runs. Excluding them, the
+quality picture inverts:
 
 | Implement cast | Substantive runs | Failed/rework | Median cost |
 |---|---:|---:|---:|
@@ -205,10 +199,10 @@ Excluding no-ops, the quality picture inverts:
 | claude-opus-5 high | 32 | 22% | $8.00 |
 | gpt-5.6-terra medium | 25 | 24% | $0.37 |
 
-**Terra at high has a *lower* substantive failure rate than opus-4.8 at high (14% vs 18%) at
-one quarter the cost.** Terra's bad reputation is a launcher-reliability problem wearing a
-model-quality costume. This is worth a ticket of its own — it is the cheapest available win in
-the whole system, and it is not a casting decision.
+**Terra at high has a *lower* substantive failure rate than opus-4.8 at high (14% vs 18%) at one
+quarter the cost.** Terra's bad reputation is a launcher-reliability problem wearing a
+model-quality costume. Worth a ticket of its own — the cheapest available win in the system,
+and not a casting decision.
 
 ### 3.4 The review gate
 
@@ -222,19 +216,18 @@ Review is **18.8% of all spend** ($482.65 of $2,574). 369 implement runs ran und
 | claude-fable-5 | 33 | 4 | 12.1% | $84.96 | $21.24 |
 
 Sonnet 5 costs **$1.44 median** per review and catches something 27.6% of the time. Opus 5 sends
-back 44% — but n=25, and opus-5 review is assigned to harder tickets, so that is at least partly
-ticket difficulty, not reviewer acuity. **Fable as a reviewer is poor value at $21 per catch:**
-it costs 1.7× sonnet per review and sends back less than half as often. If we are paying for
-fable, we should be paying for it to *implement*, not to review.
+back 44% — but n=25, and opus-5 review lands on harder tickets, so that is at least partly ticket
+difficulty, not reviewer acuity. **Fable as a reviewer is poor value at $21/catch:** 1.7× sonnet's
+price to send back less than half as often. Pay fable to *implement*, not to review.
 
-The naive gate delta (reviewed vs unreviewed tickets: +$4.31 terra, +$8.37 opus-4.8) **overstates
-the gate's cost**, because it includes the rework implement runs the gate triggered, and because
-unreviewed tickets are the easy ones by construction. The honest figure is the review run itself:
-**~$1.44 median, ~$1.65 on a terra ticket.**
+The naive gate delta (reviewed vs unreviewed: +$4.31 terra, +$8.37 opus-4.8) **overstates the
+gate's cost** — it includes the rework runs the gate triggered, and unreviewed tickets are the
+easy ones by construction. The honest figure is the review run itself: **~$1.44 median, ~$1.65
+on a terra ticket.**
 
-**Verdict: the fresh gate is cheap and it earns its keep.** ~$1.44 to catch a defect 28% of the
-time, against a median ticket cost of $3.68–$9.38, is not a close call. The gate is not where
-our money goes — the implement seat is.
+**Verdict: the fresh gate is cheap and earns its keep.** ~$1.44 to catch a defect 28% of the time
+against a $3.68–$9.38 median ticket is not a close call. The gate is not where our money goes —
+the implement seat is.
 
 ---
 
@@ -256,14 +249,13 @@ For scale: **the concierge seat costs more per month than every worker in the le
 20 days combined** ($2,574). ro is right that it is the priciest standing cost in the system.
 
 **The saving is real but smaller than the sticker suggests.** 78% of concierge tokens are cache
-reads, billed at 0.1×. The seat is dominated by *re-reading its own context*, not by generating.
-Output is only ~$15/day of the ~$70. So the saving tracks the input-side ratio (5:3, or 40%),
-not the headline model-tier gap.
+reads billed at 0.1× — the seat is dominated by *re-reading its own context*, not generating
+(output is only ~$15/day of the ~$70). So the saving tracks the input-side ratio (5:3, ~40%),
+not the headline tier gap.
 
-**The work is a genuine fit.** The concierge seat is conversation, tool dispatch, and judgment
-about where work goes — not deep implementation. Sonnet 5 scores 80.4 on Terminal-Bench and
-85.2 on SWE-bench Verified [7]; neither is the binding constraint on a seat that mostly reads
-a board, classifies a request, and files a ticket.
+**The work is a genuine fit.** The seat is conversation, tool dispatch, and judgment about where
+work goes — not deep implementation. Sonnet 5's 80.4 Terminal-Bench / 85.2 SWE-bench Verified [7]
+are not the binding constraint on a seat that reads a board, classifies a request, files a ticket.
 
 **What would regress — watch these specifically:**
 
@@ -300,15 +292,14 @@ not on the cost saving, because the cost saving is not in question and the routi
 | Substantive failure rate | 18% | 14% | favours terra |
 
 Adding a heavier reviewer to a terra ticket costs ~$1.44–$2.14 and still lands far under a heavy
-implement seat. **On well-specified backend work the pattern is straightforwardly correct**, and
-our ledger already demonstrates it at n=38 — this is not a hypothesis, it is current practice
-that nobody costed.
+implement seat. **On well-specified backend work the pattern is straightforwardly correct** — our
+ledger demonstrates it at n=38. Not a hypothesis; current practice nobody had costed.
 
-The published research agrees on the shape: the pattern practitioners converge on is *"a large
-reasoning model to plan and architect; a cheaper, fast model to execute the plan; and a different,
-independent model to review"* [10]. Note the first clause — **the plan comes from the expensive
-model.** The saving comes from cheapening *execution*, not judgment. We currently hand terra the
-ticket description and hope; the pattern says hand it a plan.
+Published research agrees on the shape: practitioners converge on *"a large reasoning model to
+plan and architect; a cheaper, fast model to execute the plan; and a different, independent model
+to review"* [10]. Note the first clause — **the plan comes from the expensive model.** The saving
+comes from cheapening *execution*, not judgment. We currently hand terra the ticket description
+and hope; the pattern says hand it a plan.
 
 ### Where it does NOT win — named failure modes
 
@@ -338,47 +329,43 @@ ticket description and hope; the pattern says hand it a plan.
 Four classes. Each names a concrete harness + model + effort and a verdict on the fresh gate.
 
 ### Class 1 — Trivial / mechanical
-*Copy tweaks, version bumps, config edits, renames, doc typos, single-file changes with an
-obvious diff.*
+*Copy tweaks, version bumps, config edits, renames, doc typos, obvious single-file diffs.*
 
 - **Cast:** `pi` / `gpt-5.6-terra` / **low**
-- **Fresh review:** **No.** `reviewTier: "self"`. A ~$1.44 review on a ~$0.37 implement run is
-  a 4× overhead to check a diff whose correctness is visible in the diff.
-- **Why not luna:** Should be luna on price ($0.20/$1.20 and Terminal-Bench 84.7). Blocked only
-  by our zero operational evidence — see the trial below.
+- **Fresh review: No** — `reviewTier: "self"`. A ~$1.44 review on a ~$0.37 run is 4× overhead to
+  check a diff whose correctness is visible in the diff.
+- **Why not luna:** should be luna on price ($0.20/$1.20, Terminal-Bench 84.7); blocked only by
+  zero operational evidence — see the trial below.
 
 ### Class 2 — Standard spec'd work *(the common case)*
-*Well-specified backend: APIs, parsers, data layers, business logic, test suites, migrations.
-There is a checkable definition of done.*
+*Well-specified backend: APIs, parsers, data layers, business logic, tests, migrations. "Done"
+is checkable.*
 
-- **Cast:** `pi` / `gpt-5.6-terra` / **high** — note **high, not medium.** Terra-high's
-  substantive failure rate is **14%** vs terra-medium's **24%**, for $1.12 vs $0.37. Paying
-  $0.75 more to halve the bounce rate is obviously correct when a bounce costs a full rerun.
-- **Fresh review:** **Yes** — `claude-sonnet-5`. ~$1.65 on a ~$5 ticket, catches 27.6%. This is
-  the best-evidenced cell in the table (n=38) and it already works.
-- **Expected all-in:** ~$5.03 including the escalation tax, vs ~$9.38 heavy. **~46% saving.**
+- **Cast:** `pi` / `gpt-5.6-terra` / **high** — note **high, not medium.** Terra-high fails 14%
+  vs terra-medium's 24%, for $1.12 vs $0.37. Paying $0.75 to halve the bounce rate is correct
+  when a bounce costs a full rerun.
+- **Fresh review: Yes** — `claude-sonnet-5`, ~$1.65 on a ~$5 ticket, catches 27.6%. Best-evidenced
+  cell here (n=38), and it already works.
+- **Expected all-in:** ~$5.03 incl. escalation tax vs ~$9.38 heavy. **~46% saving.**
 
 ### Class 3 — Judgment-heavy
-*Ambiguous specs, design decisions, refactors that touch many call sites, anything visual or
-frontend, anything where "what should this do" is the hard part.*
+*Ambiguous specs, design decisions, wide refactors, anything visual, anything where "what should
+this do" is the hard part.*
 
-- **Cast:** `claude` / `claude-opus-5` / **high** (visual work: add `reviewTier: "self"` — pi
-  has no eyes, and a reviewer who also can't see adds cost without adding signal).
-- **Fresh review:** **Only for non-visual work.** Judgment work bounces on taste, and a taste
-  bounce costs a full implement run at $8.00.
-- **Why not terra:** this is failure mode #2. The saving is real only when "done" is checkable,
-  and here it isn't.
+- **Cast:** `claude` / `claude-opus-5` / **high**; visual work adds `reviewTier: "self"`.
+- **Fresh review: only for non-visual work.** Judgment work bounces on taste, and a taste bounce
+  costs a full $8.00 implement run.
+- **Why not terra:** failure mode #2 — the saving is real only when "done" is checkable.
 
 ### Class 4 — Correctness-critical
-*Dispatcher, auth, money, data migrations, concurrency, anything where a subtle defect is
-expensive to discover later.*
+*Dispatcher, auth, money, migrations, concurrency — anywhere a subtle defect is expensive later.*
 
 - **Cast:** `claude` / `claude-fable-5` / **high** — confirm-before-cast on channel stays.
-- **Fresh review:** **Yes, but reviewer = `claude-opus-5`, not fable.** Opus-5 sends back 44%
-  at $5.48/catch; fable sends back 12.1% at $21.24/catch. Pay fable to *implement*, opus to
-  *review*. This is a concrete change from current practice.
+- **Fresh review: Yes, but reviewer = `claude-opus-5`, not fable.** Opus-5 sends back 44% at
+  $5.48/catch; fable 12.1% at $21.24/catch. Pay fable to *implement*, opus to *review*. This is
+  a concrete change from current practice.
 - **Justification:** fable is 0-for-26 on substantive failures and leads SWE-bench Pro by ~17
-  points. At $18.52/ticket it is expensive and it is worth it *here and only here*.
+  points. Expensive at $18.52/ticket, and worth it *here and only here*.
 
 ### Summary
 
@@ -392,11 +379,11 @@ expensive to discover later.*
 ### The luna trial (recommended, not a playbook change)
 
 Luna has **never been cast**, and at $0.20/$1.20 it is 10× cheaper than terra with Terminal-Bench
-within 2.7 points. The Pareto finding says it should displace terra wherever context allows [4].
-Proposal for #108.2: cast luna on **20 Class-1 tickets**, `reviewTier: "self"`, with a hard
-rule that anything reading >400K tokens goes to terra instead (the MRCR cliff). Compare
-no-op rate, substantive failure rate and cost per ticket against the terra baselines in §3.
-That is a ~$10 experiment against a five-figure annual line item.
+within 2.7 points; the Pareto finding says it should displace terra wherever context allows [4].
+Proposal for #108.2: cast luna on **20 Class-1 tickets**, `reviewTier: "self"`, with a hard rule
+that anything reading >400K tokens goes to terra instead (the MRCR cliff). Compare no-op rate,
+substantive failure rate and cost per ticket against §3's terra baselines. A ~$10 experiment
+against a five-figure annual line item.
 
 ---
 
