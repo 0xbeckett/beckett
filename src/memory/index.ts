@@ -86,6 +86,7 @@ import {
   type AgentRecallDeps,
   type AgentRecallSession,
 } from "./agent-recall.ts";
+import { isBridgedNode, listBridgeFiles, loadBridgedNodes, syncBridgeDirs } from "./bridge.ts";
 
 // =======================================================================================
 // Tunables (Spec 08 §3, §4.2 — start conservative; favor flagging over auto-merge)
@@ -221,6 +222,13 @@ export interface MemoryDeps {
   git?: boolean;
   /** Keep the parsed graph and Moss sync warm, invalidating only when the markdown tree changes. */
   warm?: boolean;
+  /**
+   * Harness auto-memory dirs (`~/.claude/projects/<slug>/memory`) cross-linked into the graph
+   * as READ-ONLY nodes, with the graph's public index published back (issue #160 — see
+   * `./bridge.ts` for the full authority split). Absent/empty ⇒ no bridging, byte-identical
+   * pre-bridge behavior.
+   */
+  bridgeDirs?: string[];
 }
 
 /** Build the {@link Memory} implementation. */
@@ -237,6 +245,8 @@ export class MemoryStore implements Memory {
   private readonly logger: Logger;
   private readonly git: boolean;
   private readonly warm: boolean;
+  /** Read-only harness auto-memory dirs folded into the graph (issue #160, ./bridge.ts). */
+  private readonly bridgeDirs: string[];
   /** Daemon-only cache: a cheap path/mtime/size stamp detects external edits without re-parsing or hashing nodes. */
   private warmGraph?: { graph: MemoryGraph; stamp: string };
   /** The graph whose documents have already been diff-synced to the warm Moss handle. */
@@ -253,6 +263,7 @@ export class MemoryStore implements Memory {
     this.logger = deps.logger ?? rootLog.child("memory");
     this.git = deps.git ?? true;
     this.warm = deps.warm ?? false;
+    this.bridgeDirs = deps.bridgeDirs ?? [];
   }
 
   // ── recall (Spec 08 §3; retrieval served by local Moss since issue #20) ────────────
@@ -426,7 +437,9 @@ export class MemoryStore implements Memory {
     g = this.buildGraph();
     for (const e of g.out.get(name) ?? []) {
       const target = g.nodes.get(e.to);
-      if (target && !target.phantom && target.name !== name) {
+      // A bridged (harness-origin) target is read-only: its cross-store backlink exists in
+      // the graph, never in the harness file (issue #160).
+      if (target && !target.phantom && !isBridgedNode(target) && target.name !== name) {
         this.refreshBacklinksOnDisk(target, g);
       }
     }
@@ -436,6 +449,7 @@ export class MemoryStore implements Memory {
     this.atomicWrite(join(this.dir, "MEMORY.md"), renderIndex(g));
     await this.commit(`memory: ${op} ${name}`);
     await this.syncMossQuietly(g);
+    this.syncBridge(g);
 
     const result = g.nodes.get(name);
     if (!result) throw new Error(`memory.remember: node '${name}' missing after write`);
@@ -519,6 +533,7 @@ export class MemoryStore implements Memory {
     this.atomicWrite(join(this.dir, "MEMORY.md"), renderIndex(g));
     await this.commit(`memory: dream ${input.name} (${input.reason})`);
     await this.syncMossQuietly(g);
+    this.syncBridge(g);
 
     const result = g.nodes.get(input.name);
     if (!result) throw new Error(`memory.rememberDream: node '${input.name}' missing after write`);
@@ -547,7 +562,11 @@ export class MemoryStore implements Memory {
     // rather than silently shrinking the number and hiding that the store is bigger than the graph.
     const files = this.listMarkdownFiles();
     const scanned = files.length;
-    const plan = planMaintenance(g, Date.now());
+    // Bridged (harness-origin) nodes are read-only imports (issue #160): the harness store
+    // owns their lifecycle, so no archive/merge/aging action may target one. A planned
+    // cross-store merge demotes to a flag — the report still surfaces "these look like the
+    // same fact across stores", but nothing ever writes under a harness root.
+    const plan = excludeBridgedFromPlan(planMaintenance(g, Date.now()), g);
     // A phantom is a link to a name with NO file. A name that DOES have a file on disk but
     // failed to parse (e.g. a truncated write) is a broken file, not a missing one — reporting
     // it as a phantom sends a re-`remember` down the wrong path and manufactures a false gap in
@@ -575,10 +594,11 @@ export class MemoryStore implements Memory {
     // Everything moved/rewritten — settle derived state: backlinks, index, moss, git.
     g = this.buildGraph();
     for (const n of g.nodes.values()) {
-      if (!n.phantom && n.path) this.refreshBacklinksOnDisk(n, g);
+      if (!n.phantom && n.path && !isBridgedNode(n)) this.refreshBacklinksOnDisk(n, g);
     }
     this.atomicWrite(join(this.dir, "MEMORY.md"), renderIndex(g));
     await this.syncMossQuietly(g); // archived/merged nodes leave the retrieval index too
+    this.syncBridge(g);
     await this.commit(
       `memory: maintenance (${plan.archives.length} archived, ${plan.merges.length} merged)`,
     );
@@ -602,7 +622,9 @@ export class MemoryStore implements Memory {
     const now = nowIso();
     for (const e of g.in.get(dup.name) ?? []) {
       const from = g.nodes.get(e.from);
-      if (!from || from.phantom || !from.path || from.name === dup.name) continue;
+      // Never rewrite a bridged (harness-origin) linker: its file is read-only to the graph;
+      // the stale link degrades to a phantom the maintenance report surfaces (issue #160).
+      if (!from || from.phantom || !from.path || from.name === dup.name || isBridgedNode(from)) continue;
       this.rewriteWikilinks(from.path, dup.name, canonical.name);
     }
 
@@ -670,7 +692,19 @@ export class MemoryStore implements Memory {
   async reindex(): Promise<void> {
     this.warmGraph = undefined;
     this.mossSyncedGraph = undefined;
-    await this.syncMossQuietly(this.buildGraph());
+    const g = this.buildGraph();
+    await this.syncMossQuietly(g);
+    this.syncBridge(g);
+  }
+
+  /**
+   * Direction graph → harness of the cross-store bridge (issue #160): publish this store's
+   * public index into each configured harness auto-memory dir (`beckett-graph-index.md` plus
+   * a one-line `MEMORY.md` pointer). Best-effort by contract — a bridge failure logs and
+   * never fails the write that triggered it.
+   */
+  private syncBridge(g: MemoryGraph): void {
+    if (this.bridgeDirs.length) syncBridgeDirs(g, this.bridgeDirs, this.logger);
   }
 
   // ── graph build (Spec 08 §2.3) ──────────────────────────────────────────────────────
@@ -688,9 +722,10 @@ export class MemoryStore implements Memory {
     return graph;
   }
 
-  /** A metadata-only change detector. Content is parsed and hashed only after a real tree change. */
+  /** A metadata-only change detector. Content is parsed and hashed only after a real tree change.
+   *  Bridged harness files stamp too, so an out-of-band harness edit reaches the next recall. */
   private graphStamp(): string {
-    return this.listMarkdownFiles()
+    return [...this.listMarkdownFiles(), ...listBridgeFiles(this.bridgeDirs)]
       .sort()
       .map((path) => {
         try {
@@ -746,10 +781,33 @@ export class MemoryStore implements Memory {
       nodes.set(node.name, node);
     }
 
+    // 1b. Cross-store bridge (issue #160): fold the harness auto-memory in as READ-ONLY
+    //     nodes. Natives were seated first, and a bridged node NEVER displaces one — on a
+    //     name collision the graph's own node wins whatever the mtimes say, because the graph
+    //     store is authoritative under its own root (the harness fact stays reachable in its
+    //     own store). Every write path checks `isBridgedNode` before touching a file, so no
+    //     remember/maintain/backlink pass can ever write under a harness root.
+    const bridged = this.bridgeDirs.length ? loadBridgedNodes(this.bridgeDirs, this.logger) : [];
+    const keptBridged: typeof bridged = [];
+    for (const b of bridged) {
+      if (nodes.has(b.node.name)) continue;
+      nodes.set(b.node.name, b.node);
+      keptBridged.push(b);
+    }
+
     // 2. Wire edges, minting phantom nodes for unresolved forward-refs (Spec 08 §2.5).
     for (const { node, edges } of parsed) {
       // Only the surviving (kept) node's edges count, to avoid double-wiring a duplicate.
       if (nodes.get(node.name)?.path !== node.path) continue;
+      for (const e of edges) {
+        if (!nodes.has(e.to)) nodes.set(e.to, phantomNode(e.to));
+        pushEdge(out, e.from, e);
+        pushEdge(inE, e.to, e);
+      }
+    }
+    // 2b. Bridged edges wire the same way — this is what resolves the graph's cross-store
+    //     [[wikilinks]] (and vice versa) into real edges instead of phantom noise.
+    for (const { edges } of keptBridged) {
       for (const e of edges) {
         if (!nodes.has(e.to)) nodes.set(e.to, phantomNode(e.to));
         pushEdge(out, e.from, e);
@@ -1077,16 +1135,20 @@ interface NodeContent {
   body: string;
 }
 
-/** Find a node that already covers this fact, to coerce create→update (Spec 08 §4.2). */
+/** Find a node that already covers this fact, to coerce create→update (Spec 08 §4.2).
+ *  Bridged (harness-origin) nodes are excluded from every arm: a remember can never merge
+ *  into — and thereby write — a read-only harness file (issue #160). A save that reuses a
+ *  bridged node's name creates a NATIVE node, which then shadows the bridged one in the
+ *  graph (native wins the name), while the harness file stays untouched. */
 function findExisting(intent: RememberIntent, g: MemoryGraph): MemoryNode | null {
   // 1. Exact (non-phantom) name hit.
   const byName = g.nodes.get(intent.name);
-  if (byName && !byName.phantom) return byName;
+  if (byName && !byName.phantom && !isBridgedNode(byName)) return byName;
 
   // 2. Alias hit (slug-compared).
   const target = slug(intent.name);
   for (const n of g.nodes.values()) {
-    if (n.phantom) continue;
+    if (n.phantom || isBridgedNode(n)) continue;
     if (asStringArray(n.metadata.aliases).map(slug).includes(target)) return n;
   }
 
@@ -1105,7 +1167,7 @@ function findExisting(intent: RememberIntent, g: MemoryGraph): MemoryNode | null
   const intended = provenanceOf({ metadata: intent.metadata ?? {} });
   let best: { node: MemoryNode; sim: number } | null = null;
   for (const n of g.nodes.values()) {
-    if (n.phantom) continue;
+    if (n.phantom || isBridgedNode(n)) continue;
     if (intent.type && n.type !== intent.type) continue;
     const p = provenanceOf(n);
     if (p.visibility !== intended.visibility || p.dmWith !== intended.dmWith) continue;
@@ -1343,9 +1405,12 @@ function buildIndex(nodes: Map<string, MemoryNode>): IndexLine[] {
  *  §9.1). Scoped facts are reachable only through `recall` with a proper audience. */
 export function renderIndex(g: MemoryGraph): string {
   // Fail closed like recall: a line whose node is missing (or unparseable) is omitted too.
+  // Bridged (harness-origin) nodes are excluded outright — this file materializes THIS store;
+  // the harness store keeps its own index, and the bridge publishes the reverse direction
+  // into it (issue #160, ./bridge.ts).
   const lines = g.index.filter((line) => {
     const node = g.nodes.get(line.name);
-    return node ? provenanceOf(node).visibility === "public" : false;
+    return node ? !isBridgedNode(node) && provenanceOf(node).visibility === "public" : false;
   });
   let out = "# Beckett Memory Index\n";
   out += `<!-- GENERATED. Do not edit. Regenerated on every memory write. last: ${nowIso()}, ${lines.length} public nodes (scoped nodes are omitted — recall with an audience) -->\n`;
