@@ -10,7 +10,7 @@
  * flips a decision fails the eval.
  *
  * It is deliberately thin and honest about what it exercises. The full production pipeline routes a
- * turn through `Concierge.onMessage` → a live Opus `claude` subprocess that emits `send`/`pass`
+ * turn through `Concierge.onMessage` → a live `claude` subprocess that emits `send`/`pass`
  * (`src/concierge/output.ts`) and enacts work via Bash tool calls. We do NOT spawn that subprocess.
  * Instead we assemble the SAME governing text the pipeline puts in its system prompt — the rendered
  * doctrine and the seeded persona, via the pipeline's own {@link renderDoctrine} and

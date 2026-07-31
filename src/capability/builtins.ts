@@ -491,7 +491,7 @@ export const configFragments = {
     })
     .strict()
     .default({}),
-  // v3 — the Concierge (long-lived `claude -p` Opus agent that owns Discord, files tickets).
+  // v3 — the Concierge (long-lived `claude -p` chat agent that owns Discord, files tickets).
   concierge: z
     .object({
       model: z.string().min(1).default("claude-sonnet-5"),

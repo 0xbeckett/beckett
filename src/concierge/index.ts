@@ -1,7 +1,7 @@
 /**
  * Beckett v3 — the Concierge (`src/concierge/index.ts`)
  * =======================================================================================
- * The long-lived `claude -p` Opus agent that OWNS Discord (v3 §0/§8). It chats in Beckett's
+ * The long-lived `claude -p` chat agent that OWNS Discord (v3 §0/§8). It chats in Beckett's
  * voice, sizes effort, and for real work files a ticket into the tracker by shelling
  * `beckett ticket ...` from its own Bash tool. It NEVER spawns workers — that is the
  * dispatcher's job. Work state lives in the tracker; chat context stays clean.

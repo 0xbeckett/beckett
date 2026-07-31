@@ -11,7 +11,7 @@
  *      hands each batch of {@link PollEvent}s to the dispatcher.
  *   4. Dispatcher — the state machine: spawns implement/review workers, steers them from
  *      ticket comments, aborts on cancel, advances ticket state on finish.
- *   5. Concierge — the long-lived `claude -p` Opus agent that owns Discord and files tickets.
+ *   5. Concierge — the long-lived `claude -p` chat agent that owns Discord and files tickets.
  *
  * The Concierge and the poll→dispatch loop are independent: the Concierge writes tickets into
  * the tracker, the poller observes them, the dispatcher acts. They never call each other
