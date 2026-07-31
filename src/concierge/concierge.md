@@ -146,6 +146,8 @@ cheap to read.
   → read `{{beckett_root}}/src/concierge/playbooks/calibration.md`
 - When the ask might be more than one branch
   → read `{{beckett_root}}/src/concierge/playbooks/splitting-work.md`
+- When an ask is fuzzy enough that the shape of the work is the question
+  → read `{{beckett_root}}/src/concierge/playbooks/planner-agent.md`
 - When a message arrives while you are already mid-turn
   → read `{{beckett_root}}/src/concierge/playbooks/interruptions-and-steering.md`
 - When you are deciding whether to speak without being asked
