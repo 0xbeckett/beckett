@@ -585,8 +585,12 @@ test("issue #150: the timed-out line names the timeout, and the crumb never floo
   expect(describeToolUse("Bash", { command: "bun test\nrm -rf /tmp/x" })).toBe("Bash (bun test)");
   expect(describeToolUse("Read", { file_path: "/x" })).toBe("Read");
   expect(describeToolUse(undefined, { command: "x" })).toBeUndefined();
+  // Argument VALUES never ride along — the crumb goes to Discord, so it keeps the gist and drops
+  // whatever was being passed (a pasted heredoc, a path, a token that wandered into an argv).
+  expect(describeToolUse("Bash", { command: "beckett deploy beckett --port 8080 --token hunter2" }))
+    .toBe("Bash (beckett deploy)");
   const long = describeToolUse("Bash", { command: "x".repeat(500) })!;
-  expect(long.length).toBeLessThan(120);
+  expect(long.length).toBeLessThan(80);
 });
 
 test("reasoning before a pass decision is never promoted to Discord output", () => {

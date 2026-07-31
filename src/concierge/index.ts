@@ -570,15 +570,20 @@ export function timedOutTurnLine(lastActivity?: string): string {
 
 /**
  * Render a `tool_use` block as the short "what it was doing" crumb for {@link timedOutTurnLine}.
- * One line, hard-capped: this reaches Discord, so a pasted heredoc or a 4k-char patch must not.
+ *
+ * The tool name plus the command's first TWO tokens, and nothing more. That is deliberate on both
+ * sides: "bun test" / "git fetch" / "beckett deploy" is the whole useful signal, while argument
+ * VALUES are dropped rather than trusted — this string reaches a Discord channel, and a crumb is
+ * not worth a pasted heredoc, a 4k-char patch, or a token that wandered into an argv. Capped again
+ * on top of that, because a single token can still be arbitrarily long.
  */
 export function describeToolUse(name: unknown, input: unknown): string | undefined {
   const tool = typeof name === "string" && name.trim() ? name.trim() : undefined;
   if (!tool) return undefined;
   const raw = (input as Record<string, unknown> | undefined)?.command;
-  const command = typeof raw === "string" ? raw.trim().split("\n")[0]?.trim() : undefined;
-  if (!command) return tool;
-  return `${tool} (${truncateForLog(command, 60)})`;
+  const firstLine = typeof raw === "string" ? raw.trim().split("\n")[0]!.trim() : "";
+  const gist = firstLine.split(/\s+/).filter(Boolean).slice(0, 2).join(" ");
+  return gist ? `${tool} (${truncateForLog(gist, 40)})` : tool;
 }
 
 /**
