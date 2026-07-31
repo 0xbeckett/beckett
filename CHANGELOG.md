@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.18.0 (2026-07-30)
+
 ### The turn deadline measures silence, not elapsed time (#150)
 
 The v6.16.1 reaper (#139) timed a turn from its start, so a concierge turn running a typecheck, a
