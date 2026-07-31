@@ -403,8 +403,12 @@ const HANDOFF_TIMEOUT_MS = 45_000;
  * Kept at the historic 240s so a genuinely wedged child (the #139 case: no events whatsoever) is
  * still declared dead on exactly the old schedule. {@link TURN_ABSOLUTE_CEILING_MS} is the backstop
  * for the one case silence cannot catch: a runaway that keeps emitting events forever.
+ *
+ * TUNING SURFACE — the whole turn deadline is these three constants and nothing else: this silence
+ * window, {@link HARD_TURN_TIMEOUT_MS} (the reap grace once silence is declared), and
+ * {@link TURN_ABSOLUTE_CEILING_MS}. Exported so a test can pin them; changed here, in one place.
  */
-const TURN_SILENCE_MS = 240_000;
+export const TURN_SILENCE_MS = 240_000;
 /**
  * Cap on mid-flow messages handed to ONE live turn (see
  * {@link ConciergeSession.injectIntoLiveTurn}). A bound, not a policy: past it the caller queues
@@ -522,7 +526,7 @@ const LATE_TURN_FRAME = "Sorry, that took a while —";
  * minutes past soft, not thirty — so a genuinely stuck turn is reaped promptly while a real answer
  * that lands within the ordinary late window is still delivered.
  */
-const HARD_TURN_TIMEOUT_MS = 120_000;
+export const HARD_TURN_TIMEOUT_MS = 120_000;
 
 /**
  * The ABSOLUTE ceiling (issue #150), measured from turn start and NEVER reset by liveness. The
@@ -536,7 +540,7 @@ const HARD_TURN_TIMEOUT_MS = 120_000;
  * bounding a leak to one recycle cycle, and a turn that trips it was pathological, not merely slow.
  * A ceiling reap posts the same honest {@link TURN_TIMED_OUT_LINE} as a silence reap.
  */
-const TURN_ABSOLUTE_CEILING_MS = 30 * 60_000;
+export const TURN_ABSOLUTE_CEILING_MS = 30 * 60_000;
 
 /**
  * The single honest line a turn that claimed a DIRECT @mention/DM posts when it dies instead of
@@ -1608,64 +1612,125 @@ export class ConciergeSession {
   }
 
   /**
-   * The normal deadline is deliberately soft: stream-json has no safe way to cancel one turn
-   * while retaining the same child for the next one. Keep its pending boundary and stdout reader
-   * alive so the model's completed answer, rather than filler, is what reaches the person.
+   * EVIDENCE OF LIFE (issue #150) — restart the silence clock for the live turn.
+   *
+   * The child streams an event on every step it takes, so a turn that is genuinely working can
+   * never accumulate its way to a deadline: each assistant message, tool call and tool result buys
+   * a fresh {@link TURN_SILENCE_MS}. If the reaper was already armed (the turn went quiet, then came
+   * back — a long `bun test` finishing is exactly this shape), it is DISARMED here: a child that
+   * just spoke is not dead, whatever it was doing a moment ago.
+   *
+   * `timedOut` is deliberately NOT cleared. The person really did wait through that quiet stretch,
+   * so the eventual answer still carries {@link LATE_TURN_FRAME}. And the absolute ceiling is
+   * untouched — liveness must not be able to extend a runaway forever.
+   */
+  private noteTurnLiveness(): void {
+    const p = this.pending;
+    if (!p) return;
+    clearTimeout(p.timer);
+    if (p.hardTimer) {
+      clearTimeout(p.hardTimer);
+      p.hardTimer = undefined;
+    }
+    const timer = setTimeout(() => this.onTurnTimeout(timer), TURN_SILENCE_MS);
+    p.timer = timer;
+  }
+
+  /**
+   * The child has been SILENT for {@link TURN_SILENCE_MS} — no assistant text, no tool call, no
+   * tool result. That is not the same as dead, so the deadline stays soft: stream-json has no safe
+   * way to cancel one turn while retaining the same child for the next one, so keeping the pending
+   * boundary and stdout reader alive is how the model's completed answer, rather than filler,
+   * reaches the person.
    *
    * The softness is not a licence to wait forever, though — so this arms a SECOND, HARD deadline
-   * ({@link HARD_TURN_TIMEOUT_MS}) on top of it. If the child still produces no `result` past that,
-   * {@link onHardTimeout} reaps the turn instead of leaking it.
+   * ({@link HARD_TURN_TIMEOUT_MS}) on top of it. If the child stays silent past that,
+   * {@link onHardTimeout} reaps the turn instead of leaking it; if it wakes up first,
+   * {@link noteTurnLiveness} disarms the reaper.
    */
   private onTurnTimeout(timer: ReturnType<typeof setTimeout>): void {
     if (!this.pending || this.pending.timer !== timer) return;
     this.pending.timedOut = true;
     this.log.warn("concierge turn exceeded soft timeout; awaiting late result", {
       sessionId: this.sessionId,
+      silenceMs: TURN_SILENCE_MS,
     });
     const hardTimer = setTimeout(() => this.onHardTimeout(hardTimer), HARD_TURN_TIMEOUT_MS);
     this.pending.hardTimer = hardTimer;
   }
 
   /**
-   * The HARD deadline fired: the soft window already elapsed and STILL no `result` arrived, so this
-   * turn is dead, not merely late. Reap it — kill the child (its slot is otherwise held forever),
-   * settle the pending turn, and let the next ask() relaunch (`--resume`, or a fresh seeded session
-   * if the transcript is gone). A mention/DM that dies here posts one honest line rather than
-   * vanishing; an ambient/un-addressed turn stays silent (see {@link failureReply}).
+   * The HARD deadline fired: the child has now been silent for the whole window and still produced
+   * no `result`, so this turn is dead, not merely slow (issue #139's wedged generation, an upstream
+   * 529 storm that never clears). Reap it.
    */
   private onHardTimeout(hardTimer: ReturnType<typeof setTimeout>): void {
     if (!this.pending || this.pending.hardTimer !== hardTimer) return;
+    this.reapTurn("hard deadline reaper", {
+      silenceMs: TURN_SILENCE_MS,
+      hardTimeoutMs: HARD_TURN_TIMEOUT_MS,
+    });
+  }
+
+  /**
+   * The ABSOLUTE ceiling fired (issue #150). The child may well still be emitting events — that is
+   * precisely the case the silence clock cannot catch — but a turn running this long has stopped
+   * being slow work and become a runaway. Reap it on the same path as a silent one.
+   */
+  private onCeilingTimeout(ceilingTimer: ReturnType<typeof setTimeout>): void {
+    if (!this.pending || this.pending.ceilingTimer !== ceilingTimer) return;
+    this.reapTurn("absolute ceiling reaper", {
+      ceilingMs: TURN_ABSOLUTE_CEILING_MS,
+      elapsedMs: Date.now() - this.turnStartedAt,
+    });
+  }
+
+  /**
+   * Declare the live turn dead and settle it: kill the child (its gate slot is otherwise held
+   * forever), settle the pending turn, and let the next ask() relaunch (`--resume`, or a fresh
+   * seeded session if the transcript is gone). A mention/DM that dies here posts one honest
+   * timed-out line rather than vanishing; an ambient/un-addressed turn stays silent (see
+   * {@link failureReply}).
+   */
+  private reapTurn(reason: string, fields: Record<string, unknown>): void {
     const p = this.pending;
+    if (!p) return;
     this.log.warn("concierge turn exceeded hard deadline; reaping dead turn", {
       sessionId: this.sessionId,
-      softTimeoutMs: TURN_TIMEOUT_MS,
-      hardTimeoutMs: HARD_TURN_TIMEOUT_MS,
+      reason,
+      lastActivity: this.liveTurnLastActivity ?? "<none>",
+      ...fields,
     });
     this.clearPendingTimers(p);
     this.pending = null;
-    const reply = this.failureReply();
+    const reply = this.failureReply(timedOutTurnLine(this.liveTurnLastActivity));
     // Free the slot: null this.child then SIGTERM, so the ensuing onExit is a superseded-child exit
     // (no relaunch, no crash count) and the NEXT ask() relaunches cleanly. Mirrors cancelLiveTurn.
-    this.recycleChild("hard deadline reaper");
+    this.recycleChild(reason);
     p.resolve(reply);
   }
 
-  /** Clear a settling turn's soft timer and (if the soft deadline had armed it) its hard timer. */
+  /** Clear every timer a settling turn may have armed (silence, reaper, absolute ceiling). */
   private clearPendingTimers(p: PendingTurn): void {
     clearTimeout(p.timer);
     if (p.hardTimer) clearTimeout(p.hardTimer);
+    if (p.ceilingTimer) clearTimeout(p.ceilingTimer);
   }
 
   /**
    * How a FAILED turn settles (issue #139). A turn that claimed a direct @mention or DM must never
-   * end in silence — it posts one honest {@link TURN_DIED_LINE}. `turnSucceeded` is deliberately
-   * left false, so the origin question stays unseen and a re-ask runs clean. Ambient/un-addressed
-   * turns (same {@link MentionClaim} shape, but `ambient: true`) keep passing silently: a failed
-   * ambient interjection is correctly invisible, and must not become new channel noise.
+   * end in silence — it posts one honest line. `turnSucceeded` is deliberately left false, so the
+   * origin question stays unseen and a re-ask runs clean. Ambient/un-addressed turns (same
+   * {@link MentionClaim} shape, but `ambient: true`) keep passing silently: a failed ambient
+   * interjection is correctly invisible, and must not become new channel noise.
+   *
+   * `line` names the actual failure: {@link TURN_DIED_LINE} for a turn that died outright (bad
+   * schema, retries exhausted — "ask again" is the right advice there), {@link timedOutTurnLine}
+   * for one a deadline reaped, where it is not (issue #150).
    */
-  private failureReply(): DiscordTurnOutput {
+  private failureReply(line: string = TURN_DIED_LINE): DiscordTurnOutput {
     return isDirectMentionClaim(this.currentMeta)
-      ? { decision: "send", message: TURN_DIED_LINE }
+      ? { decision: "send", message: line }
       : { decision: "pass", message: null };
   }
 

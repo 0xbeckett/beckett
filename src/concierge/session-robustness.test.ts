@@ -315,7 +315,9 @@ test("issue #139: the hard deadline reaps a resultless turn — child killed, pe
   expect(killed).toBeTrue(); // child reaped, no leaked process
   expect(s.child).toBeNull(); // slot freed → the next ask() relaunches (fresh session)
   expect(s.pending).toBeNull(); // pending settled
-  expect(delivered).toEqual({ decision: "send", message: "that turn died on me, ask again." });
+  // The line names the TIMEOUT (issue #150) — "ask again" alone would send the person straight
+  // back into the same deadline. It is still audible, which is what #139 bought.
+  expect(delivered).toEqual({ decision: "send", message: "that turn timed out before it finished." });
 });
 
 test("issue #139: the hard deadline does NOT reap when a late real result arrives in time", () => {
