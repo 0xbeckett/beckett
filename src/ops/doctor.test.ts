@@ -3,9 +3,19 @@
  * outages that motivated it - Pi running under an unsupported Node, a stale Pi version, a leaked worker
  * process on a done ticket, and missing env keys — plus report healthy when everything is.
  */
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { join } from "node:path";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { defaultConfig } from "../config.ts";
-import { runDoctor, parseEnvInventory, daemonPath, type DoctorDeps, type DoctorCheck } from "./doctor.ts";
+import {
+  runDoctor,
+  parseEnvInventory,
+  daemonPath,
+  realProbeVersion,
+  VERSION_PROBE_TIMEOUT_MS,
+  type DoctorDeps,
+  type DoctorCheck,
+} from "./doctor.ts";
 
 const HOME = "/home/beckett";
 
@@ -22,7 +32,7 @@ function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     bwrap: "bubblewrap 0.11.0",
     prlimit: "prlimit from util-linux 2.40",
   };
-  return {
+  const base: DoctorDeps = {
     config: defaultConfig(),
     home: HOME,
     platform: "linux",
@@ -60,8 +70,21 @@ function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     busStatus: async () => ({ version: "3.5.0", uptimeSecs: 42 }),
     diskFreeKb: async () => 50 * 1024 * 1024, // 50 GB
     browserProbe: async () => ({ executable: "/home/beckett/.cache/ms-playwright/chromium/chrome", launchable: true }),
-    ...overrides,
   };
+  const merged: DoctorDeps = { ...base, ...overrides };
+  // Binary outcomes are staged through `exec` throughout this file. Version probing has its own
+  // dep since issue #149 (it resolves on output, not on exit), so unless a test drives the probe
+  // directly, keep honouring whatever `exec` the test supplied.
+  if (!merged.probeVersion) {
+    merged.probeVersion = async (bin, opts) => {
+      const r = await merged.exec!([bin, "--version"], opts);
+      const version = r.stdout.trim().split("\n")[0] || r.stderr.trim().split("\n")[0] || "";
+      return r.code === 0
+        ? { outcome: "ok", version, lingered: false }
+        : { outcome: "absent", version: "", lingered: false };
+    };
+  }
+  return merged;
 }
 
 function byName(checks: DoctorCheck[], name: string): DoctorCheck {
@@ -378,6 +401,134 @@ describe("doctor — the issue-#30 regression checklist", () => {
     );
     expect(byName(report.checks, "token: alert webhook").level).toBe("warn");
     expect(byName(report.checks, "daemon: control.sock").level).toBe("fail");
+    expect(report.ok).toBeFalse();
+  });
+});
+
+/**
+ * Issue #149: the probe used to wait on the child's EXIT, so a harness CLI that prints its version
+ * and then never drains its event loop was reported as "not runnable on the daemon PATH" — the same
+ * message as a missing binary — after burning the full 15s timeout. These drive the real probe
+ * against real processes; a fake would not prove the streaming or the reaping.
+ */
+describe("realProbeVersion — a binary that never exits", () => {
+  const fixtures = join(import.meta.dir, "../../.tmp/doctor-probe-fixtures");
+  /** Write an executable `#!/bin/sh` shim and hand back its absolute path. */
+  function shim(name: string, body: string): string {
+    const path = join(fixtures, name);
+    writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  beforeAll(() => mkdirSync(fixtures, { recursive: true }));
+  afterAll(() => rmSync(fixtures, { recursive: true, force: true }));
+
+  test("a binary that prints and exits reports ok with its version", async () => {
+    const r = await realProbeVersion(shim("fast", "echo 1.2.3"), { timeoutMs: 5_000 });
+    expect(r).toEqual({ outcome: "ok", version: "1.2.3", lingered: false });
+  });
+
+  test("a binary that prints a version and then hangs is ok, not a failure", async () => {
+    // `exec sleep` keeps the shim's own pid, so the pid we record is the one the probe must kill.
+    const pidFile = join(fixtures, "hung.pid");
+    const bin = shim("prints-then-hangs", `echo $$ > ${pidFile}\necho 9.9.9\nexec sleep 600`);
+
+    const started = Date.now();
+    const r = await realProbeVersion(bin, { timeoutMs: 10_000 });
+    const elapsed = Date.now() - started;
+
+    expect(r.outcome).toBe("ok");
+    expect(r.version).toBe("9.9.9");
+    expect(r.lingered).toBeTrue();
+    // The whole point: it settled on the output line, nowhere near the timeout it was given.
+    expect(elapsed).toBeLessThan(5_000);
+
+    // ...and left nothing behind.
+    const pid = Number(readFileSync(pidFile, "utf-8").trim());
+    expect(pid).toBeGreaterThan(0);
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
+  test("a binary that prints nothing before the deadline reports a timeout, not absence", async () => {
+    const r = await realProbeVersion(shim("silent-hang", "exec sleep 600"), { timeoutMs: 300 });
+    expect(r).toEqual({ outcome: "timeout", version: "", lingered: true });
+  });
+
+  test("a binary that is not on the PATH reports absent", async () => {
+    const r = await realProbeVersion(join(fixtures, "no-such-binary"), { timeoutMs: 5_000 });
+    expect(r).toEqual({ outcome: "absent", version: "", lingered: false });
+  });
+
+  test("a binary that prints to stderr and exits non-zero reports absent", async () => {
+    // The exit-code grace is what stops "Unknown option: --version" from being read as a version.
+    const r = await realProbeVersion(shim("broken", "echo 'Unknown option: --version' >&2\nexit 3"), {
+      timeoutMs: 5_000,
+    });
+    expect(r.outcome).toBe("absent");
+    expect(r.lingered).toBeFalse();
+  });
+
+  test("a warning on stderr does not get mistaken for the version", async () => {
+    // stderr can speak first; stdout is still the version. Reading the warning here would sail
+    // straight into the `minVersion` comparison and fail an install that is perfectly fine.
+    const r = await realProbeVersion(shim("noisy", "echo 'warning: config is deprecated' >&2\necho 7.7.7"), {
+      timeoutMs: 5_000,
+    });
+    expect(r.outcome).toBe("ok");
+    expect(r.version).toBe("7.7.7");
+  });
+
+  test("a child that exits but leaves a grandchild holding the pipe does not hang the probe", async () => {
+    // The streams never EOF here, so draining them unbounded would hang exactly where this probe
+    // exists to stop hanging.
+    const bin = shim("forks-then-exits", "sleep 5 &\necho 4.5.6");
+    const started = Date.now();
+    const r = await realProbeVersion(bin, { timeoutMs: 10_000 });
+    expect(r.outcome).toBe("ok");
+    expect(r.version).toBe("4.5.6");
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  test("the probe budget is well below the old 15s exec timeout", () => {
+    expect(VERSION_PROBE_TIMEOUT_MS).toBeLessThan(15_000);
+  });
+});
+
+describe("doctor — how each probe outcome is reported", () => {
+  /** Healthy everywhere except `pi`, whose probe outcome the test dictates. */
+  function withPiProbe(probe: Awaited<ReturnType<NonNullable<DoctorDeps["probeVersion"]>>>) {
+    const base = healthyDeps();
+    return healthyDeps({
+      probeVersion: async (bin, opts) => (bin === "pi" ? probe : base.probeVersion!(bin, opts)),
+    });
+  }
+
+  test("pi printing a version but never exiting is OK, not UNHEALTHY", async () => {
+    const report = await runDoctor(withPiProbe({ outcome: "ok", version: "0.82.1", lingered: true }));
+    const pi = byName(report.checks, "binary: pi");
+    expect(pi.level).toBe("ok");
+    expect(pi.detail).toContain("0.82.1");
+    expect(pi.detail).toContain("did not exit");
+    expect(pi.detail).not.toContain("not runnable");
+    expect(report.ok).toBeTrue();
+  });
+
+  test("a silent binary is reported as a timeout, not as missing", async () => {
+    const report = await runDoctor(withPiProbe({ outcome: "timeout", version: "", lingered: true }));
+    const pi = byName(report.checks, "binary: pi");
+    expect(pi.level).toBe("warn");
+    expect(pi.detail).toContain("timed out");
+    expect(pi.detail).not.toContain("not runnable on the daemon PATH");
+    expect(report.ok).toBeTrue();
+  });
+
+  test("a genuinely absent binary still reports 'not runnable on the daemon PATH'", async () => {
+    const report = await runDoctor(withPiProbe({ outcome: "absent", version: "", lingered: false }));
+    const pi = byName(report.checks, "binary: pi");
+    expect(pi.level).toBe("fail");
+    expect(pi.detail).toContain("not runnable on the daemon PATH");
+    expect(pi.detail).toContain(daemonPath(HOME));
     expect(report.ok).toBeFalse();
   });
 });

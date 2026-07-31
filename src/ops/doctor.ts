@@ -64,6 +64,8 @@ export interface DoctorDeps {
   fetchFn?: typeof fetch;
   /** Run argv with an explicit env; resolves (never rejects) with the exit code + output. */
   exec?: (argv: string[], opts?: { env?: Record<string, string>; timeoutMs?: number }) => Promise<{ code: number; stdout: string; stderr: string }>;
+  /** Ask `<bin> --version` for its version without waiting on the child to exit. */
+  probeVersion?: (bin: string, opts?: { env?: Record<string, string>; timeoutMs?: number }) => Promise<VersionProbe>;
   preflight?: (harness: Harness) => Promise<PreflightResult>;
   listProcesses?: () => Promise<ProcRow[]>;
   /** Read a file, or null when absent/unreadable. */
@@ -100,6 +102,163 @@ async function realExec(
   } catch (err) {
     return { code: 127, stdout: "", stderr: (err as Error).message };
   }
+}
+
+/**
+ * Outcome of a `<bin> --version` probe.
+ *
+ *   - `ok`      — the binary printed a version. It may or may not have exited; `lingered` says which.
+ *   - `timeout` — the binary is there and ran, but printed nothing before the deadline.
+ *   - `absent`  — the binary could not be spawned, or exited non-zero without printing a version.
+ */
+export interface VersionProbe {
+  outcome: "ok" | "timeout" | "absent";
+  /** First non-empty output line (stdout preferred, stderr as fallback); "" when nothing printed. */
+  version: string;
+  /** True when the child was still running once we had our answer and the probe had to kill it. */
+  lingered: boolean;
+}
+
+/**
+ * How long a version probe waits for a FIRST LINE of output, down from the old flat 15s exec
+ * timeout (issue #149). The probe now resolves on output rather than on exit, so this budget only
+ * has to cover process startup, and it is the sole thing standing between one wedged binary and a
+ * stalled doctor run. Sized from measurement on the box: `pi --version` takes ~1.0s idle and
+ * stretched to 5.3s under ~3.6x CPU oversubscription, so 8s keeps headroom for a busy sweep while
+ * still halving the old ceiling. A binary that prints and hangs no longer costs anything near this
+ * — it settles on its first line. The harness driver's own preflight keeps its roomier 30s/60s
+ * budgets; that, not doctor, is the authoritative castability check.
+ */
+export const VERSION_PROBE_TIMEOUT_MS = 8_000;
+/** Grace between a first output line and giving up on the child's exit code. */
+const VERSION_EXIT_GRACE_MS = 250;
+/** Grace between SIGTERM and SIGKILL when reaping a child that outlasted its probe. */
+const SIGKILL_GRACE_MS = 500;
+/** Bounded wait for the output pipes to finish draining once we already have our answer. */
+const PUMP_DRAIN_MS = 250;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** SIGTERM, then SIGKILL if it is still alive — a probe must never leak a process. */
+async function reap(proc: { exitCode: number | null; signalCode: string | null; exited: Promise<number>; kill: (sig?: number | NodeJS.Signals) => void }): Promise<void> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  try {
+    proc.kill("SIGTERM");
+  } catch {
+    /* already gone */
+  }
+  const exitedFirst = await Promise.race([proc.exited.then(() => true), sleep(SIGKILL_GRACE_MS).then(() => false)]);
+  if (exitedFirst) return;
+  try {
+    proc.kill("SIGKILL");
+  } catch {
+    /* already gone */
+  }
+  await proc.exited.catch(() => 0);
+}
+
+/**
+ * Probe `<bin> --version`, resolving on the binary's first line of OUTPUT rather than on its exit.
+ *
+ * Issue #149: `beckett doctor` reported pi as "not runnable on the daemon PATH" because the old
+ * probe waited on `proc.exited` and a hung binary is, to `exec`, indistinguishable from a missing
+ * one. A harness CLI that prints its version and then fails to drain its event loop is installed
+ * and runnable — it just never exits — so the probe answers the question it was actually asked
+ * ("what version is on the PATH?") and reaps whatever is left over.
+ */
+export async function realProbeVersion(
+  bin: string,
+  opts: { env?: Record<string, string>; timeoutMs?: number } = {},
+): Promise<VersionProbe> {
+  const timeoutMs = opts.timeoutMs ?? VERSION_PROBE_TIMEOUT_MS;
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn([bin, "--version"], {
+      env: { ...(opts.env ?? (process.env as Record<string, string>)) },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  } catch {
+    // Bun.spawn throws synchronously on ENOENT — the binary genuinely is not on this PATH.
+    return { outcome: "absent", version: "", lingered: false };
+  }
+
+  // Buffer both streams, and signal as soon as either yields a complete line. Both must be drained
+  // regardless: an unread pipe fills and wedges the child we are trying to measure.
+  const buffers = { stdout: "", stderr: "" };
+  let firstLine = "";
+  let signalFirstLine = () => {};
+  const sawFirstLine = new Promise<void>((resolve) => {
+    signalFirstLine = resolve;
+  });
+  const pump = async (stream: ReadableStream<Uint8Array> | undefined, into: "stdout" | "stderr") => {
+    if (!stream) return;
+    const decoder = new TextDecoder();
+    for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
+      buffers[into] += decoder.decode(chunk, { stream: true });
+      const nl = buffers[into].indexOf("\n");
+      if (!firstLine && nl >= 0) {
+        const line = buffers[into].slice(0, nl).trim();
+        if (line) {
+          firstLine = line;
+          signalFirstLine();
+        }
+      }
+    }
+  };
+  const pumps = Promise.all([
+    pump(proc.stdout as ReadableStream<Uint8Array> | undefined, "stdout"),
+    pump(proc.stderr as ReadableStream<Uint8Array> | undefined, "stderr"),
+  ]).catch(() => {});
+
+  /**
+   * The version we report. stdout wins over stderr even when stderr spoke first — a binary that
+   * warns on stderr before printing its version on stdout must not have the warning read as its
+   * version (that would sail into the `minVersion` comparison). Falls back to the first line we
+   * saw when neither buffer holds a complete line yet.
+   */
+  const versionLine = () =>
+    buffers.stdout.trim().split("\n")[0]?.trim() || buffers.stderr.trim().split("\n")[0]?.trim() || firstLine;
+
+  /**
+   * Bounded wait for the pipes to drain. NEVER await the pumps unbounded: a child that forks and
+   * exits leaves its grandchild holding the write end, so the streams never EOF and we would hang
+   * exactly where this probe exists to stop hanging.
+   */
+  const drain = () => Promise.race([pumps, sleep(PUMP_DRAIN_MS)]);
+
+  const EXITED = Symbol("exited");
+  const TIMED_OUT = Symbol("timed-out");
+  const first = await Promise.race([
+    proc.exited.then(() => EXITED),
+    sawFirstLine.then(() => "line" as const),
+    sleep(timeoutMs).then(() => TIMED_OUT),
+  ]);
+
+  if (first === "line") {
+    // A version line is not yet proof of health: a binary can print "Unknown option: --version" and
+    // exit non-zero. Give it a moment to land an exit code before we call the run good.
+    const exited = await Promise.race([proc.exited.then(() => true), sleep(VERSION_EXIT_GRACE_MS).then(() => false)]);
+    if (!exited) {
+      await reap(proc);
+      await drain();
+      return { outcome: "ok", version: versionLine(), lingered: true };
+    }
+  } else if (first === TIMED_OUT) {
+    await reap(proc);
+    await drain();
+    const line = versionLine();
+    // Output without a trailing newline still answers the question; silence does not.
+    return line ? { outcome: "ok", version: line, lingered: true } : { outcome: "timeout", version: "", lingered: true };
+  }
+
+  // The child exited on its own: its exit code is the honest verdict.
+  await drain();
+  const code = await proc.exited;
+  const line = versionLine();
+  if (code !== 0) return { outcome: "absent", version: line, lingered: false };
+  return { outcome: "ok", version: line, lingered: false };
 }
 
 /** `ps` sweep for harness-looking processes; cwd via /proc on Linux (null elsewhere). */
@@ -202,6 +361,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   const platform = deps.platform ?? process.platform;
   const fetchFn = deps.fetchFn ?? globalThis.fetch.bind(globalThis);
   const exec = deps.exec ?? realExec;
+  const probeVersion = deps.probeVersion ?? realProbeVersion;
   const preflight = deps.preflight ?? ((h: Harness) => preflightFor(h, config, { force: true }));
   const listProcesses = deps.listProcesses ?? realListProcesses;
   const readFile = deps.readFile ?? realReadFile;
@@ -246,13 +406,24 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     { bin: "cloudflared", required: false },
   ];
   for (const b of binaries) {
-    const r = await exec([b.bin, "--version"], { env: binEnv, timeoutMs: 15_000 });
-    const version = r.stdout.trim().split("\n")[0] || r.stderr.trim().split("\n")[0] || "";
-    if (r.code !== 0) {
+    const r = await probeVersion(b.bin, { env: binEnv, timeoutMs: VERSION_PROBE_TIMEOUT_MS });
+    const version = r.version;
+    if (r.outcome === "absent") {
       checks.push({
         name: `binary: ${b.bin}`,
         level: b.required ? "fail" : "warn",
         detail: `not runnable on the daemon PATH (${path})`,
+      });
+      continue;
+    }
+    if (r.outcome === "timeout") {
+      // Installed but silent. That is a genuine anomaly and worth a row, but it is NOT the same
+      // outage as a missing binary, and it is indistinguishable from plain CPU starvation on a busy
+      // box — so it warns rather than flipping the whole report to UNHEALTHY (issue #149).
+      checks.push({
+        name: `binary: ${b.bin}`,
+        level: "warn",
+        detail: `found on the daemon PATH (${path}) but printed no version within ${Math.round(VERSION_PROBE_TIMEOUT_MS / 1000)}s - the probe timed out and killed it; the binary may be wedged or the box may be starved`,
       });
       continue;
     }
@@ -266,7 +437,11 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         continue;
       }
     }
-    checks.push({ name: `binary: ${b.bin}`, level: "ok", detail: version });
+    checks.push({
+      name: `binary: ${b.bin}`,
+      level: "ok",
+      detail: r.lingered ? `${version} (printed its version but did not exit; the probe killed it)` : version,
+    });
   }
   if (platform === "linux") {
     const sandbox = await exec(
