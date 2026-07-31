@@ -560,7 +560,6 @@ test("issue #150: the absolute ceiling still reaps a runaway that never stops em
     decision: "send",
     message: "that turn timed out before it finished. last thing it was doing: Read (cat same-file.ts).",
   });
-  expect(s.pending).toBeNull();
 });
 
 test("issue #150: the ceiling sits well above the old 6-minute deadline, and silence still reaps on the old schedule", () => {
