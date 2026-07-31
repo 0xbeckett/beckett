@@ -8,7 +8,7 @@
  *
  * Wiring:
  *   - {@link DiscordJsGateway} (`../discord/gateway.ts`) is the human-facing I/O.
- *   - A persistent Opus session ({@link ConciergeSession}) is seeded with `concierge.md` as
+ *   - A persistent concierge session ({@link ConciergeSession}) is seeded with `concierge.md` as
  *     its system prompt and answers one Discord turn at a time.
  *   - On each @beckett mention (or DM) we run a turn and post the reply back to the
  *     originating channel as a native reply.

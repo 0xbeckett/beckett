@@ -42,3 +42,13 @@ test("the composed schema parses an empty config to the fully-defaulted Config",
 test("a top-level key no capability claims is still a loud refuse-to-start", () => {
   expect(() => validateConfig({ not_a_capability: {} })).toThrow(/refusing to start/);
 });
+
+// #158 — the concierge chat/routing/filing seat ships on Sonnet 5 at medium effort. Pinned so a
+// silent regression back to Opus (the pre-#158 default) fails CI. quick.model must stay Sonnet 5.
+test("the shipped concierge default is claude-sonnet-5 at medium effort", () => {
+  const config = defaultConfig();
+  expect(config.concierge.model).toBe("claude-sonnet-5");
+  expect(config.concierge.effort).toBe("medium");
+  // Guardrail: the swap must not have touched the (already-Sonnet) quick lane.
+  expect(config.quick.model).toBe("claude-sonnet-5");
+});

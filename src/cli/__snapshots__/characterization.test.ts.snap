@@ -1831,9 +1831,9 @@ cross_channel_min_score = 0.5
 reply_context_surrounding = 5
 
 [concierge]
-model = "claude-opus-5"
+model = "claude-sonnet-5"
 rotate_at_tokens = 160000
-effort = ""
+effort = "medium"
 session_scope = "channel"
 max_concurrent_turns = 3
 max_live_sessions = 6
