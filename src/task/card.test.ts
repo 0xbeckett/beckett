@@ -3,11 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DiscordMessageEditError,
   DiscordMessageEditPermissionError,
   DiscordTransientMessageEditError,
   DiscordUnknownMessageError,
 } from "../discord/gateway.ts";
-import type { DiscordMessageEditPayload, ReplyOptions } from "../types.ts";
+import type { DiscordMessageEditPayload, Logger, ReplyOptions } from "../types.ts";
 import { TaskCardService } from "./card.ts";
 import { TaskStore, type WorkTask } from "./store.ts";
 
@@ -16,15 +17,42 @@ afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, f
 
 const silent = { debug() {}, info() {}, warn() {}, error() {}, child() { return this; } };
 
+interface LogRecord {
+  level: "debug" | "info" | "warn" | "error";
+  msg: string;
+  fields?: Record<string, unknown>;
+}
+
+/** A logger that keeps every line so tests can assert on level, message, and fields. */
+function capturingLogger(): { logger: Logger; records: LogRecord[] } {
+  const records: LogRecord[] = [];
+  const push = (level: LogRecord["level"]) => (msg: string, fields?: Record<string, unknown>) =>
+    void records.push({ level, msg, fields });
+  const logger: Logger = {
+    debug: push("debug"),
+    info: push("info"),
+    warn: push("warn"),
+    error: push("error"),
+    child: () => logger,
+  };
+  return { logger, records };
+}
+
 class FakeGateway {
   posts: Array<{ channelId: string; opts?: ReplyOptions }> = [];
   edits: Array<{ channelId: string; messageId: string; payload: DiscordMessageEditPayload }> = [];
   deletes: Array<{ channelId: string; messageId: string }> = [];
   nextEditError: Error | null = null;
   nextDeleteError: Error | null = null;
+  nextPostError: Error | null = null;
   private counter = 0;
 
   async post(channelId: string, _content: string, opts?: ReplyOptions): Promise<string> {
+    if (this.nextPostError) {
+      const error = this.nextPostError;
+      this.nextPostError = null;
+      throw error;
+    }
     this.posts.push({ channelId, opts });
     return `message-${++this.counter}`;
   }
@@ -48,7 +76,9 @@ class FakeGateway {
   }
 }
 
-async function seed(): Promise<{ store: TaskStore; gateway: FakeGateway; service: TaskCardService; dir: string }> {
+async function seed(
+  logger: Logger = silent,
+): Promise<{ store: TaskStore; gateway: FakeGateway; service: TaskCardService; dir: string }> {
   const dir = mkdtempSync(join(tmpdir(), "beckett-task-card-"));
   dirs.push(dir);
   const store = new TaskStore(join(dir, "tasks.json"));
@@ -58,7 +88,7 @@ async function seed(): Promise<{ store: TaskStore; gateway: FakeGateway; service
     store,
     gateway,
     resolveChannel: (task: WorkTask) => task.originChannelId ?? null,
-    logger: silent,
+    logger,
   });
   return { store, gateway, service, dir };
 }
@@ -160,6 +190,51 @@ test("a permission failure never reposts (would loop on a message we cannot touc
   gateway.nextEditError = new DiscordMessageEditPermissionError("chan-1", "message-1");
   await service.refresh(1);
   expect(gateway.posts).toHaveLength(1);
+});
+
+test("a permanent edit rejection logs at error WITH the Discord response body, not a retry warning", async () => {
+  const { logger, records } = capturingLogger();
+  const { gateway, service } = await seed(logger);
+  await service.refresh(1);
+  // A generic (non-repost, non-permission, non-transient) edit error is the permanent 4xx bucket:
+  // e.g. Discord 400 Invalid Form Body, whose body names the rejected components.
+  gateway.nextEditError = new DiscordMessageEditError("failed", "chan-1", "message-1", "invalid form body", {
+    cause: { status: 400, rawError: { code: 50035, message: "Invalid Form Body", errors: { components: {} } } },
+  });
+  await service.refresh(1);
+  const errorLine = records.find((r) => r.level === "error");
+  expect(errorLine).toBeDefined();
+  expect(records.some((r) => r.level === "warn" && r.msg.includes("will retry"))).toBe(false);
+  // The actual Discord body rides along so the next 400 takes minutes to find, not months.
+  expect(String(errorLine?.fields?.response)).toContain("Invalid Form Body");
+  expect(String(errorLine?.fields?.response)).toContain("50035");
+  // A permanent failure is skipped this tick like any other — it must not spin into a repost.
+  expect(gateway.posts).toHaveLength(1);
+});
+
+test("a permanent post rejection logs at error WITH the Discord response body", async () => {
+  const { logger, records } = capturingLogger();
+  const { gateway, service } = await seed(logger);
+  // The raw REST error the post path throws carries an HTTP status and Discord's parsed body.
+  gateway.nextPostError = Object.assign(new Error("Invalid Form Body"), {
+    status: 400,
+    rawError: { code: 50035, message: "Invalid Form Body", errors: { components: {} } },
+  });
+  await service.refresh(1); // first refresh → fresh post → permanent rejection
+  const errorLine = records.find((r) => r.level === "error");
+  expect(errorLine).toBeDefined();
+  expect(records.some((r) => r.level === "warn" && r.msg.includes("will retry"))).toBe(false);
+  expect(String(errorLine?.fields?.response)).toContain("Invalid Form Body");
+});
+
+test("a transient (offline / rate-limit) edit failure stays a warn, never an error", async () => {
+  const { logger, records } = capturingLogger();
+  const { gateway, service } = await seed(logger);
+  await service.refresh(1);
+  gateway.nextEditError = new DiscordTransientMessageEditError("chan-1", "message-1", "offline");
+  await service.refresh(1);
+  expect(records.some((r) => r.level === "error")).toBe(false);
+  expect(records.some((r) => r.level === "warn" && r.msg.includes("will retry"))).toBe(true);
 });
 
 test("concurrent refreshes for one task post only one card", async () => {

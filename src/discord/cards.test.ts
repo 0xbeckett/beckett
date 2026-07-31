@@ -178,7 +178,7 @@ test("task card surfaces a live preview link while in review", () => {
   expect(cardText(card)).toContain("https://beckett-preview.0xbeckett.me");
 });
 
-test("task card lists every branch as its own section", () => {
+test("task card lists every branch as its own block, titled", () => {
   const multi = renderTaskCard({
     ...taskCard(),
     branches: [
@@ -186,10 +186,42 @@ test("task card lists every branch as its own section", () => {
       { ref: "104.2", title: "Frontend", status: "running" },
     ],
   });
+  // The branch with an artifact keeps its section+accessory; the artifact-less one drops to a plain
+  // text block so it never becomes an accessory-less section (which Discord rejects, #154).
   const sections = blocksOfKind(multi, "section");
-  expect(sections).toHaveLength(2);
+  expect(sections).toHaveLength(1);
   expect(sections[0]?.text).toContain("#104.1 · Backend");
-  expect(sections[1]?.text).toContain("#104.2 · Frontend");
+  expect(cardText(multi)).toContain("#104.2 · Frontend");
+});
+
+// Every lifecycle state, including a done branch that never opened a PR, must produce a card
+// Discord accepts: no { kind: "section" } block may exist without an accessory (#154).
+const ALL_BRANCH_STATUSES: TaskBranchStatus[] = [
+  "ready", "waiting", "designing", "approval", "running", "review", "blocked", "cancelled", "done",
+];
+for (const status of ALL_BRANCH_STATUSES) {
+  test(`an artifact-less ${status} branch never emits an accessory-less section`, () => {
+    // No artifact, no pull request → branchAccessory returns nothing for every status here
+    // (a done branch with no PR is not mergeable), so this is the accessory-less path.
+    const card = renderTaskCard(taskCard({}, { status }));
+    const sections = blocksOfKind(card, "section");
+    for (const section of sections) expect(section.accessory).toBeDefined();
+    // The branch state is still shown — it just rides in a plain text block instead of a section.
+    expect(cardText(card)).toContain("#104.1 · Main");
+  });
+}
+
+test("a task whose branches ALL lack artifacts renders no accessory-less section", () => {
+  const card = renderTaskCard({
+    ...taskCard(),
+    branches: ALL_BRANCH_STATUSES.map((status, i) => ({
+      ref: `104.${i + 1}`,
+      title: `Branch ${status}`,
+      status,
+    })),
+  });
+  const sections = blocksOfKind(card, "section");
+  for (const section of sections) expect(section.accessory).toBeDefined();
 });
 
 test("a mergeable branch pins a green Merge accessory; the PR link stays inline", () => {
