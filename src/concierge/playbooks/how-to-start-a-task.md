@@ -108,32 +108,41 @@ Every claim above is vendor or third-party. Treat a luna cast as a deliberate tr
 proposes ~20 trivial tickets), read the telemetry footer when it lands, and `remember` what you
 learn.
 
-**`claude-fable-5` (Fable 5) — the heavy seat**, a tier above Opus, slowest and most expensive.
-**Ask before you cast it:** before starting a branch with a Fable review cast, say so on channel
+**`claude-fable-5` (Fable 5) — the heavy seat**, a tier above Opus, slowest and most expensive
+(`$10/$50` per Mtok; **$18.52** median all-in per ticket).
+**Ask before you cast it:** before starting a branch with a Fable cast, say so on channel
 via `beckett discord reply` — one line — and wait for the answer. Yes → Fable; "use Opus" → Opus,
 move on. Don't re-ask per ticket inside one approved plan (one confirmation covers the plan's
 tickets); do ask again for new work.
-**Use for:** `review` on correctness-critical or hard-to-reverse work — auth, money, data
-migrations, shared interfaces, anything `--project beckett` (my own core):
-`"review":{"harness":"claude","model":"claude-fable-5","effort":"high"}`. Also `implement` on the
-rare genuinely-hard design problem: sweeping cross-module refactor, subtle concurrency fix, an API
-surface many things build on.
+**Use for:** `implement` on correctness-critical or hard-to-reverse work — auth, money, data
+migrations, concurrency, shared interfaces, anything `--project beckett` (my own core) — and on the
+rare genuinely-hard design problem: sweeping cross-module refactor, an API surface many things
+build on: `"implement":{"harness":"claude","model":"claude-fable-5","effort":"high"}`. It is
+**0-for-26 on substantive failures** in our ledger and leads SWE-bench Pro by ~17 points over the
+whole pi family. Expensive, and worth it here.
+**Not the reviewer, even here.** Fable sends work back 12.1% of the time at **$21.24 per catch**;
+Opus 5 sends back 44% at **$5.48**. Pay Fable to *implement* and Opus to *review* —
+`"review":{"harness":"claude","model":"claude-opus-5","effort":"high"}`.
 **Never for:** routine implementation, routine review, anything a cheaper seat handles. Never
 unconfirmed — no silent Fable casts.
 
 **`claude-opus-5` (Opus 5) — the taste & frontend seat, and the claude implement default**
-(`"harness":"claude"` implement with no model gives you this).
+(`"harness":"claude"` implement with no model gives you this). `$5/$25` per Mtok.
 **Use for:** `implement` on all frontend/UI/design work — visual design, interaction/animation,
 component architecture, copy, layout, UX flow — and judgment-heavy fuzzy-spec tasks where the
 worker decides what "good" means (API ergonomics, refactors, my own doctrine/persona/skills);
-`review` when work deserves a stronger-than-default reviewer but not the Fable seat.
+`review` when work deserves a stronger-than-default reviewer — including everything Fable
+implemented. It is the **best-value heavy reviewer we have**: 44% send-back at $5.48 a catch,
+against Fable's 12.1% at $21.24.
 **Never for:** rote spec-grind pi does faster and cheaper.
 
 **`claude-sonnet-5` (Sonnet 5) — the fast generalist and the default reviewer**, correct for
-normal work.
+normal work. `$3/$15` per Mtok (intro $2/$10 through 2026-08-31 — budget on the list rate).
 **Use for:** `review` implicitly — omit it and the dispatcher staffs Sonnet at an effort scaled
-from your implement cast. Explicitly castable for `implement` on genuinely mechanical work where
-even pi is overkill and you want the claude toolchain.
+from your implement cast. That gate is **$1.44 a review** and sends work back 27.6% of the time
+against a $3.68–$9.38 median ticket, so it earns its keep; don't dodge it to save a dollar.
+Explicitly castable for `implement` on genuinely mechanical work where even pi is overkill and you
+want the claude toolchain.
 **Never for:** the review gate on critical work (Fable/Opus territory), or anything at `xhigh`.
 
 **`claude-haiku-4-5` (Haiku 4.5) — the reflex.** Not a casting option; one fixed seat, the
@@ -142,19 +151,31 @@ ambient-interjection triage classifier. Never cast it for implement or review.
 **Fixed seats** (not castable): you run on Opus 5; ambient triage on Haiku 4.5; the uncast
 reviewer default is Sonnet 5.
 
-#### The quick table
+#### The quick table — start from the weight of the work
 
-| Work is mostly… | implement | effort | review |
-|---|---|---|---|
-| **Backend / systems, spec is really specific** | `pi` | `medium` | default (don't cast) |
-| **Backend / systems, spec leaves decisions** | `pi` | `high` | default (don't cast) |
-| **Frontend / UI / design / taste** | `claude` (Opus) | `high` + `"reviewTier":"self"` | none (one-pass) |
-| **Judgment-heavy / fuzzy spec** | `claude` (Opus) | `high` (`xhigh` if truly hard) | default (don't cast) |
-| **Long ticket, risk is missing work** | best fit of the above | per model | `pi` @ `high` (criteria vs reality) |
-| **Correctness-critical / hard-to-reverse / touches Beckett itself** | best fit of the above | `high`–`xhigh` | `claude-fable-5` @ `high` — **confirm with the human first** |
+**Ask "how heavy is this?" before "what kind is this?"** Four weight classes; each names a seat.
+Kind-of-work only overrides weight in the places called out under the table.
 
-**Anything visual is `claude` (Opus), never `pi`** — a canvas toy, a game, an animation, a
-particle/physics demo, a landing page, "make it look like X."
+| Weight of the work | implement | effort | review | ~all-in |
+|---|---|---|---|---:|
+| **1 · Trivial / mechanical** — copy tweak, version bump, config edit, rename, doc typo, one obvious diff | `pi` — terra, or **luna** if it reads <~400K | `low` + `"reviewTier":"self"` | none (one-pass) | ~$0.40 |
+| **2 · Standard spec'd work** *(the common case)* — backend whose "done" is checkable: APIs, parsers, data layers, business logic, tests, migrations | `pi` (terra) | `high` | default (don't cast) — Sonnet 5 | ~$5 |
+| **3 · Judgment-heavy** — fuzzy spec, design calls, wide refactor, taste, **anything visual** | `claude` (Opus 5) | `high` (`xhigh` if truly hard) | default; **none + `"reviewTier":"self"` if visual** | ~$8–16 |
+| **4 · Correctness-critical** — dispatcher, auth, money, migrations, concurrency, `--project beckett` | `claude` (**Fable 5**) — **confirm with the human first** | `high` | `claude-opus-5` @ `high` — **not** Fable | ~$18–21 |
+
+**Where kind-of-work overrides weight:**
+
+- **Anything visual is `claude` (Opus), never `pi`** — a canvas toy, a game, an animation, a
+  particle/physics demo, a landing page, "make it look like X." Pi has no eyes, and neither does
+  its reviewer: a blind second pass buys cost without signal, so visual work is one-pass at
+  Class 3 however light it looks.
+- **A fuzzy spec promotes the weight class**, whatever the subject. Class 1 and 2 pay off only
+  because "done" is checkable; without that, a cheap seat builds the wrong thing confidently and
+  each bounce costs a full rerun.
+- **Long ticket where the risk is silently-missing work** — keep the implement seat its weight
+  class calls for, and cast `pi` @ `high` on `review` to grind every acceptance criterion against
+  reality.
+- **Big-repo reading demotes luna to terra** — the ~400K context line, not a judgment call.
 
 **On any frontend/UI ticket, invoke the [[ui-designer]] skill *before* you write the cast brief**
 — house aesthetic plus source-before-hand-roll (21st.dev, then shadcn/ui, then build). Bake it
@@ -163,6 +184,44 @@ them at its rubric for the self-review. (Its usage note has the brief template.)
 
 A genuinely mixed ticket (backend + UI) is better split in two — backend on pi, frontend on claude.
 
+#### Small implement + heavy review — the cast shape that saves real money
+
+Class 2 already *is* the small half of this pattern, with Sonnet as the uncast default reviewer at
+$1.44 — for the common case, cast nothing. The explicit shape is for work you'd otherwise have
+sent to a heavy implement seat: **big ticket, still-checkable "done."** Cheap seat builds, heavy
+seat gates:
+
+```
+--cast '{"implement":{"harness":"pi","model":"gpt-5.6-terra","effort":"high"},"review":{"harness":"claude","model":"claude-opus-5","effort":"high"}}'
+```
+
+**When it beats a heavy implement seat:** the work is mechanical or well-specified and "done" is
+checkable from the diff and the tests. A terra-implemented ticket lands 98% of the time at a
+**$3.68** median against **$9.38** for our old heavy claude default — **−61%**, or **−46% (~$5.03)**
+once you price in the 31% of terra tickets that escalate. Terra at `high` fails *less* than that
+heavy seat did (14% vs 18%). Upgrading the reviewer to Opus adds ~$1.44–$2.14 and still lands far
+under a heavy implement seat. This isn't a theory — it's n=38 of what we already do, finally costed.
+
+**Hand it a plan, not a paragraph.** The saving comes from cheapening *execution*, not judgment;
+the practice this copies is "big model plans, cheap model executes, third model reviews." We tend
+to hand pi the ticket description and hope. Put the plan in `--body`: the files, the order, the
+shape of the answer.
+
+**When it does NOT beat a heavy implement seat** — five failure modes, every one of them a thing a
+reviewer structurally *cannot* fix:
+
+1. **Visual.** A reviewer can't catch a layout defect the implementer never saw. Sensory gap, not
+   a quality gap. Class 3, one-pass.
+2. **Fuzzy spec.** Cheap seats drift and build the wrong thing confidently; each bounce is a full
+   implement run at **$8.02 vs $3.68**, so two bounces erase the whole saving.
+3. **Long context.** Terra holds up (MRCR 72.5%); luna does not (41.3% past 512K) against a 1.46M
+   median run. Big-repo work stays on terra at minimum.
+4. **Correctness-critical.** Review is a filter, not a guarantee — Sonnet catches 27.6% of the
+   time, which means it *misses* most of the time. Where a subtle defect is expensive, buy the
+   implement seat (Class 4); don't buy insurance on a cheap one.
+5. **Latency-bound work.** 40–53% of pi runs no-op and need relaunching — nearly free in dollars,
+   costly in wall-clock. When the answer is wanted now, cast claude.
+
 #### Effort — per model, not one ladder
 
 `effort` (`low`/`medium`/`high`/`xhigh`) tunes reasoning depth on both harnesses (claude's
@@ -170,9 +229,12 @@ A genuinely mixed ticket (backend + UI) is better split in two — backend on pi
 harness default *and* silently selects the expensive fresh-review gate. The right level depends on
 *which model*:
 
-- **`pi` (gpt-5.6-terra, default; gpt-5.6-luna for the cheap lane)** — `medium` when the ticket
-  body is really specific; `high` when it has to make real decisions; `xhigh` rare, crucial tasks
-  only.
+- **`pi` (gpt-5.6-terra, default; gpt-5.6-luna for the cheap lane)** — `low` for Class-1 trivial
+  work whose correctness is visible in the diff (pair it with `"reviewTier":"self"`); **`high` for
+  everything else**, including specs you'd once have called `medium`-crisp — terra-high fails 14%
+  of substantive runs against terra-medium's 24%, for $1.12 vs $0.37 a run, and a bounce costs a
+  whole rerun. `medium` only when you deliberately want the one-pass gate on work above trivial;
+  `xhigh` rare, crucial tasks only.
 - **`claude-opus-5`** — `high` for most tasks (the Opus default), `xhigh` for the genuinely harder
   ones. Never below `high`: work that feels like `medium` belongs on pi or Sonnet.
 - **`claude-sonnet-5`** — `medium` or `high` only. Never `xhigh`.
@@ -185,7 +247,7 @@ harness default *and* silently selects the expensive fresh-review gate. The righ
 criteria before finishing. The dispatcher reads your cast `effort`:
 
 - **`low`/`medium`** → **one pass**: the worker self-verifies, the ticket goes straight to `done`,
-  no separate reviewer. Crisp-spec pi work at `medium` lands here.
+  no separate reviewer. Class-1 trivial pi work at `low` lands here.
 - **`high`/`xhigh`, or omitted** → **fresh adversarial reviewer** after implement. Right for
   correctness-critical / hard-to-reverse work (auth, money, data migrations, shared interfaces,
   anything that breaks siblings if it's wrong).
@@ -193,8 +255,11 @@ criteria before finishing. The dispatcher reads your cast `effort`:
   "reviewTier":"self"}}` (one pass) or `"fresh"` (always review). **`"reviewTier":"self"` is how
   visual/taste work stays one-pass** — cast it explicitly on every visual ticket.
 
-Bias toward one pass (`medium` on pi, or `reviewTier:"self"` on claude); spend a fresh review only
-when a wrong answer is expensive.
+**The fresh gate is cheap — don't dodge it.** A review run is **~$1.44** median (~$1.65 on a terra
+ticket) and sends work back **27.6%** of the time, against a $3.68–$9.38 median ticket. Review is
+only 18.8% of all spend; the implement seat is where the money goes. So go one-pass on genuinely
+trivial work (`low` on pi) and on visual work (`reviewTier:"self"` — a reviewer who also can't see
+adds cost without signal), and buy the gate everywhere else.
 
 #### Cost — read the bill and recalibrate
 
@@ -231,13 +296,14 @@ beckett task start '#42.1' \
 - `--project` is the repo slug (→ `~/Projects/balloons`, pushed to `{{github_owner}}/balloons`);
   omit only for true one-offs.
 - `--criteria` is a `;`-separated list. Each item becomes one acceptance bullet.
-- `--cast` is JSON on a single argument. Default it to
-  `{"implement":{"harness":"pi","effort":"medium"}}` — always an explicit `effort` (omitted
+- `--cast` is JSON on a single argument. Default it to Class 2:
+  `{"implement":{"harness":"pi","effort":"high"}}` — always an explicit `effort` (omitted
   silently selects the expensive fresh-review tier). Don't cast `review` for normal work: the
   dispatcher supplies Sonnet @ scaled effort with the diff in hand. Deviate only when the task
-  calls for it (visual/judgment-heavy → implement with claude + `reviewTier:"self"`; long ticket
-  where the risk is missing work → a pi `review`; correctness-critical → a Fable 5 `review` cast,
-  confirmed with the human first).
+  calls for it (trivial → pi @ `low` + `reviewTier:"self"`; visual/judgment-heavy → implement with
+  claude, visual also `reviewTier:"self"`; long ticket where the risk is missing work → a pi
+  `review`; correctness-critical → a Fable 5 *implement* cast confirmed with the human first, with
+  Opus 5 on `review`).
 - `task create` organizes the work but spends no worker. `task start '#N.x'` starts an independent
   branch in `in_progress`; a branch with `--needs` is held in `backlog` until its prerequisites
   finish. Use an explicit `--state todo` only to keep the branch parked.
