@@ -41,6 +41,8 @@ export interface TaskCardBranchSnapshot {
   pullRequestNumber?: number;
   /** The PR's live state, when known. Absent means still-open (pre-#104 rows carry no state). */
   pullRequestState?: "OPEN" | "CLOSED" | "MERGED";
+  /** Hosted screenshots of the built branch, rendered as the card's media gallery. */
+  images?: { url: string; description?: string }[];
 }
 
 /** The whole task as its one self-editing card shows it: title, aggregate state, and every branch. */
@@ -77,6 +79,9 @@ function branchCardEntry(branch: TaskBranch): TaskCardBranchSnapshot {
     ...(branch.preview ? { preview: { url: branch.preview.url } } : {}),
     ...(branch.pullRequest ? { pullRequestNumber: branch.pullRequest.number } : {}),
     ...(branch.pullRequest?.state ? { pullRequestState: branch.pullRequest.state } : {}),
+    ...(branch.images?.length
+      ? { images: branch.images.map(({ url, description }) => ({ url, ...(description ? { description } : {}) })) }
+      : {}),
   };
 }
 

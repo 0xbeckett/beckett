@@ -361,6 +361,8 @@ export interface DiscordMessageEditPayload {
    * components untouched.
    */
   buttons?: DiscordButton[];
+  /** Replacement Components V2 card; clears the message's legacy content/embeds when present. */
+  card?: DiscordCard;
 }
 
 export interface ReplyOptions {
@@ -370,6 +372,8 @@ export interface ReplyOptions {
   files?: string[]; // local file paths to attach (image-only posts OK)
   embeds?: DiscordEmbed[]; // rich status cards; never carry raw diffs or secret account data
   buttons?: DiscordButton[]; // link and interaction controls; component clicks require no OAuth scope
+  /** A Components V2 card. Mutually exclusive with content/embeds/buttons on the wire. */
+  card?: DiscordCard;
   /**
    * Send content and attachments in exactly one Discord API message. This bypasses text
    * transforms, human-cadence splitting, and inter-message delays; over-2000 content is
@@ -410,9 +414,43 @@ export interface DiscordActionButton {
   customId: string;
   /** Dangerous actions render red; everything else uses Discord's primary style. */
   danger?: boolean;
+  /** Affirmative actions (merge, approve) render green. Wins over `danger` if both are set. */
+  success?: boolean;
 }
 
 export type DiscordButton = DiscordLinkButton | DiscordActionButton;
+
+// ── Components V2 cards ──────────────────────────────────────────────────────────────────────
+// A render-neutral component tree (gateway-free, so cards stay pure + unit-testable) that the
+// gateway lowers into discord.js V2 builders inside one accent-colored Container. A card
+// REPLACES content/embeds/buttons on its message — Discord forbids mixing the V2 flag with
+// legacy fields — so a message carries either a card or the legacy payload, never both.
+
+/** One image in a card's media gallery. `url` is a CDN link or an `attachment://` reference. */
+export interface DiscordCardImage {
+  url: string;
+  /** Alt text; also rendered as the item's caption on hover. */
+  description?: string;
+}
+
+export type DiscordCardBlock =
+  /** A markdown text display. `##` renders as a heading, `-# ` as subtext. */
+  | { kind: "text"; text: string }
+  /** A text block with at most one accessory button pinned to its right edge. */
+  | { kind: "section"; text: string; accessory?: DiscordButton }
+  /** A horizontal divider. */
+  | { kind: "separator" }
+  /** A row of up to five buttons. */
+  | { kind: "actions"; buttons: DiscordButton[] }
+  /** An inline image reel (max 10 items). */
+  | { kind: "gallery"; images: DiscordCardImage[] };
+
+export interface DiscordCard {
+  /** The container's accent stripe colour. */
+  color?: number;
+  /** Ordered container children. Discord caps a container at 10 components — renderers budget. */
+  blocks: DiscordCardBlock[];
+}
 
 /** A normalized button/select interaction after the gateway has deferred an ephemeral reply. */
 export interface DiscordComponentInteraction {

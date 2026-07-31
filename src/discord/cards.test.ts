@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { branchCardButtons, renderBranchEmbed, renderTaskCardEmbed, taskCardButtons } from "./cards.ts";
+import { branchCardButtons, renderBranchEmbed, renderTaskCard } from "./cards.ts";
+import type { DiscordCard, DiscordCardBlock } from "../types.ts";
 import type { BranchCardSnapshot, TaskCardBranchSnapshot, TaskCardSnapshot } from "../task/status.ts";
 import type { TaskBranchStatus, TaskStatus } from "../task/store.ts";
 
@@ -92,7 +93,7 @@ test("a direct push card links the published repository instead of calling it lo
   expect(embed.color).toBe(0x2ea043);
 });
 
-// ── task card (#104) ────────────────────────────────────────────────────────────────────────
+// ── task card (#104): one self-editing Components V2 card ────────────────────────────────────
 
 function taskCard(over: Partial<TaskCardSnapshot> = {}, branch: Partial<TaskCardBranchSnapshot> = {}): TaskCardSnapshot {
   return {
@@ -105,12 +106,36 @@ function taskCard(over: Partial<TaskCardSnapshot> = {}, branch: Partial<TaskCard
   };
 }
 
+function blocksOfKind<K extends DiscordCardBlock["kind"]>(card: DiscordCard, kind: K) {
+  return card.blocks.filter((block) => block.kind === kind) as Extract<DiscordCardBlock, { kind: K }>[];
+}
+
+function cardText(card: DiscordCard): string {
+  return card.blocks
+    .filter((block): block is Extract<DiscordCardBlock, { kind: "text" | "section" }> =>
+      block.kind === "text" || block.kind === "section",
+    )
+    .map((block) => block.text)
+    .join("\n");
+}
+
+function actionButtons(card: DiscordCard) {
+  return blocksOfKind(card, "actions").flatMap((row) => row.buttons);
+}
+
+function accessories(card: DiscordCard) {
+  return blocksOfKind(card, "section").flatMap((section) => (section.accessory ? [section.accessory] : []));
+}
+
 test("task card titles itself and states its aggregate progress", () => {
-  const embed = renderTaskCardEmbed(taskCard());
-  expect(embed.title).toBe("#104 - One self-editing task card");
-  expect(embed.description).toContain("0/1 branches done");
-  expect(embed.footer?.text).toContain("updates in place");
-  expect(embed.timestamp).toBe("2026-07-28T00:00:00.000Z");
+  const card = renderTaskCard(taskCard());
+  const header = card.blocks[0];
+  expect(header?.kind).toBe("text");
+  expect(cardText(card)).toContain("#104 - One self-editing task card");
+  expect(cardText(card)).toContain("0/1 branches done");
+  expect(cardText(card)).toContain("updates in place");
+  // The timestamp renders as Discord-native relative time in the footer subtext.
+  expect(cardText(card)).toContain(`<t:${Math.floor(Date.parse("2026-07-28T00:00:00.000Z") / 1000)}:R>`);
 });
 
 // Each lifecycle state renders with the right label and colour.
@@ -124,97 +149,151 @@ const LIFECYCLE: Array<{ status: TaskBranchStatus; taskStatus: TaskStatus; label
 ];
 for (const state of LIFECYCLE) {
   test(`task card renders the ${state.status} lifecycle state`, () => {
-    const embed = renderTaskCardEmbed(taskCard({ status: state.taskStatus }, { status: state.status }));
-    expect(JSON.stringify(embed.fields)).toContain(state.label);
-    expect(embed.color).toBe(state.color);
+    const card = renderTaskCard(taskCard({ status: state.taskStatus }, { status: state.status }));
+    expect(cardText(card)).toContain(state.label);
+    expect(card.color).toBe(state.color);
   });
 }
 
 test("a stalled branch turns the whole card red even mid-flight", () => {
-  const embed = renderTaskCardEmbed(taskCard({ status: "active" }, { status: "blocked" }));
-  expect(embed.color).toBe(0xda3633);
+  const card = renderTaskCard(taskCard({ status: "active" }, { status: "blocked" }));
+  expect(card.color).toBe(0xda3633);
 });
 
 test("task card shows the artifact link once a branch is finished", () => {
-  const embed = renderTaskCardEmbed(taskCard({ status: "done" }, {
+  const card = renderTaskCard(taskCard({ status: "done" }, {
     status: "done",
     artifact: { url: "https://github.com/acme/repo/pull/9", kind: "pull_request" },
     pullRequestNumber: 9,
   }));
-  const json = JSON.stringify(embed.fields);
-  expect(json).toContain("https://github.com/acme/repo/pull/9");
-  expect(json).toContain("PR #9");
+  expect(cardText(card)).toContain("https://github.com/acme/repo/pull/9");
+  expect(cardText(card)).toContain("PR #9");
 });
 
 test("task card surfaces a live preview link while in review", () => {
-  const embed = renderTaskCardEmbed(taskCard({}, {
+  const card = renderTaskCard(taskCard({}, {
     status: "review",
     preview: { url: "https://beckett-preview.0xbeckett.me" },
   }));
-  expect(JSON.stringify(embed.fields)).toContain("https://beckett-preview.0xbeckett.me");
+  expect(cardText(card)).toContain("https://beckett-preview.0xbeckett.me");
 });
 
-test("task card lists every branch with its own state", () => {
-  const embed = renderTaskCardEmbed(taskCard({}, {}));
-  const multi = renderTaskCardEmbed({
+test("task card lists every branch as its own section", () => {
+  const multi = renderTaskCard({
     ...taskCard(),
     branches: [
       { ref: "104.1", title: "Backend", status: "done", artifact: { url: "https://x/pull/1", kind: "pull_request" }, pullRequestNumber: 1 },
       { ref: "104.2", title: "Frontend", status: "running" },
     ],
   });
-  expect(embed.fields).toHaveLength(1);
-  expect(multi.fields).toHaveLength(2);
-  expect(multi.fields?.[0]?.name).toContain("#104.1 · Backend");
-  expect(multi.fields?.[1]?.name).toContain("#104.2 · Frontend");
+  const sections = blocksOfKind(multi, "section");
+  expect(sections).toHaveLength(2);
+  expect(sections[0]?.text).toContain("#104.1 · Backend");
+  expect(sections[1]?.text).toContain("#104.2 · Frontend");
 });
 
-test("task card carries the 73.1 action buttons: link, merge, cancel, attach", () => {
-  const done = taskCardButtons(taskCard({ status: "done" }, {
+test("a mergeable branch pins a green Merge accessory; the PR link stays inline", () => {
+  const card = renderTaskCard(taskCard({ status: "done" }, {
     status: "done",
     artifact: { url: "https://github.com/acme/repo/pull/9", kind: "pull_request" },
     pullRequestNumber: 9,
   }));
-  expect(done).toContainEqual({ label: "Open PR #9", url: "https://github.com/acme/repo/pull/9" });
-  expect(done).toContainEqual({ label: "Merge #104.1", customId: "beckett:v1:merge:104.1" });
-  expect(done).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:104" });
-  // A finished branch is no longer cancellable.
-  expect(done.some((b) => "customId" in b && b.customId.startsWith("beckett:v1:cancel"))).toBe(false);
+  expect(accessories(card)).toContainEqual({ label: "Merge #104.1", customId: "beckett:v1:merge:104.1", success: true });
+  expect(cardText(card)).toContain("https://github.com/acme/repo/pull/9");
 });
 
-test("the Merge button retires once the PR is merged or closed, but stays while open/undefined", () => {
-  const merge = (state?: "OPEN" | "CLOSED" | "MERGED") =>
-    taskCardButtons(taskCard({ status: "done" }, {
+test("a finished branch without a mergeable PR pins its artifact link as the accessory", () => {
+  const card = renderTaskCard(taskCard({ status: "done" }, {
+    status: "done",
+    artifact: { url: "https://github.com/acme/repo/pull/9", kind: "pull_request" },
+    pullRequestNumber: 9,
+    pullRequestState: "MERGED",
+  }));
+  expect(accessories(card)).toContainEqual({ label: "Open PR #9", url: "https://github.com/acme/repo/pull/9" });
+  expect(accessories(card).some((b) => "customId" in b && b.customId.startsWith("beckett:v1:merge"))).toBe(false);
+});
+
+test("the Merge accessory stays while the PR is open or pre-state, retires when merged or closed", () => {
+  const hasMerge = (state?: "OPEN" | "CLOSED" | "MERGED") =>
+    accessories(renderTaskCard(taskCard({ status: "done" }, {
       status: "done",
       artifact: { url: "https://github.com/acme/repo/pull/9", kind: "pull_request" },
       pullRequestNumber: 9,
       ...(state ? { pullRequestState: state } : {}),
-    })).some((b) => "customId" in b && b.customId.startsWith("beckett:v1:merge"));
-  // Pre-#104 rows carry no state; an open PR still merges — button present.
-  expect(merge(undefined)).toBe(true);
-  expect(merge("OPEN")).toBe(true);
-  // Terminal states retire the now-stale button.
-  expect(merge("MERGED")).toBe(false);
-  expect(merge("CLOSED")).toBe(false);
+    }))).some((b) => "customId" in b && b.customId.startsWith("beckett:v1:merge"));
+  expect(hasMerge(undefined)).toBe(true);
+  expect(hasMerge("OPEN")).toBe(true);
+  expect(hasMerge("MERGED")).toBe(false);
+  expect(hasMerge("CLOSED")).toBe(false);
 });
 
-test("an in-flight branch offers cancel but not merge", () => {
-  const running = taskCardButtons(taskCard({}, { status: "running" }));
-  expect(running).toContainEqual({ label: "Cancel #104.1", customId: "beckett:v1:cancel:104.1", danger: true });
-  expect(running.some((b) => "customId" in b && b.customId.startsWith("beckett:v1:merge"))).toBe(false);
-  expect(running).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:104" });
+test("an in-flight branch offers cancel in the action row but no accessory", () => {
+  const card = renderTaskCard(taskCard({}, { status: "running" }));
+  expect(actionButtons(card)).toContainEqual({ label: "Cancel #104.1", customId: "beckett:v1:cancel:104.1", danger: true });
+  expect(accessories(card)).toHaveLength(0);
+  expect(actionButtons(card)).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:104" });
 });
 
 test("a cancelled branch offers neither merge nor cancel, still attach", () => {
-  const buttons = taskCardButtons(taskCard({ status: "cancelled" }, { status: "cancelled" }));
-  expect(buttons.some((b) => "customId" in b && b.customId.startsWith("beckett:v1:cancel"))).toBe(false);
-  expect(buttons.some((b) => "customId" in b && b.customId.startsWith("beckett:v1:merge"))).toBe(false);
-  expect(buttons).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:104" });
+  const card = renderTaskCard(taskCard({ status: "cancelled" }, { status: "cancelled" }));
+  const ids = [...actionButtons(card), ...accessories(card)]
+    .flatMap((b) => ("customId" in b ? [b.customId] : []));
+  expect(ids.some((id) => id.startsWith("beckett:v1:cancel"))).toBe(false);
+  expect(ids.some((id) => id.startsWith("beckett:v1:merge"))).toBe(false);
+  expect(actionButtons(card)).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:104" });
 });
 
 test("a task with no branches still renders and offers attach", () => {
-  const snapshot: TaskCardSnapshot = { number: 5, title: "Fresh", status: "active", updatedAt: "2026-07-28T00:00:00.000Z", branches: [] };
-  const embed = renderTaskCardEmbed(snapshot);
-  expect(JSON.stringify(embed.fields)).toContain("No branches yet");
-  expect(taskCardButtons(snapshot)).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:5" });
+  const card = renderTaskCard({ number: 5, title: "Fresh", status: "active", updatedAt: "2026-07-28T00:00:00.000Z", branches: [] });
+  expect(cardText(card)).toContain("No branches yet");
+  expect(actionButtons(card)).toContainEqual({ label: "Attach to thread", customId: "beckett:v1:attach:5" });
+});
+
+test("branch screenshots render as one inline gallery with per-branch captions", () => {
+  const card = renderTaskCard({
+    ...taskCard(),
+    branches: [
+      { ref: "104.1", title: "Backend", status: "done", images: [{ url: "https://cdn.discordapp.com/a.png" }] },
+      {
+        ref: "104.2",
+        title: "Frontend",
+        status: "review",
+        images: [{ url: "https://cdn.discordapp.com/b.png", description: "OPS-12" }],
+      },
+    ],
+  });
+  const galleries = blocksOfKind(card, "gallery");
+  expect(galleries).toHaveLength(1);
+  expect(galleries[0]?.images).toEqual([
+    { url: "https://cdn.discordapp.com/a.png", description: "#104.1 · Backend" },
+    { url: "https://cdn.discordapp.com/b.png", description: "OPS-12" },
+  ]);
+});
+
+test("no images means no gallery block", () => {
+  expect(blocksOfKind(renderTaskCard(taskCard()), "gallery")).toHaveLength(0);
+});
+
+test("a branch overflow folds into a header note instead of breaking the container budget", () => {
+  const branches = Array.from({ length: 9 }, (_, i) => ({
+    ref: `104.${i + 1}`,
+    title: `Branch ${i + 1}`,
+    status: "running" as const,
+  }));
+  const card = renderTaskCard({ ...taskCard(), branches });
+  // Container cap is 10 children: header + separator + sections + actions + footer.
+  expect(card.blocks.length).toBeLessThanOrEqual(10);
+  expect(cardText(card)).toContain("more branches not shown");
+});
+
+test("a gallery narrows the section budget rather than exceeding the container cap", () => {
+  const branches = Array.from({ length: 9 }, (_, i) => ({
+    ref: `104.${i + 1}`,
+    title: `Branch ${i + 1}`,
+    status: "running" as const,
+    images: [{ url: `https://cdn.discordapp.com/${i}.png` }],
+  }));
+  const card = renderTaskCard({ ...taskCard(), branches });
+  expect(card.blocks.length).toBeLessThanOrEqual(10);
+  expect(blocksOfKind(card, "gallery")[0]?.images.length).toBeLessThanOrEqual(10);
 });

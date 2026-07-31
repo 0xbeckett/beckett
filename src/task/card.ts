@@ -12,7 +12,7 @@
  * Every other failure (offline, rate limited, permission) skips this tick and waits for the next
  * lifecycle change, so a bad gateway can never spin.
  */
-import { renderTaskCardEmbed, taskCardButtons } from "../discord/cards.ts";
+import { renderTaskCard } from "../discord/cards.ts";
 import { DiscordUnknownMessageError, type DiscordGateway } from "../discord/gateway.ts";
 import { log as rootLog } from "../log.ts";
 import type { Logger } from "../types.ts";
@@ -21,11 +21,18 @@ import type { TaskStore, WorkTask } from "./store.ts";
 
 export interface TaskCardServiceOptions {
   store: Pick<TaskStore, "getTask" | "setCard">;
-  gateway: Pick<DiscordGateway, "post" | "editMessage">;
+  gateway: Pick<DiscordGateway, "post" | "editMessage" | "deleteMessage">;
   /** Where a task's card is FIRST posted (attached thread → grounded workspace → origin channel). */
   resolveChannel: (task: WorkTask) => string | null;
   logger?: Logger;
 }
+
+/**
+ * The renderer generation the service posts. Discord's Components V2 flag is immutable per
+ * message, so a card posted WITHOUT it (a pre-versioning legacy embed, `v` absent) can never be
+ * edited into the V2 shape — {@link TaskCardService.render} deletes and reposts it once instead.
+ */
+const CARD_VERSION = 2;
 
 export class TaskCardService {
   private readonly logger: Logger;
@@ -81,12 +88,26 @@ export class TaskCardService {
     const task = this.opts.store.getTask(taskNumber);
     if (!task) return;
     const snapshot = taskCardSnapshot(task);
-    const embed = renderTaskCardEmbed(snapshot);
-    const buttons = taskCardButtons(snapshot);
+    const card = renderTaskCard(snapshot);
+
+    // A stale-generation card can never be edited into the current shape (the V2 flag is
+    // immutable), so it is replaced outright: delete the old message best-effort, then post fresh.
+    if (task.card && task.card.v !== CARD_VERSION) {
+      try {
+        await this.opts.gateway.deleteMessage(task.card.channelId, task.card.messageId);
+      } catch (error) {
+        this.logger.debug("legacy card delete failed; posting replacement anyway", {
+          task: taskNumber,
+          error: String(error),
+        });
+      }
+      await this.repost(task, task.card.channelId);
+      return;
+    }
 
     if (task.card) {
       try {
-        await this.opts.gateway.editMessage(task.card.channelId, task.card.messageId, { embeds: [embed], buttons });
+        await this.opts.gateway.editMessage(task.card.channelId, task.card.messageId, { card });
         return;
       } catch (error) {
         // Deleted target is the ONE repost path; everything else (offline, rate limit, permission)
@@ -113,11 +134,16 @@ export class TaskCardService {
       this.logger.debug("task has no channel for a card; skipping", { task: taskNumber });
       return;
     }
+    await this.repost(task, channelId);
+  }
+
+  /** Post + persist a fresh card, logging (never throwing) on failure. */
+  private async repost(task: WorkTask, channelId: string): Promise<void> {
     try {
       await this.postAt(task, channelId);
     } catch (error) {
       this.logger.warn("task card post failed; will retry on next change", {
-        task: taskNumber,
+        task: task.number,
         channelId,
         error: String(error),
       });
@@ -128,12 +154,11 @@ export class TaskCardService {
   private async postAt(task: WorkTask, channelId: string): Promise<void> {
     const snapshot = taskCardSnapshot(task);
     const messageId = await this.opts.gateway.post(channelId, "", {
-      embeds: [renderTaskCardEmbed(snapshot)],
-      buttons: taskCardButtons(snapshot),
+      card: renderTaskCard(snapshot),
       singleMessage: true,
       queueIfOffline: false,
     });
-    await this.opts.store.setCard(task.number, { channelId, messageId });
+    await this.opts.store.setCard(task.number, { channelId, messageId, v: CARD_VERSION });
   }
 }
 

@@ -52,6 +52,11 @@ import {
   ChannelType,
   MessageFlags,
   EmbedBuilder,
+  ContainerBuilder,
+  SectionBuilder,
+  TextDisplayBuilder,
+  SeparatorBuilder,
+  MediaGalleryBuilder,
   ThreadAutoArchiveDuration,
 } from "discord.js";
 import type {
@@ -59,6 +64,8 @@ import type {
   DiscordMessageEditPayload,
   IncomingMessage,
   IncomingReaction,
+  DiscordButton,
+  DiscordCard,
   DiscordComponentInteraction,
   ReplyContextMessage,
   ReplyOptions,
@@ -1187,7 +1194,8 @@ export class DiscordJsGateway implements DiscordGateway {
       chunks.length === 0 &&
       (!opts?.files || opts.files.length === 0) &&
       (!opts?.embeds || opts.embeds.length === 0) &&
-      (!opts?.buttons || opts.buttons.length === 0)
+      (!opts?.buttons || opts.buttons.length === 0) &&
+      !opts?.card
     ) {
       throw new Error("discord post needs text, files, an embed, or a component");
     }
@@ -1239,8 +1247,17 @@ export class DiscordJsGateway implements DiscordGateway {
           opts.browserQuestion ? { name: BROWSER_QUESTION_ATTACHMENT_NAME } : undefined,
         ));
       }
-      if (i === 0 && opts?.embeds?.length) payload.embeds = opts.embeds.map((embed) => new EmbedBuilder(embed));
-      if (i === 0 && opts?.buttons?.length) payload.components = buildButtonRows(opts.buttons);
+      if (i === 0 && opts?.card) {
+        // Components V2: the card IS the message. Discord rejects the V2 flag mixed with legacy
+        // content/embeds/components, so this branch is mutually exclusive with the two below.
+        payload.flags = [MessageFlags.IsComponentsV2];
+        payload.components = buildCardComponents(
+          redactCard(opts.card, (text) => this.redactOutboundText(channelId, "card.text", text)),
+        );
+      } else {
+        if (i === 0 && opts?.embeds?.length) payload.embeds = opts.embeds.map((embed) => new EmbedBuilder(embed));
+        if (i === 0 && opts?.buttons?.length) payload.components = buildButtonRows(opts.buttons);
+      }
 
       const sent = await channel.send(payload);
       this.ownMessageIds.add(sent.id);
@@ -1267,6 +1284,22 @@ export class DiscordJsGateway implements DiscordGateway {
       throw new Error(`discord channel ${channelId} is not a text channel`);
     }
     const message = await channel.messages.fetch(messageId);
+    // A Components V2 card replaces the WHOLE message body: the V2 flag cannot coexist with
+    // legacy content/embeds, so they are explicitly cleared. Note the flag itself is immutable
+    // per message — this only works on messages posted as V2 (see TaskCardService's version gate).
+    if (payload.card !== undefined) {
+      await message.edit({
+        allowedMentions: { parse: [] },
+        flags: [MessageFlags.IsComponentsV2],
+        components: buildCardComponents(
+          redactCard(payload.card, (text) => this.redactOutboundText(channelId, "edit.card.text", text)),
+        ),
+        content: "",
+        embeds: [],
+      });
+      this.lastEventTs = Date.now();
+      return;
+    }
     const edit: MessageEditOptions = { allowedMentions: { parse: [] } };
     if (payload.content !== undefined) {
       edit.content = this.redactOutboundText(channelId, "edit.content", payload.content);
@@ -1616,7 +1649,10 @@ function hasEditFields(payload: unknown): payload is DiscordMessageEditPayload {
   return (
     payload !== null &&
     typeof payload === "object" &&
-    (Object.hasOwn(payload, "content") || Object.hasOwn(payload, "embeds") || Object.hasOwn(payload, "buttons"))
+    (Object.hasOwn(payload, "content") ||
+      Object.hasOwn(payload, "embeds") ||
+      Object.hasOwn(payload, "buttons") ||
+      Object.hasOwn(payload, "card"))
   );
 }
 
@@ -1645,15 +1681,17 @@ function isTransientTransportError(error: unknown): boolean {
   ].includes(code);
 }
 
+function buildButton(button: DiscordButton): ButtonBuilder {
+  const built = new ButtonBuilder().setLabel(button.label.slice(0, 80));
+  if ("url" in button) return built.setStyle(ButtonStyle.Link).setURL(button.url);
+  return built
+    .setStyle(button.success ? ButtonStyle.Success : button.danger ? ButtonStyle.Danger : ButtonStyle.Primary)
+    .setCustomId(button.customId);
+}
+
 function buildButtonRow(buttons: NonNullable<ReplyOptions["buttons"]>): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    buttons.slice(0, 5).map((button) => {
-      const built = new ButtonBuilder().setLabel(button.label.slice(0, 80));
-      if ("url" in button) return built.setStyle(ButtonStyle.Link).setURL(button.url);
-      return built
-        .setStyle(button.danger ? ButtonStyle.Danger : ButtonStyle.Primary)
-        .setCustomId(button.customId);
-    }),
+    buttons.slice(0, 5).map((button) => buildButton(button)),
   );
 }
 
@@ -1663,6 +1701,58 @@ function buildButtonRow(buttons: NonNullable<ReplyOptions["buttons"]>): ActionRo
  * keep at most Discord's 25-button ceiling (the tail is dropped rather than rejected — a control
  * that cannot be shown is better than a post that fails outright).
  */
+/**
+ * Lower a render-neutral {@link DiscordCard} into the one V2 container Discord expects. A card
+ * message carries ONLY this container: Discord rejects the IsComponentsV2 flag mixed with legacy
+ * content/embeds, so callers setting `card` set nothing else. Exported for tests.
+ */
+export function buildCardComponents(card: DiscordCard): [ContainerBuilder] {
+  const container = new ContainerBuilder();
+  if (card.color !== undefined) container.setAccentColor(card.color);
+  for (const block of card.blocks.slice(0, 10)) { // Discord's container-child cap
+    switch (block.kind) {
+      case "text":
+        container.addTextDisplayComponents(new TextDisplayBuilder().setContent(block.text));
+        break;
+      case "section": {
+        const section = new SectionBuilder().addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(block.text),
+        );
+        if (block.accessory) section.setButtonAccessory(buildButton(block.accessory));
+        container.addSectionComponents(section);
+        break;
+      }
+      case "separator":
+        container.addSeparatorComponents(new SeparatorBuilder());
+        break;
+      case "actions":
+        container.addActionRowComponents(buildButtonRow(block.buttons));
+        break;
+      case "gallery":
+        container.addMediaGalleryComponents(
+          new MediaGalleryBuilder().addItems(
+            block.images.slice(0, 10).map((image) => ({
+              media: { url: image.url },
+              ...(image.description ? { description: image.description } : {}),
+            })),
+          ),
+        );
+        break;
+    }
+  }
+  return [container];
+}
+
+/** Every free-text block of a card passes the same outbound redaction as message content. */
+function redactCard(card: DiscordCard, redact: (text: string) => string): DiscordCard {
+  return {
+    ...card,
+    blocks: card.blocks.map((block) =>
+      block.kind === "text" || block.kind === "section" ? { ...block, text: redact(block.text) } : block,
+    ),
+  };
+}
+
 function buildButtonRows(buttons: NonNullable<ReplyOptions["buttons"]>): ActionRowBuilder<ButtonBuilder>[] {
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
   for (let i = 0; i < buttons.length && rows.length < 5; i += 5) {

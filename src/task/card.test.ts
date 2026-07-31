@@ -19,7 +19,9 @@ const silent = { debug() {}, info() {}, warn() {}, error() {}, child() { return 
 class FakeGateway {
   posts: Array<{ channelId: string; opts?: ReplyOptions }> = [];
   edits: Array<{ channelId: string; messageId: string; payload: DiscordMessageEditPayload }> = [];
+  deletes: Array<{ channelId: string; messageId: string }> = [];
   nextEditError: Error | null = null;
+  nextDeleteError: Error | null = null;
   private counter = 0;
 
   async post(channelId: string, _content: string, opts?: ReplyOptions): Promise<string> {
@@ -34,6 +36,15 @@ class FakeGateway {
       throw error;
     }
     this.edits.push({ channelId, messageId, payload });
+  }
+
+  async deleteMessage(channelId: string, messageId: string): Promise<void> {
+    if (this.nextDeleteError) {
+      const error = this.nextDeleteError;
+      this.nextDeleteError = null;
+      throw error;
+    }
+    this.deletes.push({ channelId, messageId });
   }
 }
 
@@ -57,12 +68,12 @@ test("first refresh posts one card and persists its id + channel against the tas
   await service.refresh(1);
   expect(gateway.posts).toHaveLength(1);
   expect(gateway.posts[0]?.channelId).toBe("chan-1");
-  // The card carries an embed and the 73.1 buttons.
-  expect(gateway.posts[0]?.opts?.embeds).toHaveLength(1);
-  expect(gateway.posts[0]?.opts?.buttons?.length).toBeGreaterThan(0);
+  // The card is a Components V2 container carrying the branch controls.
+  expect(gateway.posts[0]?.opts?.card?.blocks.length).toBeGreaterThan(0);
   const card = store.getTask(1)?.card;
   expect(card?.messageId).toBe("message-1");
   expect(card?.channelId).toBe("chan-1");
+  expect(card?.v).toBe(2);
 });
 
 test("later refreshes edit the same message in place instead of posting again", async () => {
@@ -75,7 +86,7 @@ test("later refreshes edit the same message in place instead of posting again", 
   expect(gateway.posts).toHaveLength(1);
   expect(gateway.edits).toHaveLength(2);
   expect(gateway.edits.every((e) => e.messageId === "message-1")).toBe(true);
-  expect(gateway.edits.every((e) => e.payload.buttons !== undefined)).toBe(true);
+  expect(gateway.edits.every((e) => e.payload.card !== undefined)).toBe(true);
 });
 
 test("a restarted service reads the persisted card id and resumes editing", async () => {
@@ -91,6 +102,34 @@ test("a restarted service reads the persisted card id and resumes editing", asyn
   expect(gateway.posts).toHaveLength(1);
   expect(gateway.edits).toHaveLength(1);
   expect(gateway.edits[0]?.messageId).toBe("message-1");
+});
+
+test("a pre-versioning legacy card is deleted and reposted once, never edited", async () => {
+  const { store, gateway, service } = await seed();
+  // Simulate a card posted by the legacy embed renderer: no `v` on the stored record.
+  await store.setCard(1, { channelId: "chan-1", messageId: "legacy-1" });
+  await service.refresh(1);
+  expect(gateway.edits).toHaveLength(0);
+  expect(gateway.deletes).toEqual([{ channelId: "chan-1", messageId: "legacy-1" }]);
+  expect(gateway.posts).toHaveLength(1);
+  const card = store.getTask(1)?.card;
+  expect(card?.messageId).toBe("message-1");
+  expect(card?.v).toBe(2);
+  // From here on the fresh V2 card edits in place like any other.
+  await store.setBranchStatus("1.1", "running");
+  await service.refresh(1);
+  expect(gateway.posts).toHaveLength(1);
+  expect(gateway.edits).toHaveLength(1);
+  expect(gateway.edits[0]?.messageId).toBe("message-1");
+});
+
+test("a deleted legacy card still gets its V2 replacement", async () => {
+  const { store, gateway, service } = await seed();
+  await store.setCard(1, { channelId: "chan-1", messageId: "legacy-gone" });
+  gateway.nextDeleteError = new Error("unknown message");
+  await service.refresh(1);
+  expect(gateway.posts).toHaveLength(1);
+  expect(store.getTask(1)?.card?.v).toBe(2);
 });
 
 test("a deleted card is reposted exactly once and the stored id updated", async () => {
@@ -171,7 +210,7 @@ test("postFresh propagates a post failure to the caller", async () => {
   const { service } = await seed();
   const failing = new TaskCardService({
     store: (service as unknown as { opts: { store: TaskStore } }).opts.store,
-    gateway: { post: async () => { throw new Error("missing permission"); }, editMessage: async () => {} },
+    gateway: { post: async () => { throw new Error("missing permission"); }, editMessage: async () => {}, deleteMessage: async () => {} },
     resolveChannel: () => "chan-1",
     logger: silent,
   });

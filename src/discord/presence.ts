@@ -9,6 +9,11 @@
  *   2. `~/.beckett/rpc-status.json` in the `{ details, state }` shape the existing desktop RPC
  *      daemon (`src/rpc/daemon.ts`) already parses — so that daemon needs NO change.
  *
+ * The line is a CUSTOM status (activity type 4), not Playing/Watching: a bot's board state is a
+ * caption, not an activity, and the custom type renders the text verbatim with no forced verb.
+ * Every ACTIVE fact is composed into the one line ("a deploy in flight · 2 branches build")
+ * rather than showing only the highest-priority one, so a busy board reads as a busy board.
+ *
  * The inputs come from the existing 60-second status-snapshot tick (see `shell/main.ts`); this
  * module never polls anything itself. Rate safety is the one real risk: Discord allows ~5 presence
  * updates per 20s per connection, so {@link PresenceController} only emits when the derived line
@@ -40,48 +45,44 @@ export type PresenceStatus = "online" | "idle" | "dnd";
 
 export interface DerivedPresence {
   status: PresenceStatus;
-  /** Discord activity type — only `Playing` or `Watching` are used here. */
-  activityType: ActivityType;
-  /** The activity name Discord renders after the verb, e.g. `3 branches build`. */
+  /** The custom-status state text Discord renders verbatim, e.g. `a deploy in flight · 2 branches build`. */
   text: string;
-  /** The full rendered line (`Watching 3 branches build`) — the RPC detail line + the change anchor. */
+  /** The full rendered line — the RPC detail line + the change anchor. Identical to `text` (no verb). */
   line: string;
 }
 
-/** Human verb Discord prefixes an activity with, mirrored into the RPC detail line. */
-function verbFor(type: ActivityType): string {
-  return type === ActivityType.Playing ? "Playing" : "Watching";
-}
-
-function make(activityType: ActivityType, text: string, status: PresenceStatus): DerivedPresence {
-  return { status, activityType, text, line: `${verbFor(activityType)} ${text}` };
+function make(text: string, status: PresenceStatus): DerivedPresence {
+  return { status, text, line: text };
 }
 
 /**
- * Highest-priority matching board state wins. The strings and (type, status) pairs are the frozen
- * contract from #132 — do not paraphrase them. Plural is correct at N=1 (`1 branch build`) and
- * N>1 (`3 branches build`).
+ * Degraded dominates everything (dnd + its own line). Otherwise every active fact joins the line,
+ * highest-priority first; an empty board reads idle. The strings are the frozen contract from
+ * #132 — do not paraphrase them. Plural is correct at N=1 (`1 branch build`) and N>1 (`3 branches
+ * build`).
  */
 export function derivePresence(inputs: PresenceInputs): DerivedPresence {
-  if (inputs.degraded) return make(ActivityType.Watching, "something break", "dnd");
-  if (inputs.deployInFlight) return make(ActivityType.Playing, "a deploy", "online");
-  if (inputs.browserRunLive) return make(ActivityType.Watching, "a browser run", "online");
+  if (inputs.degraded) return make("something break", "dnd");
+  const facts: string[] = [];
+  if (inputs.deployInFlight) facts.push("a deploy in flight");
+  if (inputs.browserRunLive) facts.push("a browser run live");
   const branches = Math.max(0, Math.floor(inputs.branchesInFlight));
-  if (branches >= 1) {
-    const noun = branches === 1 ? "branch" : "branches";
-    return make(ActivityType.Watching, `${branches} ${noun} build`, "online");
-  }
-  return make(ActivityType.Watching, "an empty board", "idle");
+  if (branches >= 1) facts.push(`${branches} ${branches === 1 ? "branch" : "branches"} build`);
+  if (facts.length === 0) return make("an empty board", "idle");
+  return make(facts.join(" · "), "online");
 }
 
-/** The change anchor: two derived presences are "the same" iff status, type, and text all match. */
+/** The change anchor: two derived presences are "the same" iff status and text both match. */
 export function presenceKey(derived: DerivedPresence): string {
-  return `${derived.status}|${derived.activityType}|${derived.text}`;
+  return `${derived.status}|${derived.text}`;
 }
 
-/** The discord.js payload for a derived presence. */
+/** The discord.js payload for a derived presence: one Custom activity, text carried in `state`. */
 export function toPresenceData(derived: DerivedPresence): PresenceData {
-  return { status: derived.status, activities: [{ type: derived.activityType, name: derived.text }] };
+  return {
+    status: derived.status,
+    activities: [{ type: ActivityType.Custom, name: "custom", state: derived.text }],
+  };
 }
 
 /**

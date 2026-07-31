@@ -311,3 +311,26 @@ test("a pre-card registry still parses (the card field is optional)", () => {
   expect(store.getTask(1)?.card).toBeUndefined();
   expect(store.getTask(1)?.title).toBe("Legacy");
 });
+
+test("branch card images dedupe by URL, cap at ten, and survive a reload", async () => {
+  const { path, store } = makeStore();
+  await store.createTask({ title: "Shots", originChannelId: "c1" });
+
+  await store.addBranchImage("1.1", { url: "https://cdn.example.com/a.png", description: "OPS-1" });
+  // A retried upload of the same URL never doubles the entry.
+  await store.addBranchImage("1.1", { url: "https://cdn.example.com/a.png", description: "OPS-1" });
+  for (let i = 0; i < 9; i++) {
+    await store.addBranchImage("1.1", { url: `https://cdn.example.com/${i}.png` });
+  }
+
+  let branch = new TaskStore(path).getTask(1)?.branches[0];
+  expect(branch?.images).toHaveLength(10);
+  expect(branch?.images?.filter((img) => img.url === "https://cdn.example.com/a.png")).toHaveLength(1);
+
+  // The cap keeps the most recent: one more upload pushes the oldest (a.png) off the reel.
+  await store.addBranchImage("1.1", { url: "https://cdn.example.com/9.png" });
+  branch = new TaskStore(path).getTask(1)?.branches[0];
+  expect(branch?.images).toHaveLength(10);
+  expect(branch?.images?.some((img) => img.url === "https://cdn.example.com/a.png")).toBe(false);
+  expect(branch?.images?.at(-1)?.url).toBe("https://cdn.example.com/9.png");
+});

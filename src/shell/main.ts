@@ -691,6 +691,18 @@ async function boot(): Promise<BootedSystem> {
           shotLog.warn("screenshot channel ping failed", { ticket: ticket.identifier, error: (err as Error).message });
         }
       }
+      // Feed the task card's gallery reel: the hosted URL is evergreen CDN, so storing it on the
+      // branch lets the next card refresh render the screenshot inline instead of only as a ping.
+      if (hostedUrl) {
+        try {
+          const found = tasks.findByTicket(ticket.id) ?? tasks.findByTicket(ticket.identifier);
+          if (found) {
+            await tasks.addBranchImage(found.branch.ref, { url: hostedUrl, description: ticket.identifier });
+          }
+        } catch (err) {
+          shotLog.warn("screenshot card-image store failed", { ticket: ticket.identifier, error: (err as Error).message });
+        }
+      }
       const body = hostedUrl
         ? `${BECKETT_COMMENT_MARKER}\n📸 **Frontend screenshot** of the built branch:\n\n![${ticket.identifier} frontend](${hostedUrl})`
         : `${BECKETT_COMMENT_MARKER}\n📸 **Frontend screenshot** of the built branch captured at \`${pngPath}\`.`;

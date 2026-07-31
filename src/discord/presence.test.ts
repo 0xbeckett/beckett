@@ -5,6 +5,7 @@ import {
   initialPresenceData,
   PresenceController,
   presenceKey,
+  toPresenceData,
   type PresenceInputs,
 } from "./presence.ts";
 
@@ -27,37 +28,38 @@ const silentLogger = {
 };
 
 describe("derivePresence — state priority", () => {
-  test("nothing running → Watching an empty board (idle)", () => {
+  test("nothing running → an empty board (idle)", () => {
     const d = derivePresence(NOTHING);
-    expect(d).toMatchObject({ activityType: ActivityType.Watching, text: "an empty board", status: "idle" });
-    expect(d.line).toBe("Watching an empty board");
+    expect(d).toMatchObject({ text: "an empty board", status: "idle" });
+    expect(d.line).toBe("an empty board");
   });
 
-  test("branches in flight → Watching N branches build (online)", () => {
+  test("branches in flight → N branches build (online)", () => {
     const d = derivePresence({ ...NOTHING, branchesInFlight: 3 });
-    expect(d).toMatchObject({ activityType: ActivityType.Watching, text: "3 branches build", status: "online" });
+    expect(d).toMatchObject({ text: "3 branches build", status: "online" });
   });
 
-  test("browser run outranks branches", () => {
-    const d = derivePresence({ ...NOTHING, browserRunLive: true, branchesInFlight: 5 });
-    expect(d).toMatchObject({ activityType: ActivityType.Watching, text: "a browser run", status: "online" });
+  test("active facts compose into one line, highest-priority first", () => {
+    const d = derivePresence({ ...NOTHING, deployInFlight: true, browserRunLive: true, branchesInFlight: 2 });
+    expect(d.text).toBe("a deploy in flight · a browser run live · 2 branches build");
+    expect(d.status).toBe("online");
   });
 
-  test("deploy outranks browser run and branches", () => {
-    const d = derivePresence({ ...NOTHING, deployInFlight: true, browserRunLive: true, branchesInFlight: 5 });
-    expect(d).toMatchObject({ activityType: ActivityType.Playing, text: "a deploy", status: "online" });
+  test("a browser run and branches compose without a deploy", () => {
+    const d = derivePresence({ ...NOTHING, browserRunLive: true, branchesInFlight: 1 });
+    expect(d.text).toBe("a browser run live · 1 branch build");
   });
 
-  test("degraded outranks everything", () => {
+  test("degraded dominates everything and drops the other facts", () => {
     const d = derivePresence({ degraded: true, deployInFlight: true, browserRunLive: true, branchesInFlight: 9 });
-    expect(d).toMatchObject({ activityType: ActivityType.Watching, text: "something break", status: "dnd" });
+    expect(d).toMatchObject({ text: "something break", status: "dnd" });
   });
 
-  test("full priority ladder, highest-first", () => {
+  test("full ladder, highest-first", () => {
     const ladder: Array<[PresenceInputs, string]> = [
       [{ degraded: true, deployInFlight: true, browserRunLive: true, branchesInFlight: 2 }, "something break"],
-      [{ degraded: false, deployInFlight: true, browserRunLive: true, branchesInFlight: 2 }, "a deploy"],
-      [{ degraded: false, deployInFlight: false, browserRunLive: true, branchesInFlight: 2 }, "a browser run"],
+      [{ degraded: false, deployInFlight: true, browserRunLive: true, branchesInFlight: 2 }, "a deploy in flight · a browser run live · 2 branches build"],
+      [{ degraded: false, deployInFlight: false, browserRunLive: true, branchesInFlight: 2 }, "a browser run live · 2 branches build"],
       [{ degraded: false, deployInFlight: false, browserRunLive: false, branchesInFlight: 2 }, "2 branches build"],
       [{ degraded: false, deployInFlight: false, browserRunLive: false, branchesInFlight: 0 }, "an empty board"],
     ];
@@ -82,10 +84,20 @@ describe("derivePresence — plural", () => {
   });
 });
 
+describe("toPresenceData — custom status", () => {
+  test("renders as a Custom activity with the line in state, not name", () => {
+    const data = toPresenceData(derivePresence({ ...NOTHING, branchesInFlight: 2 }));
+    expect(data).toEqual({
+      status: "online",
+      activities: [{ type: ActivityType.Custom, name: "custom", state: "2 branches build" }],
+    });
+  });
+});
+
 test("initialPresenceData is the nothing-running state", () => {
   expect(initialPresenceData()).toEqual({
     status: "idle",
-    activities: [{ type: ActivityType.Watching, name: "an empty board" }],
+    activities: [{ type: ActivityType.Custom, name: "custom", state: "an empty board" }],
   });
 });
 
@@ -116,7 +128,7 @@ describe("PresenceController — change-only + rate floor", () => {
     const h = harness();
     await h.controller.update(NOTHING);
     expect(h.presences).toHaveLength(1);
-    expect(h.statuses).toEqual([{ details: "Watching an empty board", state: "beckett" }]);
+    expect(h.statuses).toEqual([{ details: "an empty board", state: "beckett" }]);
   });
 
   test("does not re-emit when the derived line is unchanged", async () => {
@@ -134,8 +146,8 @@ describe("PresenceController — change-only + rate floor", () => {
     h.advance(60_000);
     await h.controller.update({ ...NOTHING, branchesInFlight: 2 });
     expect(h.presences).toHaveLength(2);
-    expect(h.presences[1]?.activities?.[0]?.name).toBe("2 branches build");
-    expect(h.statuses[1]).toEqual({ details: "Watching 2 branches build", state: "beckett" });
+    expect(h.presences[1]?.activities?.[0]?.state).toBe("2 branches build");
+    expect(h.statuses[1]).toEqual({ details: "2 branches build", state: "beckett" });
   });
 
   test("a change inside the 15s floor is suppressed, then re-sent after the floor", async () => {
@@ -148,7 +160,7 @@ describe("PresenceController — change-only + rate floor", () => {
     h.advance(15_000); // t=21000, floor cleared; still the pending change
     await h.controller.update({ ...NOTHING, branchesInFlight: 1 });
     expect(h.presences).toHaveLength(2);
-    expect(h.presences[1]?.activities?.[0]?.name).toBe("1 branch build");
+    expect(h.presences[1]?.activities?.[0]?.state).toBe("1 branch build");
   });
 
   test("rapid A→B→A within the floor never leaves presence stuck on a stale line", async () => {
@@ -163,7 +175,7 @@ describe("PresenceController — change-only + rate floor", () => {
     h.advance(15_000);
     await h.controller.update({ ...NOTHING, branchesInFlight: 2 }); // now B, floor cleared
     expect(h.presences).toHaveLength(2);
-    expect(h.presences[1]?.activities?.[0]?.name).toBe("2 branches build");
+    expect(h.presences[1]?.activities?.[0]?.state).toBe("2 branches build");
   });
 });
 
@@ -179,7 +191,7 @@ describe("PresenceController — failures are contained", () => {
       },
     });
     await controller.update(NOTHING); // must resolve, not reject
-    expect(statuses).toEqual([{ details: "Watching an empty board", state: "beckett" }]);
+    expect(statuses).toEqual([{ details: "an empty board", state: "beckett" }]);
   });
 
   test("both sinks throwing is swallowed", async () => {
@@ -195,7 +207,7 @@ describe("PresenceController — failures are contained", () => {
   });
 });
 
-test("presenceKey distinguishes status/type/text", () => {
+test("presenceKey distinguishes status/text", () => {
   const a = derivePresence(NOTHING);
   const b = derivePresence({ ...NOTHING, branchesInFlight: 1 });
   expect(presenceKey(a)).not.toBe(presenceKey(b));

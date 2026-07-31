@@ -11,6 +11,7 @@ import { ChannelType, Events, MessageFlags } from "discord.js";
 import type { ReplyOptions } from "../types.ts";
 import { chunkReply } from "./chunk.ts";
 import {
+  buildCardComponents,
   DiscordJsGateway,
   DiscordTransientMessageEditError,
   DiscordUnknownMessageError,
@@ -952,6 +953,105 @@ test("sendNow supports an embed-only status card with a link button", async () =
   expect(payloads[0]).not.toHaveProperty("content");
   expect((payloads[0]?.embeds as unknown[])?.length).toBe(1);
   expect((payloads[0]?.components as unknown[])?.length).toBe(1);
+});
+
+test("sendNow posts a Components V2 card with the V2 flag and no legacy fields", async () => {
+  const payloads: Array<Record<string, unknown>> = [];
+  const gateway = new DiscordJsGateway();
+  const channel = {
+    isSendable: () => true,
+    send: async (payload: Record<string, unknown>) => {
+      payloads.push(payload);
+      return { id: "v2-card" };
+    },
+  };
+  (gateway as unknown as { client: unknown }).client = { channels: { fetch: async () => channel } };
+
+  const id = await (
+    gateway as unknown as {
+      sendNow: (channelId: string, content: string, opts: unknown) => Promise<string>;
+    }
+  ).sendNow("chan-1", "", {
+    card: {
+      color: 0x2f81f7,
+      blocks: [
+        { kind: "text", text: "## #42 - Voting" },
+        { kind: "separator" },
+        {
+          kind: "section",
+          text: "**#42.1 · API**\nRunning",
+          accessory: { label: "Merge #42.1", customId: "beckett:v1:merge:42.1", success: true },
+        },
+        { kind: "gallery", images: [{ url: "https://cdn.discordapp.com/shot.png", description: "OPS-1" }] },
+        { kind: "actions", buttons: [{ label: "Attach to thread", customId: "beckett:v1:attach:42" }] },
+      ],
+    },
+    singleMessage: true,
+  });
+
+  expect(id).toBe("v2-card");
+  expect(payloads).toHaveLength(1);
+  const sent = payloads[0]!;
+  expect(sent.flags).toEqual([MessageFlags.IsComponentsV2]);
+  // A card IS the message: no legacy content/embeds may ride along (Discord rejects the mix).
+  expect(sent).not.toHaveProperty("content");
+  expect(sent).not.toHaveProperty("embeds");
+  const container = (sent.components as Array<{ toJSON: () => Record<string, unknown> }>)[0]!;
+  const json = container.toJSON();
+  expect(json.accent_color).toBe(0x2f81f7);
+  expect((json.components as unknown[]).length).toBe(5);
+});
+
+test("editMessage with a card clears legacy fields and pins the V2 flag", async () => {
+  const patches: Array<Record<string, unknown>> = [];
+  const gateway = fakeEditableGateway(async (payload) => { patches.push(payload); });
+
+  await gateway.editMessage("chan-1", "message-1", {
+    card: { blocks: [{ kind: "text", text: "## #42 - Voting" }] },
+  });
+
+  expect(patches).toHaveLength(1);
+  expect(patches[0]?.flags).toEqual([MessageFlags.IsComponentsV2]);
+  expect(patches[0]?.content).toBe("");
+  expect(patches[0]?.embeds).toEqual([]);
+  expect((patches[0]?.components as unknown[])?.length).toBe(1);
+  expect(patches[0]?.allowedMentions).toEqual({ parse: [] });
+});
+
+test("buildCardComponents renders every block kind inside one accent container", () => {
+  const [container] = buildCardComponents({
+    color: 0x2ea043,
+    blocks: [
+      { kind: "text", text: "## Heading" },
+      { kind: "separator" },
+      { kind: "section", text: "Body", accessory: { label: "Open PR", url: "https://x/pull/1" } },
+      { kind: "actions", buttons: [{ label: "Cancel #1.1", customId: "beckett:v1:cancel:1.1", danger: true }] },
+      { kind: "gallery", images: [{ url: "https://cdn.discordapp.com/a.png" }] },
+    ],
+  });
+  const json = container.toJSON() as { accent_color: number; components: Array<{ type: number }> };
+  expect(json.accent_color).toBe(0x2ea043);
+  expect(json.components).toHaveLength(5);
+});
+
+test("buildCardComponents styles success and danger buttons", () => {
+  const [container] = buildCardComponents({
+    blocks: [
+      {
+        kind: "actions",
+        buttons: [
+          { label: "Merge #1.1", customId: "beckett:v1:merge:1.1", success: true },
+          { label: "Cancel #1.1", customId: "beckett:v1:cancel:1.1", danger: true },
+        ],
+      },
+    ],
+  });
+  const json = container.toJSON() as {
+    components: Array<{ components: Array<{ style: number; label: string }> }>;
+  };
+  const [merge, cancel] = json.components[0]!.components;
+  expect(merge).toMatchObject({ label: "Merge #1.1", style: 3 }); // ButtonStyle.Success
+  expect(cancel).toMatchObject({ label: "Cancel #1.1", style: 4 }); // ButtonStyle.Danger
 });
 
 test("fetchMessageContext folds a forwarded snapshot into an otherwise-empty target row (#113)", async () => {

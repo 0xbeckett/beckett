@@ -1,5 +1,5 @@
-/** Pure renderers for compact Discord embeds. They receive aggregates, never source patches. */
-import type { DiscordButton, DiscordEmbed } from "../types.ts";
+/** Pure renderers for compact Discord embeds and Components V2 cards. They receive aggregates, never source patches. */
+import type { DiscordButton, DiscordCard, DiscordCardBlock, DiscordCardImage, DiscordEmbed } from "../types.ts";
 import type { BranchCardSnapshot, TaskCardBranchSnapshot, TaskCardSnapshot } from "../task/status.ts";
 import type { TaskBranchStatus } from "../task/store.ts";
 import { componentId } from "./interactions.ts";
@@ -78,7 +78,14 @@ export function renderBranchEmbed(card: BranchCardSnapshot): DiscordEmbed {
   };
 }
 
-// ── task card (#104): one self-editing embed per task, machine state only ──────────────────────
+// ── task card (#104): one self-editing Components V2 card per task, machine state only ───────
+//
+// The card is a single accent-colored container: a heading, one section per branch (status +
+// links, with the branch's primary control pinned as the section accessory), an inline media
+// gallery of branch screenshots when any exist, and a bottom action row for cancel/attach.
+// Discord caps a container at TEN components, so the section budget is whatever is left after
+// the fixed header/separator/actions/footer and the optional gallery; overflow branches are
+// folded into a "…and N more" header note rather than breaking the send.
 
 /** Human label for each lifecycle state the card reflects. */
 const BRANCH_STATE_LABEL: Record<TaskBranchStatus, string> = {
@@ -106,56 +113,114 @@ const BRANCH_STATE_ICON: Record<TaskBranchStatus, string> = {
   cancelled: "⚫",
 };
 
-/**
- * The whole task as one embed: title, aggregate colour, and a field per branch carrying its
- * lifecycle state and — once work has produced them — the artifact and preview links. This is
- * machine state, edited in place; it never speaks in Beckett's voice.
- */
-export function renderTaskCardEmbed(snapshot: TaskCardSnapshot): DiscordEmbed {
-  const fields: NonNullable<DiscordEmbed["fields"]> = snapshot.branches.map((branch) => ({
-    name: truncate(`#${branch.ref} · ${branch.title}`, 240),
-    value: branchLine(branch),
-  }));
-  if (fields.length === 0) fields.push({ name: "Branches", value: "No branches yet" });
-  return {
-    title: truncate(`#${snapshot.number} - ${snapshot.title}`, 240),
-    description: taskStateLine(snapshot),
-    color: taskCardColor(snapshot),
-    fields,
-    footer: { text: "Live task card · updates in place" },
-    timestamp: snapshot.updatedAt,
-  };
+/** Discord caps a container at 10 children; header + separator + actions + footer are fixed. */
+const CONTAINER_BUDGET = 10;
+const FIXED_BLOCKS = 4; // header text, separator, actions row, footer text
+/** A gallery shows at most this many images (Discord's own media-gallery cap). */
+const GALLERY_MAX_IMAGES = 10;
+/** Cancel buttons share one action row with Attach; the remainder wait for a later render. */
+const ACTION_ROW_BUTTON_BUDGET = 5;
+
+/** A branch whose open PR is mergeable gets the green Merge accessory; merged/closed retires it. */
+function mergeable(branch: TaskCardBranchSnapshot): boolean {
+  return (
+    branch.status === "done" &&
+    branch.pullRequestNumber !== undefined &&
+    branch.pullRequestState !== "MERGED" &&
+    branch.pullRequestState !== "CLOSED"
+  );
 }
 
-/** The card's controls: per-branch link/merge/cancel plus one task-level attach. */
-export function taskCardButtons(snapshot: TaskCardSnapshot): DiscordButton[] {
-  const buttons: DiscordButton[] = [];
-  for (const branch of snapshot.branches) {
-    if (branch.artifact) {
-      buttons.push({
-        label: branch.artifact.kind === "pull_request"
-          ? `Open PR${branch.pullRequestNumber ? ` #${branch.pullRequestNumber}` : ""}`
-          : "Open repository",
-        url: branch.artifact.url,
+/** The branch's one pinned control: Merge when shippable, else its artifact link, else nothing. */
+function branchAccessory(branch: TaskCardBranchSnapshot): DiscordButton | undefined {
+  if (mergeable(branch)) {
+    return { label: `Merge #${branch.ref}`, customId: componentId("merge", branch.ref), success: true };
+  }
+  if (branch.artifact) {
+    return {
+      label: branch.artifact.kind === "pull_request"
+        ? `Open PR${branch.pullRequestNumber ? ` #${branch.pullRequestNumber}` : ""}`
+        : "Open repository",
+      url: branch.artifact.url,
+    };
+  }
+  return undefined;
+}
+
+/** `<t:…:R>` renders as Discord-native relative time ("2 minutes ago"); unparseable → no stamp. */
+function relativeTimestamp(iso: string): string | undefined {
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? undefined : `<t:${Math.floor(ms / 1000)}:R>`;
+}
+
+/** Every branch screenshot, most-recent-branch first, capped at the gallery's own limit. */
+function galleryImages(snapshot: TaskCardSnapshot): DiscordCardImage[] {
+  return snapshot.branches
+    .flatMap((branch) =>
+      (branch.images ?? []).map((image) => ({
+        url: image.url,
+        description: image.description ?? `#${branch.ref} · ${truncate(branch.title, 60)}`,
+      })),
+    )
+    .slice(0, GALLERY_MAX_IMAGES);
+}
+
+/**
+ * The whole task as one Components V2 card: accent colour, heading + aggregate state, a section
+ * per branch carrying its lifecycle state and — once work has produced them — artifact/preview
+ * links and the merge control, a screenshot reel, and the cancel/attach row. This is machine
+ * state, edited in place; it never speaks in Beckett's voice.
+ */
+export function renderTaskCard(snapshot: TaskCardSnapshot): DiscordCard {
+  const images = galleryImages(snapshot);
+  const sectionBudget = CONTAINER_BUDGET - FIXED_BLOCKS - (images.length > 0 ? 1 : 0);
+  const shown = snapshot.branches.slice(0, Math.max(1, sectionBudget));
+  const overflow = snapshot.branches.length - shown.length;
+
+  const header = [
+    `## ${truncate(`#${snapshot.number} - ${snapshot.title}`, 80)}`,
+    taskStateLine(snapshot),
+    ...(overflow > 0 ? [`-# …and ${overflow} more branch${overflow === 1 ? "" : "es"} not shown`] : []),
+  ].join("\n");
+
+  const blocks: DiscordCardBlock[] = [{ kind: "text", text: header }, { kind: "separator" }];
+
+  if (shown.length === 0) {
+    blocks.push({ kind: "text", text: "No branches yet" });
+  } else {
+    for (const branch of shown) {
+      const accessory = branchAccessory(branch);
+      blocks.push({
+        kind: "section",
+        text: `**${truncate(`#${branch.ref} · ${branch.title}`, 80)}**\n${branchLine(branch)}`,
+        ...(accessory ? { accessory } : {}),
       });
     }
-    if (
-      branch.status === "done" &&
-      branch.pullRequestNumber &&
-      branch.pullRequestState !== "MERGED" &&
-      branch.pullRequestState !== "CLOSED"
-    ) {
-      buttons.push({ label: `Merge #${branch.ref}`, customId: componentId("merge", branch.ref) });
-    }
-    if (branch.status !== "cancelled" && branch.status !== "done") {
-      buttons.push({ label: `Cancel #${branch.ref}`, customId: componentId("cancel", branch.ref), danger: true });
-    }
   }
-  // The interaction channel (not this card's location) is the workspace target, so attach carries
-  // the task number and the click resolves the destination from where it was pressed — from a
-  // plain channel, a fresh thread off this card's own message.
-  buttons.push({ label: "Attach to thread", customId: componentId("attach", String(snapshot.number)) });
-  return buttons;
+
+  if (images.length > 0) blocks.push({ kind: "gallery", images });
+
+  // Cancel sits in the shared bottom row (per-branch accessories carry only the primary control);
+  // past the row budget the extras simply reappear as earlier branches resolve and the card
+  // re-renders. Attach is always present — the interaction channel is the workspace target.
+  const cancellable = snapshot.branches.filter((b) => b.status !== "cancelled" && b.status !== "done");
+  const row: DiscordButton[] = [
+    ...cancellable.slice(0, ACTION_ROW_BUTTON_BUDGET - 1).map((branch) => ({
+      label: `Cancel #${branch.ref}`,
+      customId: componentId("cancel", branch.ref),
+      danger: true,
+    })),
+    { label: "Attach to thread", customId: componentId("attach", String(snapshot.number)) },
+  ];
+  blocks.push({ kind: "actions", buttons: row });
+
+  const stamp = relativeTimestamp(snapshot.updatedAt);
+  blocks.push({
+    kind: "text",
+    text: `-# Live task card · updates in place${stamp ? ` · updated ${stamp}` : ""}`,
+  });
+
+  return { color: taskCardColor(snapshot), blocks };
 }
 
 function branchLine(branch: TaskCardBranchSnapshot): string {

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitHubBranchCardReader } from "../github/types.ts";
-import { BranchStatusService } from "./status.ts";
+import { BranchStatusService, taskCardSnapshot } from "./status.ts";
 import { TaskStore } from "./store.ts";
 
 const dirs: string[] = [];
@@ -123,4 +123,23 @@ test("a pre-publish snapshot wins over a still-live worktree after its direct-pu
 
   expect(liveReads).toBe(0);
   expect(card.changes).toEqual({ additions: 4, deletions: 1, files: 2, commits: 1 });
+});
+
+async function store2WithNoImages() {
+  const tasks = store();
+  await tasks.createTask({ title: "Plain" });
+  return taskCardSnapshot(tasks.getTask(1)!).branches[0]!;
+}
+
+test("task card snapshot carries branch gallery images through", async () => {
+  const tasks = store();
+  await tasks.createTask({ title: "Voting", project: "polls" });
+  await tasks.addBranchImage("1.1", { url: "https://cdn.example.com/shot.png", description: "OPS-1" });
+
+  const snapshot = taskCardSnapshot(tasks.getTask(1)!);
+  expect(snapshot.branches[0]?.images).toEqual([{ url: "https://cdn.example.com/shot.png", description: "OPS-1" }]);
+
+  // A branch with no screenshots omits the field entirely.
+  const fresh = await store2WithNoImages();
+  expect(Object.hasOwn(fresh, "images")).toBe(false);
 });

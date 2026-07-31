@@ -115,6 +115,13 @@ const DiffSummarySchema = z.object({
   updatedAt: z.string(),
 });
 
+/** One hosted screenshot on a branch's card gallery reel. CDN URLs are evergreen; no teardown. */
+const CardImageSchema = z.object({
+  url: z.string().min(1),
+  description: z.string().optional(),
+  updatedAt: z.string(),
+});
+
 const TaskBranchSchema = z.object({
   id: z.string().min(1),
   ref: z.string().regex(/^\d+(?:\.\d+)+$/),
@@ -130,6 +137,8 @@ const TaskBranchSchema = z.object({
   diff: DiffSummarySchema.optional(),
   /** A live, externally-reachable preview of this branch's frontend while it is in review. */
   preview: PreviewLinkSchema.optional(),
+  /** Hosted screenshots of the branch's built frontend, rendered as the task card's gallery. */
+  images: z.array(CardImageSchema).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -142,6 +151,12 @@ const TaskBranchSchema = z.object({
 const TaskCardSchema = z.object({
   channelId: z.string().min(1),
   messageId: z.string().min(1),
+  /**
+   * The card RENDERER version that posted this message. Discord's Components V2 flag is immutable
+   * per message, so a card posted by an older renderer can never be edited into the new shape —
+   * the service reposts instead. Absent means a pre-versioning (legacy embed) card.
+   */
+  v: z.number().int().positive().optional(),
   updatedAt: z.string(),
 });
 
@@ -413,9 +428,22 @@ export class TaskStore {
    * Record (or replace) the id + channel of this task's one self-editing card (#104). Replacing is
    * the deleted-card repost path: the old id is gone from Discord, so the fresh one overwrites it.
    */
-  async setCard(taskRef: string | number, card: { channelId: string; messageId: string }): Promise<WorkTask> {
+  async setCard(taskRef: string | number, card: { channelId: string; messageId: string; v?: number }): Promise<WorkTask> {
     return this.updateTask(taskRef, (task) => {
       task.card = { ...card, updatedAt: this.now().toISOString() };
+    });
+  }
+
+  /**
+   * Add a hosted screenshot to a branch's card gallery reel. Dedupes by URL (a retried capture
+   * of the same upload never doubles the entry) and caps the reel at ten — Discord's own media
+   * gallery limit — keeping the most recent.
+   */
+  async addBranchImage(branchRef: string, image: { url: string; description?: string }): Promise<TaskBranch> {
+    return this.updateBranch(branchRef, (branch) => {
+      const existing = (branch.images ?? []).filter((entry) => entry.url !== image.url);
+      existing.push({ ...image, updatedAt: this.now().toISOString() });
+      branch.images = existing.slice(-10);
     });
   }
 
