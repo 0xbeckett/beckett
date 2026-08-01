@@ -1,0 +1,48 @@
+graph TD
+  H(["humans — Discord, CLI, the desktop"])
+
+  subgraph SEATS["SEATS — who speaks"]
+    direction LR
+    R["reflex · Haiku<br/>always warm, per channel<br/>banter + routing"]
+    M["mind · Sonnet<br/>decides, files, steers"]
+    D["deep · Opus<br/>hard trees only"]
+    R -->|"work or a decision"| M
+    M -->|"needs a real plan"| D
+  end
+
+  subgraph KERNEL["KERNEL — invariant"]
+    direction TB
+    ST[("store — one SQLite<br/>job · event · node · edge<br/>work and memory in the same file")]
+    CX["ctx — renders ONE org slice<br/>per turn and per spawn<br/>never a context dump"]
+    LP["loop — write → emit → ready<br/>same tick, no polling"]
+    DRV["drive — continue · rules · initiative<br/>'what next' is a scheduler fact,<br/>never a question put to a model"]
+    SN["session — spawn · stream · steer<br/>resume · budget"]
+    ST --> CX
+    ST --> DRV
+    CX --> LP
+    DRV -->|"next ready job · zero tokens"| LP
+    LP --> SN
+  end
+
+  W["workers<br/>j7 = branch = worktree = session = card"]
+  BUS{{"capsule bus · ONE contract, hot-loadable at runtime"}}
+
+  subgraph CAP["CAPSULES — swappable"]
+    direction LR
+    C1["wire<br/>Discord · CLI"]
+    C2["repo<br/>git · worktree · gh"]
+    C3["desk<br/>Hyprland · AX tree · pixels"]
+    C4["web<br/>browser lane"]
+    C5["canvas<br/>generate · annotate"]
+    C6["ship · vault<br/>deploy · credentials"]
+  end
+
+  H --> SEATS
+  SEATS -->|"job.create — one typed round trip"| KERNEL
+  SN --> W
+  W -->|"events + what it learned"| ST
+  DRV -.->|"gate · stuck · delivered — the only three"| M
+  ST ==>|"card edits as code · zero tokens"| C1
+  W --> BUS
+  SN --> BUS
+  BUS --> CAP

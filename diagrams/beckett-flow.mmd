@@ -1,0 +1,25 @@
+graph TD
+  MSG(["a message lands"]) --> RFX["reflex · Haiku<br/>warm socket, first token ~0.6s"]
+
+  RFX -->|"banter"| CHAT["answers in voice<br/>nothing filed"]
+  RFX -->|"work or a decision"| MIND["mind · Sonnet<br/>one typed round trip"]
+
+  MIND --> FILE["job tree written<br/>j7 · j7.1 · j7.2"]
+  FILE --> RDY["loop derives ready<br/>same tick, no poll"]
+  RDY --> PRE{"preflight<br/>provider healthy?"}
+
+  PRE -->|"no"| HOLD["hold + the exact fix<br/>0 tokens · 0 worktree"]
+  PRE -->|"yes"| WORK["worker session<br/>own worktree, own budget"]
+
+  WORK --> EV[("event log<br/>+ org graph")]
+  EV -->|"card edit as code · 0 tokens"| CARD["the card moves"]
+  EV --> DRIVE{"drive"}
+
+  DRIVE -->|"a next job is ready"| RDY
+  DRIVE -->|"rule fires: PR comment,<br/>red deploy, failed check"| FILE
+  DRIVE -->|"small + obvious"| WORK
+  DRIVE -->|"gate · stuck · delivered"| SAY["Beckett speaks<br/>only these three"]
+
+  HUM(["human cuts in"]) -.->|"barge-in at the next<br/>tool boundary"| WORK
+  HUM -.->|"preempts the live turn"| MIND
+  WORK -.->|"delivered / queued receipt"| SAY
