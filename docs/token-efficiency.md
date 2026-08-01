@@ -36,7 +36,7 @@ as `estimate: true`; only terra and luna have confirmed operational rates. One e
 stale: it carries `claude-fable-5` at $1/$5 (Haiku's tier) against a real live rate of $10/$50 —
 a **10× underestimate** on the one model class that's supposed to be expensive by design. A rate
 table that silently undercounts your priciest model isn't a rounding error, it's a blind spot; v1's
-[telemetry](#the-event-ledger-single-source-of-spend-and-telemetry) has to close it before it can
+[telemetry](#the-event-ledger--single-source-of-spend-and-telemetry) has to close it before it can
 be trusted to gate anything.
 
 ### All-in cost per ticket (implement + review + retries), by primary implement model
@@ -105,9 +105,9 @@ From 1,440 concierge transcripts, 30,148 assistant turns, last 14 days as of 202
 | Cache reads as share of concierge tokens | **78%** (1.89B of 2.42B tokens) |
 | Output tokens as share of daily cost | ~$15 of ~$70 (~21%) |
 
-**The concierge seat alone costs more than 20 days of every worker run combined** ($2,090/mo vs
-a $2,574/20-day run rate of ~$3,861/mo — worker spend and concierge spend are the same order of
-magnitude, and concierge is the bigger of the two). A pure Sonnet-5 swap saves only ~40% (list
+**The concierge seat is the same order of magnitude as all worker spend combined** ($2,090/mo
+concierge vs a $2,574/20-day worker run rate of ~$3,861/mo) — the single largest line item in
+the system. A pure Sonnet-5 swap saves only ~40% (list
 price: ~$41.80/day → ~$1,254/mo; intro price: ~$27.87/day → ~$836/mo), because 78% of the bill is
 cache reads at 0.1× price — the saving tracks the input-price ratio, not the sticker-price gap.
 **Turn volume, not model choice, is the primary lever.** See [§ v1 cost targets](#v1-cost-targets-the-2090mo--250400mo-concierge-attack)
@@ -201,7 +201,7 @@ substantive failure (14% vs 18%) at roughly a quarter of the price ($1.12 vs $4.
 as a ~200-line driver behind the same Runner interface, behind the health cache, with claude as the
 default lane. See [architecture.md](architecture.md) for the Runner abstraction.
 
-**Why fable is rare:** $18.52–$18.93 median all-in, 5× terra/opus — but 0% failure across 26
+**Why fable is rare:** $18.72–$18.93 median all-in, 5× terra/opus — but 0% failure across 26
 correctness-critical runs. Justified only for the one class where a wrong answer is expensive
 enough that 5× the tokens is cheap insurance; cast anywhere else, it's pure waste. Fable never
 reviews, for the same reason in reverse — its review catch rate (12.1%) doesn't clear its price.
@@ -234,7 +234,7 @@ blocks all work is its own outage, and a missing check is cheaper to recover fro
 Nine v0 sidecar stores (`spend.jsonl`, `dispatch.jsonl`, journal, advance-outbox, publish-outbox,
 comment-cursors, poll-snapshot, dispatcher-state, pending-steer store) collapse into one table:
 `event (job_id, kind, payload, cost_usd, tokens, ts)` in `~/.beckett/beckett.db`. Every spend
-number Beckett reports — a card's cost footer, a weekly bill, a per-ticket rollup, a dashboard —
+number Beckett reports — a card's cost footer, a weekly bill, a per-job rollup, a dashboard —
 reads the same rows the Supervisor itself acted on. There is no second accounting system that can
 drift from the first; "what actually happened" is never inferred from prose or reconstructed from
 a differently-shaped file.
@@ -296,7 +296,7 @@ step specifically must show the ~3× expensive-seat turn cut the model predicts 
 job class, not per ticket-as-a-whole) is unchanged: mechanical/haiku jobs are untested but priced
 at haiku's $1/$5 tier; normal terra/sonnet implement jobs should track terra's $1.12–$3.68 median
 substantive/all-in band; long-context jobs the same, minus the luna/haiku option; correctness-
-critical fable jobs stay at $13.52–$18.93 median by design — that cost buys the 0%-failure number,
+critical fable jobs stay at $18.72–$18.93 median by design — that cost buys the 0%-failure number,
 not a target to shrink. Review stays at $1.44 median on sonnet, unchanged, because it already earns
 its keep.
 

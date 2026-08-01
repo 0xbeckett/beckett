@@ -7,7 +7,7 @@ Agent SDK sessions. Process-level and module-level detail lives in [architecture
 the order of operations for getting from v0 to here is [migration.md](migration.md); the cost
 rationale behind the casting and seat choices is [token-efficiency.md](token-efficiency.md).
 
-## The whole design in seven concepts
+## 0. The whole design in seven concepts
 
 Everything below is built from exactly these. Nothing else is durable, nothing else has a name.
 
@@ -39,7 +39,7 @@ Four ground rules follow from the concepts:
   `job` fire an in-process emitter; the scheduler is a function called on that emit and on boot.
   Dispatch latency is a function call, not a poll interval.
 
-## Chosen shape — and the shapes we refused
+## 1. Chosen shape — and the shapes we refused
 
 v1 is **a single Bun Supervisor on `@anthropic-ai/claude-agent-sdk`, one SQLite store, all agent
 work executed as SDK `query()` sessions in worktrees, fronted by the two-seat concierge.**
@@ -59,7 +59,7 @@ Everything load-bearing is GA: `query()`, streaming input, `resume`, `maxBudgetU
 hooks, `canUseTool`, worktrees, skills. **Zero preview-feature bets.** The ~90% code cut is
 achieved by *deleting concepts*, not by outsourcing them to preview features.
 
-## The Job model
+## 2. The Job model
 
 ```sql
 CREATE TABLE job (
@@ -116,9 +116,9 @@ job rows, not a compiler.
 "last completed stage" is simply the set of `done` rows. A crash re-enters at the first
 non-done job — never from scratch, with no workflow-replay dependency.
 
-## Mechanics
+## 3. Mechanics
 
-### Intake → dispatch
+### 3.1 Intake → dispatch
 
 Discord message → Wire → **front desk** (Haiku, warm, per-channel), which does three things and
 nothing else: (a) classifies *directed / ambient / secret* — the deterministic
@@ -138,7 +138,7 @@ one round trip) → DB write → emitter → scheduler → preflight (<50ms when
 | worker milestone → card updated | one concierge turn | **<1s, zero tokens** | DB → Wire card edit as code |
 | crash → work resumed | manual | **boot reconcile pass** | loss bounded to the 120s WIP window |
 
-### Mid-run steering
+### 3.2 Mid-run steering
 
 `job.say(id, text)` **writes the Event row first**, so "dropped" is unrepresentable by
 construction. If the job is `running`, the Supervisor pushes a user turn into the live SDK
@@ -151,7 +151,7 @@ restarts in the same file. A steer landing on `done` work gets an explicit too-l
 states what already happened: *"too late — it already pushed that commit. Revert or fix
 forward?"* Never a bare "ok, updated."
 
-### Review / QA
+### 3.3 Review / QA
 
 A review job is an ordinary child: `runner='agent'`, cast sonnet/medium, dep on the implement
 job, `--json-schema` verdict `{verdict: pass|rework, findings[]}`. Tier is a cast choice
@@ -160,7 +160,7 @@ passed in the rendered brief so review never re-reads the repo cold. Rework is b
 the scheduler. Review stays at today's shape and price on purpose — $1.44 median, 27.6% catch
 rate — it earns its keep. **Fable never reviews** (1.7× sonnet's cost for half the catch rate).
 
-### Dependencies and branch basing
+### 3.4 Dependencies and branch basing
 
 `deps[]` plus the derived-ready rule, with readiness recomputed from the DB (never daemon
 memory alone) so the boot pass catches anything that completed while the Supervisor was down.
@@ -169,7 +169,7 @@ deps branches from its last completed dep's branch head and merges the rest — 
 `origin/main`. The OPS-59/61 stale-basing incident had nothing to do with the tracker
 underneath it; the fix survives the tracker.
 
-### Resume after restart
+### 3.5 Resume after restart
 
 Three durable facts, written in this order:
 
@@ -186,7 +186,7 @@ steers. Resume failure → retry with backoff up to a cap, then `hold='unresumab
 <sha>'` — never a silent restart from scratch. The boot-resume path is exercised by every
 deploy, so it cannot rot.
 
-### Session continuity
+### 3.6 Session continuity
 
 One spawn per task, not per stage. A cast-stable chain keeps **one session**: rework cycles
 resume the original implement session by `session_id` — the model that wrote the code fixes
@@ -194,7 +194,7 @@ the code, with its context intact — instead of a cold re-brief. A **fresh sess
 only where fresh eyes are the point**: review, and any stage whose cast changes. The
 cold-spawn tax is paid exactly where it buys catch rate.
 
-### Budgets and spend
+### 3.7 Budgets and spend
 
 `maxBudgetUsd` on every `query()` and `--max-turns` on every spawn — **enforced spawn-time
 rails**, not post-hoc telemetry (v0's gap). Every result frame writes one Event with tokens
@@ -204,7 +204,7 @@ past what I'd normally spend on it — keep going?"* A yes raises `budget_usd` a
 hold. Budget checks fail-open on ledger-read errors with a warning Event — a stuck budget gate
 is its own outage.
 
-### Preflight by construction
+### 3.8 Preflight by construction
 
 A `health` table keyed `(harness, provider)`: `{status: healthy|cooldown_until|blocked,
 reason}`. Fed two ways: (a) every classed failure event (`rate_limit|overloaded|auth|billing`)
@@ -222,7 +222,7 @@ Event noting the substitution — recall is never silently degraded. (Terra's me
 implement input is 1.46M tokens; it is the long-context cheap lane, haiku the short-context
 cheap lane.)
 
-### Human gates
+### 3.9 Human gates
 
 `runner='human'` rows are never spawned; they cost zero tokens parked and are restart-inert by
 construction — the Supervisor has no code path that starts them. The Wire posts the ask as an
@@ -231,7 +231,7 @@ thumbs-up reaction on the anchor, or a channel-level "yeah go ahead" (resolved a
 single oldest open gate) flips the row. **One nudge at 24h, then silence forever** — parked is
 a legitimate resting state and the card just says so.
 
-### Cancel
+### 3.10 Cancel
 
 `job.cancel(id)` marks the subtree `cancelled`, aborts live sessions, discards buffered steers
 **with an explicit note** — and **keeps the branch**: worktrees are kept on cancel and pruned
@@ -240,7 +240,7 @@ the word if you want it back."* The **hold-and-cancel pre-post staleness gate** 
 re-check before any queued post lands after a cancel) ships in the Wire — ~60 lines, the
 highest feel-per-line item on the floor.
 
-### Failure ladders
+### 3.11 Failure ladders
 
 One policy table in the Supervisor, driven by classified result frames — no ladder code per
 stage:
@@ -254,7 +254,7 @@ stage:
 | substantive failure ×2 on the same job | stop retrying and **ask** — *"failed the same way twice: the harness can't reach the db. Keep poking, or is this on your side?"* |
 | harness substitution | next healthy harness from the fallback order, substitution cap 3 |
 
-### Publish gating
+### 3.12 Publish gating
 
 "Done means the link resolves" (OPS-30), enforced both ways: (a) a `runner='shell'` **verify
 child** fetches the actual PR/URL and requires a 200 before the parent may go `done`; (b) the
@@ -266,7 +266,7 @@ conversational hold. Campaign work funnels off `target_branch`, not main (OPS-18
 **Attach convenience**: `beckett attach j7` shells to `claude --resume <session_id>` —
 observation for humans, GA-only, never in the correctness path.
 
-### Casting
+### 3.13 Casting
 
 Front-load judgment, execute cheap — the fix for the 31%-bounce / 2.2×-escalation tax:
 
@@ -290,7 +290,7 @@ Front-load judgment, execute cheap — the fix for the 31%-bounce / 2.2×-escala
 - Casting is a small deterministic table plus presets consulted at file time — removed from
   the concierge's judgment entirely, which is what makes the Sonnet mind safe (next section).
 
-## The concierge cost attack: ~$2,090/mo → $250–400/mo
+## 4. The concierge cost attack: ~$2,090/mo → $250–400/mo
 
 **Baseline mechanics:** ~$70/day ≈ ~2,150 turns/day on an Opus seat re-reading a ~160k warm
 context (78% of tokens are cache reads). The bill is **turn volume × context size × model** —
@@ -325,22 +325,7 @@ ledger, not the seat. Total **$7–10/day ≈ $210–300/mo**, target band $250�
 busy weeks. Measured, not assumed: spend Events run side-by-side against v0 for a week before
 cutover, and the front-desk step must show the ~3× expensive-seat turn cut or it rolls back.
 
-## Discord surface
-
-Unchanged in feel — this *is* the product — simplified in fact. The full contract is
-[discord.md](discord.md); the orchestration-relevant invariants are: the `-# filed j7` grey
-subtext is stamped by code, never by the model, with refs validated `/^j\d+(\.\d+)*$/` and a
-null-means-post-nothing contract; one self-editing embed card per top-level job driven straight
-off `job`/`event` rows with no reconciler — the card reads the same rows the Supervisor acts
-on, so "what actually happened" is never inferred; workers emit ≤1 beat per meaningful
-milestone via an MCP call and **never speak in channel** — every human-visible sentence is
-authored by the Seats sharing one `persona.md`; Beckett interrupts for exactly three things —
-a gate, a failure it can't resolve, delivery. The only visible change from v0: the ref you see
-is the ref that exists (`j7`, no `OPS-42`/`#42.1` shadow pair); a 30-day `kv` alias map keeps
-old refs resolving, then drops. The ten-conversations checklist in discord.md is the release
-gate for cutover.
-
-## Every v0 must-survive behavior, accounted for
+## 5. Every v0 must-survive behavior, accounted for
 
 The v0 inventory's non-negotiable list, row by row, against where it lives in v1:
 
@@ -358,7 +343,22 @@ The v0 inventory's non-negotiable list, row by row, against where it lives in v1
 | Publish gating (OPS-30, OPS-185) | verify shell child + bounded retries + `target_branch` funnel (§Publish gating) |
 | Casting economics (#156/#159) | deterministic cast table, preflight, MRCR guard (§Casting, §Preflight) |
 
-## Risk register
+## 6. Discord surface
+
+Unchanged in feel — this *is* the product — simplified in fact. The full contract is
+[discord.md](discord.md); the orchestration-relevant invariants are: the `-# filed j7` grey
+subtext is stamped by code, never by the model, with refs validated `/^j\d+(\.\d+)*$/` and a
+null-means-post-nothing contract; one self-editing card per top-level job driven straight
+off `job`/`event` rows with no reconciler — the card reads the same rows the Supervisor acts
+on, so "what actually happened" is never inferred; workers emit ≤1 beat per meaningful
+milestone via an MCP call and **never speak in channel** — every human-visible sentence is
+authored by the Seats sharing one `persona.md`; Beckett interrupts for exactly three things —
+a gate, a failure it can't resolve, delivery. The only visible change from v0: the ref you see
+is the ref that exists (`j7`, no `OPS-42`/`#42.1` shadow pair); a 30-day `kv` alias map keeps
+old refs resolving, then drops. The ten-conversations checklist in discord.md is the release
+gate for cutover.
+
+## 7. Risk register
 
 Preview-feature bets: **none taken.** Everything load-bearing is GA. Preview surfaces and
 their GA paths, one line each:
@@ -387,7 +387,7 @@ Operational risks:
 | Mind context pressure | no channel window, no repo, no diffs on the seat; 60k rotation; sidecar-free rehydrate from board summary |
 | SDK subscription-auth terms | personal use as documented; the API-key path is a config flip |
 
-## Migration
+## 8. Migration
 
 The full order of operations is [migration.md](migration.md). The shape in one paragraph: land
 the store beside v0 with no behavior change; port the pure Discord modules verbatim with their

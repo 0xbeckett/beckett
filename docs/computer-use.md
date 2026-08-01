@@ -13,7 +13,7 @@ This document is the library design that keeps computer use cheap: a strict esca
 free JSON to last-resort pixels, a set of token-cutting techniques applied at each rung, the native
 Hyprland toolbox that makes the cheap rungs possible, and the module list to build. It is v1 law —
 new errand code is written against this ladder, not against the pixel loop directly. Every rung's
-cost lands in the [Event ledger](orchestration.md#2-the-unit-of-work) exactly like any other Job's
+cost lands in the [Event ledger](orchestration.md#2-the-job-model) exactly like any other Job's
 spend; there is no separate computer-use accounting.
 
 See [betterwright.md](betterwright.md) for the browser lane in full (BetterWright is layer L1 of
@@ -107,7 +107,7 @@ That's backwards for cost: step-wise AX interaction still pays (observation + re
 N turns, with the transcript re-read each turn. A BetterWright script performs the same N actions
 for one generation plus one result payload — the code-as-action collapse from §1 applies whether
 or not an AX tree exists. L2 is for the case L1 can't yet handle: a flow novel enough that the
-model can't write a script blind. The synthesis in [betterwright.md §5](betterwright.md) covers
+model can't write a script blind. The v1 usage doctrine section of [betterwright.md](betterwright.md) covers
 this in full; the summary for this ladder is: feed the model one ARIA snapshot before it writes a
 script (so it isn't guessing selectors), cache the working script keyed on a DOM-shape hash, and
 fall back to L2 step-mode only after two failed script attempts on the same flow.
@@ -115,7 +115,7 @@ fall back to L2 step-mode only after two failed script attempts on the same flow
 ### 2.2 Model routing across the ladder
 
 Casting follows the orchestration doc's cast table (§3.13): haiku-class executes L0–L2 steps and
-macro replays; sonnet-class writes BetterWright scripts, plans multi-step errands, and takes over
+macro replays — including single-read BetterWright scripts, cast haiku low per [betterwright.md](betterwright.md)’s browser casting table; sonnet-class writes novel multi-step BetterWright scripts, plans errands, and takes over
 after two consecutive executor failures; opus-class is reserved for gnarly multi-app choreography
 or an explicit request. Keep haiku off L4 entirely — if an errand degrades to full-desktop pixels,
 it has already escalated past the point where the cheap executor is doing useful work, and haiku
@@ -143,7 +143,7 @@ real errand uses most of them at once.
    path gets cached against a `(app-or-site, errand, layout-hash)` key. A cache hit replays at
    near-zero LLM cost; a mismatch (layout hash changed) invalidates and re-derives once. This is
    the same mechanism Stagehand ships for the browser (validate-then-replay, self-heal on
-   mismatch) — Beckett's `memory/macros/` module (§5) generalizes it to the desktop.
+   mismatch) — Beckett's `memory/macros/` module (§6) generalizes it to the desktop.
 4. **Recorded macros with replay.** Every errand that succeeds once gets distilled into a
    parameterized script or cached selector set, keyed by precondition hash. The second occurrence
    of "renew the domain" or "check the shipping status" runs the macro directly and pays for one

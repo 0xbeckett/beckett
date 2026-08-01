@@ -305,12 +305,13 @@ ladder's L1 (see [computer-use.md](computer-use.md) for L0–L4). Concretely:
 1. **L0 first, always** — if a CLI or API answers the question, no browser opens.
 2. **Any web errand enters at L1 (BetterWright)** — code-as-action is the default mode: the model
 writes a script, batches actions, returns distilled data.
-3. **Within L1, a step-mode fallback** — after two failed script attempts on a genuinely novel or
-visually-unpredictable page, the model drops to single-action scripts against `snapshot()` refs instead of
-abandoning the browser lane. Still inside the one-tool contract — a strategy change, not a tool change.
+3. **Step-mode fallback — L2 in ladder terms, still inside the one `betterwright_browser` tool** —
+after two failed script attempts on a genuinely novel or visually-unpredictable page, the model
+drops to single-action scripts against `snapshot()` refs instead of abandoning the browser lane.
+A strategy change, not a tool change.
 4. **Escalate past BetterWright only when the target isn't a web surface at all** — a native
-GTK/Qt/Electron app, terminal-only tooling, a canvas/game with no accessible DOM. That's
-[computer-use.md](computer-use.md)'s L2–L4, run through Omarchy's native toolbox ([omarchy.md](omarchy.md):
+GTK/Qt/Electron app, terminal-only tooling, a canvas/game with no accessible DOM. That's L2's
+desktop half and L3–L4 in [computer-use.md](computer-use.md)'s ladder, run through Omarchy's native toolbox ([omarchy.md](omarchy.md):
 `hyprctl`, AT-SPI, cropped/full-desktop capture) — a different process family, not a BetterWright configuration.
 
 ### Persistent identity budgets

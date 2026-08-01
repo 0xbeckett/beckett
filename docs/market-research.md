@@ -146,12 +146,12 @@ Botpress/Voiceflow builds, Quickchat, eesel) are moderation/support/chat only �
 
 | From | Steal |
 |---|---|
-| Devin | Mid-task clarifying questions in-thread; per-task cost accounting (ACU-like metering per ticket); org Knowledge/Playbooks as first-class memory objects; optimize for cheap correction, not zero-shot perfection |
-| Factory | Milestone → validation-phase loop in plans (`basm` quorum/judge nodes already point here); explicit role boundaries per worker; outcome-language mission intake ("migrate X off Y") |
+| Devin | Mid-task clarifying questions in-thread; per-task cost accounting (ACU-like metering per job); org Knowledge/Playbooks as first-class memory objects; optimize for cheap correction, not zero-shot perfection |
+| Factory | Milestone → validation-phase loop in plans (job-tree quorum/judge rows already point here); explicit role boundaries per worker; outcome-language mission intake ("migrate X off Y") |
 | Codex | Fast ack + report-back-to-originating-thread discipline (the `intake` skill already does the ack — keep it sacred); rolling usage windows for self-imposed token budgets |
-| Copilot/Agent HQ | Issue-assignment metaphor (a ticket assigned to Beckett *is* the intake); review→auto-fix-PR closed loop; branch-level compartmentalization per worker |
+| Copilot/Agent HQ | Issue-assignment metaphor (a job assigned to Beckett *is* the intake); review→auto-fix-PR closed loop; branch-level compartmentalization per worker |
 | Cursor | Parallel isolated workers with trivially reviewable handoff; show the plan before executing |
-| Claude Code | Adopt the primitives wholesale (Agent Teams, Dynamic Workflows, ultracode, hooks, background tasks) instead of hand-rolling — this is the whole v1 thesis (see [`orchestration.md`](orchestration.md)); token burn is linear in fleet size, so effort-tiering per ticket matters |
+| Claude Code | Adopt the GA primitives wholesale (`query()`, streaming input, resume, worktrees, hooks, skills) instead of hand-rolling — this is the whole v1 thesis; the preview tier (Agent Teams, Dynamic Workflows, `--bg` fleets) is explicitly rejected (see [`orchestration.md`](orchestration.md) §7); token burn is linear in fleet size, so effort-tiering per job matters |
 | Claude Tag | One identity, one memory, staged *visible* work anyone can pick up; learn the "company" (the Discord server) passively from its channels |
 | OpenHands | Stay open/self-hosted/model-agnostic as identity, not just architecture |
 | Jules | Task-count quotas as a legible self-limit (n tasks/day) rather than raw token caps |
@@ -197,7 +197,7 @@ Botpress/Voiceflow builds, Quickchat, eesel) are moderation/support/chat only �
   outcome pricing is real but concentrated in support (Intercom Fin $0.99, HubSpot Breeze $0.50,
   Zendesk $1.50–2.00 per resolution) — under 10% adoption today, projected dominant for agentic
   products; hybrid models are 43% of SaaS now, headed toward ~61% by end-2026. Expect
-  per-merged-PR pricing experiments next. *Implication:* meter and report cost-per-ticket even
+  per-merged-PR pricing experiments next. *Implication:* meter and report cost-per-job even
   though the owner pays wholesale — legibility is the point, not a bill.
 - **Fleets are table stakes; the orchestration layer is being absorbed.** Standalone fleet
   dashboards died (Terragon shut down Jan 2026; Bloop/Vibe Kanban wound down hosted service;

@@ -24,8 +24,9 @@ Each has a sharp v0 failure it is a direct answer to.
 
 ### 1. Token efficiency
 
-**v0 counter-example:** the Concierge's standing cost ran ~$2,090/mo median — larger than 20
-days of *all* worker spend combined — because 78% of its tokens were cache re-reads of a
+**v0 counter-example:** the Concierge's standing cost ran ~$2,090/mo median — the same order
+of magnitude as *all* worker spend combined (~$3,861/mo run rate), and the single largest
+line item in the system — because 78% of its tokens were cache re-reads of a
 ~160k-token warm context, and every worker milestone became a full model turn just to narrate
 progress nobody asked about.
 

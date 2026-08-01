@@ -11,7 +11,7 @@ everything that happens to it is an **Event** — one append-only row. **Doctrin
 Claude Code plugin (agents, skills, hooks, one small in-process MCP server) that tells the model
 side how to behave. There is no external tracker, no poller, no outbox, no sidecar JSON: a write
 to the `job` table fires an in-process emitter, and the scheduler is a function called on that
-emit and on boot. The whole repo is ~11.2k lines, down from ~40k. The full mechanics live in
+emit and on boot. The whole repo is ~11.9k lines, down from ~118k (≈71k code + 47k test). The full mechanics live in
 [orchestration.md](orchestration.md); this doc is the shape and the map.
 
 ## The seven concepts
@@ -174,7 +174,7 @@ Targets, not measurements — they are the build's size contract and they sum to
 | `jingle/` + deploy/site/image | 1,200 | credential vault glue and the delivery hands |
 | `cli/` | 550 | `beckett job/plan/say/spend/status/attach/doctor` |
 | Doctrine plugin | ~600 md | `agents/`, `skills/`, prompts, `persona.md` — data, not code |
-| **Total** | **≈11,150 + 600 md** | from ~40k |
+| **Total** | **≈11,850 + 600 md** | from ~118k (≈71k code + 47k test) |
 
 ## Old → new: what absorbed each deleted subsystem
 

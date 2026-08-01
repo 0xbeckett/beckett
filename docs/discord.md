@@ -262,3 +262,32 @@ see [computer-use.md](computer-use.md) for the browser-agent flow that actually 
   state transitions are. Edits are coalesced on meaningful state changes only.
 - **No threads Beckett opens for itself.** Every thread in the product exists because a person
   claimed one with `&j7` or `&recent` — Beckett never creates one unprompted.
+
+## Acceptance: the ten conversations
+
+The release gate for cutover ([migration.md](migration.md)'s build order): before v1 replaces v0
+in front of people, all ten of these conversations have to work — not as demos, but as observed
+behavior against the live `job`/`event` rows. This checklist is the product definition in
+miniature; everything above exists so these ten go well.
+
+1. **Banter silence.** Casual chatter gets a reply in voice and nothing else — no Job, no card,
+   no `-# filed` line.
+2. **A question is not a job.** "what's a good way to do X?" gets an answer in-channel; nothing
+   is filed unless the asker turns it into work.
+3. **≤4s ack.** A real work request shows its `-# filed j7` receipt within about four seconds of
+   the message landing.
+4. **An honest "how's it going".** Status answers read the live rows — the card and the reply can
+   never disagree, and neither can invent progress.
+5. **Steer receipts.** A mid-run correction gets a `delivered`/`queued` receipt, and the words
+   provably reach the worker (orchestration.md §3.2) — or Beckett says they arrived too late and
+   states what already happened.
+6. **Cheap stop.** "stop" cancels the subtree cleanly: work halts, the branch survives for the
+   7-day prune window, and the card says exactly what was abandoned.
+7. **Zero-token gates.** A parked `runner='human'` gate consumes nothing while it waits — one
+   nudge at 24h, then silence until a human answers.
+8. **Hours-later resume.** Picking the conversation back up hours later continues from real
+   state — the attach map, the card, and the session all agree on where things stand.
+9. **"Why did you do it that way?"** Beckett answers from memory and Event rows — an account of
+   what actually happened, never a plausible reconstruction.
+10. **Truthful post-crash state.** After a restart, Beckett reports exactly what survived and
+    resumes from it — never a silent from-scratch restart, never a claimed memory it doesn't have.

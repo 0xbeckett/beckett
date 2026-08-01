@@ -6,8 +6,8 @@ means. It is not a narrative — it is the checklist the cut is run against.
 
 ## The cut in numbers
 
-`src/` on this branch is **117,837 lines** (70,851 code + 46,986 test). v1 lands at **≈11,150
-lines of code + ~600 lines of doctrine markdown** — the module list in orchestration.md §5 — a
+`src/` on this branch is **117,837 lines** (70,851 code + 46,986 test). v1 lands at **≈11,850
+lines of code + ~600 lines of doctrine markdown** — the module list in [architecture.md](architecture.md)’s repo map — a
 **~90% cut**, tests included, because the tests that die are the ones whose subjects die with
 them.
 
@@ -83,8 +83,9 @@ disagreed, synthesis wins):
   verb in the v1 CLI list.
 - **codex and pi drivers delete outright**, not conditionally. The inventory kept them "if
   multi-harness casting is kept." Synthesis's casting table (orchestration.md §3.13) names exactly
-  two driver lanes — claude-family via the Agent SDK, and terra — so codex and pi have no cast
-  that reaches them.
+  two driver lanes — claude-family via the Agent SDK, and terra — so the old general-purpose
+  codex/pi drivers have no cast that reaches them. Terra's pi/codex access is rebuilt as the
+  ~200-line `run/terra.ts` behind preflight, not carried over from `src/drivers/`.
 
 ## Build order
 
@@ -180,7 +181,7 @@ nothing in that order depends on which host is running it.
 
 ## What "v1 done" means
 
-The release gate is the ten-conversations acceptance checklist (orchestration.md §6): banter
+The release gate is the ten-conversations acceptance checklist ([discord.md](discord.md) §Acceptance): banter
 silence, question-no-ticket, ≤4s ack, honest "how's it going", steer receipts, cheap stop,
 zero-token gates, hours-later resume, "why did you do it that way" recall, truthful post-crash
 state. Underneath that product-level gate, every must-survive behavior from the inventory needs a
