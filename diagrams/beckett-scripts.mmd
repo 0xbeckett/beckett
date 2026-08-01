@@ -1,0 +1,24 @@
+graph TD
+  ASK(["an errand arrives<br/>'check my notifications on X'<br/>'bump betterwright'"])
+
+  ASK --> LOOK{"recall — do I already<br/>know how to do this?<br/>(same query that runs anyway)"}
+
+  LOOK -->|"no"| LIVE["DO IT LIVE — expensive<br/>observation ladder:<br/>hyprctl JSON → AX tree → cropped pixels"]
+  LOOK -->|"a script exists"| PRE{"preconditions hold?<br/>app · url · account"}
+
+  PRE -->|"no — refuse, don't guess"| LIVE
+  PRE -->|"yes"| RUN["REPLAY — zero model tokens<br/>deterministic, same every time"]
+
+  RUN --> OK{"every step's<br/>assertion held?"}
+  OK -->|"yes"| DONE(["result yielded<br/>same event rows as any job"])
+  OK -->|"no"| FAIL["fails AT A NAMED STEP<br/>'step 3: expected role=button<br/>name=Notifications, got nothing'"]
+
+  FAIL --> REPAIR["repair — agent re-enters<br/>at THAT STEP ONLY<br/>cost tracks the breakage, not the errand"]
+  REPAIR -->|"fixed"| SAVE
+  REPAIR -->|"broke twice — it isn't a script problem"| ESC["stop scripting it<br/>file a real job"]
+
+  LIVE --> DONE
+  LIVE -.->|"SUCCESS HOOK — never a decision<br/>the agent makes upfront"| DISTILL["distill — write the script from<br/>what it actually did:<br/>real selectors, real assertions"]
+
+  DISTILL --> SAVE["save as a node in the org graph<br/>attributed, versioned, recallable"]
+  SAVE -.->|"found next time"| LOOK
