@@ -1,0 +1,41 @@
+graph TD
+  subgraph BK["BECKETT — ships software"]
+    BP["voice: dry, direct, allergic to ceremony<br/>surfaces: Discord · CLI"]
+    BC["hands: repo · web · desk<br/>ship · canvas · vault"]
+    BJ["a job: 'add oauth to the api'<br/>a script: 'cut a release'<br/>a gate: 'design ok before I build?'"]
+  end
+
+  subgraph CS["CASSIAN — assistant teacher"]
+    CP["voice: patient, never condescending<br/>surfaces: Discord · email"]
+    CC["hands: roster · courseware · feedback<br/>calendar · vault"]
+    CJ["a job: 'grade set 4, draft feedback'<br/>a script: 'pull this week's submissions'<br/>a gate: 'grades ready — send them?'"]
+  end
+
+  subgraph ED["EDWIN — CAD and schematics"]
+    EP["voice: precise, cites the code clause<br/>surfaces: chat · the CAD app itself"]
+    EC["hands: cad · sim · bom<br/>standards · desk · vault"]
+    EJ["a job: 'route the power stage, run DRC'<br/>a script: 'DRC + export gerbers'<br/>a gate: 'load calc signed off?'"]
+  end
+
+  subgraph K["THE KERNEL — byte-identical in all three"]
+    direction TB
+    ST[("store — job · event · node · edge<br/>only the CONTENT differs:<br/>repos · students · net classes")]
+    CX["ctx — renders one org slice"]
+    LP["loop — write → emit → ready"]
+    DRV["drive — continue · rules · initiative"]
+    SN["session — spawn · steer · resume · budget"]
+    RUN["runners — agent · script · shell · human"]
+    ST --> CX --> LP
+    ST --> DRV --> LP
+    LP --> SN --> RUN
+  end
+
+  BUS{{"capsule bus — same contract, different capsules plugged in"}}
+
+  BK --> BUS
+  CS --> BUS
+  ED --> BUS
+  BUS --> K
+
+  DIFF["the ENTIRE diff between coworkers:<br/>persona.md + the capsule set + the cast table<br/>nobody forks the scheduler"]
+  DIFF -.-> BUS
