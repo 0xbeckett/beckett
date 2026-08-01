@@ -1,0 +1,26 @@
+graph TD
+  SIG(["signals — no timer, no polling<br/>chatter in a room · a job finished · a PR comment<br/>an email landed · a calendar event nears · CI went red"])
+
+  SIG --> NOTICE["NOTICE — rides the seat that is already reading<br/>'could I help here' is one more field on a<br/>classification already happening — marginal cost ~0<br/>no output, no surface, most die here"]
+
+  NOTICE --> JUDGE{"worth anything?<br/>and what does the action TOUCH?<br/>(reversibility, not confidence)"}
+
+  JUDGE -->|"nothing"| DROP(["stay quiet — the default"])
+
+  JUDGE -->|"touches only itself"| T1["TIER 1 — free and invisible<br/>update the graph · prewarm context<br/>draft it and HOLD it · run a read-only script<br/>➜ just do it, say nothing"]
+
+  JUDGE -->|"costs a little attention,<br/>trivially undone"| T2["TIER 2 — cheap and reversible<br/>offer · sketch 'here's how it could work'<br/>draft PR · propose the email<br/>➜ just do it, rate-limited per room"]
+
+  JUDGE -->|"leaves the building"| T3["TIER 3 — external or hard to undo<br/>SEND the email · spend money · touch prod<br/>comment on someone else's work<br/>➜ ALWAYS ask, however confident"]
+
+  T1 --> OUT
+  T2 --> OUT
+  T3 -->|"human says yes"| OUT
+
+  OUT[("every proactive act writes an outcome row<br/>accepted · used · ignored · declined · corrected")]
+
+  OUT --> TUNE["acceptance rate, per person and per room<br/>MOVES THE THRESHOLD automatically"]
+  TUNE -.->|"quiet where it's unwelcome,<br/>forward where it lands"| JUDGE
+
+  BUD["initiative has its OWN budget<br/>separate from work spend<br/>spent = Beckett goes quiet. a feature."]
+  BUD -.-> JUDGE
