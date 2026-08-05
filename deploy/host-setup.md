@@ -186,8 +186,18 @@ From the Mac, after a PR merges to main:
 ./deploy/deploy-prod.sh
 ```
 
-That is the entire deploy story: ff-only pull of origin/main → `bun install` → typecheck gate →
-restart → health read-back → version tag. It refuses a dirty checkout by design.
+That is the entire deploy story: credential preflight → ff-only pull of origin/main → land the
+release-version bump through its own PR → `bun install` → typecheck gate → version tag → restart →
+health read-back. It refuses a dirty checkout by design.
+
+`main` is branch-protected (PR + the `check` status check) and the script re-execs into a
+`systemd --user --scope` with no ambient git credential, so it never runs a bare `git push`. The
+bump goes onto `release-bump-vX.Y.Z` and lands via `beckett gh land` (push → PR → CI → merge); the
+annotated tag goes up via `beckett gh push --tag`; both authenticate with the GitHub App
+installation token. `beckett gh preflight --repo <owner/name>` runs first — no credential is a
+named FATAL before anything is committed, never git's `could not read Username`. A re-run whose
+bump already landed is a clean no-op on that step and proceeds to the gates.
+`BECKETT_BUMP_CI_TIMEOUT` (seconds, default 1800) bounds the wait on the bump PR's CI.
 
 **Rolling back across the v4 rename** (v4.0.0 renamed the unit `beckett-v3` → `beckett-v4`; the
 unit symlinks point INTO the repo, so a checkout of an older release dangles the v4 unit): on the

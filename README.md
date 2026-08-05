@@ -310,6 +310,12 @@ typechecks (never restarts onto broken code),
 restarts `beckett-v4.service`, reads back health, and tags the deployed version. Crash alerts and
 a weekly heartbeat post to the Discord alert channel.
 
+Both of its writes to GitHub ride the GitHub App installation token, never a bare `git push`
+(the script re-execs into a systemd user scope with no ambient git credential, and `main` is
+branch-protected anyway): the release-version bump lands through its own PR via `beckett gh land`,
+and the annotated tag via `beckett gh push --tag`. It preflights that credential before it commits
+anything, so a missing app key fails immediately with a named cause.
+
 ## Repo layout
 
 ```

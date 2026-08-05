@@ -35,6 +35,32 @@ if [ -z "${BECKETT_DEPLOY_SCOPED:-}" ] && grep -qs 'beckett-v4\.service' /proc/s
   exec env BECKETT_DEPLOY_SCOPED=1 systemd-run --user --scope --quiet -- "$0" "$@"
 fi
 
+# ── the one credential every push in this script rides (issue #5) ───────────────────────────
+# NOTHING here uses a bare `git push`. Two reasons, both proven by v6.24.0's blocked deploy:
+#   1. No ambient credential. The self-deploy guard above re-execs into a `systemd --user --scope`,
+#      which inherits no git credential helper — a bare push dies with
+#      `fatal: could not read Username for 'https://github.com'` even when it has nothing to push.
+#   2. `main` is branch-protected. Even WITH a credential, pushing the release-bump commit straight
+#      at main is refused: `GH006: Protected branch update failed … Changes must be made through a
+#      pull request. Required status check "check" is expected.`
+# So both writes go through the GitHub App installation token (`x-access-token:<token>`, minted by
+# src/github/app.ts): the bump lands via `beckett gh land` (push branch → PR → CI → merge), and the
+# release tag via `beckett gh push --tag`. Reads (`git fetch`, `git ls-remote`) work anonymously
+# and are left alone. Preflight the credential HERE, before anything is written, so a missing app
+# key is a named FATAL rather than git's "could not read Username" ten minutes in.
+REPO="${BECKETT_DEPLOY_REPO:-$(git remote get-url origin | sed -E 's#\.git$##; s#/+$##; s#^[^@/]+@[^:]+:##; s#^[a-z+]+://[^/]+/##')}"
+echo "== preflighting the GitHub App credential for ${REPO} =="
+if ! CRED_PREFLIGHT="$(bun run beckett gh preflight --repo "${REPO}" --dir "$PWD" 2>&1)"; then
+  echo "FATAL: no usable GitHub credential for ${REPO} — this deploy cannot publish anything." >&2
+  echo "${CRED_PREFLIGHT}" >&2
+  echo "The release-bump PR and the release tag both push with the GitHub App installation token;" >&2
+  echo "there is no fallback to ambient git credentials (this script re-execs into a systemd user" >&2
+  echo "scope that has none). Set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH in ~/.beckett/.env" >&2
+  echo "(see deploy/github-app.md), confirm with 'beckett gh app diagnose --repo ${REPO}', then" >&2
+  echo "re-run ./deploy/deploy-prod.sh. Nothing has been committed, pushed, or restarted." >&2
+  exit 1
+fi
+
 # ── smart semver bump (OPS-188) ─────────────────────────────────────────────────────────────
 # BEFORE we ship the merge, decide whether this release is a MINOR (new capability) or a PATCH
 # (fix / internal / behavior-preserving) from the commits since the last deployed tag, then write
@@ -45,11 +71,12 @@ fi
 # interactively and beckett prompts; or pre-decide non-interactively with
 #   BECKETT_BUMP=minor|patch|major|yes ./deploy/deploy-prod.sh
 # ("yes" accepts the auto suggestion). The bump commit must reach origin/main before prod pulls,
-# so we sync main, bump, and push here.
+# so we sync main, bump, and land it through a PR here.
 echo "== computing version bump since last deploy =="
 git fetch origin --tags --prune
 git checkout main
 git pull --ff-only origin main
+BASE_SHA="$(git rev-parse origin/main)"
 BUMP_FLAG=""
 case "${BECKETT_BUMP:-}" in
   minor) BUMP_FLAG="--minor" ;;
@@ -60,11 +87,54 @@ case "${BECKETT_BUMP:-}" in
   *)     echo "FATAL: BECKETT_BUMP must be one of minor|patch|major|yes" >&2; exit 1 ;;
 esac
 # ${VAR:+"$VAR"} → nothing when empty (safe under set -u, portable to bash 3.2 on the Mac).
-if bun run beckett version bump ${BUMP_FLAG:+"$BUMP_FLAG"}; then
-  git push origin main          # ship the release-bump commit so prod ff-pulls it below
-else
+if ! bun run beckett version bump ${BUMP_FLAG:+"$BUMP_FLAG"}; then
   echo "FATAL: version bump aborted — not deploying" >&2
   exit 1
+fi
+
+# Is there anything to land? Compared by TREE, not by sha, so both no-op shapes are one branch:
+# `beckett version bump` reporting `"level": "none"` (nothing merged since the last release, so no
+# commit was made at all), and a re-run whose bump already landed on origin/main under a different
+# sha (the squash merge below rewrites it). Either way there is nothing to push, we do not touch
+# GitHub, and the deploy proceeds straight to the gates — the re-run wedge issue #5 describes was
+# exactly this step failing on a push it did not even need to make.
+if git diff --quiet "${BASE_SHA}" HEAD; then
+  git reset --hard -q "${BASE_SHA}"   # drop a same-content leftover commit from an earlier run
+  echo "== no version bump to land — main already matches origin/main =="
+else
+  VERSION_TO_LAND="v$(python3 -c 'import json;print(json.load(open("package.json"))["version"])')"
+  BUMP_BRANCH="release-bump-${VERSION_TO_LAND}"
+  # Move the bump commit onto its own branch and put local main back on origin/main: protection
+  # will not take it directly, and leaving it on main would make the ff-pull below a no-op that
+  # hides whether the PR actually merged.
+  git branch -f "${BUMP_BRANCH}" HEAD
+  git reset --hard -q "${BASE_SHA}"
+  echo "== landing ${VERSION_TO_LAND} on protected main through a PR (${BUMP_BRANCH}) =="
+  # --force: this branch is machine-owned and single-purpose. A re-run after a blocked landing
+  # rebuilds the same content as a NEW commit, which a fast-forward push would reject — and that
+  # rejection would wedge every retry. The PR itself is reused (`ensurePR`), so this updates the
+  # open PR rather than opening a second one.
+  if ! bun run beckett gh land \
+      --repo "${REPO}" --dir "$PWD" \
+      --head "${BUMP_BRANCH}" --base main --strategy squash --force \
+      --ci-timeout "${BECKETT_BUMP_CI_TIMEOUT:-1800}" \
+      --rerun-with "./deploy/deploy-prod.sh" \
+      --title "beckett: release ${VERSION_TO_LAND}" \
+      --body "Release ${VERSION_TO_LAND} — version bump + CHANGELOG cut, opened by deploy/deploy-prod.sh."; then
+    echo "FATAL: the release bump for ${VERSION_TO_LAND} did not land on main (cause above)." >&2
+    echo "Nothing was tagged, restarted, or deployed. The bump commit is safe on the local branch" >&2
+    echo "${BUMP_BRANCH}; clear the blocker and re-run ./deploy/deploy-prod.sh — it reuses the PR." >&2
+    exit 1
+  fi
+  git fetch origin --tags --prune
+  git pull --ff-only origin main
+  git branch -D "${BUMP_BRANCH}" >/dev/null 2>&1 || true   # no stale release-bump-* graveyard
+  LANDED_VERSION="v$(python3 -c 'import json;print(json.load(open("package.json"))["version"])')"
+  [ "${LANDED_VERSION}" = "${VERSION_TO_LAND}" ] || {
+    echo "FATAL: the bump PR merged but origin/main is at ${LANDED_VERSION}, not ${VERSION_TO_LAND}" >&2
+    exit 1
+  }
+  echo "== ${VERSION_TO_LAND} is on origin/main =="
 fi
 
 # ── phase 1: prepare + gate the release on the host (NOT restarting yet) ────────────────────
@@ -141,10 +211,12 @@ REMOTE
 # wedged the NEXT deploy's bump base. Tagging here, before the restart, trades that fragile ordering
 # for a durable one; phase 3 still re-verifies the tag survived on origin after the restart.
 #
-# Push via git's explicit tag refspec. Do NOT use `beckett gh push` here: its branch-only API
-# rejects refs/tags/* (GH014). A pre-existing tag must already be an annotated tag on THIS exact
-# release commit; silently accepting a local lightweight/stale tag would let package.json and
-# origin's history drift again.
+# Push through `beckett gh push --tag` — the App-credentialed tag path (`GitHubCli.pushTag`, which
+# pushes `refs/tags/<v>:refs/tags/<v>` so a tag lands as a tag). A bare `git push origin refs/tags/…`
+# used to sit here and could not authenticate at all inside the deploy's systemd user scope
+# (`could not read Username`), which is what left releases untagged (issue #5). A pre-existing tag
+# must already be an annotated tag on THIS exact release commit; silently accepting a local
+# lightweight/stale tag would let package.json and origin's history drift again.
 VERSION="v$(python3 -c 'import json;print(json.load(open("package.json"))["version"])')"
 HEAD_COMMIT="$(git rev-parse HEAD)"
 if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
@@ -161,9 +233,12 @@ else
   git -c tag.gpgSign=false tag -a "${VERSION}" -m "beckett: release ${VERSION}"
   echo "== created annotated tag ${VERSION} =="
 fi
-# The fully-qualified refspec is accepted by git/GitHub and guarantees the release tag reaches
-# origin, unlike the branch-oriented `beckett gh push` interface.
-git push -q origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
+if ! bun run beckett gh push --repo "${REPO}" --tag "${VERSION}" --dir "$PWD"; then
+  echo "FATAL: could not push the release tag ${VERSION} to ${REPO}." >&2
+  echo "The bump for ${VERSION} is already on main; re-run ./deploy/deploy-prod.sh once the cause" >&2
+  echo "above is cleared (the bump step will be a no-op and it will retry the tag)." >&2
+  exit 1
+fi
 REMOTE_TAG="$(git ls-remote --tags origin "refs/tags/${VERSION}" | awk '{print $1}')"
 LOCAL_TAG="$(git rev-parse "refs/tags/${VERSION}")"
 [ "${REMOTE_TAG}" = "${LOCAL_TAG}" ] || {

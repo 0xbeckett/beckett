@@ -41,8 +41,13 @@ import { buildGitHubPublishingGuidance } from "../../dispatch/publishing-guidanc
 import type { Config, Logger, MergeStrategy, ReviewParams } from "../../types.ts";
 
 const CLI_USAGE =
-  "beckett gh repo create|star|unstar | pr create|merge|close|status|review | push | " +
-  "app status|installations|repos|diagnose|install-url";
+  "beckett gh repo create|star|unstar | pr create|merge|close|status|review | push | land | " +
+  "preflight | app status|installations|repos|diagnose|install-url";
+
+const LAND_USAGE =
+  "usage: beckett gh land --repo <owner/name> --head <branch> --title <t> [--base main] [--body <b>] " +
+  "[--ref <localRef>] [--strategy squash|merge|rebase] [--ci-timeout <secs>] [--force] [--dir <d>] " +
+  "[--rerun-with <command>]";
 
 /**
  * The GitHub App identity behind every `beckett gh` call ({@link GitHubAppAuth}) — the surface the
@@ -341,6 +346,53 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
       if (!flags.repo || !flags.branch) fail("usage: beckett gh push --repo <owner/name> --branch <remoteBranch> [--ref <localRef>] [--dir <d>]");
       await gh.pushBranch(String(flags.repo), flags.ref ? String(flags.ref) : "HEAD", String(flags.branch));
       out({ pushed: true, repo: String(flags.repo), branch: String(flags.branch) });
+    }
+
+    // `beckett gh land` — get a branch's commits ONTO a protected base the only way protection
+    // allows: push it, open (or reuse) its PR, wait for CI, merge. `beckett finish` runs the same
+    // engine (`src/cli/land.ts`) for the end-of-ticket motion; `deploy/deploy-prod.sh` runs this
+    // verb to land its release-version bump, since `git push origin main` is refused by GH006 and,
+    // inside the deploy's `systemd --user --scope`, has no credential at all.
+    if (sub === "land") {
+      for (const k of ["repo", "head", "title"]) if (!flags[k]) fail(LAND_USAGE);
+      const { DEFAULT_CI_TIMEOUT_MS, LandError, landBranch } = await import("../../cli/land.ts");
+      let ciTimeoutMs = DEFAULT_CI_TIMEOUT_MS;
+      if (flags["ci-timeout"] !== undefined) {
+        const secs = Number(flags["ci-timeout"]);
+        if (!Number.isFinite(secs) || secs < 0) fail("beckett gh land: --ci-timeout must be a number of seconds (0 to refuse rather than wait)");
+        ciTimeoutMs = Math.round(secs * 1000);
+      }
+      const strategy = (flags.strategy ? String(flags.strategy) : "squash") as MergeStrategy;
+      if (!["squash", "merge", "rebase"].includes(strategy)) fail("beckett gh land: --strategy must be one of squash|merge|rebase");
+      const head = String(flags.head);
+      try {
+        const landed = await landBranch(gh, {
+          repo: String(flags.repo),
+          head,
+          localRef: flags.ref ? String(flags.ref) : head,
+          base: flags.base ? String(flags.base) : "main",
+          title: String(flags.title),
+          body: flags.body ? String(flags.body) : "",
+          strategy,
+          ciTimeoutMs,
+          force: flags.force === true,
+          dir: flags.dir ? String(flags.dir) : process.cwd(),
+          command: flags["rerun-with"] ? String(flags["rerun-with"]) : "beckett gh land",
+          // Narration on stderr: stdout stays exactly one JSON object for the caller to parse.
+          step: (msg) => process.stderr.write(`land: ${msg}\n`),
+        });
+        out({ landed: true, repo: String(flags.repo), head, base: flags.base ? String(flags.base) : "main", pr: landed.pr, merge: landed.merge });
+      } catch (err) {
+        if (err instanceof LandError) fail(`beckett gh land: ${err.message}`);
+        throw err;
+      }
+    }
+
+    // `beckett gh preflight` — "is there a usable credential for this repo, right now?", asked
+    // BEFORE a caller does work it could not then publish. Mints the installation token (a real
+    // check, not a config read) and prints what it resolved; the token never leaves the process.
+    if (sub === "preflight") {
+      out(await gh.verifyCredential(flags.repo ? String(flags.repo) : undefined));
     }
 
     fail(`usage: ${CLI_USAGE}`);

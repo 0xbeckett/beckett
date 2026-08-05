@@ -19,6 +19,9 @@
  *  2. **It reuses the existing guarded paths.** PR/merge go through `GitHubCli` (the one credential
  *     boundary — never raw `gh`/`git push`); the deploy is the existing script, spawned, never a
  *     hand-rolled restart. This command adds sequencing and diagnosis, not a second way to ship.
+ *     The push → PR → CI → merge motion itself lives in {@link landBranch} (`land.ts`), shared with
+ *     `beckett gh land` — which is how the deploy script lands its release-version bump on a
+ *     protected `main`. One landing path, one set of named blockers.
  *
  * Idempotent by construction: re-running after a fixed blocker reuses the open PR
  * (`GitHubCli.ensurePR`), skips the merge if it already landed, and redeploys.
@@ -30,9 +33,17 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { PrMergeability } from "../github/types.ts";
+import { DEFAULT_CI_TIMEOUT_MS, LandError, landBranch } from "./land.ts";
 import { fail, out, quietLogger } from "./io.ts";
 import { config, SOCK } from "./context.ts";
+
+/**
+ * The merge gate and its blocker prose live in {@link land.ts} (shared with `beckett gh land`), and
+ * are re-exported here because they ARE `beckett finish`'s contract — the messages an operator
+ * reads when it stops — and its test suite pins them at this address.
+ */
+export { CHECKS_GRACE_MS, describeMergeFailure, gateMerge } from "./land.ts";
+export type { MergeGate } from "./land.ts";
 
 export const FINISH_USAGE =
   'usage: beckett finish -m "<message>" [--dir <path>] [--repo <owner/name>] [--base <branch>] ' +
@@ -46,17 +57,6 @@ export const FINISH_USAGE =
  */
 export const FINISH_AUDIT_CHANNEL_ID = "1520658476974735490";
 
-/** How long to keep polling GitHub for a verdict before giving up with a specific message. */
-const DEFAULT_CI_TIMEOUT_MS = 15 * 60_000;
-/** Gap between mergeability reads while CI runs. */
-const POLL_INTERVAL_MS = 15_000;
-/**
- * A PR that was opened seconds ago legitimately reports ZERO checks — the workflows have not
- * registered yet. Merging into that window would ship past a CI suite that never ran, so an
- * empty rollup is treated as "still pending" until this grace elapses, and only then as "this repo
- * has no CI".
- */
-const CHECKS_GRACE_MS = 60_000;
 /** Lines of deploy output kept for the failure message. */
 const DEPLOY_TAIL_LINES = 25;
 
@@ -211,115 +211,6 @@ export function primaryWorktree(porcelain: string): string | null {
   return null;
 }
 
-// ── the merge gate (pure: every blocker's message is pinned by tests) ────────────────────────
-
-export type MergeGate =
-  /** Already on main — skip the merge and go straight to the deploy. */
-  | { kind: "merged" }
-  /** Clear to merge now. */
-  | { kind: "ready" }
-  /** Not yet, but it may still resolve on its own — keep polling until the deadline. */
-  | { kind: "wait"; why: string }
-  /** It will not resolve on its own. `error` names the blocker AND the command that clears it. */
-  | { kind: "blocked"; error: string };
-
-/**
- * Decide what to do with a PR from GitHub's own verdict. Ordering is deliberate: the most SPECIFIC
- * cause wins, because `mergeStateStatus` collapses several distinct problems into `BLOCKED` and a
- * caller told "blocked" learns nothing. So failed checks are reported as failed checks, conflicts
- * as conflicts, and only a genuinely unexplained block falls through to the generic branch —
- * which still names the status GitHub returned rather than inventing a reason.
- *
- * `checksGraceElapsed` distinguishes "this repo has no CI" from "the workflows have not registered
- * yet", which look identical over the API (an empty rollup) for the first seconds of a PR's life.
- */
-export function gateMerge(pr: PrMergeability, repo: string, checksGraceElapsed: boolean): MergeGate {
-  const ref = `PR #${pr.number}${pr.url ? ` (${pr.url})` : ""}`;
-  if (pr.state === "MERGED") return { kind: "merged" };
-  if (pr.state === "CLOSED") {
-    return {
-      kind: "blocked",
-      error:
-        `${ref} is CLOSED, so there is nothing to merge. Reopen it (\`beckett gh raw -- pr reopen ${pr.number} ` +
-        `--repo ${repo}\`) and re-run \`beckett finish\`, or finish from a branch that still has an open PR.`,
-    };
-  }
-  if (pr.isDraft) {
-    return {
-      kind: "blocked",
-      error:
-        `${ref} is a DRAFT — GitHub refuses to merge drafts. Mark it ready with ` +
-        `\`beckett gh raw -- pr ready ${pr.number} --repo ${repo}\`, then re-run \`beckett finish\`.`,
-    };
-  }
-  if (pr.checks.conclusion === "FAILURE") {
-    return {
-      kind: "blocked",
-      error:
-        `CI FAILED on ${ref}: ${pr.checks.failed} of ${pr.checks.total} checks red ` +
-        `(${pr.checks.passed} passed, ${pr.checks.pending} still running). Refusing to merge red. ` +
-        `Read them with \`beckett gh raw -- pr checks ${pr.number} --repo ${repo}\`, push the fix to ` +
-        `\`${pr.headRefName || "the branch"}\`, then re-run \`beckett finish\`.`,
-    };
-  }
-  if (pr.checks.conclusion === "PENDING") {
-    return { kind: "wait", why: `${pr.checks.pending} of ${pr.checks.total} checks still running` };
-  }
-  if (pr.checks.total === 0 && !checksGraceElapsed) {
-    return { kind: "wait", why: "no checks reported yet (waiting for the workflows to register)" };
-  }
-  if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") {
-    return {
-      kind: "blocked",
-      error:
-        `${ref} has MERGE CONFLICTS with ${pr.baseRefName || "the base branch"}. Nothing automatic can ` +
-        `resolve these. In the branch checkout: \`git fetch origin && git rebase origin/${pr.baseRefName || "main"}\`, ` +
-        `settle the conflicts, push, then re-run \`beckett finish\`.`,
-    };
-  }
-  // GitHub recomputes mergeability asynchronously; UNKNOWN means "ask again", not "no".
-  if (pr.mergeable === "UNKNOWN") return { kind: "wait", why: "GitHub is still computing mergeability" };
-  if (pr.mergeStateStatus === "BEHIND") {
-    return {
-      kind: "blocked",
-      error:
-        `${ref} is BEHIND ${pr.baseRefName || "main"} and this repo requires branches to be up to date ` +
-        `before merging. Update it (\`git fetch origin && git rebase origin/${pr.baseRefName || "main"}\` in the ` +
-        `branch checkout, then push) and re-run \`beckett finish\`.`,
-    };
-  }
-  if (pr.mergeStateStatus === "BLOCKED") {
-    return {
-      kind: "blocked",
-      error:
-        `${ref} is BLOCKED by branch protection — checks are ${pr.checks.conclusion.toLowerCase()}, so what is ` +
-        `missing is almost certainly a required REVIEW or a required check that has not reported. ` +
-        `Check with \`beckett gh raw -- pr view ${pr.number} --repo ${repo}\`; get the approval (or fix the ` +
-        `protection rule), then re-run \`beckett finish\`.`,
-    };
-  }
-  return { kind: "ready" };
-}
-
-/**
- * A `gh pr merge` refusal, translated. gh's own stderr is accurate but terse ("Pull request is not
- * mergeable"), and by the time it appears the caller has already lost the pre-merge read — so
- * restate what it means HERE, with the branch and repo filled in, rather than passing the raw line
- * through and letting whoever reads it guess.
- */
-export function describeMergeFailure(err: string, repo: string, number: number, branch: string): string {
-  const raw = err.trim();
-  const lower = raw.toLowerCase();
-  const rebase = `\`git fetch origin && git rebase origin/main\` in the ${branch} checkout, push, then re-run \`beckett finish\``;
-  if (lower.includes("not mergeable") || lower.includes("conflict")) {
-    return `merging PR #${number} failed: GitHub refused it as not mergeable — the base moved under the branch. Resolve with ${rebase}.\n${raw}`;
-  }
-  if (lower.includes("required status check") || lower.includes("review") || lower.includes("protected branch")) {
-    return `merging PR #${number} failed: branch protection on ${repo} still refuses it (a required review or check). Read \`beckett gh raw -- pr view ${number} --repo ${repo}\`, clear it, then re-run \`beckett finish\`.\n${raw}`;
-  }
-  return `merging PR #${number} on ${repo} failed. ${raw}`;
-}
-
 /**
  * The guarded deploy's exit, translated. Its own gates already print a `FATAL:` line explaining
  * themselves, so surface THAT rather than a generic non-zero exit — and recognize the host-config
@@ -348,6 +239,23 @@ export function describeDeployFailure(code: number, tail: string): string {
       `${head} Cause: the deploy checkout on the daemon host has uncommitted edits, and it refuses to ` +
       `deploy over hand edits. On the host: \`cd ~/beckett && git status --short\`, restore it to a clean ` +
       `origin/main, then re-run \`beckett finish\`.\n${tail}`
+    );
+  }
+  if (lower.includes("no usable github credential")) {
+    return (
+      `${head} Cause: the deploy host has no GitHub App credential, so it can neither land the release ` +
+      `bump nor push the release tag (both ride the installation token — there is no ambient-git ` +
+      `fallback). Set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH in ~/.beckett/.env (deploy/github-app.md), ` +
+      `check it with \`beckett gh preflight --repo <owner/name>\`, then re-run \`beckett finish\` — the PR is ` +
+      `already merged, so it goes straight to the deploy.\n${tail}`
+    );
+  }
+  if (lower.includes("did not land on main")) {
+    return (
+      `${head} Cause: the deploy could not land its release-version bump on main — the bump goes through ` +
+      `its own PR (main is branch-protected), and that PR is blocked. The FATAL lines above name the ` +
+      `blocker; clear it, then re-run \`beckett finish\` (the bump PR is reused, and a bump that already ` +
+      `landed is a no-op).\n${tail}`
     );
   }
   if (lower.includes("permission denied") || lower.includes("could not resolve hostname") || lower.includes("connection refused")) {
@@ -483,8 +391,6 @@ export async function runGuardedDeploy(
   return { code: await proc.exited, tail: tail.join("\n").trim() };
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 // ── the verb ────────────────────────────────────────────────────────────────────────────────
 
 export async function runFinish(argv: string[]): Promise<void> {
@@ -600,77 +506,32 @@ export async function runFinish(argv: string[]): Promise<void> {
 
   const gh = await buildGh(repoRoot);
 
-  // ── push ─────────────────────────────────────────────────────────────────────────────────
-  step(`pushing ${branch} to ${repo}`);
-  try {
-    await gh.pushBranch(repo, "HEAD", branch);
-  } catch (err) {
-    const raw = (err as Error).message;
-    const hint = /non-fast-forward|fetch first|rejected/i.test(raw)
-      ? ` The remote branch has commits yours does not. Reconcile with \`git fetch origin && git rebase origin/${branch}\` in ${repoRoot}, then re-run.`
-      : "";
-    fail(`beckett finish: pushing ${branch} to ${repo} failed.${hint}\n${raw}`);
-  }
-
-  // ── PR ───────────────────────────────────────────────────────────────────────────────────
-  step(`opening (or reusing) the PR into ${opts.base}`);
+  // ── push → PR → CI → merge ───────────────────────────────────────────────────────────────
+  // The shared landing engine (`land.ts`): the same motion `beckett gh land` runs for the deploy's
+  // release bump, so a protected `main` is satisfied the one way that works and every blocker is
+  // named once, in one place.
   let pr: { number: number; url: string };
-  try {
-    pr = await gh.ensurePR({ repo, base: opts.base, head: branch, title: opts.title, body: opts.body });
-  } catch (err) {
-    const raw = (err as Error).message;
-    if (/no commits between/i.test(raw)) {
-      fail(
-        `beckett finish: ${branch} has no commits that ${opts.base} does not already have, so there is no PR ` +
-          `to open — this work is already merged, or nothing was committed. Check with ` +
-          `\`git log origin/${opts.base}..${branch}\` in ${repoRoot}.`,
-      );
-    }
-    fail(`beckett finish: opening the PR for ${branch} on ${repo} failed.\n${raw}`);
-  }
-  step(`PR #${pr.number} — ${pr.url}`);
-
-  // ── CI + merge gate ──────────────────────────────────────────────────────────────────────
-  const startedAt = Date.now();
-  let gate: MergeGate = { kind: "wait", why: "reading the PR" };
-  let lastWhy = "";
-  for (;;) {
-    let state: PrMergeability;
-    try {
-      state = await gh.prMergeability(repo, pr.number);
-    } catch (err) {
-      fail(`beckett finish: could not read PR #${pr.number} on ${repo} — cannot tell whether it is safe to merge.\n${(err as Error).message}`);
-    }
-    gate = gateMerge(state, repo, Date.now() - startedAt >= CHECKS_GRACE_MS);
-    if (gate.kind === "blocked") fail(`beckett finish: ${gate.error}`);
-    if (gate.kind !== "wait") break;
-    lastWhy = gate.why;
-    const elapsed = Date.now() - startedAt;
-    if (elapsed >= opts.ciTimeoutMs) {
-      fail(
-        `beckett finish: gave up waiting on PR #${pr.number} (${pr.url}) after ${Math.round(elapsed / 1000)}s — ` +
-          `${lastWhy}. Nothing was merged and nothing was deployed. Watch it with ` +
-          `\`beckett gh pr status ${pr.number} --repo ${repo}\` and re-run \`beckett finish\` once it settles, ` +
-          `or raise the budget with --ci-timeout <secs>.`,
-      );
-    }
-    step(`waiting on CI — ${lastWhy} (${Math.round(elapsed / 1000)}s of ${Math.round(opts.ciTimeoutMs / 1000)}s)`);
-    await sleep(Math.min(POLL_INTERVAL_MS, Math.max(0, opts.ciTimeoutMs - elapsed)));
-  }
-
-  // ── merge ────────────────────────────────────────────────────────────────────────────────
   let merged: "merged" | "already-merged";
-  if (gate.kind === "merged") {
-    step(`PR #${pr.number} is already merged — going straight to the deploy`);
-    merged = "already-merged";
-  } else {
-    step(`merging PR #${pr.number} into ${opts.base} (${opts.strategy})`);
-    try {
-      await gh.mergePR(repo, pr.number, opts.strategy);
-    } catch (err) {
-      fail(`beckett finish: ${describeMergeFailure((err as Error).message, repo, pr.number, branch)}`);
-    }
-    merged = "merged";
+  try {
+    const landed = await landBranch(gh, {
+      repo,
+      head: branch,
+      localRef: "HEAD",
+      base: opts.base,
+      title: opts.title,
+      body: opts.body,
+      strategy: opts.strategy,
+      ciTimeoutMs: opts.ciTimeoutMs,
+      dir: repoRoot,
+      command: "beckett finish",
+      timeoutAlso: " and nothing was deployed",
+      step,
+    });
+    pr = landed.pr;
+    merged = landed.merge;
+  } catch (err) {
+    if (err instanceof LandError) fail(`beckett finish: ${err.message}`);
+    throw err;
   }
 
   // ── the guarded redeploy ─────────────────────────────────────────────────────────────────

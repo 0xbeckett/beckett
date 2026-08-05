@@ -116,6 +116,15 @@ That token reaches subprocesses two ways, both through the environment and never
   slot* holding the short-lived token. `x-access-token` is the only username GitHub accepts for an
   installation token.
 
+**Every write rides this chain — including the deploy's.** `deploy/deploy-prod.sh` used to run two
+bare `git push`es (the release-bump commit, the release tag); both died with `fatal: could not read
+Username for 'https://github.com'`, because the script re-execs itself into a `systemd --user
+--scope` that inherits no credential helper. They now go through `beckett gh land` and
+`beckett gh push --tag`, and the script preflights the credential with `beckett gh preflight --repo
+<owner/name>` before it commits anything — a missing app key is a named FATAL up front, not a
+mystery halfway through a release. Reads (`git fetch`, `git ls-remote`) still work anonymously and
+are left alone.
+
 ## Permissions
 
 Least-privilege for an agent that reads and writes code and PRs. The manifest

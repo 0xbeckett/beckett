@@ -183,6 +183,16 @@ const CASES: Case[] = [
   { name: "gh: pr status without repo prints usage", argv: ["gh", "pr", "status", "1"], env: DUMMY_GH },
   { name: "gh: push without flags prints usage", argv: ["gh", "push"], env: DUMMY_GH },
   { name: "gh: push --tag without a repo prints usage", argv: ["gh", "push", "--tag", "v1.0.0"], env: DUMMY_GH },
+  { name: "gh: land without flags prints usage", argv: ["gh", "land"], env: DUMMY_GH },
+  { name: "gh: land without a title prints usage", argv: ["gh", "land", "--repo", "o/n", "--head", "b"], env: DUMMY_GH },
+  {
+    name: "gh: land with a bad --ci-timeout is refused",
+    argv: ["gh", "land", "--repo", "o/n", "--head", "b", "--title", "t", "--ci-timeout", "soon"],
+    env: DUMMY_GH,
+  },
+  // The deploy's fail-fast preflight (issue #5): a missing app credential must say SO, up front,
+  // instead of surfacing later as git's "could not read Username for 'https://github.com'".
+  { name: "gh: preflight without GitHub credentials names the missing app credential", argv: ["gh", "preflight", "--repo", "o/n"] },
   { name: "gh: raw with no gh args prints usage", argv: ["gh", "raw"], env: DUMMY_GH },
   { name: "gh: raw with an empty passthrough prints usage", argv: ["gh", "raw", "--"], env: DUMMY_GH },
 
