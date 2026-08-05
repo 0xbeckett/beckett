@@ -335,9 +335,20 @@ export function describeDeployFailure(code: number, tail: string): string {
   return `${head}${fatal ? ` Cause: ${fatal.trim()}` : ""}\n${tail}`;
 }
 
-/** The one line each invocation records in the ops channel. */
-export function finishAuditLine(repo: string, branch: string, title: string): string {
-  return `\`beckett finish\` running on \`${repo}\` — branch \`${branch}\`: "${title}" (PR → merge → guarded redeploy)`;
+/** Longest title the audit line carries; the daemon caps an ack at 240 chars, so cap it HERE
+ *  rather than letting it truncate the trailing context away. */
+const AUDIT_TITLE_MAX = 90;
+
+/**
+ * The one line each invocation records in the ops channel. `at` (a wall-clock stamp) is what makes
+ * two runs distinct: the daemon coalesces byte-identical posts inside a two-minute window, and
+ * "fix the blocker, re-run" legitimately repeats the same message — without the stamp the second
+ * invocation would silently leave no record.
+ */
+export function finishAuditLine(repo: string, branch: string, title: string, at: Date): string {
+  const short = title.length > AUDIT_TITLE_MAX ? `${title.slice(0, AUDIT_TITLE_MAX - 1).trimEnd()}…` : title;
+  const stamp = at.toISOString().slice(11, 19);
+  return `\`beckett finish\` ${stamp}Z — \`${repo}\` @ \`${branch}\`: "${short}" (PR → merge → redeploy)`;
 }
 
 // ── side-effecting helpers ──────────────────────────────────────────────────────────────────
@@ -361,13 +372,18 @@ function auditChannelId(): string {
  * Record this invocation in the ops channel. Best-effort BY DESIGN: the audit trail is worth a
  * couple of seconds, never worth refusing to ship because the daemon is restarting. A failure is
  * reported in the result rather than swallowed, so a silently-broken ledger stays visible.
+ *
+ * `discord.ack`, NOT `discord.reply` — and that difference is load-bearing. The concierge runs
+ * `beckett finish` from INSIDE a live turn, and a `discord.reply` into the channel that turn is
+ * running in CLAIMS it (`repliedViaCli`), which would make this bookkeeping line swallow the
+ * concierge's actual answer. An ack posts without claiming anything.
  */
 async function postAuditLine(text: string): Promise<{ posted: boolean; channel: string; note?: string }> {
   const channelId = auditChannelId();
   if (channelId === "disabled") return { posted: false, channel: channelId, note: "audit posting disabled" };
   try {
     const { callBus } = await import("../shell/control-bus.ts");
-    const res = await callBus(SOCK, "discord.reply", { channelId, text }, 20_000);
+    const res = await callBus(SOCK, "discord.ack", { channelId, text }, 20_000);
     return res.ok
       ? { posted: true, channel: channelId }
       : { posted: false, channel: channelId, note: res.error ?? "the daemon refused the audit post" };
@@ -464,8 +480,9 @@ export async function runFinish(argv: string[]): Promise<void> {
   }
 
   // Announce FIRST: the ledger should record the runs that go on to fail, not only the clean ones.
-  const audit = await postAuditLine(finishAuditLine(repo, branch, opts.title));
-  if (!audit.posted && audit.note) step(`audit post to ${audit.channel} did not land (${audit.note}) — continuing`);
+  const audit = await postAuditLine(finishAuditLine(repo, branch, opts.title, new Date()));
+  if (audit.channel === "disabled") step("audit posting is disabled for this host — continuing");
+  else if (!audit.posted) step(`audit post to ${audit.channel} did not land (${audit.note}) — continuing`);
 
   // ── the working tree ─────────────────────────────────────────────────────────────────────
   const status = await git(["status", "--porcelain"], repoRoot);

@@ -256,12 +256,27 @@ describe("describeDeployFailure", () => {
 });
 
 describe("the audit line", () => {
+  const at = new Date("2026-08-04T21:07:03.000Z");
+
   test("names the repo, branch and message so the ops channel reads as a ledger", () => {
-    const line = finishAuditLine("kowo-co/beckett", "beckett/task-2-1", "wrap the finish flow");
+    const line = finishAuditLine("kowo-co/beckett", "beckett/task-2-1", "wrap the finish flow", at);
     expect(line).toContain("beckett finish");
     expect(line).toContain("kowo-co/beckett");
     expect(line).toContain("beckett/task-2-1");
     expect(line).toContain("wrap the finish flow");
+  });
+
+  test("carries a timestamp, so a re-run with the same message is not coalesced away", () => {
+    const first = finishAuditLine("o/r", "b", "same message", at);
+    const second = finishAuditLine("o/r", "b", "same message", new Date("2026-08-04T21:09:41.000Z"));
+    expect(first).toContain("21:07:03Z");
+    expect(first).not.toBe(second);
+  });
+
+  test("stays inside the daemon's 240-char ack cap even with a long message", () => {
+    const line = finishAuditLine("kowo-co/beckett", "beckett/task-2-1", "x".repeat(400), at);
+    expect(line.length).toBeLessThanOrEqual(240);
+    expect(line).toContain("…");
   });
 
   test("targets the ops channel the ticket specifies", () => {
