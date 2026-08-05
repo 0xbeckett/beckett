@@ -58,6 +58,48 @@ computes what it can actually afford and tells pages that instead:
 - **Proven against the real space**, not a fixture: `bun scripts/ops/browser-smoke.ts` now asserts
   the quota a live page reads tracks the lane's measured budget.
 
+Measured in the lane, against `https://procreations-maple-webgpu.static.hf.space/`:
+
+| | before | after |
+| --- | --- | --- |
+| `navigator.storage.estimate().quota` | `622287713` (593 MiB) | `34359738368` (32 GiB) |
+| shard fetches | died at ~15s, `transferSize 0`, 3/3 | completed, 0 errors, 0 failed requests |
+| weights staged | 0 B | `5308191948` B (5.31 GB) in 265 s, ~19 MiB/s |
+| page state | "network error", back to landing | `READY · SUBGROUPS` |
+
+The download half is fixed and reproduced twice end to end (266.3 s and 263.3 s, both clean).
+
+**No TTFT or tokens/sec number is reported here, because any number this lane produced would be
+meaningless — and the reason is worth recording.** The generation is not running on a GPU. The
+lane has no GPU at all:
+
+- `adapter.info` inside the lane reports `vendor: "nvidia"`, `architecture: "lovelace"`,
+  `subgroupMinSize/MaxSize: 32`, and a feature set including `subgroups`, `shader-f16` and
+  `texture-compression-bc`. The page believes it, which is why it prints `READY · SUBGROUPS`.
+- The host has no NVIDIA hardware. `/dev/nvidia*` does not exist, `nvidia-smi` is not installed,
+  and the only VGA device is `Intel Corporation Xeon E3-1200 v3/4th Gen Core Processor Integrated
+  Graphics Controller` on `i915`. A Lovelace adapter cannot be present on this machine.
+- Measured rather than inferred: a naive 1024³ fp32 WGSL matmul in the lane runs at **0.6 GFLOPS**
+  (8 dispatches, 27.7 s). A Lovelace part is three orders of magnitude above that; even the host's
+  Haswell iGPU would be ~two. That is a CPU rasterizer — Dawn's SwiftShader fallback.
+- Structurally it could not be anything else: the bwrap sandbox mounts `--dev /dev`, a fresh
+  minimal devtmpfs, and binds no `/dev/dri` node. There is no path from inside the sandbox to the
+  i915 device, so Chromium has nothing to fall back *from*.
+
+So `adapter.info` is fabricated by exactly the mechanism this ticket is about. CloakBrowser
+normalises the WebGPU adapter as a fingerprint surface the same way it normalised
+`navigator.storage.estimate()`, and both numbers were fiction from the same source. The quota
+fiction broke the download and is fixed; the adapter fiction is cosmetic to Beckett but makes any
+throughput figure off this lane a measurement of SwiftShader wearing an RTX badge. A 20B model on
+a software rasterizer is not a benchmark, it is a hang: an earlier attempt streamed for ~22 minutes
+without settling, and a bounded retry is recorded in the ticket. Reporting tok/s from that would
+have been reporting a made-up number with extra steps.
+
+What this change is therefore claiming, and nothing more: **the storage bug is fixed and the 5.31 GB
+model loads.** Making the lane's WebGPU real is a separate piece of work — it needs `/dev/dri`
+bound into the sandbox and CloakBrowser's adapter spoofing addressed — and is deliberately not in
+this diff, which is scoped to storage.
+
 ## v6.24.1 (2026-08-04)
 
 ### The pipeline feed speaks English (#4)
