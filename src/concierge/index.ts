@@ -101,6 +101,12 @@ import {
   type ChannelEntry,
 } from "./channel-context.ts";
 import { createChannelProfiler, type ChannelProfiler } from "./channel-profiles.ts";
+import {
+  createOwedMentionStore,
+  OWED_MENTION_MAX_REPLAYS,
+  type OwedMention,
+  type OwedMentionStore,
+} from "./owed-mentions.ts";
 import { STOP_WORDS } from "../moss-local/index.ts";
 import { TurnGate } from "./turn-gate.ts";
 import { SessionPool, GLOBAL_SCOPE } from "./session-pool.ts";
@@ -342,6 +348,21 @@ function workspacesStateFile(config: Config, logger: Logger): string | undefined
   }
 }
 
+/**
+ * Full configs always resolve this; a partial test config leaves the owed-mention ledger
+ * memory-only rather than making a Concierge unconstructible (see `owed-mentions.ts`).
+ */
+function owedMentionsFile(config: Config, logger: Logger): string | undefined {
+  try {
+    return join(buildPaths(config).beckettDir, "concierge-owed-mentions.json");
+  } catch (err) {
+    logger.warn("owed-mention ledger path unavailable; replay across restarts disabled", {
+      error: String(err),
+    });
+    return undefined;
+  }
+}
+
 /** Full configs always resolve this path; the fallback keeps legacy partial test configs constructible. */
 function tasksStateFile(config: Config, logger: Logger): string {
   try {
@@ -488,6 +509,27 @@ const AMEND_MIN_CHARS = 16;
 const SUPERSEDED_TURN_NOTICE = "Scrapping my half-written reply to that — going with your latest.";
 
 /**
+ * Prepended to a turn the boot replay is re-running (issue #3), telling the session the one thing
+ * it cannot otherwise know: this message is old and nothing was ever said to it.
+ *
+ * A NOTE, NOT A FRAME. The daemon could just as easily bolt "sorry, I restarted" onto the front of
+ * whatever the model returns — and that is exactly the canned schedule-narration the doctrine bans
+ * the model from writing, so the daemon does not get to write it either. The model is told the
+ * fact; how much of a beat that deserves is its call, and it varies (a question that is now moot
+ * gets a different answer than one that still stands, and only the model can tell which).
+ *
+ * The staleness warning at the end is the substantive half: "is the deploy done?" asked before a
+ * restart has an answer that CHANGED because of the restart, and answering it from the message
+ * alone would be confidently wrong.
+ */
+const REPLAYED_TURN_NOTE =
+  "SYSTEM: the message below arrived before your last restart and its turn died before answering — " +
+  "nothing has ever been posted in reply to it, and the person has been waiting since. You are " +
+  "answering it now, late. Acknowledge that briefly and in your own voice (a beat, not an apology " +
+  "paragraph), then answer it. Anything time-sensitive in it may have changed while you were down: " +
+  "check the current state before answering from the message alone.\n\n";
+
+/**
  * Render whatever the CLI put in `structured_output` as a loggable string (object → JSON). A
  * directed turn with no valid delivery object is a BUG, not a deliberate pass (issue #138), so the
  * raw output is logged truncated for the fix; the person gets {@link TURN_DIED_LINE}, not dead air.
@@ -549,8 +591,18 @@ export const TURN_ABSOLUTE_CEILING_MS = 30 * 60_000;
  * voice: lowercase, no em-dash, no apology paragraph. It says the turn FAILED; it never manufactures
  * a substitute answer or guesses what the turn would have said. A turn reaped by a DEADLINE gets
  * {@link TURN_TIMED_OUT_LINE} instead — "ask again" is wrong advice for a timeout.
+ *
+ * LAST RESORT, NOT THE DEFAULT (issue #3). Asking a person to re-type the question a machine lost
+ * is the machine's failure billed to them, so this line is now reachable only where recovery has
+ * actually been tried and actually failed. Two gates stand in front of it:
+ *   - in-turn: {@link MissingDeliveryOutputError} re-drives the turn once before it settles here,
+ *     so a single lost delivery object never reaches the channel;
+ *   - across a restart: an unanswered mention stays in the owed-mention ledger
+ *     (`src/concierge/owed-mentions.ts`) and is REPLAYED after boot, up to
+ *     {@link OWED_MENTION_MAX_REPLAYS} times, before the replay path posts this instead.
+ * Exported so those paths — and their tests — name the same string.
  */
-const TURN_DIED_LINE = "that turn died on me, ask again.";
+export const TURN_DIED_LINE = "that turn died on me, ask again.";
 
 /**
  * What a DEADLINE-reaped turn says (issue #150). "ask again" is actively bad advice here: re-asking
@@ -700,6 +752,17 @@ function seedFromHandoff(summary: string): string {
   );
 }
 
+/**
+ * Fold a SYSTEM note into the head of an outbound turn, preserving its shape: a text-only turn
+ * stays a plain string (byte-identical to the historic form, minus the note), and a turn carrying
+ * image blocks keeps them — the note simply becomes the leading text block. Mirrors
+ * {@link ConciergeSession.consumeSeed}, which does the same thing for a handoff seed.
+ */
+function prependTurnNote(message: TurnMessage, note: string): TurnMessage {
+  if (typeof message === "string") return `${note}\n\n---\n\n${message}`;
+  return [{ type: "text", text: note }, ...message];
+}
+
 /** Keep the durable channel window with the model-written note; it is data, never instructions. */
 function enrichHandoff(summary: string, channelWindow: string): string {
   if (!channelWindow.trim()) return summary.trim();
@@ -737,6 +800,63 @@ class ResumeBeforeInitError extends Error {
     super(message);
     this.name = "ResumeBeforeInitError";
   }
+}
+
+/**
+ * Thrown when an INITIALIZED session's turn reaches its `result` with no valid delivery object at
+ * all (issue #3). Caught by {@link ConciergeSession.runTurn}, which re-drives the same turn once
+ * on the same session before anyone is told the turn died.
+ *
+ * ── WHY THIS IS THE COMMON DEATH, NOT AN EXOTIC ONE ────────────────────────────────────
+ * Every "that turn died on me, ask again." the room saw on 2026-08-04 came through exactly this
+ * branch — `concierge result missing valid Discord delivery output; suppressing`, three times,
+ * `rawOutput:"<absent>"` on all three. It has two distinct causes and the re-drive answers both:
+ *
+ *   1. THE MODEL SKIPPED THE DELIVERY OBJECT. Two of the three (01:39:30Z, 01:43:36Z) carried
+ *      exactly one assistant text block and no tool use: the turn wrote its answer as plain
+ *      assistant text and never emitted `structured_output`. That text can contain deliberation,
+ *      so the reasoning-leak guard suppresses it — correctly — and the person got the canned line
+ *      for what is a transient, non-deterministic formatting miss. Re-driving fixes it outright:
+ *      the same question, asked again on the same warm transcript, emits the object.
+ *
+ *   2. THE CHILD WAS KILLED MID-TURN. The third (04:56:17Z, fifteen assistant blocks) landed three
+ *      seconds before a deploy's new pid: the daemon's SIGTERM reached the `claude` child, which
+ *      emitted a bare terminal `result` on its way out. Here the re-drive usually cannot finish
+ *      either — the whole process is going away — and that is the point: it FAILS instead of
+ *      posting "ask again", leaving the mention owed in the ledger for boot replay to answer.
+ *
+ * DIRECT MENTIONS ONLY. An ambient turn already settles as a silent pass, and spending a second
+ * generation on an interjection nobody asked for is the wrong trade.
+ */
+class MissingDeliveryOutputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MissingDeliveryOutputError";
+  }
+}
+
+/**
+ * Re-drives granted to ONE ask whose result carried no delivery object. Exactly one: cause (1)
+ * above is transient and clears on the retry, while cause (2) cannot be retried out of, so a
+ * larger budget would only spend generations on a dying process before saying the same thing.
+ */
+const LOST_OUTPUT_REDRIVES = 1;
+
+/**
+ * The note prepended to a re-driven turn (see {@link MissingDeliveryOutputError}). It exists for
+ * the tool-heavy case: the first attempt may have filed a ticket, staffed a worker, or posted via
+ * `beckett discord reply` before losing its delivery object, and a re-drive that blindly repeats
+ * those is worse than the failure it fixes. The re-drive resumes the SAME session, so the previous
+ * attempt's tool calls and results are right there in the transcript — this just makes the model
+ * look before repeating them.
+ */
+function reDriveNote(): string {
+  return (
+    "SYSTEM: your previous attempt at this exact turn ended without a delivery object, so NOTHING was " +
+    "posted and the person is still waiting. Answer it again below. If that attempt already ran " +
+    "commands (filed a ticket, started work, posted with `beckett discord reply`), those effects may " +
+    "have LANDED — check before repeating them, then answer."
+  );
 }
 
 /** A turn waiting for its `result` boundary. Single-flight: at most one is live at a time. */
@@ -907,6 +1027,12 @@ export class ConciergeSession {
    * it is the "what was it doing" crumb a deadline-reaped turn reports (issue #150).
    */
   private liveTurnLastActivity: string | undefined;
+  /**
+   * Re-drives still available to the ask in flight ({@link LOST_OUTPUT_REDRIVES}). Set at the head
+   * of {@link runTurn}, spent in {@link onResult}. Per-ASK, not per-attempt: once it hits zero the
+   * next lost delivery object settles honestly instead of retrying again.
+   */
+  private lostOutputRedrives = 0;
 
   // launch plumbing. NOTE: `claude -p --input-format stream-json` emits `system/init` only AFTER
   // the first stdin line arrives, so start() must NOT block waiting for init (that deadlocks —
@@ -1208,9 +1334,24 @@ export class ConciergeSession {
 
   private async runTurn(message: TurnMessage, meta?: unknown): Promise<DiscordTurnOutput> {
     if (this.stopped) throw new Error("concierge session stopped");
+    // The re-drive budget belongs to the ASK, not to an attempt — see {@link lostOutputRedrives}.
+    this.lostOutputRedrives = LOST_OUTPUT_REDRIVES;
     try {
       return await this.driveTurn(message, meta);
     } catch (err) {
+      if (err instanceof MissingDeliveryOutputError) {
+        // The turn reached `result` with no delivery object on a live session (issue #3). Ask the
+        // same question again on the SAME warm transcript rather than telling the person their
+        // turn died: cause (1) — a model that answered in plain text — clears on the retry, and
+        // cause (2) — a child killed by a deploy — now fails through to the owed-mention ledger
+        // instead of burning the canned line on a restart. Budget already spent in onResult, so
+        // this can re-drive exactly once and never loops.
+        this.log.warn("re-driving a turn whose result carried no delivery object", {
+          sessionId: this.sessionId,
+          err: String(err),
+        });
+        return await this.driveTurn(prependTurnNote(message, reDriveNote()), meta);
+      }
       if (!(err instanceof ResumeBeforeInitError)) throw err;
       // The `--resume` transcript was gone and the in-flight turn died before init. onExit has
       // already minted a fresh session id, re-seeded the last handoff note, and armed
@@ -1779,11 +1920,23 @@ export class ConciergeSession {
         directMention: isDirectMentionClaim(this.currentMeta),
         rawOutput: truncateForLog(rawStructuredOutput(result.structured_output), 500),
       });
+      // ONE more try before anyone is told their turn died (issue #3). This branch was the source
+      // of every canned "ask again" the room saw — a plain-text answer that skipped the delivery
+      // object, and a child SIGTERMed by a deploy mid-turn. Both are recoverable, and neither is
+      // the person's problem to solve by re-typing their question, so re-drive rather than settle:
+      // runTurn re-asks once on the same warm transcript, and if the daemon is going down that
+      // re-drive fails through to the owed-mention ledger, which replays it after boot.
+      if (isDirectMentionClaim(this.currentMeta) && this.lostOutputRedrives > 0) {
+        this.lostOutputRedrives -= 1;
+        p.reject(new MissingDeliveryOutputError("concierge: turn result carried no delivery object"));
+        return;
+      }
       // A waiting person is owed a word, not dead air. For an AMBIENT/un-addressed turn the silence
       // is correct and stays. But a turn that claimed a direct @mention/DM — including one whose
       // upstream retries were exhausted into an error `result` — reads as a crash to the person who
       // asked, so {@link failureReply} posts one honest fixed line instead of manufacturing an
-      // answer.
+      // answer. Reaching here means the re-drive above ALSO came back empty: two consecutive turns
+      // produced nothing deliverable, which is the "genuinely unreplayable" case the line is for.
       p.resolve(this.failureReply());
       return;
     }
@@ -2352,6 +2505,24 @@ export class Concierge {
   private readonly activeMentions = new Map<string, MentionClaim>();
   /** IDs accepted this process, preventing a boot REST fetch racing the live gateway event from double-answering. */
   private readonly inboundMessageIds = new Set<string>();
+  /**
+   * The durable owed-mention ledger (issue #3): every directed mention/DM is written down when its
+   * turn is dispatched and struck off when it is actually answered, so a turn that dies with the
+   * daemon is REPLAYED after boot instead of costing the person a re-ask. See
+   * `src/concierge/owed-mentions.ts` for why the channel-store cursor cannot serve this role.
+   */
+  private readonly owed: OwedMentionStore;
+  /**
+   * Mention ids being replayed RIGHT NOW, so {@link buildTurn} can tell the session it is answering
+   * late (and the model can say so in its own voice, rather than the daemon writing that line for
+   * it). Held only for the duration of the replayed `onMessage`.
+   */
+  private readonly replayingMentions = new Set<string>();
+  /**
+   * The boot replay drain ({@link replayOwedMentions}), kept so tests — and any future shutdown
+   * path that wants to wait for it — can await something. Resolved when no replay is running.
+   */
+  private replayDone: Promise<void> = Promise.resolve();
   /** Last static denial by channel+user, so denied DMs/mentions cannot spam Discord. */
   private readonly accessDenyAt = new Map<string, number>();
   /**
@@ -2499,6 +2670,13 @@ export class Concierge {
     // clock or it expires them as decades old), the real clock in production.
     const ambientClock = opts.ambientClock;
     this.nowMs = ambientClock ? () => ambientClock.now() : Date.now;
+    // Lazy on the filesystem like everything else built here — constructing a Concierge still
+    // touches nothing; the first claim (or the boot snapshot) reads.
+    this.owed = createOwedMentionStore({
+      file: owedMentionsFile(this.config, this.log),
+      logger: this.log.child("owed"),
+      now: this.nowMs,
+    });
     if (this.config.shared_context?.enabled) {
       const sc = this.config.shared_context;
       this.channelStore = createChannelContextStore({
@@ -3145,6 +3323,10 @@ export class Concierge {
     this.stopping = false;
     this.seedIdentities();
     this.loadStaleBrowserQuestions();
+    // Snapshot the debts THIS process inherited, before the gateway can add live ones (issue #3).
+    // Taken here rather than at drain time so a mention arriving during boot is answered by its own
+    // turn, exactly as always, and can never also be picked up as something to replay.
+    const owedAtBoot = this.owed.list();
     // Fail fast on a bad launch (auth/bin/config) by bringing up the dedicated system session
     // eagerly; real channel sessions come up lazily on their first human turn.
     this.migrateLegacySessionState(SYSTEM_SCOPE);
@@ -3173,6 +3355,11 @@ export class Concierge {
     // Discord-dependent recovery are ready.
     await Promise.all([systemWarm, workspaceRecovery]);
     this.serveControlBus();
+    // Pay the inherited debts (issue #3). Deliberately AFTER serveControlBus and deliberately NOT
+    // awaited: a replayed turn is a full Opus turn that will reach for `beckett …` commands over
+    // the control socket, so it must not run before that socket is served — and it must not hold
+    // the daemon's boot for as long as it takes to answer.
+    this.replayDone = this.replayOwedMentions(owedAtBoot);
     // Announce the boot (with the live commit) once the gateway is up. Best-effort + non-blocking:
     // a failed post must never hold up — or crash — the daemon coming online.
     void this.announceStartup();
@@ -3211,6 +3398,122 @@ export class Concierge {
         });
       }
     }
+  }
+
+  /**
+   * Answer the mentions this daemon inherited unanswered (issue #3) — the half of restart recovery
+   * {@link reconcileDowntimeMessages} structurally cannot do.
+   *
+   * Reconciliation recovers what the daemon never SAW, by refetching everything past the channel
+   * store's cursor. But that cursor moves at capture time, so a mention that WAS received and then
+   * died mid-turn (the 2026-08-04 21:56 case: the deploy's SIGTERM landed on a turn fifteen
+   * assistant blocks deep) sits behind the cursor and is invisible to it forever. This drains the
+   * ledger instead, which tracks the only thing that matters: was it answered.
+   *
+   * Each entry re-enters {@link onMessage} VERBATIM — same access gates, same shared context, same
+   * attachments, same reply context — so a replayed turn is the turn that should have run, not a
+   * cut-down imitation of it. `replayingMentions` is what makes it honest: {@link buildTurn} adds a
+   * note saying this is late, and the model says so in its own voice.
+   *
+   * Sequential, and best-effort per entry: one channel Beckett was removed from must not strand
+   * the rest of the queue.
+   */
+  private async replayOwedMentions(owed: readonly OwedMention[]): Promise<void> {
+    if (owed.length === 0) return;
+    this.log.info("replaying mentions whose turn died before it answered", { count: owed.length });
+    for (const entry of owed) {
+      if (this.stopping) return;
+      try {
+        // A debt that may already have been paid is not replayed on a guess — see
+        // {@link alreadyAnswered}. Double-answering is the one failure this path must not have.
+        if (await this.alreadyAnswered(entry)) {
+          this.log.info("owed mention was already answered before the restart — settling, not replaying", {
+            channelId: entry.channelId,
+            messageId: entry.messageId,
+          });
+          this.owed.settle(entry.messageId);
+          continue;
+        }
+        const attempt = this.owed.noteReplay(entry.messageId);
+        if (attempt > OWED_MENTION_MAX_REPLAYS) {
+          // Replay is now genuinely impossible: this message has died with a daemon more times
+          // than a restart explains. THIS is what the canned line is for — the last resort, after
+          // recovery was tried and tried again, not the first thing the person hears.
+          this.log.warn("owed mention exhausted its replays — falling back to the honest line", {
+            channelId: entry.channelId,
+            messageId: entry.messageId,
+            replays: attempt,
+          });
+          await this.gateway
+            .post(entry.channelId, TURN_DIED_LINE, {
+              replyToMessageId: entry.messageId,
+              replyToUserId: entry.message.userId,
+            })
+            .catch((err) => this.log.warn("owed-mention give-up line failed to post", { err: String(err) }));
+          this.owed.settle(entry.messageId);
+          continue;
+        }
+        this.log.info("replaying an owed mention", {
+          channelId: entry.channelId,
+          messageId: entry.messageId,
+          attempt,
+        });
+        this.replayingMentions.add(entry.messageId);
+        // This process has never seen the message, but be explicit: the dedupe set is what stands
+        // between a replay and a no-op, and it is cheap to state the intent rather than rely on it.
+        this.inboundMessageIds.delete(entry.messageId);
+        try {
+          await this.onMessage(entry.message);
+        } finally {
+          this.replayingMentions.delete(entry.messageId);
+        }
+        // ONE replay attempt, then the debt closes — however onMessage chose to end it. It settles
+        // its own answered/passed/failed outcomes, but it also has legitimate early exits that
+        // never reach a claim at all: the author's access was revoked while we were down, the text
+        // resolved to a branch card, the message got folded into another live turn. Left owed,
+        // each of those would replay every boot until the budget ran out and then post "ask again"
+        // to someone who was never owed a turn in the first place.
+        //
+        // Except when we are going down AGAIN mid-replay — the second-restart case
+        // {@link OWED_MENTION_MAX_REPLAYS} exists for. onMessage's catch deliberately left the
+        // debt open there, and settling it here would throw away the retry it just bought.
+        if (!this.stopping) this.owed.settle(entry.messageId);
+      } catch (err) {
+        // The entry stays owed (onMessage settles it only on a real outcome), so the next boot
+        // picks it up again — within its replay budget.
+        this.log.warn("owed-mention replay failed", {
+          channelId: entry.channelId,
+          messageId: entry.messageId,
+          error: String(err),
+        });
+      }
+    }
+  }
+
+  /**
+   * Did the reply for this owed mention already go out before we died?
+   *
+   * Only ever asked of a `delivering` entry — one where a post was ATTEMPTED and the process
+   * vanished before it could be settled. A `queued` entry never reached a post site, so there is
+   * nothing to duplicate and nothing to check.
+   *
+   * The check reads Discord itself (the only authority on what was actually said): fetch the
+   * mention plus its neighbours and look for one of Beckett's own messages after it. That is
+   * circumstantial rather than exact — `fetchMessageContext` reports authorship, not reply
+   * targets — and it is deliberately biased toward "yes, answered". When this path is wrong it
+   * costs one re-ask; when the other bias is wrong it costs a duplicate answer, and a Beckett that
+   * says the same thing twice after every deploy is a worse Beckett than one that occasionally
+   * misses. Same reasoning for a fetch that fails or a gateway too old to have the method.
+   */
+  private async alreadyAnswered(entry: OwedMention): Promise<boolean> {
+    if (entry.phase !== "delivering") return false;
+    const fetchContext = this.gateway.fetchMessageContext?.bind(this.gateway);
+    if (!fetchContext) return true;
+    const around = await fetchContext(entry.channelId, entry.messageId, { surrounding: 5 }).catch(() => null);
+    if (!around || around.length === 0) return true;
+    const target = around.findIndex((message) => message.isTarget);
+    if (target < 0) return true; // the message is gone (deleted) — nothing to answer
+    return around.slice(target + 1).some((message) => message.isBeckett);
   }
 
   /** Wire the on-demand Git/GitHub branch card provider after shell construction. */
@@ -4556,6 +4859,10 @@ export class Concierge {
                       : {}),
                     ...(files.length > 0 ? { files } : {}),
                   };
+                  // A CLI reply IS this turn's answer, so it is the other place a mention's debt starts
+                  // being paid — stamp the ledger BEFORE the post for the same reason the auto-post
+                  // site does (issue #3), or a crash in that window lets boot replay answer twice.
+                  if (claimsActiveTurn && active && !active.ambient) this.owed.markDelivering(active.messageId);
                   // A long reply may land as several human-cadence messages (OPS-62); `post` returns the FIRST
                   // message id (the reply-correlation anchor), so `data.messageId` keeps its single-id contract.
                   const messageId = await this.gateway.post(channelId, text, opts);
@@ -5224,6 +5531,17 @@ export class Concierge {
       (meta) => isMentionClaim(meta) && meta.userId === m.userId && meta.channelId === m.channelId,
     );
 
+    // Write the debt down BEFORE the turn can start (issue #3). From here until this message is
+    // answered — or deliberately passed on — it is durably owed, so a turn that dies with the
+    // daemon is replayed after boot instead of costing this person a re-ask. Every exit from the
+    // block below settles it, except the one that must not: a shutdown.
+    //
+    // POSITION IS THE PRIVACY GUARANTEE. This ledger persists message text to disk, so it sits
+    // downstream of every gate that keeps text OUT of durable storage: the outsider gate, the
+    // approval intercept (live secrets), and the browser-question resume (passwords). Each of
+    // those returns above, so none of them can ever reach a claim. Do not move this call up.
+    this.owed.claim(m);
+
     let keepTyping = true;
     const typing = setInterval(() => {
       if (keepTyping) void this.gateway.sendTyping(m.channelId);
@@ -5253,6 +5571,10 @@ export class Concierge {
       // unavailable here, so deliberation cannot become a native Discord reply.
       if (output.decision === "send" && !mention.repliedViaCli) {
         const text = output.message;
+        // Stamp the ledger BEFORE the post, never after: if this process dies in the window
+        // between "posted" and "settled", the entry has to say "I may already have answered" so
+        // boot replay verifies instead of answering twice (owed-mentions.ts).
+        this.owed.markDelivering(m.messageId);
         // The Concierge's conversational reply is a native reply, which notifies only its author.
         const ackId = await this.gateway.post(m.channelId, text, {
           replyToMessageId: m.messageId,
@@ -5269,21 +5591,40 @@ export class Concierge {
         // the drop is visible. The superseding message runs its own turn and answers separately; a
         // deliberate model pass (superseded unset) still stays silent as before.
         const notice = SUPERSEDED_TURN_NOTICE;
+        this.owed.markDelivering(m.messageId);
         const ackId = await this.gateway
           .post(m.channelId, notice, { replyToMessageId: m.messageId, replyToUserId: m.userId })
           .catch(() => null);
         if (ackId) this.recordBeckettPost(m.channelId, notice, ackId);
       }
+      // The turn reached a real outcome — an answer, a deliberate pass, or a supersede that said
+      // so. Whichever it was, this message is no longer owed.
+      this.owed.settle(m.messageId);
     } catch (err) {
       keepTyping = false;
       clearInterval(typing);
       this.log.error("concierge turn failed", { messageId: m.messageId, err: String(err) });
-      await this.gateway
-        .post(m.channelId, "Something broke on my end — try me again in a sec.", {
-          replyToMessageId: m.messageId,
-          replyToUserId: m.userId,
-        })
-        .catch(() => undefined);
+      if (this.stopping) {
+        // THE restart-window case (issue #3), and the one exit that must not settle: the daemon is
+        // going down, this turn died with it, and anything we post now is racing a closing gateway.
+        // Leave the debt on the books — the next boot replays it and the person never re-asks.
+        this.log.warn("directed turn lost to a shutdown — left owed for replay after boot", {
+          channelId: m.channelId,
+          messageId: m.messageId,
+        });
+      } else {
+        // A live daemon that failed this turn owes a word NOW, not at the next restart: the session
+        // has already re-driven a lost delivery object once (MissingDeliveryOutputError), so by
+        // here the failure is real and a boot replay hours away is not the answer.
+        this.owed.markDelivering(m.messageId);
+        await this.gateway
+          .post(m.channelId, "Something broke on my end — try me again in a sec.", {
+            replyToMessageId: m.messageId,
+            replyToUserId: m.userId,
+          })
+          .catch(() => undefined);
+        this.owed.settle(m.messageId);
+      }
     } finally {
       if (this.activeMentions.get(m.channelId) === mention) this.activeMentions.delete(m.channelId);
     }
@@ -5446,7 +5787,11 @@ export class Concierge {
       // Who is talking, in full: their person file, once per session per speaker.
       this.personContextPrefix(m.channelId, speaker.userId) +
       // Reply-context rides last, right against the live turn it annotates.
-      (await this.replyContextPrefix(m, speaker));
+      (await this.replyContextPrefix(m, speaker)) +
+      // A replayed mention (issue #3) is answered LATE and the person should hear that from
+      // Beckett, in voice — so the fact goes to the model rather than a canned frame bolted onto
+      // whatever it says. Empty on every ordinary turn.
+      (this.replayingMentions.has(m.messageId) ? REPLAYED_TURN_NOTE : "");
     if (m.attachments.length === 0)
       return prefix + frameUserTurn(m.channelId, speaker, m.messageId, content);
     let images: TurnContentBlock[] = [];
@@ -5673,6 +6018,11 @@ export class Concierge {
    */
   private captureInbound(m: IncomingMessage, level: AccessLevel): void {
     if (!this.channelStore || level === "outsider") return;
+    // A replayed mention (issue #3) was already captured by the run that RECEIVED it — capture
+    // happens before the turn, so it is the one part of that run that provably completed. The
+    // store appends blind (no dedupe by message id), so re-capturing here would leave the shared
+    // record holding the same line twice, forever.
+    if (this.replayingMentions.has(m.messageId)) return;
     const files = m.attachments.map((a) => `[file: ${a.name}]`).join(" ");
     // A Discord forward stores its original in message snapshots, not `content` — fold it in
     // BEFORE the empty-content guard below, or a forward-only message (the common case: forward
