@@ -193,6 +193,24 @@ export function repoFromRemoteUrl(url: string): string | null {
   return parts.slice(-2).join("/");
 }
 
+/**
+ * The repo's PRIMARY checkout, out of `git worktree list --porcelain` (its first entry, always the
+ * main working tree — linked worktrees follow).
+ *
+ * This matters because the guarded deploy runs `git checkout main` in whatever directory it is
+ * spawned from, and a LINKED worktree cannot check out a branch another worktree already holds —
+ * git refuses with `fatal: 'main' is already used by worktree at …`. Ticket work happens in exactly
+ * such a worktree (`.beckett/worktrees/N`), so spawning the deploy in `--dir` would fail on every
+ * self-hosted finish, AFTER the merge had already landed. The deploy therefore runs where an
+ * operator has always run it by hand: the checkout that holds `main`.
+ */
+export function primaryWorktree(porcelain: string): string | null {
+  for (const line of porcelain.split("\n")) {
+    if (line.startsWith("worktree ")) return line.slice("worktree ".length).trim() || null;
+  }
+  return null;
+}
+
 // ── the merge gate (pure: every blocker's message is pinned by tests) ────────────────────────
 
 export type MergeGate =
@@ -318,6 +336,13 @@ export function describeDeployFailure(code: number, tail: string): string {
       `so it will go straight to the deploy).\n${tail}`
     );
   }
+  if (lower.includes("is already used by worktree")) {
+    return (
+      `${head} Cause: the deploy ran in a LINKED git worktree, which cannot check out \`main\` while ` +
+      `another checkout holds it. Re-run \`beckett finish\` (it skips the merge and retries the deploy), ` +
+      `or run \`./deploy/deploy-prod.sh\` directly from the checkout that holds main.\n${tail}`
+    );
+  }
   if (lower.includes("checkout is dirty")) {
     return (
       `${head} Cause: the deploy checkout on the daemon host has uncommitted edits, and it refuses to ` +
@@ -331,7 +356,9 @@ export function describeDeployFailure(code: number, tail: string): string {
       `key, then re-run \`beckett finish\`.\n${tail}`
     );
   }
-  const fatal = tail.split("\n").find((line) => line.includes("FATAL:"));
+  // The script's own gates shout `FATAL:`; git — whose errors reach here just as often — says
+  // `fatal:`. Matching only the loud one left git's actual reason out of the message entirely.
+  const fatal = tail.split("\n").find((line) => /fatal:/i.test(line));
   return `${head}${fatal ? ` Cause: ${fatal.trim()}` : ""}\n${tail}`;
 }
 
@@ -540,15 +567,35 @@ export async function runFinish(argv: string[]): Promise<void> {
   }
 
   // Only Beckett's own repo ships a guarded deploy. Resolving that here (not after the merge) is
-  // what lets the identity preflight below run ONLY when a deploy is actually going to happen.
-  const script = join(repoRoot, "deploy", "deploy-prod.sh");
+  // what lets the preflights below run ONLY when a deploy is actually going to happen — and lets
+  // them fail while nothing has been pushed or merged yet.
+  //
+  // The deploy runs in the repo's PRIMARY checkout, not necessarily the branch's: see
+  // {@link primaryWorktree}. `--dir` picks the branch to ship; it does not relocate the deploy.
+  const worktrees = await git(["worktree", "list", "--porcelain"], repoRoot);
+  const deployRoot = (worktrees.code === 0 ? primaryWorktree(worktrees.stdout) : null) ?? repoRoot;
+  const script = join(deployRoot, "deploy", "deploy-prod.sh");
   const willDeploy = opts.deploy && existsSync(script);
 
-  // The deploy commits the release bump on THIS checkout, so a missing identity blocks it just as
-  // surely as it blocks the commit above — catch it here, before the PR, not 10 minutes in.
   if (willDeploy) {
-    const identity = await gitIdentityProblem(repoRoot);
+    // The deploy commits the release bump in the DEPLOY checkout, so a missing identity blocks it
+    // just as surely as it blocks the commit above — catch it here, before the PR, not 10 minutes
+    // in and on the far side of a merge.
+    const identity = await gitIdentityProblem(deployRoot);
     if (identity) fail(`beckett finish: ${identity} (the guarded deploy commits the release version bump)`);
+    // Likewise a dirty deploy checkout: `git checkout main` there would fail after the merge landed.
+    if (deployRoot !== repoRoot) {
+      const deployStatus = await git(["status", "--porcelain"], deployRoot);
+      const deployDirty = deployStatus.code === 0 ? deployStatus.stdout.trim() : "";
+      if (deployDirty) {
+        fail(
+          `beckett finish: the deploy checkout ${deployRoot} has uncommitted changes, so the guarded ` +
+            `deploy could not check out ${opts.base} there:\n${deployDirty}\nClean it up (\`cd ${deployRoot} && ` +
+            `git status --short\`) and re-run \`beckett finish\`, or pass --no-deploy to land the PR ` +
+            `without shipping. Nothing has been pushed or merged yet.`,
+        );
+      }
+    }
   }
 
   const gh = await buildGh(repoRoot);
@@ -637,8 +684,8 @@ export async function runFinish(argv: string[]): Promise<void> {
     deploy = { ran: false, reason: `no guarded deploy path in this repo (${script} does not exist)` };
     step(`merged, but ${deploy.reason} — nothing to redeploy`);
   } else {
-    step(`running the guarded redeploy (${script}, BECKETT_BUMP=${opts.bump})`);
-    const { code, tail } = await runGuardedDeploy(script, repoRoot, opts.bump, !quiet);
+    step(`running the guarded redeploy (${script} in ${deployRoot}, BECKETT_BUMP=${opts.bump})`);
+    const { code, tail } = await runGuardedDeploy(script, deployRoot, opts.bump, !quiet);
     if (code !== 0) fail(`beckett finish: ${describeDeployFailure(code, tail)}`);
     deploy = { ran: true };
   }
@@ -651,7 +698,7 @@ export async function runFinish(argv: string[]): Promise<void> {
     committed,
     pr: { number: pr.number, url: pr.url },
     merge: { state: merged, strategy: opts.strategy },
-    deploy: deploy.ran ? { ran: true, script, bump: opts.bump } : { ran: false, reason: deploy.reason },
+    deploy: deploy.ran ? { ran: true, script, cwd: deployRoot, bump: opts.bump } : { ran: false, reason: deploy.reason },
     audit,
   });
 }

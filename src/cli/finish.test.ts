@@ -25,6 +25,7 @@ import {
   finishAuditLine,
   gateMerge,
   parseFinishArgs,
+  primaryWorktree,
   repoFromRemoteUrl,
   runGuardedDeploy,
 } from "./finish.ts";
@@ -256,6 +257,48 @@ describe("describeDeployFailure", () => {
     const msg = describeDeployFailure(1, "== gating origin/main ==\nFATAL: bubblewrap is required\nbye");
     expect(msg).toContain("FATAL: bubblewrap is required");
     expect(msg).toContain("bye");
+  });
+
+  // git shouts in lower case, and its errors reach this function as often as the script's own do.
+  test("git's own lower-case fatal line is surfaced as the cause too", () => {
+    const msg = describeDeployFailure(1, "== computing version bump ==\nfatal: could not read Username for 'https://github.com'");
+    expect(msg).toContain("Cause: fatal: could not read Username");
+  });
+
+  test("a linked-worktree checkout clash is named, not left as a bare exit code", () => {
+    const msg = describeDeployFailure(1, "fatal: 'main' is already used by worktree at '/home/beckett/Projects/beckett'");
+    expect(msg).toContain("LINKED git worktree");
+    expect(msg).toContain("deploy-prod.sh");
+    // Re-running is the fix, and it must be clear the merge is not at risk.
+    expect(msg).toContain("merge DID land");
+  });
+});
+
+describe("primaryWorktree", () => {
+  // The deploy runs `git checkout main`, which a linked worktree cannot do while the primary
+  // checkout holds that branch — so the deploy must be spawned in the FIRST entry, not `--dir`.
+  const PORCELAIN = [
+    "worktree /home/beckett/Projects/beckett",
+    "HEAD 5f165862f3eff6f0ee1af7bfa0c5315626014927",
+    "branch refs/heads/main",
+    "",
+    "worktree /home/beckett/Projects/beckett/.beckett/worktrees/2",
+    "HEAD f804fa5f3eff6f0ee1af7bfa0c5315626014927",
+    "branch refs/heads/beckett/task-2-1",
+    "",
+  ].join("\n");
+
+  test("picks the main working tree, never the linked worktree the ticket was built in", () => {
+    expect(primaryWorktree(PORCELAIN)).toBe("/home/beckett/Projects/beckett");
+  });
+
+  test("a single-checkout repo is its own primary worktree", () => {
+    expect(primaryWorktree("worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n")).toBe("/srv/app");
+  });
+
+  test("unparseable output is null so the caller falls back rather than deploying somewhere wrong", () => {
+    expect(primaryWorktree("")).toBeNull();
+    expect(primaryWorktree("not porcelain at all")).toBeNull();
   });
 });
 
