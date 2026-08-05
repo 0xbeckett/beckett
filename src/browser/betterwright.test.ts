@@ -526,6 +526,43 @@ test("an acquire escalates past the caches when only site storage is left to rec
   }
 });
 
+test("the enforced footprint ceiling is the quota the lane advertised, not the constant", async () => {
+  let profileSize = 10;
+  const fake = new FakeBetterWright();
+  // On a tight host the lane advertises well under its 32 GiB ceiling, and a page that
+  // ignores the estimate must be stopped at the number it was actually given: CloakBrowser's
+  // switch only changes what a page is told, so this check is what protects the host disk.
+  const runtime = createBetterWrightRuntime(settingsFor(), quietLog, {
+    createBrowser: () => fake,
+    measureProfileBytes: async () => profileSize,
+    env: { BECKETT_BROWSER_STORAGE_QUOTA_MIB: "2" },
+  });
+  try {
+    await runtime.acquire(leaseFor("advertised"));
+    profileSize = 3 * 1024 * 1024;
+    await expect(runtime.evaluate("advertised", "return 1")).rejects.toThrow("storage quota this lane grants");
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("an unset or unusable advertised quota falls back to the lane ceiling", async () => {
+  const fake = new FakeBetterWright();
+  const runtime = createBetterWrightRuntime(settingsFor(), quietLog, {
+    createBrowser: () => fake,
+    // A garbage value must not become a tiny ceiling that refuses every lease.
+    measureProfileBytes: async () => 4 * 1024 * 1024,
+    env: { BECKETT_BROWSER_STORAGE_QUOTA_MIB: "not-a-number" },
+  });
+  try {
+    await runtime.acquire(leaseFor("fallback"));
+    const result = await runtime.evaluate("fallback", "return 1");
+    expect(result.events.join("\n")).not.toContain("profile blocked");
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("the whole-footprint ceiling still refuses a lease when caches cannot be reclaimed", async () => {
   let profileSize = 10;
   const fake = new FakeBetterWright();

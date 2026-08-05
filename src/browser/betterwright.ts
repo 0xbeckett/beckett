@@ -57,17 +57,30 @@ const MAX_LEASES_HARD_CAP = 16;
  */
 const MAX_PROFILE_BYTES = 512 * 1024 * 1024;
 /**
- * Global absolute ceiling for the profile's whole on-disk footprint, disposable caches
- * included. This is the ceiling of the budget the lane advertises through
- * `navigator.storage.estimate()` and enforces as `RLIMIT_FSIZE` (see storage-quota.ts):
- * a page told it may keep 32 GiB must not then be refused a lease, or have the bytes
- * deleted out from under it, by a ceiling two orders of magnitude smaller.
- *
- * The advertised quota is that ceiling less the host's free-space reserve, so it is never
- * larger than this number — the slack only ever runs in the safe direction, and a page
- * that fills every byte it was promised still cannot trip this.
+ * Absolute ceiling for the profile's whole on-disk footprint, site storage included, when
+ * the lane did not say what it advertised. It is the ceiling of the lane budget
+ * (storage-quota.ts): a page told it may keep 32 GiB must not then be refused a lease, or
+ * have the bytes deleted out from under it, by a ceiling two orders of magnitude smaller.
  */
 const MAX_PROFILE_DISK_BYTES = LANE_STORAGE_BYTES;
+/** Set by isolated.ts to the budget this lane advertised to pages; see storage-quota.ts. */
+const QUOTA_ENV = "BECKETT_BROWSER_STORAGE_QUOTA_MIB";
+
+/**
+ * The whole-footprint ceiling this lane enforces: exactly the quota it advertised through
+ * `navigator.storage.estimate()`, which on a tight host is well under the ceiling above.
+ *
+ * The advertised number and the enforced one must be the same number. CloakBrowser's
+ * `--fingerprint-storage-quota` only changes what a page is *told* — Chromium's quota
+ * manager keeps accepting writes past it — so this check is the only thing standing
+ * between a page and the host's free-space reserve. Reading the figure the host already
+ * computed, rather than recomputing it here, is what keeps the two from drifting apart.
+ */
+function advertisedProfileDiskBytes(env: Record<string, string | undefined>): number {
+  const mib = parsePositiveInt(env[QUOTA_ENV]);
+  if (mib === undefined) return MAX_PROFILE_DISK_BYTES;
+  return Math.min(MAX_PROFILE_DISK_BYTES, mib * 1024 * 1024);
+}
 /** Per-lease growth allowance for real profile state, from each lease's own baseline. */
 const MAX_PROFILE_GROWTH_BYTES = 100 * 1024 * 1024;
 /** Prune disposable caches before they can make a dormant profile unavailable. */
@@ -183,7 +196,7 @@ export function createBetterWrightRuntime(
   const configuredMax = deps.maxLeases ?? parsePositiveInt(env.BECKETT_BROWSER_MAX_LEASES) ?? DEFAULT_MAX_LEASES;
   const maxLeases = killSwitch ? 1 : Math.min(MAX_LEASES_HARD_CAP, Math.max(1, configuredMax));
   const maxProfileBytes = boundedBudget(deps.maxProfileBytes, MAX_PROFILE_BYTES);
-  const maxProfileDiskBytes = boundedBudget(deps.maxProfileDiskBytes, MAX_PROFILE_DISK_BYTES);
+  const maxProfileDiskBytes = boundedBudget(deps.maxProfileDiskBytes, advertisedProfileDiskBytes(env));
   const maxProfileGrowthBytes = boundedBudget(deps.maxProfileGrowthBytes, MAX_PROFILE_GROWTH_BYTES);
   const profileRoot = resolve(settings.profileDir);
   // The scan short-circuits at the ceiling it is being measured against. Using the
