@@ -11,6 +11,7 @@ import {
   contextPreamble,
   createBrowserAgent,
   redactKnownBrowserInputs,
+  resolveCredsEntry,
   secretsPreamble,
   type BrowserAgentQuestion,
   type BrowserAgentRun,
@@ -170,6 +171,9 @@ function fakeKeychain(values: Record<string, string>, totpCodes: string[] = []):
       if (!code) throw new Error("no more codes");
       return code;
     },
+    async list() {
+      return ["x.com", "team-email"];
+    },
   };
 }
 
@@ -226,7 +230,9 @@ describe("dispatch", () => {
     expect(mcp.mcpServers.browser.args[0]).toEndWith("/src/browser/mcp.ts");
     expect(mcp.mcpServers.browser.env.BECKETT_BROWSER_RUN_ID).toBe(runId);
     expect(mcp.mcpServers.browser.env.BECKETT_BROWSER_CONTROL_TOKEN.length).toBeGreaterThanOrEqual(43);
-    expect(outcomes[0]).toMatchObject({ state: "done", result: "BROWSER:inspect args", outcomeDelivered: false });
+    // The fake harness echoes its whole input, which now carries the credentials preamble too.
+    expect(outcomes[0]).toMatchObject({ state: "done", outcomeDelivered: false });
+    expect(outcomes[0]!.result).toStartWith("BROWSER:inspect args");
     expect(outcomes[0]!.proofFiles).toHaveLength(1);
   });
 
@@ -307,8 +313,8 @@ describe("dispatch queue", () => {
     // Both queued runs drain in order without any re-dispatch.
     await waitUntil(() => outcomes.length === 3, 8_000);
     expect(outcomes.map((run) => run.runId)).toEqual([first.runId, second.runId, third.runId]);
-    expect(outcomes[1]).toMatchObject({ state: "done", result: "BROWSER:second task" });
-    expect(outcomes[2]).toMatchObject({ state: "done", result: "BROWSER:third task" });
+    expect(outcomes[1]!.result).toStartWith("BROWSER:second task");
+    expect(outcomes[2]!.result).toStartWith("BROWSER:third task");
     expect(agent.stats().queued).toBe(0);
   });
 
@@ -382,7 +388,7 @@ describe("dispatch queue", () => {
     await agent.resume(first.runId, "blue");
     await waitUntil(() => outcomes.length === 2, 8_000);
     expect(outcomes.map((run) => run.runId)).toEqual([first.runId, survivor.runId]);
-    expect(outcomes[1]).toMatchObject({ state: "done", result: "BROWSER:queued survivor" });
+    expect(outcomes[1]!.result).toStartWith("BROWSER:queued survivor");
   });
 
   test("a queued credentialed dispatch drops the secret values and re-reads them at start", async () => {
@@ -394,6 +400,9 @@ describe("dispatch queue", () => {
       },
       async totp() {
         throw new Error("unused");
+      },
+      async list() {
+        return ["x.com"];
       },
     };
     const { dir, agent, outcomes, questions } = setup({}, { keychain });
@@ -520,12 +529,59 @@ describe("keychain secrets", () => {
       async totp() {
         throw new Error("unused");
       },
+      async list() {
+        return ["x.com"];
+      },
     };
     const { agent } = setup({}, { keychain });
     await expect(
       agent.run("log in", { channelId: "chan", requesterId: "owner", credsEntry: "nope" }),
     ).rejects.toThrow(/not readable/);
     expect(agent.stats().running).toBe(0);
+  });
+
+  // The dispatcher wrote the entry name into the task PROSE instead of credsEntry, so the run
+  // started with no `secrets` at all, reached for BetterWright's own credential store, and asked
+  // for "a stored credential named jingle". Resolve the name or refuse — never start blind.
+  describe("credential entry resolution", () => {
+    const vault = ["x-account", "team-email"];
+
+    test("an explicit entry always wins", () => {
+      expect(resolveCredsEntry("log in to x.com", "x-account", vault)).toEqual({ entry: "x-account" });
+    });
+
+    test("a task with no credential intent needs no entry", () => {
+      expect(resolveCredsEntry("check the status page for outages", null, vault)).toEqual({ entry: null });
+    });
+
+    test("recovers the entry a dispatcher named only in the task text", () => {
+      const resolved = resolveCredsEntry(
+        "Log into X (x.com) using the x-account credentials from jingle, then post.",
+        null,
+        vault,
+      );
+      expect(resolved).toMatchObject({ entry: "x-account", recoveredFrom: "task text" });
+    });
+
+    test("refuses a credential task naming no real entry, and lists what exists", () => {
+      const resolved = resolveCredsEntry("log in to x.com and post the thread", null, vault);
+      expect(resolved.entry).toBeNull();
+      expect(resolved.error).toContain("x-account, team-email");
+    });
+
+    test("refuses rather than guessing when the task names two entries", () => {
+      const resolved = resolveCredsEntry("log in with x-account then team-email", null, vault);
+      expect(resolved.entry).toBeNull();
+      expect(resolved.error).toContain("more than one");
+    });
+
+    test("a dispatch that needs credentials but carries none never starts", async () => {
+      const { agent } = setup({}, { keychain: fakeKeychain({ password: "pw" }) });
+      await expect(
+        agent.run("log in to example.com and post", { channelId: "chan", requesterId: "owner" }),
+      ).rejects.toThrow(/pass credsEntry/);
+      expect(agent.stats().running).toBe(0);
+    });
   });
 
   test("runs without a creds entry expose no secrets", async () => {

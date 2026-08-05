@@ -24,6 +24,8 @@ export interface KeychainEntrySecrets {
 export interface KeychainReader {
   read(entry: string): Promise<KeychainEntrySecrets>;
   totp(entry: string): Promise<string>;
+  /** Entry NAMES in the vault (metadata only). Used to resolve a dispatch that named one in prose. */
+  list(): Promise<string[]>;
 }
 
 /** Test seam mirroring `src/secret/keychain.ts`, plus captured stdout for the exec/show paths. */
@@ -127,6 +129,19 @@ export function createKeychainReader(run: JingleReadRunner = spawnJingleRead): K
         values[field] = fetched.stdout;
       }
       return { entry, fields, values, hasTotp };
+    },
+
+    async list() {
+      const listed = await run(["list", "--json"]);
+      if (listed.code !== 0) return [];
+      try {
+        const parsed = JSON.parse(listed.stdout) as { entries?: { name?: unknown }[] };
+        return (parsed.entries ?? [])
+          .map((e) => e.name)
+          .filter((name): name is string => typeof name === "string" && !!name.trim());
+      } catch {
+        return [];
+      }
     },
 
     async totp(entry) {

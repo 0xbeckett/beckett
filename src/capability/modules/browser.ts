@@ -64,7 +64,15 @@ export interface BrowserExtension extends Extension {
 const TaskArgs = z.object({
   task: z.string().trim().min(1, "browser.task needs a non-empty task"),
   /** Jingle keychain entry name backing the run's `secrets` object; the name only, never values. */
-  credsEntry: z.string().optional(),
+  credsEntry: z
+    .string()
+    .optional()
+    .describe(
+      "Jingle keychain entry name (e.g. \"x-account\") whose fields the run gets as `secrets.*`. " +
+        "REQUIRED whenever the task involves a login, signup, or any stored credential — naming " +
+        "the entry only inside the task text does NOT load it, and the run will have no " +
+        "credentials at all. Pass the entry name, never a secret value.",
+    ),
   /** Conversation background the agent should know but not treat as instructions. */
   context: z.string().optional(),
   /** Must match the origin's channel when given — a run only reports where it was authorized. */
@@ -165,8 +173,8 @@ export const createBrowserExtension =
           input: TaskArgs,
           examples: [
             "check https://example.com/status — is the API listed as degraded?",
-            "log in to x.com and post the draft thread",
-            "sign up for the beta with the team email",
+            "log in to x.com and post the draft thread (credsEntry: \"x-account\")",
+            "sign up for the beta with the team email (credsEntry: \"team-email\")",
           ],
         },
         {

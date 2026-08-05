@@ -264,6 +264,58 @@ export function secretsPreamble(secrets: KeychainEntrySecrets): string {
   );
 }
 
+/**
+ * The line a run gets when it has NO credentials loaded. Without it a task that plainly needs a
+ * login (the dispatcher wrote "log into X with the x-account credentials" but forgot `credsEntry`)
+ * leaves the agent to improvise: it reaches for BetterWright's own credential store, asks it for an
+ * entry named after whatever the prose mentioned, and reports "no stored credential named jingle"
+ * — a confusing dead end that reads like a browser-engine limitation rather than a missing
+ * parameter. Say plainly that nothing is loaded and that asking is the only correct move.
+ */
+export const NO_SECRETS_PREAMBLE =
+  `No credentials are loaded for this run: there is no \`secrets\` object in your scripts. If this ` +
+  `task needs a login, do NOT try the browser's built-in credential store, do not guess an entry ` +
+  `name, and do not type a placeholder — ask the operator for the keychain entry name, and they ` +
+  `will re-dispatch this task with the credentials attached.`;
+
+/** Signals that a dispatched task cannot be completed without a credential. */
+const CREDENTIAL_INTENT_RE = /\b(log ?in|logs? into|logged in|sign ?in|sign ?up|password|credential|creds|keychain|jingle)\b/i;
+
+export interface CredsResolution {
+  entry: string | null;
+  /** Set when the entry was recovered from the task prose rather than passed as a parameter. */
+  recoveredFrom?: string;
+  /** Set when the task clearly needs credentials but no entry could be resolved. */
+  error?: string;
+}
+
+/**
+ * Decide which keychain entry backs a dispatch. An explicit `credsEntry` always wins. Otherwise,
+ * when the task plainly needs a credential, recover the entry the dispatcher named in prose — the
+ * common failure is a model writing "using the x-account credentials from jingle" into the task
+ * text instead of the parameter, which silently produces a run with no secrets at all. Recovery is
+ * deliberately conservative: an exact, whole-word match on a REAL vault entry name, and only when
+ * exactly one matches. Anything ambiguous fails the dispatch loudly with the available names, which
+ * is far cheaper than a run that flails for ten minutes and then asks an unanswerable question.
+ */
+export function resolveCredsEntry(task: string, requested: string | null, vaultEntries: readonly string[]): CredsResolution {
+  const explicit = requested?.trim();
+  if (explicit) return { entry: explicit };
+  if (!CREDENTIAL_INTENT_RE.test(task)) return { entry: null };
+  const named = vaultEntries.filter((entry) => new RegExp(`(?<![\\w-])${escapeRegex(entry)}(?![\\w-])`, "i").test(task));
+  if (named.length === 1) return { entry: named[0]!, recoveredFrom: "task text" };
+  const available = vaultEntries.length > 0 ? vaultEntries.join(", ") : "(the vault is empty)";
+  return {
+    entry: null,
+    error:
+      `this task needs credentials but no keychain entry was attached: pass credsEntry with the ` +
+      `entry name instead of only mentioning it in the task text. ` +
+      (named.length > 1
+        ? `The task names more than one vault entry (${named.join(", ")}) — say which one.`
+        : `Available entries: ${available}.`),
+  };
+}
+
 export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
   const { config, logger, browser, keychain } = deps;
   const spawn = deps.spawn ?? Bun.spawn;
@@ -569,7 +621,7 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       starting.delete(run.runId);
       let input = run.task;
       if (run.context) input += `\n\n${contextPreamble(run.context)}`;
-      if (dispatch.secrets) input += `\n\n${secretsPreamble(dispatch.secrets)}`;
+      input += `\n\n${dispatch.secrets ? secretsPreamble(dispatch.secrets) : NO_SECRETS_PREAMBLE}`;
       // Steering that arrived while queued folds into the launch input — a queued run has no
       // transcript yet for a tool-result delivery.
       if (dispatch.pendingSteers.length > 0) {
@@ -805,7 +857,18 @@ export function createBrowserAgent(deps: CreateBrowserAgentDeps): BrowserAgent {
       if (!opts.channelId || !opts.requesterId) {
         throw new Error("browser tasks need an origin channel and an authenticated requester");
       }
-      const credsEntry = opts.credsEntry?.trim() || null;
+      // A dispatch that needs credentials but carries no entry name is the single most expensive
+      // silent failure this agent has: the run starts, has no `secrets`, and improvises. Resolve
+      // (or refuse) here, before anything spawns.
+      const resolved = resolveCredsEntry(task, opts.credsEntry ?? null, keychain ? await keychain.list() : []);
+      if (resolved.error) throw new Error(resolved.error);
+      if (resolved.recoveredFrom) {
+        logger.warn("browser dispatch named its keychain entry in prose instead of credsEntry", {
+          entry: resolved.entry,
+          recoveredFrom: resolved.recoveredFrom,
+        });
+      }
+      const credsEntry = resolved.entry;
       let secrets: KeychainEntrySecrets | null = null;
       if (credsEntry) {
         if (!keychain) throw new Error("keychain credentials are unavailable - jingle reader is not wired");
