@@ -29,7 +29,8 @@ const clicked = await page.evaluate(() => {
   return "clicked: " + btn.textContent.trim();
 });
 await page.waitForTimeout(5000);
-return await page.evaluate(async () => {
+const state = await page.evaluate(async () => {
   const est = await navigator.storage.estimate();
-  return JSON.stringify({ quota: est.quota, usage: est.usage, probe: window.__probe, text: document.body.innerText.slice(0, 500) });
+  return { quota: est.quota, usage: est.usage, probe: window.__probe, text: document.body.innerText.replace(/\s+/g, " ").slice(0, 400) };
 });
+return JSON.stringify({ clicked, ...state });
