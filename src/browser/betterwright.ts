@@ -25,6 +25,7 @@ import { BetterWright, NetworkPolicy, piImageArtifacts } from "betterwright";
 import { openTrustedBrowserAttachment } from "./attachments.ts";
 import type { Logger } from "../types.ts";
 import { measureDirectoryBytes, pruneChromeProfileCaches } from "./profile-cache.ts";
+import { LANE_STORAGE_BYTES } from "./storage-quota.ts";
 import type {
   BrowserCheckpoint,
   BrowserEvalResult,
@@ -40,9 +41,22 @@ const MAX_EVENTS = 100;
 const DEFAULT_MAX_LEASES = 3;
 /** Absolute upper bound on the cap regardless of configuration. */
 const MAX_LEASES_HARD_CAP = 16;
-/** Global absolute ceiling for the shared Chromium profile directory. */
+/**
+ * Global absolute ceiling for *real* profile state — cookies, IndexedDB, Local Storage,
+ * everything Chromium will not silently rebuild. Disposable caches are excluded from
+ * this number (see DISPOSABLE_CACHE_PATHS), so it stays a measure of what a lease has
+ * actually accumulated rather than of cache churn.
+ */
 const MAX_PROFILE_BYTES = 512 * 1024 * 1024;
-/** Per-lease growth allowance, measured from each lease's own acquire baseline. */
+/**
+ * Global absolute ceiling for the profile's whole on-disk footprint, disposable caches
+ * included. This is the same budget the lane advertises through
+ * `navigator.storage.estimate()` and enforces as `RLIMIT_FSIZE` (see storage-quota.ts):
+ * a page told it may keep 32 GiB must not then be refused a lease, or have the bytes
+ * deleted out from under it, by a ceiling two orders of magnitude smaller.
+ */
+const MAX_PROFILE_DISK_BYTES = LANE_STORAGE_BYTES;
+/** Per-lease growth allowance for real profile state, from each lease's own baseline. */
 const MAX_PROFILE_GROWTH_BYTES = 100 * 1024 * 1024;
 /** Prune disposable caches before they can make a dormant profile unavailable. */
 const PROFILE_PRUNE_HIGH_WATER_MARK = 0.7;
@@ -104,6 +118,8 @@ export interface CreateBetterWrightRuntimeDeps {
   /** Shared-profile size probe; defaults to scanning the betterwright home. */
   measureProfileBytes?: (options?: { excludeDisposableCache?: boolean }) => Promise<number>;
   maxProfileBytes?: number;
+  /** Whole-footprint ceiling override, caches included; defaults to the lane budget. */
+  maxProfileDiskBytes?: number;
   maxProfileGrowthBytes?: number;
   /** Environment source for the cap / kill-switch; defaults to process.env. */
   env?: Record<string, string | undefined>;
@@ -155,10 +171,18 @@ export function createBetterWrightRuntime(
   const configuredMax = deps.maxLeases ?? parsePositiveInt(env.BECKETT_BROWSER_MAX_LEASES) ?? DEFAULT_MAX_LEASES;
   const maxLeases = killSwitch ? 1 : Math.min(MAX_LEASES_HARD_CAP, Math.max(1, configuredMax));
   const maxProfileBytes = boundedBudget(deps.maxProfileBytes, MAX_PROFILE_BYTES);
+  const maxProfileDiskBytes = boundedBudget(deps.maxProfileDiskBytes, MAX_PROFILE_DISK_BYTES);
   const maxProfileGrowthBytes = boundedBudget(deps.maxProfileGrowthBytes, MAX_PROFILE_GROWTH_BYTES);
   const profileRoot = resolve(settings.profileDir);
+  // The scan short-circuits at the ceiling it is being measured against. Using the
+  // smaller one for a cache-inclusive scan would report a 5 GB CacheStorage as exactly
+  // the ceiling plus a byte, and every acquire would refuse the lease.
   const measureProfileBytes = deps.measureProfileBytes
-    ?? ((options) => measureDirectoryBytes(profileRoot, maxProfileBytes + 1, options));
+    ?? ((options) => measureDirectoryBytes(
+      profileRoot,
+      (options?.excludeDisposableCache ? maxProfileBytes : maxProfileDiskBytes) + 1,
+      options,
+    ));
 
   const createBrowser = deps.createBrowser ?? ((options) => new BetterWright(options) as unknown as BetterWrightClient);
   const browser = createBrowser({

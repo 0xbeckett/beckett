@@ -131,6 +131,12 @@ interface BuildBrowserHostLaunchOptions {
   hostPath: string;
   chromiumExecutable: string;
   cloakCacheDir?: string;
+  /**
+   * Host directory holding the CloakBrowser wrapper shim's `dist/index.js`. Only the
+   * betterwright backend loads it; without it the lane keeps CloakBrowser's fabricated
+   * storage quota, so startHost always supplies it.
+   */
+  cloakShimDir?: string;
   repoRoot: string;
   bwrapPath?: string;
   sandboxExecPath?: string;
@@ -159,6 +165,10 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
   mkdirSync(hostHome, { recursive: true, mode: 0o700 });
   mkdirSync(hostTmp, { recursive: true, mode: 0o700 });
 
+  // One number governs the lane's storage: what pages are told they may keep, the
+  // largest single file the sandbox will let Chromium write, and (in betterwright.ts)
+  // the profile's on-disk ceiling. See storage-quota.ts.
+  const laneStorageBytes = resolveLaneStorageBytes({ profileDir: options.settings.profileDir });
   const encodedSettings = Buffer.from(JSON.stringify(options.settings), "utf8").toString("base64url");
   const encodedBudgets = options.budgetOverrides
     ? Buffer.from(JSON.stringify(options.budgetOverrides), "utf8").toString("base64url")
@@ -170,6 +180,19 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
   const cloakEnv: Record<string, string> =
     options.backend === "betterwright" && options.cloakCacheDir
       ? { CLOAKBROWSER_CACHE_DIR: options.cloakCacheDir, CLOAKBROWSER_AUTO_UPDATE: "false" }
+      : {};
+  // The shim reads the budget from the environment and appends CloakBrowser's
+  // --fingerprint-storage-quota, the only switch that moves what
+  // navigator.storage.estimate() reports. Inside bubblewrap the shim is bound beside
+  // the host bundle, so BetterWright loads it from the sandbox's own path.
+  const storageEnv = (sandboxed: boolean): Record<string, string> =>
+    options.backend === "betterwright" && options.cloakShimDir
+      ? {
+        BECKETT_BROWSER_STORAGE_QUOTA_MIB: String(laneStorageQuotaMib(laneStorageBytes)),
+        BETTERWRIGHT_CLOAKBROWSER_PATH: sandboxed
+          ? join(SANDBOX_HOST_DIR, CLOAK_SHIM_DIR_NAME)
+          : options.cloakShimDir,
+      }
       : {};
   // Forward the betterwright adapter's concurrent-lease controls into the host
   // so the cap and the single-lease kill switch operate inside the sandbox.
@@ -190,6 +213,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
     BECKETT_BROWSER_HOST_SETTINGS: encodedSettings,
     BECKETT_BROWSER_BACKEND: options.backend ?? "playwright",
     ...cloakEnv,
+    ...storageEnv(false),
     ...leaseEnv,
     ...(encodedBudgets ? { BECKETT_BROWSER_HOST_BUDGETS: encodedBudgets } : {}),
   };
@@ -248,6 +272,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
     ];
     if (encodedBudgets) args.push("--setenv", "BECKETT_BROWSER_HOST_BUDGETS", encodedBudgets);
     for (const [name, value] of Object.entries(cloakEnv)) args.push("--setenv", name, value);
+    for (const [name, value] of Object.entries(storageEnv(true))) args.push("--setenv", name, value);
     for (const [name, value] of Object.entries(leaseEnv)) args.push("--setenv", name, value);
     args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
     addLinuxSystemMounts(args);
@@ -285,6 +310,15 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
     if (options.backend === "betterwright" && options.cloakCacheDir && existsSync(options.cloakCacheDir)) {
       args.push("--ro-bind", options.cloakCacheDir, options.cloakCacheDir);
     }
+    // Read-only, and beside the host bundle rather than under /repo/src, so the shim
+    // resolves `cloakbrowser` from the node_modules already bound below.
+    if (options.backend === "betterwright" && options.cloakShimDir) {
+      args.push(
+        "--ro-bind",
+        join(options.cloakShimDir, "dist", "index.js"),
+        join(SANDBOX_HOST_DIR, CLOAK_SHIM_DIR_NAME, "dist", "index.js"),
+      );
+    }
     addBrowserRuntimeMounts(args, repoRoot, hostPath);
     args.push(
       "--chdir",
@@ -296,8 +330,11 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
     // bwrap receives a minimal environment too; --clearenv controls the sandboxed child.
     return {
       // Chromium inherits this per-file ceiling, so a download cannot fill the disk before the
-      // controller's aggregate streaming budget gets a chance to cancel and delete it.
-      command: [prlimit, "--fsize=134217728", "--", ...args],
+      // controller's aggregate streaming budget gets a chance to cancel and delete it. It is the
+      // lane's whole storage budget rather than a separate smaller number: CacheStorage keeps one
+      // file per entry, so any ceiling below the budget silently caps a single cached asset — and
+      // Chromium does not survive the SIGXFSZ, it dies mid-fetch and the page sees a network error.
+      command: [prlimit, `--fsize=${laneStorageBytes}`, "--", ...args],
       cwd: repoRoot,
       env: { PATH: options.parentEnv?.PATH ?? "/usr/bin:/bin", LANG: "C.UTF-8" },
       isolation: "bubblewrap",
@@ -332,7 +369,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
   throw new Error(`secure computer-use is unsupported on ${options.platform}; use explicit process-only mode only for testing`);
 }
 
-function browserHostBundle(repoRoot: string): Promise<string> {
+function browserHostBundle(repoRoot: string): Promise<BrowserHostArtifacts> {
   const root = resolve(repoRoot);
   const existing = HOST_BUNDLES.get(root);
   if (existing) return existing;
@@ -344,7 +381,7 @@ function browserHostBundle(repoRoot: string): Promise<string> {
   return pending;
 }
 
-async function buildBrowserHostBundle(repoRoot: string): Promise<string> {
+async function buildBrowserHostBundle(repoRoot: string): Promise<BrowserHostArtifacts> {
   const nodeModules = join(repoRoot, "node_modules");
   const cacheParent = join(nodeModules, ".cache");
   const cacheRoot = join(cacheParent, "beckett-browser");
@@ -374,10 +411,30 @@ async function buildBrowserHostBundle(repoRoot: string): Promise<string> {
     const target = join(cacheRoot, "host.mjs");
     renameSync(result.outputs[0]!.path, target);
     chmodSync(target, 0o600);
-    return realpathSync(target);
+    return { hostPath: realpathSync(target), cloakShimDir: publishCloakShim(cacheRoot) };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Copy the CloakBrowser wrapper shim beside the host bundle, unbundled: BetterWright
+ * imports it by path at runtime, and its `cloakbrowser` import has to stay a bare
+ * specifier so Node resolves it from the bound `/repo/node_modules` inside the sandbox.
+ */
+function publishCloakShim(cacheRoot: string): string {
+  const shimDir = join(cacheRoot, CLOAK_SHIM_DIR_NAME);
+  const distDir = join(shimDir, "dist");
+  for (const path of [shimDir, distDir]) {
+    if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
+      throw new Error(`CloakBrowser shim path must not contain symlinks: ${path}`);
+    }
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  }
+  const target = join(distDir, "index.js");
+  copyFileSync(CLOAK_SHIM_SOURCE, target);
+  chmodSync(target, 0o600);
+  return shimDir;
 }
 
 export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeDeps): BrowserRuntime {
@@ -566,7 +623,7 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
     if (child) return;
     if (stopped) throw new Error("browser runtime is stopped");
     const currentSettings = hostSettingsForLease(current);
-    const hostPath = await browserHostBundle(repoRoot);
+    const { hostPath, cloakShimDir } = await browserHostBundle(repoRoot);
     const launch = buildBrowserHostLaunch({
       settings: currentSettings,
       platform,
@@ -576,6 +633,7 @@ export function createIsolatedBrowserRuntime(deps: CreateIsolatedBrowserRuntimeD
       hostPath,
       chromiumExecutable,
       cloakCacheDir,
+      cloakShimDir,
       repoRoot,
       bwrapPath: deps.bwrapPath,
       sandboxExecPath: deps.sandboxExecPath,
