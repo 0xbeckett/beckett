@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+### The browser lane stops lying to pages about storage (#7)
+
+A WebGPU space that streams 5.31 GB of model weights never loaded in the sandboxed browser lane:
+`navigator.storage.estimate()` reported `quota=622287713` (593 MiB), `persist()` returned `true`
+and changed nothing, and the shards that did start died at ~15s with `transferSize 0`. The host had
+429 GB free. Two independent causes, both named rather than papered over:
+
+- **The quota was a fingerprint, not a filesystem.** CloakBrowser — the managed browser BetterWright
+  drives — treats `navigator.storage.estimate()` as a fingerprint surface like any other. Its
+  patched Chromium carries a `--fingerprint-storage-quota` switch (`strings chrome | grep
+  '^fingerprint-'`), and with no value supplied it fabricates a consumer-plausible figure from the
+  per-profile seed in `.betterwright-fingerprint-seed`. `622287713` was that fabrication. It had no
+  relation to bwrap, to `--tmpfs /tmp`, or to the real disk, which is why `persist()` could not move
+  it and why looking for a filesystem reporting ~1 GB would never have found one.
+- **A 128 MiB `RLIMIT_FSIZE` killed the download.** The lane launched Chromium under
+  `prlimit --fsize=134217728`, a *per-file* ceiling. The space writes its weights as 26 OPFS files
+  of 206,588,416 bytes each, so Chromium took SIGXFSZ partway through the first shard and the fetch
+  died with nothing transferred — the "network error" the page reported.
+
+The quota manager is left switched on and unmodified; `--unlimited-storage` is not used. The lane
+computes what it can actually afford and tells pages that instead:
+
+- **One number, three enforcement points** (`src/browser/storage-quota.ts`). Free space on the
+  filesystem backing the profile, less an 8 GiB host reserve, clamped to a 32 GiB lane ceiling and a
+  512 MiB floor. That number is what pages are told, the lane's `RLIMIT_FSIZE`, and the profile's
+  on-disk ceiling. An unprobeable filesystem falls back to the floor, never the ceiling.
+- **The switch reaches Chromium through a wrapper shim** (`src/browser/cloak-storage-quota.mjs`).
+  BetterWright reserves the whole `--fingerprint*` namespace from `chromiumArgs` and rejects it
+  outright — correctly, since those switches decide the browser's presented identity. It does
+  support substituting the CloakBrowser wrapper module (`BETTERWRIGHT_CLOAKBROWSER_PATH`), so the
+  shim re-exports the real wrapper's two entry points with one switch appended and nothing else
+  touched.
+- **The sandbox is unchanged.** The shim is bound `--ro-bind`, beside the host bundle. No new
+  writable bind, no `--share-net`, no capability change; `--unshare-all` and `--cap-drop ALL` stand.
+  The only loosened limit is the per-file `RLIMIT_FSIZE`, deliberately: it was capping a single
+  cached asset, and the aggregate footprint is bounded below it by the profile budget.
+- **The profile budget is two ceilings, split by who put the bytes there**
+  (`src/browser/betterwright.ts`, `src/browser/profile-cache.ts`). Beckett's own profile state —
+  cookies, logins, history — keeps the 512 MiB ceiling and the 100 MB per-lease growth allowance.
+  Storage a page filled under the quota it was granted (Cache Storage, the HTTP cache, IndexedDB,
+  and OPFS, which is where the weights actually land) is measured against the advertised quota
+  instead. The lane enforces the exact figure it advertised, read back from the same environment
+  variable the shim used, because CloakBrowser's switch only changes what a page is *told* —
+  Chromium keeps accepting writes past it, so this check is what protects the host's free space.
+- **Weights survive the run and the next acquire.** `pruneChromeProfileCaches` still deletes only
+  disposable caches between leases; OPFS and the other quota-managed stores now go only under an
+  explicit escalation, taken when a profile is over its whole-footprint ceiling with nothing else
+  left to reclaim. Cookies and logins survive either way, and nothing is deleted mid-lease.
+- **Proven against the real space**, not a fixture: `bun scripts/ops/browser-smoke.ts` now asserts
+  the quota a live page reads tracks the lane's measured budget.
+
 ## v6.24.1 (2026-08-04)
 
 ### The pipeline feed speaks English (#4)
