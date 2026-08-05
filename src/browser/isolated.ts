@@ -320,13 +320,7 @@ export function buildBrowserHostLaunch(options: BuildBrowserHostLaunchOptions): 
       );
     }
     addBrowserRuntimeMounts(args, repoRoot, hostPath);
-    args.push(
-      "--chdir",
-      "/repo",
-      "--",
-      "/runtime/node",
-      "/repo/node_modules/.cache/beckett-browser/host.mjs",
-    );
+    args.push("--chdir", "/repo", "--", "/runtime/node", join(SANDBOX_HOST_DIR, "host.mjs"));
     // bwrap receives a minimal environment too; --clearenv controls the sandboxed child.
     return {
       // Chromium inherits this per-file ceiling, so a download cannot fill the disk before the
@@ -1005,10 +999,10 @@ function addBrowserRuntimeMounts(args: string[], repoRoot: string, hostPath: str
     "--dir",
     "/repo/node_modules/.cache",
     "--dir",
-    "/repo/node_modules/.cache/beckett-browser",
+    SANDBOX_HOST_DIR,
     "--ro-bind",
     hostPath,
-    "/repo/node_modules/.cache/beckett-browser/host.mjs",
+    join(SANDBOX_HOST_DIR, "host.mjs"),
   );
   // betterwright 1.x drives the managed CloakBrowser as this host's backend, so
   // the sandbox must now expose that whole runtime dependency closure: tldts
