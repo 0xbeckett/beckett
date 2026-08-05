@@ -67,23 +67,32 @@ Measured in the lane, against `https://procreations-maple-webgpu.static.hf.space
 | weights staged | 0 B | `5308191948` B (5.31 GB) in 265 s, ~19 MiB/s |
 | page state | "network error", back to landing | `READY · SUBGROUPS` |
 
-The download half is fixed and reproduced twice end to end (266.3 s and 263.3 s, both clean).
+The download half is fixed and reproduced three times end to end, on three fresh profiles
+(266.3 s, 263.3 s and 274.7 s, all clean, all reaching `READY · SUBGROUPS` with
+`usage = 5308191948`). The 32 GiB quota was also read back from a second origin
+(a local `http://127.0.0.1` page) to confirm it is the lane's budget rather than
+anything specific to the Hugging Face origin.
 
 **No TTFT or tokens/sec number is reported here, because any number this lane produced would be
 meaningless — and the reason is worth recording.** The generation is not running on a GPU. The
 lane has no GPU at all:
 
-- `adapter.info` inside the lane reports `vendor: "nvidia"`, `architecture: "lovelace"`,
-  `subgroupMinSize/MaxSize: 32`, and a feature set including `subgroups`, `shader-f16` and
-  `texture-compression-bc`. The page believes it completely — its own RUNTIME INFO panel reads
-  `DEVICE nvidia · lovelace` and `RUNTIME Custom WebGPU · subgroup fast path`, so it selects the
-  hardware kernel path and prints `READY · SUBGROUPS`.
+- `adapter.info` inside the lane reports `vendor: "nvidia"`, `subgroupMinSize/MaxSize: 32`, and a
+  feature set including `subgroups`, `shader-f16` and `texture-compression-bc`. The page believes
+  it completely — its own RUNTIME INFO panel reads `DEVICE nvidia · <arch>` and `RUNTIME Custom
+  WebGPU · subgroup fast path`, so it selects the hardware kernel path and prints
+  `READY · SUBGROUPS`.
+- **The architecture is not even stable across profiles**, which is the tell: one profile reported
+  `architecture: "lovelace"`, a second fresh profile on the same machine minutes later reported
+  `"ampere"`. Real silicon does not change generation between runs. It is seed-derived, exactly
+  like the `622287713` quota was.
 - The host has no NVIDIA hardware. `/dev/nvidia*` does not exist, `nvidia-smi` is not installed,
   and the only VGA device is `Intel Corporation Xeon E3-1200 v3/4th Gen Core Processor Integrated
-  Graphics Controller` on `i915`. A Lovelace adapter cannot be present on this machine.
-- Measured rather than inferred: a naive 1024³ fp32 WGSL matmul in the lane runs at **0.6 GFLOPS**
-  (8 dispatches, 27.7 s). A Lovelace part is three orders of magnitude above that; even the host's
-  Haswell iGPU would be ~two. That is a CPU rasterizer — Dawn's SwiftShader fallback.
+  Graphics Controller` on `i915`. Neither a Lovelace nor an Ampere part is present on this machine.
+- Measured rather than inferred: a naive fp32 WGSL matmul in the lane runs at **0.5–0.6 GFLOPS**
+  (512³, 4 dispatches, 2.0 s; and 1024³, 8 dispatches, 27.7 s). An Ampere or Lovelace part is four
+  orders of magnitude above that; even the host's Haswell iGPU would be ~two. That is a CPU
+  rasterizer — Dawn's SwiftShader fallback.
 - Structurally it could not be anything else: the bwrap sandbox mounts `--dev /dev`, a fresh
   minimal devtmpfs, and binds no `/dev/dri` node. There is no path from inside the sandbox to the
   i915 device, so Chromium has nothing to fall back *from*.
