@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.20.0 (2026-08-04)
+
 ### Beckett's GitHub identity is a kowo-co GitHub App, not a machine account (#114)
 
 The `0xbeckett` machine account is permanently lost (2FA unrecoverable). Rather than mint another
