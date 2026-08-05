@@ -44,7 +44,7 @@ const run = await page.evaluate(async () => {
   // Wall time from click until the app's own TTFT pill appears.
   let ttftPillMs = null;
   let ttftPillText = null;
-  for (let i = 0; i < 9000; i++) {
+  for (let i = 0; i < 1500; i++) {
     const t = document.body.innerText.replace(/\s+/g, " ");
     const m = t.match(/TTFT\s+[\d.]+\s*MS/i);
     if (m) { ttftPillMs = performance.now() - t0; ttftPillText = m[0]; break; }
@@ -53,7 +53,7 @@ const run = await page.evaluate(async () => {
 
   // Done when the stop control (■) disappears.
   let settledMs = null;
-  for (let i = 0; i < 18000; i++) {
+  for (let i = 0; i < 3000; i++) {
     const stopping = [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "■");
     if (!stopping && i > 10) { settledMs = performance.now() - t0; break; }
     await sleep(200);

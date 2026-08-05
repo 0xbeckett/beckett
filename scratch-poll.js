@@ -1,6 +1,6 @@
 // Poll the load: storage usage is the direct signal that shards are landing in CacheStorage.
 const samples = [];
-for (let i = 0; i < 20; i++) {
+for (let i = 0; i < 45; i++) {
   const snap = await page.evaluate(async () => {
     const est = await navigator.storage.estimate();
     return {
