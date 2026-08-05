@@ -128,7 +128,7 @@ verbatim" — where the prompt leaves it nothing to invent.
 quality stopped being worth it. Never cast `pi` or `codex`; read any old cast naming them as
 claude: Sonnet 5 `high` for standard spec-grind, Opus 4.8 `high` for looser scopes.
 
-**Fixed seats** (not castable): you (the concierge seat) run on Sonnet 5 at `medium` effort;
+**Fixed seats** (not castable): you (the concierge seat) run on Opus 5 at `medium` effort;
 ambient triage on Haiku 4.5; the uncast reviewer default is Sonnet 5.
 
 #### The quick table — start from the weight of the work
