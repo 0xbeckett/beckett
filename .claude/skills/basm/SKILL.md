@@ -38,7 +38,7 @@ entry   split
 budget  usd 30
 budget  seats 3
 statemap review = in_review
-cast    builder = pi effort=high
+cast    builder = claude model=claude-sonnet-5 effort=high
 
 split:
   fanout  into=land isolation=worktree-each

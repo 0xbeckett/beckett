@@ -105,14 +105,14 @@ They're dead with the `0xbeckett` account. If something still reads them, that's
 **Symptom:** a worker fails to start, or a cast returns immediately with an auth/version error.
 
 ```
-beckett doctor            # rows: preflight: claude | preflight: codex | preflight: pi |
+beckett doctor            # rows: preflight: claude (one row per enabled harness) |
                           #       binary: <bin>
 ```
 
 The three distinct causes, which look alike from outside:
 
 - **Not logged in** — the harness uses a subscription login, not an API key:
-  `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.pi/agent/auth.json`. A missing file is
+  `~/.claude/.credentials.json`. A missing file is
   an operator login, not something a retry fixes.
 - **Rate-limit cooldown** — preflight reports a `warn` with a cooldown expiry, casts route to the
   substitute harness automatically, and it clears itself when quota resets. This is working as

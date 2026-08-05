@@ -21,13 +21,13 @@ beckett plan <<'JSON'
     { "key": "schema", "title": "Add the votes table + migration",
       "project": "polls",
       "criteria": ["migration up/down", "indexed by poll_id"],
-      "cast": {"implement":{"harness":"pi","effort":"medium"}} },
+      "cast": {"implement":{"harness":"claude","model":"claude-sonnet-5","effort":"high"}} },
     { "key": "api", "title": "POST /vote + GET /results endpoints",
       "project": "polls", "needs": ["schema"],
-      "cast": {"implement":{"harness":"pi","effort":"medium"}} },
+      "cast": {"implement":{"harness":"claude","model":"claude-sonnet-5","effort":"high"}} },
     { "key": "ui", "title": "Voting widget + live results bar chart",
       "project": "polls", "needs": ["api"],
-      "cast": {"implement":{"harness":"claude","effort":"low"}} }
+      "cast": {"implement":{"harness":"claude","model":"claude-opus-5","effort":"high","reviewTier":"self"}} }
   ] }
 JSON
 ```
@@ -41,9 +41,10 @@ edges, no cycles) before filing anything, then files in dependency order: roots 
 ## Rules
 
 - Same craft per node as a single ticket: sharp title, checkable criteria, the right `cast`
-  (see doctrine — pi for backend/spec grind, claude for frontend/taste; always name an `effort`).
+  (see doctrine — Sonnet 5 for crisp spec-grind, Opus 4.8 for "go do this", Opus 5 for
+  frontend/taste; always name an `effort`).
 - Nodes that share a `project` build in the same repo, in dependency order. Mixed
-  backend+frontend is the classic split (pi node → claude node).
+  backend+frontend is the classic split (Sonnet node → Opus 5 node).
 - Pass `channel` at the top level so every node's updates route back to the conversation.
 - Announce the *shape* in one line, never the references: "three steps — schema, then API, then
   UI." The refs land on their own in the `-# filed …` subtext line (one line for the whole wave),

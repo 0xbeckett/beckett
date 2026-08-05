@@ -57,7 +57,7 @@ test("per-harness default efforts land where they should", () => {
   );
   expect(config.harness.codex.default_effort).toBe("low");
   expect(config.harness.pi.thinking).toBe("medium");
-  expect(config.harness.claude.default_effort).toBe("xhigh"); // untouched default
+  expect(config.harness.claude.default_effort).toBe("high"); // untouched default
 });
 
 test("tracker config parses with defaults and a custom board list", () => {

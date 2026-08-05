@@ -20,7 +20,6 @@ test("a clean install exposes a healthy-pending-configuration status socket", as
     "missing GitHub credentials in ~/.beckett/.env — set GITHUB_APP_ID + " +
       "GITHUB_APP_PRIVATE_KEY_PATH (see deploy/github-app.md), or a legacy GITHUB_PAT",
     "Claude is not logged in",
-    "Pi is enabled but not logged in",
     "GitHub username is still CHANGE_ME in ~/.beckett/config.toml",
   ]));
 

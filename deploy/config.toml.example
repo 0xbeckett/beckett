@@ -25,12 +25,12 @@ max_harness_substitutions = 6
 reviewer = "claude-sonnet-5"
 
 [harness]
-fallback_order = ["claude", "pi", "codex"]
+fallback_order = ["claude"]
 
 [harness.claude]
 bin = "claude"
 default_model = "claude-sonnet-5"
-default_effort = "xhigh"
+default_effort = "high"
 permission_mode = "bypassPermissions"
 extra_flags = ["--verbose", "--replay-user-messages", "--include-hook-events"]
 
@@ -44,7 +44,7 @@ approval_policy = "never"
 network_default = true
 
 [harness.pi]
-enabled = true
+enabled = false
 bin = "pi"
 default_provider = "openai-codex"
 default_model = "gpt-5.6-terra"

@@ -75,10 +75,10 @@ const HarnessConfigSchema = z
   .object({
     // Substitution order when a cast harness fails preflight or dies on auth/rate-limit
     // (issue #17): the dispatcher walks this list for the first enabled + healthy harness.
-    // A claude outage must not stall the fleet while a working pi/codex login sits idle.
+    // Claude-only by doctrine (2026-08): the pi/codex lane is retired — no OpenAI models.
     fallback_order: z
       .array(z.enum(["claude", "codex", "pi"]))
-      .default(["claude", "pi", "codex"]),
+      .default(["claude"]),
     // No `enabled` switch for claude: it is the backbone harness and the fallback target
     // whenever a cast names a disabled harness, so it can never honestly be off. (codex/pi
     // `enabled` ARE real: Dispatcher#castFor falls back to claude when one is disabled.)
@@ -87,10 +87,10 @@ const HarnessConfigSchema = z
         bin: z.string().min(1).default("claude"),
         default_model: z.string().min(1).default("claude-sonnet-5"),
         // Reasoning effort handed to every claude worker via `claude --effort` (verified on
-        // claude 2.1.197). Sonnet 5 @ xhigh is the v3.1 worker default — fast cold boots with
-        // full reasoning. A ticket may cast a lower effort per stage. Honored by
-        // ClaudeDriver.buildArgs + dispatch/spawn#buildEnvelope.
-        default_effort: z.enum(["low", "medium", "high", "xhigh"]).default("xhigh"),
+        // claude 2.1.197). Sonnet 5 @ high is the worker default — the doctrine caps Sonnet at
+        // high (a task that wants xhigh belongs on Opus 5). A ticket may cast a different
+        // effort per stage. Honored by ClaudeDriver.buildArgs + dispatch/spawn#buildEnvelope.
+        default_effort: z.enum(["low", "medium", "high", "xhigh"]).default("high"),
         // v0 seed: bounded by the worktree + PreToolUse scope hook, so the worker runs
         // autonomously without per-edit prompts (Spec 12 §1.7; Spec 02 §8). Honored by
         // ClaudeDriver.buildArgs.
@@ -136,17 +136,13 @@ const HarnessConfigSchema = z
         network_default: z.boolean().default(true),
       })
       .default({}),
-    // pi (pi.dev / earendil-works) — the malleable, provider-agnostic coding agent that
-    // replaces codex as Beckett's non-claude worker. No network sandbox to fight; auth is the
-    // ChatGPT/Codex OAuth via the "openai-codex" provider (see ~/.pi/agent/auth.json), which
-    // runs the model through codex (0.144). Model + reasoning default to gpt-5.6-terra @ high;
-    // a cast can override the model per ticket (e.g. "gpt-5.6-luna" for cheap/mechanical grind).
-    // terra is ~5.5-parity on coding at roughly half the price — a straight drop-in upgrade over
-    // the old gpt-5.5 default. NOTE: SOL and bare gpt-5.6 are hard-blocked on the ChatGPT-account
-    // tier ("not supported with a ChatGPT account") — don't cast those.
+    // pi (pi.dev / earendil-works) — RETIRED BY DOCTRINE (2026-08): no OpenAI models; disabled
+    // by default and absent from the fallback chain. The block stays so a third-party install
+    // can re-enable it explicitly. Auth was the ChatGPT/Codex OAuth via the "openai-codex"
+    // provider (~/.pi/agent/auth.json), running the model through codex.
     pi: z
       .object({
-        enabled: z.boolean().default(true),
+        enabled: z.boolean().default(false),
         bin: z.string().min(1).default("pi"),
         default_provider: z.string().min(1).default("openai-codex"),
         default_model: z.string().min(1).default("gpt-5.6-terra"),

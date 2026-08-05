@@ -20,6 +20,13 @@ import {
 
 const HOME = "/home/beckett";
 
+/** Pi is disabled in the shipped defaults (doctrine 2026-08); pi-specific probes re-enable it. */
+function piEnabledConfig() {
+  const config = defaultConfig();
+  config.harness.pi.enabled = true;
+  return config;
+}
+
 /** Baseline deps where EVERYTHING is healthy; tests break one thing at a time. */
 function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
   const versions: Record<string, string> = {
@@ -134,6 +141,7 @@ describe("doctor — the issue-#30 regression checklist", () => {
     const base = healthyDeps();
     const report = await runDoctor(
       healthyDeps({
+        config: piEnabledConfig(),
         exec: async (argv, opts) => {
           if (argv[0] === "node") return { code: 0, stdout: "v22.18.0", stderr: "" };
           return base.exec!(argv, opts);
@@ -212,6 +220,7 @@ describe("doctor — the issue-#30 regression checklist", () => {
   test("a stale pi (0.72.1 < 0.78) surfaces as a preflight FAIL", async () => {
     const report = await runDoctor(
       healthyDeps({
+        config: piEnabledConfig(),
         preflight: async (h) =>
           h === "pi" ? { ok: false, problems: ["pi 0.72.1 is older than the 0.78 minimum"] } : { ok: true, problems: [] },
       }),
@@ -226,6 +235,7 @@ describe("doctor — the issue-#30 regression checklist", () => {
     const until = Date.parse("2026-07-29T18:00:00.000Z");
     const report = await runDoctor(
       healthyDeps({
+        config: piEnabledConfig(),
         preflight: async (h) =>
           h === "pi"
             ? { ok: false, cooledUntil: until, problems: ["pi is on a rate-limit cooldown"] }
@@ -501,6 +511,7 @@ describe("doctor — how each probe outcome is reported", () => {
   function withPiProbe(probe: Awaited<ReturnType<NonNullable<DoctorDeps["probeVersion"]>>>) {
     const base = healthyDeps();
     return healthyDeps({
+      config: piEnabledConfig(),
       probeVersion: async (bin, opts) => (bin === "pi" ? probe : base.probeVersion!(bin, opts)),
     });
   }
