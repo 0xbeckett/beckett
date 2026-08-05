@@ -2,7 +2,7 @@
 # Beckett — encrypted secrets backup (issue #34). Run FROM the Mac after any secret change:
 #   ./deploy/backup-secrets.sh
 #
-# Pulls the recovery-critical files off loom-desk, tars them, and age-encrypts the archive to
+# Pulls the recovery-critical files off the beckett box, tars them, and age-encrypts the archive to
 # ~/.beckett-backups/ on THIS machine. The age PRIVATE key lives only on the Mac
 # (~/.config/age/beckett-backup.key) — the box being lost or seized never exposes the backup.
 #
@@ -14,7 +14,7 @@
 #   age -d -i ~/.config/age/beckett-backup.key ~/.beckett-backups/<newest>.tar.age | ssh beckett@HOST 'tar -x -C ~'
 set -euo pipefail
 
-HOST="${BECKETT_HOST:-beckett@loom-desk}"
+HOST="${BECKETT_HOST:-beckett@desktop}"
 OUT_DIR="${HOME}/.beckett-backups"
 # The Mac backup key's PUBLIC half — safe in git; encryption needs only this.
 RECIPIENT="age1e2chek2xwjucvt2nye8dkdmq08df5l7kd7j58vm40jm2yaz6g3squ74aue"
