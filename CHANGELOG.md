@@ -75,7 +75,9 @@ lane has no GPU at all:
 
 - `adapter.info` inside the lane reports `vendor: "nvidia"`, `architecture: "lovelace"`,
   `subgroupMinSize/MaxSize: 32`, and a feature set including `subgroups`, `shader-f16` and
-  `texture-compression-bc`. The page believes it, which is why it prints `READY · SUBGROUPS`.
+  `texture-compression-bc`. The page believes it completely — its own RUNTIME INFO panel reads
+  `DEVICE nvidia · lovelace` and `RUNTIME Custom WebGPU · subgroup fast path`, so it selects the
+  hardware kernel path and prints `READY · SUBGROUPS`.
 - The host has no NVIDIA hardware. `/dev/nvidia*` does not exist, `nvidia-smi` is not installed,
   and the only VGA device is `Intel Corporation Xeon E3-1200 v3/4th Gen Core Processor Integrated
   Graphics Controller` on `i915`. A Lovelace adapter cannot be present on this machine.
@@ -90,10 +92,14 @@ So `adapter.info` is fabricated by exactly the mechanism this ticket is about. C
 normalises the WebGPU adapter as a fingerprint surface the same way it normalised
 `navigator.storage.estimate()`, and both numbers were fiction from the same source. The quota
 fiction broke the download and is fixed; the adapter fiction is cosmetic to Beckett but makes any
-throughput figure off this lane a measurement of SwiftShader wearing an RTX badge. A 20B model on
-a software rasterizer is not a benchmark, it is a hang: an earlier attempt streamed for ~22 minutes
-without settling, and a bounded retry is recorded in the ticket. Reporting tok/s from that would
-have been reporting a made-up number with extra steps.
+throughput figure off this lane a measurement of SwiftShader wearing an RTX badge — worse, of
+SwiftShader running the *subgroup fast path* it was told it could use.
+
+What a bounded generation attempt actually did, for the record: the space reloaded and reached
+`READY` in 155 s, one short prompt ("Say hello in one short sentence.") was submitted, and **no
+first token appeared within a 180 s bound**. An earlier unbounded attempt streamed for ~22 minutes
+without settling. A 20B model on a software rasterizer is not a benchmark, it is a hang, and
+reporting tok/s from it would have been reporting a made-up number with extra steps.
 
 What this change is therefore claiming, and nothing more: **the storage bug is fixed and the 5.31 GB
 model loads.** Making the lane's WebGPU real is a separate piece of work — it needs `/dev/dri`
