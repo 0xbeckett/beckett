@@ -186,6 +186,13 @@ const CASES: Case[] = [
   { name: "gh: raw with no gh args prints usage", argv: ["gh", "raw"], env: DUMMY_GH },
   { name: "gh: raw with an empty passthrough prints usage", argv: ["gh", "raw", "--"], env: DUMMY_GH },
 
+  // ── finish — argv validation only; every case here refuses BEFORE it reads a repo, so the
+  //    suite can never push, merge, or deploy anything from a test run. ────────────────────
+  { name: "finish: without a message prints usage", argv: ["finish"] },
+  { name: "finish: an unknown flag is refused, not ignored", argv: ["finish", "-m", "ship it", "--bogus"] },
+  { name: "finish: a bad merge strategy is refused", argv: ["finish", "-m", "ship it", "--strategy", "octopus"] },
+  { name: "finish: -m with no value is refused", argv: ["finish", "-m"] },
+
   // ── dns ─────────────────────────────────────────────────────────────────────────────────
   { name: "dns: without CLOUDFLARE_API_TOKEN is refused", argv: ["dns", "ls"] },
   { name: "dns: without CLOUDFLARE_ZONE_ID is refused", argv: ["dns", "ls"], env: { CLOUDFLARE_API_TOKEN: "dummy-token" } },

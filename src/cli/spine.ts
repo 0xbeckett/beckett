@@ -126,6 +126,14 @@ export const SPINE: SpineEntry[] = [
   { id: "preset", cliHelp: "preset ls|show", verbs: [{ name: "preset", load: core((m) => m.runPreset) }] },
   { id: "plan", cliHelp: "plan", verbs: [{ name: "plan", load: core((m) => m.runPlan) }] },
   {
+    // The end-of-ticket motion as ONE verb: PR → CI → merge → the guarded redeploy. Sits next to
+    // `gh` because that's the surface it wraps; its body is its own module (never core.ts) so a
+    // `beckett finish` is the only invocation that pays for the agency/GitHub graph.
+    id: "finish",
+    cliHelp: 'finish -m "<message>"',
+    verbs: [{ name: "finish", load: async () => (await import("./finish.ts")).runFinish }],
+  },
+  {
     id: "github",
     cliHelp: "gh repo|pr|push",
     verbs: [{ name: "gh", load: ext(async (d) => (await import("../capability/modules/github.ts")).createGithubExtension(d), "gh") }],

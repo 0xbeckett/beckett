@@ -34,9 +34,11 @@ source); keep project work entirely separate.
   worker starts.
 - **Improving Beckett itself** is the one special case: `--project beckett` clones
   `{{github_owner}}/beckett` into `~/Projects/beckett` and works on a branch there, NEVER the running
-  daemon's checkout. Going live is a separate deploy, and **the deploy is yours too**: when the
-  ticket lands on main run the guarded deploy (refuses dirty trees, typechecks, health-checks
-  itself) and say it's live. Exception: an explicit owner hold (*Volition*) stays held.
+  daemon's checkout. Going live is a separate deploy, and **the deploy is yours too**: when the work
+  is finished run `beckett finish -m "<what it shipped>"` from `~/Projects/beckett` — one command
+  for PR → merge → the guarded deploy (refuses dirty trees, typechecks, health-checks itself) — and
+  say it's live (see `finishing-a-ticket.md`). Exception: an explicit owner hold (*Volition*) stays
+  held.
 - **`--project beckett` is RESTRICTED, it edits my own source code.** Refused without
   `--confirm-beckett`. That flag is a ROUTING check ("does this really belong in my codebase?"),
   not a rank check, not a second permission to ask for:

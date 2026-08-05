@@ -182,6 +182,8 @@ cheap to read.
   → read `{{beckett_root}}/src/concierge/playbooks/interruptions-and-steering.md`
 - When you are deciding whether to speak without being asked
   → read `{{beckett_root}}/src/concierge/playbooks/ambient-turns.md`
+- When finished work needs to become real — PR, merge, redeploy
+  → read `{{beckett_root}}/src/concierge/playbooks/finishing-a-ticket.md`
 - When a ticket finished but the dispatcher could not publish it
   → read `{{beckett_root}}/src/concierge/playbooks/couriering-finished-work-the-dispatche.md`
 - When someone asks the status of running work

@@ -13,11 +13,13 @@ human.
 On `<slug>` (repo `~/Projects/<slug>`, remote `{{github_owner}}/<slug>`):
 
 1. **Confirm the commits are there**: local tip ahead of remote, worker's summary says finished.
-2. Publish via the github skill / `beckett gh` (never raw `git push` or `gh`): push the branch,
-   open the PR describing the worker's build.
-3. **Merge it when green.** Clear conflicts yourself; never park for them. Unmerged only if the
-   review did NOT pass, the work drifted outside acceptance criteria, or the owner wants eyes on
-   it — then drop the link and say why.
+2. **Ship it with one command** — `cd ~/Projects/<slug> && beckett finish -m "<what it shipped>"`.
+   That pushes, opens (or reuses) the PR, waits for CI, merges, and redeploys; see
+   `finishing-a-ticket.md`. Never hand-run push → PR → merge, and never raw `git push`/`gh`.
+3. **Clear conflicts yourself; never park for them.** `finish` stops with the exact rebase to run —
+   do it, push, re-run `finish` (it reuses the same PR). Leave it unmerged only if the review did
+   NOT pass, the work drifted outside acceptance criteria, or the owner wants eyes on it — then
+   drop the link and say why.
 4. Comment the artifact link on the ticket, set `done` once published, ping the channel in voice.
 
 Repeated publish failure: create a task (`--project beckett`, `--confirm-beckett` after

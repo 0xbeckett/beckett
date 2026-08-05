@@ -60,6 +60,7 @@ import type {
   GitHubBranchCard,
   GitHubBranchCardReader,
   GitHubPrReader,
+  PrMergeability,
   PrSignals,
 } from "../github/types.ts";
 import type { GitHubActivityCommit, GitHubActivityReader, GitHubMergedPullRequest } from "../github/activity.ts";
@@ -1062,8 +1063,13 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     return false;
   }
 
-  /** Open a PR, but return an already-open one instead of failing (idempotent publish re-runs). */
-  private async ensurePR(p: OpenPRParams): Promise<{ number: number; url: string }> {
+  /**
+   * Open a PR, but return an already-open one instead of failing (idempotent publish re-runs).
+   * Public because `beckett finish` (`src/cli/finish.ts`) re-runs the same end-of-ticket motion
+   * after a transient failure and must reuse the PR it already filed rather than erroring on
+   * "a pull request already exists".
+   */
+  async ensurePR(p: OpenPRParams): Promise<{ number: number; url: string }> {
     const existing = await this.findOpenPR(p.repo, p.head);
     if (existing) return existing;
     try {
@@ -1229,6 +1235,58 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     }
     const checks = summarizeCheckRollup(parsed.statusCheckRollup);
     return checks.total === 0 || checks.conclusion === "SUCCESS";
+  }
+
+  /**
+   * Everything a caller needs to decide "can this PR be merged right now, and if not, WHY" in ONE
+   * `gh pr view` round-trip: lifecycle, draft flag, GitHub's own `mergeable` verdict, the
+   * `mergeStateStatus` (BLOCKED / DIRTY / BEHIND / CLEAN …), and the rolled-up checks. Read only, so
+   * it's FREE. {@link isGreen} answers only "green?" — which collapses "still running" and "failed"
+   * into one `false` and says nothing about conflicts, so a caller that must report a SPECIFIC
+   * blocker (`beckett finish`) cannot build one from it. Throws with a clear message on an
+   * unreadable/missing PR rather than reporting a falsely-unmergeable one.
+   */
+  async prMergeability(repo: string, n: number): Promise<PrMergeability> {
+    await this.ensureCreds("check PR mergeability", { repo });
+    const fields = "number,url,title,state,isDraft,mergeable,mergeStateStatus,headRefName,baseRefName,statusCheckRollup";
+    const r = await this.runner(["gh", "pr", "view", String(n), "--repo", repo, "--json", fields], {
+      env: this.ghEnv(),
+    });
+    if (r.code !== 0) {
+      throw new Error(`gh pr view (mergeability) failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+    let p: {
+      number?: number;
+      url?: string;
+      title?: string;
+      state?: string;
+      isDraft?: boolean;
+      mergeable?: string;
+      mergeStateStatus?: string;
+      headRefName?: string;
+      baseRefName?: string;
+      statusCheckRollup?: CheckRollupEntry[];
+    };
+    try {
+      p = JSON.parse(r.stdout);
+    } catch {
+      throw new Error(`gh pr view (mergeability) returned unparseable JSON for PR #${n}`);
+    }
+    const state = String(p.state ?? "OPEN").toUpperCase();
+    return {
+      number: typeof p.number === "number" ? p.number : n,
+      url: String(p.url ?? ""),
+      title: String(p.title ?? ""),
+      state: state === "MERGED" || state === "CLOSED" ? state : "OPEN",
+      isDraft: Boolean(p.isDraft),
+      // GitHub computes both asynchronously; an in-flight computation reports UNKNOWN, which is a
+      // "ask again in a moment", never a refusal.
+      mergeable: String(p.mergeable ?? "UNKNOWN").toUpperCase(),
+      mergeStateStatus: String(p.mergeStateStatus ?? "UNKNOWN").toUpperCase(),
+      headRefName: String(p.headRefName ?? ""),
+      baseRefName: String(p.baseRefName ?? ""),
+      checks: summarizeCheckRollup(p.statusCheckRollup),
+    };
   }
 
   /**

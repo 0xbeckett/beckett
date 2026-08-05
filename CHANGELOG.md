@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### `beckett finish` — PR, merge and redeploy behind one command (#2)
+
+The end-of-ticket motion used to be five-plus hand-run CLI calls (check status → push → open PR →
+poll CI → merge → find the right deploy script → run it) with a lot of back-and-forth in chat, and
+a redeploy that quietly got skipped whenever the thread was lost. It is now one command run from
+the ticket's checkout:
+
+```bash
+beckett finish -m "what this ticket shipped"
+```
+
+- **The whole motion, in order**: commit a dirty tree with that message, push the branch, open **or
+  reuse** its PR, wait for CI, merge into `main`, then run THE guarded redeploy
+  (`deploy/deploy-prod.sh` — dirty-tree refusal, typecheck gate, browser drain, health read-back,
+  release tag). PR and merge go through `GitHubCli`, the one credential boundary; the deploy is the
+  existing script, spawned. No second way to ship.
+- **Every stop is named.** A wrapper that reports "merge failed" is worse than the sequence it
+  replaces, because the caller can no longer see which step it was on. Failed checks, conflicts,
+  drafts, branch protection, a base that moved, an unset git identity on the host, a dirty deploy
+  checkout, an unreachable box — each produces a specific line with the PR, the cause, and the
+  command that clears it. CI waiting is bounded (`--ci-timeout`, default 15 min), never an
+  open-ended poll, and a timeout says explicitly that nothing merged and nothing deployed.
+- **The redeploy runs in the repo's PRIMARY checkout**, not the branch's. Ticket work happens in a
+  linked worktree, and a linked worktree cannot run the deploy's `git checkout main` while the main
+  checkout holds that branch (`fatal: 'main' is already used by worktree at …`) — which would have
+  failed every self-hosted finish on the far side of the merge. `finish` resolves that checkout
+  itself and preflights it (dirty tree, git identity) BEFORE anything is pushed or merged.
+- **Re-running is safe**: it reuses the open PR, skips a merge that already landed, and goes
+  straight to the deploy — so "fix the blocker, re-run" is always the instruction.
+- Every invocation posts one line to the ops channel before it touches anything, so the runs that
+  FAILED show up in the ledger too.
+- New `GitHubCli.prMergeability` reads GitHub's own merge verdict (`mergeable`,
+  `mergeStateStatus`, the check rollup) in one round-trip — `isGreen` collapses "still running" and
+  "failed" into one `false` and says nothing about conflicts.
+- Concierge doctrine now routes the finish workflow here
+  (`src/concierge/playbooks/finishing-a-ticket.md`, plus the couriering, task-filing and
+  self-improve playbooks) instead of describing the manual PR/merge/deploy steps.
+
 ## v6.20.0 (2026-08-04)
 
 ### Beckett's GitHub identity is a kowo-co GitHub App, not a machine account (#114)
