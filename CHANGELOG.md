@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.24.3 (2026-08-05)
+
 ### The browser lane stops lying to pages about storage (#7)
 
 A WebGPU space that streams 5.31 GB of model weights never loaded in the sandboxed browser lane:
