@@ -77,6 +77,27 @@ export interface BranchCardCheckSummary {
 }
 
 /**
+ * "Can this PR merge right now, and if not, WHY" — GitHub's own verdict, read in one round-trip
+ * (implemented by `GitHubCli.prMergeability`). `mergeable` is GitHub's tri-state MERGEABLE /
+ * CONFLICTING / UNKNOWN (UNKNOWN while it recomputes the merge commit), and `mergeStateStatus` is
+ * the finer-grained reason — BLOCKED (a required review or check is missing), DIRTY (conflicts),
+ * BEHIND (base moved under a strict branch protection), UNSTABLE (checks still failing), CLEAN.
+ * Kept distinct from {@link BranchCardCheckSummary}: checks are only ONE of the ways a merge blocks.
+ */
+export interface PrMergeability {
+  number: number;
+  url: string;
+  title: string;
+  state: PrLifecycle;
+  isDraft: boolean;
+  mergeable: string;
+  mergeStateStatus: string;
+  headRefName: string;
+  baseRefName: string;
+  checks: BranchCardCheckSummary;
+}
+
+/**
  * GitHub's authoritative view of a published branch with a pull request. This deliberately carries
  * aggregate metadata only: Discord cards must never receive or render patch hunks.
  */
