@@ -70,6 +70,14 @@ GITHUB_APP_INSTALLATION_ID=<from step 4>
 Then delete the dead `GITHUB_PAT`, `GH_TOKEN`, and `GITHUB_USER` lines — the `0xbeckett` PAT is
 revoked with the account.
 
+The checkout on the box was seeded from a git bundle, so its `origin` is a local file. Repoint it
+at GitHub and pull (git auth comes from the daemon's token injection, so run this via `beckett gh`
+once the daemon is up — or as a one-off, plain HTTPS works for the initial pull of a public repo):
+
+```bash
+ssh beckett@desktop 'cd ~/beckett && git remote set-url origin https://github.com/kowo-co/beckett.git && git pull --ff-only'
+```
+
 **4. Restart and verify:**
 
 ```bash
