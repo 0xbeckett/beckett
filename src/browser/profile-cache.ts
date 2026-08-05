@@ -21,6 +21,26 @@ export const DISPOSABLE_CACHE_PATHS = [
   ["Service Worker", "ScriptCache"],
 ] as const;
 
+/**
+ * Chromium subtrees a *page* fills using the storage the browser granted it — the
+ * bytes `navigator.storage.estimate()` counts as `usage`. These are not regenerable
+ * the way a cache is, but they are not Beckett's profile state either: they belong to
+ * the quota the lane advertised, and are budgeted against it rather than against the
+ * much smaller ceiling for Chromium's own bookkeeping.
+ *
+ * A model runner that stages several GB of weights uses these directly: Cache Storage
+ * and the HTTP cache are covered above, and the Origin Private File System ("File
+ * System") is the other half of what a WebGPU app writes.
+ */
+export const SITE_STORAGE_PATHS = [
+  ["File System"],
+  ["IndexedDB"],
+  ["Local Storage"],
+  ["Shared Storage"],
+  ["blob_storage"],
+  ["databases"],
+] as const;
+
 export interface ChromeCachePruneResult {
   reclaimedBytes: number;
 }
@@ -32,8 +52,23 @@ export interface ChromeCachePruneResult {
  * an open browser: it never touches the tree, it only decides whether to count it.
  */
 export function isDisposableCacheDir(path: string): boolean {
+  return matchesProfileSubtree(path, DISPOSABLE_CACHE_PATHS);
+}
+
+/**
+ * True when `path` is storage a page filled under its granted quota — a disposable
+ * cache, or one of {@link SITE_STORAGE_PATHS}. This is the set the per-lease profile
+ * accounting discounts, because those bytes are already bounded by the quota the lane
+ * advertised (see storage-quota.ts) rather than by the profile-hygiene ceiling.
+ */
+export function isSiteStorageDir(path: string): boolean {
+  return isDisposableCacheDir(path) || matchesProfileSubtree(path, SITE_STORAGE_PATHS);
+}
+
+/** Purely structural, no filesystem access: is `path` one of `subtrees` under a `Default`? */
+function matchesProfileSubtree(path: string, subtrees: ReadonlyArray<ReadonlyArray<string>>): boolean {
   const segments = path.split(/[/\\]+/).filter(Boolean);
-  for (const parts of DISPOSABLE_CACHE_PATHS) {
+  for (const parts of subtrees) {
     if (segments.length < parts.length + 1) continue;
     const anchor = segments.length - parts.length;
     if (segments[anchor - 1] !== "Default") continue;
@@ -44,20 +79,20 @@ export function isDisposableCacheDir(path: string): boolean {
 
 /**
  * Allocated bytes, ignoring symlinks so a profile cannot lead scans outside itself.
- * With `excludeDisposableCache`, disposable cache subtrees are skipped so the result
- * tracks real profile state rather than regenerable cache churn.
+ * With `excludeSiteStorage`, quota-managed storage is skipped so the result tracks
+ * Beckett's own profile state rather than what a page stored under its granted quota.
  */
 export async function measureDirectoryBytes(
   root: string,
   stopAfter = Number.POSITIVE_INFINITY,
-  options?: { excludeDisposableCache?: boolean },
+  options?: { excludeSiteStorage?: boolean },
 ): Promise<number> {
-  const excludeDisposableCache = options?.excludeDisposableCache ?? false;
+  const excludeSiteStorage = options?.excludeSiteStorage ?? false;
   const pending = [root];
   let total = 0;
   while (pending.length > 0 && total <= stopAfter) {
     const current = pending.pop()!;
-    if (excludeDisposableCache && isDisposableCacheDir(current)) continue;
+    if (excludeSiteStorage && isSiteStorageDir(current)) continue;
     try {
       const stat = await lstat(current);
       if (stat.isSymbolicLink()) continue;

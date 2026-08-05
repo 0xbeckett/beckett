@@ -21,8 +21,8 @@
  * will not rebuild — is held to MAX_PROFILE_BYTES with a per-lease growth allowance.
  * The whole on-disk footprint, disposable caches included, is held to
  * MAX_PROFILE_DISK_BYTES, which is the same budget storage-quota.ts advertises to
- * pages. Keeping those two the same number is what lets a page cache a multi-GB asset
- * set without the next acquire either refusing the lease or pruning the bytes away.
+ * pages. Holding the footprint to exactly what was advertised is what lets a page cache
+ * a multi-GB asset set without the next acquire refusing the lease or pruning it away.
  */
 
 import { closeSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readSync, writeSync } from "node:fs";
