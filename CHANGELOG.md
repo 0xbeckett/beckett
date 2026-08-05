@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.24.0 (2026-08-04)
+
 ### `beckett finish` — PR, merge and redeploy behind one command (#2)
 
 The end-of-ticket motion used to be five-plus hand-run CLI calls (check status → push → open PR →
