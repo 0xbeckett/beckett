@@ -16,6 +16,13 @@
  * Concurrency is capped (default 3, `BECKETT_BROWSER_MAX_LEASES`). The kill
  * switch `BECKETT_BROWSER_SINGLE_LEASE=1` pins the cap to one lease, restoring
  * the pre-1.3.0 strictly-single-lease behaviour without a revert.
+ *
+ * The profile budget is two ceilings, not one. Real profile state — what Chromium
+ * will not rebuild — is held to MAX_PROFILE_BYTES with a per-lease growth allowance.
+ * The whole on-disk footprint, disposable caches included, is held to
+ * MAX_PROFILE_DISK_BYTES, which is the same budget storage-quota.ts advertises to
+ * pages. Keeping those two the same number is what lets a page cache a multi-GB asset
+ * set without the next acquire either refusing the lease or pruning the bytes away.
  */
 
 import { closeSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readSync, writeSync } from "node:fs";
@@ -455,15 +462,18 @@ const attachFile = async (target, screenshotPath) => {
       leases.set(active.session, active);
       launches++;
       try {
+        // Cache-inclusive, against the whole-footprint ceiling: this guards real disk,
+        // and a lease that legitimately cached gigabytes of assets must still be able to
+        // acquire the next one without those bytes being reclaimed first.
         let profileBytes = await measureProfileBytes();
         let cachePruneReclaimed: number | null = null;
-        if (profileBytes > maxProfileBytes * PROFILE_PRUNE_HIGH_WATER_MARK && leases.size === 1) {
+        if (profileBytes > maxProfileDiskBytes * PROFILE_PRUNE_HIGH_WATER_MARK && leases.size === 1) {
           // This is before BetterWright starts a session. With another lease live its
           // worker may own the profile, so never risk deleting a cache under Chrome.
           cachePruneReclaimed = (await pruneChromeProfileCaches(profileRoot)).reclaimedBytes;
           profileBytes = await measureProfileBytes();
         }
-        if (profileBytes > maxProfileBytes) {
+        if (profileBytes > maxProfileDiskBytes) {
           const pruneDetail = cachePruneReclaimed === null
             ? "cache prune was skipped while another browser lease was active"
             : `cache prune reclaimed ${cachePruneReclaimed} bytes, still over`;

@@ -341,7 +341,7 @@ test("acquire prunes an oversized disposable cache before warming a lease", asyn
   const fake = new FakeBetterWright();
   const runtime = createBetterWrightRuntime(settings, quietLog, {
     createBrowser: () => fake,
-    maxProfileBytes: 128 * 1024,
+    maxProfileDiskBytes: 128 * 1024,
   });
   try {
     await runtime.acquire(leaseFor("cache-recovery"));
@@ -362,7 +362,7 @@ test("acquire leaves caches alone below the prune high-water mark", async () => 
   const fake = new FakeBetterWright();
   const runtime = createBetterWrightRuntime(settings, quietLog, {
     createBrowser: () => fake,
-    maxProfileBytes: 128 * 1024,
+    maxProfileDiskBytes: 128 * 1024,
   });
   try {
     await runtime.acquire(leaseFor("below-high-water"));
