@@ -18,6 +18,7 @@ function snapshot(): StatusDashboardSnapshot {
     health: [{ name: "Tracker poll", reachable: true, lastSuccessAt: 1, lastSuccessAgeMs: 0, consecutiveFailures: 0 }],
     harnessUsage: [],
     subscriptionLimits: { claude: { available: false, limits: [] }, codex: { available: false, limits: [], observedAgeMs: null, stale: false } },
+    ccusage: { available: false, sessionCostUsd: null, dailyCostUsd: null, observedAt: null },
   };
 }
 

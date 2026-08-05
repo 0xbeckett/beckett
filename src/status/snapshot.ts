@@ -5,8 +5,9 @@ import type { SystemMetrics } from "../system-metrics.ts";
 import type { TrackerPoller } from "../tracker/poll.ts";
 import type { TrackerClient } from "../tracker/client.ts";
 import { readUptimeSnapshot } from "../uptime.ts";
+import { CcusageSource } from "./ccusage.ts";
 import { SubscriptionLimitsSource } from "./subscriptions.ts";
-import type { CoreOperationHealth, HarnessUsage, StatusDashboardSnapshot, SubscriptionLimits } from "./types.ts";
+import type { CcusageSpend, CoreOperationHealth, HarnessUsage, StatusDashboardSnapshot, SubscriptionLimits } from "./types.ts";
 
 export interface StatusSnapshotCollectorDeps {
   version: string;
@@ -20,6 +21,7 @@ export interface StatusSnapshotCollectorDeps {
   fetch?: typeof fetch;
   now?: () => number;
   subscriptions?: Pick<SubscriptionLimitsSource, "collect">;
+  ccusage?: Pick<CcusageSource, "collect">;
 }
 
 interface HealthProbe {
@@ -36,16 +38,20 @@ export class StatusSnapshotCollector {
   private healthFailures = 0;
   private healthVersion: string | null = null;
   private readonly subscriptions: Pick<SubscriptionLimitsSource, "collect">;
+  private readonly ccusage: Pick<CcusageSource, "collect">;
 
   constructor(private readonly deps: StatusSnapshotCollectorDeps) {
     this.now = deps.now ?? Date.now;
     this.fetchImpl = deps.fetch ?? globalThis.fetch.bind(globalThis);
     this.subscriptions = deps.subscriptions ?? new SubscriptionLimitsSource({ fetch: this.fetchImpl, now: this.now });
+    this.ccusage = deps.ccusage ?? new CcusageSource({ now: this.now });
   }
 
   async collect(): Promise<StatusDashboardSnapshot> {
     const now = this.now();
-    const [system, probe, subscriptionLimits] = await Promise.all([this.deps.metrics.read(), this.probeHealth(), this.collectSubscriptions()]);
+    const [system, probe, subscriptionLimits, ccusage] = await Promise.all([
+      this.deps.metrics.read(), this.probeHealth(), this.collectSubscriptions(), this.collectCcusage(),
+    ]);
     const poll = this.deps.poller.stats();
     const tracker = this.deps.tracker.stats();
     const trackerFailedAfterSuccess = tracker.lastErrorAt !== null &&
@@ -89,12 +95,18 @@ export class StatusSnapshotCollector {
       health,
       harnessUsage: usage(this.deps.spendPath, now),
       subscriptionLimits,
+      ccusage,
     };
   }
 
   private async collectSubscriptions(): Promise<SubscriptionLimits> {
     try { return await this.subscriptions.collect(); }
     catch { return { claude: { available: false, limits: [] }, codex: { available: false, limits: [], observedAgeMs: null, stale: false } }; }
+  }
+
+  private async collectCcusage(): Promise<CcusageSpend> {
+    try { return await this.ccusage.collect(); }
+    catch { return { available: false, sessionCostUsd: null, dailyCostUsd: null, observedAt: null }; }
   }
 
   private async probeHealth(): Promise<HealthProbe> {

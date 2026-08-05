@@ -39,20 +39,28 @@ export const fixtureSnapshot: StatusDashboardSnapshot = {
     claude: { available: true, limits: [{ label: "5h session", percentUsed: 14, resetsAt: "2026-07-26T13:00:00Z", severity: "normal" }], overage: { used: 0, limit: 20, currency: "USD" } },
     codex: { available: true, limits: [{ label: "5h", percentUsed: 34, resetsAt: "2026-07-26T14:00:00Z", severity: null }], observedAgeMs: 31 * 60_000, stale: true },
   },
+  ccusage: { available: true, sessionCostUsd: 2.5, dailyCostUsd: 6.75, observedAt: "2026-07-26T12:00:00.000Z" },
 };
 
 test("pure status renderer exposes every dashboard panel from a fixture snapshot", () => {
   const embed = renderStatusDashboardEmbed(fixtureSnapshot);
   expect(embed.title).toBe("Beckett live status");
   expect(embed.fields?.map((field) => field.name)).toEqual([
-    "Uptime", "Downtime", "Versions", "CPU load", "RAM", "Disk", "Core API health", "Harness usage", "Subscription limits",
+    "Uptime", "Downtime", "Versions", "CPU load", "RAM", "Disk", "Core API health", "Harness usage", "ccusage spend", "Subscription limits",
   ]);
   expect(embed.fields?.[1]?.value).toContain("No downtime recorded since 2026-07-26");
   expect(embed.fields?.[6]?.value).toContain("Tracker poll");
   expect(embed.fields?.[7]?.value).toContain("24h:");
   expect(embed.fields?.[7]?.value).toContain("7d:");
-  expect(embed.fields?.[8]?.value).toContain("Claude Max");
-  expect(embed.fields?.[8]?.value).toContain("STALE");
+  expect(embed.fields?.[8]?.value).toContain("Session: $2.50");
+  expect(embed.fields?.[8]?.value).toContain("Today: $6.75");
+  expect(embed.fields?.[9]?.value).toContain("Claude Max");
+  expect(embed.fields?.[9]?.value).toContain("STALE");
+});
+
+test("unavailable ccusage spend renders plainly instead of blank or throwing", () => {
+  const embed = renderStatusDashboardEmbed({ ...fixtureSnapshot, ccusage: { available: false, sessionCostUsd: null, dailyCostUsd: null, observedAt: null } });
+  expect(embed.fields?.[8]).toEqual({ name: "ccusage spend", value: "unavailable", inline: true });
 });
 
 test("health yellow has the concrete stale-but-reachable meaning", () => {

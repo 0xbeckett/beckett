@@ -1,6 +1,6 @@
 /** Pure Discord status-dashboard renderer: snapshot in, embed out. */
 import type { DiscordEmbed } from "../types.ts";
-import type { CoreOperationHealth, StatusDashboardSnapshot, SubscriptionLimits } from "../status/types.ts";
+import type { CcusageSpend, CoreOperationHealth, StatusDashboardSnapshot, SubscriptionLimits } from "../status/types.ts";
 
 const GREEN = 0x2ea043;
 const AMBER = 0xd29922;
@@ -34,6 +34,7 @@ export function renderStatusDashboardEmbed(snapshot: StatusDashboardSnapshot): D
       { name: "Disk", value: usage(snapshot.system.diskUsed, snapshot.system.diskTotal), inline: true },
       { name: "Core API health", value: health.map(({ operation, color }) => healthLine(operation, color)).join("\n") || "No operations observed" },
       { name: "Harness usage", value: harnessUsage(snapshot) },
+      { name: "ccusage spend", value: ccusageSpend(snapshot.ccusage), inline: true },
       { name: "Subscription limits", value: subscriptionLimits(snapshot.subscriptionLimits, snapshot.collectedAt) },
     ],
     footer: { text: "Health: green current · yellow stale but reachable · red unavailable" },
@@ -73,6 +74,12 @@ function harnessUsage(snapshot: StatusDashboardSnapshot): string {
     const h7 = `${row.last7d.turns} turns · ${formatTokens(row.last7d.tokensIn + row.last7d.tokensOut)}`;
     return `**${row.harness}** — 24h: ${h24}; 7d: ${h7}`;
   }).join("\n").slice(0, 1_000);
+}
+
+function ccusageSpend(ccusage: CcusageSpend): string {
+  if (!ccusage.available) return "unavailable";
+  const money = (n: number | null) => (n === null ? "—" : `$${n.toFixed(2)}`);
+  return `Session: ${money(ccusage.sessionCostUsd)}\nToday: ${money(ccusage.dailyCostUsd)}`;
 }
 
 function subscriptionLimits(limits: SubscriptionLimits, collectedAt: string): string {
