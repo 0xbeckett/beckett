@@ -1,59 +1,68 @@
-// Wait for READY, submit a prompt, then read the space's own TTFT / tok/s pill.
+// Wait for READY, capture RUNTIME INFO, submit a short prompt, let it finish, read the pill.
 const ready = await page.evaluate(async () => {
-  for (let i = 0; i < 120; i++) {
-    if (/READY/i.test(document.body.innerText)) return "ready after " + i + "s";
+  for (let i = 0; i < 300; i++) {
+    if (/READY/i.test(document.body.innerText)) return "ready after ~" + i + "s";
     await new Promise((r) => setTimeout(r, 1000));
   }
-  return "never became READY: " + document.body.innerText.replace(/\s+/g, " ").slice(0, 300);
+  return "never became READY";
+});
+
+// What the app itself believes it is running on.
+const runtimeInfo = await page.evaluate(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const btn = [...document.querySelectorAll("button")].find((b) => /RUNTIME INFO/i.test(b.textContent || ""));
+  if (!btn) return "no RUNTIME INFO button";
+  btn.click();
+  await sleep(1500);
+  const text = document.body.innerText.replace(/\s+/g, " ");
+  const close = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "×");
+  if (close) close.click();
+  await sleep(800);
+  return text.slice(0, 1400);
 });
 
 const run = await page.evaluate(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const deepThink = [...document.querySelectorAll("button")].find((b) => /DEEP THINK/i.test(b.textContent || ""));
+  const deepThinkState = deepThink
+    ? `${deepThink.getAttribute("aria-pressed")}|${deepThink.className}`.slice(0, 160)
+    : "absent";
+
   const field = document.querySelector("textarea") || document.querySelector('[contenteditable="true"]');
   if (!field) return { error: "no input field" };
+  const prompt = "Say hello in exactly five words.";
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+  setter.call(field, prompt);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  await sleep(400);
 
-  const prompt = "In one short paragraph, explain why the sky is blue.";
-  if (field.tagName === "TEXTAREA") {
-    // React tracks the value; bypass its tracker so the input event is believed.
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
-    setter.call(field, prompt);
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-  } else {
-    field.textContent = prompt;
-    field.dispatchEvent(new InputEvent("input", { bubbles: true }));
-  }
-  await sleep(300);
-
-  const bodyBefore = document.body.innerText;
   const sendBtn = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "↑" && !b.disabled);
   const t0 = performance.now();
   if (sendBtn) sendBtn.click();
   else field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
-  // TTFT measured in-page: first moment new response text is painted.
-  let ttftMs = null;
-  for (let i = 0; i < 1200; i++) {
-    const now = document.body.innerText;
-    if (now.length > bodyBefore.length + 40 && !/^\s*$/.test(now.slice(bodyBefore.length))) {
-      ttftMs = performance.now() - t0;
-      break;
-    }
-    await sleep(100);
+  // Wall time from click until the app's own TTFT pill appears.
+  let ttftPillMs = null;
+  let ttftPillText = null;
+  for (let i = 0; i < 9000; i++) {
+    const t = document.body.innerText.replace(/\s+/g, " ");
+    const m = t.match(/TTFT\s+[\d.]+\s*MS/i);
+    if (m) { ttftPillMs = performance.now() - t0; ttftPillText = m[0]; break; }
+    await sleep(200);
   }
 
-  // Generation is done when the stop control (■) goes away.
+  // Done when the stop control (■) disappears.
   let settledMs = null;
-  for (let i = 0; i < 3000; i++) {
+  for (let i = 0; i < 18000; i++) {
     const stopping = [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "■");
-    if (!stopping && i > 5) { settledMs = performance.now() - t0; break; }
-    await sleep(100);
+    if (!stopping && i > 10) { settledMs = performance.now() - t0; break; }
+    await sleep(200);
   }
-  await sleep(2500);
+  await sleep(3000);
 
   const text = document.body.innerText.replace(/\s+/g, " ");
-  // The pill prints the space's own measurements; capture every candidate fragment.
-  const pill = (text.match(/[^.|]*(TTFT|tok\/s|tokens\/s|tok\/sec|ms\b)[^.|]*/gi) || []).slice(-8);
-  return { ttftMs, settledMs, pill, tail: text.slice(-700) };
+  const stats = (text.match(/(TTFT|TOK\/S|TOKENS\/S|[\d.]+\s*TOK)[^|]{0,60}/gi) || []).slice(-10);
+  return { deepThinkState, ttftPillMs, ttftPillText, settledMs, stats, tail: text.slice(-900) };
 });
 
-return JSON.stringify({ ready, ...run }, null, 1);
+return JSON.stringify({ ready, runtimeInfo, ...run }, null, 1);
