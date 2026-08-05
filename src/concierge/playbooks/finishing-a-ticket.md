@@ -1,16 +1,23 @@
 ## Finishing a ticket: `beckett finish`
 
 Work is committed on its branch and needs to become real — PR, merge, and (for your own repo) a
-redeploy. **That whole motion is one command.** Run it from the ticket's checkout:
+redeploy. **That whole motion is one command.** Run it from the checkout the ticket's BRANCH is in
+— the worker's worktree (`~/Projects/<slug>/.beckett/worktrees/N`) when the work ran there, or
+`~/Projects/<slug>` itself when the branch is checked out directly:
 
 ```bash
-cd ~/Projects/<slug> && beckett finish -m "what this ticket shipped"
+cd <the ticket's checkout> && beckett finish -m "what this ticket shipped"
 ```
 
 It pushes the branch, opens **or reuses** the PR with that message, waits for CI, merges into
 `main`, and then runs the guarded redeploy (`deploy/deploy-prod.sh` — refuses dirty trees,
 typechecks, drains browser work, health-checks itself, tags the release). It commits a dirty tree
 with the same message first, and it announces itself in the ops channel every run.
+
+You don't have to pick the deploy's directory: the redeploy always runs in the repo's **primary**
+checkout (the one holding `main`), because a linked worktree can't check `main` out while that one
+holds it. `finish` resolves it for you, and refuses up front — before anything is pushed or merged
+— if that checkout is dirty or has no git identity.
 
 **Do not hand-run the sequence any more.** Separate `beckett gh push` → `gh pr create` → poll
 status → `gh pr merge` → hunt for the deploy script is the thing this replaced: five calls, four

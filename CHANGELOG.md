@@ -24,6 +24,11 @@ beckett finish -m "what this ticket shipped"
   checkout, an unreachable box — each produces a specific line with the PR, the cause, and the
   command that clears it. CI waiting is bounded (`--ci-timeout`, default 15 min), never an
   open-ended poll, and a timeout says explicitly that nothing merged and nothing deployed.
+- **The redeploy runs in the repo's PRIMARY checkout**, not the branch's. Ticket work happens in a
+  linked worktree, and a linked worktree cannot run the deploy's `git checkout main` while the main
+  checkout holds that branch (`fatal: 'main' is already used by worktree at …`) — which would have
+  failed every self-hosted finish on the far side of the merge. `finish` resolves that checkout
+  itself and preflights it (dirty tree, git identity) BEFORE anything is pushed or merged.
 - **Re-running is safe**: it reuses the open PR, skips a merge that already landed, and goes
   straight to the deploy — so "fix the blocker, re-run" is always the instruction.
 - Every invocation posts one line to the ops channel before it touches anything, so the runs that
