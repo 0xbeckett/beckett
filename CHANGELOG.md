@@ -13,9 +13,12 @@ and changed nothing, and the shards that did start died at ~15s with `transferSi
   drives — treats `navigator.storage.estimate()` as a fingerprint surface like any other. Its
   patched Chromium carries a `--fingerprint-storage-quota` switch (`strings chrome | grep
   '^fingerprint-'`), and with no value supplied it fabricates a consumer-plausible figure from the
-  per-profile seed in `.betterwright-fingerprint-seed`. `622287713` was that fabrication. It had no
-  relation to bwrap, to `--tmpfs /tmp`, or to the real disk, which is why `persist()` could not move
-  it and why looking for a filesystem reporting ~1 GB would never have found one.
+  per-profile seed in `.betterwright-fingerprint-seed`. `622287713` was that fabrication. Measured
+  directly: with the switch suppressed, two fresh profiles on the same filesystem at the same moment
+  reported `552891516` and `596334088` — a free-space reading would have returned the same number
+  twice. It had no relation to bwrap, to `--tmpfs /tmp`, or to the real disk, which is why
+  `persist()` could not move it and why hunting for a filesystem reporting ~1 GB would never have
+  found one.
 - **A 128 MiB `RLIMIT_FSIZE` killed the download.** The lane launched Chromium under
   `prlimit --fsize=134217728`, a *per-file* ceiling. The space writes its weights as 26 OPFS files
   of 206,588,416 bytes each, so Chromium took SIGXFSZ partway through the first shard and the fetch
