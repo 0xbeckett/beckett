@@ -17,12 +17,13 @@
  * switch `BECKETT_BROWSER_SINGLE_LEASE=1` pins the cap to one lease, restoring
  * the pre-1.3.0 strictly-single-lease behaviour without a revert.
  *
- * The profile budget is two ceilings, not one. Real profile state — what Chromium
- * will not rebuild — is held to MAX_PROFILE_BYTES with a per-lease growth allowance.
- * The whole on-disk footprint, disposable caches included, is held to
- * MAX_PROFILE_DISK_BYTES, which is the same budget storage-quota.ts advertises to
- * pages. Holding the footprint to exactly what was advertised is what lets a page cache
- * a multi-GB asset set without the next acquire refusing the lease or pruning it away.
+ * The profile budget is two ceilings, not one, split along who put the bytes there.
+ * Beckett's own profile state is held to MAX_PROFILE_BYTES with a per-lease growth
+ * allowance. Storage a page filled under the quota the lane granted it — Cache Storage,
+ * the HTTP cache, OPFS, IndexedDB — is held to MAX_PROFILE_DISK_BYTES, which is that
+ * same advertised quota (storage-quota.ts). Budgeting a page against what it was
+ * promised, rather than against Beckett's housekeeping allowance, is what lets a model
+ * runner stage several GB of weights and still have a working lane afterwards.
  */
 
 import { closeSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readSync, writeSync } from "node:fs";
@@ -49,10 +50,10 @@ const DEFAULT_MAX_LEASES = 3;
 /** Absolute upper bound on the cap regardless of configuration. */
 const MAX_LEASES_HARD_CAP = 16;
 /**
- * Global absolute ceiling for *real* profile state — cookies, IndexedDB, Local Storage,
- * everything Chromium will not silently rebuild. Disposable caches are excluded from
- * this number (see DISPOSABLE_CACHE_PATHS), so it stays a measure of what a lease has
- * actually accumulated rather than of cache churn.
+ * Global absolute ceiling for Beckett's own profile state — cookies, logins, history,
+ * Chromium's bookkeeping. Storage a page filled under its granted quota is excluded
+ * (see isSiteStorageDir), so this stays a measure of what the browser accumulates on
+ * Beckett's behalf rather than of what a site was invited to store.
  */
 const MAX_PROFILE_BYTES = 512 * 1024 * 1024;
 /**
@@ -123,7 +124,7 @@ export interface CreateBetterWrightRuntimeDeps {
   /** Kill switch override; pins the cap to a single lease when true. */
   singleLease?: boolean;
   /** Shared-profile size probe; defaults to scanning the betterwright home. */
-  measureProfileBytes?: (options?: { excludeDisposableCache?: boolean }) => Promise<number>;
+  measureProfileBytes?: (options?: { excludeSiteStorage?: boolean }) => Promise<number>;
   maxProfileBytes?: number;
   /** Whole-footprint ceiling override, caches included; defaults to the lane budget. */
   maxProfileDiskBytes?: number;
@@ -187,7 +188,7 @@ export function createBetterWrightRuntime(
   const measureProfileBytes = deps.measureProfileBytes
     ?? ((options) => measureDirectoryBytes(
       profileRoot,
-      (options?.excludeDisposableCache ? maxProfileBytes : maxProfileDiskBytes) + 1,
+      (options?.excludeSiteStorage ? maxProfileBytes : maxProfileDiskBytes) + 1,
       options,
     ));
 
@@ -247,11 +248,13 @@ export function createBetterWrightRuntime(
     // A lease that already tripped stays tripped until it releases; re-scanning
     // cannot un-trip it and must never touch another lease's accounting.
     if (lease.profileBudgetError) return;
-    // Discount disposable Chromium caches: a media-heavy page (x.com) grows them by
-    // ~100MB in a single lease, which is regenerable churn, not real profile state.
-    // Measuring non-cache bytes here — against a non-cache acquire baseline — keeps the
-    // growth allowance and the ceiling tracking state that actually persists.
-    const profileBytes = await measureProfileBytes({ excludeDisposableCache: true });
+    // Discount storage a page filled under its granted quota: a media-heavy page (x.com)
+    // grows the disposable caches by ~100MB in a lease, and a model runner stages several
+    // GB into Cache Storage and OPFS. Neither is Beckett's profile state, and both are
+    // already bounded by the quota the lane advertised. Measuring the rest here — against
+    // a like-for-like acquire baseline — keeps the growth allowance and this ceiling
+    // tracking what Chromium itself accumulates.
+    const profileBytes = await measureProfileBytes({ excludeSiteStorage: true });
     // Growth allowance is per-lease (its own acquire baseline); the ceiling is
     // global and shared. Whichever binds first wins.
     const storageLimit = Math.min(maxProfileBytes, lease.profileBytesAtAcquire + maxProfileGrowthBytes);
@@ -259,6 +262,17 @@ export function createBetterWrightRuntime(
       const growthBytes = Math.max(0, profileBytes - lease.profileBytesAtAcquire);
       lease.profileBudgetError = new Error(
         `browser profile storage budget exceeded for run ${lease.runId} (profile=${profileBytes}, lease growth=${growthBytes} bytes)`,
+      );
+      pushLeaseEvent(lease, `[profile blocked] ${lease.profileBudgetError.message}`);
+      return;
+    }
+    // Site storage is discounted above, so it needs its own bound: the advertised quota.
+    // A page may use every byte it was promised and not one more, and it learns that here
+    // rather than by filling the host disk.
+    const diskBytes = await measureProfileBytes();
+    if (diskBytes > maxProfileDiskBytes) {
+      lease.profileBudgetError = new Error(
+        `browser profile storage budget exceeded for run ${lease.runId} (profile=${diskBytes} bytes, past the ${maxProfileDiskBytes}-byte storage quota this lane grants)`,
       );
       pushLeaseEvent(lease, `[profile blocked] ${lease.profileBudgetError.message}`);
     }
@@ -472,6 +486,13 @@ const attachFile = async (target, screenshotPath) => {
           // worker may own the profile, so never risk deleting a cache under Chrome.
           cachePruneReclaimed = (await pruneChromeProfileCaches(profileRoot)).reclaimedBytes;
           profileBytes = await measureProfileBytes();
+          // Caches alone may not be enough: a page that staged gigabytes into Cache
+          // Storage or OPFS owes none of it back, and a lane with nothing left to reclaim
+          // would refuse every lease from here on. Escalate rather than wedge.
+          if (profileBytes > maxProfileDiskBytes) {
+            cachePruneReclaimed += (await pruneChromeProfileCaches(profileRoot, { includeSiteStorage: true })).reclaimedBytes;
+            profileBytes = await measureProfileBytes();
+          }
         }
         if (profileBytes > maxProfileDiskBytes) {
           const pruneDetail = cachePruneReclaimed === null
@@ -482,7 +503,7 @@ const attachFile = async (target, screenshotPath) => {
         // The growth baseline discounts disposable caches so enforceProfileBudget compares
         // like against like; the ceiling/prune checks above deliberately stay cache-inclusive
         // because they guard real on-disk usage.
-        active.profileBytesAtAcquire = await measureProfileBytes({ excludeDisposableCache: true });
+        active.profileBytesAtAcquire = await measureProfileBytes({ excludeSiteStorage: true });
         // Start the BetterWright worker now so unavailable browser setup fails
         // before the agent begins its turn.
         await runOnLease(active, () => execute(active, "return page.url()"));

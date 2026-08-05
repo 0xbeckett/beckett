@@ -25,21 +25,65 @@ test("isDisposableCacheDir matches disposable cache trees below Default and noth
   expect(isDisposableCacheDir(join(root, "Cache"))).toBe(false);
 });
 
-test("measureDirectoryBytes can exclude disposable caches while counting real state", async () => {
+test("isSiteStorageDir covers what a page stores under its quota, not Beckett's own state", () => {
+  const root = "/state/profile";
+  // Everything disposable is site storage too.
+  expect(isSiteStorageDir(join(root, "Default", "Cache"))).toBe(true);
+  expect(isSiteStorageDir(join(root, "Default", "Service Worker", "CacheStorage"))).toBe(true);
+  // ...plus the quota-managed stores a page writes directly. OPFS is the one a WebGPU
+  // model runner uses for weights, alongside Cache Storage.
+  expect(isSiteStorageDir(join(root, "Default", "File System"))).toBe(true);
+  expect(isSiteStorageDir(join(root, "Default", "IndexedDB"))).toBe(true);
+  expect(isSiteStorageDir(join(root, "Default", "Local Storage"))).toBe(true);
+  expect(isSiteStorageDir(join(root, "betterwright", "browser", "profile", "Default", "File System"))).toBe(true);
+  // Beckett's own profile state is never a page's to fill.
+  expect(isSiteStorageDir(join(root, "Default", "Cookies"))).toBe(false);
+  expect(isSiteStorageDir(join(root, "Default", "Login Data"))).toBe(false);
+  expect(isSiteStorageDir(join(root, "File System"))).toBe(false);
+  // The disposable set stays narrower: the routine prune must not reach site storage.
+  expect(isDisposableCacheDir(join(root, "Default", "File System"))).toBe(false);
+});
+
+test("measureDirectoryBytes can exclude site storage while counting Beckett's own state", async () => {
   const root = mkdtempSync(join(tmpdir(), "beckett-profile-measure-"));
   roots.push(root);
   const defaultDir = join(root, "Default");
   mkdirSync(join(defaultDir, "Cache"), { recursive: true });
   writeFileSync(join(defaultDir, "Cache", "media.bin"), Buffer.alloc(512 * 1024));
-  mkdirSync(join(defaultDir, "IndexedDB"), { recursive: true });
-  writeFileSync(join(defaultDir, "IndexedDB", "state.bin"), Buffer.alloc(64 * 1024));
+  mkdirSync(join(defaultDir, "File System"), { recursive: true });
+  writeFileSync(join(defaultDir, "File System", "weights.bin"), Buffer.alloc(256 * 1024));
+  writeFileSync(join(defaultDir, "Cookies"), Buffer.alloc(64 * 1024));
 
-  const withCache = await measureDirectoryBytes(root);
-  const withoutCache = await measureDirectoryBytes(root, Number.POSITIVE_INFINITY, { excludeDisposableCache: true });
-  expect(withCache).toBeGreaterThan(withoutCache);
-  // The disposable cache (512 KiB) is discounted; the real IndexedDB state (64 KiB) is not.
-  expect(withCache - withoutCache).toBeGreaterThanOrEqual(512 * 1024);
-  expect(withoutCache).toBeGreaterThanOrEqual(64 * 1024);
+  const everything = await measureDirectoryBytes(root);
+  const ownState = await measureDirectoryBytes(root, Number.POSITIVE_INFINITY, { excludeSiteStorage: true });
+  // Both the disposable cache (512 KiB) and the OPFS weights (256 KiB) are discounted;
+  // the cookie jar is not.
+  expect(everything - ownState).toBeGreaterThanOrEqual(768 * 1024);
+  expect(ownState).toBeGreaterThanOrEqual(64 * 1024);
+});
+
+test("the escalated prune reclaims site storage but still keeps authentication", async () => {
+  const root = mkdtempSync(join(tmpdir(), "beckett-profile-escalate-"));
+  roots.push(root);
+  const defaultDir = join(root, "betterwright", "browser", "profile", "Default");
+  mkdirSync(join(defaultDir, "File System"), { recursive: true });
+  mkdirSync(join(defaultDir, "Cache"), { recursive: true });
+  writeFileSync(join(defaultDir, "File System", "weights.bin"), Buffer.alloc(1024 * 1024));
+  writeFileSync(join(defaultDir, "Cache", "media.bin"), Buffer.alloc(256 * 1024));
+  writeFileSync(join(defaultDir, "Cookies"), "signed-in");
+
+  // The routine prune leaves a page's own storage alone...
+  const routine = await pruneChromeProfileCaches(root);
+  expect(existsSync(join(defaultDir, "Cache"))).toBe(false);
+  expect(existsSync(join(defaultDir, "File System"))).toBe(true);
+  expect(routine.reclaimedBytes).toBeGreaterThanOrEqual(256 * 1024);
+
+  // ...and only the escalation, for a profile with nothing else left to give back,
+  // reaches it. Logins survive both.
+  const escalated = await pruneChromeProfileCaches(root, { includeSiteStorage: true });
+  expect(existsSync(join(defaultDir, "File System"))).toBe(false);
+  expect(escalated.reclaimedBytes).toBeGreaterThanOrEqual(1024 * 1024);
+  expect(readFileSync(join(defaultDir, "Cookies"), "utf8")).toBe("signed-in");
 });
 
 test("prunes only disposable caches in every nested Default profile", async () => {

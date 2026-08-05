@@ -6,8 +6,8 @@ import { join } from "node:path";
  * Chromium subtrees below a `Default` profile that hold only regenerable data:
  * HTTP/code/GPU caches and the Service Worker cache/script stores. Chromium
  * rebuilds all of these on demand, so their churn is not real profile growth.
- * This one list is authoritative for both what the prune deletes and what the
- * budget discounts, so the two can never disagree on "disposable".
+ * This one list is authoritative for what the routine prune deletes, so the prune
+ * and the "disposable" judgement can never disagree.
  */
 export const DISPOSABLE_CACHE_PATHS = [
   ["Cache"],
@@ -108,11 +108,23 @@ export async function measureDirectoryBytes(
 }
 
 /**
- * Remove only cache trees below every Chromium `Default` profile found under root.
+ * Remove cache trees below every Chromium `Default` profile found under root.
  * This deliberately has no broad profile cleanup fallback: authentication and browser state stay.
  * Callers must ensure no browser process currently owns the profile.
+ *
+ * With `includeSiteStorage`, {@link SITE_STORAGE_PATHS} goes too. That is the escalation
+ * for a profile still over its whole-footprint ceiling after the caches are gone — a
+ * page may legitimately have staged gigabytes it never has to give back, and without
+ * this the lane would refuse every subsequent lease with nothing left to reclaim.
+ * Cookies, logins and history survive either way.
  */
-export async function pruneChromeProfileCaches(profileRoot: string): Promise<ChromeCachePruneResult> {
+export async function pruneChromeProfileCaches(
+  profileRoot: string,
+  options?: { includeSiteStorage?: boolean },
+): Promise<ChromeCachePruneResult> {
+  const targets = options?.includeSiteStorage
+    ? [...DISPOSABLE_CACHE_PATHS, ...SITE_STORAGE_PATHS]
+    : DISPOSABLE_CACHE_PATHS;
   const before = await measureDirectoryBytes(profileRoot);
   const pending = [profileRoot];
   const defaults: string[] = [];
@@ -130,7 +142,7 @@ export async function pruneChromeProfileCaches(profileRoot: string): Promise<Chr
       // A concurrently removed cache is already successfully pruned.
     }
   }
-  await Promise.all(defaults.flatMap((defaultDir) => DISPOSABLE_CACHE_PATHS.map(async (parts) => {
+  await Promise.all(defaults.flatMap((defaultDir) => targets.map(async (parts) => {
     const target = join(defaultDir, ...parts);
     try {
       const stat = await lstat(target);
