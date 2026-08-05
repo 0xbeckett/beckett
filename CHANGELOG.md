@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v6.24.1 (2026-08-04)
+
 ### The pipeline feed speaks English (#4)
 
 The dispatch event feed posted one raw trace row per transition — `✗ 04:56:31 · #2.1 · implement ·
