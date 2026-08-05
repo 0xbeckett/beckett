@@ -8,6 +8,7 @@ import { buildBrowserEvaluatorLaunch } from "./evaluator-runner.ts";
 import { assertTrustedBrowserAttachment } from "./attachments.ts";
 import { assertTrustedArtifactPng, buildBrowserHostLaunch, createIsolatedBrowserRuntime } from "./isolated.ts";
 import { browserHostSettings, type BrowserHostSettings } from "./runtime.ts";
+import { laneStorageQuotaMib, MIN_LANE_STORAGE_BYTES, resolveLaneStorageBytes } from "./storage-quota.ts";
 
 const quietLog = (() => {
   const logger = { info() {}, warn() {}, debug() {}, error() {}, child() { return logger; } };
@@ -78,7 +79,12 @@ describe("browser host sandbox policy", () => {
       expect(launch.command).not.toContain("CAP_SYS_ADMIN");
       expect(launch.command).toContain("/runtime/node");
       expect(launch.command).not.toContain("/runtime/bun");
-      expect(launch.command.slice(0, 3)).toEqual([fixture.prlimit, "--fsize=134217728", "--"]);
+      // The per-file ceiling is the lane's storage budget, not a separate constant:
+      // CacheStorage keeps one file per entry, so a lower ceiling would cap a single
+      // cached asset and kill Chromium with SIGXFSZ partway through writing it.
+      const laneBytes = resolveLaneStorageBytes({ profileDir: fixture.settings.profileDir });
+      expect(launch.command.slice(0, 3)).toEqual([fixture.prlimit, `--fsize=${laneBytes}`, "--"]);
+      expect(laneBytes).toBeGreaterThanOrEqual(MIN_LANE_STORAGE_BYTES);
       const writable = launch.command.flatMap((value, index, all) => (value === "--bind" ? [all[index + 1]] : []));
       expect(writable).toEqual([fixture.settings.profileDir, fixture.settings.artifactsRoot]);
       expect(launch.command.join(" ")).not.toContain(".env");
@@ -86,6 +92,104 @@ describe("browser host sandbox policy", () => {
       expect(launch.command.some((value, index) => value === resolve(import.meta.dir, "../..") && launch.command[index + 1] === "/repo")).toBe(false);
       expect(launch.command).toContain("/repo/node_modules/.cache/beckett-browser/host.mjs");
       expect(launch.command).not.toContain("/repo/src/browser");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the betterwright backend hands Chromium the lane's real storage budget", () => {
+    const fixture = fixturePaths();
+    const shimDir = join(fixture.dir, "cloak-storage-quota");
+    mkdirSync(join(shimDir, "dist"), { recursive: true });
+    writeFileSync(join(shimDir, "dist", "index.js"), "fixture");
+    try {
+      const launch = buildBrowserHostLaunch({
+        settings: fixture.settings,
+        platform: "linux",
+        sandbox: "auto",
+        execPath: process.execPath,
+        nodePath: fixture.node,
+        hostPath: fixture.host,
+        chromiumExecutable: fixture.browser,
+        cloakShimDir: shimDir,
+        repoRoot: resolve(import.meta.dir, "../.."),
+        bwrapPath: "/usr/bin/bwrap",
+        prlimitPath: fixture.prlimit,
+        backend: "betterwright",
+        parentEnv: { PATH: "/usr/bin:/bin" },
+      });
+
+      const setenv = new Map<string, string>();
+      launch.command.forEach((value, index) => {
+        if (value === "--setenv") setenv.set(launch.command[index + 1]!, launch.command[index + 2]!);
+      });
+      const laneBytes = resolveLaneStorageBytes({ profileDir: fixture.settings.profileDir });
+      expect(setenv.get("BECKETT_BROWSER_STORAGE_QUOTA_MIB")).toBe(String(laneStorageQuotaMib(laneBytes)));
+      // BetterWright must load the shim from the sandbox's own path, never the host's.
+      expect(setenv.get("BETTERWRIGHT_CLOAKBROWSER_PATH"))
+        .toBe("/repo/node_modules/.cache/beckett-browser/cloak-storage-quota");
+      expect(launch.command).toContain("/repo/node_modules/.cache/beckett-browser/cloak-storage-quota/dist/index.js");
+
+      // The shim is a read-only mount: the only writable binds stay the profile and
+      // artifact roots, and nothing about network or capability isolation moves.
+      const writable = launch.command.flatMap((value, index, all) => (value === "--bind" ? [all[index + 1]] : []));
+      expect(writable).toEqual([fixture.settings.profileDir, fixture.settings.artifactsRoot]);
+      const readOnly = launch.command.flatMap((value, index, all) => (value === "--ro-bind" ? [all[index + 1]] : []));
+      expect(readOnly).toContain(join(shimDir, "dist", "index.js"));
+      expect(launch.command).toContain("--unshare-all");
+      expect(launch.command).toContain("--cap-drop");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the playwright backend gets no CloakBrowser shim at all", () => {
+    const fixture = fixturePaths();
+    const shimDir = join(fixture.dir, "cloak-storage-quota");
+    mkdirSync(join(shimDir, "dist"), { recursive: true });
+    writeFileSync(join(shimDir, "dist", "index.js"), "fixture");
+    try {
+      const launch = buildBrowserHostLaunch({
+        settings: fixture.settings,
+        platform: "linux",
+        sandbox: "auto",
+        execPath: process.execPath,
+        nodePath: fixture.node,
+        hostPath: fixture.host,
+        chromiumExecutable: fixture.browser,
+        cloakShimDir: shimDir,
+        repoRoot: resolve(import.meta.dir, "../.."),
+        bwrapPath: "/usr/bin/bwrap",
+        prlimitPath: fixture.prlimit,
+        parentEnv: { PATH: "/usr/bin:/bin" },
+      });
+      expect(launch.command.join(" ")).not.toContain("BETTERWRIGHT_CLOAKBROWSER_PATH");
+      expect(launch.command.join(" ")).not.toContain("cloak-storage-quota");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  test("process-only mode points betterwright at the shim's real host path", () => {
+    const fixture = fixturePaths();
+    const shimDir = join(fixture.dir, "cloak-storage-quota");
+    mkdirSync(join(shimDir, "dist"), { recursive: true });
+    writeFileSync(join(shimDir, "dist", "index.js"), "fixture");
+    try {
+      const launch = buildBrowserHostLaunch({
+        settings: fixture.settings,
+        platform: "linux",
+        sandbox: "none",
+        execPath: process.execPath,
+        nodePath: fixture.node,
+        hostPath: fixture.host,
+        chromiumExecutable: fixture.browser,
+        cloakShimDir: shimDir,
+        repoRoot: resolve(import.meta.dir, "../.."),
+        backend: "betterwright",
+      });
+      expect(launch.env.BETTERWRIGHT_CLOAKBROWSER_PATH).toBe(shimDir);
+      expect(Number(launch.env.BECKETT_BROWSER_STORAGE_QUOTA_MIB)).toBeGreaterThan(0);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }

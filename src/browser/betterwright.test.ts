@@ -438,6 +438,69 @@ test("disposable cache growth does not trip the per-lease budget, but real profi
   }
 });
 
+test("a multi-GB CacheStorage write survives the lease budget and the next acquire", async () => {
+  const settings = settingsFor();
+  const defaultDir = join(settings.profileDir, "betterwright", "browser", "profile", "Default");
+  mkdirSync(defaultDir, { recursive: true });
+  writeFileSync(join(defaultDir, "Cookies"), "signed-in");
+  const cacheStorage = join(defaultDir, "Service Worker", "CacheStorage");
+  const fake = new FakeBetterWright();
+  // Real measureDirectoryBytes so both ceilings are exercised against real files. The
+  // ratios stand in for production's 512 MB real-state / 32 GiB whole-footprint pair:
+  // the cached asset set is far past the real-state ceiling and well under the disk one.
+  const runtime = createBetterWrightRuntime(settings, quietLog, {
+    createBrowser: () => fake,
+    maxProfileBytes: 256 * 1024,
+    maxProfileGrowthBytes: 64 * 1024,
+    maxProfileDiskBytes: 32 * 1024 * 1024,
+  });
+  try {
+    await runtime.acquire(leaseFor("model-cache"));
+
+    // A page caches an asset set many times the real-state ceiling. This is exactly
+    // what the lane now advertises room for, so it must not trip the lease.
+    mkdirSync(cacheStorage, { recursive: true });
+    writeFileSync(join(cacheStorage, "shard-0.bin"), Buffer.alloc(8 * 1024 * 1024));
+    writeFileSync(join(cacheStorage, "shard-1.bin"), Buffer.alloc(8 * 1024 * 1024));
+    const survived = await runtime.evaluate("model-cache", "return 1");
+    expect(survived.value).toBeNull();
+
+    await runtime.release("model-cache", false);
+
+    // ...and the next lease acquires without the weights being reclaimed first: 16 MiB
+    // is under the 70% high-water mark of the 32 MiB whole-footprint ceiling.
+    await runtime.acquire(leaseFor("second-run"));
+    expect(existsSync(join(cacheStorage, "shard-0.bin"))).toBe(true);
+    const next = await runtime.evaluate("second-run", "return 2");
+    expect(next.events.join("\n")).not.toContain("profile cache pruned");
+
+    // Real profile state is still bounded by its own, much smaller ceiling.
+    writeFileSync(join(defaultDir, "runaway-state.bin"), Buffer.alloc(1024 * 1024));
+    await expect(runtime.evaluate("second-run", "return 3")).rejects.toThrow("profile storage budget exceeded");
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("the whole-footprint ceiling still refuses a lease when caches cannot be reclaimed", async () => {
+  let profileSize = 10;
+  const fake = new FakeBetterWright();
+  const runtime = createBetterWrightRuntime(settingsFor(), quietLog, {
+    createBrowser: () => fake,
+    measureProfileBytes: async () => profileSize,
+    maxProfileDiskBytes: 1_000,
+    maxLeases: 5,
+  });
+  try {
+    await runtime.acquire(leaseFor("alpha"));
+    // A second live lease blocks the prune, so the oversized profile has nowhere to go.
+    profileSize = 5_000;
+    await expect(runtime.acquire(leaseFor("beta"))).rejects.toThrow("profile storage budget exceeded");
+  } finally {
+    await runtime.stop();
+  }
+});
+
 test("the global profile ceiling binds every lease regardless of its own baseline", async () => {
   let profileSize = 10;
   const fake = new FakeBetterWright();
