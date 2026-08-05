@@ -12,7 +12,10 @@
  * reads a repo). Every decision that HAS a right answer lives in a pure function so it can be.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { PrMergeability } from "../github/types.ts";
 import {
   FINISH_AUDIT_CHANNEL_ID,
@@ -23,6 +26,7 @@ import {
   gateMerge,
   parseFinishArgs,
   repoFromRemoteUrl,
+  runGuardedDeploy,
 } from "./finish.ts";
 
 function pr(over: Partial<PrMergeability> = {}): PrMergeability {
@@ -252,6 +256,50 @@ describe("describeDeployFailure", () => {
     const msg = describeDeployFailure(1, "== gating origin/main ==\nFATAL: bubblewrap is required\nbye");
     expect(msg).toContain("FATAL: bubblewrap is required");
     expect(msg).toContain("bye");
+  });
+});
+
+describe("runGuardedDeploy", () => {
+  const sandboxes: string[] = [];
+  afterAll(() => {
+    for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A stand-in for `deploy/deploy-prod.sh` — the real one ships code to a live host. */
+  function fakeDeploy(body: string): { script: string; cwd: string } {
+    const cwd = mkdtempSync(join(tmpdir(), "beckett-finish-deploy-"));
+    sandboxes.push(cwd);
+    const script = join(cwd, "deploy-prod.sh");
+    writeFileSync(script, `#!/usr/bin/env bash\n${body}\n`);
+    return { script, cwd };
+  }
+
+  test("a clean deploy exits 0 and its output is captured", async () => {
+    const { script, cwd } = fakeDeploy('echo "== deploy complete =="');
+    const result = await runGuardedDeploy(script, cwd, "yes");
+    expect(result.code).toBe(0);
+    expect(result.tail).toContain("deploy complete");
+  });
+
+  test("the bump is pre-decided in the environment (the script must never prompt from here)", async () => {
+    const { script, cwd } = fakeDeploy('echo "bump=${BECKETT_BUMP}"');
+    expect((await runGuardedDeploy(script, cwd, "minor")).tail).toContain("bump=minor");
+  });
+
+  test("a failing gate returns its exit code, and stderr survives into the tail", async () => {
+    const { script, cwd } = fakeDeploy('echo "FATAL: deploy checkout is dirty" >&2\nexit 3');
+    const result = await runGuardedDeploy(script, cwd, "yes");
+    expect(result.code).toBe(3);
+    // The tail is what the operator-facing error is built from, so it must survive the pipe.
+    expect(describeDeployFailure(result.code, result.tail)).toContain("cd ~/beckett");
+  });
+
+  test("a long deploy log is truncated to a readable tail, keeping the END", async () => {
+    const { script, cwd } = fakeDeploy("seq 1 500\nexit 1");
+    const { tail } = await runGuardedDeploy(script, cwd, "yes");
+    expect(tail.split("\n").length).toBeLessThanOrEqual(25);
+    expect(tail).toContain("500");
+    expect(tail).not.toContain("\n1\n");
   });
 });
 

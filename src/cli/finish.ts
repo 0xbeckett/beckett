@@ -408,13 +408,13 @@ async function buildGh(dir: string) {
 }
 
 /** Pump a child's stream to stderr live while keeping the last {@link DEPLOY_TAIL_LINES} lines. */
-async function teeToStderr(stream: ReadableStream<Uint8Array> | null, tail: string[]): Promise<void> {
+async function teeToStderr(stream: ReadableStream<Uint8Array> | null, tail: string[], echo: boolean): Promise<void> {
   if (!stream) return;
   const decoder = new TextDecoder();
   let pending = "";
   for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
     const text = decoder.decode(chunk, { stream: true });
-    if (!quiet) process.stderr.write(text);
+    if (echo) process.stderr.write(text);
     pending += text;
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
@@ -425,6 +425,26 @@ async function teeToStderr(stream: ReadableStream<Uint8Array> | null, tail: stri
   }
   if (pending) tail.push(pending);
   while (tail.length > DEPLOY_TAIL_LINES) tail.shift();
+}
+
+/**
+ * Run THE guarded deploy script as a child, narrating it live and keeping its tail for the failure
+ * message. Nothing here reimplements any part of the deploy — it is spawned exactly as an operator
+ * would run it, with the two things a non-interactive caller must supply: the toolchain on PATH
+ * (bun lives in `~/.bun/bin`, which a non-login shell does not add) and a pre-decided
+ * `BECKETT_BUMP`, since the script prompts for the version bump on a TTY and there is nobody here
+ * to answer.
+ */
+export async function runGuardedDeploy(script: string, cwd: string, bump: string): Promise<{ code: number; tail: string }> {
+  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+  const home = process.env.HOME ?? "";
+  const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");
+  env.PATH = env.PATH ? `${extra}:${env.PATH}` : extra;
+  env.BECKETT_BUMP = bump;
+  const proc = Bun.spawn(["bash", script], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
+  const tail: string[] = [];
+  await Promise.all([teeToStderr(proc.stdout, tail), teeToStderr(proc.stderr, tail)]);
+  return { code: await proc.exited, tail: tail.join("\n").trim() };
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -609,18 +629,8 @@ export async function runFinish(argv: string[]): Promise<void> {
     step(`merged, but ${deploy.reason} — nothing to redeploy`);
   } else {
     step(`running the guarded redeploy (${script}, BECKETT_BUMP=${opts.bump})`);
-    const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-    const home = process.env.HOME ?? "";
-    const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");
-    env.PATH = env.PATH ? `${extra}:${env.PATH}` : extra;
-    // The deploy prompts for the version bump on a TTY; from here there is nobody to prompt, so it
-    // is always pre-decided (`yes` accepts the script's own MINOR/PATCH classification).
-    env.BECKETT_BUMP = opts.bump;
-    const proc = Bun.spawn(["bash", script], { cwd: repoRoot, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
-    const tail: string[] = [];
-    await Promise.all([teeToStderr(proc.stdout, tail), teeToStderr(proc.stderr, tail)]);
-    const code = await proc.exited;
-    if (code !== 0) fail(`beckett finish: ${describeDeployFailure(code, tail.join("\n").trim())}`);
+    const { code, tail } = await runGuardedDeploy(script, repoRoot, opts.bump);
+    if (code !== 0) fail(`beckett finish: ${describeDeployFailure(code, tail)}`);
     deploy = { ran: true };
   }
 
