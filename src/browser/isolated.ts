@@ -12,6 +12,7 @@ import {
   chmodSync,
   closeSync,
   constants,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -32,6 +33,7 @@ import { chromium } from "playwright";
 import type { Logger } from "../types.ts";
 import { openTrustedBrowserAttachment, type TrustedBrowserAttachment } from "./attachments.ts";
 import { runBrowserEvaluator } from "./evaluator-runner.ts";
+import { laneStorageQuotaMib, resolveLaneStorageBytes } from "./storage-quota.ts";
 import type { BrowserHostRequest, BrowserHostResponse, BrowserHostMethod } from "./host.ts";
 import type {
   BrowserEvalResult,
@@ -47,9 +49,21 @@ import type {
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const HOST_PATH = join(MODULE_DIR, "host.ts");
-const HOST_BUNDLES = new Map<string, Promise<string>>();
+const CLOAK_SHIM_SOURCE = join(MODULE_DIR, "cloak-storage-quota.mjs");
+/** Directory name the shim is published under, beside the built host bundle. */
+const CLOAK_SHIM_DIR_NAME = "cloak-storage-quota";
+/** Where the bound host bundle (and so the shim beside it) lives inside bubblewrap. */
+const SANDBOX_HOST_DIR = "/repo/node_modules/.cache/beckett-browser";
+const HOST_BUNDLES = new Map<string, Promise<BrowserHostArtifacts>>();
 const MAX_HOST_LINE_CHARS = 32 * 1024 * 1024;
 const MAX_CODE_CHARS = 100_000;
+
+/** Built host bundle plus the CloakBrowser wrapper shim published alongside it. */
+interface BrowserHostArtifacts {
+  hostPath: string;
+  /** Directory holding `dist/index.js`, the value BETTERWRIGHT_CLOAKBROWSER_PATH takes. */
+  cloakShimDir: string;
+}
 
 type HostChild = ReturnType<typeof Bun.spawn>;
 type SandboxMode = "auto" | "none" | "macos";
