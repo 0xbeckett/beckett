@@ -17,7 +17,7 @@
 
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
-import { existsSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import type { Config, Harness } from "../types.ts";
 import { availableHarnesses, preflightFor, type PreflightResult } from "../drivers/index.ts";
 import { buildPaths } from "../paths.ts";
@@ -77,6 +77,8 @@ export interface DoctorDeps {
   diskFreeKb?: (path: string) => Promise<number | null>;
   /** Verify the pinned Chromium artifact actually launches, not merely that its file exists. */
   browserProbe?: () => Promise<{ executable: string; launchable: boolean; error?: string }>;
+  /** List a directory's entry names, or null when absent/unreadable. */
+  listDir?: (path: string) => string[] | null;
 }
 
 // ── default (real) probe implementations ──────────────────────────────────────────────────
@@ -290,6 +292,14 @@ function realReadFile(path: string): string | null {
   }
 }
 
+function realListDir(path: string): string[] | null {
+  try {
+    return readdirSync(path);
+  } catch {
+    return null;
+  }
+}
+
 async function realDiskFreeKb(path: string): Promise<number | null> {
   const { code, stdout } = await realExec(["df", "-Pk", path]);
   if (code !== 0) return null;
@@ -366,6 +376,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   const preflight = deps.preflight ?? ((h: Harness) => preflightFor(h, config, { force: true }));
   const listProcesses = deps.listProcesses ?? realListProcesses;
   const readFile = deps.readFile ?? realReadFile;
+  const listDir = deps.listDir ?? realListDir;
   const diskFreeKb = deps.diskFreeKb ?? realDiskFreeKb;
   const browserProbe = deps.browserProbe ?? realBrowserProbe;
   const paths = buildPaths(config);
@@ -444,6 +455,21 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       detail: r.lingered ? `${version} (printed its version but did not exit; the probe killed it)` : version,
     });
   }
+  // The CLI shim every worker skill invokes (`beckett gh`, `beckett browser`, …). It is host
+  // state written by install.sh, NOT started by systemd — the daemon runs `bun src/shell/main.ts`
+  // directly — so a box can pass every check above while workers die on `beckett: command not
+  // found` (the desktop migration did exactly this).
+  {
+    const shim = await exec(["beckett", "version"], { env: binEnv, timeoutMs: VERSION_PROBE_TIMEOUT_MS });
+    const version = shim.stdout.trim().split("\n")[0] ?? "";
+    checks.push(shim.code === 0 && version
+      ? { name: "cli: beckett", level: "ok", detail: version }
+      : {
+          name: "cli: beckett",
+          level: "fail",
+          detail: `\`beckett version\` is not runnable on the daemon PATH (${path}) - every worker skill calls this CLI; recreate the ~/.local/bin/beckett shim (install.sh writes it: exec bun ~/beckett/src/cli/beckett.ts)`,
+        });
+  }
   if (platform === "linux") {
     const sandbox = await exec(
       ["bwrap", "--unshare-all", "--share-net", "--die-with-parent", "--ro-bind", "/", "/", "/bin/true"],
@@ -470,6 +496,20 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         });
   } catch (err) {
     checks.push({ name: "browser: chromium", level: "fail", detail: `Playwright unavailable: ${(err as Error).message}` });
+  }
+  // The managed CloakBrowser binary the BetterWright backend launches inside the bubblewrap
+  // sandbox. With the cache absent the host still comes up ("host ready") and then every session
+  // dies at launch with "worker exited unexpectedly" — so probe the artifact, not the host.
+  if (platform === "linux") {
+    const cloakDir = env.CLOAKBROWSER_CACHE_DIR?.trim() || join(home, ".cloakbrowser");
+    const managed = (listDir(cloakDir) ?? []).filter((entry) => entry.startsWith("chromium-"));
+    checks.push(managed.length > 0
+      ? { name: "browser: cloakbrowser", level: "ok", detail: `${join(cloakDir, managed[0]!)}` }
+      : {
+          name: "browser: cloakbrowser",
+          level: "fail",
+          detail: `no managed CloakBrowser binary under ${cloakDir} - BetterWright sessions die at launch without it; run bun x betterwright setup --cloak-only (deploy-prod.sh runs this on every deploy)`,
+        });
   }
 
   // 2. Harness preflights (issue #17's checks, forced fresh): auth artifact, version minimum,

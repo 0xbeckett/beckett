@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Beckett — THE deploy (issue #29). Run from the Mac after a PR merges to main:
 #   ./deploy/deploy-prod.sh
-# Prod (~/beckett on loom-desk) only ever runs origin/main: fetch, ff-only pull, typecheck,
+# Prod (~/beckett on desktop) only ever runs origin/main: fetch, ff-only pull, typecheck,
 # restart, health read-back. Also tags the deployed version (from package.json) and prunes
 # dead wk_* worker branches so the graveyard never regrows.
 set -euo pipefail
 
-HOST="${BECKETT_HOST:-beckett@loom-desk}"
+HOST="${BECKETT_HOST:-beckett@desktop}"
 
 # ── self-deploy survival guard (issue #81) ──────────────────────────────────────────────────
 # When beckett deploys ITSELF, the running daemon spawns this script, so it (and its ssh child)

@@ -54,10 +54,12 @@ function healthyDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     exec: async (argv) => {
       const bin = argv[0]!;
       if (argv[1] === "--version" && versions[bin]) return { code: 0, stdout: versions[bin], stderr: "" };
+      if (bin === "beckett" && argv[1] === "version") return { code: 0, stdout: "6.19.0", stderr: "" };
       if (bin === "bwrap") return { code: 0, stdout: "", stderr: "" };
       if (bin === "cloudflared") return { code: 0, stdout: "OK", stderr: "" };
       return { code: 127, stdout: "", stderr: "not found" };
     },
+    listDir: (path: string) => (path.endsWith(".cloakbrowser") ? ["chromium-146.0.7680.177.5", ".last_update_check"] : null),
     preflight: async () => ({ ok: true, problems: [] }),
     fetchFn: (async (url: string | URL | Request) =>
       String(url).includes("api.github.com")
@@ -135,6 +137,28 @@ describe("doctor — the issue-#30 regression checklist", () => {
     const sandbox = byName(report.checks, "browser: process sandbox");
     expect(sandbox.level).toBe("fail");
     expect(sandbox.detail).toContain("No permissions");
+  });
+
+  test("a missing beckett CLI shim is a FAIL even when the daemon itself is green", async () => {
+    const base = healthyDeps();
+    const report = await runDoctor(healthyDeps({
+      exec: async (argv, opts) =>
+        argv[0] === "beckett"
+          ? { code: 127, stdout: "", stderr: "beckett: command not found" }
+          : base.exec!(argv, opts),
+    }));
+    const shim = byName(report.checks, "cli: beckett");
+    expect(shim.level).toBe("fail");
+    expect(shim.detail).toContain("~/.local/bin/beckett");
+    expect(report.ok).toBeFalse();
+  });
+
+  test("an absent CloakBrowser cache is a FAIL — BetterWright sessions die at launch without it", async () => {
+    const report = await runDoctor(healthyDeps({ listDir: () => null }));
+    const cloak = byName(report.checks, "browser: cloakbrowser");
+    expect(cloak.level).toBe("fail");
+    expect(cloak.detail).toContain("betterwright setup --cloak-only");
+    expect(report.ok).toBeFalse();
   });
 
   test("node below Pi's 22.19 floor on the daemon PATH is a FAIL", async () => {
