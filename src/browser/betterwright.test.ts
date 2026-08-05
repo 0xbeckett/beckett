@@ -457,11 +457,13 @@ test("a multi-GB CacheStorage write survives the lease budget and the next acqui
   try {
     await runtime.acquire(leaseFor("model-cache"));
 
-    // A page caches an asset set many times the real-state ceiling. This is exactly
-    // what the lane now advertises room for, so it must not trip the lease.
+    // A page stages an asset set many times the profile-state ceiling, across both of the
+    // stores a WebGPU model runner actually uses. This is exactly what the lane now
+    // advertises room for, so it must not trip the lease.
     mkdirSync(cacheStorage, { recursive: true });
+    mkdirSync(join(defaultDir, "File System"), { recursive: true });
     writeFileSync(join(cacheStorage, "shard-0.bin"), Buffer.alloc(8 * 1024 * 1024));
-    writeFileSync(join(cacheStorage, "shard-1.bin"), Buffer.alloc(8 * 1024 * 1024));
+    writeFileSync(join(defaultDir, "File System", "shard-1.bin"), Buffer.alloc(8 * 1024 * 1024));
     const survived = await runtime.evaluate("model-cache", "return 1");
     expect(survived.value).toBeNull();
 
@@ -477,6 +479,48 @@ test("a multi-GB CacheStorage write survives the lease budget and the next acqui
     // Real profile state is still bounded by its own, much smaller ceiling.
     writeFileSync(join(defaultDir, "runaway-state.bin"), Buffer.alloc(1024 * 1024));
     await expect(runtime.evaluate("second-run", "return 3")).rejects.toThrow("profile storage budget exceeded");
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("site storage past the advertised quota still blocks the lease that wrote it", async () => {
+  const settings = settingsFor();
+  const defaultDir = join(settings.profileDir, "betterwright", "browser", "profile", "Default");
+  mkdirSync(join(defaultDir, "File System"), { recursive: true });
+  const fake = new FakeBetterWright();
+  const runtime = createBetterWrightRuntime(settings, quietLog, {
+    createBrowser: () => fake,
+    maxProfileDiskBytes: 4 * 1024 * 1024,
+  });
+  try {
+    await runtime.acquire(leaseFor("greedy"));
+    // Discounting site storage from the profile-state ceiling would leave it unbounded
+    // if the advertised quota did not bind it here. A page gets what it was promised.
+    writeFileSync(join(defaultDir, "File System", "runaway.bin"), Buffer.alloc(8 * 1024 * 1024));
+    await expect(runtime.evaluate("greedy", "return 1")).rejects.toThrow("storage quota this lane grants");
+  } finally {
+    await runtime.stop();
+  }
+});
+
+test("an acquire escalates past the caches when only site storage is left to reclaim", async () => {
+  const settings = settingsFor();
+  const defaultDir = join(settings.profileDir, "betterwright", "browser", "profile", "Default");
+  mkdirSync(join(defaultDir, "File System"), { recursive: true });
+  writeFileSync(join(defaultDir, "File System", "weights.bin"), Buffer.alloc(2 * 1024 * 1024));
+  writeFileSync(join(defaultDir, "Cookies"), "signed-in");
+  const fake = new FakeBetterWright();
+  const runtime = createBetterWrightRuntime(settings, quietLog, {
+    createBrowser: () => fake,
+    maxProfileDiskBytes: 512 * 1024,
+  });
+  try {
+    // Nothing disposable exists to reclaim, so without the escalation this acquire — and
+    // every one after it — would fail with the lane permanently over its ceiling.
+    await runtime.acquire(leaseFor("recovering"));
+    expect(existsSync(join(defaultDir, "File System"))).toBe(false);
+    expect(readFileSync(join(defaultDir, "Cookies"), "utf8")).toBe("signed-in");
   } finally {
     await runtime.stop();
   }
