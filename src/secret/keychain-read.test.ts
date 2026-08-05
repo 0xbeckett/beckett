@@ -56,6 +56,22 @@ describe("keychain reader", () => {
     for (const args of calls) expect(args.join(" ")).not.toContain("hunter2-secret");
   });
 
+  // Regression: jingle's leak tripwire rewrites an injected value printed by the child to
+  // "[REDACTED by jingle]". Our carrier child prints by design into a private pipe, so the guard
+  // must be off — with it on, every credential silently became that 20-character marker and got
+  // typed into login forms (x.com answered "the password you entered is incorrect" for hours).
+  test("disables the leak guard on the carrier read", async () => {
+    const { runner, calls } = fakeJingle({ fields: ["password"], values: { password: "hunter2-secret" } });
+    await createKeychainReader(runner).read("x.com");
+    const exec = calls.find((args) => args[0] === "exec")!;
+    expect(exec).toContain("--no-leak-guard");
+  });
+
+  test("rejects a redaction marker instead of passing it off as the credential", async () => {
+    const { runner } = fakeJingle({ fields: ["password"], values: { password: "[REDACTED by jingle]" } });
+    await expect(createKeychainReader(runner).read("x.com")).rejects.toThrow(/redacted x\.com:password/);
+  });
+
   test("mints fresh totp codes and validates their shape", async () => {
     const reader = createKeychainReader(fakeJingle({ totpCode: "739184" }).runner);
     expect(await reader.totp("x.com")).toBe("739184");

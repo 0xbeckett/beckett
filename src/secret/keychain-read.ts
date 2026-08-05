@@ -58,10 +58,28 @@ const spawnJingleRead: JingleReadRunner = async (args) => {
 const CARRIER_ENV = "BECKETT_KEYCHAIN_VALUE";
 
 /**
+ * What jingle's leak tripwire substitutes when a child prints an injected secret. Our carrier child
+ * prints the value BY DESIGN into a private in-memory pipe, so the guard is off for that call
+ * (`--no-leak-guard`) — but if a jingle build ever ignores the flag, the marker would sail on as if
+ * it were the credential. It is a plausible-looking 20-character string, so nothing downstream
+ * would notice: the browser agent would type it into the login form and the site would answer
+ * "incorrect password" (it did, for hours, against x.com). Detect it and fail loudly instead.
+ */
+const JINGLE_REDACTION_MARKER = "[REDACTED by jingle]";
+
+/**
  * Create the production reader. Field names come from `jingle show --json` (metadata only —
  * jingle redacts values in every output mode). Each value is then pulled through
- * `jingle exec -s entry:field=VAR --no-inherit-env -- sh -c 'printf %s "$VAR"'`: the value
- * exists in the child's env and our captured pipe, nowhere else.
+ * `jingle exec -s entry:field=VAR --no-inherit-env --no-leak-guard -- sh -c 'printf %s "$VAR"'`:
+ * the value exists in the child's env and our captured pipe, nowhere else.
+ *
+ * `--no-leak-guard` is REQUIRED here and is not a weakening of jingle's tripwire. That guard
+ * exists to stop a secret reaching a terminal a human or transcript can see; it streams the
+ * child's stdout and rewrites any injected value to {@link JINGLE_REDACTION_MARKER}. Our child's
+ * stdout is a Bun pipe read into daemon memory — the sanctioned handoff, not an egress — so with
+ * the guard on, every credential arrives as the marker string and gets typed into login forms
+ * verbatim. Redaction of anything user- or model-facing is enforced separately and still applies
+ * (see `redactKnownBrowserInputs` in src/browser/agent.ts).
  */
 export function createKeychainReader(run: JingleReadRunner = spawnJingleRead): KeychainReader {
   return {
@@ -92,12 +110,20 @@ export function createKeychainReader(run: JingleReadRunner = spawnJingleRead): K
           "-s",
           `${entry}:${field}=${CARRIER_ENV}`,
           "--no-inherit-env",
+          "--no-leak-guard",
           "--",
           "/bin/sh",
           "-c",
           `printf %s "$${CARRIER_ENV}"`,
         ]);
         if (fetched.code !== 0) throw new Error(`jingle could not resolve ${entry}:${field} (${fetched.code})`);
+        if (fetched.stdout === JINGLE_REDACTION_MARKER) {
+          throw new Error(
+            `jingle redacted ${entry}:${field} on its way to beckett — the carrier read came back as ` +
+              `"${JINGLE_REDACTION_MARKER}" instead of the credential. This jingle build ignored ` +
+              `--no-leak-guard; upgrade it (a credential typed as this marker looks like a wrong password).`,
+          );
+        }
         values[field] = fetched.stdout;
       }
       return { entry, fields, values, hasTotp };
