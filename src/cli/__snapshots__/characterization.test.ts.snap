@@ -630,7 +630,7 @@ exports[`cli: finish: without a message prints usage 1`] = `
   "exit": 1,
   "stderr": 
 "error: beckett finish: a message is required — beckett finish -m "what this ticket shipped"
-usage: beckett finish -m "<message>" [--dir <path>] [--repo <owner/name>] [--base <branch>] [--strategy squash|merge|rebase] [--bump yes|patch|minor|major] [--no-deploy] [--no-commit] [--ci-timeout <secs>] [--json]
+usage: beckett finish -m "<message>" [--dir <path>] [--repo <owner/name>] [--base <branch>] [--strategy squash|merge|rebase] [--bump yes|patch|minor|major] [--no-deploy] [--no-commit] [--ci-timeout <secs>] [--json (quiet: result only, no progress narration)]
 "
 ,
   "stdout": "",
@@ -642,7 +642,7 @@ exports[`cli: finish: an unknown flag is refused, not ignored 1`] = `
   "exit": 1,
   "stderr": 
 "error: beckett finish: unknown flag "--bogus"
-usage: beckett finish -m "<message>" [--dir <path>] [--repo <owner/name>] [--base <branch>] [--strategy squash|merge|rebase] [--bump yes|patch|minor|major] [--no-deploy] [--no-commit] [--ci-timeout <secs>] [--json]
+usage: beckett finish -m "<message>" [--dir <path>] [--repo <owner/name>] [--base <branch>] [--strategy squash|merge|rebase] [--bump yes|patch|minor|major] [--no-deploy] [--no-commit] [--ci-timeout <secs>] [--json (quiet: result only, no progress narration)]
 "
 ,
   "stdout": "",
@@ -654,7 +654,7 @@ exports[`cli: finish: a bad merge strategy is refused 1`] = `
   "exit": 1,
   "stderr": 
 "error: beckett finish: --strategy must be one of squash|merge|rebase
-usage: beckett finish -m "<message>" [--dir <path>] [--repo <owner/name>] [--base <branch>] [--strategy squash|merge|rebase] [--bump yes|patch|minor|major] [--no-deploy] [--no-commit] [--ci-timeout <secs>] [--json]
+usage: beckett finish -m "<message>" [--dir <path>] [--repo <owner/name>] [--base <branch>] [--strategy squash|merge|rebase] [--bump yes|patch|minor|major] [--no-deploy] [--no-commit] [--ci-timeout <secs>] [--json (quiet: result only, no progress narration)]
 "
 ,
   "stdout": "",
@@ -666,7 +666,7 @@ exports[`cli: finish: -m with no value is refused 1`] = `
   "exit": 1,
   "stderr": 
 "error: beckett finish: --message needs a value
-usage: beckett finish -m "<message>" [--dir <path>] [--repo <owner/name>] [--base <branch>] [--strategy squash|merge|rebase] [--bump yes|patch|minor|major] [--no-deploy] [--no-commit] [--ci-timeout <secs>] [--json]
+usage: beckett finish -m "<message>" [--dir <path>] [--repo <owner/name>] [--base <branch>] [--strategy squash|merge|rebase] [--bump yes|patch|minor|major] [--no-deploy] [--no-commit] [--ci-timeout <secs>] [--json (quiet: result only, no progress narration)]
 "
 ,
   "stdout": "",

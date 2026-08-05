@@ -37,7 +37,7 @@ import { config, SOCK } from "./context.ts";
 export const FINISH_USAGE =
   'usage: beckett finish -m "<message>" [--dir <path>] [--repo <owner/name>] [--base <branch>] ' +
   "[--strategy squash|merge|rebase] [--bump yes|patch|minor|major] [--no-deploy] [--no-commit] " +
-  "[--ci-timeout <secs>] [--json]";
+  "[--ci-timeout <secs>] [--json (quiet: result only, no progress narration)]";
 
 /**
  * The ops channel every `beckett finish` run announces itself in — the same room the daemon posts
@@ -77,6 +77,7 @@ export interface FinishOptions {
   /** Commit a dirty tree with the given message instead of refusing it. */
   commit: boolean;
   ciTimeoutMs: number;
+  /** Suppress the live progress/deploy narration on stderr; stdout's result object is unchanged. */
   json: boolean;
 }
 
@@ -136,7 +137,8 @@ export function parseFinishArgs(argv: string[], cwd = process.cwd()): FinishOpti
   let ciTimeoutMs = DEFAULT_CI_TIMEOUT_MS;
   if (typeof flags["ci-timeout"] === "string") {
     const secs = Number(flags["ci-timeout"]);
-    if (!Number.isFinite(secs) || secs < 0) usage("beckett finish: --ci-timeout must be a number of seconds (0 to skip waiting)");
+    // 0 means "don't wait": anything not already mergeable is reported as a blocker immediately.
+    if (!Number.isFinite(secs) || secs < 0) usage("beckett finish: --ci-timeout must be a number of seconds (0 to refuse rather than wait)");
     ciTimeoutMs = Math.round(secs * 1000);
   }
 
@@ -340,9 +342,15 @@ export function finishAuditLine(repo: string, branch: string, title: string): st
 
 // ── side-effecting helpers ──────────────────────────────────────────────────────────────────
 
-/** Progress goes to stderr so stdout stays exactly one JSON object for the caller to parse. */
+/**
+ * Live narration goes to STDERR so stdout stays exactly one JSON object for the caller to parse.
+ * `--json` silences the narration (and the deploy's own output) for a caller that only wants the
+ * result; nothing that ends up in an error message is narration-only, so silencing it never costs
+ * diagnosis.
+ */
+let quiet = false;
 function step(msg: string): void {
-  process.stderr.write(`finish: ${msg}\n`);
+  if (!quiet) process.stderr.write(`finish: ${msg}\n`);
 }
 
 function auditChannelId(): string {
@@ -390,7 +398,7 @@ async function teeToStderr(stream: ReadableStream<Uint8Array> | null, tail: stri
   let pending = "";
   for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
     const text = decoder.decode(chunk, { stream: true });
-    process.stderr.write(text);
+    if (!quiet) process.stderr.write(text);
     pending += text;
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
@@ -415,6 +423,7 @@ export async function runFinish(argv: string[]): Promise<void> {
     if (err instanceof FinishUsageError) fail(err.message);
     throw err;
   }
+  quiet = opts.json;
 
   // ── repo/branch context ──────────────────────────────────────────────────────────────────
   const top = await git(["rev-parse", "--show-toplevel"], opts.dir);
