@@ -75,6 +75,10 @@ fi
 echo "== gating origin/main on ${HOST} (build + smoke + typecheck; NOT restarting yet) =="
 ssh "${HOST}" 'bash -s' <<'REMOTE'
 set -euo pipefail
+# Non-login ssh shells don't source .bash_profile, so pin the daemon PATH explicitly (bun lives
+# in ~/.bun/bin on installer-provisioned hosts; loom-desk kept a /usr/local/bin copy, desktop
+# does not). MUST stay in sync with `Environment=PATH=` in deploy/systemd/beckett-v4.service.
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 cd ~/beckett
 if [ -n "$(git status --porcelain)" ]; then
   echo "FATAL: deploy checkout is dirty — ~/beckett must never be edited by hand:" >&2
@@ -179,6 +183,7 @@ echo "== tagged and pushed ${VERSION} BEFORE restart =="
 echo "== draining browser work and restarting ${HOST} =="
 ssh "${HOST}" 'bash -s' <<'REMOTE'
 set -euo pipefail
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 cd ~/beckett
 bun deploy/browser-drain-guard.ts
 systemctl --user restart beckett-v4.service
