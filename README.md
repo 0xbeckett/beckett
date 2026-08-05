@@ -277,6 +277,7 @@ Run on the box as the beckett user (`bun src/cli/beckett.ts <...>`, usually alia
 | `beckett reload` | Re-read `persona.md` and re-ground on a fresh session (live voice retune). |
 | `beckett task create|branch|start|show|list …` | Create numbered work, split it into branches, start execution, and inspect progress. |
 | `beckett ticket …` | Internal tracker-ticket controls used for comments, state changes, and compatibility. |
+| `beckett finish -m "…"` | The whole end-of-ticket motion from the branch's checkout: push, open/reuse the PR, wait for CI, merge to main, then run the guarded redeploy. Every stop names the blocker and its fix; re-running is safe. |
 | `beckett eval "author/model" [--short|--full]` | Run the curated coding prompt suite against any OpenRouter model and save a readable report. |
 | `beckett memory recall "…"` / `remember …` | Query / write Beckett's cross-conversation knowledge. |
 | `beckett identity set --user <id> …` | Teach Beckett who someone is and how to address them. |
@@ -291,7 +292,14 @@ share a `--project`; they start from the completed predecessor's local Git branc
 ## Deploying changes
 
 Prod (`~/beckett` on the box) only ever runs `origin/main` and is **never edited by hand**. From
-your dev machine, after a PR merges to main:
+the branch's checkout, once the work is finished:
+
+```bash
+beckett finish -m "what this ticket shipped"
+```
+
+That is PR → CI → merge → deploy in one call, and it is how Beckett ships its own work. The deploy
+half is the script below; run it directly when the merge already happened some other way:
 
 ```bash
 ./deploy/deploy-prod.sh

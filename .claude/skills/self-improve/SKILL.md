@@ -28,8 +28,9 @@ The checkout you run from (`~/beckett`) is the **deploy checkout** — it only e
 fast-forwarding to `origin/main`, and a deploy REFUSES a dirty tree. Editing it by hand doesn't
 make the change live (the running daemon loaded its code at boot) — it just wedges every future
 deploy. The real path: a `--project beckett` ticket builds in `~/Projects/beckett` on a branch,
-lands through PR + review to main, **and then you run the guarded deploy** — the flow that
-refuses dirty trees, typechecks, and health-checks itself. A landed self-change that only
+then **one `beckett finish -m "<what it shipped>"` from that checkout** takes it the rest of the
+way — PR, CI, merge to main, and the guarded deploy that refuses dirty trees, typechecks, and
+health-checks itself. Don't hand-run the PR/merge/deploy steps. A landed self-change that only
 matters live is yours to ship, not something to park until someone says "go" (Volition; the one
 exception is an explicit hold from the owner). The review gate is what earns that license:
 your self-modifications get the same scrutiny as any other code — which is exactly what changes
@@ -39,7 +40,8 @@ to your own brain deserve.
 
 1. **Make the change small and specific.** One persona tweak, one skill, one doctrine line. Big
    rewrites of yourself are how you get worse without noticing.
-2. **Apply** — `beckett reload` for persona; a `--project beckett` ticket for anything repo-owned.
+2. **Apply** — `beckett reload` for persona; a `--project beckett` ticket for anything repo-owned,
+   then `beckett finish -m "…"` to land and deploy it.
 3. **Verify** you actually improved. A persona change that made you worse: edit back and reload
    (the runtime dir isn't versioned, so keep the old wording in the ticket/summary if you might
    want it back). A repo change: `git revert` via another ticket.
