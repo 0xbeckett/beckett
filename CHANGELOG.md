@@ -40,7 +40,9 @@ computes what it can actually afford and tells pages that instead:
 - **The sandbox is unchanged.** The shim is bound `--ro-bind`, beside the host bundle. No new
   writable bind, no `--share-net`, no capability change; `--unshare-all` and `--cap-drop ALL` stand.
   The only loosened limit is the per-file `RLIMIT_FSIZE`, deliberately: it was capping a single
-  cached asset, and the aggregate footprint is bounded below it by the profile budget.
+  cached asset. Saved downloads do not gain from it — BetterWright writes them to
+  `<profile>/betterwright/artifacts/downloads`, which is not site storage, so they still count
+  against the 512 MB profile-state ceiling and are bounded well below the old per-file number.
 - **The profile budget is two ceilings, split by who put the bytes there**
   (`src/browser/betterwright.ts`, `src/browser/profile-cache.ts`). Beckett's own profile state —
   cookies, logins, history — keeps the 512 MiB ceiling and the 100 MB per-lease growth allowance.
