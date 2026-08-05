@@ -5,8 +5,9 @@ import type { SystemMetrics } from "../system-metrics.ts";
 import type { TrackerPoller } from "../tracker/poll.ts";
 import type { TrackerClient } from "../tracker/client.ts";
 import { readUptimeSnapshot } from "../uptime.ts";
+import { CcusageSource } from "./ccusage.ts";
 import { SubscriptionLimitsSource } from "./subscriptions.ts";
-import type { CoreOperationHealth, HarnessUsage, StatusDashboardSnapshot, SubscriptionLimits } from "./types.ts";
+import type { CcusageSpend, CoreOperationHealth, HarnessUsage, StatusDashboardSnapshot, SubscriptionLimits } from "./types.ts";
 
 export interface StatusSnapshotCollectorDeps {
   version: string;
@@ -20,6 +21,7 @@ export interface StatusSnapshotCollectorDeps {
   fetch?: typeof fetch;
   now?: () => number;
   subscriptions?: Pick<SubscriptionLimitsSource, "collect">;
+  ccusage?: Pick<CcusageSource, "collect">;
 }
 
 interface HealthProbe {

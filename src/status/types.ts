@@ -19,6 +19,16 @@ export interface HarnessUsage {
   last7d: { records: number; turns: number; tokensIn: number; tokensOut: number; costUsd: number | null };
 }
 
+/** Live spend read from `npx ccusage`, the local Claude Code usage/cost CLI. */
+export interface CcusageSpend {
+  available: boolean;
+  /** Cost of the current active 5h billing block, or null when there is none / it's unknown. */
+  sessionCostUsd: number | null;
+  /** Cost attributed to the most recent day ccusage reports, or null when unknown. */
+  dailyCostUsd: number | null;
+  observedAt: string | null;
+}
+
 /** Plain, already-collected plan capacity data; renderers never fetch or read files. */
 export interface SubscriptionLimits {
   claude: {
@@ -45,4 +55,5 @@ export interface StatusDashboardSnapshot {
   health: CoreOperationHealth[];
   harnessUsage: HarnessUsage[];
   subscriptionLimits: SubscriptionLimits;
+  ccusage: CcusageSpend;
 }
