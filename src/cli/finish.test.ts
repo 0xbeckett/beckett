@@ -265,6 +265,24 @@ describe("describeDeployFailure", () => {
     expect(msg).toContain("Cause: fatal: could not read Username");
   });
 
+  // Both writes the deploy makes ride the GitHub App token (issue #5), so its two new host-config
+  // stops need names of their own rather than falling through to "here is a FATAL line".
+  test("a missing GitHub App credential on the deploy host is named as host config", () => {
+    const msg = describeDeployFailure(
+      1,
+      "FATAL: no usable GitHub credential for kowo-co/beckett — this deploy cannot publish anything.",
+    );
+    expect(msg).toContain("no GitHub App credential");
+    expect(msg).toContain("beckett gh preflight");
+    expect(msg).toContain("merge DID land");
+  });
+
+  test("a blocked release-bump PR says the bump is what did not land", () => {
+    const msg = describeDeployFailure(1, "FATAL: the release bump for v6.25.0 did not land on main (cause above).");
+    expect(msg).toContain("release-version bump");
+    expect(msg).toContain("branch-protected");
+  });
+
   test("a linked-worktree checkout clash is named, not left as a bare exit code", () => {
     const msg = describeDeployFailure(1, "fatal: 'main' is already used by worktree at '/home/beckett/Projects/beckett'");
     expect(msg).toContain("LINKED git worktree");

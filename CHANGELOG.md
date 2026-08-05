@@ -25,6 +25,33 @@ every restart, UTC seconds, and worker ids. The channel now gets a digest instea
 - **The forensic rows are unchanged** and still available via `beckett ticket trace "<ref>"`; every
   digest names that command. `bun scripts/ops/dispatch-digest-sample.ts` prints the before/after.
 
+### The deploy can ship again: both of its pushes ride the GitHub App token (#5)
+
+`deploy/deploy-prod.sh` could not complete a deploy on the daemon host. Its two `git push` calls had
+no credential (the script re-execs into a `systemd --user --scope`, which inherits none) and died
+with `fatal: could not read Username for 'https://github.com'` — even when the push had nothing to
+push, which is what wedged every re-run. Adding a credential only moved the wall: `main` is
+branch-protected, so the bump was refused with `GH006: Protected branch update failed`. The last
+three releases were hand-couriered through PRs; v6.24.0's deploy stopped mid-run.
+
+- **The release bump lands through its own PR.** The bump commit moves to `release-bump-vX.Y.Z` and
+  goes up via the new `beckett gh land` — push branch → open (or reuse) PR → wait for CI → merge —
+  then main is fast-forwarded and the branch deleted. Branch protection is satisfied, not weakened,
+  and no `release-bump-*` graveyard is left behind.
+- **One landing engine, two callers.** `beckett finish` and `beckett gh land` share
+  `src/cli/land.ts`; the merge gate and every named blocker live there once, and each caller names
+  its OWN re-run command in the message an operator reads.
+- **The release tag pushes through `beckett gh push --tag`** (`GitHubCli.pushTag`), the same App
+  installation token as everything else, replacing the bare `git push origin refs/tags/…`.
+- **A missing credential fails fast, named.** New `beckett gh preflight [--repo <owner/name>]` mints
+  the installation token (a real check, not a config read) and the deploy runs it before it commits
+  anything — `no GitHub credentials in ~/.beckett/.env …`, not git's username prompt, and nothing
+  committed, pushed, or restarted.
+- **Re-runs are clean.** The bump step compares trees, not shas: `"level": "none"` and a bump that
+  already landed under the squash merge's sha are both no-ops that proceed to the gates, and a
+  re-run after a blocked landing reuses the same PR (the machine-owned bump branch is force-updated,
+  which is the only place `pushBranch`'s new `force` option is reachable from).
+
 ## v6.24.0 (2026-08-04)
 
 ### `beckett finish` — PR, merge and redeploy behind one command (#2)

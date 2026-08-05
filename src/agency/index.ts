@@ -542,26 +542,63 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * scaffolding first (OPS-61), so neither a direct branch push nor a cross-fork PR push can leak
    * `.beckett/` — a checked-out `HEAD`/branch ref can be cleaned; a bare sha can't, so it's skipped.
    */
-  private async gitPush(cwd: string, repo: string, localRef: string, remoteBranch: string): Promise<void> {
+  private async gitPush(
+    cwd: string,
+    repo: string,
+    localRef: string,
+    remoteBranch: string,
+    opts?: { force?: boolean },
+  ): Promise<void> {
     // Re-resolve for THIS remote: the publish flow pushes the same checkout to a fork and an
     // upstream, which under App auth are two different installations (and two different tokens).
     await this.ensureCreds("push branch", { repo });
     if (localRef === "HEAD" || !/^[0-9a-f]{7,40}$/i.test(localRef)) await this.stripTrackedScaffolding(cwd);
     const url = `${this.gitHost()}/${repo}.git`;
-    const r = await this.runner(["git", "push", url, `${localRef}:refs/heads/${remoteBranch}`], {
-      cwd,
-      env: this.gitEnv(),
-    });
+    const r = await this.runner(
+      ["git", "push", ...(opts?.force ? ["--force"] : []), url, `${localRef}:refs/heads/${remoteBranch}`],
+      { cwd, env: this.gitEnv() },
+    );
     if (r.code !== 0) {
       throw new Error(`git push failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
     }
     this.opts.logger.info("branch pushed", { repo, remoteBranch });
   }
 
-  /** Push a local ref to a remote branch over authenticated HTTPS (Spec 07 §3.3). FREE caller. */
-  async pushBranch(repo: string, localRef: string, remoteBranch: string): Promise<void> {
+  /**
+   * Push a local ref to a remote branch over authenticated HTTPS (Spec 07 §3.3). FREE caller.
+   *
+   * `force` is deliberately opt-in and narrow: it exists for MACHINE-OWNED, single-purpose branches
+   * this process is the sole author of — the deploy's `release-bump-vX.Y.Z`, which a re-run rebuilds
+   * from scratch (same content, new sha) and could otherwise never re-push (`non-fast-forward`),
+   * wedging every retry. It is not exposed on `beckett gh push`; only `beckett gh land --force`
+   * reaches it. Never point it at a branch a human is also pushing to.
+   */
+  async pushBranch(repo: string, localRef: string, remoteBranch: string, opts?: { force?: boolean }): Promise<void> {
     await this.ensureCreds("push branch", { repo });
-    await this.gitPush(this.opts.resolveRepoDir(repo), repo, localRef, remoteBranch);
+    await this.gitPush(this.opts.resolveRepoDir(repo), repo, localRef, remoteBranch, opts);
+  }
+
+  /**
+   * Prove a usable credential exists for `repo` WITHOUT writing anything — the fail-fast preflight
+   * `deploy/deploy-prod.sh` runs before it commits a version bump it would then be unable to land.
+   * Under App auth this actually mints the installation token for the target (so "the app isn't
+   * installed here" surfaces as its own named error, install link included) rather than merely
+   * checking that an app id is configured. The token itself is never returned or printed.
+   */
+  async verifyCredential(repo?: string): Promise<{
+    mode: "app" | "pat";
+    /** The git username the token rides under (`x-access-token` for an installation token). */
+    username: string;
+    account: string;
+    repo?: string;
+  }> {
+    await this.ensureCreds("verify the GitHub credential", repo ? { repo } : undefined);
+    return {
+      mode: this.opts.app ? "app" : "pat",
+      username: this.credential.username,
+      account: this.opts.account,
+      ...(repo ? { repo } : {}),
+    };
   }
 
   /**
