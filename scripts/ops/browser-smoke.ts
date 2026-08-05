@@ -10,7 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { validateConfig } from "../../src/config.ts";
-import { createBrowserRuntime } from "../../src/browser/runtime.ts";
+import { browserHostSettings, createBrowserRuntime } from "../../src/browser/runtime.ts";
+import { LANE_STORAGE_BYTES, MIN_LANE_STORAGE_BYTES, resolveLaneStorageBytes } from "../../src/browser/storage-quota.ts";
 import { serveBus } from "../../src/shell/control-bus.ts";
 import type { BrowserEvalResult } from "../../src/browser/runtime.ts";
 import type { Logger } from "../../src/types.ts";
@@ -54,13 +55,11 @@ const previousDir = process.env.BECKETT_DIR;
 process.env.BECKETT_DIR = dir;
 const token = randomBytes(32).toString("base64url");
 const runId = "betterwright-smoke";
-const runtime = createBrowserRuntime({
-  config: validateConfig({
-    paths: { beckett_dir: dir },
-    quick: { browser_profile_dir: "browser/profile", browser_eval_timeout_ms: 20_000 },
-  }),
-  logger,
+const config = validateConfig({
+  paths: { beckett_dir: dir },
+  quick: { browser_profile_dir: "browser/profile", browser_eval_timeout_ms: 20_000 },
 });
+const runtime = createBrowserRuntime({ config, logger });
 
 interface McpClient {
   call(method: string, params?: Record<string, unknown>): Promise<Record<string, any>>;
@@ -174,6 +173,35 @@ try {
     },
   }));
   if (result.value !== "saved:browser-ready") throw new Error(`unexpected BetterWright result: ${String(result.value)}`);
+
+  // The storage quota a page actually reads. CloakBrowser fabricates this figure from the
+  // profile's fingerprint seed unless the lane overrides it, and only a real browser on a
+  // real origin can tell which number won — unit tests reach the switch, not the page.
+  const estimate = mcpResult(await mcp.call("tools/call", {
+    name: "betterwright_browser",
+    arguments: {
+      code: `
+        await page.goto(${JSON.stringify(baseUrl)});
+        const estimate = await page.evaluate(() => navigator.storage.estimate());
+        return estimate.quota;
+      `,
+    },
+  }));
+  const quota = Number(estimate.value);
+  const expected = resolveLaneStorageBytes({ profileDir: browserHostSettings(config).profileDir });
+  if (!Number.isFinite(quota) || quota <= 0) throw new Error(`browser reported no storage quota: ${String(estimate.value)}`);
+  // Whole mebibytes is the signature of the lane's own switch: CloakBrowser's fabricated
+  // figure is a seed-derived byte count (593.46 MiB on the profile that motivated this).
+  if (quota % (1024 * 1024) !== 0) throw new Error(`storage quota ${quota} is not the lane's whole-MiB budget`);
+  if (quota < MIN_LANE_STORAGE_BYTES || quota > LANE_STORAGE_BYTES) {
+    throw new Error(`storage quota ${quota} is outside the lane's policy band`);
+  }
+  // The smoke's profile sits on a filesystem whose free space moves while it runs, so the
+  // budget is compared with a tolerance rather than for equality — the point is that the
+  // page sees THIS lane's measured budget, not a number invented from a fingerprint.
+  if (Math.abs(quota - expected) > 1024 * 1024 * 1024) {
+    throw new Error(`storage quota ${quota} does not track the lane budget ${expected}`);
+  }
 
   const captured = await mcp.call("tools/call", {
     name: "betterwright_browser",
