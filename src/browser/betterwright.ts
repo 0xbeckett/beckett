@@ -58,10 +58,14 @@ const MAX_LEASES_HARD_CAP = 16;
 const MAX_PROFILE_BYTES = 512 * 1024 * 1024;
 /**
  * Global absolute ceiling for the profile's whole on-disk footprint, disposable caches
- * included. This is the same budget the lane advertises through
+ * included. This is the ceiling of the budget the lane advertises through
  * `navigator.storage.estimate()` and enforces as `RLIMIT_FSIZE` (see storage-quota.ts):
  * a page told it may keep 32 GiB must not then be refused a lease, or have the bytes
  * deleted out from under it, by a ceiling two orders of magnitude smaller.
+ *
+ * The advertised quota is that ceiling less the host's free-space reserve, so it is never
+ * larger than this number — the slack only ever runs in the safe direction, and a page
+ * that fills every byte it was promised still cannot trip this.
  */
 const MAX_PROFILE_DISK_BYTES = LANE_STORAGE_BYTES;
 /** Per-lease growth allowance for real profile state, from each lease's own baseline. */
