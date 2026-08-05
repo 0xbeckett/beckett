@@ -494,11 +494,17 @@ export type GmailAuth =
 export interface Identity {
   name: string;
   github: {
-    /** Login authenticated by GITHUB_PAT. */
+    /** Login Beckett's work is attributed to (`beckett[bot]` under App auth). */
     account: string;
     /** Account or organization that owns Beckett-managed project repositories. */
     owner: string;
-    pat: string; // NEVER logged
+    pat: string; // NEVER logged — legacy PAT path; empty under GitHub App auth
+    /**
+     * GitHub App credentials (the identity since #114). Present → installation tokens are minted
+     * per-target and `pat` is unused. NEVER logged. Typed loosely here to keep `types.ts`
+     * dependency-free; the concrete shape is `GitHubAppCredentials` in `src/github/app.ts`.
+     */
+    app?: { appId: string; privateKeyPem: string; installationId?: number; slug?: string };
     apiBase: string;
     noreplyEmail: string;
   };
@@ -885,7 +891,7 @@ export interface Config {
     /** Board name used when a caller omits --board. */
     default_board: string;
   };
-  /** OPS-124 — GitHub PR poller. Secret GITHUB_PAT lives in env; active only when it's set. */
+  /** OPS-124 — GitHub PR poller. The credential lives in env; active only when one is set. */
   github: {
     /** How often to re-read watched PRs' review/CI/merge signal (seconds). */
     poll_secs: number;

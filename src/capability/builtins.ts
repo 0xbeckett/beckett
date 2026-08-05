@@ -404,9 +404,10 @@ export const configFragments = {
   // The bored ticket queue (OPS-190/191). bored's loopback URL rides BECKETT_BORED_URL in env,
   // not here; boards are plain names. Beckett keeps the canonical TicketStates.
   tracker: TrackerConfigSchema,
-  // OPS-124 — GitHub PR sense: the poller that watches the PRs Beckett opened on the 0xbeckett
-  // org and relays review/CI/merge signal. The GITHUB_PAT secret lives in env, not here. Active
-  // only when a PAT is configured. GitHub's REST API is rate-limited, so this polls far less
+  // OPS-124 — GitHub PR sense: the poller that watches the PRs Beckett opened on the kowo-co
+  // org and relays review/CI/merge signal. The credential (the GitHub App key, or a legacy PAT)
+  // lives in env, not here; the poller is active only when one is configured. GitHub's REST API
+  // is rate-limited, so this polls far less
   // aggressively than the ticket tracker (60s default is ample for review/CI latency).
   github: z
     .object({

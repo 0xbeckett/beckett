@@ -3,7 +3,7 @@
  * =======================================================================================
  * OPS-124 — Beckett's primary artifact is the PR, and it used to be WRITE-ONLY: it opened a
  * PR and went blind to review comments, CI, and the eventual merge. This module gives it eyes.
- * The {@link GitHubPrPoller} watches the PRs Beckett opened on the 0xbeckett org and turns the
+ * The {@link GitHubPrPoller} watches the PRs Beckett opened on the kowo-co org and turns the
  * raw `gh pr view` reads below into a stream of MATERIAL {@link PrPollEvent}s — the same shape
  * the tracker poller uses to feed the Concierge (see `src/tracker/types.ts`).
  *
@@ -137,7 +137,7 @@ export const prKey = (repo: string, number: number): string => `${repo}#${number
 
 /**
  * Parse `owner/repo` + PR number out of a GitHub PR web URL
- * (`https://github.com/0xbeckett/foo/pull/96`). Returns null when the string isn't a PR URL, so
+ * (`https://github.com/kowo-co/foo/pull/96`). Returns null when the string isn't a PR URL, so
  * a non-PR publish (a direct push) never gets registered as something to watch.
  */
 export function parsePrUrl(url: string): { repo: string; number: number } | null {

@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Beckett's GitHub identity is a kowo-co GitHub App, not a machine account (#114)
+
+The `0xbeckett` machine account is permanently lost (2FA unrecoverable). Rather than mint another
+human-shaped login, Beckett is now a **GitHub App owned by `kowo-co`**, acting as `beckett[bot]`.
+This is the better shape for what Beckett actually is: anyone can **install** it on their own repos
+with a link and a repo picker — nobody has to add a bot user as a collaborator — and the credential
+stops being a long-lived PAT sitting in a dotfile.
+
+- **Real installation-token minting** (`src/github/app.ts`): app JWT (RS256, `iat` backdated 60s
+  against clock skew, 9-minute `exp`) → installation lookup → `POST
+  /app/installations/{id}/access_tokens`. Tokens are cached per installation and re-minted five
+  minutes before expiry. `GitHubCli` resolves the installation from the **target repo/owner** of
+  each call (repo → owner → pinned `GITHUB_APP_INSTALLATION_ID` → the sole installation) and
+  refuses to guess when none of those cover it — the error carries the real installation list and
+  the install link. `git` over HTTPS authenticates as `x-access-token`; `gh` gets `GH_TOKEN`. Both
+  ride the environment, never argv, exactly as the PAT did.
+- **Access triage as a first-class surface**: `beckett gh app status | installations | repos |
+  diagnose | install-url`. `diagnose` separates the three causes a bare `404` conflates —
+  not-installed, installed-but-repo-unselected, and no-such-owner — and is explicit about the one
+  case GitHub genuinely cannot disambiguate (a private repo that is either unselected or
+  nonexistent). The `troubleshooting` skill leads with it.
+- **Registration is automated up to the one click GitHub requires**:
+  `deploy/github-app-manifest.json` is the checked-in app definition (least privilege — contents
+  RW, pull_requests RW, issues RW, metadata R, checks R; no webhooks), and
+  `bun scripts/ops/github-app-register.ts` POSTs it, catches the redirect, exchanges the temporary
+  code, and writes the private key out at mode 0600. Runbook: `deploy/github-app.md`.
+- **Failure is loud, never silent.** A half-configured app (id without a key, an unreadable key
+  path, a file that isn't a PEM) throws at identity load rather than degrading to "GitHub isn't set
+  up here" — which is what a missing credential and a broken one used to look like to each other.
+  `beckett doctor` gained `identity: github app` and `identity: github token` rows that sign a real
+  JWT and mint a real token.
+- The legacy `GITHUB_PAT` path still works for a self-hosted install without its own app, but it is
+  documented as legacy; `GH_TOKEN` and `GITHUB_USER` are dead and marked for deletion from the box
+  `.env`.
+
 ## v6.18.0 (2026-07-30)
 
 ### The turn deadline measures silence, not elapsed time (#150)

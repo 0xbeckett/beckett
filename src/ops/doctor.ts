@@ -23,6 +23,7 @@ import { availableHarnesses, preflightFor, type PreflightResult } from "../drive
 import { buildPaths } from "../paths.ts";
 import { callBus } from "../shell/control-bus.ts";
 import { resolveGitHubAccount } from "../github/owner.ts";
+import { GitHubAppAuth, loadGitHubAppCredentials } from "../github/app.ts";
 import { boredBaseUrl } from "../bored/client.ts";
 
 /** One health probe's outcome. `fail` rows flip the report's overall `ok` to false. */
@@ -523,11 +524,14 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       headers: (v) => ({ Authorization: `Bot ${v}` }),
     },
     {
+      // Legacy path only: with the GitHub App configured this probe is skipped entirely (see the
+      // "identity: github app" check below), and a bare box with neither credential fails there.
       name: "token: github",
       key: "GITHUB_PAT",
-      required: true,
+      required: false,
       url: () => "https://api.github.com/user",
       headers: (v) => ({ Authorization: `Bearer ${v}`, "User-Agent": "beckett-doctor" }),
+      missingDetail: "GITHUB_PAT is not set (expected — the GitHub App replaced it)",
     },
     {
       name: "token: cloudflare",
@@ -582,6 +586,72 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       );
     } catch (err) {
       checks.push({ name: p.name, level: "fail", detail: `probe failed: ${(err as Error).message}` });
+    }
+  }
+
+  // 3c. GitHub identity. Since #114 Beckett is a GitHub App owned by kowo-co, not a machine
+  // account: the live question is no longer "is the PAT valid?" but "can the app still sign a
+  // JWT, and who has installed it?". A half-configured app (id without a key) throws at load —
+  // that is a fail, not a skip, because it looks exactly like "GitHub isn't set up here".
+  {
+    let appCreds: ReturnType<typeof loadGitHubAppCredentials> = null;
+    let configError: string | null = null;
+    try {
+      appCreds = loadGitHubAppCredentials(env);
+    } catch (err) {
+      configError = (err as Error).message;
+    }
+    if (configError) {
+      checks.push({ name: "identity: github app", level: "fail", detail: configError });
+    } else if (!appCreds) {
+      checks.push(
+        env.GITHUB_PAT?.trim()
+          ? {
+              name: "identity: github app",
+              level: "warn",
+              detail:
+                "no GitHub App configured — still on the legacy PAT. Set GITHUB_APP_ID + " +
+                "GITHUB_APP_PRIVATE_KEY_PATH (deploy/github-app.md)",
+            }
+          : {
+              name: "identity: github app",
+              level: "fail",
+              detail:
+                "no GitHub credentials at all — set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH " +
+                "in ~/.beckett/.env (deploy/github-app.md)",
+            },
+      );
+    } else {
+      try {
+        const auth = new GitHubAppAuth(appCreds, { fetchImpl: fetchFn });
+        const meta = await auth.appMetadata();
+        const installs = await auth.listInstallations();
+        checks.push({
+          name: "identity: github app",
+          level: "ok",
+          detail:
+            `${meta.slug}[bot] (app ${meta.id}, owner ${meta.owner}) — ` +
+            `${installs.length} installation(s): ${installs.map((i) => i.account).join(", ") || "none yet"}`,
+        });
+        // A signed JWT proves the key; a minted installation token proves the whole chain.
+        const home = appCreds.installationId ?? installs[0]?.id;
+        if (home) {
+          const tok = await auth.tokenForInstallation(home);
+          checks.push({
+            name: "identity: github token",
+            level: "ok",
+            detail: `installation ${home} token minted, expires ${tok.expiresAt} (${tok.repositorySelection} repos)`,
+          });
+        } else {
+          checks.push({
+            name: "identity: github token",
+            level: "warn",
+            detail: `nobody has installed the app yet — share ${await auth.installUrl()}`,
+          });
+        }
+      } catch (err) {
+        checks.push({ name: "identity: github app", level: "fail", detail: (err as Error).message });
+      }
     }
   }
 

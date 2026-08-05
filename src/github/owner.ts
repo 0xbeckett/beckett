@@ -2,7 +2,7 @@ type GitHubIdentityConfig = { identity?: { github_user?: string } };
 type GitHubEnv = Record<string, string | undefined>;
 
 export interface GitHubTarget {
-  /** Login authenticated by GITHUB_PAT. Organizations are not valid here. */
+  /** Login Beckett's work is attributed to (`beckett[bot]`). Organizations are not valid here. */
   account: string;
   /** Account or organization that owns Beckett-managed project repositories. */
   owner: string;
@@ -24,7 +24,7 @@ export function resolveGitHubTarget(
   return { account, owner };
 }
 
-/** Resolve the login that GITHUB_PAT is expected to authenticate as. */
+/** Resolve the login Beckett authenticates/attributes as. */
 export function resolveGitHubAccount(
   config: GitHubIdentityConfig,
   env: GitHubEnv = process.env,

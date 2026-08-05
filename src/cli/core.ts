@@ -1030,7 +1030,7 @@ export async function runTicket(argv: string[]): Promise<void> {
       casting,
       criteria,
       // The code project this ticket builds → its own repo at ~/Projects/<slug>, pushed to
-      // 0xbeckett/<slug>. Decoupled from Beckett's own source repo.
+      // <owner>/<slug>. Decoupled from Beckett's own source repo.
       project: flags.project ? String(flags.project) : undefined,
       // INT starts in its live Design stage by default; OPS keeps the tracker's ready default.
       state: flags.state ? (String(flags.state) as TicketState) : isIntBoard ? "design" : undefined,

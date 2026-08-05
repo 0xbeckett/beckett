@@ -174,7 +174,7 @@ const CASES: Case[] = [
   { name: "identity: unknown sub fails", argv: ["identity", "bogus"] },
 
   // ── gh (dummy PAT gets past the env gate to the usage contract; no network) ────────────
-  { name: "gh: without GITHUB_PAT is refused", argv: ["gh", "repo", "create", "x"] },
+  { name: "gh: without GitHub credentials is refused", argv: ["gh", "repo", "create", "x"] },
   { name: "gh: bare prints usage", argv: ["gh"], env: DUMMY_GH },
   { name: "gh: repo create without a name prints usage", argv: ["gh", "repo", "create"], env: DUMMY_GH },
   { name: "gh: pr without an action prints usage", argv: ["gh", "pr"], env: DUMMY_GH },

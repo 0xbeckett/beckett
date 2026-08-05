@@ -1,0 +1,37 @@
+{
+  "$comment": [
+    "Beckett's GitHub identity (#114). The 0xbeckett machine account is permanently lost (2FA",
+    "unrecoverable); Beckett is now a GitHub App owned by the kowo-co org, acting as beckett[bot].",
+    "",
+    "This file is the source of truth for the app's registration. Register it with:",
+    "    bun scripts/ops/github-app-register.ts",
+    "which POSTs this manifest to GitHub, catches the redirect, exchanges the temporary code, and",
+    "writes the private key + env lines out. See docs/github-app.md for the click-through.",
+    "",
+    "Permissions are least-privilege for an agent that reads and writes code and PRs. Widening",
+    "them re-prompts every existing installation for approval, so add only what a task actually",
+    "needs, and edit BOTH this file and the live app settings so they never drift.",
+    "",
+    "If the name \"beckett\" is taken at registration time, GitHub rejects the whole POST; change",
+    "`name` here to \"0xbeckett\" and re-run. App names are globally unique across GitHub."
+  ],
+  "name": "beckett",
+  "url": "https://0xbeckett.me",
+  "description": "Beckett — an agentic coworker reached in Discord. Install it on the repos you want it to work in; it opens branches and PRs as beckett[bot].",
+  "public": true,
+  "redirect_url": "http://127.0.0.1:7788/callback",
+  "hook_attributes": {
+    "url": "https://0xbeckett.me/github/webhook",
+    "active": false
+  },
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "metadata": "read",
+    "checks": "read"
+  },
+  "default_events": [],
+  "request_oauth_on_install": false,
+  "setup_on_update": false
+}

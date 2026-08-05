@@ -113,7 +113,7 @@ SHA256 before extraction. Cloudflared is optional.
 
 | File | What |
 |---|---|
-| `~/.beckett/.env` | `DISCORD_TOKEN`, `GITHUB_PAT`, `DISCORD_ALERT_WEBHOOK_URL`, … — the committed `.env.example` is the full inventory with per-key mint/scope notes (`beckett doctor` flags drift) |
+| `~/.beckett/.env` | `DISCORD_TOKEN`, `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY_PATH` (see [`github-app.md`](github-app.md)), `DISCORD_ALERT_WEBHOOK_URL`, … — the committed `.env.example` is the full inventory with per-key mint/scope notes (`beckett doctor` flags drift) |
 | `~/.claude/.credentials.json` | claude subscription login |
 | `~/.codex/auth.json` | codex ChatGPT login |
 | `~/.pi/agent/auth.json` | pi OAuth login |
@@ -140,7 +140,7 @@ key (`~/.config/age/beckett-backup.key`) exists ONLY there. Backups are delibera
 ## 5. Clone + units
 
 ```bash
-git clone https://github.com/0xbeckett/beckett.git ~/beckett
+git clone https://github.com/kowo-co/beckett.git ~/beckett
 cd ~/beckett && bun install --frozen-lockfile
 ./deploy/install.sh --no-start  # links units and keeps any existing daemon disabled/stopped
 # After credentials are ready:

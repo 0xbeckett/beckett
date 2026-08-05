@@ -504,11 +504,11 @@ exports[`cli: identity: unknown sub fails 1`] = `
 }
 `;
 
-exports[`cli: gh: without GITHUB_PAT is refused 1`] = `
+exports[`cli: gh: without GitHub credentials is refused 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: no GITHUB_PAT in ~/.beckett/.env — GitHub is unavailable
+"error: no GitHub credentials in ~/.beckett/.env — set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH (the kowo-co GitHub App; see deploy/github-app.md) or a legacy GITHUB_PAT — GitHub is unavailable
 "
 ,
   "stdout": "",
@@ -519,7 +519,7 @@ exports[`cli: gh: bare prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett gh repo create|star|unstar | pr create|merge|close|status|review | push
+"error: usage: beckett gh repo create|star|unstar | pr create|merge|close|status|review | push | app status|installations|repos|diagnose|install-url
 "
 ,
   "stdout": "",

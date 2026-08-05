@@ -57,7 +57,7 @@ import type { QuickRunner } from "../quick/index.ts";
 import type { BrowserRuntime } from "../browser/runtime.ts";
 import type { BrowserAgent } from "../browser/agent.ts";
 import { defaultKeychainReader } from "../secret/keychain-read.ts";
-import { GitHubCli, loadIdentity } from "../agency/index.ts";
+import { GitHubCli, githubAuth, githubConfigured, loadIdentity } from "../agency/index.ts";
 import { resolveProjectOwner } from "../github/owner.ts";
 import { LiveAgentRegistry } from "../agent/registry.ts";
 import { createAgentRunner } from "../agent/invoke.ts";
@@ -98,7 +98,7 @@ const PROJECTS_ROOT = process.env.BECKETT_PROJECTS_ROOT?.trim() || join(homedir(
 
 /**
  * The git repo a ticket's worker runs in (v3.1): the ticket's OWN project repo at
- * `<PROJECTS_ROOT>/<slug>`, pushed to `0xbeckett/<slug>` — fully decoupled from Beckett's own
+ * `<PROJECTS_ROOT>/<slug>`, pushed to `<owner>/<slug>` — fully decoupled from Beckett's own
  * source repo (`~/beckett`, which a worker never touches). The slug is the ticket's
  * Concierge-named `project`, or the ticket identifier when unnamed (a per-ticket sandbox). The
  * dispatcher provisions the repo (clone if it exists on GitHub, else `git init`) before spawning.
@@ -209,11 +209,11 @@ async function boot(): Promise<BootedSystem> {
   const pollerByProjectId = new Map<string, TrackerPoller>();
 
   // Deterministic GitHub publishing: when a ticket reaches done, its project repo is pushed to
-  // `0xbeckett/<slug>` (public) so the links Beckett hands out actually resolve — instead of
+  // `<owner>/<slug>` (public) so the links Beckett hands out actually resolve — instead of
   // relying on the worker to push, which it skipped and left repos that 404'd. Built from the
-  // GitHub identity; a missing PAT makes it undefined → the dispatcher skips publishing and says so.
+  // GitHub identity; no credential makes it undefined → the dispatcher skips publishing and says so.
   const identity = loadIdentity(config);
-  const publishRepo = identity.github.pat
+  const publishRepo = githubConfigured(identity)
     ? async (a: {
         slug: string;
         repoRoot: string;
@@ -224,7 +224,7 @@ async function boot(): Promise<BootedSystem> {
         commitMessage?: string;
       }) => {
         const gh = new GitHubCli({
-          pat: identity.github.pat,
+          ...githubAuth(identity),
           account: identity.github.account,
           // Per-project owner: Beckett's self-project repo moved to kowo-co (#114); all others stay
           // under the configured owner.
@@ -246,13 +246,13 @@ async function boot(): Promise<BootedSystem> {
       }
     : undefined;
   if (!publishRepo) {
-    logger.warn("no GITHUB_PAT — project repos will stay local-only (not pushed to GitHub)");
+    logger.warn("no GitHub credentials — project repos will stay local-only (not pushed to GitHub)");
   }
 
-  // GitHub PR sense (OPS-124): watch the PRs Beckett opens on the 0xbeckett org and relay review/CI/
+  // GitHub PR sense (OPS-124): watch the PRs Beckett opens on the kowo-co org and relay review/CI/
   // merge signal back to the ticket's channel. Registry-driven — the dispatcher's `onPrOpened` hook
   // (below) registers each PR at open time with its origin channel. Read-only: it observes and
-  // relays, never replies or merges. Skipped without a PAT (nothing to read GitHub with).
+  // relays, never replies or merges. Skipped without a credential (nothing to read GitHub with).
   const paths = buildPaths(config);
   const beckettDir = paths.beckettDir;
   // Lifecycle history starts now; a previous unmatched boot becomes an explicit unclean restart.
@@ -277,9 +277,9 @@ async function boot(): Promise<BootedSystem> {
       logger.warn("task branch diff snapshot failed", { branch: branch.ref, error: String(err) });
     }
   };
-  const githubReader = identity.github.pat
+  const githubReader = githubConfigured(identity)
     ? new GitHubCli({
-        pat: identity.github.pat,
+        ...githubAuth(identity),
         account: identity.github.account,
         owner: identity.github.owner,
         apiBase: identity.github.apiBase,
@@ -287,7 +287,7 @@ async function boot(): Promise<BootedSystem> {
         logger: logger.child("gh.read"),
       })
     : null;
-  const prPoller: GitHubPrPoller | null = identity.github.pat
+  const prPoller: GitHubPrPoller | null = githubConfigured(identity)
     ? createGitHubPrPoller({
         reader: githubReader!,
         account: identity.github.account,
@@ -301,7 +301,7 @@ async function boot(): Promise<BootedSystem> {
   // merging PRs there. It uses the same credentialed GitHubCli boundary as every other GitHub
   // operation; deployment identities are advanced as watermarks but never become Discord lines.
   const activityConfig = config.github.activity;
-  const activityPoller: GitHubActivityPoller | null = identity.github.pat && activityConfig.enabled
+  const activityPoller: GitHubActivityPoller | null = githubConfigured(identity) && activityConfig.enabled
     ? createGitHubActivityPoller({
         reader: githubReader!,
         repo: activityConfig.repo,

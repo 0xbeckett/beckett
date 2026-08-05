@@ -11,6 +11,10 @@ dist/
 
 # secrets
 .env
+# GitHub App private keys (#114) — these live in ~/.beckett/, never in the repo, but a stray
+# download into the checkout must never be committable.
+*.pem
+*.private-key.pem
 
 # Beckett runtime home (if BECKETT_DIR points into the repo during local testing)
 /home

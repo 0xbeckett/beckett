@@ -1,7 +1,7 @@
 /**
  * Beckett — GitHub PR poller (`src/github/poll.ts`)
  * =======================================================================================
- * OPS-124 — watches the PRs Beckett opened on the 0xbeckett org and turns "what changed on my
+ * OPS-124 — watches the PRs Beckett opened on the kowo-co org and turns "what changed on my
  * PR" into a stream of material {@link PrPollEvent}s the Concierge relays in voice ("ro left 2
  * comments on #96", "CI failed on the memory branch", "#96 merged"). It mirrors the tracker poller
  * (`src/tracker/poll.ts`): an in-memory snapshot per PR, diffed against a fresh read each tick, with

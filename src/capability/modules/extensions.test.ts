@@ -285,7 +285,7 @@ test("asCapability projects the phase-4 organs' v5 facets (incl. the worker-appe
   // Manifest action-class stays FREE so the CLI spine slot is byte-identical.
   expect(github.actionClass).toBe(ActionClass.FREE);
   expect(github.id).toBe("github");
-  expect(github.cliHelp).toBe("gh repo|pr|push");
+  expect(github.cliHelp).toBe("gh repo|pr|push|app");
   expect(github.cliVerbs.map((v) => v.name)).toEqual(["gh"]);
   // The worker-append promptBlocks must survive the projection (the characterization suite
   // never exercises workerSystemAppend, so a drop would be silent).

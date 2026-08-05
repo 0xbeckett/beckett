@@ -16,8 +16,20 @@ export function pendingConfigurationProblems(
   home = homedir(),
 ): string[] {
   const problems: string[] = [];
-  for (const key of ["DISCORD_TOKEN", "DISCORD_OWNER_ID", "GITHUB_PAT"]) {
+  for (const key of ["DISCORD_TOKEN", "DISCORD_OWNER_ID"]) {
     if (!env[key]?.trim()) problems.push(`missing ${key} in ~/.beckett/.env`);
+  }
+  // GitHub is satisfied by EITHER the kowo-co GitHub App (the identity since #114) or a legacy
+  // PAT — so name both, and only complain when neither is present.
+  const hasApp = Boolean(
+    env.GITHUB_APP_ID?.trim() &&
+      (env.GITHUB_APP_PRIVATE_KEY_PATH?.trim() || env.GITHUB_APP_PRIVATE_KEY_PEM?.trim()),
+  );
+  if (!hasApp && !env.GITHUB_PAT?.trim()) {
+    problems.push(
+      "missing GitHub credentials in ~/.beckett/.env — set GITHUB_APP_ID + " +
+        "GITHUB_APP_PRIVATE_KEY_PATH (see deploy/github-app.md), or a legacy GITHUB_PAT",
+    );
   }
   const ownerId = env.DISCORD_OWNER_ID?.trim();
   if (ownerId && !/^\d{17,20}$/.test(ownerId)) {

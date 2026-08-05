@@ -19,11 +19,13 @@
  * (fail-closed, Spec 07 §2.3). This is the security invariant: if it isn't classified FREE
  * or HANDSHAKE_GATED, it cannot happen on the autonomous path.
  *
- * GitHub agency (Spec 07 §3) rides a single fine-grained PAT (env `GITHUB_PAT`) for both git
- * transport (`git push` via a credential helper that reads the PAT from the *environment*,
- * never argv) and the API (`gh` CLI with `GH_TOKEN`). If `GITHUB_PAT` is absent, GitHub work
- * **degrades gracefully**: branch + diff stay local, and delivery reports
- * {@link PR_PENDING_CREDS_NOTE} — that is correct v0 behavior, not a stub.
+ * GitHub agency (Spec 07 §3) rides ONE credential for both git transport (`git push` via a
+ * credential helper that reads the secret from the *environment*, never argv) and the API (`gh`
+ * CLI with `GH_TOKEN`). Since #114 that credential is a **GitHub App installation token**
+ * (`src/github/app.ts`) — Beckett acts as `beckett[bot]`, minted fresh per installation and
+ * refreshed before expiry; the legacy `GITHUB_PAT` path still works when no app is configured.
+ * If NEITHER is configured, GitHub work **degrades gracefully**: branch + diff stay local, and
+ * delivery reports {@link PR_PENDING_CREDS_NOTE} — that is correct behavior, not a stub.
  *
  * Gmail is OUT of v0 scope (Spec 12 §3): the taxonomy stays *aware* of `gmail.*` (classify
  * still routes draft→FREE, send→HANDSHAKE_GATED), and the send handshake string exists, but
@@ -66,6 +68,7 @@ import { log as rootLog } from "../log.ts";
 import { childEnv } from "../env.ts";
 import { SCAFFOLDING_DIR } from "../worker/worktree.ts";
 import { resolveGitHubTarget } from "../github/owner.ts";
+import { GitHubAppAuth, loadGitHubAppCredentials } from "../github/app.ts";
 
 // =======================================================================================
 // Errors
@@ -90,12 +93,17 @@ export class GateRefused extends Error {
 }
 
 /**
- * Thrown by the GitHub client when no `GITHUB_PAT` is configured. Callers (DELIVER) catch
+ * Thrown by the GitHub client when NO credential is configured — neither the GitHub App
+ * (`GITHUB_APP_ID` + a private key) nor a legacy `GITHUB_PAT`. Callers (DELIVER) catch
  * this and degrade to a local branch + {@link PR_PENDING_CREDS_NOTE} (Spec 07 §3; v0 brief).
  */
 export class GitHubUnavailableError extends Error {
   constructor(op: string) {
-    super(`agency.github: cannot ${op} — GITHUB_PAT is not configured (work stays local)`);
+    super(
+      `agency.github: cannot ${op} — no GitHub credentials are configured ` +
+        `(set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH for the GitHub App, or a legacy GITHUB_PAT) ` +
+        `— work stays local`,
+    );
     this.name = "GitHubUnavailableError";
   }
 }
@@ -116,7 +124,8 @@ export const SEND_EMAIL_HANDSHAKE = "drafted it — send as me, or you handle it
  */
 export const PR_PENDING_CREDS_NOTE =
   "PR pending GitHub creds — the work is committed on a local branch; " +
-  "add GITHUB_PAT to ~/.beckett/.env and I'll push it and open the PR.";
+  "add the GitHub App credentials (GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH) to " +
+  "~/.beckett/.env and I'll push it and open the PR.";
 
 /** The full, voiced merge handshake line (Spec 07 §3.4). */
 export function mergeHandshakePrompt(opts: {
@@ -329,6 +338,12 @@ async function run(
 export interface GitHubClientOptions {
   /** The PAT (env GITHUB_PAT). Empty string = unavailable → methods throw gracefully. */
   pat: string;
+  /**
+   * GitHub App auth (the identity since #114 — `kowo-co/beckett[bot]`). When present it WINS over
+   * `pat`: every op resolves the installation covering its target repo/owner and mints a fresh
+   * one-hour installation token (cached, auto-refreshed). Absent → the legacy PAT path, unchanged.
+   */
+  app?: GitHubAppAuth;
   /** GitHub login the commits/PRs are attributed to (Identity.github.account). */
   account: string;
   /** Account or organization that owns managed project repos. Defaults to `account`. */
@@ -396,13 +411,46 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
-  /** Whether GitHub agency is usable (a PAT is configured). */
+  /** Whether GitHub agency is usable (a GitHub App or a PAT is configured). */
   get available(): boolean {
-    return this.opts.pat.length > 0;
+    return this.opts.app !== undefined || this.opts.pat.length > 0;
   }
 
-  private requireCreds(op: string): void {
+  /**
+   * The credential every `gh`/`git` subprocess rides. With the App this is a fresh installation
+   * token (the git username MUST be `x-access-token` — installation tokens are rejected under any
+   * other username); with a PAT it is the PAT under Beckett's login. Refreshed by
+   * {@link ensureCreds} at the top of each operation, so a long-running daemon never hands a
+   * subprocess an expired token.
+   */
+  private resolved: { token: string; username: string } | null = null;
+
+  /**
+   * Availability check + token resolution in one. `target` (a repo, or an owner) selects WHICH
+   * installation to mint for — the app can be installed on many accounts, and using the wrong
+   * installation's token is how an agent ends up reaching into a stranger's repo.
+   * Throws {@link GitHubUnavailableError} when nothing is configured (never a silent no-op), and
+   * the underlying `GitHubAppApiError` — install link included — when no installation covers the
+   * target.
+   */
+  private async ensureCreds(op: string, target?: { repo?: string; owner?: string }): Promise<void> {
     if (!this.available) throw new GitHubUnavailableError(op);
+    if (this.opts.app) {
+      const scope = target ?? { owner: this.publishingOwner() };
+      const minted = await this.opts.app.token(scope);
+      this.resolved = { token: minted.token, username: "x-access-token" };
+      return;
+    }
+    this.resolved = { token: this.opts.pat, username: this.opts.account };
+  }
+
+  /** The token/username resolved by {@link ensureCreds} (falls back to the PAT for pure reads). */
+  private get credential(): { token: string; username: string } {
+    if (this.resolved) return this.resolved;
+    if (this.opts.pat) return { token: this.opts.pat, username: this.opts.account };
+    // App-configured but nothing resolved yet: the caller reached a subprocess without going
+    // through ensureCreds. Fail loudly rather than shipping an empty token to `git`/`gh`.
+    throw new GitHubUnavailableError("authenticate (no installation token resolved)");
   }
 
   /** Managed project-repository destination; authentication still uses `account`. */
@@ -417,26 +465,32 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
       : this.opts.apiBase.replace(/\/api\/v3\/?$/, "").replace(/\/$/, "");
   }
 
-  /** Env for `gh`: GH_TOKEN/GITHUB_TOKEN carry the PAT; forbidden keys stripped. */
+  /** Env for `gh`: GH_TOKEN/GITHUB_TOKEN carry the token; forbidden keys stripped. */
   private ghEnv(): Record<string, string | undefined> {
-    return { ...sanitizedEnv(), GH_TOKEN: this.opts.pat, GITHUB_TOKEN: this.opts.pat };
+    const { token } = this.credential;
+    return { ...sanitizedEnv(), GH_TOKEN: token, GITHUB_TOKEN: token };
   }
 
   /**
    * Env for `git`: an inline credential helper that echoes the username + `$GITHUB_PAT`.
-   * Configured via GIT_CONFIG_* so the PAT stays in the environment, never in argv or
+   * Configured via GIT_CONFIG_* so the secret stays in the environment, never in argv or
    * `~/.git-credentials` (Spec 07 §3.2). The first (empty) helper clears any inherited one.
+   *
+   * `GITHUB_PAT` is the *carrier slot*, not a claim about which credential is in it: under App
+   * auth it holds the short-lived installation token and the username is `x-access-token` (the
+   * only username GitHub accepts for an installation token over HTTPS).
    */
   private gitEnv(): Record<string, string | undefined> {
+    const { token, username } = this.credential;
     return {
       ...sanitizedEnv(),
-      GITHUB_PAT: this.opts.pat,
+      GITHUB_PAT: token,
       GIT_TERMINAL_PROMPT: "0",
       GIT_CONFIG_COUNT: "2",
       GIT_CONFIG_KEY_0: "credential.helper",
       GIT_CONFIG_VALUE_0: "",
       GIT_CONFIG_KEY_1: "credential.helper",
-      GIT_CONFIG_VALUE_1: `!f() { echo username=${this.opts.account}; echo "password=$GITHUB_PAT"; }; f`,
+      GIT_CONFIG_VALUE_1: `!f() { echo username=${username}; echo "password=$GITHUB_PAT"; }; f`,
     };
   }
 
@@ -451,7 +505,8 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * token can leak.
    */
   private rawEnv(): Record<string, string | undefined> {
-    return { ...this.gitEnv(), GH_TOKEN: this.opts.pat, GITHUB_TOKEN: this.opts.pat };
+    const { token } = this.credential;
+    return { ...this.gitEnv(), GH_TOKEN: token, GITHUB_TOKEN: token };
   }
 
   /**
@@ -487,6 +542,9 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * `.beckett/` — a checked-out `HEAD`/branch ref can be cleaned; a bare sha can't, so it's skipped.
    */
   private async gitPush(cwd: string, repo: string, localRef: string, remoteBranch: string): Promise<void> {
+    // Re-resolve for THIS remote: the publish flow pushes the same checkout to a fork and an
+    // upstream, which under App auth are two different installations (and two different tokens).
+    await this.ensureCreds("push branch", { repo });
     if (localRef === "HEAD" || !/^[0-9a-f]{7,40}$/i.test(localRef)) await this.stripTrackedScaffolding(cwd);
     const url = `${this.gitHost()}/${repo}.git`;
     const r = await this.runner(["git", "push", url, `${localRef}:refs/heads/${remoteBranch}`], {
@@ -501,7 +559,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
 
   /** Push a local ref to a remote branch over authenticated HTTPS (Spec 07 §3.3). FREE caller. */
   async pushBranch(repo: string, localRef: string, remoteBranch: string): Promise<void> {
-    this.requireCreds("push branch");
+    await this.ensureCreds("push branch", { repo });
     await this.gitPush(this.opts.resolveRepoDir(repo), repo, localRef, remoteBranch);
   }
 
@@ -514,7 +572,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * commit — there is nothing to rewrite. FREE caller.
    */
   async pushTag(repo: string, tag: string): Promise<void> {
-    this.requireCreds("push tag");
+    await this.ensureCreds("push tag", { repo });
     const name = tag.replace(/^refs\/tags\//, "").trim();
     if (!name) throw new Error("push tag: a tag name is required");
     const cwd = this.opts.resolveRepoDir(repo);
@@ -538,7 +596,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * the sanctioned entrypoint).
    */
   async raw(args: string[], cwd?: string): Promise<number> {
-    this.requireCreds("run gh");
+    await this.ensureCreds("run gh");
     const child = this.spawner(["gh", ...args], { cwd, env: this.rawEnv() });
     return await child.exited;
   }
@@ -556,7 +614,9 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     sourceDir?: string; // an existing git repo to wire as origin
     push?: boolean; // push sourceDir's commits after creating
   }): Promise<{ nameWithOwner: string; url: string }> {
-    this.requireCreds("create repo");
+    await this.ensureCreds("create repo", {
+      owner: p.name.includes("/") ? p.name.split("/")[0]! : this.publishingOwner(),
+    });
     const args = ["gh", "repo", "create", p.name, p.private === false ? "--public" : "--private"];
     if (p.description) args.push("--description", p.description);
     if (p.sourceDir) {
@@ -583,7 +643,9 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * a separately logged-in `gh` installation.
    */
   async setRepoStar(repo: string, starred: boolean): Promise<void> {
-    this.requireCreds(starred ? "star repo" : "unstar repo");
+    // Starring is a USER action: an installation token gets 403 "Resource not accessible by
+    // integration" here. Resolve the home installation anyway so the failure is GitHub's honest one.
+    await this.ensureCreds(starred ? "star repo" : "unstar repo");
     const match = repo.match(/^([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,99})$/);
     if (!match) throw new Error("repo must be in owner/name form");
     const owner = match[1]!;
@@ -593,7 +655,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     const response = await this.fetchImpl(url, {
       method: starred ? "PUT" : "DELETE",
       headers: {
-        Authorization: `Bearer ${this.opts.pat}`,
+        Authorization: `Bearer ${this.credential.token}`,
         Accept: "application/vnd.github+json",
       },
     });
@@ -608,6 +670,13 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
   async repoExists(nameWithOwner: string): Promise<boolean> {
     if (!this.available) return false;
     const repo = nameWithOwner.includes("/") ? nameWithOwner : `${this.opts.account}/${nameWithOwner}`;
+    // A read, but still credentialed: under App auth an unresolved token is a throw, and a repo
+    // no installation covers is honestly "I can't see it" — which `gh repo view` reports as false.
+    try {
+      await this.ensureCreds("check repo exists", { repo });
+    } catch {
+      return false;
+    }
     const r = await this.runner(["gh", "repo", "view", repo, "--json", "name"], { env: this.ghEnv() });
     return r.code === 0;
   }
@@ -615,12 +684,12 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
   /**
    * Make a repo publicly visible (idempotent — a no-op if it's already public). Project repos are
    * public so the links Beckett hands out resolve; this self-heals repos an older code path left
-   * private (the cause of the `0xbeckett/<slug>` 404s). Uses the REST `private=false` field, which
+   * private (the cause of the `<owner>/<slug>` 404s). Uses the REST `private=false` field, which
    * is stable across `gh` versions (the `repo edit --visibility` flag is not). FREE: a metadata edit.
    */
   async setPublic(nameWithOwner: string): Promise<void> {
-    this.requireCreds("set repo visibility");
     const repo = nameWithOwner.includes("/") ? nameWithOwner : `${this.opts.account}/${nameWithOwner}`;
+    await this.ensureCreds("set repo visibility", { repo });
     const r = await this.runner(["gh", "api", "--method", "PATCH", `repos/${repo}`, "-F", "private=false"], {
       env: this.ghEnv(),
     });
@@ -636,7 +705,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * had an `origin`, and the ticket had already been marked done, so the work silently never shipped):
    *
    *   1. **Origin outside our account/managed owner** — the head repo and push target come from
-   *      `origin`, never a hardcoded `0xbeckett/<slug>`. If we're a collaborator (write access) we
+   *      `origin`, never a hardcoded `<owner>/<slug>`. If we're a collaborator (write access) we
    *      push the ticket branch straight to origin and open a plain in-repo PR; otherwise we fork
    *      the upstream, push to the fork, and open a cross-fork PR. Merging is a human call → `kind: "pr"`.
    *   2. **A repo we already own** (a continuing/shared project, e.g. the beckett self-repo) → push a
@@ -665,7 +734,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
     /** The worker's completion summary; used as the single squash-apply commit subject. */
     commitMessage?: string;
   }): Promise<PublishResult> {
-    this.requireCreds("publish repo");
+    await this.ensureCreds("publish repo");
     // Clean the source tree once up front (OPS-61) so NO publish path — including the brand-new-repo
     // `gh repo create --push`, which bypasses gitPush — can leak Beckett's internal scaffolding.
     await this.stripTrackedScaffolding(p.sourceDir);
@@ -677,9 +746,9 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
       (p.description ? `\n\n${p.description}` : "");
 
     // Case 1 — origin points to a repo outside our own account/managed owner. The head repo and
-    // push target are read from THAT origin, never a hardcoded `0xbeckett/<slug>` — the assumption
+    // push target are read from THAT origin, never a hardcoded `<owner>/<slug>` — the assumption
     // that stranded #12 (origin was frgmt0/bored, but publish tried to open a cross-fork PR from a
-    // 0xbeckett fork that was never pushed). Two sub-shapes, distinguished by whether we can push:
+    // stale fork that was never pushed). Two sub-shapes, distinguished by whether we can push:
     //   1a — we're a collaborator on origin (write access): push the branch STRAIGHT to origin and
     //        open a plain in-repo PR (base = origin's default branch, head = branch). No fork.
     //   1b — a genuine third-party upstream we can only read: fork it, push the branch to our fork,
@@ -1025,7 +1094,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
 
   /** Open a PR as itself (Spec 07 §3.3). FREE: a proposal, not a change to main. */
   async openPR(p: OpenPRParams): Promise<{ number: number; url: string }> {
-    this.requireCreds("open PR");
+    await this.ensureCreds("open PR", { repo: p.repo });
     const args = [
       "gh", "pr", "create",
       "--repo", p.repo,
@@ -1053,7 +1122,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
 
   /** Update a PR (push more commits handled by pushBranch; this edits metadata). FREE. */
   async updatePR(repo: string, n: number, p: UpdatePRParams): Promise<void> {
-    this.requireCreds("update PR");
+    await this.ensureCreds("update PR", { repo });
     const args = ["gh", "pr", "edit", String(n), "--repo", repo];
     if (p.title !== undefined) args.push("--title", p.title);
     if (p.body !== undefined) args.push("--body", p.body);
@@ -1067,7 +1136,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
 
   /** Comment / approve / request-changes on a PR (Spec 07 §3.3). FREE: speech, not state. */
   async reviewPR(repo: string, n: number, rv: ReviewParams): Promise<void> {
-    this.requireCreds("review PR");
+    await this.ensureCreds("review PR", { repo });
     const flag =
       rv.event === "APPROVE" ? "--approve" : rv.event === "REQUEST_CHANGES" ? "--request-changes" : "--comment";
     const r = await this.runner(
@@ -1084,7 +1153,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * {@link Agency.perform}("gh.pr.merge", …); this method assumes the handshake already said go.
    */
   async mergePR(repo: string, n: number, strategy: MergeStrategy): Promise<void> {
-    this.requireCreds("merge PR");
+    await this.ensureCreds("merge PR", { repo });
     const flag = strategy === "merge" ? "--merge" : strategy === "rebase" ? "--rebase" : "--squash";
     const r = await this.runner(
       ["gh", "pr", "merge", String(n), "--repo", repo, flag, "--delete-branch"],
@@ -1102,7 +1171,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * the current repo (cwd) is used, matching how the other pr verbs resolve their target.
    */
   async prState(repo: string, n: number): Promise<string> {
-    this.requireCreds("view PR");
+    await this.ensureCreds("view PR", repo ? { repo } : undefined);
     const repoArgs = repo ? ["--repo", repo] : [];
     const r = await run(
       ["gh", "pr", "view", String(n), ...repoArgs, "--json", "state"],
@@ -1126,7 +1195,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * resulting state on success. When `repo` is empty the current repo (cwd) is used.
    */
   async closePR(repo: string, n: number): Promise<{ repo: string; number: number; state: string }> {
-    this.requireCreds("close PR");
+    await this.ensureCreds("close PR", repo ? { repo } : undefined);
     const state = await this.prState(repo, n); // throws clearly if the PR doesn't exist / is invisible
     if (state === "MERGED") throw new Error(`PR #${n} is already merged — cannot close`);
     if (state === "CLOSED") throw new Error(`PR #${n} is already closed`);
@@ -1144,7 +1213,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
 
   /** Whether a PR's status checks are all green (Spec 07 §3.6) — the pre-handshake gate. */
   async isGreen(repo: string, n: number): Promise<boolean> {
-    this.requireCreds("check PR status");
+    await this.ensureCreds("check PR status", { repo });
     const r = await this.runner(
       ["gh", "pr", "view", String(n), "--repo", repo, "--json", "statusCheckRollup"],
       { cwd: this.opts.resolveRepoDir(repo), env: this.ghEnv() },
@@ -1173,7 +1242,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * pollers reuse Beckett's credential boundary instead of invoking gh/git themselves.
    */
   async mainCommits(repo: string, branch: string): Promise<GitHubActivityCommit[]> {
-    this.requireCreds("read repository commits");
+    await this.ensureCreds("read repository commits", { repo });
     const r = await this.runner(
       ["gh", "api", "--method", "GET", `repos/${repo}/commits`, "-f", `sha=${branch}`, "-f", "per_page=100"],
       { env: this.ghEnv() },
@@ -1195,7 +1264,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
 
   /** Recently merged pull requests for the external activity relay (read-only). */
   async mergedPullRequests(repo: string): Promise<GitHubMergedPullRequest[]> {
-    this.requireCreds("read merged pull requests");
+    await this.ensureCreds("read merged pull requests", { repo });
     const r = await this.runner(
       ["gh", "api", "--method", "GET", `repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100`],
       { env: this.ghEnv() },
@@ -1224,7 +1293,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
    * never a wall of diff lines.
    */
   async branchCard(repo: string, ref: string | number): Promise<GitHubBranchCard> {
-    this.requireCreds("read branch card");
+    await this.ensureCreds("read branch card", { repo });
     const selector = String(ref).trim();
     if (!repo.trim() || !selector) throw new Error("branch card needs both repo and branch/PR ref");
     const fields =
@@ -1288,7 +1357,7 @@ export class GitHubCli implements GitHubClient, GitHubPrReader, GitHubBranchCard
   }
 
   async prSignals(repo: string, n: number): Promise<PrSignals> {
-    this.requireCreds("read PR signals");
+    await this.ensureCreds("read PR signals", { repo });
     const fields =
       "number,url,title,state,isDraft,headRefOid,reviewDecision,reviews,comments,statusCheckRollup";
     const r = await this.runner(["gh", "pr", "view", String(n), "--repo", repo, "--json", fields], {
@@ -1427,12 +1496,17 @@ export function loadIdentity(config: Config, env: NodeJS.ProcessEnv = process.en
     gmailAuth = { kind: "app-password", appPassword: env.GMAIL_APP_PASSWORD ?? "" };
   }
 
+  // GitHub App credentials win when configured; a HALF-configured app throws here (loud by
+  // design — a missing key must never look like "GitHub isn't set up on this box").
+  const app = loadGitHubAppCredentials(env) ?? undefined;
+
   return {
     name: "Beckett",
     github: {
       account: github.account,
       owner: github.owner,
       pat: env.GITHUB_PAT ?? "",
+      app,
       apiBase,
       noreplyEmail: `${github.account}@users.noreply.github.com`,
     },
@@ -1447,3 +1521,40 @@ export function loadIdentity(config: Config, env: NodeJS.ProcessEnv = process.en
     osUser: env.BECKETT_OS_USER ?? "beckett",
   };
 }
+
+/**
+ * One {@link GitHubAppAuth} per (app id, api base) for the life of the process, so the daemon's
+ * installation-token cache is shared by every client it builds instead of re-minting a token on
+ * each `gh` call. Keyed on the app id, not the identity object, because callers re-`loadIdentity`
+ * freely.
+ */
+const appAuthCache = new Map<string, GitHubAppAuth>();
+
+/**
+ * The auth half of {@link GitHubClientOptions}, derived from an {@link Identity}. Spread it into
+ * every `new GitHubCli({ ... })` so the App path and the legacy PAT path are decided in ONE place:
+ *
+ * ```ts
+ * new GitHubCli({ ...githubAuth(identity), account, owner, apiBase, resolveRepoDir, logger })
+ * ```
+ */
+export function githubAuth(identity: Identity): { pat: string; app?: GitHubAppAuth } {
+  if (!identity.github.app) return { pat: identity.github.pat };
+  const key = `${identity.github.app.appId}@${identity.github.apiBase}`;
+  let auth = appAuthCache.get(key);
+  if (!auth) {
+    auth = new GitHubAppAuth(identity.github.app, { apiBase: identity.github.apiBase });
+    appAuthCache.set(key, auth);
+  }
+  return { pat: identity.github.pat, app: auth };
+}
+
+/** Whether this Beckett can reach GitHub at all — an App **or** a legacy PAT. */
+export function githubConfigured(identity: Identity): boolean {
+  return identity.github.app !== undefined || identity.github.pat.length > 0;
+}
+
+/** The one sentence to say when GitHub is not configured. Used by every caller that degrades. */
+export const GITHUB_UNCONFIGURED_NOTE =
+  "no GitHub credentials in ~/.beckett/.env — set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH " +
+  "(the kowo-co GitHub App; see deploy/github-app.md) or a legacy GITHUB_PAT — GitHub is unavailable";

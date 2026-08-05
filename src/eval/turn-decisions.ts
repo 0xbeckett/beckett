@@ -131,7 +131,7 @@ export function buildSystemPrompt(
   const env = opts.env ?? process.env;
   // The `{{github_owner}}` substitution is cosmetic for the eval; supply a fallback so the render
   // never throws when GITHUB_ACCOUNT isn't set (e.g. a bare CI checkout).
-  const owner = env.GITHUB_ACCOUNT?.trim() || "0xbeckett";
+  const owner = env.GITHUB_ACCOUNT?.trim() || "kowo-co";
   const doctrine = renderDoctrine(
     opts.doctrine ?? readDoctrineCorpus(),
     validateConfig({ identity: { github_user: owner } }),

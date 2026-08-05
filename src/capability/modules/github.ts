@@ -3,7 +3,7 @@
  * =======================================================================================
  * The `beckett gh …` surface (stateless `gh`/`git` subprocesses, token from env — Spec 07
  * §3.2) on the v6 extension contract (Phase 4, docs/v6-architecture.md §6). Two entrypoints
- * share ONE client-construction core ({@link buildGh}: identity load + PAT preflight):
+ * share ONE client-construction core ({@link buildGh}: identity load + credential preflight):
  *   - the CLI verb keeps its historical flag parse + `out`/`fail` contract byte-for-byte (the
  *     CLI characterization suite pins it; thrown core errors reach stderr via
  *     `main().catch(fail)`), and
@@ -28,12 +28,39 @@ import { z } from "zod";
 import { ActionClass, type Extension, type ExtensionFactory } from "../../ext/contract.ts";
 import { asCapability } from "../../ext/compat.ts";
 import type { Capability, CapabilityDeps } from "../index.ts";
-import { GitHubCli, loadIdentity } from "../../agency/index.ts";
+import {
+  GITHUB_UNCONFIGURED_NOTE,
+  GitHubCli,
+  githubAuth,
+  githubConfigured,
+  loadIdentity,
+} from "../../agency/index.ts";
+import { GitHubAppAuth, appInstallUrl } from "../../github/app.ts";
 import { fail, out, parse } from "../../cli/io.ts";
 import { buildGitHubPublishingGuidance } from "../../dispatch/publishing-guidance.ts";
 import type { Config, Logger, MergeStrategy, ReviewParams } from "../../types.ts";
 
-const CLI_USAGE = "beckett gh repo create|star|unstar | pr create|merge|close|status|review | push";
+const CLI_USAGE =
+  "beckett gh repo create|star|unstar | pr create|merge|close|status|review | push | " +
+  "app status|installations|repos|diagnose|install-url";
+
+/**
+ * The GitHub App identity behind every `beckett gh` call ({@link GitHubAppAuth}) — the surface the
+ * troubleshooting playbook queries when a repo looks unreachable. Throws the same loud message as
+ * {@link buildGh} when nothing is configured, and a specific one when only a legacy PAT is.
+ */
+function buildAppAuth(config: Config): GitHubAppAuth {
+  const identity = loadIdentity(config);
+  if (!githubConfigured(identity)) throw new Error(GITHUB_UNCONFIGURED_NOTE);
+  const auth = githubAuth(identity).app;
+  if (!auth) {
+    throw new Error(
+      "this Beckett is on the legacy GITHUB_PAT path — there is no GitHub App to inspect. " +
+        "Set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH (see deploy/github-app.md).",
+    );
+  }
+  return auth;
+}
 
 function quietLogger(): Logger {
   const quiet = { info() {}, warn() {}, debug() {}, error() {}, child() { return quiet; } } as unknown as Logger;
@@ -49,9 +76,9 @@ function quietLogger(): Logger {
  */
 function buildGh(config: Config, dir: string | undefined): GitHubCli {
   const identity = loadIdentity(config);
-  if (!identity.github.pat) throw new Error("no GITHUB_PAT in ~/.beckett/.env — GitHub is unavailable");
+  if (!githubConfigured(identity)) throw new Error(GITHUB_UNCONFIGURED_NOTE);
   return new GitHubCli({
-    pat: identity.github.pat,
+    ...githubAuth(identity),
     account: identity.github.account,
     owner: identity.github.owner,
     apiBase: identity.github.apiBase,
@@ -170,6 +197,60 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
       // touches resolveRepoDir, so an absent --dir is fine. gh runs in --dir or the caller's cwd.
       const gh = buildGh(config, dir);
       process.exit(await gh.raw(rawArgs, dir ?? process.cwd()));
+    }
+
+    // `beckett gh app …` — Beckett asking GitHub about ITSELF: which app it is, who has installed
+    // it, what those installations can reach, and why a given repo is out of reach. Handled before
+    // the shared client build because none of it touches a repo working dir.
+    if (sub === "app") {
+      const { _: appArgs, flags: appFlags } = parse(rest);
+      const action = appArgs[0] ?? "status";
+      const auth = buildAppAuth(config);
+
+      if (action === "status") {
+        const meta = await auth.appMetadata();
+        const installs = await auth.listInstallations();
+        out({
+          appId: auth.appId,
+          slug: meta.slug,
+          name: meta.name,
+          owner: meta.owner,
+          actsAs: `${meta.slug}[bot]`,
+          installUrl: appInstallUrl(meta.slug),
+          pinnedInstallationId: auth.pinnedInstallationId ?? null,
+          installations: installs.length,
+          accounts: installs.map((i) => i.account),
+        });
+      }
+
+      if (action === "installations") {
+        out({ installations: await auth.listInstallations() });
+      }
+
+      if (action === "repos") {
+        let id = appFlags.installation ? Number(appFlags.installation) : undefined;
+        if (!id && appFlags.owner) {
+          const found = await auth.installationForOwner(String(appFlags.owner));
+          if (!found) fail(`the app is not installed on ${String(appFlags.owner)}`);
+          id = found!.id;
+        }
+        if (!id) id = auth.pinnedInstallationId;
+        if (!id) fail("usage: beckett gh app repos [--owner <login> | --installation <id>]");
+        out({ installation: id, repositories: await auth.installationRepositories(id!) });
+      }
+
+      if (action === "diagnose") {
+        const repo = appFlags.repo ? String(appFlags.repo) : "";
+        const owner = appFlags.owner ? String(appFlags.owner) : repo.split("/")[0] ?? "";
+        if (!owner) fail("usage: beckett gh app diagnose --repo <owner/name> | --owner <login>");
+        out(await auth.diagnoseAccess({ owner, repo: repo || undefined }));
+      }
+
+      if (action === "install-url") {
+        out({ installUrl: await auth.installUrl() });
+      }
+
+      fail("usage: beckett gh app status|installations|repos|diagnose|install-url");
     }
 
     const { _, flags } = parse(rest);
@@ -303,7 +384,7 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
           "a branch is ready for review and someone asks to open/raise a PR.",
         actionClass: ActionClass.HANDSHAKE_GATED,
         input: PrOpenArgs,
-        examples: ["open a PR from feature/x into main on 0xbeckett/beckett"],
+        examples: ["open a PR from feature/x into main on kowo-co/beckett"],
       },
       {
         id: "github.pr-merge",
@@ -312,7 +393,7 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
           "on the base branch — reach for it only when explicitly asked to merge a specific PR.",
         actionClass: ActionClass.HANDSHAKE_GATED,
         input: PrMergeArgs,
-        examples: ["merge PR 42 on 0xbeckett/beckett with squash"],
+        examples: ["merge PR 42 on kowo-co/beckett with squash"],
       },
       {
         id: "github.pr-close",
@@ -320,7 +401,7 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
           "Close a pull request WITHOUT merging it. Use for \"close PR 42\" / \"drop that PR\".",
         actionClass: ActionClass.HANDSHAKE_GATED,
         input: PrCloseArgs,
-        examples: ["close PR 42 on 0xbeckett/beckett"],
+        examples: ["close PR 42 on kowo-co/beckett"],
       },
       {
         id: "github.pr-status",
@@ -328,7 +409,7 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
           "Read whether a pull request's checks are green. A pure read — use to answer \"is PR 42 " +
           "passing?\" before deciding to merge.",
         input: PrStatusArgs,
-        examples: ["is PR 42 green on 0xbeckett/beckett?"],
+        examples: ["is PR 42 green on kowo-co/beckett?"],
       },
       {
         id: "github.pr-review",
@@ -347,7 +428,7 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
           "has commits that need to reach a branch on GitHub.",
         actionClass: ActionClass.ALWAYS_ASK,
         input: PushArgs,
-        examples: ["push this worktree's HEAD to the branch feature/x on 0xbeckett/beckett"],
+        examples: ["push this worktree's HEAD to the branch feature/x on kowo-co/beckett"],
       },
     ],
     invoke: async (call) => {
@@ -421,12 +502,13 @@ export const createGithubExtension: ExtensionFactory = ({ config }): Extension =
     },
 
     // --- v5 facets, carried through unchanged ---
-    cliHelp: "gh repo|pr|push",
+    cliHelp: "gh repo|pr|push|app",
     skillDoc: ".claude/skills/github/SKILL.md",
     cliVerbs: [
       {
         name: "gh",
-        summary: "repo create/star, PR create/merge/close/status/review, branch push",
+        summary:
+          "repo create/star, PR create/merge/close/status/review, branch push, app identity/installations",
         usage: CLI_USAGE,
         run: runGh,
       },

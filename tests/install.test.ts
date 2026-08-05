@@ -452,6 +452,31 @@ describe("public installer input and file contracts", () => {
     expect(undocumented).toEqual([]);
   });
 
+  test("readiness accepts EITHER the GitHub App or a legacy PAT (#114)", async () => {
+    // The 0xbeckett PAT is dead; the identity is now a GitHub App. A box configured with app
+    // credentials and NO PAT must read as ready, and a box with neither must name both paths.
+    // BECKETT_STATE/BECKETT_HOME are readonly in the installer, so `env_value` is the seam.
+    const probe = async (envBody: string) => {
+      const script = [
+        'source "$1"',
+        'env_value() { printf "%s\\n" "$TEST_ENV" | sed -n "s/^$2=//p" | head -1; }',
+        "config_bool() { printf 'false\\n'; }",
+        "readiness_problems",
+      ].join("\n");
+      const r = await run(["bash", "-c", script, "bash", INSTALLER], { env: { TEST_ENV: envBody } });
+      expect(r.code).toBe(0);
+      return r.stdout;
+    };
+
+    const base = `DISCORD_TOKEN=x\nDISCORD_OWNER_ID=${VALID_DISCORD_ID}\n`;
+    expect(await probe(`${base}GITHUB_APP_ID=1\nGITHUB_APP_PRIVATE_KEY_PATH=/k.pem\n`)).not.toContain("GitHub");
+    expect(await probe(`${base}GITHUB_PAT=ghp_x\n`)).not.toContain("GitHub");
+    const neither = await probe(base);
+    expect(neither).toContain("missing GitHub credentials");
+    expect(neither).toContain("GITHUB_APP_ID");
+    expect(neither).toContain("GITHUB_PAT");
+  });
+
   test("tracker preflight exercises the configured default board", async () => {
     const dir = tempDir("beckett-install-tracker-preflight-");
     const calls = join(dir, "calls");

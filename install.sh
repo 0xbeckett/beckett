@@ -874,7 +874,7 @@ configure_instance() {
     local env_tmp
     env_tmp="$(mktemp)"
     TEMP_PATHS+=("${env_tmp}")
-    printf '# Created by the Beckett installer. Keep this file private.\nDISCORD_TOKEN=\nDISCORD_OWNER_ID=\nDISCORD_OWNER_NAME=\nGITHUB_PAT=\nBECKETT_GH_ORG=\nBECKETT_MAIL_ADDRESS=\nOPENROUTER_REFERER=\nBECKETT_BORED_URL=\nBECKETT_STARTUP_CHANNEL_ID=disabled\n' > "${env_tmp}"
+    printf '# Created by the Beckett installer. Keep this file private.\nDISCORD_TOKEN=\nDISCORD_OWNER_ID=\nDISCORD_OWNER_NAME=\nGITHUB_APP_ID=\nGITHUB_APP_PRIVATE_KEY_PATH=\nGITHUB_PAT=\nBECKETT_GH_ORG=\nBECKETT_MAIL_ADDRESS=\nOPENROUTER_REFERER=\nBECKETT_BORED_URL=\nBECKETT_STARTUP_CHANNEL_ID=disabled\n' > "${env_tmp}"
     chown "${BECKETT_USER}:${BECKETT_USER}" "${env_tmp}"
     as_beckett install -m 0600 "${env_tmp}" "${env_path}"
   else
@@ -913,7 +913,7 @@ configure_instance() {
   fi
 
   # Project checkouts use this value independently from identity.github_user. Without the
-  # portable override, a third-party install would still try to publish into the 0xbeckett org.
+  # portable override, a third-party install would still try to publish into the kowo-co org.
   sync_github_org "${env_path}" "${config_path}" "${previous_github_user}"
 }
 
@@ -930,10 +930,19 @@ install_cli_shim() {
 readiness_problems() {
   local env_path="${BECKETT_STATE}/.env"
   local key value
-  for key in DISCORD_TOKEN DISCORD_OWNER_ID GITHUB_PAT; do
+  for key in DISCORD_TOKEN DISCORD_OWNER_ID; do
     value="$(env_value "${env_path}" "${key}")"
     [ -n "${value}" ] || printf '%s\n' "missing ${key} in ${env_path}"
   done
+
+  # GitHub is satisfied by EITHER a GitHub App (id + private key — the identity Beckett itself
+  # runs on; see deploy/github-app.md) or a legacy PAT. Only complain when neither is present.
+  if [ -z "$(env_value "${env_path}" GITHUB_APP_ID)" ] ||
+     { [ -z "$(env_value "${env_path}" GITHUB_APP_PRIVATE_KEY_PATH)" ] &&
+       [ -z "$(env_value "${env_path}" GITHUB_APP_PRIVATE_KEY_PEM)" ]; }; then
+    [ -n "$(env_value "${env_path}" GITHUB_PAT)" ] ||
+      printf '%s\n' "missing GitHub credentials in ${env_path} (GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH, or GITHUB_PAT)"
+  fi
 
   local owner_id
   owner_id="$(env_value "${env_path}" DISCORD_OWNER_ID)"

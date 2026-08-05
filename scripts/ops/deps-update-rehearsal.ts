@@ -33,19 +33,19 @@ const real = defaultDepsUpdateDeps({ beckettCli: ["bun", "src/cli/beckett.ts"], 
 
 const result = await runDepsUpdate(
   {
-    repo: flag("repo", "0xbeckett/beckett"),
+    repo: flag("repo", "kowo-co/beckett"),
     base: flag("base", "main"),
     sourceRepo: flag("source", defaultRepoRoot()),
     workRoot,
     branch: `beckett/deps-rehearsal-${flag("stamp", "local")}`,
-    author: { name: "0xbeckett", email: "0xbeckett@users.noreply.github.com" },
+    author: { name: "beckett[bot]", email: "beckett[bot]@users.noreply.github.com" },
   },
   {
     ...real,
     // The ONLY stub: nothing reaches GitHub. Everything above it is the real thing.
     async beckett(argv) {
       would.push(argv);
-      const url = "https://github.com/0xbeckett/beckett/pull/REHEARSAL";
+      const url = "https://github.com/kowo-co/beckett/pull/REHEARSAL";
       return { code: 0, stdout: argv.includes("pr") ? JSON.stringify({ number: 0, url }) : "", stderr: "" };
     },
   },

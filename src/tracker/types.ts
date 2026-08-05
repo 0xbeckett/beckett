@@ -109,7 +109,7 @@ export interface Ticket {
   blockedBy: string[];
   /**
    * The CODE project this ticket builds — its own repo under `~/Projects/<project>`, pushed to
-   * `0xbeckett/<project>` on GitHub, fully decoupled from Beckett's own source repo. The Concierge
+   * `<owner>/<project>` on GitHub, fully decoupled from Beckett's own source repo. The Concierge
    * names it at creation (```beckett-project``` block); absent ⇒ the dispatcher falls back to the
    * ticket identifier (a per-ticket sandbox). NOT the tracker board (that's `projectId`).
    */

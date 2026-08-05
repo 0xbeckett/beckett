@@ -125,7 +125,7 @@ images log in
 as root, so the shortest install is:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/0xbeckett/beckett/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/kowo-co/beckett/main/install.sh | bash
 ```
 
 From a sudo-enabled account, pipe to `sudo bash` instead. A minimal image without `curl` needs
@@ -135,7 +135,7 @@ The installer is interactive even through a pipe: it reads setup answers from th
 keeps secret input hidden. To inspect it before running:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/0xbeckett/beckett/main/install.sh -o /tmp/install-beckett.sh
+curl -fsSL https://raw.githubusercontent.com/kowo-co/beckett/main/install.sh -o /tmp/install-beckett.sh
 less /tmp/install-beckett.sh
 bash /tmp/install-beckett.sh        # as root; otherwise: sudo bash /tmp/install-beckett.sh
 ```
@@ -158,8 +158,11 @@ Have these ready when prompted:
   suitably private parent when task names are sensitive. Discord's [bot quick start](https://docs.discord.com/developers/quick-start/getting-started)
   walks through creation and Guild Install;
 - your Discord user ID (Developer Mode → right-click your user → Copy User ID), as well as the bot token;
-- a GitHub PAT (classic `repo` + `workflow`, or a fine-grained token with equivalent repository and
-  Actions write access) and the matching GitHub username;
+- GitHub credentials. The reference instance runs as a **GitHub App** owned by its org — the
+  identity users install on their own repos (see [`deploy/github-app.md`](deploy/github-app.md));
+  a self-hosted install can either register its own app or fall back to a PAT (classic `repo` +
+  `workflow`, or a fine-grained token with equivalent repository and Actions write access) plus
+  the matching GitHub username;
 - a Claude Code subscription login. Pi is enabled by default, so either complete its login too or
   answer **no** when the installer asks to enable it. Codex needs a login only when enabled.
 
@@ -168,14 +171,14 @@ the `beckett-v4` user service therefore starts in **`healthy-pending-configurati
 than crash-looping: `sudo -iu beckett beckett status --pretty` lists exactly what remains. It accepts
 only `status` until the required secrets and enabled harness credentials exist. The installer prints
 the exact login commands and one rerun command; that rerun starts bored (Beckett files, steers, and
-completes every ticket through it), confirms the tracker is reachable, validates the GitHub PAT
-belongs to the configured account, and then runs `beckett doctor`. Every rerun is idempotent,
+completes every ticket through it), confirms the tracker is reachable, validates the GitHub
+credential, and then runs `beckett doctor`. Every rerun is idempotent,
 preserves custom config/secrets, and explicitly restarts an already-running daemon onto the new code.
 
 Installing a fork is the same flow:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/0xbeckett/beckett/main/install.sh |
+curl -fsSL https://raw.githubusercontent.com/kowo-co/beckett/main/install.sh |
   bash -s -- --repo https://github.com/<you>/beckett.git
 ```
 
@@ -195,9 +198,10 @@ API keys from `.env` (see [`src/env.ts`](src/env.ts)). Log those CLIs in as thei
 
 Two files, both under `~/.beckett/` on the box (never in git):
 
-- **`.env`** — secrets and instance identity: `DISCORD_TOKEN`, `DISCORD_OWNER_ID`, `GITHUB_PAT`,
+- **`.env`** — secrets and instance identity: `DISCORD_TOKEN`, `DISCORD_OWNER_ID`,
+  `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY_PATH` (or a legacy `GITHUB_PAT`),
   `DISCORD_ALERT_WEBHOOK_URL`, … The committed `.env.example` is the full inventory with per-key
-  mint/scope notes. The pending daemon will not become fully live until the first three are set.
+  mint/scope notes. The pending daemon will not become fully live until Discord and GitHub are set.
 - **`config.toml`** — runtime overrides. Validation is **strict**: every key is defaulted, so a
   near-empty file boots, but an unknown or out-of-range value is a loud refuse-to-start.
   [`deploy/config.toml.example`](deploy/config.toml.example) is every key at its default (it's

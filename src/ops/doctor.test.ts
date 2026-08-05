@@ -6,6 +6,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { defaultConfig } from "../config.ts";
 import {
   runDoctor,
@@ -544,5 +545,93 @@ describe("doctor — plumbing", () => {
     expect(daemonPath("/home/beckett")).toBe(
       "/home/beckett/.local/bin:/home/beckett/.bun/bin:/usr/local/bin:/usr/bin:/bin",
     );
+  });
+});
+
+/**
+ * The GitHub identity checks (#114). Beckett is a GitHub App owned by kowo-co, so the doctor's
+ * live question is "can the app still sign a JWT, and who has installed it?" — not "is the PAT
+ * valid?". A real RSA key is generated per run so the JWT the doctor mints is genuinely signed.
+ */
+describe("doctor — GitHub App identity", () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+
+  /** A fetch that answers the app endpoints; anything else falls through to the healthy default. */
+  function appFetch(base: DoctorDeps, opts: { installations?: unknown[] } = {}) {
+    return (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith("/app")) {
+        return Response.json({ id: 111, slug: "beckett", name: "beckett", owner: { login: "kowo-co" } });
+      }
+      if (u.includes("/app/installations?")) {
+        return Response.json(
+          opts.installations ?? [{ id: 555, account: { login: "kowo-co", type: "Organization" }, repository_selection: "all" }],
+        );
+      }
+      if (u.includes("/access_tokens")) {
+        return Response.json(
+          { token: "ghs_x", expires_at: "2030-01-01T00:00:00Z", repository_selection: "all" },
+          { status: 201 },
+        );
+      }
+      return base.fetchFn!(url, init);
+    }) as unknown as typeof fetch;
+  }
+
+  test("a configured app reports who it is, who installed it, and that a token mints", async () => {
+    const base = healthyDeps();
+    const report = await runDoctor(
+      healthyDeps({
+        env: { ...base.env, GITHUB_APP_ID: "111", GITHUB_APP_PRIVATE_KEY_PEM: privateKey },
+        fetchFn: appFetch(base),
+      }),
+    );
+    const app = byName(report.checks, "identity: github app");
+    expect(app.level).toBe("ok");
+    expect(app.detail).toContain("beckett[bot]");
+    expect(app.detail).toContain("kowo-co");
+    const token = byName(report.checks, "identity: github token");
+    expect(token.level).toBe("ok");
+    expect(token.detail).toContain("2030-01-01T00:00:00Z");
+  });
+
+  test("an app nobody has installed yet is a WARN carrying the install link", async () => {
+    const base = healthyDeps();
+    const report = await runDoctor(
+      healthyDeps({
+        env: { ...base.env, GITHUB_APP_ID: "111", GITHUB_APP_PRIVATE_KEY_PEM: privateKey },
+        fetchFn: appFetch(base, { installations: [] }),
+      }),
+    );
+    const token = byName(report.checks, "identity: github token");
+    expect(token.level).toBe("warn");
+    expect(token.detail).toContain("https://github.com/apps/beckett/installations/new");
+  });
+
+  test("a half-configured app is a FAIL, never a quiet skip", async () => {
+    const base = healthyDeps();
+    const report = await runDoctor(healthyDeps({ env: { ...base.env, GITHUB_APP_ID: "111" } }));
+    const app = byName(report.checks, "identity: github app");
+    expect(app.level).toBe("fail");
+    expect(app.detail).toContain("no private key");
+    expect(report.ok).toBeFalse();
+  });
+
+  test("no app and no PAT at all is a FAIL", async () => {
+    const base = healthyDeps();
+    const report = await runDoctor(healthyDeps({ env: { ...base.env, GITHUB_PAT: undefined } }));
+    const app = byName(report.checks, "identity: github app");
+    expect(app.level).toBe("fail");
+    expect(app.detail).toContain("no GitHub credentials at all");
+  });
+
+  test("still on the legacy PAT is a WARN pointing at the migration", async () => {
+    const app = byName((await runDoctor(healthyDeps())).checks, "identity: github app");
+    expect(app.level).toBe("warn");
+    expect(app.detail).toContain("deploy/github-app.md");
   });
 });

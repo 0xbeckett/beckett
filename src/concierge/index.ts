@@ -112,7 +112,7 @@ import {
 import { createTriageClassifier, type TriageFn, type TriageVerdict } from "./triage.ts";
 import type { DiscordButton, DiscordComponentInteraction, DiscordEmbed, TaskThreadCreated } from "../types.ts";
 import { ComponentRouter, decodeComponentId, type ComponentActionContext } from "../discord/interactions.ts";
-import { GitHubCli, loadIdentity } from "../agency/index.ts";
+import { GitHubCli, githubAuth, githubConfigured, loadIdentity } from "../agency/index.ts";
 import { createTrackerClient } from "../tracker/client.ts";
 import { TaskStore, displayTaskName, type TaskBranch, type WorkTask } from "../task/store.ts";
 import type { BranchStatusService } from "../task/status.ts";
@@ -6181,9 +6181,9 @@ export class Concierge {
     const pr = found.branch.pullRequest;
     if (!pr) return `Branch #${ctx.target} has no pull request to merge.`;
     const identity = loadIdentity(this.config);
-    if (!identity.github.pat) return "GitHub is not configured for this Beckett.";
+    if (!githubConfigured(identity)) return "GitHub is not configured for this Beckett.";
     const github = new GitHubCli({
-      pat: identity.github.pat,
+      ...githubAuth(identity),
       account: identity.github.account,
       owner: identity.github.owner,
       apiBase: identity.github.apiBase,
