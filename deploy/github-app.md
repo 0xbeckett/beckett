@@ -51,11 +51,11 @@ https://github.com/apps/<slug>/installations/new
 Choose **Only select repositories → `kowo-co/beckett`** (least privilege). "All repositories" is
 available if you'd rather not re-approve each new repo.
 
-**3. Put the credentials on the box.** Copy the key to `beckett@loom-desk` and add the env lines:
+**3. Put the credentials on the box.** Copy the key to `beckett@desktop` and add the env lines:
 
 ```bash
-scp ~/.beckett/github-app.pem beckett@loom-desk:~/.beckett/github-app.pem
-ssh beckett@loom-desk 'chmod 600 ~/.beckett/github-app.pem'
+scp ~/.beckett/github-app.pem beckett@desktop:~/.beckett/github-app.pem
+ssh beckett@desktop 'chmod 600 ~/.beckett/github-app.pem'
 ```
 
 In `~/.beckett/.env` on the box:
@@ -73,7 +73,7 @@ revoked with the account.
 **4. Restart and verify:**
 
 ```bash
-ssh beckett@loom-desk 'systemctl --user restart beckett-v4.service'
+ssh beckett@desktop 'systemctl --user restart beckett-v4.service'
 beckett gh app status          # app id, slug, owner, who has installed it
 beckett gh app installations   # → the id for GITHUB_APP_INSTALLATION_ID
 beckett doctor                 # "identity: github app" + "identity: github token" green

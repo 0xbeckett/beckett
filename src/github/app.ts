@@ -519,12 +519,16 @@ export class GitHubAppAuth {
       : { status: "repo-not-selected-or-missing", owner, repo: full, installationId: byOwner.id, installUrl };
   }
 
-  /** Unauthenticated existence probe for a user/org login (a typo check, not an auth check). */
+  /**
+   * Unauthenticated existence probe for a user/org login (a typo check, not an auth check).
+   * Only a 404 counts as "doesn't exist" — an unauthenticated 403 (rate limit) must not make
+   * the triage tell someone their own account is a typo.
+   */
   private async ownerExists(owner: string): Promise<boolean> {
     const res = await this.fetchImpl(`${this.apiBase}/users/${owner}`, {
       headers: { Accept: "application/vnd.github+json", "User-Agent": "beckett" },
     });
-    return res.ok;
+    return res.status !== 404;
   }
 
   /** Unauthenticated existence probe for a repo — 200 only for public repos, which is the point. */
