@@ -59,8 +59,12 @@ const run = await page.evaluate(async () => {
       if (m) { pillText = m[0]; pillAtMs = performance.now() - t0; }
     }
     if (i % 60 === 0) samples.push({ atSec: Math.round((performance.now() - t0) / 1000), chars: grown });
-    const stopping = [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "■");
-    if (!stopping && i > 20 && firstTextMs !== null) { stoppedMs = performance.now() - t0; break; }
+    // Quiescence, not the ■ control: that button is in the DOM even when hidden, so
+    // "is it still streaming" has to be answered by whether the text is still growing.
+    const stopping = [...document.querySelectorAll("button")]
+      .some((b) => b.textContent.trim() === "■" && b.offsetParent !== null);
+    const quietMs = lastGrowthMs === null ? 0 : performance.now() - t0 - lastGrowthMs;
+    if (firstTextMs !== null && !stopping && quietMs > 45_000) { stoppedMs = performance.now() - t0; break; }
     await nap(500);
   }
   await nap(2000);
