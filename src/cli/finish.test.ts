@@ -97,6 +97,11 @@ describe("parseFinishArgs", () => {
     expect(opts.deploy).toBe(false);
     expect(opts.commit).toBe(false);
   });
+
+  test("--json is the quiet switch (stdout is a result object either way)", () => {
+    expect(parseFinishArgs(["-m", "x"], "/r").json).toBe(false);
+    expect(parseFinishArgs(["-m", "x", "--json"], "/r").json).toBe(true);
+  });
 });
 
 describe("repoFromRemoteUrl", () => {

@@ -493,9 +493,14 @@ export async function runFinish(argv: string[]): Promise<void> {
     committed = true;
   }
 
+  // Only Beckett's own repo ships a guarded deploy. Resolving that here (not after the merge) is
+  // what lets the identity preflight below run ONLY when a deploy is actually going to happen.
+  const script = join(repoRoot, "deploy", "deploy-prod.sh");
+  const willDeploy = opts.deploy && existsSync(script);
+
   // The deploy commits the release bump on THIS checkout, so a missing identity blocks it just as
   // surely as it blocks the commit above — catch it here, before the PR, not 10 minutes in.
-  if (opts.deploy) {
+  if (willDeploy) {
     const identity = await gitIdentityProblem(repoRoot);
     if (identity) fail(`beckett finish: ${identity} (the guarded deploy commits the release version bump)`);
   }
@@ -576,14 +581,13 @@ export async function runFinish(argv: string[]): Promise<void> {
   }
 
   // ── the guarded redeploy ─────────────────────────────────────────────────────────────────
-  const script = join(repoRoot, "deploy", "deploy-prod.sh");
   let deploy: { ran: boolean; reason?: string } = { ran: false };
   if (!opts.deploy) {
     deploy = { ran: false, reason: "--no-deploy" };
     step("skipping the deploy (--no-deploy)");
-  } else if (!existsSync(script)) {
-    // Only Beckett's own repo ships a guarded deploy. Refusing here would strand every OTHER
-    // project's finish at the merge; hand-rolling a restart would be worse. Say so and stop.
+  } else if (!willDeploy) {
+    // Refusing here would strand every OTHER project's finish at the merge, and hand-rolling a
+    // restart for them would be worse. Say plainly that there was nothing to redeploy.
     deploy = { ran: false, reason: `no guarded deploy path in this repo (${script} does not exist)` };
     step(`merged, but ${deploy.reason} — nothing to redeploy`);
   } else {
