@@ -434,8 +434,17 @@ async function teeToStderr(stream: ReadableStream<Uint8Array> | null, tail: stri
  * (bun lives in `~/.bun/bin`, which a non-login shell does not add) and a pre-decided
  * `BECKETT_BUMP`, since the script prompts for the version bump on a TTY and there is nobody here
  * to answer.
+ *
+ * `echo` mirrors the deploy's output to stderr as it arrives — a deploy is the slowest stage by far
+ * and silence for minutes reads as a hang. It defaults OFF so tests (and `--json`) capture the tail
+ * without narrating it; {@link runFinish} turns it on for an ordinary interactive run.
  */
-export async function runGuardedDeploy(script: string, cwd: string, bump: string): Promise<{ code: number; tail: string }> {
+export async function runGuardedDeploy(
+  script: string,
+  cwd: string,
+  bump: string,
+  echo = false,
+): Promise<{ code: number; tail: string }> {
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
   const home = process.env.HOME ?? "";
   const extra = [join(home, ".local/bin"), join(home, ".bun/bin")].join(":");
@@ -443,7 +452,7 @@ export async function runGuardedDeploy(script: string, cwd: string, bump: string
   env.BECKETT_BUMP = bump;
   const proc = Bun.spawn(["bash", script], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
   const tail: string[] = [];
-  await Promise.all([teeToStderr(proc.stdout, tail), teeToStderr(proc.stderr, tail)]);
+  await Promise.all([teeToStderr(proc.stdout, tail, echo), teeToStderr(proc.stderr, tail, echo)]);
   return { code: await proc.exited, tail: tail.join("\n").trim() };
 }
 
@@ -629,7 +638,7 @@ export async function runFinish(argv: string[]): Promise<void> {
     step(`merged, but ${deploy.reason} — nothing to redeploy`);
   } else {
     step(`running the guarded redeploy (${script}, BECKETT_BUMP=${opts.bump})`);
-    const { code, tail } = await runGuardedDeploy(script, repoRoot, opts.bump);
+    const { code, tail } = await runGuardedDeploy(script, repoRoot, opts.bump, !quiet);
     if (code !== 0) fail(`beckett finish: ${describeDeployFailure(code, tail)}`);
     deploy = { ran: true };
   }

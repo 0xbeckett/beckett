@@ -294,6 +294,16 @@ describe("runGuardedDeploy", () => {
     expect(describeDeployFailure(result.code, result.tail)).toContain("cd ~/beckett");
   });
 
+  test("mirroring the log live does not change what is captured for the error message", async () => {
+    // The deploy is the slowest stage, so an ordinary run narrates it as it arrives; the tail the
+    // failure message is built from must be identical either way.
+    const { script, cwd } = fakeDeploy('echo "FATAL: bubblewrap is required" >&2\nexit 1');
+    const silent = await runGuardedDeploy(script, cwd, "yes");
+    const echoed = await runGuardedDeploy(script, cwd, "yes", true);
+    expect(echoed).toEqual(silent);
+    expect(echoed.tail).toContain("FATAL: bubblewrap is required");
+  });
+
   test("a long deploy log is truncated to a readable tail, keeping the END", async () => {
     const { script, cwd } = fakeDeploy("seq 1 500\nexit 1");
     const { tail } = await runGuardedDeploy(script, cwd, "yes");
