@@ -507,6 +507,11 @@ export class Dispatcher {
   private readonly spendLedgerPath: string;
   /** OPS-167's only transition telemetry chokepoint; persistence happens inside `emit`. */
   private readonly dispatchEvents: DispatchEventBus;
+  /**
+   * Set for the rest of the process's life by {@link drainForShutdown}. Every worker that dies from
+   * here on was killed BY US, so {@link trace} reports those runs as interrupted, not failed (#4).
+   */
+  private draining = false;
   /** The stage lookup (OPS-180): staffing, casting, done-parsing, and finish handling all resolve here. */
   private readonly stages: StageView;
   /** Config-resolved retry/rework bounds (`[supervise] max_*`; defaults = the old constants). */
@@ -1071,6 +1076,15 @@ export class Dispatcher {
 
   /** Emit one persisted-before-live stage transition. No dispatch path writes telemetry directly. */
   private trace(ticket: Ticket, stage: string, outcome: DispatchOutcome, message?: string, error?: string): void {
+    // #4: once the drain starts, WE are killing these workers. Their aborted runs surface as harness
+    // errors whose "error text" is whatever the worker last narrated — which is how a deploy used to
+    // fill the feed with FAILED/ALERT rows quoting an innocent "I'll start by getting oriented…".
+    // Nothing that fails during a shutdown is a ticket failure; it is the restart, and it is named
+    // as one. The original detail is kept for the forensic trace.
+    if (this.draining && outcome === "failed") {
+      outcome = "interrupted";
+      message = message ? `${message} (stopped by a daemon restart)` : "stopped by a daemon restart";
+    }
     this.dispatchEvents.emit({
       ticketId: ticket.id,
       ticketRef: ticket.branchRef ? `#${ticket.branchRef}` : ticket.identifier,
@@ -1399,6 +1413,8 @@ export class Dispatcher {
     reason = "daemon shutdown",
     timeoutMs = 20_000,
   ): Promise<DispatcherShutdownResult> {
+    // Before anything is aborted: from here on a dying worker is a restart, not a failure (#4).
+    this.draining = true;
     const live = [...this.workers.entries()];
     const queuedSpawns = this.pending.length;
     this.pending.splice(0);

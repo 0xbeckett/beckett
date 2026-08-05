@@ -2,7 +2,19 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type DispatchOutcome = "started" | "passed" | "bounced" | "cancelled" | "failed" | "held" | "info";
+/**
+ * `interrupted` is deliberately distinct from `failed` (#4): a worker the daemon killed on its way
+ * down did not fail the ticket, and must never be dressed as a failure in the feed.
+ */
+export type DispatchOutcome =
+  | "started"
+  | "passed"
+  | "bounced"
+  | "cancelled"
+  | "failed"
+  | "interrupted"
+  | "held"
+  | "info";
 
 /** One immutable dispatch timeline row. Persisted before the live sink is notified. */
 export interface DispatchEvent {
@@ -117,10 +129,16 @@ const MARKERS: Record<DispatchOutcome, string> = {
   bounced: "↩",
   cancelled: "⛔",
   failed: "✗",
+  interrupted: "⟲",
   held: "⏸",
   info: "•",
 };
 
+/**
+ * The FORENSIC row: marker, UTC clock, internal stage name, outcome, elapsed, raw detail. This
+ * shape belongs to `beckett ticket trace` and nowhere else — the Discord feed speaks the digest in
+ * ./digest.ts instead (#4).
+ */
 export function formatDispatchEvent(event: DispatchEvent): string {
   const stamp = event.ts.slice(11, 19);
   const elapsed = formatElapsed(event.elapsedMs);

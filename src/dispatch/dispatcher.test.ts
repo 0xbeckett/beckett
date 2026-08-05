@@ -1769,6 +1769,36 @@ describe("steering + cancel", () => {
     expect(d.live()).toHaveLength(0);
     expect(spawnCalls).toHaveLength(1);
   });
+
+  // #4: a deploy kills live workers, and their aborted harness runs surface as errors whose "error
+  // text" is whatever the worker last narrated. Those must never reach the feed as FAILED/ALERT.
+  test("a worker killed by the shutdown drain is traced as interrupted, never failed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "beckett-drain-interrupt-"));
+    try {
+      const path = join(dir, "dispatch.jsonl");
+      const { d } = newDispatcher(1, { dispatchEventsPath: path });
+      const ticket = makeTicket({ id: "a", identifier: "OPS-A" });
+      await d.handle(stateChanged(ticket, "in_progress"));
+      await tick();
+
+      await d.drainForShutdown("SIGTERM", 1000);
+      // The driver delivers its terminal event as the abort lands: an error finish carrying the
+      // worker's harmless opening narration.
+      created[0]!.finish("error", "I'll start by getting oriented in the repo.");
+      await tick();
+
+      const rows = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      expect(rows.some((r) => r.outcome === "failed")).toBe(false);
+      const interrupted = rows.filter((r) => r.outcome === "interrupted");
+      expect(interrupted).toHaveLength(1);
+      expect(interrupted[0]!.stage).toBe("implement");
+      expect(interrupted[0]!.message).toContain("stopped by a daemon restart");
+      // The worker's own words stay in the forensic ledger for `beckett ticket trace`.
+      expect(interrupted[0]!.error).toContain("getting oriented");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("rework cap", () => {

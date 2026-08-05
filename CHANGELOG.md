@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### The pipeline feed speaks English (#4)
+
+The dispatch event feed posted one raw trace row per transition — `✗ 04:56:31 · #2.1 · implement ·
+FAILED · 22m 4s 🚨 ALERT — I'll start by getting oriented in the repo…`, which is a worker's
+harmless opening narration wrapped in failure dressing because a deploy killed it. Alongside that:
+no-op `in_review → in_review` transitions, the same staff/repo/worktree batch replayed twice after
+every restart, UTC seconds, and worker ids. The channel now gets a digest instead.
+
+- **One self-editing message per ticket episode** (`src/dispatch/digest.ts`,
+  `src/dispatch/digest-feed.ts`): each event becomes at most one plain-English sentence stamped
+  with a local time, appended to a message that is edited in place. A 26-row run is 3 messages.
+- **A restart is reported as a restart.** `drainForShutdown` marks the dispatcher draining, so every
+  worker that dies from then on is traced with the new `interrupted` outcome instead of `failed` —
+  never an alert, never quoting the worker's last narration as an error.
+- **Noise is dropped**: no-op `X → X` transitions, worktree/repo plumbing (unless it fails), and any
+  sentence repeated inside the replay window (the restart batch).
+- **Genuine failures still land promptly**, marked, carrying the real error text, in a message of
+  their own so an edit can't bury them.
+- **The forensic rows are unchanged** and still available via `beckett ticket trace "<ref>"`; every
+  digest names that command. `bun scripts/ops/dispatch-digest-sample.ts` prints the before/after.
+
 ## v6.24.0 (2026-08-04)
 
 ### `beckett finish` — PR, merge and redeploy behind one command (#2)
