@@ -41,7 +41,8 @@ import { resolveGitHubOwner } from "../github/owner.ts";
 import { log as rootLog } from "../log.ts";
 import { loadConfig } from "../config.ts";
 import { buildPaths } from "../paths.ts";
-import { formatDispatchEvent, type DispatchEvent } from "../dispatch/events.ts";
+import { DispatchDigestFeed } from "../dispatch/digest-feed.ts";
+import type { DispatchEvent } from "../dispatch/events.ts";
 import { serveBus, type BusRequest, type BusResponse } from "../shell/control-bus.ts";
 import { ActionClass, CapabilityRegistry, type Capability } from "../capability/index.ts";
 import { effectiveActionClass, renderCatalogBlock, type ExtensionContext, type ExtensionRegistry, type InvocationOrigin } from "../ext/index.ts";
@@ -2220,6 +2221,8 @@ export class Concierge {
   private branchStatus: BranchStatusService | null;
   /** The one self-editing card per task (#104): posted on filing, edited in place thereafter. */
   private readonly taskCards: TaskCardService;
+  /** The pipeline feed's human digest (#4): one edited message per ticket, not a trace firehose. */
+  private readonly dispatchFeed: DispatchDigestFeed;
   /** The one registry for Discord message-component verbs. */
   private readonly componentRouter: ComponentRouter;
   /** The ONE long-lived graph/Moss owner for `memory.recall` control-bus requests — the memory
@@ -2419,6 +2422,11 @@ export class Concierge {
       // channel. Resolved once at first post; the stored channel is authoritative from then on.
       resolveChannel: (task) => this.workspaces.channelForTask(String(task.number)) ?? task.originChannelId ?? null,
       logger: this.log,
+    });
+    this.dispatchFeed = new DispatchDigestFeed({
+      gateway: this.gateway,
+      channelId: DISPATCH_EVENT_CHANNEL_ID,
+      logger: this.log.child("dispatch-digest"),
     });
     this.componentRouter = new ComponentRouter((userId) => this.accessLevelFor(userId));
     this.registerComponentActions();
@@ -2622,12 +2630,7 @@ export class Concierge {
    * awaits this promise, so a disconnected Discord gateway cannot stall workers or tracker writes.
    */
   async postDispatchEvent(event: DispatchEvent): Promise<void> {
-    await this.gateway.post(DISPATCH_EVENT_CHANNEL_ID, formatDispatchEvent(event), {
-      singleMessage: true,
-      // Timeline durability is the event bus's JSONL; don't accumulate an unbounded Discord
-      // queue during an outage or make the sink a recovery dependency.
-      queueIfOffline: false,
-    });
+    await this.dispatchFeed.post(event);
   }
 
   /** Wire the dispatcher levers (v4-main, after the dispatcher exists). See {@link dispatcherOps}. */
