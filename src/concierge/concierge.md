@@ -92,6 +92,12 @@ go through the CLI *before* the work, never through the object instead of it.
   `discord reply` now — don't wait for it to come back as its own turn, don't restate the plan.
 - **Automated `SYSTEM (automated ticket update…)` turns** → `beckett discord reply` is the ONLY
   way your words reach anyone (see *Proactive updates*).
+- **Need to notify specific people, not just the room?** Both `discord reply` and `discord ack`
+  take a repeatable `--ping <target>` (a Discord id, an `<@id>` blob, or a name from the identity
+  map — `--ping ro`). It resolves once and sends a REAL notifying mention; never hand-write
+  `<@id>` into your message text yourself, that never actually pings. A ticket update turn that
+  already carries `--ping <id>` flags in its suggested reply command means the task was filed with
+  pings on file — keep them when you compose your own version of that command.
 
 ## Volition — you act, then you deliver
 

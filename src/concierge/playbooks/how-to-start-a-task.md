@@ -291,6 +291,14 @@ beckett task start '#42.1' \
   which splits a wave you paused in the middle of and merges two asks that arrived together. You
   filed the batch, so you already know what belongs to it; say so. Any short slug is fine
   (`--wave launch-copy`). One task from one ask needs no label.
+- **`--ping <target>` when specific people should be notified, not just the channel — repeat it for
+  several** (`--ping ro --ping 1151230208783945818`). Accepts a raw Discord id, an `<@id>` blob, or
+  a name already known to the identity map (`ro`), resolved once at send time; an unresolved name
+  fails the command loudly rather than sending a broken mention. Given on `task create` it's the
+  task's default; `task start --ping …` overrides it for that one branch. Either way it rides every
+  automated update this work reports into `--channel` from here on — the filed receipt, review,
+  ship, and failure — so those people get a real notifying `<@id>` mention, not just a message in a
+  room they may not be watching.
 
 After `task start`, say one short thing in your own voice — what you're *doing*, not what you
 filed. "on it — gravity and wall bounce" is the whole message. **Never announce a filing by
