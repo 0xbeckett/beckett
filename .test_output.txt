@@ -1,0 +1,19 @@
+bun test v1.3.14 (0d9b296a)
+{"level":"info","ts":"2026-08-07T03:46:18.059Z","component":"e2e-resume.driver.claude","msg":"spawning claude worker","bin":"/tmp/beckett-resume-NzZ8zi/fake-claude.sh","workspace":"/tmp/beckett-resume-NzZ8zi/worktree","isResume":false,"sessionId":"894f1e1f-45ff-4b56-a770-b99a3c2f9d65","model":"claude-sonnet-4-5","effort":"low"}
+{"level":"info","ts":"2026-08-07T03:46:18.703Z","component":"e2e-resume.driver.claude","msg":"relaunching with --resume","sessionId":"894f1e1f-45ff-4b56-a770-b99a3c2f9d65"}
+{"level":"info","ts":"2026-08-07T03:46:18.703Z","component":"e2e-resume.driver.claude","msg":"spawning claude worker","bin":"/tmp/beckett-resume-NzZ8zi/fake-claude.sh","workspace":"/tmp/beckett-resume-NzZ8zi/worktree","isResume":true,"sessionId":"894f1e1f-45ff-4b56-a770-b99a3c2f9d65","model":"claude-sonnet-4-5","effort":"low"}
+{"level":"warn","ts":"2026-08-07T03:46:19.499Z","component":"e2e-resume.driver.claude","msg":"aborting worker","reason":"test teardown","sessionId":"894f1e1f-45ff-4b56-a770-b99a3c2f9d65"}
+{"level":"info","ts":"2026-08-07T03:46:19.501Z","component":"e2e-resume.driver.claude","msg":"harness leader exited on SIGTERM — sweeping remaining process group","pid":1797963}
+
+src/browser/isolated.test.ts:
+122 |   }
+123 | 
+124 |   const playwrightPath = realpathIfPossible(join(repoRoot, "node_modules/playwright"));
+125 |   const playwrightCorePath = realpathIfPossible(join(repoRoot, "node_modules/playwright-core"));
+126 |   for (const path of [evaluatorPath, playwrightPath, playwrightCorePath]) {
+127 |     if (!existsSync(path)) throw new Error(`browser evaluator runtime is missing: ${path}`);
+                                                                                                ^
+error: browser evaluator runtime is missing: /home/beckett/Projects/beckett/.beckett/worktrees/10/node_modules/playwright
+      at buildBrowserEvaluatorLaunch (/home/beckett/Projects/beckett/.beckett/worktrees/10/src/browser/evaluator-runner.ts:127:91)
+      at <anonymous> (/home/beckett/Projects/beckett/.beckett/worktrees/10/src/browser/isolated.test.ts:271:22)
+(fail) browser evaluator sandbox policy > Linux uses a fresh bounded bubblewrap without controller state mounts [0.83ms]
