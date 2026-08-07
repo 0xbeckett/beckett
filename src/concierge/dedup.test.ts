@@ -41,6 +41,7 @@ interface Post {
   files?: string[];
   singleMessage?: boolean;
   browserQuestion?: boolean;
+  pingUserIds?: string[];
 }
 
 /**
@@ -85,6 +86,7 @@ function harness(opts: {
       files?: string[];
       singleMessage?: boolean;
       browserQuestion?: boolean;
+      pingUserIds?: string[];
     }) {
       postAttempts++;
       if (opts.postDelayMs) await Bun.sleep(opts.postDelayMs);
@@ -102,6 +104,7 @@ function harness(opts: {
         text,
         replyTo: o?.replyToMessageId,
         files: o?.files,
+        pingUserIds: o?.pingUserIds,
         ...(o?.singleMessage !== undefined ? { singleMessage: o.singleMessage } : {}),
         ...(o?.browserQuestion !== undefined ? { browserQuestion: o.browserQuestion } : {}),
       });
@@ -200,6 +203,28 @@ test("discord.reply forwards files and permits image-only posts", async () => {
     args: { channelId: CHAN, text: "", files: ["/tmp/logo.png"] },
   });
   expect(posts).toEqual([{ channelId: CHAN, text: "", replyTo: undefined, files: ["/tmp/logo.png"] }]);
+});
+
+test("discord.reply forwards resolved --ping ids to the gateway so they actually notify (issue #10)", async () => {
+  const { concierge, posts } = harness({ replyViaCli: false, turnText: "" });
+  const RO = "1151230208783945818";
+  await concierge.onBusRequest({
+    cmd: "discord.reply",
+    args: { channelId: CHAN, text: `<@${RO}>\nshipped it`, pingUserIds: [RO] },
+  });
+  expect(posts).toEqual([{ channelId: CHAN, text: `<@${RO}>\nshipped it`, replyTo: undefined, files: undefined, pingUserIds: [RO] }]);
+});
+
+test("discord.ack forwards resolved --ping ids to the gateway (issue #10)", async () => {
+  const { concierge, posts } = harness({ replyViaCli: false, turnText: "" });
+  const RO = "1151230208783945818";
+  await concierge.onBusRequest({
+    cmd: "discord.ack",
+    args: { channelId: CHAN, text: `<@${RO}>\non it`, pingUserIds: [RO] },
+  });
+  expect(posts).toHaveLength(1);
+  expect(posts[0]?.pingUserIds).toEqual([RO]);
+  expect(posts[0]?.text).toBe(`<@${RO}>\non it`);
 });
 
 test("the browser agent cannot be borrowed outside an authenticated request", async () => {

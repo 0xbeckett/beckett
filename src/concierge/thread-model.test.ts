@@ -49,6 +49,7 @@ interface Harness {
   tasks: TaskStore;
   workspaces: WorkspaceRegistry;
   posts: { channelId: string; content: string }[];
+  postOpts: Array<{ pingUserIds?: string[] } | undefined>;
   asks: string[];
   joined: string[];
   dir: string;
@@ -61,6 +62,7 @@ function harness(): Harness {
   process.env.BECKETT_DIR = dir;
   process.env.DISCORD_OWNER_ID = OWNER;
   const posts: { channelId: string; content: string }[] = [];
+  const postOpts: Array<{ pingUserIds?: string[] } | undefined> = [];
   const asks: string[] = [];
   const joined: string[] = [];
   const gateway = {
@@ -78,8 +80,9 @@ function harness(): Harness {
     async joinThread(threadId: string) {
       joined.push(threadId);
     },
-    async post(channelId: string, content: string) {
+    async post(channelId: string, content: string, opts?: { pingUserIds?: string[] }) {
       posts.push({ channelId, content });
+      postOpts.push(opts);
       return `mid-${posts.length}`;
     },
   } as never;
@@ -93,7 +96,7 @@ function harness(): Harness {
   const tasks = new TaskStore(join(dir, "tasks.json"));
   const concierge = new Concierge({ config, session, gateway, tasks, channelProfiler: null });
   const workspaces = (concierge as unknown as { workspaces: WorkspaceRegistry }).workspaces;
-  return { concierge, tasks, workspaces, posts, asks, joined, dir };
+  return { concierge, tasks, workspaces, posts, postOpts, asks, joined, dir };
 }
 
 function message(over: Partial<IncomingMessage> = {}): IncomingMessage {
@@ -507,4 +510,29 @@ test("a filing for attached work stamps its line in the thread, not the filing c
 
   await concierge.stop();
   expect(posts.at(-1)).toEqual({ channelId: THREAD, content: "-# filed ticket 1.1" });
+});
+
+// A task/branch's persisted `--ping` list (issue #10) rides its filed receipt too, so the people
+// asked for at filing time get notified the instant the ticket lands, not just on later updates.
+test("a filed branch's persisted pings are prepended to its filed line and allow-listed on the post", async () => {
+  const { concierge, tasks, posts, postOpts } = harness();
+  const RO = "1151230208783945818";
+  await tasks.createTask({ title: "Build voting", originChannelId: CHAN, initialBranchTitle: "API", pings: [RO] });
+  const bus = (concierge as unknown as { onBusRequest: Function }).onBusRequest.bind(concierge);
+  await bus({ cmd: "ticket.filed", args: { identifier: "OPS-1", channelId: CHAN, taskRef: "1", branchRef: "1.1" } });
+
+  await concierge.stop();
+  expect(posts).toEqual([{ channelId: CHAN, content: `<@${RO}>\n-# filed ticket 1.1` }]);
+  expect(postOpts.at(-1)?.pingUserIds).toEqual([RO]);
+});
+
+test("a filed branch with no pings stamps its line exactly as before, with no ping opts", async () => {
+  const { concierge, tasks, posts, postOpts } = harness();
+  await tasks.createTask({ title: "Build voting", originChannelId: CHAN, initialBranchTitle: "API" });
+  const bus = (concierge as unknown as { onBusRequest: Function }).onBusRequest.bind(concierge);
+  await bus({ cmd: "ticket.filed", args: { identifier: "OPS-1", channelId: CHAN, taskRef: "1", branchRef: "1.1" } });
+
+  await concierge.stop();
+  expect(posts).toEqual([{ channelId: CHAN, content: "-# filed ticket 1.1" }]);
+  expect(postOpts.at(-1)).toBeUndefined();
 });
