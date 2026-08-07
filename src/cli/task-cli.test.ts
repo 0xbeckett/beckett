@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -183,4 +183,83 @@ test("without a label, back-to-back filings in ONE channel do share a wave", asy
   const waves = wavesOf(dir);
   expect(waves[0]).toBe(waves[1]!);
   expect(waves[0]).not.toBe("");
+});
+
+// ── --ping (issue #10) ─────────────────────────────────────────────────────────────────────
+const RO = "1151230208783945818";
+const ALICE = "222222222222222222";
+
+function seedIdentities(dir: string): void {
+  writeFileSync(
+    join(dir, "identities.json"),
+    JSON.stringify({
+      [RO]: { known_name: "ro", created_at: 1, updated_at: 1 },
+      [ALICE]: { known_name: "alice", created_at: 1, updated_at: 1 },
+    }),
+  );
+}
+
+test("task create --ping resolves and persists the task-level default ping list", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-task-ping-create-"));
+  dirs.push(dir);
+  seedIdentities(dir);
+
+  const created = await cli(dir, ["task", "create", "--title", "Voting launch", "--ping", "ro", "--ping", ALICE]) as any;
+  expect(created.task.pings).toEqual([RO, ALICE]);
+  // The branch inherits — it never got its own override at create time.
+  expect(created.branch.pings).toBeUndefined();
+
+  const shown = await cli(dir, ["task", "show", "#1"]) as any;
+  expect(shown.pings).toEqual([RO, ALICE]);
+});
+
+test("task create --ping fails clearly on an unknown target, naming it and the known names", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-task-ping-unknown-"));
+  dirs.push(dir);
+  seedIdentities(dir);
+
+  await expect(cli(dir, ["task", "create", "--title", "Voting launch", "--ping", "nobody"])).rejects.toThrow(
+    /unknown --ping target: nobody.*known names: alice, ro/s,
+  );
+});
+
+test("task start --ping overrides the branch's pings independent of the task-level default", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "beckett-task-ping-start-"));
+  dirs.push(dir);
+  seedIdentities(dir);
+  const tickets: Array<Record<string, unknown>> = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname === "/tickets" && request.method === "GET") return Response.json({ tickets });
+      if (url.pathname === "/tickets" && request.method === "POST") {
+        const createPayload = await request.json() as Record<string, unknown>;
+        const ticket = {
+          ref: "OPS-1", title: createPayload.title, body: createPayload.body,
+          criteria: createPayload.criteria ?? [], state: "todo", needs: createPayload.needs ?? [],
+          createdAt: "2026-07-12T00:00:00.000Z", updatedAt: "2026-07-12T00:00:00.000Z",
+        };
+        tickets.push(ticket);
+        return Response.json({ ticket });
+      }
+      if (url.pathname === "/tickets/OPS-1" && request.method === "GET") return Response.json({ ticket: tickets[0] });
+      if (url.pathname === "/tickets/OPS-1/staff" && request.method === "POST") {
+        tickets[0]!.state = "in_progress";
+        return Response.json({ ok: true });
+      }
+      return new Response(`unexpected ${request.method} ${url.pathname}`, { status: 404 });
+    },
+  });
+
+  try {
+    await cli(dir, ["task", "create", "--title", "Voting launch", "--ping", "ro"]);
+    await cli(dir, ["task", "start", "#1.1", "--body", "Build it", "--ping", "alice"], { BECKETT_BORED_URL: server.url.origin });
+
+    const shown = await cli(dir, ["task", "show", "#1.1"]) as any;
+    expect(shown.task.pings).toEqual([RO]);
+    expect(shown.branch.pings).toEqual([ALICE]);
+  } finally {
+    server.stop(true);
+  }
 });

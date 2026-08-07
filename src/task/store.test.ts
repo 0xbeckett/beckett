@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TaskStore, displayTaskName, newWaveId } from "./store.ts";
+import { TaskStore, displayTaskName, effectivePings, newWaveId } from "./store.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -333,4 +333,28 @@ test("branch card images dedupe by URL, cap at ten, and survive a reload", async
   expect(branch?.images).toHaveLength(10);
   expect(branch?.images?.some((img) => img.url === "https://cdn.example.com/a.png")).toBe(false);
   expect(branch?.images?.at(-1)?.url).toBe("https://cdn.example.com/9.png");
+});
+
+test("createTask persists a `pings` default; setPings overrides it per branch (issue #10)", async () => {
+  const { path, store } = makeStore();
+  const RO = "1151230208783945818";
+  const ALICE = "222222222222222222";
+  const { task, branch } = await store.createTask({ title: "Voting launch", pings: [RO] });
+  expect(task.pings).toEqual([RO]);
+  // No override yet — the branch inherits the task's default.
+  expect(effectivePings(task, branch)).toEqual([RO]);
+
+  const overridden = await store.setPings(branch.ref, [ALICE]);
+  expect(overridden.pings).toEqual([ALICE]);
+  const reloadedTask = new TaskStore(path).getTask(1)!;
+  expect(effectivePings(reloadedTask, reloadedTask.branches[0]!)).toEqual([ALICE]);
+  // The task-level default is untouched by a branch override.
+  expect(reloadedTask.pings).toEqual([RO]);
+});
+
+test("a task created with no `--ping` has no pings field, and effectivePings degrades to empty", async () => {
+  const { store } = makeStore();
+  const { task, branch } = await store.createTask({ title: "Voting launch" });
+  expect(task.pings).toBeUndefined();
+  expect(effectivePings(task, branch)).toEqual([]);
 });
