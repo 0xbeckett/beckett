@@ -4827,6 +4827,11 @@ export class Concierge {
               const files = Array.isArray(req.args.files)
                 ? req.args.files.map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean)
                 : [];
+              // Discord user ids resolved from `--ping` (issue #10); the CLI already rendered their
+              // `<@id>` mentions into `text` — this just allow-lists them so the mention notifies.
+              const pingUserIds = Array.isArray(req.args.pingUserIds)
+                ? req.args.pingUserIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean)
+                : [];
               if (!channelId || (!text && files.length === 0)) {
                 return { ok: false, error: "discord.reply needs channelId and text or files" };
               }
@@ -4858,6 +4863,7 @@ export class Concierge {
                       ? { replyToMessageId: active!.messageId, replyToUserId: active!.userId }
                       : {}),
                     ...(files.length > 0 ? { files } : {}),
+                    ...(pingUserIds.length > 0 ? { pingUserIds } : {}),
                   };
                   // A CLI reply IS this turn's answer, so it is the other place a mention's debt starts
                   // being paid — stamp the ledger BEFORE the post for the same reason the auto-post
@@ -4898,6 +4904,11 @@ export class Concierge {
               // given, the ack is a reaction ON THE REQUESTER'S OWN message instead of a separate
               // "on it" line in the channel — no chunker, no post, no shared-context entry.
               const emoji = typeof req.args.emoji === "string" ? req.args.emoji.trim() : "";
+              // Discord user ids resolved from `--ping` (issue #10); the CLI already rendered their
+              // `<@id>` mentions into `raw` — this just allow-lists them so the mention notifies.
+              const pingUserIds = Array.isArray(req.args.pingUserIds)
+                ? req.args.pingUserIds.map((id) => (typeof id === "string" ? id.trim() : "")).filter(Boolean)
+                : [];
               if (!channelId || (!raw && !emoji)) {
                 return { ok: false, error: "discord.ack needs channelId and text or emoji" };
               }
@@ -4947,6 +4958,7 @@ export class Concierge {
                     ...(claimsActiveTurn && !active!.ambient
                       ? { replyToMessageId: active!.messageId, replyToUserId: active!.userId }
                       : {}),
+                    ...(pingUserIds.length > 0 ? { pingUserIds } : {}),
                   };
                   const messageId = await this.gateway.post(channelId, text, opts);
                   // Deliberately NOT recorded into the shared context and NOT marked repliedViaCli: an ack

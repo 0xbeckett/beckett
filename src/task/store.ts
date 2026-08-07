@@ -139,6 +139,12 @@ const TaskBranchSchema = z.object({
   preview: PreviewLinkSchema.optional(),
   /** Hosted screenshots of the branch's built frontend, rendered as the task card's gallery. */
   images: z.array(CardImageSchema).optional(),
+  /**
+   * Discord user ids (resolved once, at `task start`) to ping on every automated update this
+   * branch's work reports into its channel (issue #10). Overrides the task-level default below —
+   * absent means "inherit the task's pings", `[]` means "explicitly no pings for this branch".
+   */
+  pings: z.array(z.string()).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -171,6 +177,9 @@ const TaskSchema = z.object({
   // Optional so pre-wave registries still parse; stamped on every task created from here on.
   waveId: z.string().optional(),
   card: TaskCardSchema.optional(),
+  /** Discord user ids resolved from `--ping` at `task create` (issue #10) — the task-level default
+   *  every branch's automated updates ping unless a branch sets its own (see TaskBranch.pings). */
+  pings: z.array(z.string()).optional(),
   branches: z.array(TaskBranchSchema),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -220,6 +229,14 @@ export function normalizeBranchRef(raw: string): string {
 
 export function displayTaskName(task: Pick<WorkTask, "number" | "title">): string {
   return `#${task.number} - ${task.title}`;
+}
+
+/**
+ * The ping list that actually applies to one branch's automated updates (issue #10): the branch's
+ * own list when it has one (even `[]`, an explicit opt-out), else the task's default.
+ */
+export function effectivePings(task: Pick<WorkTask, "pings">, branch: Pick<TaskBranch, "pings">): string[] {
+  return branch.pings ?? task.pings ?? [];
 }
 
 export function branchStatusForTicket(state: TicketState): TaskBranchStatus {
@@ -337,6 +354,8 @@ export class TaskStore {
     project?: string;
     initialBranchTitle?: string;
     waveId?: string;
+    /** Task-level default `--ping` list (issue #10); every branch inherits it unless overridden. */
+    pings?: string[];
   }): Promise<{ task: WorkTask; branch: TaskBranch }> {
     return this.mutate((registry) => {
       const now = this.now().toISOString();
@@ -362,6 +381,7 @@ export class TaskStore {
         // Inferred inside the lock that allocates `number`, off the registry as just read, so two
         // concurrent creators cannot land in different halves of the same burst.
         waveId: input.waveId ?? inferWaveId(registry.tasks, now, input.originChannelId),
+        ...(input.pings && input.pings.length > 0 ? { pings: input.pings } : {}),
         branches: [branch],
         createdAt: now,
         updatedAt: now,
@@ -563,6 +583,16 @@ export class TaskStore {
   async setBranchStatus(branchRef: string, status: TaskBranchStatus): Promise<TaskBranch> {
     return this.updateBranch(branchRef, (branch) => {
       branch.status = status;
+    });
+  }
+
+  /**
+   * `task start --ping` (issue #10): set this branch's own ping list, overriding the task-level
+   * default for every automated update this branch's work reports from here on.
+   */
+  async setPings(branchRef: string, userIds: string[]): Promise<TaskBranch> {
+    return this.updateBranch(branchRef, (branch) => {
+      branch.pings = userIds;
     });
   }
 

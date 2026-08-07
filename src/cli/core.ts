@@ -1382,16 +1382,30 @@ export async function runConfig(argv: string[]): Promise<void> {
   fail("usage: beckett config print-default  (regenerates deploy/config.toml.example)");
 }
 
+// Resolve every `--ping <target>` in argv (issue #10) to Discord user ids once, at send time,
+// failing the command with the unresolved target(s) named rather than sending a broken mention.
+function resolvePings(argv: string[]): string[] {
+  const targets = collectFlag(argv, "ping");
+  if (targets.length === 0) return [];
+  try {
+    return resolvePingTargets(targets, paths.identitiesFile);
+  } catch (err) {
+    fail((err as Error).message);
+  }
+}
+
 // ── top-level (control bus) ──────────────────────────────────────────────────────────────
 export async function runDiscordReply(argv: string[]): Promise<void> {
   const { _, flags } = parse(argv);
   const files = flags.file
     ? (Array.isArray(flags.file) ? flags.file.map(String) : [String(flags.file)])
     : undefined;
+  const pingUserIds = resolvePings(argv);
   await discordReplyBus({
     channelId: flags.channel ? String(flags.channel) : undefined,
-    text: _.join(" "),
+    text: renderMentions(_.join(" "), pingUserIds),
     files,
+    ...(pingUserIds.length > 0 ? { pingUserIds } : {}),
   });
 }
 
@@ -1403,11 +1417,13 @@ export async function runDiscordAck(argv: string[]): Promise<void> {
   // React-as-ack (#103): `--emoji ✅` acknowledges by reacting to the message this turn is answering
   // instead of posting a separate "on it" line. Text and emoji are both optional here; the daemon
   // rejects the empty case and falls back to a text ack when there is no message to react to.
+  const pingUserIds = resolvePings(argv);
   await discordReplyBus(
     {
       channelId: flags.channel ? String(flags.channel) : undefined,
-      text: _.join(" "),
+      text: renderMentions(_.join(" "), pingUserIds),
       ...(flags.emoji ? { emoji: String(flags.emoji) } : {}),
+      ...(pingUserIds.length > 0 ? { pingUserIds } : {}),
     },
     "discord.ack",
   );
