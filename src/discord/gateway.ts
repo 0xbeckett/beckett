@@ -1230,11 +1230,14 @@ export class DiscordJsGateway implements DiscordGateway {
       const messageContent = replyUserId ? stripUserMention(chunks[i]!, replyUserId) : chunks[i]!;
       const payload: MessageCreateOptions = messageContent ? { content: messageContent } : {};
       // Every outgoing message disables Discord's implicit parsing. A direct reply opts back into
-      // exactly its author's native-reply notification — never roles, @here, @everyone, or another
-      // user named in model text. If the author id is unavailable, the reply stays visually native
-      // but deliberately sends no notification.
-      payload.allowedMentions = replyUserId
-        ? { parse: [], users: [replyUserId], repliedUser: true }
+      // exactly its author's native-reply notification, and any ids resolved from `--ping` (issue
+      // #10) are allow-listed too — never roles, @here, @everyone, or another user named ad hoc in
+      // model text. `pingUserIds` only applies to the first chunk: that's the one `renderMentions`
+      // prepended the `<@id>` blobs to.
+      const pingUserIds = i === 0 ? opts?.pingUserIds ?? [] : [];
+      const mentionUsers = [...new Set([replyUserId, ...pingUserIds].filter((id): id is string => !!id))];
+      payload.allowedMentions = mentionUsers.length > 0
+        ? { parse: [], users: mentionUsers, ...(replyUserId ? { repliedUser: true } : {}) }
         : { parse: [] };
       if (i === 0 && opts?.replyToMessageId) {
         // Native reply-to: visual threading without threads + the strong correlation key

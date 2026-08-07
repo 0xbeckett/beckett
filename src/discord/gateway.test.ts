@@ -875,6 +875,29 @@ test("a reply containing only a redundant mention remains deliverable without do
   expect(payloads[0]?.allowedMentions).toEqual({ parse: [], users: [userId], repliedUser: true });
 });
 
+test("pingUserIds are allow-listed on an ambient post's allowed_mentions (issue #10)", async () => {
+  const { payloads, callSendNow } = fakeSendableGateway();
+  const ro = "1151230208783945818";
+  const alice = "222222222222222222";
+  await callSendNow(`<@${ro}> <@${alice}>\nlanded`, { pingUserIds: [ro, alice] });
+
+  expect(payloads[0]?.content).toBe(`<@${ro}> <@${alice}>\nlanded`);
+  expect(payloads[0]?.allowedMentions).toEqual({ parse: [], users: [ro, alice] });
+});
+
+test("pingUserIds merge with (and dedupe against) the native-reply author on a direct reply", async () => {
+  const { payloads, callSendNow } = fakeSendableGateway();
+  const ro = "1151230208783945818";
+  const alice = "222222222222222222";
+  await callSendNow(`<@${alice}>\ngot it`, {
+    replyToMessageId: "message-1",
+    replyToUserId: ro,
+    pingUserIds: [ro, alice],
+  });
+
+  expect(payloads[0]?.allowedMentions).toEqual({ parse: [], users: [ro, alice], repliedUser: true });
+});
+
 test("ambient one-liners have no reply or ping, and all implicit mention parsing is disabled", async () => {
   const { payloads, callSendNow } = fakeSendableGateway();
   await callSendNow("@everyone @here <@&987654321> <@1151230208783945818> nice");

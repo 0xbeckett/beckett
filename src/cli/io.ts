@@ -41,6 +41,24 @@ export function parse(argv: string[]): { _: string[]; flags: Record<string, stri
   return { _, flags };
 }
 
+/**
+ * Collect every occurrence of a repeatable `--flag <value>` pair, in argv order (e.g.
+ * `--ping ro --ping alice`). `parse()` above overwrites a repeated flag with its last value, so a
+ * flag meant to be given more than once (issue #10) has to be read straight off argv instead.
+ */
+export function collectFlag(argv: string[], name: string): string[] {
+  const flag = `--${name}`;
+  const values: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== flag) continue;
+    const next = argv[i + 1];
+    if (next === undefined || next.startsWith("--")) continue;
+    values.push(next);
+    i++;
+  }
+  return values;
+}
+
 /** Validate a `--port` style flag into a usable port number, or fall back. */
 export function parsePort(raw: string | boolean | undefined, fallback: number): number {
   if (raw === undefined || raw === false) return fallback;

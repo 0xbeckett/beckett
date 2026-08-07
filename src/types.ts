@@ -384,6 +384,12 @@ export interface ReplyOptions {
   browserQuestion?: boolean;
   /** Fail immediately instead of queueing when offline; used for expiring browser questions. */
   queueIfOffline?: boolean;
+  /**
+   * Discord user ids resolved from `--ping` (issue #10). Allow-listed on the first outgoing
+   * message's `allowed_mentions` so the `<@id>` blobs `renderMentions` prepends to content
+   * actually notify — without this they render but never ping (Discord's default is parse: []).
+   */
+  pingUserIds?: string[];
 }
 
 export interface DiscordEmbedField {

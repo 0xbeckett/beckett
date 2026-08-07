@@ -18,7 +18,7 @@ import { join, resolve } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { resolveBoardName } from "../config.ts";
 import { callBus, ControlBusTimeoutError, indeterminateBusTimeout } from "../shell/control-bus.ts";
-import { fail, out, parse, quietLogger } from "./io.ts";
+import { collectFlag, fail, out, parse, quietLogger } from "./io.ts";
 import { config, paths, SOCK } from "./context.ts";
 import { loadAccess, requestGrant, revokeAccess, loadPending, ACCESS_CAP, PENDING_GRANT_TTL_MS } from "../discord/access.ts";
 import { bundledMaintainersFile, loadMaintainers, requestMaintainerGrant, revokeMaintainer } from "../discord/maintainers.ts";
@@ -30,6 +30,7 @@ import {
   ensureSeeded,
   resolveAddress,
 } from "../discord/identity.ts";
+import { resolvePingTargets, renderMentions } from "../discord/mentions.ts";
 import { getPerson, upsertPerson } from "../memory/people.ts";
 import { readJournal, DEFAULT_TAIL_LINES } from "../progress/journal.ts";
 import type { Casting, Ticket, TicketState } from "../tracker/types.ts";
