@@ -603,6 +603,50 @@ exports[`cli: gh: push --tag without a repo prints usage 1`] = `
 }
 `;
 
+exports[`cli: gh: land without flags prints usage 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: usage: beckett gh land --repo <owner/name> --head <branch> --title <t> [--base main] [--body <b>] [--ref <localRef>] [--strategy squash|merge|rebase] [--ci-timeout <secs>] [--force] [--dir <d>] [--rerun-with <command>]
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: gh: land without a title prints usage 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: usage: beckett gh land --repo <owner/name> --head <branch> --title <t> [--base main] [--body <b>] [--ref <localRef>] [--strategy squash|merge|rebase] [--ci-timeout <secs>] [--force] [--dir <d>] [--rerun-with <command>]
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: gh: land with a bad --ci-timeout is refused 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: beckett gh land: --ci-timeout must be a number of seconds (0 to refuse rather than wait)
+"
+,
+  "stdout": "",
+}
+`;
+
+exports[`cli: gh: preflight without GitHub credentials names the missing app credential 1`] = `
+{
+  "exit": 1,
+  "stderr": 
+"error: no GitHub credentials in ~/.beckett/.env — set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH (the kowo-co GitHub App; see deploy/github-app.md) or a legacy GITHUB_PAT — GitHub is unavailable
+"
+,
+  "stdout": "",
+}
+`;
+
 exports[`cli: gh: raw with no gh args prints usage 1`] = `
 {
   "exit": 1,
@@ -1228,7 +1272,7 @@ exports[`cli: task: create without a title prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>] [--wave <label>] [--loop <name>]
+"error: usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>] [--wave <label>] [--loop <name>] [--ping <target>]...
 "
 ,
   "stdout": "",
@@ -1321,7 +1365,7 @@ exports[`cli: task: start without a ref prints usage 1`] = `
 {
   "exit": 1,
   "stderr": 
-"error: usage: beckett task start <#N|#N.x> [--board <name>|--intensive] [--body <b>|--body-stdin] [--project <slug>] [--state <state>] [--preset <name>] [--cast <json>] [--criteria "a;b"] [--channel <id>]
+"error: usage: beckett task start <#N|#N.x> [--board <name>|--intensive] [--body <b>|--body-stdin] [--project <slug>] [--state <state>] [--preset <name>] [--cast <json>] [--criteria "a;b"] [--channel <id>] [--ping <target>]...
 "
 ,
   "stdout": "",
@@ -2066,50 +2110,6 @@ exports[`cli: persona: daemon down fails on the bus 1`] = `
   "exit": 1,
   "stderr": 
 "error: shell not running (socket <BECKETT_DIR>/control.sock): <CONNECT_ERROR>
-"
-,
-  "stdout": "",
-}
-`;
-
-exports[`cli: gh: land without flags prints usage 1`] = `
-{
-  "exit": 1,
-  "stderr": 
-"error: usage: beckett gh land --repo <owner/name> --head <branch> --title <t> [--base main] [--body <b>] [--ref <localRef>] [--strategy squash|merge|rebase] [--ci-timeout <secs>] [--force] [--dir <d>] [--rerun-with <command>]
-"
-,
-  "stdout": "",
-}
-`;
-
-exports[`cli: gh: land without a title prints usage 1`] = `
-{
-  "exit": 1,
-  "stderr": 
-"error: usage: beckett gh land --repo <owner/name> --head <branch> --title <t> [--base main] [--body <b>] [--ref <localRef>] [--strategy squash|merge|rebase] [--ci-timeout <secs>] [--force] [--dir <d>] [--rerun-with <command>]
-"
-,
-  "stdout": "",
-}
-`;
-
-exports[`cli: gh: land with a bad --ci-timeout is refused 1`] = `
-{
-  "exit": 1,
-  "stderr": 
-"error: beckett gh land: --ci-timeout must be a number of seconds (0 to refuse rather than wait)
-"
-,
-  "stdout": "",
-}
-`;
-
-exports[`cli: gh: preflight without GitHub credentials names the missing app credential 1`] = `
-{
-  "exit": 1,
-  "stderr": 
-"error: no GitHub credentials in ~/.beckett/.env — set GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY_PATH (the kowo-co GitHub App; see deploy/github-app.md) or a legacy GITHUB_PAT — GitHub is unavailable
 "
 ,
   "stdout": "",
