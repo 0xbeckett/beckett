@@ -121,7 +121,8 @@ import type { DiscordButton, DiscordComponentInteraction, DiscordEmbed, TaskThre
 import { ComponentRouter, decodeComponentId, type ComponentActionContext } from "../discord/interactions.ts";
 import { GitHubCli, githubAuth, githubConfigured, loadIdentity } from "../agency/index.ts";
 import { createTrackerClient } from "../tracker/client.ts";
-import { TaskStore, displayTaskName, type TaskBranch, type WorkTask } from "../task/store.ts";
+import { TaskStore, displayTaskName, effectivePings, type TaskBranch, type WorkTask } from "../task/store.ts";
+import { renderMentions } from "../discord/mentions.ts";
 import type { BranchStatusService } from "../task/status.ts";
 import { TaskCardService } from "../task/card.ts";
 import { branchCardButtons, renderBranchEmbed } from "../discord/cards.ts";
@@ -3811,8 +3812,21 @@ export class Concierge {
     // null means nothing renderable survived — post NOTHING, not an empty subtext line.
     const line = formatFiledLine(pending.refs);
     if (line === null) return;
+    // Persisted `--ping` targets (issue #10): a task/branch filed with pings gets them on its
+    // filed receipt too, unioned across every ref in this batch (deduped by renderMentions).
+    const pingUserIds = [...new Set(
+      pending.refs.flatMap((ref) => {
+        const found = this.tasks.resolveTaskRef(ref);
+        if (!found) return [];
+        return found.branch ? effectivePings(found.task, found.branch) : (found.task.pings ?? []);
+      }),
+    )];
     try {
-      await this.gateway.post(channelId, line);
+      await this.gateway.post(
+        channelId,
+        renderMentions(line, pingUserIds),
+        pingUserIds.length > 0 ? { pingUserIds } : undefined,
+      );
       this.log.info("stamped filed line", { channelId, refs: normalizeFiledRefs(pending.refs) });
     } catch (err) {
       this.log.warn("filed line post failed", { channelId, err: String(err) });
@@ -5337,12 +5351,18 @@ export class Concierge {
       });
       return null;
     }
+    // Persisted `--ping` targets (issue #10): a task/branch filed with pings gets them on every
+    // automated update it reports (review, ship, failure, …), not just its filed receipt — the
+    // reply command below already carries resolved ids, so the model never has to guess who to ping.
+    const found = ticket.branchRef ? this.tasks.getBranch(ticket.branchRef) : null;
+    const pings = found ? effectivePings(found.task, found.branch) : [];
+    const pingFlags = pings.map((id) => ` --ping ${id}`).join("");
     const text =
       `SYSTEM (automated ticket update — NOT a message from a user; do not reply to this turn as if a person typed it):\n` +
       `${ticket.branchRef ? `Branch #${ticket.branchRef}` : `Ticket ${ticket.identifier}`} "${ticket.title}" has an update:\n\n${detail}\n\n` +
       `If this is worth telling the person who asked for it, send them a short note IN YOUR VOICE by ` +
       `running this from your Bash tool:\n` +
-      `  beckett discord reply --channel ${channel} "<your message>"\n` +
+      `  beckett discord reply --channel ${channel}${pingFlags} "<your message>"\n` +
       `Paraphrase — don't dump the raw status. If it's routine or not worth a ping, do nothing.`;
     return { channel, text, ident: ticket.identifier };
   }

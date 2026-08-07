@@ -773,7 +773,7 @@ export async function runTask(argv: string[]): Promise<void> {
   if (sub === "create") {
     const title = String(flags.title ?? _.join(" ")).trim();
     if (!title) {
-      fail('usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>] [--wave <label>] [--loop <name>]');
+      fail('usage: beckett task create --title <t> [--branch-title <t>] [--project <slug>] [--channel <discord-channel-id>] [--wave <label>] [--loop <name>] [--ping <target>]...');
     }
     const project = flags.project ? String(flags.project) : undefined;
     guardRestrictedProject(project, Boolean(flags["confirm-beckett"]));
@@ -785,12 +785,16 @@ export async function runTask(argv: string[]): Promise<void> {
     // could, like work filed for one ask across two channels. An explicit label always wins.
     const wave = flags.wave ? String(flags.wave).trim() : "";
     const loop = flags.loop ? String(flags.loop).trim() : "";
+    // `--ping` (issue #10, repeatable): the task-level default every branch's automated updates
+    // (filed receipt, review, ship, failure) ping unless a branch sets its own at `task start`.
+    const pings = resolvePings(rest);
     const created = await store.createTask({
       title,
       ...(flags["branch-title"] ? { initialBranchTitle: String(flags["branch-title"]) } : {}),
       ...(project ? { project } : {}),
       ...(flags.channel ? { originChannelId: String(flags.channel) } : {}),
       ...(wave ? { waveId: wave } : {}),
+      ...(pings.length > 0 ? { pings } : {}),
     });
     await notifyBus("task.created", {
       taskRef: `#${created.task.number}`,
@@ -851,9 +855,11 @@ export async function runTask(argv: string[]): Promise<void> {
     const requestedRef = _[0] ?? (flags.branch ? String(flags.branch) : "");
     if (!requestedRef) {
       fail(
-        'usage: beckett task start <#N|#N.x> [--board <name>|--intensive] [--body <b>|--body-stdin] [--project <slug>] [--state <state>] [--preset <name>] [--cast <json>] [--criteria "a;b"] [--channel <id>]',
+        'usage: beckett task start <#N|#N.x> [--board <name>|--intensive] [--body <b>|--body-stdin] [--project <slug>] [--state <state>] [--preset <name>] [--cast <json>] [--criteria "a;b"] [--channel <id>] [--ping <target>]...',
       );
     }
+    // `--ping` (issue #10, repeatable): a branch-level override of the task's default pings.
+    const pings = resolvePings(rest);
     const branchRef = requestedRef.includes(".")
       ? normalizeBranchRef(requestedRef)
       : `${normalizeTaskNumber(requestedRef)}.1`;
@@ -896,6 +902,7 @@ export async function runTask(argv: string[]): Promise<void> {
         ...(channel ? { originChannel: channel } : {}),
       },
     });
+    if (pings.length > 0) await store.setPings(started.branch.ref, pings);
 
     // `task.created` is intentionally idempotent: repeat it at first start so a task allocated
     // while the daemon was down still gets its Discord workspace once execution begins.
