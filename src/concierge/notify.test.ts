@@ -286,6 +286,58 @@ test("a carded task's cancellation is card-only churn (no plain ping), but its d
   expect(asks[0]!.toLowerCase()).toContain("done");
 });
 
+test("a branch's persisted --ping list rides every automated update as a --ping flag on the suggested reply (issue #10)", async () => {
+  const RO = "1151230208783945818";
+  const dir = mkdtempSync(join(tmpdir(), "beckett-notify-ping-"));
+  const store = new TaskStore(join(dir, "tasks.json"));
+  await store.createTask({ title: "Add healthz", originChannelId: CHAN, pings: [RO] });
+  const { concierge, asks } = harness(undefined, store);
+
+  concierge.notify({
+    kind: "comment_added",
+    ticket: ticket({ branchRef: "1.1" }),
+    comment: dispatcherComment("Review found issues → back to **in_progress** for re-work."),
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(1);
+  expect(asks[0]).toContain(`beckett discord reply --channel ${CHAN} --ping ${RO} "<your message>"`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a branch's own pings (set at task start) override the task's default in the suggested reply", async () => {
+  const RO = "1151230208783945818";
+  const ALICE = "222222222222222222";
+  const dir = mkdtempSync(join(tmpdir(), "beckett-notify-ping-override-"));
+  const store = new TaskStore(join(dir, "tasks.json"));
+  await store.createTask({ title: "Add healthz", originChannelId: CHAN, pings: [RO] });
+  await store.setPings("1.1", [ALICE]);
+  const { concierge, asks } = harness(undefined, store);
+
+  concierge.notify({
+    kind: "comment_added",
+    ticket: ticket({ branchRef: "1.1" }),
+    comment: dispatcherComment("Review found issues → back to **in_progress** for re-work."),
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(1);
+  expect(asks[0]).toContain(`--ping ${ALICE}`);
+  expect(asks[0]).not.toContain(`--ping ${RO}`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a task/branch with no pings suggests the plain reply command, unchanged", async () => {
+  const { concierge, asks } = harness();
+  concierge.notify({
+    kind: "comment_added",
+    ticket: ticket(),
+    comment: dispatcherComment("Review found issues → back to **in_progress** for re-work."),
+  });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(asks.length).toBe(1);
+  expect(asks[0]).toContain(`beckett discord reply --channel ${CHAN} "<your message>"`);
+  expect(asks[0]).not.toContain("--ping");
+});
+
 test("a card-less task still gets the plain cancellation ping (pre-card path unchanged)", async () => {
   const { concierge, asks } = harness();
   concierge.notify({ kind: "cancelled", ticket: ticket() });
